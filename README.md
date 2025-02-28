@@ -24,15 +24,17 @@ Kokoro is a multilingual TTS model that supports various languages and voice sty
 #### Example Usage
 
 ```python
-from tts.models.kokoro import KokoroModel, KokoroPipeline
+from mlx_audio.tts.models.kokoro import KokoroPipeline
+from mlx_audio.tts.utils import load_model
 from IPython.display import Audio
 import soundfile as sf
 
 # Initialize the model
-model = KokoroModel(repo_id='prince-canuma/Kokoro-82M')
+model_id = 'prince-canuma/Kokoro-82M'
+model = load_model(model_id)
 
 # Create a pipeline with American English
-pipeline = KokoroPipeline(lang_code='a', model=model)
+pipeline = KokoroPipeline(lang_code='a', model=model, repo_id=model_id)
 
 # Generate audio
 text = "The MLX King lives. Let him cook!"
@@ -58,16 +60,17 @@ for _, _, audio in pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+
 You can quantize models for improved performance:
 
 ```python
-from tts.models.kokoro import KokoroModel
-from tts.utils import quantize_model
+from mlx_audio.tts.utils import quantize_model, load_model
 import json
 import mlx.core as mx
 
-model = KokoroModel(repo_id='prince-canuma/Kokoro-82M')
+model = load_model(repo_id='prince-canuma/Kokoro-82M')
 config = model.config
 
 # Quantize to 8-bit
-weights, config = quantize_model(model, config, 64, 8)
+group_size = 64
+bits = 8
+weights, config = quantize_model(model, config, group_size, bits)
 
 # Save quantized model
 with open('./8bit/config.json', 'w') as f:
