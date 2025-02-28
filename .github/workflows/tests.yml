@@ -38,5 +38,5 @@ jobs:
 
       - name: Run Python tests
         run: |
-          cd tts/
+          cd mlx_audio/tts/
           pytest -s ./tests
