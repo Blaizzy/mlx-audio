@@ -6,6 +6,7 @@ import sys
 import mlx.core as mx
 import soundfile as sf
 
+from .audio_player import AudioPlayer
 from .utils import load_model
 
 
@@ -30,6 +31,7 @@ def parse_args():
     parser.add_argument(
         "--join_audio", action="store_true", help="Join all audio files into one"
     )
+    parser.add_argument("--play", action='store_true', help="Play the output audio")
     return parser.parse_args()
 
 
@@ -58,7 +60,7 @@ def main():
 
         audio_list = []
         for i, result in enumerate(results):
-            if args.join_audio:
+            if args.join_audio or args.play:
                 audio_list.append(result.audio)
             else:
                 sf.write(f"{args.file_prefix}_{i:03d}.wav", result.audio, 24000)
@@ -83,6 +85,14 @@ def main():
             print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
             sf.write(f"{args.file_prefix}.wav", audio, 24000)
+            
+        if args.play:
+            audio = mx.concatenate(audio_list, axis=0)
+            
+            player = AudioPlayer()
+            player.queue_audio(audio)
+            player.wait_for_drain()
+            player.stop()
     except ImportError as e:
         print(f"Import error: {e}")
         print(
