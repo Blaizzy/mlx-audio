@@ -15,6 +15,23 @@ A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX f
 pip install mlx-audio
 ```
 
+### Quick Start
+
+To generate audio with an LLM use:
+
+```bash
+# Basic usage
+mlx_audio.tts.generate --text "Hello, world"
+
+# Specify prefix for output file
+mlx_audio.tts.generate --text "Hello, world" --file_prefix hello
+
+# Adjust speaking speed (0.5-2.0)
+mlx_audio.tts.generate --text "Hello, world" --speed 1.4
+```
+
+
+
 ## Models
 
 ### Kokoro
