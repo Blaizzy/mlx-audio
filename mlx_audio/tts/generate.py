@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument(
         "--join_audio", action="store_true", help="Join all audio files into one"
     )
-    parser.add_argument("--play", action='store_true', help="Play the output audio")
+    parser.add_argument("--play", action="store_true", help="Play the output audio")
     return parser.parse_args()
 
 
@@ -85,10 +85,10 @@ def main():
             print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
             sf.write(f"{args.file_prefix}.wav", audio, 24000)
-            
+
         if args.play:
             audio = mx.concatenate(audio_list, axis=0)
-            
+
             player = AudioPlayer()
             player.queue_audio(audio)
             player.wait_for_drain()
