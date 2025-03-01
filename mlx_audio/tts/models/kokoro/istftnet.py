@@ -452,6 +452,7 @@ def mlx_stft(
 
     return spec.transpose(1, 0)
 
+
 def mlx_istft(
     x,
     hop_length=None,
@@ -486,25 +487,26 @@ def mlx_istft(
     for i in range(x.shape[0]):
         # inverse FFT of each frame
         frame_time = mx.fft.irfft(x[i])
-        
+
         # get the position in the time-domain signal to add the frame
         start = i * hop_length
         end = start + win_length
-        
+
         # overlap-add the inverse transformed frame, scaled by the window
         reconstructed[start:end] += frame_time * w
-        window_sum[start:end] += w ** 2
+        window_sum[start:end] += w**2
 
     # normalize by the sum of the window values
     reconstructed = mx.where(window_sum != 0, reconstructed / window_sum, reconstructed)
 
     if center and length is None:
         reconstructed = reconstructed[win_length // 2 : -win_length // 2]
-        
+
     if length is not None:
         reconstructed = reconstructed[:length]
 
     return reconstructed
+
 
 class MLXSTFT:
     def __init__(
