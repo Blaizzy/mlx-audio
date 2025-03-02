@@ -12,6 +12,5 @@ torch>=2.5.1
 transformers>=4.49.0
 sentencepiece>=0.2.0
 huggingface_hub>=0.27.0
-librosa>=0.10.2.post1
 sounddevice>=0.5.1
 soundfile>=0.13.1
