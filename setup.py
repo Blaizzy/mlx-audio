@@ -16,7 +16,7 @@ with open(requirements_path) as fid:
     requirements = [l.strip() for l in fid.readlines()]
 
 # Import the version from the package
-from version import __version__
+from mlx_audio.version import __version__
 
 # Setup configuration
 setup(
@@ -31,15 +31,23 @@ setup(
     license="MIT",
     install_requires=requirements,
     packages=find_packages(where=root_dir),
+    include_package_data=True,
+    package_data={
+        "mlx_audio": ["tts/*.html", "tts/*.js", "tts/*.css", "tts/static/**/*"],
+    },
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
     python_requires=">=3.8",
+    extras_require={
+        "py38": ["importlib_resources"],
+    },
     entry_points={
         "console_scripts": [
             "mlx_audio.tts.generate = mlx_audio.tts.generate:main",
+            "mlx_audio.server = mlx_audio.server:main",
         ]
     },
 )

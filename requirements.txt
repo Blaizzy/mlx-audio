@@ -14,3 +14,5 @@ sentencepiece>=0.2.0
 huggingface_hub>=0.27.0
 sounddevice>=0.5.1
 soundfile>=0.13.1
+fastapi>=0.95.0
+uvicorn>=0.22.0

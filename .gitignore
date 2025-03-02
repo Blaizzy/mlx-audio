@@ -19,11 +19,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.python-version
 
 # Virtual Environment
 venv/
 ENV/
 env/
+.venv/
 
 # IDE
 .idea/
@@ -36,3 +38,4 @@ env/
 Thumbs.db
 
 test.ipynb
+output/
