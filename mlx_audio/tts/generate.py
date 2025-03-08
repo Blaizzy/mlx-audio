@@ -117,5 +117,59 @@ def main():
         traceback.print_exc()
 
 
+def generate_audio(text: str,
+                   model: str = "prince-canuma/Kokoro-82M",
+                   voice: str = "af_heart",
+                   speed: float = 1.0,
+                   lang_code: str = "a",
+                   file_path: str = "audio",
+                   audio_format: str = "wav",
+                   sample_rate: int = 24000,
+                   verbose: bool = True) -> None:
+    """
+    Generates audio from text using a specified TTS model.
+
+    Parameters:
+    - text (str): The input text to be converted to speech.
+    - model (str): The TTS model to use (default: "prince-canuma/Kokoro-82M").
+    - voice (str): The voice style to use (default: "af_heart").
+    - speed (float): Playback speed multiplier (default: 1.0).
+    - lang_code (str): The language code (default: "a").
+    - file_path (str): The output file path without extension (default: "audio").
+    - audio_format (str): Output audio format (e.g., "wav", "flac") (default: "wav").
+    - sample_rate (int): Sampling rate in Hz (default: 24000).
+    - verbose (bool): Whether to print status messages (default: True).
+
+    Returns:
+    - None: The function writes the generated audio to a file.
+    """
+    try:
+        # Load the specified TTS model
+        model_instance = load_model(model_path=model)
+
+        # Generate audio using the model
+        results = model_instance.generate(
+            text=text,
+            voice=voice,
+            speed=speed,
+            lang_code=lang_code,
+            verbose=verbose,  # Pass verbose to model if applicable
+        )
+
+        # Concatenate generated audio segments
+        audio_list = [result.audio for result in results]
+        final_audio = mx.concatenate(audio_list, axis=0)
+
+        # Save the audio to the specified file format
+        output_file = f"{file_path}.{audio_format}"
+        sf.write(output_file, final_audio, sample_rate)
+
+        if verbose:
+            print(f"✅ Audio successfully generated and saved as: {output_file}")
+
+    except Exception as e:
+        print(f"❌ Error generating audio: {e}")
+
+
 if __name__ == "__main__":
     main()
