@@ -99,7 +99,9 @@ def tts_endpoint(
         )
 
     # Store current model repo_id for comparison
-    current_model_repo_id = getattr(tts_model, 'repo_id', None) if tts_model is not None else None
+    current_model_repo_id = (
+        getattr(tts_model, "repo_id", None) if tts_model is not None else None
+    )
 
     # Load the model if it's not loaded or if a different model is requested
     if tts_model is None or current_model_repo_id != model:
@@ -129,7 +131,7 @@ def tts_endpoint(
         text=text,
         voice=voice,
         speed=speed_float,
-        lang_code=voice[0],  
+        lang_code=voice[0],
         verbose=False,
     )
 
