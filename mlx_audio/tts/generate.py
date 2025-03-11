@@ -52,7 +52,7 @@ def main():
     try:
         if args.play:
             player = AudioPlayer()
-        
+
         model = load_model(model_path=args.model)
         print(
             f"\n\033[94mModel:\033[0m {args.model}\n"
