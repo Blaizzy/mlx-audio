@@ -19,7 +19,10 @@ def parse_args():
         help="Path or repo id of the model",
     )
     parser.add_argument(
-        "--text", type=str, default="The sky above the port", help="Text to generate"
+        "--text",
+        type=str,
+        default=None,
+        help="Text to generate (leave blank to input via stdin)",
     )
     parser.add_argument("--voice", type=str, default="af_heart", help="Voice name")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
@@ -32,7 +35,16 @@ def parse_args():
         "--join_audio", action="store_true", help="Join all audio files into one"
     )
     parser.add_argument("--play", action="store_true", help="Play the output audio")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.text is None:
+        if not sys.stdin.isatty():
+            args.text = sys.stdin.read().strip()
+        else:
+            print("Please enter the text to generate:")
+            args.text = input("> ").strip()
+
+    return args
 
 
 def main():

@@ -1,9 +1,4 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D Orb Audio Visualization</title>
+<title>3D Orb Audio Visualization</title>
     <style>
         body {
             margin: 0;
@@ -20,6 +15,9 @@
             background-color: rgba(0, 0, 0, 0.5);
             padding: 15px;
             border-radius: 10px;
+            max-width: 350px;
+            max-height: 80vh;
+            overflow-y: auto;
         }
         button {
             background-color: #4CAF50;
@@ -44,16 +42,184 @@
         #status {
             margin-top: 10px;
         }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"], select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            background-color: rgba(255, 255, 255, 0.9);
+        }
+        textarea {
+            height: 80px;
+            resize: vertical;
+        }
+        .tab-container {
+            margin-top: 15px;
+        }
+        .tab {
+            overflow: hidden;
+            border-bottom: 1px solid #ccc;
+            margin-bottom: 10px;
+        }
+        .tab button {
+            background-color: inherit;
+            float: left;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 8px 16px;
+            transition: 0.3s;
+            color: #ddd;
+        }
+        .tab button:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .tab button.active {
+            background-color: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+        .tabcontent {
+            display: none;
+            padding: 10px 0;
+        }
+        .error {
+            color: #ff6b6b;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        /* Improved slider styling */
+        .slider-container {
+            margin-top: 10px;
+            position: relative;
+        }
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #ddd;
+        }
+        input[type="range"] {
+            width: 100%;
+            margin: 0;
+            background: transparent;
+            -webkit-appearance: none;
+        }
+        input[type="range"]:focus {
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 6px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+            -webkit-appearance: none;
+            margin-top: -5px;
+        }
+        input[type="range"]::-moz-range-track {
+            width: 100%;
+            height: 6px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+        }
+        input[type="range"]::-moz-range-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+        }
+        .speed-value-display {
+            position: relative;
+            text-align: center;
+            font-weight: bold;
+            color: white;
+            margin-top: 5px;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
 
     <div id="controls">
         <h1>MLX-Audio Player</h1>
-        <input type="file" id="audioUpload" accept="audio/*">
-        <button id="playBtn" disabled>Play</button>
-        <button id="stopBtn" disabled>Stop</button>
-        <div id="status">Upload an audio file to begin visualization</div>
+        
+        <div class="tab">
+            <button class="tablinks active" onclick="openTab(event, 'textToSpeech')">Text to Speech</button>
+            <button class="tablinks" onclick="openTab(event, 'fileUpload')">File Upload</button>
+        </div>
+        
+        <div id="textToSpeech" class="tabcontent" style="display: block;">
+            <div class="form-group">
+                <label for="text">Text to convert:</label>
+                <textarea id="text" placeholder="Enter text here..."></textarea>
+            </div>
+            
+            <div class="form-group">
+                <label for="voice">Voice:</label>
+                <select id="voice">
+                    <option value="af_heart">AF Heart</option>
+                    <option value="af_nova">AF Nova</option>
+                    <option value="af_bella">AF Bella</option>
+                    <option value="bf_emma">BF Emma</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="model">Model:</label>
+                <select id="model">
+                    <option value="mlx-community/Kokoro-82M-4bit">Kokoro 82M 4bit</option>
+                    <option value="mlx-community/Kokoro-82M-6bit">Kokoro 82M 6bit</option>
+                    <option value="mlx-community/Kokoro-82M-8bit">Kokoro 82M 8bit</option>
+                    <option value="mlx-community/Kokoro-82M-bf16">Kokoro 82M bf16</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="speed">Speech Speed:</label>
+                <div class="slider-container">
+                    <div class="slider-labels">
+                        <span>Slower</span>
+                        <span>Normal</span>
+                        <span>Faster</span>
+                    </div>
+                    <input type="range" id="speed" min="0.5" max="2.0" step="0.1" value="1.0">
+                    <div class="speed-value-display"><span id="speed-value">1.0</span>x</div>
+                </div>
+            </div>
+            
+            <button id="generateBtn">Generate Speech</button>
+            <button id="openFolderBtn" style="background-color: #2196F3;">Open Output Folder</button>
+            <div id="ttsError" class="error" style="display: none;"></div>
+            <div id="ttsStatus" style="margin-top: 10px; max-width: 350px;"></div>
+        </div>
+        
+        <div id="fileUpload" class="tabcontent">
+            <input type="file" id="audioUpload" accept="audio/*">
+            <div style="margin-top: 10px;">
+                <button id="playBtn" disabled>Play</button>
+                <button id="stopBtn" disabled>Stop</button>
+            </div>
+            <div id="status">Upload an audio file to begin visualization</div>
+        </div>
     </div>
 
     <!-- Load Three.js from CDN -->
@@ -66,6 +232,17 @@
         const playBtn = document.getElementById('playBtn');
         const stopBtn = document.getElementById('stopBtn');
         const statusElement = document.getElementById('status');
+
+        // TTS elements
+        const textInput = document.getElementById('text');
+        const voiceSelect = document.getElementById('voice');
+        const modelSelect = document.getElementById('model');
+        const speedInput = document.getElementById('speed');
+        const speedValue = document.getElementById('speed-value');
+        const generateBtn = document.getElementById('generateBtn');
+        const openFolderBtn = document.getElementById('openFolderBtn');
+        const ttsErrorElement = document.getElementById('ttsError');
+        const ttsStatusElement = document.getElementById('ttsStatus');
 
         // Audio variables
         let audioContext;
@@ -138,6 +315,183 @@
         const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
         scene.add(glowMesh);
 
+        // Tab functionality
+        function openTab(evt, tabName) {
+            // Hide all tabcontent
+            const tabcontent = document.getElementsByClassName("tabcontent");
+            for (let i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].style.display = "none";
+            }
+            
+            // Remove active class from all tablinks
+            const tablinks = document.getElementsByClassName("tablinks");
+            for (let i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+            }
+            
+            // Show the current tab and add active class to the button
+            document.getElementById(tabName).style.display = "block";
+            evt.currentTarget.className += " active";
+        }
+        
+        // Speed slider update
+        speedInput.addEventListener('input', function() {
+            speedValue.textContent = this.value;
+        });
+        
+        // Generate speech button handler
+        generateBtn.addEventListener('click', function() {
+            const text = textInput.value;
+            const voice = voiceSelect.value;
+            const model = modelSelect.value;
+            const speed = speedInput.value;
+            
+            if (!text.trim()) {
+                showTtsError('Please enter some text');
+                return;
+            }
+            
+            // Hide previous error
+            ttsErrorElement.style.display = 'none';
+            ttsStatusElement.textContent = 'Generating speech...';
+            
+            // Create form data
+            const formData = new FormData();
+            formData.append('text', text);
+            formData.append('voice', voice);
+            formData.append('model', model);
+            formData.append('speed', speed);
+            
+            // Send request to server
+            fetch('/tts', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to generate speech');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                ttsStatusElement.textContent = 'Speech generated successfully!';
+                
+                // Clean up previous audio resources
+                if (audioElement) {
+                    audioElement.pause();
+                    audioElement.removeAttribute('src');
+                    audioElement.load();
+                }
+                
+                if (audioSource) {
+                    audioSource.disconnect();
+                    audioSource = null;
+                }
+                
+                // Create new audio element to avoid source node issues
+                audioElement = new Audio();
+                
+                // Set audio source with absolute path
+                audioElement.src = `/audio/${data.filename}`;
+                audioElement.loop = false;
+                
+                // Enable play button
+                playBtn.disabled = false;
+                stopBtn.disabled = true;
+                
+                // Add ended event listener
+                audioElement.addEventListener('ended', function() {
+                    statusElement.textContent = "Audio finished playing.";
+                    playBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    resetSphere();
+                });
+                
+                // Auto-play the generated audio
+                playAudio();
+            })
+            .catch(error => {
+                showTtsError(error.message);
+                ttsStatusElement.textContent = '';
+            });
+        });
+        
+        // Open output folder button handler
+        openFolderBtn.addEventListener('click', function() {
+            fetch('/open_output_folder', {
+                method: 'POST'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to open output folder');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                ttsStatusElement.textContent = `Opened output folder: ${data.path}`;
+            })
+            .catch(error => {
+                showTtsError(error.message);
+            });
+        });
+        
+        function showTtsError(message) {
+            ttsErrorElement.textContent = message;
+            ttsErrorElement.style.display = 'block';
+        }
+        
+        // Function to play audio (reused for both upload and TTS)
+        function playAudio() {
+            if (!audioElement || !audioElement.src) {
+                statusElement.textContent = "No audio available to play.";
+                return;
+            }
+            
+            statusElement.textContent = "Playing audio...";
+            
+            // Initialize audio context if needed
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            
+            // Create analyser if needed
+            if (!analyser) {
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+            }
+            
+            // Connect audio element to analyser if not already connected
+            if (!audioSource) {
+                try {
+                    audioSource = audioContext.createMediaElementSource(audioElement);
+                    audioSource.connect(analyser);
+                    analyser.connect(audioContext.destination);
+                } catch (error) {
+                    console.error("Error connecting audio source:", error);
+                    statusElement.textContent = "Error setting up audio visualization. Try refreshing the page.";
+                    
+                    // Still try to play the audio even if visualization fails
+                    audioElement.play().catch(playError => {
+                        statusElement.textContent = "Error playing audio: " + playError.message;
+                    });
+                    return;
+                }
+            }
+            
+            // Play audio
+            audioElement.play().then(() => {
+                playBtn.disabled = true;
+                stopBtn.disabled = false;
+            }).catch(error => {
+                statusElement.textContent = "Error playing audio: " + error.message;
+            });
+        }
+
         // Handle audio upload
         audioUpload.addEventListener('change', function(e) {
             const file = e.target.files[0];
@@ -145,15 +499,22 @@
 
             statusElement.textContent = "Audio file loaded. Press Play to start.";
 
-            // Create audio element if it doesn't exist
-            if (!audioElement) {
-                audioElement = new Audio();
-            } else {
+            // Clean up previous audio resources
+            if (audioElement) {
                 audioElement.pause();
+                audioElement.removeAttribute('src');
+                audioElement.load();
             }
-
+            
+            if (audioSource) {
+                audioSource.disconnect();
+                audioSource = null;
+            }
+            
+            // Create new audio element
+            audioElement = new Audio();
             audioElement.src = URL.createObjectURL(file);
-            audioElement.loop = false; // Changed to false to stop after one play
+            audioElement.loop = false;
 
             // Enable play button
             playBtn.disabled = false;
@@ -170,39 +531,7 @@
 
         // Play button handler
         playBtn.addEventListener('click', function() {
-            if (!audioElement || !audioElement.src) {
-                statusElement.textContent = "Please upload an audio file first.";
-                return;
-            }
-
-            statusElement.textContent = "Playing audio...";
-
-            // Initialize audio context if needed
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-            }
-
-            // Create analyser if needed
-            if (!analyser) {
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
-            }
-
-            // Connect audio element to analyser if not already connected
-            if (!audioSource) {
-                audioSource = audioContext.createMediaElementSource(audioElement);
-                audioSource.connect(analyser);
-                analyser.connect(audioContext.destination);
-            }
-
-            // Play audio
-            audioElement.play().then(() => {
-                playBtn.disabled = true;
-                stopBtn.disabled = false;
-            }).catch(error => {
-                statusElement.textContent = "Error playing audio: " + error.message;
-            });
+            playAudio();
         });
 
         // Stop button handler
@@ -244,6 +573,9 @@
             // Update controls
             controls.update();
 
+            // Get current time for pulsating effect
+            const time = performance.now() * 0.001; // Convert to seconds
+
             // Rotate sphere slowly
             sphere.rotation.y += 0.002;
             sphere.rotation.x += 0.001;
@@ -258,6 +590,9 @@
                 const midAvg = getAverageFrequency(dataArray, 6, 20);
                 const trebleAvg = getAverageFrequency(dataArray, 21, 40);
 
+                // Calculate base pulsating factor (same as when no audio is playing)
+                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
+                
                 // Update sphere vertices based on frequency data
                 const positionAttribute = sphereGeometry.attributes.position;
 
@@ -282,8 +617,9 @@
                         frequencyFactor = bassAvg / 255;
                     }
 
-                    // Scale vertex based on frequency
-                    const scaleFactor = 1 + frequencyFactor * 0.5;
+                    // Scale vertex based on both pulsation and frequency
+                    // First apply the pulsating effect, then add audio reactivity
+                    const scaleFactor = pulseFactor * (1 + frequencyFactor * 0.5);
 
                     positionAttribute.setXYZ(
                         i,
@@ -304,16 +640,58 @@
                 sphere.material.color.setHSL(hue, saturation, lightness);
                 sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
 
-                // Update glow
+                // Update glow with both pulsation and audio reactivity
                 glowMesh.material.color.setHSL(hue, saturation, lightness);
+                const glowPulseFactor = 1 + Math.sin(time * 1.2) * 0.04;
                 glowMesh.scale.set(
-                    1 + (bassAvg / 255) * 0.1,
-                    1 + (bassAvg / 255) * 0.1,
-                    1 + (bassAvg / 255) * 0.1
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1)
                 );
 
-                // Update point light
-                pointLight.intensity = 0.5 + (bassAvg / 255) * 1.5;
+                // Update point light with both pulsation and audio reactivity
+                const lightPulseFactor = 0.5 + Math.sin(time * 1.8) * 0.2;
+                pointLight.intensity = lightPulseFactor + (bassAvg / 255) * 1.5;
+                pointLight.color.setHSL(hue, saturation, lightness);
+            } else {
+                // Apply subtle pulsating effect when no audio is playing
+                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
+                
+                // Update sphere vertices for pulsating effect
+                const positionAttribute = sphereGeometry.attributes.position;
+                
+                for (let i = 0; i < positionAttribute.count; i++) {
+                    const originalVertex = originalVertices[i];
+                    
+                    positionAttribute.setXYZ(
+                        i,
+                        originalVertex.x * pulseFactor,
+                        originalVertex.y * pulseFactor,
+                        originalVertex.z * pulseFactor
+                    );
+                }
+                
+                positionAttribute.needsUpdate = true;
+                sphereGeometry.computeVertexNormals();
+                
+                // Subtle color pulsation
+                const hue = 0.6; // Blue hue
+                const saturation = 0.8;
+                const lightness = 0.4 + Math.sin(time * 2) * 0.05; // Subtle brightness pulsation
+                
+                sphere.material.color.setHSL(hue, saturation, lightness);
+                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
+                
+                // Update glow with subtle pulsation
+                glowMesh.material.color.setHSL(hue, saturation, lightness);
+                glowMesh.scale.set(
+                    1 + Math.sin(time * 1.2) * 0.04, // Slightly different frequency for interesting effect
+                    1 + Math.sin(time * 1.2) * 0.04,
+                    1 + Math.sin(time * 1.2) * 0.04
+                );
+                
+                // Subtle point light pulsation
+                pointLight.intensity = 0.5 + Math.sin(time * 1.8) * 0.2;
                 pointLight.color.setHSL(hue, saturation, lightness);
             }
 
