@@ -152,9 +152,7 @@ class Model(nn.Module):
         asr = t_en @ pred_aln_trg
 
         decoder = mx.compile(decoder) if decoder is not None else self.decoder
-        audio = decoder(asr, F0_pred, N_pred, ref_s[:, :128])[
-            0
-        ]  # Working fine in MLX
+        audio = decoder(asr, F0_pred, N_pred, ref_s[:, :128])[0]  # Working fine in MLX
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
     def sanitize(self, weights):
@@ -274,11 +272,7 @@ class Model(nn.Module):
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
             # Calculate real-time factor (RTF)
-            rtf = (
-                audio_duration_seconds / segment_time
-                if segment_time > 0
-                else 0
-            )
+            rtf = audio_duration_seconds / segment_time if segment_time > 0 else 0
 
             # Format duration as HH:MM:SS.mmm
             duration_mins = int(audio_duration_seconds // 60)

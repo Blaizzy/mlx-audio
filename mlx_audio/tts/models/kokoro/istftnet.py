@@ -1,6 +1,6 @@
+import math
 from typing import List, Optional, Tuple, Union
 
-import math
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -511,23 +511,23 @@ def mlx_istft(
 
 def mlx_angle(z, deg=False):
     z = mx.array(z)
-    
+
     if z.dtype == mx.complex64:
         zimag = mx.imag(z)
         zreal = mx.real(z)
     else:
         zimag = mx.zeros_like(z)
         zreal = z
-    
+
     a = mx.arctan2(zimag, zreal)
-    
+
     if deg:
         a = a * (180.0 / math.pi)
-        
+
     return a
 
 
-def mlx_unwrap(p, discont=None, axis=-1, period=2*math.pi):
+def mlx_unwrap(p, discont=None, axis=-1, period=2 * math.pi):
     if discont is None:
         discont = period / 2
 
@@ -547,7 +547,9 @@ def mlx_unwrap(p, discont=None, axis=-1, period=2*math.pi):
     interval_low = -interval_high
 
     ddmod = dd - period * mx.floor((dd - interval_low) / period)
-    ddmod = mx.where((mx.abs(dd - interval_high) < 1e-10) & (dd > 0), interval_high, ddmod)
+    ddmod = mx.where(
+        (mx.abs(dd - interval_high) < 1e-10) & (dd > 0), interval_high, ddmod
+    )
 
     ph_correct = ddmod - dd
     ph_correct = mx.where(mx.abs(dd) < discont, 0, ph_correct)
@@ -557,7 +559,7 @@ def mlx_unwrap(p, discont=None, axis=-1, period=2*math.pi):
     zero_padding = mx.zeros(padding_shape)
     padded_corrections = mx.concatenate([zero_padding, ph_correct], axis=axis)
     cumulative_corrections = mx.cumsum(padded_corrections, axis=axis)
-    
+
     return p + cumulative_corrections
 
 
