@@ -631,9 +631,9 @@ class MLXSTFT:
 
             reconstructed.append(audio)
 
-        reconstructed = np.stack(reconstructed, axis=0)[:, None, :]
+        reconstructed = mx.stack(reconstructed, axis=0)[:, None, :]
 
-        return mx.array(reconstructed)
+        return reconstructed
 
     def __call__(self, input_data: mx.array) -> mx.array:
         self.magnitude, self.phase = self.transform(input_data)
@@ -683,7 +683,7 @@ class SineGen:
                 scale_factor=1 / self.upsample_scale,
                 mode="linear",
             ).transpose(0, 2, 1)
-            phase = mx.cumsum(rad_values, axis=1) * 2 * np.pi
+            phase = mx.cumsum(rad_values, axis=1) * 2 * mx.pi
             phase = interpolate(
                 phase.transpose(0, 2, 1) * self.upsample_scale,
                 scale_factor=self.upsample_scale,
@@ -713,7 +713,7 @@ class SineGen:
             # within the previous voiced segment.
             i_phase = mx.cumsum(rad_values - tmp_cumsum, axis=1)
             # get the sines
-            sines = mx.cos(i_phase * 2 * np.pi)
+            sines = mx.cos(i_phase * 2 * mx.pi)
         return sines
 
     def __call__(self, f0: mx.array) -> Tuple[mx.array, mx.array, mx.array]:
@@ -1008,7 +1008,7 @@ class AdainResBlk1d(nn.Module):
 
     def __call__(self, x, s):
         out = self._residual(x, s)
-        out = (out + self._shortcut(x)) / np.sqrt(2)
+        out = (out + self._shortcut(x)) / mx.sqrt(2)
         return out
 
 
