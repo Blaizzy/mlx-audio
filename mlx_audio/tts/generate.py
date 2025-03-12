@@ -50,8 +50,7 @@ def parse_args():
 def main():
     args = parse_args()
     try:
-        if args.play:
-            player = AudioPlayer()
+        player = AudioPlayer() if args.play else None
 
         model = load_model(model_path=args.model)
         print(
