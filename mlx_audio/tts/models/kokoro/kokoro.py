@@ -272,7 +272,11 @@ class Model(nn.Module):
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
             # Calculate real-time factor (RTF)
-            rtf = audio_duration_seconds / segment_time if segment_time > 0 else 0
+            rtf = (
+                segment_time / audio_duration_seconds
+                if audio_duration_seconds > 0
+                else 0
+            )
 
             # Format duration as HH:MM:SS.mmm
             duration_mins = int(audio_duration_seconds // 60)
