@@ -97,7 +97,7 @@ def main():
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
 
-        if args.join_audio and not args.play:
+        if args.join_audio:
             print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
             sf.write(f"{args.file_prefix}.wav", audio, 24000)
