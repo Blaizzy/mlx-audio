@@ -2,7 +2,7 @@ import inspect
 from dataclasses import dataclass
 
 import mlx.core as mx
-
+import numpy as np
 
 @dataclass
 class BaseModelArgs:
@@ -31,6 +31,28 @@ def check_array_shape(arr):
         return True
     else:
         return False
+
+def adjust_speed(audio_array, speed_factor):
+    """
+    Adjust the speed of the audio by resampling
+    speed_factor > 1: faster
+    speed_factor < 1: slower
+    """
+    # Convert to numpy if it's an MLX array
+    if isinstance(audio_array, mx.array):
+        audio_array = audio_array.tolist()
+    audio_array = np.array(audio_array)
+
+    # Calculate new length
+    old_length = len(audio_array)
+    new_length = int(old_length / speed_factor)
+
+    # Create new time points
+    old_indices = np.arange(old_length)
+    new_indices = np.linspace(0, old_length-1, new_length)
+
+    # Resample using linear interpolation
+    return np.interp(new_indices, old_indices, audio_array)
 
 
 @dataclass
