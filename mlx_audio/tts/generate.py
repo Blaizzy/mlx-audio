@@ -75,7 +75,7 @@ def main():
         audio_list = []
         for i, result in enumerate(results):
             mx.eval(result.audio)
-        
+
             if args.play:
                 player.queue_audio(result.audio)
             if args.join_audio:
