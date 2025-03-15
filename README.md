@@ -89,6 +89,9 @@ mlx_audio.server
 
 # With custom host and port
 mlx_audio.server --host 0.0.0.0 --port 9000
+
+# With verbose logging
+mlx_audio.server --verbose
 ```
 
 Available command line arguments:

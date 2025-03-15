@@ -150,9 +150,13 @@ class Model(nn.Module):
             input_ids, input_lengths, text_mask
         )  # Working fine in MLX
         asr = t_en @ pred_aln_trg
-        audio = self.decoder(asr, F0_pred, N_pred, ref_s[:, :128])[
-            0
-        ]  # Working fine in MLX
+
+        decoder = mx.compile(decoder) if decoder is not None else self.decoder
+        audio = decoder(asr, F0_pred, N_pred, ref_s[:, :128])[0]  # Working fine in MLX
+
+        # Evaluate the computation graph for audio and pred_dur before returning
+        mx.eval(audio, pred_dur)
+
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
     def sanitize(self, weights):
@@ -255,8 +259,6 @@ class Model(nn.Module):
         # Track overall generation time
         start_time = time.time()
 
-        metrics = []
-
         for segment_idx, (graphenes, phonemes, audio) in enumerate(
             pipeline(text, voice=voice, speed=speed, split_pattern=split_pattern)
         ):
@@ -272,11 +274,6 @@ class Model(nn.Module):
             # Calculate audio duration in seconds
             sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
-
-            # Calculate milliseconds per sample
-            ms_per_sample = (
-                1000 / sample_rate
-            )  # This gives 0.0417 ms per sample at 24kHz
 
             # Calculate real-time factor (RTF)
             rtf = (

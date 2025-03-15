@@ -184,6 +184,16 @@
             </div>
             
             <div class="form-group">
+                <label for="model">Model:</label>
+                <select id="model">
+                    <option value="mlx-community/Kokoro-82M-4bit">Kokoro 82M 4bit</option>
+                    <option value="mlx-community/Kokoro-82M-6bit">Kokoro 82M 6bit</option>
+                    <option value="mlx-community/Kokoro-82M-8bit">Kokoro 82M 8bit</option>
+                    <option value="mlx-community/Kokoro-82M-bf16">Kokoro 82M bf16</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
                 <label for="speed">Speech Speed:</label>
                 <div class="slider-container">
                     <div class="slider-labels">
@@ -226,6 +236,7 @@
         // TTS elements
         const textInput = document.getElementById('text');
         const voiceSelect = document.getElementById('voice');
+        const modelSelect = document.getElementById('model');
         const speedInput = document.getElementById('speed');
         const speedValue = document.getElementById('speed-value');
         const generateBtn = document.getElementById('generateBtn');
@@ -332,6 +343,7 @@
         generateBtn.addEventListener('click', function() {
             const text = textInput.value;
             const voice = voiceSelect.value;
+            const model = modelSelect.value;
             const speed = speedInput.value;
             
             if (!text.trim()) {
@@ -347,6 +359,7 @@
             const formData = new FormData();
             formData.append('text', text);
             formData.append('voice', voice);
+            formData.append('model', model);
             formData.append('speed', speed);
             
             // Send request to server
@@ -560,6 +573,9 @@
             // Update controls
             controls.update();
 
+            // Get current time for pulsating effect
+            const time = performance.now() * 0.001; // Convert to seconds
+
             // Rotate sphere slowly
             sphere.rotation.y += 0.002;
             sphere.rotation.x += 0.001;
@@ -574,6 +590,9 @@
                 const midAvg = getAverageFrequency(dataArray, 6, 20);
                 const trebleAvg = getAverageFrequency(dataArray, 21, 40);
 
+                // Calculate base pulsating factor (same as when no audio is playing)
+                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
+                
                 // Update sphere vertices based on frequency data
                 const positionAttribute = sphereGeometry.attributes.position;
 
@@ -598,8 +617,9 @@
                         frequencyFactor = bassAvg / 255;
                     }
 
-                    // Scale vertex based on frequency
-                    const scaleFactor = 1 + frequencyFactor * 0.5;
+                    // Scale vertex based on both pulsation and frequency
+                    // First apply the pulsating effect, then add audio reactivity
+                    const scaleFactor = pulseFactor * (1 + frequencyFactor * 0.5);
 
                     positionAttribute.setXYZ(
                         i,
@@ -620,16 +640,58 @@
                 sphere.material.color.setHSL(hue, saturation, lightness);
                 sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
 
-                // Update glow
+                // Update glow with both pulsation and audio reactivity
                 glowMesh.material.color.setHSL(hue, saturation, lightness);
+                const glowPulseFactor = 1 + Math.sin(time * 1.2) * 0.04;
                 glowMesh.scale.set(
-                    1 + (bassAvg / 255) * 0.1,
-                    1 + (bassAvg / 255) * 0.1,
-                    1 + (bassAvg / 255) * 0.1
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1)
                 );
 
-                // Update point light
-                pointLight.intensity = 0.5 + (bassAvg / 255) * 1.5;
+                // Update point light with both pulsation and audio reactivity
+                const lightPulseFactor = 0.5 + Math.sin(time * 1.8) * 0.2;
+                pointLight.intensity = lightPulseFactor + (bassAvg / 255) * 1.5;
+                pointLight.color.setHSL(hue, saturation, lightness);
+            } else {
+                // Apply subtle pulsating effect when no audio is playing
+                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
+                
+                // Update sphere vertices for pulsating effect
+                const positionAttribute = sphereGeometry.attributes.position;
+                
+                for (let i = 0; i < positionAttribute.count; i++) {
+                    const originalVertex = originalVertices[i];
+                    
+                    positionAttribute.setXYZ(
+                        i,
+                        originalVertex.x * pulseFactor,
+                        originalVertex.y * pulseFactor,
+                        originalVertex.z * pulseFactor
+                    );
+                }
+                
+                positionAttribute.needsUpdate = true;
+                sphereGeometry.computeVertexNormals();
+                
+                // Subtle color pulsation
+                const hue = 0.6; // Blue hue
+                const saturation = 0.8;
+                const lightness = 0.4 + Math.sin(time * 2) * 0.05; // Subtle brightness pulsation
+                
+                sphere.material.color.setHSL(hue, saturation, lightness);
+                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
+                
+                // Update glow with subtle pulsation
+                glowMesh.material.color.setHSL(hue, saturation, lightness);
+                glowMesh.scale.set(
+                    1 + Math.sin(time * 1.2) * 0.04, // Slightly different frequency for interesting effect
+                    1 + Math.sin(time * 1.2) * 0.04,
+                    1 + Math.sin(time * 1.2) * 0.04
+                );
+                
+                // Subtle point light pulsation
+                pointLight.intensity = 0.5 + Math.sin(time * 1.8) * 0.2;
                 pointLight.color.setHSL(hue, saturation, lightness);
             }
 
