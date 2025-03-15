@@ -1,15 +1,15 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
-
 from huggingface_hub import snapshot_download
-
 from mlx_lm.tokenizer_utils import load_tokenizer
 
 from mlx_audio.codec import Mimi
+
 from .model import Model, ModelArgs
 
 MIMI_NAME = "tokenizer-e351c8d8-checkpoint125.safetensors"
@@ -25,7 +25,9 @@ class Segment:
     audio: mx.array
 
 
-def get_model_path_for_tokenizer(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+def get_model_path_for_tokenizer(
+    path_or_hf_repo: str, revision: Optional[str] = None
+) -> Path:
     model_path = Path(path_or_hf_repo)
 
     if not model_path.exists():
@@ -61,7 +63,9 @@ class Generator:
 
         self.sample_rate = mimi.cfg.sample_rate
 
-    def _tokenize_text_segment(self, text: str, speaker: int) -> Tuple[mx.array, mx.array]:
+    def _tokenize_text_segment(
+        self, text: str, speaker: int
+    ) -> Tuple[mx.array, mx.array]:
         frame_tokens = []
         frame_masks = []
 
@@ -101,10 +105,14 @@ class Generator:
         Returns:
             (seq_len, 33), (seq_len, 33)
         """
-        text_tokens, text_masks = self._tokenize_text_segment(segment.text, segment.speaker)
+        text_tokens, text_masks = self._tokenize_text_segment(
+            segment.text, segment.speaker
+        )
         audio_tokens, audio_masks = self._tokenize_audio(segment.audio)
 
-        return mx.concat([text_tokens, audio_tokens], axis=0), mx.concat([text_masks, audio_masks], axis=0)
+        return mx.concat([text_tokens, audio_tokens], axis=0), mx.concat(
+            [text_masks, audio_masks], axis=0
+        )
 
     def generate(
         self,
@@ -124,7 +132,9 @@ class Generator:
             tokens.append(segment_tokens)
             tokens_mask.append(segment_tokens_mask)
 
-        gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(text, speaker)
+        gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
+            text, speaker
+        )
         tokens.append(gen_segment_tokens)
         tokens_mask.append(gen_segment_tokens_mask)
 
@@ -134,22 +144,37 @@ class Generator:
         samples = []
         curr_tokens = mx.expand_dims(prompt_tokens, axis=0)
         curr_tokens_mask = mx.expand_dims(prompt_tokens_mask, axis=0)
-        curr_pos = mx.expand_dims(mx.arange(0, prompt_tokens.shape[0]), axis=0).astype(mx.int32)
+        curr_pos = mx.expand_dims(mx.arange(0, prompt_tokens.shape[0]), axis=0).astype(
+            mx.int32
+        )
 
         max_seq_len = 2048 - max_audio_frames
         if curr_tokens.shape[1] >= max_seq_len:
-            raise ValueError(f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}")
+            raise ValueError(
+                f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
+            )
 
         for _ in range(max_audio_frames):
-            sample = self._model.generate_frame(curr_tokens, curr_tokens_mask, curr_pos, temperature, topk)
+            sample = self._model.generate_frame(
+                curr_tokens, curr_tokens_mask, curr_pos, temperature, topk
+            )
             if mx.all(sample == 0):
                 break  # eos
 
             samples.append(sample)
 
-            curr_tokens = mx.expand_dims(mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1), axis=1)
+            curr_tokens = mx.expand_dims(
+                mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1), axis=1
+            )
             curr_tokens_mask = mx.expand_dims(
-                mx.concat([mx.ones_like(sample).astype(mx.bool_), mx.zeros((1, 1)).astype(mx.bool_)], axis=1), axis=1
+                mx.concat(
+                    [
+                        mx.ones_like(sample).astype(mx.bool_),
+                        mx.zeros((1, 1)).astype(mx.bool_),
+                    ],
+                    axis=1,
+                ),
+                axis=1,
             )
             curr_pos = curr_pos[:, -1:] + 1
 
@@ -165,7 +190,9 @@ class Generator:
 
         return audio
 
+
 import torch
+
 
 def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
     model_args = ModelArgs(
@@ -177,9 +204,9 @@ def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
     )
     model = Model(model_args)
     generator = Generator(model)
-    
+
     weights = torch.load(ckpt_path, weights_only=True)
-    
+
     new_weights = {}
     for k, v in weights.items():
         k = k.replace("backbone.", "backbone.model.")
@@ -193,11 +220,12 @@ def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
         k = k.replace(".mlp_norm.scale", ".post_attention_layernorm.weight")
         k = k.replace(".norm.scale", ".norm.weight")
         new_weights[k] = mx.array(v)
-    
+
     model.load_weights(list(new_weights.items()))
     mx.eval(model.parameters())
 
     return generator
+
 
 #  Debugging
 
@@ -205,7 +233,7 @@ import numpy as np
 import soundfile as sf
 
 if __name__ == "__main__":
-    generator = load_csm_1b(Path("~/Downloads/ckpt.pt").expanduser())
+    generator = load_csm_1b()
     text = "Hello world."
     speaker = 0
     context = []

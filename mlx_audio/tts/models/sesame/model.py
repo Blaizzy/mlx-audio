@@ -3,9 +3,9 @@ from typing import Dict, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-
 from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.models.llama import Model as LlamaBaseModel, ModelArgs as LlamaModelArgs
+from mlx_lm.models.llama import Model as LlamaBaseModel
+from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
 
 
 def create_causal_mask(seq_len: int) -> mx.array:
@@ -118,11 +118,15 @@ class Model(nn.Module):
         self.decoder, decoder_dim = prepare_transformer(LlamaBaseModel(decoder_args))
 
         self.text_embeddings = nn.Embedding(args.text_vocab_size, backbone_dim)
-        self.audio_embeddings = nn.Embedding(args.audio_vocab_size * args.audio_num_codebooks, backbone_dim)
+        self.audio_embeddings = nn.Embedding(
+            args.audio_vocab_size * args.audio_num_codebooks, backbone_dim
+        )
 
         self.projection = nn.Linear(backbone_dim, decoder_dim, bias=False)
         self.codebook0_head = nn.Linear(backbone_dim, args.audio_vocab_size, bias=False)
-        self.audio_head = mx.zeros((args.audio_num_codebooks - 1, decoder_dim, args.audio_vocab_size))
+        self.audio_head = mx.zeros(
+            (args.audio_num_codebooks - 1, decoder_dim, args.audio_vocab_size)
+        )
 
         self._backbone_causal_mask = None
         self._decoder_causal_mask = None
@@ -133,7 +137,9 @@ class Model(nn.Module):
     def setup_caches(self, max_batch_size: int):
         backbone_args = create_llama_model_args(self.args.backbone_flavor)
 
-        self._backbone_causal_mask = create_causal_mask(backbone_args.max_position_embeddings)
+        self._backbone_causal_mask = create_causal_mask(
+            backbone_args.max_position_embeddings
+        )
         self._decoder_causal_mask = create_causal_mask(self.args.audio_num_codebooks)
 
         self.backbone_cache = make_prompt_cache(self.backbone)
@@ -206,7 +212,11 @@ class Model(nn.Module):
 
         for i in range(1, self.args.audio_num_codebooks):
             curr_decoder_mask = index_causal_mask(self._decoder_causal_mask, curr_pos)
-            decoder_h = self.decoder(self.projection(curr_h), mask=curr_decoder_mask, cache=self.decoder_cache)
+            decoder_h = self.decoder(
+                self.projection(curr_h),
+                mask=curr_decoder_mask,
+                cache=self.decoder_cache,
+            )
 
             ci_logits = mx.matmul(decoder_h[:, -1, :], self.audio_head[i - 1])
             ci_sample = sample_topk(ci_logits, topk, temperature)
@@ -232,6 +242,9 @@ class Model(nn.Module):
         audio_tokens_flat = mx.reshape(audio_tokens, (-1,))
         audio_embeds_flat = self.audio_embeddings(audio_tokens_flat)
 
-        audio_embeds = mx.reshape(audio_embeds_flat, (tokens.shape[0], tokens.shape[1], self.args.audio_num_codebooks, -1))
+        audio_embeds = mx.reshape(
+            audio_embeds_flat,
+            (tokens.shape[0], tokens.shape[1], self.args.audio_num_codebooks, -1),
+        )
 
         return mx.concat([audio_embeds, text_embeds], axis=-2)
