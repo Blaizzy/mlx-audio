@@ -4,6 +4,7 @@ from typing import Dict, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_lm.models.cache import KVCache, make_prompt_cache
 from mlx_lm.models.llama import Model as LlamaBaseModel, ModelArgs as LlamaModelArgs
 
 
@@ -125,12 +126,38 @@ class Model(nn.Module):
 
         self.backbone_causal_mask = None
         self.decoder_causal_mask = None
+        self.backbone_cache = None
+        self.decoder_cache = None
+        self.caches_enabled = False
 
     def setup_caches(self, max_batch_size: int):
         backbone_args = create_llama_model_args(self.args.backbone_flavor)
+        decoder_args = create_llama_model_args(self.args.decoder_flavor)
 
         self.backbone_causal_mask = create_causal_mask(backbone_args.max_position_embeddings)
         self.decoder_causal_mask = create_causal_mask(self.args.audio_num_codebooks)
+
+        self.backbone_cache = make_prompt_cache(self.backbone)
+        self.decoder_cache = make_prompt_cache(self.decoder)
+        self.caches_enabled = True
+
+    def caches_are_enabled(self):
+        return self.caches_enabled
+
+    def reset_caches(self):
+        if self.backbone_cache is not None:
+            for cache in self.backbone_cache:
+                if hasattr(cache, "keys"):
+                    cache.keys = None
+                    cache.values = None
+                    cache.offset = 0
+
+        if self.decoder_cache is not None:
+            for cache in self.decoder_cache:
+                if hasattr(cache, "keys"):
+                    cache.keys = None
+                    cache.values = None
+                    cache.offset = 0
 
     def generate_frame(
         self,
@@ -151,13 +178,13 @@ class Model(nn.Module):
         Returns:
             (batch_size, audio_num_codebooks) sampled tokens
         """
-        b, s, _ = tokens.shape
+        assert self.caches_are_enabled(), "backbone caches are not enabled"
 
         curr_backbone_mask = index_causal_mask(self.backbone_causal_mask, input_pos)
         embeds = self._embed_tokens(tokens)
         masked_embeds = embeds * mx.expand_dims(tokens_mask, -1)
         h = mx.sum(masked_embeds, axis=2)
-        h = self.backbone(h, mask=curr_backbone_mask)
+        h = self.backbone(h, mask=curr_backbone_mask, cache=self.backbone_cache)
 
         last_h = h[:, -1, :]
         c0_logits = self.codebook0_head(last_h)
@@ -170,9 +197,17 @@ class Model(nn.Module):
         curr_pos = mx.expand_dims(curr_pos, 0)
         curr_pos = mx.broadcast_to(curr_pos, (curr_h.shape[0], curr_h.shape[1]))
 
+        # reset decoder cache for new frame
+        
+        for cache in self.decoder_cache:
+            if hasattr(cache, "keys"):
+                cache.keys = None
+                cache.values = None
+                cache.offset = 0
+
         for i in range(1, self.args.audio_num_codebooks):
             curr_decoder_mask = index_causal_mask(self.decoder_causal_mask, curr_pos)
-            decoder_h = self.decoder(self.projection(curr_h), mask=curr_decoder_mask, cache=None)  #  TODO: self.decoder_cache
+            decoder_h = self.decoder(self.projection(curr_h), mask=curr_decoder_mask, cache=self.decoder_cache)
 
             ci_logits = mx.matmul(decoder_h[:, -1, :], self.audio_head[i - 1])
             ci_sample = sample_topk(ci_logits, topk, temperature)
