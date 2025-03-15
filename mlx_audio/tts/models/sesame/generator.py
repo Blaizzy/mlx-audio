@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Tuple
 
 import mlx.core as mx
-from huggingface_hub import snapshot_download
-from mlx_lm.tokenizer_utils import load_tokenizer
+from mlx_lm.sample_utils import make_sampler
+from tokenizers.processors import TemplateProcessing
+from transformers import AutoTokenizer
 
 from mlx_audio.codec import Mimi
 
@@ -14,7 +15,7 @@ from .model import Model, ModelArgs
 
 MIMI_NAME = "tokenizer-e351c8d8-checkpoint125.safetensors"
 DEFAULT_REPO = "kyutai/moshiko-pytorch-bf16"
-TOKENIZER_REPO = "mlx-community/Llama-3.2-1B-Instruct-bf16"
+TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
 
 
 @dataclass
@@ -25,25 +26,18 @@ class Segment:
     audio: mx.array
 
 
-def get_model_path_for_tokenizer(
-    path_or_hf_repo: str, revision: Optional[str] = None
-) -> Path:
-    model_path = Path(path_or_hf_repo)
-
-    if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=["*.json"],
-            )
-        )
-    return model_path
-
-
-def load_llama3_tokenizer(path_or_hf_repo: str, revision: Optional[str] = None):
-    model_path = get_model_path_for_tokenizer(path_or_hf_repo, revision)
-    tokenizer = load_tokenizer(model_path)
+def load_llama3_tokenizer(path_or_hf_repo: str):
+    tokenizer = AutoTokenizer.from_pretrained(path_or_hf_repo)
+    bos = tokenizer.bos_token
+    eos = tokenizer.eos_token
+    tokenizer._tokenizer.post_processor = TemplateProcessing(
+        single=f"{bos}:0 $A:0 {eos}:0",
+        pair=f"{bos}:0 $A:0 {eos}:0 {bos}:1 $B:1 {eos}:1",
+        special_tokens=[
+            (f"{bos}", tokenizer.bos_token_id),
+            (f"{eos}", tokenizer.eos_token_id),
+        ],
+    )
     return tokenizer
 
 
@@ -70,7 +64,7 @@ class Generator:
         frame_masks = []
 
         text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
-        text_frame = mx.zeros((len(text_tokens), 33)).astype(mx.int64)
+        text_frame = mx.zeros((len(text_tokens), 33)).astype(mx.int32)
         text_frame_mask = mx.zeros((len(text_tokens), 33)).astype(mx.bool_)
         text_frame[:, -1] = mx.array(text_tokens)
         text_frame_mask[:, -1] = True
@@ -90,7 +84,7 @@ class Generator:
         eos_frame = mx.zeros(audio_tokens.size(0), 1)
         audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
 
-        audio_frame = mx.zeros(audio_tokens.size(1), 33).astype(mx.int64)
+        audio_frame = mx.zeros(audio_tokens.size(1), 33).astype(mx.int32)
         audio_frame_mask = mx.zeros(audio_tokens.size(1), 33).astype(mx.bool_)
         audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
         audio_frame_mask[:, :-1] = True
@@ -120,12 +114,13 @@ class Generator:
         speaker: int,
         context: List[Segment],
         max_audio_length_ms: float = 90_000,
-        temperature: float = 0.9,
-        topk: int = 50,
+        sampler: Callable[..., mx.array] = None,
     ) -> mx.array:
-        #  TODO: self._model.reset_caches()
+        self._model.reset_caches()
 
+        sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
         max_audio_frames = int(max_audio_length_ms / 80)
+
         tokens, tokens_mask = [], []
         for segment in context:
             segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
@@ -156,7 +151,7 @@ class Generator:
 
         for _ in range(max_audio_frames):
             sample = self._model.generate_frame(
-                curr_tokens, curr_tokens_mask, curr_pos, temperature, topk
+                curr_tokens, curr_tokens_mask, curr_pos, sampler
             )
             if mx.all(sample == 0):
                 break  # eos
@@ -179,7 +174,7 @@ class Generator:
             curr_pos = curr_pos[:, -1:] + 1
 
         transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
-        audio = self._audio_tokenizer.decode(transposed)[None, None, :]
+        audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
 
         # This applies an imperceptible watermark to identify audio as AI-generated.
         # Watermarking ensures transparency, dissuades misuse, and enables traceability.
@@ -209,8 +204,6 @@ def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
 
     new_weights = {}
     for k, v in weights.items():
-        k = k.replace("backbone.", "backbone.model.")
-        k = k.replace("decoder.", "decoder.model.")
         k = k.replace(".attn.", ".self_attn.")
         k = k.replace(".output_proj", ".o_proj")
         k = k.replace(".w1", ".gate_proj")
@@ -233,10 +226,13 @@ import numpy as np
 import soundfile as sf
 
 if __name__ == "__main__":
-    generator = load_csm_1b()
-    text = "Hello world."
+    generator = load_csm_1b(Path("~/Downloads/ckpt.pt").expanduser())
+    text = "Hello from Sesame!"
     speaker = 0
     context = []
-    audio = generator.generate(text, speaker, context, max_audio_length_ms=3_000)
-    print(audio.shape)
-    sf.write("output.wav", np.array(audio[0, 0, 0, 0]), generator.sample_rate)
+    sampler = make_sampler(temp=0.9, top_k=50)
+    audio = generator.generate(
+        text, speaker, context, max_audio_length_ms=10_000, sampler=sampler
+    )
+    mx.eval(audio)
+    sf.write("output.wav", np.array(audio), generator.sample_rate)

@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Union
+from typing import Callable
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.models.llama import Model as LlamaBaseModel
+from mlx_lm.models.llama import LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
+
+from .attention import Attention
 
 
 def create_causal_mask(seq_len: int) -> mx.array:
@@ -44,66 +46,57 @@ class ModelArgs:
     text_vocab_size: int
     audio_vocab_size: int
     audio_num_codebooks: int
-    rope_theta: float = 10000
-    rope_traditional: bool = False
-    max_position_embeddings: int = 2048
-    rope_scaling: Optional[Dict[str, Union[float, str]]] = None
-    attention_bias: bool = False
-    mlp_bias: bool = False
-    rms_norm_eps: float = 1e-5
-    tie_word_embeddings: bool = False
 
 
 def create_llama_model_args(flavor: str) -> LlamaModelArgs:
     if flavor == "llama-1B":
         return LlamaModelArgs(
             model_type="llama",
-            hidden_size=2048,
             num_hidden_layers=16,
-            intermediate_size=8192,
             num_attention_heads=32,
             num_key_value_heads=8,
+            head_dim=64,
+            hidden_size=2048,
+            intermediate_size=8192,
             rms_norm_eps=1e-5,
             vocab_size=128_256,
             max_position_embeddings=2048,
-            rope_theta=500_000,
             attention_bias=False,
             mlp_bias=False,
-            tie_word_embeddings=False,
+            rope_theta=500_000,
+            rope_scaling={
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
         )
     elif flavor == "llama-100M":
         return LlamaModelArgs(
             model_type="llama",
-            hidden_size=1024,
             num_hidden_layers=4,
-            intermediate_size=8192,
             num_attention_heads=8,
             num_key_value_heads=2,
+            head_dim=128,
+            hidden_size=1024,
+            intermediate_size=8192,
             rms_norm_eps=1e-5,
             vocab_size=128_256,
             max_position_embeddings=2048,
-            rope_theta=500_000,
             attention_bias=False,
             mlp_bias=False,
-            tie_word_embeddings=False,
+            rope_theta=500_000,
+            rope_scaling={
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
         )
     else:
         raise ValueError(f"Unknown flavor: {flavor}")
-
-
-class Identity(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def __call__(self, x):
-        return x
-
-
-def prepare_transformer(model: LlamaBaseModel) -> Tuple[LlamaBaseModel, int]:
-    hidden_size = model.args.hidden_size
-    model.model.embed_tokens = Identity()
-    model.lm_head = Identity()
-    return model, hidden_size
 
 
 class Model(nn.Module):
@@ -114,8 +107,19 @@ class Model(nn.Module):
         backbone_args = create_llama_model_args(args.backbone_flavor)
         decoder_args = create_llama_model_args(args.decoder_flavor)
 
-        self.backbone, backbone_dim = prepare_transformer(LlamaBaseModel(backbone_args))
-        self.decoder, decoder_dim = prepare_transformer(LlamaBaseModel(decoder_args))
+        self.backbone = LlamaModel(backbone_args)
+        self.decoder = LlamaModel(decoder_args)
+
+        backbone_dim = backbone_args.hidden_size
+        decoder_dim = decoder_args.hidden_size
+
+        self.backbone.embed_tokens = nn.Identity()
+        self.decoder.embed_tokens = nn.Identity()
+
+        for layer in self.backbone.layers:
+            layer.self_attn = Attention(backbone_args)
+        for layer in self.decoder.layers:
+            layer.self_attn = Attention(decoder_args)
 
         self.text_embeddings = nn.Embedding(args.text_vocab_size, backbone_dim)
         self.audio_embeddings = nn.Embedding(
@@ -151,26 +155,17 @@ class Model(nn.Module):
 
     def reset_caches(self):
         if self.backbone_cache is not None:
-            for cache in self.backbone_cache:
-                if hasattr(cache, "keys"):
-                    cache.keys = None
-                    cache.values = None
-                    cache.offset = 0
+            self.backbone_cache = make_prompt_cache(self.backbone)
 
         if self.decoder_cache is not None:
-            for cache in self.decoder_cache:
-                if hasattr(cache, "keys"):
-                    cache.keys = None
-                    cache.values = None
-                    cache.offset = 0
+            self.decoder_cache = make_prompt_cache(self.decoder)
 
     def generate_frame(
         self,
         tokens: mx.array,
         tokens_mask: mx.array,
         input_pos: mx.array,
-        temperature: float,
-        topk: int,
+        sampler: Callable[..., mx.array],
     ) -> mx.array:
         """
         Args:
@@ -193,22 +188,18 @@ class Model(nn.Module):
 
         last_h = h[:, -1, :]
         c0_logits = self.codebook0_head(last_h)
-        c0_sample = sample_topk(c0_logits, topk, temperature)
+        c0_sample = mx.expand_dims(sampler(c0_logits), axis=-1)
         c0_embed = self._embed_audio(0, c0_sample)
 
         curr_h = mx.concat([mx.expand_dims(last_h, 1), c0_embed], axis=1)
-        curr_sample = mx.array(c0_sample)
+        curr_sample = c0_sample
         curr_pos = mx.arange(curr_h.shape[1], dtype=mx.int32)
         curr_pos = mx.expand_dims(curr_pos, 0)
         curr_pos = mx.broadcast_to(curr_pos, (curr_h.shape[0], curr_h.shape[1]))
 
         # reset decoder cache for new frame
 
-        for cache in self.decoder_cache:
-            if hasattr(cache, "keys"):
-                cache.keys = None
-                cache.values = None
-                cache.offset = 0
+        self.decoder_cache = make_prompt_cache(self.decoder)
 
         for i in range(1, self.args.audio_num_codebooks):
             curr_decoder_mask = index_causal_mask(self._decoder_causal_mask, curr_pos)
@@ -219,7 +210,7 @@ class Model(nn.Module):
             )
 
             ci_logits = mx.matmul(decoder_h[:, -1, :], self.audio_head[i - 1])
-            ci_sample = sample_topk(ci_logits, topk, temperature)
+            ci_sample = mx.expand_dims(sampler(ci_logits), axis=-1)
             ci_embed = self._embed_audio(i, ci_sample)
 
             curr_h = ci_embed
@@ -233,14 +224,13 @@ class Model(nn.Module):
 
     def _embed_tokens(self, tokens: mx.array) -> mx.array:
         text_embeds = self.text_embeddings(tokens[:, :, -1])
-        text_embeds = mx.expand_dims(text_embeds, -2)
+        text_embeds = mx.expand_dims(text_embeds, axis=-2)
 
         codebook_indices = mx.arange(self.args.audio_num_codebooks, dtype=mx.int32)
         codebook_offsets = codebook_indices * self.args.audio_vocab_size
 
         audio_tokens = tokens[:, :, :-1] + mx.reshape(codebook_offsets, (1, 1, -1))
-        audio_tokens_flat = mx.reshape(audio_tokens, (-1,))
-        audio_embeds_flat = self.audio_embeddings(audio_tokens_flat)
+        audio_embeds_flat = self.audio_embeddings(audio_tokens.flatten())
 
         audio_embeds = mx.reshape(
             audio_embeds_flat,
