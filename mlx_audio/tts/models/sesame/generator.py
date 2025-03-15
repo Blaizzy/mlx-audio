@@ -165,6 +165,7 @@ class Generator:
 
         return audio
 
+import torch
 
 def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
     model_args = ModelArgs(
@@ -175,20 +176,39 @@ def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
         audio_num_codebooks=32,
     )
     model = Model(model_args)
-
-    # TODO: Load model from checkpoint
-    # state_dict = torch.load(ckpt_path)
-    # model.load_state_dict(state_dict)
-
     generator = Generator(model)
+    
+    weights = torch.load(ckpt_path, weights_only=True)
+    
+    new_weights = {}
+    for k, v in weights.items():
+        k = k.replace("backbone.", "backbone.model.")
+        k = k.replace("decoder.", "decoder.model.")
+        k = k.replace(".attn.", ".self_attn.")
+        k = k.replace(".output_proj", ".o_proj")
+        k = k.replace(".w1", ".gate_proj")
+        k = k.replace(".w2", ".down_proj")
+        k = k.replace(".w3", ".up_proj")
+        k = k.replace(".sa_norm.scale", ".input_layernorm.weight")
+        k = k.replace(".mlp_norm.scale", ".post_attention_layernorm.weight")
+        k = k.replace(".norm.scale", ".norm.weight")
+        new_weights[k] = mx.array(v)
+    
+    model.load_weights(list(new_weights.items()))
+    mx.eval(model.parameters())
+
     return generator
 
 #  Debugging
 
+import numpy as np
+import soundfile as sf
+
 if __name__ == "__main__":
-    generator = load_csm_1b()
+    generator = load_csm_1b(Path("~/Downloads/ckpt.pt").expanduser())
     text = "Hello world."
     speaker = 0
     context = []
-    audio = generator.generate(text, speaker, context)
-    print(audio)
+    audio = generator.generate(text, speaker, context, max_audio_length_ms=3_000)
+    print(audio.shape)
+    sf.write("output.wav", np.array(audio[0, 0, 0, 0]), generator.sample_rate)
