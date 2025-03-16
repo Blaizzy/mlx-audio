@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 from mlx_audio.codec import Mimi
 
 from ..base import GenerationResult
-from .model import SesameModel, SesameModelArgs
+from .model import SesameModel
 
 try:
     from .watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
@@ -21,8 +21,7 @@ except ImportError:
         "Watermarking module not found. Please install silentcipher to use watermarking."
     )
 
-MIMI_NAME = "tokenizer-e351c8d8-checkpoint125.safetensors"
-DEFAULT_REPO = "kyutai/moshiko-pytorch-bf16"
+MIMI_REPO = "kyutai/moshiko-pytorch-bf16"
 TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
 
 
@@ -58,7 +57,7 @@ class Model:
         self._model.setup_caches(1)
 
         self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
-        mimi = Mimi.from_pretrained(DEFAULT_REPO, MIMI_NAME)
+        mimi = Mimi.from_pretrained(MIMI_REPO)
         self._audio_tokenizer = mimi
 
         try:
@@ -90,14 +89,17 @@ class Model:
         frame_masks = []
 
         # (K, T)
-        audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
+        audio_tokens = self._audio_tokenizer.encode(
+            mx.expand_dims(mx.expand_dims(audio, 0), 0)
+        )[0]
+
         # add EOS frame
-        eos_frame = mx.zeros(audio_tokens.size(0), 1)
+        eos_frame = mx.zeros((audio_tokens.shape[0], 1))
         audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
 
-        audio_frame = mx.zeros(audio_tokens.size(1), 33).astype(mx.int32)
-        audio_frame_mask = mx.zeros(audio_tokens.size(1), 33).astype(mx.bool_)
-        audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
+        audio_frame = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.int32)
+        audio_frame_mask = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.bool_)
+        audio_frame[:, :-1] = audio_tokens.swapaxes(0, 1)
         audio_frame_mask[:, :-1] = True
 
         frame_tokens.append(audio_frame)
@@ -127,10 +129,6 @@ class Model:
         mx.eval(self._model.parameters())
         self._model.eval()
 
-    @dataclass
-    class GenerationResult:
-        audio: mx.array
-
     def generate(
         self,
         text: str,
@@ -138,9 +136,16 @@ class Model:
         context: List[Segment] = [],
         max_audio_length_ms: float = 90_000,
         sampler: Callable[..., mx.array] = None,
+        ref_audio: mx.array = None,
+        ref_text: str = None,
         **kwargs,
     ):
         self._model.reset_caches()
+
+        # if reference audio is provided, use it as the first segment
+
+        if len(context) == 0:
+            context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
 
         start_time = time.time()
 
@@ -239,25 +244,27 @@ class Model:
         duration_hours = int(audio_duration_seconds // 3600)
         duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
-        yield GenerationResult(
-            audio=audio,
-            samples=samples,
-            segment_idx=0,
-            token_count=token_count,
-            audio_duration=duration_str,
-            real_time_factor=round(rtf, 2),
-            prompt={
-                "tokens": token_count,
-                "tokens-per-sec": (
-                    round(token_count / segment_time, 2) if segment_time > 0 else 0
-                ),
-            },
-            audio_samples={
-                "samples": samples,
-                "samples-per-sec": (
-                    round(samples / segment_time, 2) if segment_time > 0 else 0
-                ),
-            },
-            processing_time_seconds=segment_time,
-            peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
-        )
+        return [
+            GenerationResult(
+                audio=audio,
+                samples=samples,
+                segment_idx=0,
+                token_count=token_count,
+                audio_duration=duration_str,
+                real_time_factor=round(rtf, 2),
+                prompt={
+                    "tokens": token_count,
+                    "tokens-per-sec": (
+                        round(token_count / segment_time, 2) if segment_time > 0 else 0
+                    ),
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": (
+                        round(samples / segment_time, 2) if segment_time > 0 else 0
+                    ),
+                },
+                processing_time_seconds=segment_time,
+                peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
+            )
+        ]
