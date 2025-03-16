@@ -25,7 +25,8 @@ def index_causal_mask(mask: mx.array, input_pos: mx.array) -> mx.array:
 
 
 @dataclass
-class ModelArgs:
+class SesameModelArgs:
+    model_type: str
     backbone_flavor: str
     decoder_flavor: str
     text_vocab_size: int
@@ -84,9 +85,10 @@ def create_llama_model_args(flavor: str) -> LlamaModelArgs:
         raise ValueError(f"Unknown flavor: {flavor}")
 
 
-class Model(nn.Module):
-    def __init__(self, args: ModelArgs):
+class SesameModel(nn.Module):
+    def __init__(self, config):
         super().__init__()
+        args = SesameModelArgs(**config)
         self.args = args
 
         backbone_args = create_llama_model_args(args.backbone_flavor)

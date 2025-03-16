@@ -1,18 +1,18 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 import mlx.core as mx
-from huggingface_hub import hf_hub_download
 from mlx_lm.sample_utils import make_sampler
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
 
 from mlx_audio.codec import Mimi
 
-from .model import Model, ModelArgs
+from ..base import GenerationResult
+from .model import SesameModel, SesameModelArgs
 
 try:
     from .watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
@@ -49,12 +49,12 @@ def load_llama3_tokenizer(path_or_hf_repo: str):
     return tokenizer
 
 
-class Generator:
+class Model:
     def __init__(
         self,
-        model: Model,
+        config: Dict,
     ):
-        self._model = model
+        self._model = SesameModel(config)
         self._model.setup_caches(1)
 
         self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
@@ -119,17 +119,32 @@ class Generator:
             [text_masks, audio_masks], axis=0
         )
 
+    def sanitize(self, weights):
+        return weights
+
+    def load_weights(self, weights):
+        self._model.load_weights(weights)
+        mx.eval(self._model.parameters())
+        self._model.eval()
+
+    @dataclass
+    class GenerationResult:
+        audio: mx.array
+
     def generate(
         self,
         text: str,
-        speaker: int,
-        context: List[Segment],
+        speaker: int = 0,
+        context: List[Segment] = [],
         max_audio_length_ms: float = 90_000,
         sampler: Callable[..., mx.array] = None,
-    ) -> mx.array:
+        **kwargs,
+    ):
         self._model.reset_caches()
 
-        sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
+        start_time = time.time()
+
+        sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
 
         tokens, tokens_mask = [], []
@@ -198,49 +213,51 @@ class Generator:
                 self.sample_rate,
                 CSM_1B_GH_WATERMARK,
             )
+            audio = mx.array(audio, dtype=mx.float32)
 
-        return audio
+        mx.eval(audio)
 
-    @classmethod
-    def from_pretrained(
-        cls,
-        repo_id: str = "lucasnewman/csm-1b-mlx",
-        filename: str = "model.safetensors",
-    ) -> "Generator":
-        model_args = ModelArgs(
-            backbone_flavor="llama-1B",
-            decoder_flavor="llama-100M",
-            text_vocab_size=128256,
-            audio_vocab_size=2051,
-            audio_num_codebooks=32,
+        segment_time = time.time() - start_time
+
+        samples = audio.shape[0] if audio is not None else 0
+        assert samples > 0, "No audio generated"
+
+        # Calculate token count
+        token_count = curr_tokens.shape[2]
+
+        # Calculate audio duration in seconds
+        sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+        audio_duration_seconds = samples / sample_rate
+
+        # Calculate real-time factor (RTF)
+        rtf = segment_time / audio_duration_seconds if audio_duration_seconds > 0 else 0
+
+        # Format duration as HH:MM:SS.mmm
+        duration_mins = int(audio_duration_seconds // 60)
+        duration_secs = int(audio_duration_seconds % 60)
+        duration_ms = int((audio_duration_seconds % 1) * 1000)
+        duration_hours = int(audio_duration_seconds // 3600)
+        duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+        yield GenerationResult(
+            audio=audio,
+            samples=samples,
+            segment_idx=0,
+            token_count=token_count,
+            audio_duration=duration_str,
+            real_time_factor=round(rtf, 2),
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": (
+                    round(token_count / segment_time, 2) if segment_time > 0 else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (
+                    round(samples / segment_time, 2) if segment_time > 0 else 0
+                ),
+            },
+            processing_time_seconds=segment_time,
+            peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
         )
-        model = Model(model_args)
-        generator = cls(model)
-
-        model_file = hf_hub_download(repo_id, filename)
-        weights = mx.load(model_file)
-        model.load_weights(list(weights.items()))
-        mx.eval(model.parameters())
-
-        return generator
-
-
-#  Debugging
-
-import numpy as np
-import soundfile as sf
-
-if __name__ == "__main__":
-    generator = Generator.from_pretrained("lucasnewman/csm-1b-mlx")
-    text = "Hello from Sesame!"
-    speaker = 0
-    context = []
-    audio = generator.generate(
-        text,
-        speaker,
-        context,
-        max_audio_length_ms=10_000,
-        sampler=make_sampler(temp=0.9, top_k=50),
-    )
-    mx.eval(audio)
-    sf.write("output.wav", np.array(audio), generator.sample_rate)
