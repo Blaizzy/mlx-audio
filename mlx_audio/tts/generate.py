@@ -8,18 +8,19 @@ from .audio_player import AudioPlayer
 from .utils import load_model
 
 
-def generate_audio(text: str,
-                   model: str = "prince-canuma/Kokoro-82M",
-                   voice: str = "af_heart",
-                   speed: float = 1.0,
-                   lang_code: str = "a",
-                   file_path: str = "audio",
-                   audio_format: str = "wav",
-                   sample_rate: int = 24000,
-                   join_audio: bool = False,
-                   play: bool = False,
-                   verbose: bool = True,
-                   ) -> None:
+def generate_audio(
+    text: str,
+    model: str = "prince-canuma/Kokoro-82M",
+    voice: str = "af_heart",
+    speed: float = 1.0,
+    lang_code: str = "a",
+    file_path: str = "audio",
+    audio_format: str = "wav",
+    sample_rate: int = 24000,
+    join_audio: bool = False,
+    play: bool = False,
+    verbose: bool = True,
+) -> None:
     """
     Generates audio from text using a specified TTS model.
 
@@ -51,11 +52,7 @@ def generate_audio(text: str,
             print("==========")
 
         results = model_instance.generate(
-            text=text,
-            voice=voice,
-            speed=speed,
-            lang_code=lang_code,
-            verbose=verbose
+            text=text, voice=voice, speed=speed, lang_code=lang_code, verbose=verbose
         )
 
         audio_list = []
@@ -94,8 +91,10 @@ def generate_audio(text: str,
             player.stop()
 
         if verbose:
-            print(f"✅ Audio successfully generated and saved as: {file_path}.{audio_format}")
-        
+            print(
+                f"✅ Audio successfully generated and saved as: {file_path}.{audio_format}"
+            )
+
     except ImportError as e:
         print(f"Import error: {e}")
         print(
@@ -104,20 +103,39 @@ def generate_audio(text: str,
     except Exception as e:
         print(f"❌ Error generating audio: {e}")
         import traceback
+
         traceback.print_exc()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate audio from text using TTS.")
-    parser.add_argument("--model", type=str, default="prince-canuma/Kokoro-82M", help="Path or repo ID of the model")
-    parser.add_argument("--text", type=str, default=None, help="Text to generate (leave blank to input via stdin)")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="prince-canuma/Kokoro-82M",
+        help="Path or repo ID of the model",
+    )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default=None,
+        help="Text to generate (leave blank to input via stdin)",
+    )
     parser.add_argument("--voice", type=str, default="af_heart", help="Voice name")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument("--lang_code", type=str, default="a", help="Language code")
-    parser.add_argument("--file_prefix", type=str, default="audio", help="Output file name prefix")
-    parser.add_argument("--audio_format", type=str, default="wav", help="Output audio format")
-    parser.add_argument("--sample_rate", type=int, default=24000, help="Audio sample rate in Hz")
-    parser.add_argument("--join_audio", action="store_true", help="Join all audio files into one")
+    parser.add_argument(
+        "--file_prefix", type=str, default="audio", help="Output file name prefix"
+    )
+    parser.add_argument(
+        "--audio_format", type=str, default="wav", help="Output audio format"
+    )
+    parser.add_argument(
+        "--sample_rate", type=int, default=24000, help="Audio sample rate in Hz"
+    )
+    parser.add_argument(
+        "--join_audio", action="store_true", help="Join all audio files into one"
+    )
     parser.add_argument("--play", action="store_true", help="Play the output audio")
     parser.add_argument("--verbose", action="store_true", help="Print verbose output")
     args = parser.parse_args()
@@ -147,6 +165,7 @@ def main():
         play=args.play,
         verbose=args.verbose,
     )
+
 
 if __name__ == "__main__":
     main()
