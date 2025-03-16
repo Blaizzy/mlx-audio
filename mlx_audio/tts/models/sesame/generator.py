@@ -13,6 +13,13 @@ from mlx_audio.codec import Mimi
 
 from .model import Model, ModelArgs
 
+try:
+    from .watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+except ImportError:
+    print(
+        "Watermarking module not found. Please install silentcipher to use watermarking."
+    )
+
 MIMI_NAME = "tokenizer-e351c8d8-checkpoint125.safetensors"
 DEFAULT_REPO = "kyutai/moshiko-pytorch-bf16"
 TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
@@ -53,7 +60,10 @@ class Generator:
         mimi = Mimi.from_pretrained(DEFAULT_REPO, MIMI_NAME)
         self._audio_tokenizer = mimi
 
-        #  self._watermarker = load_watermarker()
+        try:
+            self._watermarker = load_watermarker()
+        except Exception:
+            self._watermarker = None
 
         self.sample_rate = mimi.cfg.sample_rate
 
@@ -180,8 +190,13 @@ class Generator:
         # Watermarking ensures transparency, dissuades misuse, and enables traceability.
         # Please be a responsible AI citizen and keep the watermarking in place.
         # If using CSM 1B in another application, use your own private key and keep it secret.
-        # audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
-        # audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+        if self._watermarker is not None:
+            audio = watermark(
+                self._watermarker,
+                audio,
+                self.sample_rate,
+                CSM_1B_GH_WATERMARK,
+            )
 
         return audio
 
