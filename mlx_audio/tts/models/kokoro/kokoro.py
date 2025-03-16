@@ -153,6 +153,10 @@ class Model(nn.Module):
 
         decoder = mx.compile(decoder) if decoder is not None else self.decoder
         audio = decoder(asr, F0_pred, N_pred, ref_s[:, :128])[0]  # Working fine in MLX
+
+        # Evaluate the computation graph for audio and pred_dur before returning
+        mx.eval(audio, pred_dur)
+
         return self.Output(audio=audio, pred_dur=pred_dur) if return_output else audio
 
     def sanitize(self, weights):
