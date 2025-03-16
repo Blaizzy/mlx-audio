@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, List, Tuple
 
 import mlx.core as mx
+from huggingface_hub import hf_hub_download
 from mlx_lm.sample_utils import make_sampler
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
@@ -200,39 +201,28 @@ class Generator:
 
         return audio
 
+    @classmethod
+    def from_pretrained(
+        cls,
+        repo_id: str = "lucasnewman/csm-1b-mlx",
+        filename: str = "model.safetensors",
+    ) -> "Generator":
+        model_args = ModelArgs(
+            backbone_flavor="llama-1B",
+            decoder_flavor="llama-100M",
+            text_vocab_size=128256,
+            audio_vocab_size=2051,
+            audio_num_codebooks=32,
+        )
+        model = Model(model_args)
+        generator = cls(model)
 
-import torch
+        model_file = hf_hub_download(repo_id, filename)
+        weights = mx.load(model_file)
+        model.load_weights(list(weights.items()))
+        mx.eval(model.parameters())
 
-
-def load_csm_1b(ckpt_path: str = "ckpt.pt") -> Generator:
-    model_args = ModelArgs(
-        backbone_flavor="llama-1B",
-        decoder_flavor="llama-100M",
-        text_vocab_size=128256,
-        audio_vocab_size=2051,
-        audio_num_codebooks=32,
-    )
-    model = Model(model_args)
-    generator = Generator(model)
-
-    weights = torch.load(ckpt_path, weights_only=True)
-
-    new_weights = {}
-    for k, v in weights.items():
-        k = k.replace(".attn.", ".self_attn.")
-        k = k.replace(".output_proj", ".o_proj")
-        k = k.replace(".w1", ".gate_proj")
-        k = k.replace(".w2", ".down_proj")
-        k = k.replace(".w3", ".up_proj")
-        k = k.replace(".sa_norm.scale", ".input_layernorm.weight")
-        k = k.replace(".mlp_norm.scale", ".post_attention_layernorm.weight")
-        k = k.replace(".norm.scale", ".norm.weight")
-        new_weights[k] = mx.array(v)
-
-    model.load_weights(list(new_weights.items()))
-    mx.eval(model.parameters())
-
-    return generator
+        return generator
 
 
 #  Debugging
@@ -241,13 +231,16 @@ import numpy as np
 import soundfile as sf
 
 if __name__ == "__main__":
-    generator = load_csm_1b(Path("~/Downloads/ckpt.pt").expanduser())
+    generator = Generator.from_pretrained("lucasnewman/csm-1b-mlx")
     text = "Hello from Sesame!"
     speaker = 0
     context = []
-    sampler = make_sampler(temp=0.9, top_k=50)
     audio = generator.generate(
-        text, speaker, context, max_audio_length_ms=10_000, sampler=sampler
+        text,
+        speaker,
+        context,
+        max_audio_length_ms=10_000,
+        sampler=make_sampler(temp=0.9, top_k=50),
     )
     mx.eval(audio)
     sf.write("output.wav", np.array(audio), generator.sample_rate)

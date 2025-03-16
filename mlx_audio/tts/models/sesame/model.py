@@ -24,21 +24,6 @@ def index_causal_mask(mask: mx.array, input_pos: mx.array) -> mx.array:
     return mx.expand_dims(mask_indexed, axis=1)
 
 
-def multinomial_sample_one(probs: mx.array) -> mx.array:
-    return mx.random.categorical(probs, num_samples=1)
-
-
-def sample_topk(logits: mx.array, topk: int, temperature: float) -> mx.array:
-    logits = logits / temperature
-    top_values = mx.topk(logits, k=topk, axis=-1)
-    threshold = top_values[:, topk - 1 : topk]
-    mask = logits < threshold
-    logits = mx.where(mask, mx.ones_like(logits) * -float("inf"), logits)
-    probs = mx.softmax(logits, axis=-1)
-    sample = multinomial_sample_one(probs)
-    return sample
-
-
 @dataclass
 class ModelArgs:
     backbone_flavor: str
@@ -134,6 +119,7 @@ class Model(nn.Module):
 
         self._backbone_causal_mask = None
         self._decoder_causal_mask = None
+
         self.backbone_cache = None
         self.decoder_cache = None
         self.caches_enabled = False
@@ -167,17 +153,6 @@ class Model(nn.Module):
         input_pos: mx.array,
         sampler: Callable[..., mx.array],
     ) -> mx.array:
-        """
-        Args:
-            tokens: (batch_size, seq_len, audio_num_codebooks+1)
-            tokens_mask: (batch_size, seq_len, audio_num_codebooks+1)
-            input_pos: (batch_size, seq_len)
-            temperature: sampling temperature
-            topk: top-k sampling parameter
-
-        Returns:
-            (batch_size, audio_num_codebooks) sampled tokens
-        """
         assert self.caches_are_enabled(), "backbone caches are not enabled"
 
         curr_backbone_mask = index_causal_mask(self._backbone_causal_mask, input_pos)
