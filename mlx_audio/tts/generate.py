@@ -1,6 +1,6 @@
-from typing import Optional
 import argparse
 import sys
+from typing import Optional
 
 import mlx.core as mx
 import soundfile as sf
@@ -15,7 +15,7 @@ def generate_audio(
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
-    ref_audio: Optional[mx.array] =ref_audio,
+    ref_audio: Optional[mx.array] = ref_audio,
     ref_text: Optional[str] = None,
     file_prefix: str = "audio",
     audio_format: str = "wav",
@@ -42,12 +42,12 @@ def generate_audio(
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
-    
+
     Returns:
     - None: The function writes the generated audio to a file.
     """
     try:
-       # Load reference audio for voice matching if specified
+        # Load reference audio for voice matching if specified
         ref_audio = None
         ref_text = None
 
@@ -68,10 +68,10 @@ def generate_audio(
                 )
             ref_audio = mx.array(ref_audio, dtype=mx.float32)
             ref_text = args.ref_text
-        
+
         # Load AudioPlayer
         player = AudioPlayer() if args.play else None
-        
+
         # Load model
         model = load_model(model_path=model_path)
         print(
@@ -101,7 +101,7 @@ def generate_audio(
             else:
                 output_file = f"{args.file_prefix}_{i:03d}.{audio_format}"
                 sf.write(output_file, result.audio, 24000)
-                
+
             if verbose:
 
                 print("==========")
@@ -116,14 +116,13 @@ def generate_audio(
                     f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"
                 )
                 print(f"Real-time factor:      {result.real_time_factor:.2f}x")
-                print(
-                    f"Processing time:       {result.processing_time_seconds:.2f}s"
-                )
+                print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
                 if not args.join_audio:
-                    print(f"✅ Audio successfully generated and saved as: {output_file}")
-            
-         
+                    print(
+                        f"✅ Audio successfully generated and saved as: {output_file}"
+                    )
+
         if args.join_audio:
             print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
@@ -132,7 +131,7 @@ def generate_audio(
         if args.play:
             player.wait_for_drain()
             player.stop()
-            
+
     except ImportError as e:
         print(f"Import error: {e}")
         print(
@@ -176,6 +175,7 @@ def parse_args():
     parser.add_argument(
         "--sample_rate", type=int, default=24000, help="Audio sample rate in Hz"
     )
+    parser.add_argument(
         "--ref_audio", type=str, default=None, help="Path to reference audio"
     )
     parser.add_argument(
@@ -212,6 +212,7 @@ def main():
         play=args.play,
         verbose=args.verbose,
     )
+
 
 if __name__ == "__main__":
     main()
