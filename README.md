@@ -48,13 +48,14 @@ from mlx_audio.tts.generate import generate_audio
 # Example: Generate an audiobook chapter as audio
 generate_audio(
     text="In the beginning, the universe was created...",
-    model="prince-canuma/Kokoro-82M",
+    model_path="prince-canuma/Kokoro-82M",
     voice="af_heart",
     speed=1.2,
     lang_code="en",
-    file_path="audiobook_chapter1",
+    file_prefix="audiobook_chapter1",
     audio_format="wav",
     sample_rate=24000,
+    join_audio=True,
     verbose=True  # Set to False to disable print messages
 )
 
