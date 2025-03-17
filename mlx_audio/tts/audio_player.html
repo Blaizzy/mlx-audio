@@ -323,6 +323,11 @@
         const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
         scene.add(glowMesh);
 
+        // Define rotation speed variables
+        let rotationSpeedY = 0.002;
+        let rotationSpeedX = 0.001;
+        let isGenerating = false;
+
         // Tab functionality
         function openTab(evt, tabName) {
             // Hide all tabcontent
@@ -363,6 +368,11 @@
             ttsErrorElement.style.display = 'none';
             ttsStatusElement.textContent = 'Generating speech...';
             
+            // Increase rotation speed to indicate processing
+            isGenerating = true;
+            rotationSpeedY = 0.01;
+            rotationSpeedX = 0.005;
+            
             // Create form data
             const formData = new FormData();
             formData.append('text', text);
@@ -385,6 +395,11 @@
             })
             .then(data => {
                 ttsStatusElement.textContent = 'Speech generated successfully!';
+                
+                // Reset rotation speed
+                isGenerating = false;
+                rotationSpeedY = 0.002;
+                rotationSpeedX = 0.001;
                 
                 // Clean up previous audio resources
                 if (audioElement) {
@@ -422,7 +437,11 @@
             })
             .catch(error => {
                 showTtsError(error.message);
-                ttsStatusElement.textContent = '';
+                
+                // Reset rotation speed on error too
+                isGenerating = false;
+                rotationSpeedY = 0.002;
+                rotationSpeedX = 0.001;
             });
         });
         
@@ -584,9 +603,9 @@
             // Get current time for pulsating effect
             const time = performance.now() * 0.001; // Convert to seconds
 
-            // Rotate sphere slowly
-            sphere.rotation.y += 0.002;
-            sphere.rotation.x += 0.001;
+            // Rotate sphere with current speed
+            sphere.rotation.y += rotationSpeedY;
+            sphere.rotation.x += rotationSpeedX;
             glowMesh.rotation.copy(sphere.rotation);
 
             // Update visualization if audio is playing

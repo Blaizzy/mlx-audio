@@ -35,6 +35,12 @@ def parse_args():
         "--join_audio", action="store_true", help="Join all audio files into one"
     )
     parser.add_argument("--play", action="store_true", help="Play the output audio")
+    parser.add_argument(
+        "--ref_audio", type=str, default=None, help="Path to reference audio"
+    )
+    parser.add_argument(
+        "--ref_text", type=str, default=None, help="Caption for reference audio"
+    )
     args = parser.parse_args()
 
     if args.text is None:
@@ -50,6 +56,29 @@ def parse_args():
 def main():
     args = parse_args()
     try:
+        # load reference audio for voice matching if specified
+
+        ref_audio = None
+        ref_text = None
+
+        if args.ref_audio:
+            if not os.path.exists(args.ref_audio):
+                raise FileNotFoundError(
+                    f"Reference audio file not found: {args.ref_audio}"
+                )
+            if not args.ref_text:
+                raise ValueError(
+                    "Reference text is required when using reference audio."
+                )
+
+            ref_audio, ref_sr = sf.read(args.ref_audio)
+            if ref_sr != 24000:
+                raise ValueError(
+                    f"Reference audio sample rate must be 24000 Hz, but got {ref_sr} Hz."
+                )
+            ref_audio = mx.array(ref_audio, dtype=mx.float32)
+            ref_text = args.ref_text
+
         player = AudioPlayer() if args.play else None
 
         model = load_model(model_path=args.model)
@@ -66,6 +95,8 @@ def main():
             voice=args.voice,
             speed=args.speed,
             lang_code=args.lang_code,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
             verbose=True,
         )
         print(
