@@ -249,6 +249,7 @@ class Model(nn.Module):
         lang_code: str = "af",
         split_pattern: str = r"\n+",
         verbose: bool = False,
+        **kwargs,
     ):
         pipeline = KokoroPipeline(
             model=self,
