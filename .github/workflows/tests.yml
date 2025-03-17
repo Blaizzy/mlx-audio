@@ -36,7 +36,12 @@ jobs:
           python -m pip install pytest
           python -m pip install -e .
 
-      - name: Run Python tests
+      - name: Run Python tests (TTS)
         run: |
           cd mlx_audio/tts/
+          pytest -s ./tests
+
+      - name: Run Python tests (Codec)
+        run: |
+          cd mlx_audio/codec/
           pytest -s ./tests
