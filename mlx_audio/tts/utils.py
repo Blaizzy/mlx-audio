@@ -154,7 +154,10 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         )
 
     model.load_weights(list(weights.items()))
-    mx.eval(model.parameters())
+
+    if not lazy:
+        mx.eval(model.parameters())
+
     model.eval()
 
     return model
