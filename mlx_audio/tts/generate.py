@@ -20,6 +20,7 @@ def generate_audio(
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
+    from_cli: bool = False,
 ) -> None:
     """
     Generates audio from text using a specified TTS model.
@@ -36,6 +37,7 @@ def generate_audio(
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
+    - from_cli (bool): Indicates whether the function is called from the command line.
 
     Returns:
     - None: The function writes the generated audio to a file.
@@ -56,52 +58,59 @@ def generate_audio(
         )
 
         audio_list = []
-        player = AudioPlayer() if args.play else None
         for i, result in enumerate(results):
-            if args.play:
-                player.queue_audio(result.audio)
-            if args.join_audio:
+            if join_audio or play:
                 audio_list.append(result.audio)
             else:
-                sf.write(f"{args.file_prefix}_{i:03d}.wav", result.audio, 24000)
+                output_file = (
+                    f"{file_path}_{i:03d}.{audio_format}"
+                    if from_cli
+                    else f"{file_path}.{audio_format}"
+                )
+                sf.write(f"{output_file}", result.audio, sample_rate)
 
-            if args.verbose:
-                print("==========")
-                print(f"Duration:              {result.audio_duration}")
-                print(
-                    f"Samples/sec:           {result.audio_samples['samples-per-sec']:.1f}"
-                )
-                print(
-                    f"Prompt:                {result.token_count} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
-                )
-                print(
-                    f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"
-                )
-                print(f"Real-time factor:      {result.real_time_factor:.2f}x")
-                print(f"Processing time:       {result.processing_time_seconds:.2f}s")
-                print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
+            if verbose:
+                if from_cli:
+                    print(
+                        f"✅ Audio successfully generated and saved as: {file_path}.{audio_format}"
+                    )
+                else:
+                    print("==========")
+                    print(f"Duration:              {result.audio_duration}")
+                    print(
+                        f"Samples/sec:           {result.audio_samples['samples-per-sec']:.1f}"
+                    )
+                    print(
+                        f"Prompt:                {result.token_count} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
+                    )
+                    print(
+                        f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"
+                    )
+                    print(f"Real-time factor:      {result.real_time_factor:.2f}x")
+                    print(
+                        f"Processing time:       {result.processing_time_seconds:.2f}s"
+                    )
+                    print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
 
-        if args.join_audio:
+        if join_audio:
             print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(f"{args.file_prefix}.wav", audio, 24000)
+            sf.write(f"{file_path}.wav", audio, 24000)
 
-        if args.play:
+        if play:
+            audio = mx.concatenate(audio_list, axis=0)
+
+            player = AudioPlayer()
+            player.queue_audio(audio)
             player.wait_for_drain()
             player.stop()
-
-        if verbose:
-            print(
-                f"✅ Audio successfully generated and saved as: {file_path}.{audio_format}"
-            )
-
     except ImportError as e:
         print(f"Import error: {e}")
         print(
             "This might be due to incorrect Python path. Check your project structure."
         )
     except Exception as e:
-        print(f"❌ Error generating audio: {e}")
+        print(f"Error loading model: {e}")
         import traceback
 
         traceback.print_exc()
@@ -113,7 +122,7 @@ def parse_args():
         "--model",
         type=str,
         default="prince-canuma/Kokoro-82M",
-        help="Path or repo ID of the model",
+        help="Path or repo id of the model",
     )
     parser.add_argument(
         "--text",
@@ -127,17 +136,18 @@ def parse_args():
     parser.add_argument(
         "--file_prefix", type=str, default="audio", help="Output file name prefix"
     )
+    parser.add_argument("--verbose", action="store_false", help="Print verbose output")
+    parser.add_argument(
+        "--join_audio", action="store_true", help="Join all audio files into one"
+    )
+    parser.add_argument("--play", action="store_true", help="Play the output audio")
     parser.add_argument(
         "--audio_format", type=str, default="wav", help="Output audio format"
     )
     parser.add_argument(
         "--sample_rate", type=int, default=24000, help="Audio sample rate in Hz"
     )
-    parser.add_argument(
-        "--join_audio", action="store_true", help="Join all audio files into one"
-    )
-    parser.add_argument("--play", action="store_true", help="Play the output audio")
-    parser.add_argument("--verbose", action="store_true", help="Print verbose output")
+
     args = parser.parse_args()
 
     if args.text is None:
@@ -164,6 +174,7 @@ def main():
         join_audio=args.join_audio,
         play=args.play,
         verbose=args.verbose,
+        from_cli=True,  # Indicate that this was called from CLI
     )
 
 
