@@ -11,7 +11,7 @@ import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_unflatten
 from mlx_lm.utils import get_model_path, load_config, make_shards
 
-MODEL_REMAPPING = {"lucasnewman/csm-1b-mlx": "sesame"}
+MODEL_REMAPPING = {"mlx-community/csm-1b": "sesame"}
 MAX_FILE_SIZE_GB = 5
 
 
@@ -154,9 +154,7 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         )
 
     model.load_weights(list(weights.items()))
-
-    if not lazy and isinstance(model, nn.Module):
-        mx.eval(model.parameters())
-        model.eval()
+    mx.eval(model.parameters())
+    model.eval()
 
     return model
