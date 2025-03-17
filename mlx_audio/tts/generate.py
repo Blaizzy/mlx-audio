@@ -36,7 +36,7 @@ def generate_audio(
     - speed (float): Playback speed multiplier.
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
-    - ref_text (str): Reference audio caption.
+    - ref_text (str): Caption for reference audio.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
     - sample_rate (int): Sampling rate in Hz.
