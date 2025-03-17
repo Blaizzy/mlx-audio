@@ -95,7 +95,7 @@ def generate_audio(
         if join_audio:
             print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(f"{file_path}.wav", audio, 24000)
+            sf.write(f"{file_path}.wav", audio, sample_rate)
 
         if play:
             audio = mx.concatenate(audio_list, axis=0)
