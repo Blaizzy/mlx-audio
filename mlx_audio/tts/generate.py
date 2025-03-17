@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 from typing import Optional
 
@@ -51,9 +52,7 @@ def generate_audio(
 
         if ref_audio:
             if not os.path.exists(ref_audio):
-                raise FileNotFoundError(
-                    f"Reference audio file not found: {ref_audio}"
-                )
+                raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
             if not ref_text:
                 raise ValueError(
                     "Reference text is required when using reference audio."
@@ -117,9 +116,7 @@ def generate_audio(
                 print(f"Real-time factor:      {result.real_time_factor:.2f}x")
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
-                print(
-                    f"✅ Audio successfully generated and saving as: {file_name}"
-                )
+                print(f"✅ Audio successfully generated and saving as: {file_name}")
 
         if join_audio:
             if verbose:
