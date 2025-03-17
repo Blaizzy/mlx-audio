@@ -15,7 +15,7 @@ def generate_audio(
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
-    ref_audio: Optional[mx.array] = ref_audio,
+    ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
     file_prefix: str = "audio",
     audio_format: str = "wav",
@@ -48,29 +48,26 @@ def generate_audio(
     """
     try:
         # Load reference audio for voice matching if specified
-        ref_audio = None
-        ref_text = None
 
-        if args.ref_audio:
-            if not os.path.exists(args.ref_audio):
+        if ref_audio:
+            if not os.path.exists(ref_audio):
                 raise FileNotFoundError(
-                    f"Reference audio file not found: {args.ref_audio}"
+                    f"Reference audio file not found: {ref_audio}"
                 )
-            if not args.ref_text:
+            if not ref_text:
                 raise ValueError(
                     "Reference text is required when using reference audio."
                 )
 
-            ref_audio, ref_sr = sf.read(args.ref_audio)
+            ref_audio, ref_sr = sf.read(ref_audio)
             if ref_sr != 24000:
                 raise ValueError(
                     f"Reference audio sample rate must be 24000 Hz, but got {ref_sr} Hz."
                 )
             ref_audio = mx.array(ref_audio, dtype=mx.float32)
-            ref_text = args.ref_text
 
         # Load AudioPlayer
-        player = AudioPlayer() if args.play else None
+        player = AudioPlayer() if play else None
 
         # Load model
         model = load_model(model_path=model_path)
@@ -81,7 +78,7 @@ def generate_audio(
             f"\033[94mSpeed:\033[0m {speed}x\n"
             f"\033[94mLanguage:\033[0m {lang_code}"
         )
-        print("==========")
+
         results = model.generate(
             text=text,
             voice=voice,
@@ -93,14 +90,16 @@ def generate_audio(
         )
 
         audio_list = []
+        file_name = f"{file_prefix}.{audio_format}"
         for i, result in enumerate(results):
-            if args.play:
+            if play:
                 player.queue_audio(result.audio)
-            if args.join_audio:
+            if join_audio:
                 audio_list.append(result.audio)
+
             else:
-                output_file = f"{args.file_prefix}_{i:03d}.{audio_format}"
-                sf.write(output_file, result.audio, 24000)
+                file_name = f"{file_prefix}_{i:03d}.{audio_format}"
+                sf.write(file_name, result.audio, 24000)
 
             if verbose:
 
@@ -118,17 +117,17 @@ def generate_audio(
                 print(f"Real-time factor:      {result.real_time_factor:.2f}x")
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
-                if not args.join_audio:
-                    print(
-                        f"✅ Audio successfully generated and saved as: {output_file}"
-                    )
+                print(
+                    f"✅ Audio successfully generated and saving as: {file_name}"
+                )
 
-        if args.join_audio:
-            print(f"Joining {len(audio_list)} audio files")
+        if join_audio:
+            if verbose:
+                print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
             sf.write(f"{file_prefix}.{audio_format}", audio, 24000)
 
-        if args.play:
+        if play:
             player.wait_for_drain()
             player.stop()
 
@@ -199,13 +198,13 @@ def main():
 
     generate_audio(
         text=args.text,
-        model=args.model,
+        model_path=args.model,
         voice=args.voice,
         speed=args.speed,
         lang_code=args.lang_code,
-        ref_audio=ref_audio,
-        ref_text=ref_text,
-        file_path=args.file_prefix,
+        ref_audio=args.ref_audio,
+        ref_text=args.ref_text,
+        file_prefix=args.file_prefix,
         audio_format=args.audio_format,
         sample_rate=args.sample_rate,
         join_audio=args.join_audio,
