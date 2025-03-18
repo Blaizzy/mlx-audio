@@ -7,6 +7,9 @@ I wrote me a script to call the mx_audio.server and convert, verse by verse.
 It took me **28 hours and 05 minutes** to convert all **31,102** verses, resulting in **86h32m36s**.
 I ran it on a Mac Mini M4pro, 12 cores, 24GB Ram;
 
+![Screenshot 2025-03-18 at 14 52 35](https://github.com/user-attachments/assets/4a213b39-a24c-4e93-b0dc-04b385ea20ed)
+
+
 Some example results, are located at `./audios/bible_akjv`
 
 ## Want to try it yourself?
