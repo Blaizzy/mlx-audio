@@ -13,11 +13,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger("mlx_audio_server")
+def setup_logging(verbose: bool = False):
+    level = logging.DEBUG if verbose else logging.INFO
+    format_str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    if verbose:
+        format_str = "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
+
+    logging.basicConfig(level=level, format=format_str)
+    return logging.getLogger("mlx_audio_server")
+
+
+logger = setup_logging()  # Will be updated with verbose setting in main()
 
 from mlx_audio.tts.generate import main as generate_main
 
@@ -40,7 +48,6 @@ app.add_middleware(
 # Load the model once on server startup.
 # You can change the model path or pass arguments as needed.
 # For performance, load once globally:
-MODEL_PATH = "prince-canuma/Kokoro-82M"
 tts_model = None  # Will be loaded when the server starts
 audio_player = None  # Will be initialized when the server starts
 
@@ -48,15 +55,18 @@ audio_player = None  # Will be initialized when the server starts
 # Use an absolute path that's guaranteed to be writable
 OUTPUT_FOLDER = os.path.join(os.path.expanduser("~"), ".mlx_audio", "outputs")
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-logger.info(f"Using output folder: {OUTPUT_FOLDER}")
+logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
 
 
 @app.post("/tts")
 def tts_endpoint(
-    text: str = Form(...), voice: str = Form("af_heart"), speed: float = Form(1.0)
+    text: str = Form(...),
+    voice: str = Form("af_heart"),
+    speed: float = Form(1.0),
+    model: str = Form("mlx-community/Kokoro-82M-4bit"),
 ):
     """
-    POST an x-www-form-urlencoded form with 'text' (and optional 'voice' and 'speed').
+    POST an x-www-form-urlencoded form with 'text' (and optional 'voice', 'speed', and 'model').
     We run TTS on the text, save the audio in a unique file,
     and return JSON with the filename so the client can retrieve it.
     """
@@ -75,23 +85,53 @@ def tts_endpoint(
     except ValueError:
         return JSONResponse({"error": "Invalid speed value"}, status_code=400)
 
+    # Validate model parameter
+    valid_models = [
+        "mlx-community/Kokoro-82M-4bit",
+        "mlx-community/Kokoro-82M-6bit",
+        "mlx-community/Kokoro-82M-8bit",
+        "mlx-community/Kokoro-82M-bf16",
+    ]
+    if model not in valid_models:
+        return JSONResponse(
+            {"error": f"Invalid model. Must be one of: {', '.join(valid_models)}"},
+            status_code=400,
+        )
+
+    # Store current model repo_id for comparison
+    current_model_repo_id = (
+        getattr(tts_model, "repo_id", None) if tts_model is not None else None
+    )
+
+    # Load the model if it's not loaded or if a different model is requested
+    if tts_model is None or current_model_repo_id != model:
+        try:
+            logger.debug(f"Loading TTS model from {model}")
+            tts_model = load_model(model)
+            logger.debug("TTS model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading TTS model: {str(e)}")
+            return JSONResponse(
+                {"error": f"Failed to load model: {str(e)}"}, status_code=500
+            )
+
     # We'll do something like the code in model.generate() from the TTS library:
     # Generate the unique filename
     unique_id = str(uuid.uuid4())
     filename = f"tts_{unique_id}.wav"
     output_path = os.path.join(OUTPUT_FOLDER, filename)
 
-    logger.info(
-        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}"
+    logger.debug(
+        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}"
     )
-    logger.info(f"Output file will be: {output_path}")
+    logger.debug(f"Output file will be: {output_path}")
 
     # We'll use the high-level "model.generate" method:
     results = tts_model.generate(
         text=text,
         voice=voice,
         speed=speed_float,
-        lang_code="a",
+        lang_code=voice[0],
         verbose=False,
     )
 
@@ -112,7 +152,7 @@ def tts_endpoint(
     # Write the audio as a WAV
     try:
         sf.write(output_path, cat_audio, 24000)
-        logger.info(f"Successfully wrote audio file to {output_path}")
+        logger.debug(f"Successfully wrote audio file to {output_path}")
 
         # Verify the file exists
         if not os.path.exists(output_path):
@@ -123,7 +163,7 @@ def tts_endpoint(
 
         # Check file size
         file_size = os.path.getsize(output_path)
-        logger.info(f"File size: {file_size} bytes")
+        logger.debug(f"File size: {file_size} bytes")
 
         if file_size == 0:
             logger.error("File was created but is empty")
@@ -147,20 +187,20 @@ def get_audio_file(filename: str):
     The user can GET /audio/<filename> to fetch the WAV file.
     """
     file_path = os.path.join(OUTPUT_FOLDER, filename)
-    logger.info(f"Requested audio file: {file_path}")
+    logger.debug(f"Requested audio file: {file_path}")
 
     if not os.path.exists(file_path):
         logger.error(f"File not found: {file_path}")
         # List files in the directory to help debug
         try:
             files = os.listdir(OUTPUT_FOLDER)
-            logger.info(f"Files in output directory: {files}")
+            logger.debug(f"Files in output directory: {files}")
         except Exception as e:
             logger.error(f"Error listing output directory: {str(e)}")
 
         return JSONResponse({"error": "File not found"}, status_code=404)
 
-    logger.info(f"Serving audio file: {file_path}")
+    logger.debug(f"Serving audio file: {file_path}")
     return FileResponse(file_path, media_type="audio/wav")
 
 
@@ -335,7 +375,7 @@ def open_output_folder():
                 {"error": f"Unsupported platform: {sys.platform}"}, status_code=500
             )
 
-        logger.info(f"Opened output folder: {OUTPUT_FOLDER}")
+        logger.debug(f"Opened output folder: {OUTPUT_FOLDER}")
         return {"status": "opened", "path": OUTPUT_FOLDER}
     except Exception as e:
         logger.error(f"Error opening output folder: {str(e)}")
@@ -356,25 +396,28 @@ def setup_server():
         with open(test_file, "w") as f:
             f.write("Test write permissions")
         os.remove(test_file)
-        logger.info(f"Output directory {OUTPUT_FOLDER} is writable")
+        logger.debug(f"Output directory {OUTPUT_FOLDER} is writable")
     except Exception as e:
         logger.error(f"Error with output directory {OUTPUT_FOLDER}: {str(e)}")
         # Try to use a fallback directory in /tmp
         fallback_dir = os.path.join("/tmp", "mlx_audio_outputs")
-        logger.info(f"Trying fallback directory: {fallback_dir}")
+        logger.debug(f"Trying fallback directory: {fallback_dir}")
         try:
             os.makedirs(fallback_dir, exist_ok=True)
             OUTPUT_FOLDER = fallback_dir
-            logger.info(f"Using fallback output directory: {OUTPUT_FOLDER}")
+            logger.debug(f"Using fallback output directory: {OUTPUT_FOLDER}")
         except Exception as fallback_error:
             logger.error(f"Error with fallback directory: {str(fallback_error)}")
 
     # Load the model if not already loaded
     if tts_model is None:
         try:
-            logger.info(f"Loading TTS model from {MODEL_PATH}")
-            tts_model = load_model(MODEL_PATH)
-            logger.info("TTS model loaded successfully")
+            default_model = (
+                "mlx-community/Kokoro-82M-4bit"  # Same default as in tts_endpoint
+            )
+            logger.debug(f"Loading TTS model from {default_model}")
+            tts_model = load_model(default_model)
+            logger.debug("TTS model loaded successfully")
         except Exception as e:
             logger.error(f"Error loading TTS model: {str(e)}")
             raise
@@ -382,18 +425,18 @@ def setup_server():
     # Initialize the audio player if not already initialized
     if audio_player is None:
         try:
-            logger.info("Initializing audio player")
+            logger.debug("Initializing audio player")
             audio_player = AudioPlayer()
-            logger.info("Audio player initialized successfully")
+            logger.debug("Audio player initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing audio player: {str(e)}")
 
     # Try to mount the static files directory
     try:
         static_dir = find_static_dir()
-        logger.info(f"Found static directory: {static_dir}")
+        logger.debug(f"Found static directory: {static_dir}")
         app.mount("/static", StaticFiles(directory=static_dir), name="static")
-        logger.info("Static files mounted successfully")
+        logger.debug("Static files mounted successfully")
     except Exception as e:
         logger.error(f"Could not mount static files directory: {e}")
         logger.warning(
@@ -401,7 +444,7 @@ def setup_server():
         )
 
 
-def main(host="127.0.0.1", port=8000):
+def main(host="127.0.0.1", port=8000, verbose=False):
     """Parse command line arguments for the server and start it."""
     parser = argparse.ArgumentParser(description="Start the MLX-Audio TTS server")
     parser.add_argument(
@@ -416,11 +459,25 @@ def main(host="127.0.0.1", port=8000):
         default=8000,
         help="Port to bind the server to (default: 8000)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging with detailed debug information",
+    )
     args = parser.parse_args()
+
+    # Update logger with verbose setting
+    global logger
+    logger = setup_logging(args.verbose)
 
     # Start the server with the parsed arguments
     setup_server()
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="debug" if args.verbose else "info",
+    )
 
 
 if __name__ == "__main__":

@@ -38,6 +38,30 @@ mlx_audio.tts.generate --text "Hello, world" --file_prefix hello
 mlx_audio.tts.generate --text "Hello, world" --speed 1.4
 ```
 
+### How to call from python
+
+To generate audio with an LLM use:
+
+```python
+from mlx_audio.tts.generate import generate_audio
+
+# Example: Generate an audiobook chapter as audio
+generate_audio(
+    text="In the beginning, the universe was created...",
+    model_path="prince-canuma/Kokoro-82M",
+    voice="af_heart",
+    speed=1.2,
+    lang_code="en",
+    file_prefix="audiobook_chapter1",
+    audio_format="wav",
+    sample_rate=24000,
+    join_audio=True,
+    verbose=True  # Set to False to disable print messages
+)
+
+print("Audiobook chapter successfully generated!")
+
+```
 
 ### Web Interface & API Server
 
@@ -66,6 +90,9 @@ mlx_audio.server
 
 # With custom host and port
 mlx_audio.server --host 0.0.0.0 --port 9000
+
+# With verbose logging
+mlx_audio.server --verbose
 ```
 
 Available command line arguments:

@@ -1,3 +1,4 @@
+import math
 from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
@@ -505,6 +506,60 @@ def mlx_istft(
     return reconstructed
 
 
+def mlx_angle(z, deg=False):
+    z = mx.array(z)
+
+    if z.dtype == mx.complex64:
+        zimag = mx.imag(z)
+        zreal = mx.real(z)
+    else:
+        zimag = mx.zeros_like(z)
+        zreal = z
+
+    a = mx.arctan2(zimag, zreal)
+
+    if deg:
+        a = a * (180.0 / math.pi)
+
+    return a
+
+
+def mlx_unwrap(p, discont=None, axis=-1, period=2 * math.pi):
+    if discont is None:
+        discont = period / 2
+
+    discont = max(discont, period / 2)
+
+    slice_indices = [slice(None)] * p.ndim
+
+    slice_indices[axis] = slice(1, None)
+    after_slice = tuple(slice_indices)
+
+    slice_indices[axis] = slice(None, -1)
+    before_slice = tuple(slice_indices)
+
+    dd = p[after_slice] - p[before_slice]
+
+    interval_high = period / 2
+    interval_low = -interval_high
+
+    ddmod = dd - period * mx.floor((dd - interval_low) / period)
+    ddmod = mx.where(
+        (mx.abs(dd - interval_high) < 1e-10) & (dd > 0), interval_high, ddmod
+    )
+
+    ph_correct = ddmod - dd
+    ph_correct = mx.where(mx.abs(dd) < discont, 0, ph_correct)
+
+    padding_shape = list(ph_correct.shape)
+    padding_shape[axis] = 1
+    zero_padding = mx.zeros(padding_shape)
+    padded_corrections = mx.concatenate([zero_padding, ph_correct], axis=axis)
+    cumulative_corrections = mx.cumsum(padded_corrections, axis=axis)
+
+    return p + cumulative_corrections
+
+
 class MLXSTFT:
     def __init__(
         self, filter_length=800, hop_length=200, win_length=800, window="hann"
@@ -516,18 +571,17 @@ class MLXSTFT:
         self.window = window
 
     def transform(self, input_data):
-        # Convert to numpy and ensure 2D
-        audio_np = np.array(input_data)
-        if audio_np.ndim == 1:
-            audio_np = audio_np[None, :]
+        # Ensure 2D
+        if input_data.ndim == 1:
+            input_data = input_data[None, :]
 
         magnitudes = []
         phases = []
 
-        for batch_idx in range(audio_np.shape[0]):
-            # Compute STFT using librosa
+        for batch_idx in range(input_data.shape[0]):
+            # Compute STFT
             stft = mlx_stft(
-                audio_np[batch_idx],
+                input_data[batch_idx],
                 n_fft=self.filter_length,
                 hop_length=self.hop_length,
                 win_length=self.win_length,
@@ -537,33 +591,32 @@ class MLXSTFT:
             )
 
             # Get magnitude
-            magnitude = np.abs(stft)
+            magnitude = mx.abs(stft)
 
-            # Get phase, matching PyTorch's initialization and accumulation
-            phase = np.angle(stft)
+            # Get phase
+            phase = mlx_angle(stft)
 
             magnitudes.append(magnitude)
             phases.append(phase)
 
-        magnitudes = np.stack(magnitudes, axis=0)
-        phases = np.stack(phases, axis=0)
+        magnitudes = mx.stack(magnitudes, axis=0)
+        phases = mx.stack(phases, axis=0)
 
-        return mx.array(magnitudes), mx.array(phases)
+        return magnitudes, phases
 
     def inverse(self, magnitude, phase):
-        magnitude_np = np.array(magnitude)
-        phase_np = np.array(phase)
-
         reconstructed = []
 
-        for batch_idx in range(magnitude_np.shape[0]):
+        for batch_idx in range(magnitude.shape[0]):
             # Unwrap phases for reconstruction
-            phase_cont = np.unwrap(phase_np[batch_idx], axis=1)
+            phase_cont = mlx_unwrap(phase[batch_idx], axis=1)
 
             # Combine magnitude and phase
-            stft = magnitude_np[batch_idx] * np.exp(1j * phase_cont)
+            real_part = magnitude[batch_idx] * mx.cos(phase_cont)
+            imag_part = magnitude[batch_idx] * mx.sin(phase_cont)
+            stft = real_part + 1j * imag_part
 
-            # Inverse STFT using librosa
+            # Inverse STFT
             audio = mlx_istft(
                 stft,
                 hop_length=self.hop_length,
@@ -575,10 +628,9 @@ class MLXSTFT:
 
             reconstructed.append(audio)
 
-        # Stack and reshape to match PyTorch output shape
-        reconstructed = np.stack(reconstructed, axis=0)[:, None, :]
+        reconstructed = mx.stack(reconstructed, axis=0)[:, None, :]
 
-        return mx.array(reconstructed)
+        return reconstructed
 
     def __call__(self, input_data: mx.array) -> mx.array:
         self.magnitude, self.phase = self.transform(input_data)
@@ -628,7 +680,7 @@ class SineGen:
                 scale_factor=1 / self.upsample_scale,
                 mode="linear",
             ).transpose(0, 2, 1)
-            phase = mx.cumsum(rad_values, axis=1) * 2 * np.pi
+            phase = mx.cumsum(rad_values, axis=1) * 2 * mx.pi
             phase = interpolate(
                 phase.transpose(0, 2, 1) * self.upsample_scale,
                 scale_factor=self.upsample_scale,
@@ -658,7 +710,7 @@ class SineGen:
             # within the previous voiced segment.
             i_phase = mx.cumsum(rad_values - tmp_cumsum, axis=1)
             # get the sines
-            sines = mx.cos(i_phase * 2 * np.pi)
+            sines = mx.cos(i_phase * 2 * mx.pi)
         return sines
 
     def __call__(self, f0: mx.array) -> Tuple[mx.array, mx.array, mx.array]:
@@ -953,7 +1005,7 @@ class AdainResBlk1d(nn.Module):
 
     def __call__(self, x, s):
         out = self._residual(x, s)
-        out = (out + self._shortcut(x)) / np.sqrt(2)
+        out = (out + self._shortcut(x)) / mx.sqrt(2)
         return out
 
 
