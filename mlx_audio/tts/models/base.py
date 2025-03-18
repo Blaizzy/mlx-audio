@@ -38,21 +38,30 @@ def adjust_speed(audio_array, speed_factor):
     speed_factor > 1: faster
     speed_factor < 1: slower
     """
-    # Convert to numpy if it's an MLX array
-    if isinstance(audio_array, mx.array):
-        audio_array = audio_array.tolist()
-    audio_array = np.array(audio_array)
+    # Ensure we're working with MLX arrays
+    if not isinstance(audio_array, mx.array):
+        audio_array = mx.array(audio_array)
 
     # Calculate new length
-    old_length = len(audio_array)
+    old_length = audio_array.shape[0]
     new_length = int(old_length / speed_factor)
 
     # Create new time points
-    old_indices = np.arange(old_length)
-    new_indices = np.linspace(0, old_length-1, new_length)
+    old_indices = mx.arange(old_length)
+    new_indices = mx.linspace(0, old_length-1, new_length)
 
     # Resample using linear interpolation
-    return np.interp(new_indices, old_indices, audio_array)
+    # Since mx doesn't have interp, we'll implement it directly
+    indices_floor = mx.floor(new_indices).astype(mx.int32)
+    indices_ceil = mx.minimum(indices_floor + 1, old_length - 1)
+    weights_ceil = new_indices - indices_floor
+    weights_floor = 1.0 - weights_ceil
+
+    # Perform the interpolation
+    result = (weights_floor.reshape(-1, 1) * audio_array[indices_floor] +
+              weights_ceil.reshape(-1, 1) * audio_array[indices_ceil])
+
+    return result
 
 
 @dataclass

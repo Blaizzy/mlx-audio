@@ -11,10 +11,13 @@ import numpy as np
 import math
 from transformers import BertTokenizer
 import glob
+import time
 import tqdm
 import math
-from torch_codec import codec_decode
 from scipy.io.wavfile import write as write_wav
+from encodec import EncodecModel
+from .pipeline import Pipeline
+from ..base import GenerationResult, BaseModelArgs
 
 mx.random.seed(42)
 
@@ -38,7 +41,7 @@ SAMPLE_RATE = 24_000
 
 
 @dataclass
-class ModelConfig:
+class ModelConfig(BaseModelArgs):
     block_size: int = 1024
     input_vocab_size: int = 10_048
     output_vocab_size: int = 10_048
@@ -49,6 +52,9 @@ class ModelConfig:
     bias: bool = False
     n_codes_total: Optional[int] = None
     n_codes_given: Optional[int] = None
+    model_size: str = "base"
+    model_type: str = "bark"
+
 
 
 model_args = {
@@ -108,8 +114,8 @@ class LayerNorm(nn.Module):
 class CausalSelfAttention(nn.Module):
     def __init__(self, args: ModelConfig):
         super().__init__()
-        self.c_attn = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
-        self.c_proj = nn.Linear(args.n_embd, args.n_embd, bias=args.bias)
+        self.att_proj = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
+        self.out_proj = nn.Linear(args.n_embd, args.n_embd, bias=args.bias)
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.n_head = args.n_head
@@ -123,7 +129,7 @@ class CausalSelfAttention(nn.Module):
 
     def __call__(self, x, past_kv=None, use_cache=False):
         B, T, C = x.shape
-        query, key, value = mx.split(self.c_attn(x), 3, axis=2)
+        query, key, value = mx.split(self.att_proj(x), 3, axis=2)
         key = key.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
         query = query.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
         value = value.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
@@ -144,15 +150,15 @@ class CausalSelfAttention(nn.Module):
         att = mx.softmax(att.astype(mx.float32), axis=-1).astype(att.dtype)
         att = self.attn_dropout(att)
         y = (att @ value).transpose(0, 2, 1, 3).reshape(B, T, C)
-        y = self.resid_dropout(self.c_proj(y))
+        y = self.resid_dropout(self.out_proj(y))
         return (y, present)
 
 
 class NonCausalSelfAttention(nn.Module):
     def __init__(self, args: ModelConfig):
         super().__init__()
-        self.c_attn = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
-        self.c_proj = nn.Linear(args.n_embd, args.n_embd, bias=args.bias)
+        self.att_proj = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
+        self.out_proj = nn.Linear(args.n_embd, args.n_embd, bias=args.bias)
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.n_head = args.n_head
@@ -161,7 +167,7 @@ class NonCausalSelfAttention(nn.Module):
 
     def __call__(self, x):
         B, T, C = x.shape
-        query, key, value = mx.split(self.c_attn(x), 3, axis=2)
+        query, key, value = mx.split(self.att_proj(x), 3, axis=2)
         key = key.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
         query = query.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
         value = value.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
@@ -170,7 +176,7 @@ class NonCausalSelfAttention(nn.Module):
         att = mx.softmax(att.astype(mx.float32), axis=-1).astype(att.dtype)
         att = self.attn_dropout(att)
         y = (att @ value).transpose(0, 2, 1, 3).reshape(B, T, C)
-        y = self.resid_dropout(self.c_proj(y))
+        y = self.resid_dropout(self.out_proj(y))
         return y
 
 
@@ -178,15 +184,15 @@ class MLP(nn.Module):
     def __init__(self, args: ModelConfig):
         super().__init__()
 
-        self.c_fc = nn.Linear(args.n_embd, 4 * args.n_embd, bias=False)
-        self.c_proj = nn.Linear(4 * args.n_embd, args.n_embd, bias=False)
+        self.in_proj = nn.Linear(args.n_embd, 4 * args.n_embd, bias=False)
+        self.out_proj = nn.Linear(4 * args.n_embd, args.n_embd, bias=False)
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(args.dropout)
 
     def __call__(self, x: mx.array) -> mx.array:
-        x = self.c_fc(x)
+        x = self.in_proj(x)
         x = self.gelu(x)
-        x = self.c_proj(x)
+        x = self.out_proj(x)
         x = self.dropout(x)
         return x
 
@@ -195,18 +201,18 @@ class Block(nn.Module):
     def __init__(self, args: ModelConfig, layer_idx: int = 0):
         super().__init__()
         self.args = args
-        self.ln_1 = LayerNorm(args.n_embd, bias=True)
+        self.layernorm_1 = LayerNorm(args.n_embd, bias=True)
         self.attn = CausalSelfAttention(args)
-        self.ln_2 = LayerNorm(args.n_embd, bias=True)
+        self.layernorm_2 = LayerNorm(args.n_embd, bias=True)
         self.mlp = MLP(args)
         self.layer_idx = layer_idx
 
     def __call__(self, x: mx.array, past_kv=None, use_cache=False):
         attn_output, prev_kvs = self.attn(
-            self.ln_1(x), past_kv=past_kv, use_cache=use_cache
+            self.layernorm_1(x), past_kv=past_kv, use_cache=use_cache
         )
         x = x + attn_output
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.mlp(self.layernorm_2(x))
         return (x, prev_kvs)
 
 
@@ -214,14 +220,14 @@ class FineBlock(nn.Module):
     def __init__(self, args: ModelConfig):
         super().__init__()
         self.args = args
-        self.ln_1 = nn.LayerNorm(args.n_embd)
+        self.layernorm_1 = nn.LayerNorm(args.n_embd)
         self.attn = NonCausalSelfAttention(args)
-        self.ln_2 = nn.LayerNorm(args.n_embd)
+        self.layernorm_2 = nn.LayerNorm(args.n_embd)
         self.mlp = MLP(args)
 
     def __call__(self, x: mx.array):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+        x = x + self.attn(self.layernorm_1(x))
+        x = x + self.mlp(self.layernorm_2(x))
         return x
 
 
@@ -299,7 +305,7 @@ class FineGPT(nn.Module):
         super().__init__()
         self.args = args
         self.n_codes_total = args.n_codes_total
-        self.wtes = [
+        self.input_embeds_layers = [
             nn.Embedding(args.input_vocab_size, args.n_embd)
             for _ in range(args.n_codes_total)
         ]
@@ -312,7 +318,7 @@ class FineGPT(nn.Module):
             for _ in range(args.n_codes_given, args.n_codes_total)
         ]
         for i in range(self.n_codes_total - args.n_codes_given):
-            self.wtes[i + 1].weight = self.lm_heads[i].weight
+            self.input_embeds_layers[i + 1].weight = self.lm_heads[i].weight
 
     def __call__(self, pred_idx: mx.array, idx: mx.array) -> mx.array:
         b, t, codes = idx.shape
@@ -340,46 +346,45 @@ class Model(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.bark_coarse = GPT(config)
-        self.bark_fine = FineGPT(config)
-        self.bark_text = GPT(config)
+
+        # if config.model_size == "large":
+        #     self.semantic = GPT(model_args["bark-text-large"])
+        #     self.fine_acoustics = FineGPT(model_args["bark-fine-large"])
+        #     self.bark_coarse = GPT(model_args["bark-coarse-large"])
+        # else:
+        self.semantic = GPT(model_args["bark-text"])
+        self.fine_acoustics = FineGPT(model_args["bark-fine"])
+        self.coarse_acoustics = GPT(model_args["bark-coarse"])
+
+        self.codec_model = EncodecModel.encodec_model_24khz()
+        self.codec_model.eval()
+        self.codec_model.to("cpu")
+        self.codec_model.set_target_bandwidth(6.0)
+
+        self.tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased")
+
 
     def sanitize(self, weights):
         sanitized_weights = {}
-        for key, state_dict in weights.items():
+        for key, value in weights.items():
             # there's no _orig_mod.transformer
-            state = {k.replace("_orig_mod.transformer.", ""): v for k, v in state_dict.items()}
+            if "_orig_mod.transformer." in key:
+                key = key.replace("_orig_mod.transformer.", "")
             # transformer block mapping
-            layer_count = 24 if self.config.model_size == "large" else 12
-            for i in range(layer_count):
-                prefix = f"h.{i}."
-                state = {k.replace(prefix, f"layers.{i}."): v for k, v in state.items()}
+            if "h" in key:
+                layer_count = 24 if self.config.model_size == "large" else 12
+                for i in range(layer_count):
+                    prefix = f"h.{i}."
+                    key = key.replace(prefix, f"layers.{i}.")
             # lm_head
-            state = {k.replace("_orig_mod.", ""): v for k, v in state.items()}
-            sanitized_weights[key] = state
+            if "lm_head" in key:
+                key = key.replace("_orig_mod.", "")
+
+            if "codec" in key:
+                pass
+            else:
+                sanitized_weights[key] = value
         return sanitized_weights
-
-
-    def load_model(model_dir: str, model: str):
-        # break up the weights into bark-coarse and bark-fine
-        if model == "large":
-            file_pattern = f"{model_dir}*_2.npz"
-            files = glob.glob(file_pattern)
-        else:
-            all_files = glob.glob(f"{model_dir}*.npz")
-            files = [file for file in all_files if "_2" not in file]
-        tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased")
-        if model == "large":
-            bark_text = GPT(model_args["bark-text-large"])
-            bark_fine = FineGPT(model_args["bark-fine-large"])
-            bark_coarse = GPT(model_args["bark-coarse-large"])
-        else:
-            bark_text = GPT(model_args["bark-text"])
-            bark_fine = FineGPT(model_args["bark-fine"])
-            bark_coarse = GPT(model_args["bark-coarse"])
-
-
-        return tokenizer, bark_coarse, bark_fine, bark_text
 
 
     def generate(
@@ -398,7 +403,7 @@ class Model(nn.Module):
 
         metrics = []
 
-        for segment_idx, (audio) in enumerate(
+        for segment_idx, (audio, phonemes) in enumerate(
             pipeline(text, **kwargs)
         ):
             # Track per-segment generation time
@@ -456,5 +461,4 @@ class Model(nn.Module):
                 peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
             )
 
-`
 

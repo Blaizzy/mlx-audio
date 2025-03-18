@@ -2,6 +2,7 @@ import mlx.nn as nn
 import mlx.core as mx
 import tqdm
 import math
+from .isftnet import codec_decode
 from ..base import adjust_speed
 
 TEXT_ENCODING_OFFSET = 10_048
@@ -151,7 +152,7 @@ class Pipeline:
                 logit_end_idx = min(logit_end_idx, logits.shape[-1])
                 relevant_logits = logits[0, 0, logit_start_idx:logit_end_idx]
                 item_next = mx.random.categorical(
-                    relevant_logits * (1 / temp), num_samples=1
+                    relevant_logits * (1 / temperature), num_samples=1
                 ).astype(mx.int32)
 
                 item_next += logit_start_idx
@@ -241,7 +242,8 @@ class Pipeline:
         semantic_tokens = self.generate_text_semantic(text, temperature, use_kv_caching)
         coarse_tokens = self.generate_coarse(semantic_tokens, temperature, silent, use_kv_caching)
         fine_tokens = self.generate_fine(coarse_tokens, temperature)
-        self.
-        audio_arr = adjust_speed(fine_tokens, speed)
+        # TODO: adjust speed
+        # audio_arr = adjust_speed(fine_tokens, speed)
+        audio_arr = codec_decode(self.model.codec_model, fine_tokens)
 
-        return audio_arr
+        return audio_arr, semantic_tokens
