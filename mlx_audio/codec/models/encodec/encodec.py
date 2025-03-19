@@ -599,9 +599,6 @@ class Encodec(nn.Module):
         encoded_frames = []
         scales = []
 
-        print(
-            f"Encoding {input_length} samples into {chunk_length} samples with stride {stride}."
-        )
         step = chunk_length - stride
         if (input_length % stride) != step:
             raise ValueError(
