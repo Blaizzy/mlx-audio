@@ -1,1 +1,1 @@
-from .encodec import Encodec
+from .encodec import Encodec, EncodecConfig
