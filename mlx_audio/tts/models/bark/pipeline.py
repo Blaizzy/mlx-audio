@@ -32,10 +32,7 @@ COARSE_INFER_TOKEN = 12_050
 SAMPLE_RATE = 24_000
 
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
-default_cache_dir = os.path.join(os.path.expanduser("~"), ".cache")
-CACHE_DIR = os.path.join(
-    os.getenv("XDG_CACHE_HOME", default_cache_dir), "suno", "bark_v0"
-)
+
 
 
 SUPPORTED_LANGS = [
@@ -87,10 +84,8 @@ def _load_voice_prompt(voice_prompt_input):
         if voice_prompt_input not in ALLOWED_PROMPTS:
             raise ValueError("voice prompt not found")
 
-        path = os.path.join(
-            "/Users/prince_canuma/bark-small/speaker_embeddings",
-            f"{voice_prompt_input}.npz",
-        )
+        path = f"{voice_prompt_input}.npz"
+        
         if not os.path.exists(path):
             raise ValueError("voice prompt not found")
         voice_prompt = np.load(path)

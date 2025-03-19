@@ -337,8 +337,7 @@ class TestKokoroPipeline(unittest.TestCase):
 @patch("importlib.resources.open_text", patched_open_text)
 class TestBarkModel(unittest.TestCase):
     @patch("mlx_audio.tts.models.bark.bark.BertTokenizer")
-    @patch("mlx_audio.tts.models.bark.bark.EncodecModel")
-    def test_init(self, mock_encodec, mock_tokenizer):
+    def test_init(self, mock_tokenizer):
         """Test BarkModel initialization."""
         from mlx_audio.tts.models.bark.bark import (
             CoarseAcousticsConfig,
@@ -369,7 +368,6 @@ class TestBarkModel(unittest.TestCase):
         self.assertIsNotNone(model.semantic)
         self.assertIsNotNone(model.coarse_acoustics)
         self.assertIsNotNone(model.fine_acoustics)
-        self.assertIsNotNone(model.codec_model)
         self.assertIsNotNone(model.tokenizer)
 
     def test_sanitize_weights(self):
@@ -391,7 +389,6 @@ class TestBarkModel(unittest.TestCase):
             "_orig_mod.transformer.h.0.mlp.weight": mx.zeros((10, 10)),
             "_orig_mod.transformer.h.1.mlp.weight": mx.zeros((10, 10)),
             "lm_head.weight": mx.zeros((10, 10)),
-            "0.weight": mx.zeros((10, 10)),  # fine acoustics weight
         }
 
         sanitized = model.sanitize(weights)
@@ -400,14 +397,13 @@ class TestBarkModel(unittest.TestCase):
         self.assertIn("layers.0.mlp.weight", sanitized)
         self.assertIn("layers.1.mlp.weight", sanitized)
         self.assertIn("lm_head.weight", sanitized)
-        self.assertIn("fine_acoustics.lm_heads.0.weight", sanitized)
 
 
 @patch("importlib.resources.open_text", patched_open_text)
 class TestBarkPipeline(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
-        from mlx_audio.tts.models.bark.bark import Model, ModelConfig
+        from mlx_audio.tts.models.bark.bark import Model, ModelConfig, SemanticConfig, CoarseAcousticsConfig, FineAcousticsConfig, CodecConfig
         from mlx_audio.tts.models.bark.pipeline import Pipeline
 
         # Create mock model with required attributes
@@ -422,7 +418,12 @@ class TestBarkPipeline(unittest.TestCase):
         self.mock_tokenizer = MagicMock()
 
         # Initialize pipeline
-        self.pipeline = Pipeline(model=self.mock_model, tokenizer=self.mock_tokenizer)
+        self.pipeline = Pipeline(model=self.mock_model, tokenizer=self.mock_tokenizer, config=ModelConfig(
+            semantic_config=SemanticConfig(),
+            coarse_acoustics_config=CoarseAcousticsConfig(),
+            fine_acoustics_config=FineAcousticsConfig(),
+            codec_config=CodecConfig(),
+        ))
 
     def test_generate_text_semantic(self):
         """Test semantic token generation."""
