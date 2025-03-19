@@ -11,6 +11,7 @@ from .base import BaseModelArgs, create_attention_mask
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models import cache as cache_utils
 from mlx_lm.utils import stream_generate
+from ..base import GenerationResponse
 
 
 @dataclass
@@ -281,6 +282,8 @@ class Model(nn.Module):
                 logits = logits / temperature
 
             next_token = torch.argmax(logits, dim=-1)
+            if next_token == self.tokenizer.eos_token_id:
+                break
 
             input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
             attention_mask = torch.cat([attention_mask, torch.ones((1, 1), dtype=torch.int64)], dim=1)
@@ -324,5 +327,19 @@ class Model(nn.Module):
             for i in range(len(my_samples)):
                 print(prompts[i])
                 samples = my_samples[i]
+                audio_duration_seconds = samples /  24000 * samples.shape[1]
+                duration_hours = int(audio_duration_seconds // 3600)
+                duration_mins = int(audio_duration_seconds % 3600 // 60)
+                duration_secs = int(audio_duration_seconds % 60)
+                duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}"
+
+                yield GenerationResponse(
+                    tokens=len(input_ids),
+                    audio=samples,
+                    text=prompts[i],
+                    voice=voice,
+                    temperature=temperature,
+                    duration=duration_str,
+                )
 
 
