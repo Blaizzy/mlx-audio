@@ -448,10 +448,6 @@ class Model(nn.Module):
             if "lm_head" in key:
                 key = key.replace("_orig_mod.", "")
 
-            # Handle fine acoustics lm_heads weights
-            for i in range(7):  # 0 through 6
-                if f"{i}.weight" == key:
-                    key = f"fine_acoustics.lm_heads.{i}.weight"
 
             if "codec" in key:
                 pass
