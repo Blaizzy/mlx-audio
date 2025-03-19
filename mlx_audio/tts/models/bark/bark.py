@@ -1,4 +1,3 @@
-
 import argparse
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union, Dict
@@ -17,6 +16,7 @@ import math
 from scipy.io.wavfile import write as write_wav
 from encodec import EncodecModel
 from .pipeline import Pipeline
+from mlx_lm.models.base import create_causal_mask
 from ..base import GenerationResult, BaseModelArgs
 
 mx.random.seed(42)
@@ -39,9 +39,66 @@ COARSE_SEMANTIC_PAD_TOKEN = 12_048
 COARSE_INFER_TOKEN = 12_050
 SAMPLE_RATE = 24_000
 
+def filter_dataclass_fields(data_dict, dataclass_type):
+    """Filter a dictionary to only include keys that are fields in the dataclass."""
+    valid_fields = {f.name for f in dataclass_type.__dataclass_fields__.values()}
+    return {k: v for k, v in data_dict.items() if k in valid_fields}
+
+@dataclass
+class SemanticConfig(BaseModelArgs):
+    bad_words_ids: list[list[int]] = None
+    block_size: int = 1024
+    input_vocab_size: int = 129600
+    output_vocab_size: int = 129600
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    bias: bool = False
+    model_type: str = "semantic"
+    dropout: float = 0.0
+    architectures: list[str] = None
+
+
+@dataclass
+class CoarseAcousticsConfig(BaseModelArgs):
+    block_size: int = 1024
+    input_vocab_size: int = 12096
+    output_vocab_size: int = 12096
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    bias: bool = False
+    model_type: str = "coarse_acoustics"
+    dropout: float = 0.0
+
+@dataclass
+class FineAcousticsConfig(BaseModelArgs):
+    block_size: int = 1024
+    input_vocab_size: int = 1056
+    output_vocab_size: int = 1056
+    n_layer: int = 12
+    n_head: int = 12
+    n_embd: int = 768
+    bias: bool = False
+    model_type: str = "fine_acoustics"
+    n_codes_total: int = 8
+    n_codes_given: int = 1
+    dropout: float = 0.0
+
+
+@dataclass
+class CodecConfig(BaseModelArgs):
+    model_type: str = "codec"
+    sample_rate: int = 24000
+    target_bandwidth: float = 6.0
+
 
 @dataclass
 class ModelConfig(BaseModelArgs):
+    semantic_config: SemanticConfig
+    coarse_acoustics_config: CoarseAcousticsConfig
+    fine_acoustics_config: FineAcousticsConfig
+    codec_config: CodecConfig
     block_size: int = 1024
     input_vocab_size: int = 10_048
     output_vocab_size: int = 10_048
@@ -54,42 +111,9 @@ class ModelConfig(BaseModelArgs):
     n_codes_given: Optional[int] = None
     model_size: str = "base"
     model_type: str = "bark"
+    initializer_range: float = 0.02
 
 
-
-model_args = {
-    "bark-coarse": ModelConfig(input_vocab_size=12096, output_vocab_size=12096),
-    "bark-fine": ModelConfig(
-        n_codes_given=1, n_codes_total=8, input_vocab_size=1056, output_vocab_size=1056
-    ),
-    "bark-text": ModelConfig(
-        input_vocab_size=129600,
-        output_vocab_size=10048,
-    ),
-    "bark-coarse-large": ModelConfig(
-        n_layer=24,
-        n_head=16,
-        n_embd=1024,
-        input_vocab_size=12096,
-        output_vocab_size=12096,
-    ),
-    "bark-fine-large": ModelConfig(
-        n_codes_given=1,
-        n_codes_total=8,
-        n_layer=24,
-        n_head=16,
-        n_embd=1024,
-        input_vocab_size=1056,
-        output_vocab_size=1056,
-    ),
-    "bark-text-large": ModelConfig(
-        n_layer=24,
-        n_head=16,
-        n_embd=1024,
-        input_vocab_size=129600,
-        output_vocab_size=10048,
-    ),
-}
 
 
 class LayerNorm(nn.Module):
@@ -112,7 +136,7 @@ class LayerNorm(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, args: ModelConfig):
+    def __init__(self, args: Union[SemanticConfig, CoarseAcousticsConfig, FineAcousticsConfig]):
         super().__init__()
         self.att_proj = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
         self.out_proj = nn.Linear(args.n_embd, args.n_embd, bias=args.bias)
@@ -137,25 +161,23 @@ class CausalSelfAttention(nn.Module):
             past_key, past_value = past_kv
             key = mx.concatenate([past_key, key], axis=-2)
             value = mx.concatenate([past_value, value], axis=-2)
+
         FULL_T = key.shape[-2]
         if use_cache is True:
             present = (key, value)
         else:
             present = None
-        att = (query @ key.transpose(0, 1, 3, 2)) * (1.0 / math.sqrt(key.shape[3]))
 
-        att = mx.where(
-            self.bias[:, :, FULL_T - T : FULL_T, :FULL_T] == 0, float("-1e9"), att
-        )
-        att = mx.softmax(att.astype(mx.float32), axis=-1).astype(att.dtype)
-        att = self.attn_dropout(att)
-        y = (att @ value).transpose(0, 2, 1, 3).reshape(B, T, C)
+        mask = create_causal_mask(key.shape[2])[None, None, FULL_T - T : FULL_T, :FULL_T]
+        y = mx.fast.scaled_dot_product_attention(query, key, value, scale=1.0 / math.sqrt(key.shape[3]), mask=mask)
+        y = self.attn_dropout(y)
+        y = y.transpose(0, 2, 1, 3).reshape(B, T, C)
         y = self.resid_dropout(self.out_proj(y))
         return (y, present)
 
 
 class NonCausalSelfAttention(nn.Module):
-    def __init__(self, args: ModelConfig):
+    def __init__(self, args: Union[SemanticConfig, CoarseAcousticsConfig, FineAcousticsConfig]):
         super().__init__()
         self.att_proj = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
         self.out_proj = nn.Linear(args.n_embd, args.n_embd, bias=args.bias)
@@ -172,16 +194,15 @@ class NonCausalSelfAttention(nn.Module):
         query = query.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
         value = value.reshape(B, T, self.n_head, C // self.n_head).transpose(0, 2, 1, 3)
 
-        att = (query @ key.transpose(0, 1, 3, 2)) * (1.0 / math.sqrt(key.shape[3]))
-        att = mx.softmax(att.astype(mx.float32), axis=-1).astype(att.dtype)
-        att = self.attn_dropout(att)
-        y = (att @ value).transpose(0, 2, 1, 3).reshape(B, T, C)
+        y = mx.fast.scaled_dot_product_attention(query, key, value, scale=1.0 / math.sqrt(key.shape[3]))
+        y = self.attn_dropout(y)
+        y = y.transpose(0, 2, 1, 3).reshape(B, T, C)
         y = self.resid_dropout(self.out_proj(y))
         return y
 
 
 class MLP(nn.Module):
-    def __init__(self, args: ModelConfig):
+    def __init__(self, args: Union[SemanticConfig, CoarseAcousticsConfig, FineAcousticsConfig]):
         super().__init__()
 
         self.in_proj = nn.Linear(args.n_embd, 4 * args.n_embd, bias=False)
@@ -198,12 +219,12 @@ class MLP(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, args: ModelConfig, layer_idx: int = 0):
+    def __init__(self, args: Union[SemanticConfig, CoarseAcousticsConfig], layer_idx: int = 0):
         super().__init__()
         self.args = args
-        self.layernorm_1 = LayerNorm(args.n_embd, bias=True)
+        self.layernorm_1 = LayerNorm(args.n_embd, bias=False)
         self.attn = CausalSelfAttention(args)
-        self.layernorm_2 = LayerNorm(args.n_embd, bias=True)
+        self.layernorm_2 = LayerNorm(args.n_embd, bias=False)
         self.mlp = MLP(args)
         self.layer_idx = layer_idx
 
@@ -217,7 +238,7 @@ class Block(nn.Module):
 
 
 class FineBlock(nn.Module):
-    def __init__(self, args: ModelConfig):
+    def __init__(self, args: FineAcousticsConfig):
         super().__init__()
         self.args = args
         self.layernorm_1 = nn.LayerNorm(args.n_embd)
@@ -232,14 +253,14 @@ class FineBlock(nn.Module):
 
 
 class GPT(nn.Module):
-    def __init__(self, args: ModelConfig):
+    def __init__(self, args: Union[SemanticConfig, CoarseAcousticsConfig]):
         super().__init__()
         self.args = args
-        self.wte = nn.Embedding(args.input_vocab_size, args.n_embd)
-        self.wpe = nn.Embedding(args.block_size, args.n_embd)
+        self.input_embeds_layer = nn.Embedding(args.input_vocab_size, args.n_embd)
+        self.position_embeds_layer = nn.Embedding(args.block_size, args.n_embd)
         self.drop = nn.Dropout(args.dropout)
         self.layers = [Block(args=args) for _ in range(args.n_layer)]
-        self.ln_f = LayerNorm(args.n_embd, bias=True)
+        self.layernorm_final = LayerNorm(args.n_embd, bias=False)
         self.lm_head = nn.Linear(args.n_embd, args.output_vocab_size, bias=False)
 
     def __call__(
@@ -254,20 +275,20 @@ class GPT(nn.Module):
 
         if past_kv is not None:
             assert t == 1
-            tok_emb = self.wte(x)
+            tok_emb = self.input_embeds_layer(x)
         else:
             if merge_context:
                 assert x.shape[1] >= 256 + 256 + 1
                 t = x.shape[1] - 256
                 tok_emb = mx.concatenate(
                     [
-                        self.wte(x[:, :256]) + self.wte(x[:, 256 : 256 + 256]),
-                        self.wte(x[:, 256 + 256 :]),
+                        self.input_embeds_layer(x[:, :256]) + self.input_embeds_layer(x[:, 256 : 256 + 256]),
+                        self.input_embeds_layer(x[:, 256 + 256 :]),
                     ],
                     axis=1,
                 )
             else:
-                tok_emb = self.wte(x)
+                tok_emb = self.input_embeds_layer(x)
 
         # past length
         if past_kv is None:
@@ -280,7 +301,7 @@ class GPT(nn.Module):
             position_ids = mx.arange(past_length, t + past_length)
             position_ids = position_ids.reshape(1, -1)  # shape (1, t)
 
-        pos_emb = self.wpe(position_ids)  # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.position_embeds_layer(position_ids)  # position embeddings of shape (1, t, n_embd)
         x = self.drop(tok_emb + pos_emb)
 
         new_kv = () if use_cache else None
@@ -291,7 +312,7 @@ class GPT(nn.Module):
             if use_cache:
                 new_kv = new_kv + (kv,)
 
-        x = self.ln_f(x)
+        x = self.layernorm_final(x)
 
         logits = self.lm_head(
             x[:, -1:, :]
@@ -301,7 +322,7 @@ class GPT(nn.Module):
 
 
 class FineGPT(nn.Module):
-    def __init__(self, args: ModelConfig):
+    def __init__(self, args: FineAcousticsConfig):
         super().__init__()
         self.args = args
         self.n_codes_total = args.n_codes_total
@@ -309,10 +330,11 @@ class FineGPT(nn.Module):
             nn.Embedding(args.input_vocab_size, args.n_embd)
             for _ in range(args.n_codes_total)
         ]
-        self.wpe = nn.Embedding(args.block_size, args.n_embd)
+        self.position_embeds_layer = nn.Embedding(args.block_size, args.n_embd)
         self.drop = nn.Dropout(args.dropout)
         self.layers = [FineBlock(args=args) for _ in range(args.n_layer)]
-        self.ln_f = nn.LayerNorm(args.n_embd)
+        self.layernorm_final = nn.LayerNorm(args.n_embd)
+
         self.lm_heads = [
             nn.Linear(args.n_embd, args.output_vocab_size, bias=False)
             for _ in range(args.n_codes_given, args.n_codes_total)
@@ -329,16 +351,17 @@ class FineGPT(nn.Module):
         assert codes == self.n_codes_total, (b, t, codes)
         pos = mx.arange(0, t).astype(mx.int64).reshape(1, t)  # shape (1, t)
         tok_embs = [
-            wte(idx[:, :, i].astype(mx.int32)).reshape(b, t, -1, 1)
-            for i, wte in enumerate(self.wtes)
+            self.input_embeds_layers[i](idx[:, :, i].astype(mx.int32)).reshape(b, t, -1, 1)
+            for i in range(self.n_codes_total)
         ]  # token embeddings of shape (b, t, n_embd)
         tok_emb = mx.concatenate(tok_embs, axis=-1)
-        pos_emb = self.wpe(pos)  # position embeddings of shape (1, t, n_embd)
+        pos_emb = self.position_embeds_layer(pos)  # position embeddings of shape (1, t, n_embd)
         x = tok_emb[:, :, :, : pred_idx + 1].sum(axis=-1)
         x = self.drop(x + pos_emb)
         for block in self.layers:
             x = block(x)
-        x = self.ln_f(x)
+        x = self.layernorm_final(x)
+
         logits = self.lm_heads[pred_idx - self.args.n_codes_given](x)
         return logits
 
@@ -347,14 +370,28 @@ class Model(nn.Module):
         super().__init__()
         self.config = config
 
-        # if config.model_size == "large":
-        #     self.semantic = GPT(model_args["bark-text-large"])
-        #     self.fine_acoustics = FineGPT(model_args["bark-fine-large"])
-        #     self.bark_coarse = GPT(model_args["bark-coarse-large"])
-        # else:
-        self.semantic = GPT(model_args["bark-text"])
-        self.fine_acoustics = FineGPT(model_args["bark-fine"])
-        self.coarse_acoustics = GPT(model_args["bark-coarse"])
+        # Convert config dictionaries to proper configuration objects if needed
+        if isinstance(config.semantic_config, dict):
+            filtered_config = filter_dataclass_fields(config.semantic_config, SemanticConfig)
+            semantic_config = SemanticConfig(**filtered_config)
+        else:
+            semantic_config = config.semantic_config
+
+        if isinstance(config.coarse_acoustics_config, dict):
+            filtered_config = filter_dataclass_fields(config.coarse_acoustics_config, CoarseAcousticsConfig)
+            coarse_config = CoarseAcousticsConfig(**filtered_config)
+        else:
+            coarse_config = config.coarse_acoustics_config
+
+        if isinstance(config.fine_acoustics_config, dict):
+            filtered_config = filter_dataclass_fields(config.fine_acoustics_config, FineAcousticsConfig)
+            fine_config = FineAcousticsConfig(**filtered_config)
+        else:
+            fine_config = config.fine_acoustics_config
+
+        self.semantic = GPT(semantic_config)
+        self.fine_acoustics = FineGPT(fine_config)
+        self.coarse_acoustics = GPT(coarse_config)
 
         self.codec_model = EncodecModel.encodec_model_24khz()
         self.codec_model.eval()
@@ -365,6 +402,7 @@ class Model(nn.Module):
 
 
     def sanitize(self, weights):
+
         sanitized_weights = {}
         for key, value in weights.items():
             # there's no _orig_mod.transformer
@@ -376,14 +414,23 @@ class Model(nn.Module):
                 for i in range(layer_count):
                     prefix = f"h.{i}."
                     key = key.replace(prefix, f"layers.{i}.")
+
             # lm_head
             if "lm_head" in key:
                 key = key.replace("_orig_mod.", "")
+
+            # Handle fine acoustics lm_heads weights
+            for i in range(7):  # 0 through 6
+                if f"{i}.weight" == key:
+                    key = f"fine_acoustics.lm_heads.{i}.weight"
+
+
 
             if "codec" in key:
                 pass
             else:
                 sanitized_weights[key] = value
+
         return sanitized_weights
 
 
@@ -403,7 +450,8 @@ class Model(nn.Module):
 
         metrics = []
 
-        for segment_idx, (audio, phonemes) in enumerate(
+
+        for segment_idx, (audio, tokens) in enumerate(
             pipeline(text, **kwargs)
         ):
             # Track per-segment generation time
@@ -413,7 +461,7 @@ class Model(nn.Module):
             assert samples > 0, "No audio generated"
 
             # Calculate token count
-            token_count = len(phonemes) if phonemes is not None else 0
+            token_count = len(tokens) if tokens is not None else 0
 
             # Calculate audio duration in seconds
             sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different

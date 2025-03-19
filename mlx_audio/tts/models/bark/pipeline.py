@@ -4,6 +4,8 @@ import tqdm
 import math
 from .isftnet import codec_decode
 from ..base import adjust_speed
+from dataclasses import dataclass
+from typing import Optional
 
 TEXT_ENCODING_OFFSET = 10_048
 SEMANTIC_PAD_TOKEN = 10_000
@@ -23,6 +25,21 @@ COARSE_SEMANTIC_PAD_TOKEN = 12_048
 COARSE_INFER_TOKEN = 12_050
 SAMPLE_RATE = 24_000
 
+@dataclass
+class Result:
+    audio: mx.array
+    tokens: mx.array
+
+    ### MARK: BEGIN BACKWARD COMPAT ###
+    def __iter__(self):
+        yield self.audio
+        yield self.tokens
+
+    def __getitem__(self, index):
+        return [self.audio, self.tokens][index]
+
+    def __len__(self):
+        return 2
 
 class Pipeline:
     def __init__(self, model: nn.Module, tokenizer: any):
@@ -64,7 +81,7 @@ class Pipeline:
                 x_input = x[:, -1:]
             else:
                 x_input = x
-            logits, kv_cache = self.model(
+            logits, kv_cache = self.model.semantic(
                 x_input, merge_context=True, use_cache=use_kv_caching, past_kv=kv_cache
             )
             relevant_logits = logits[0, 0, :SEMANTIC_VOCAB_SIZE]
@@ -83,7 +100,7 @@ class Pipeline:
             if i == n_tot_steps - 1:
                 break
         out = x.squeeze()[256 + 256 + 1 :]
-        return out
+        return out, encoded_text
 
 
     def generate_coarse(
@@ -140,7 +157,7 @@ class Pipeline:
                     continue
                 is_major_step = n_step % N_COARSE_CODEBOOKS == 0
                 x_input = x_in[:, -1:] if use_kv_caching and kv_cache is not None else x_in
-                logits, kv_cache = self.model(
+                logits, kv_cache = self.model.coarse_acoustics(
                     x_input, use_cache=use_kv_caching, past_kv=kv_cache
                 )
                 logit_start_idx = (
@@ -213,7 +230,7 @@ class Pipeline:
             rel_start_fill_idx = start_fill_idx - start_idx
             in_buffer = in_arr[start_idx : start_idx + 1024, :][None]
             for nn in range(n_coarse, N_FINE_CODEBOOKS):
-                logits = self.model(nn, in_buffer)
+                logits = self.model.fine_acoustics(nn, in_buffer)
                 if temperature is None:
                     relevant_logits = logits[0, rel_start_fill_idx:, :CODEBOOK_SIZE]
                     codebook_preds = mx.argmax(relevant_logits, -1)
@@ -238,12 +255,12 @@ class Pipeline:
         assert gen_fine_arr.shape[-1] == x_coarse_gen.shape[-1]
         return gen_fine_arr
 
-    def __call__(self, text: str, temperature: float = 0.7, silent: bool = False, speed: float = 1.0, use_kv_caching: bool = False):
-        semantic_tokens = self.generate_text_semantic(text, temperature, use_kv_caching)
+    def __call__(self, text: str, temperature: float = 0.1, silent: bool = False, speed: float = 1.0, use_kv_caching: bool = False, **kwargs):
+        semantic_tokens, tokens = self.generate_text_semantic(text, temperature, use_kv_caching)
         coarse_tokens = self.generate_coarse(semantic_tokens, temperature, silent, use_kv_caching)
-        fine_tokens = self.generate_fine(coarse_tokens, temperature)
+        fine_tokens = self.generate_fine(coarse_tokens, temperature)[None, ...]
         # TODO: adjust speed
         # audio_arr = adjust_speed(fine_tokens, speed)
-        audio_arr = codec_decode(self.model.codec_model, fine_tokens)
+        audio_arr = codec_decode(self.model.codec_model, fine_tokens)[None, ...]
 
-        return audio_arr, semantic_tokens
+        yield Result(audio=audio_arr, tokens=tokens)
