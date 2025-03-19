@@ -1,6 +1,7 @@
 import mlx.core as mx
 import mlx.nn as nn
 
+
 # Loads to torch Encodec model
 def codec_decode(codec: nn.Module, fine_tokens: mx.array):
     arr = fine_tokens.astype(mx.int32)[None]

@@ -1,6 +1,7 @@
 import functools
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional, Tuple, Union
@@ -9,12 +10,13 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from huggingface_hub import snapshot_download
-from dataclasses import dataclass
+
 
 def filter_dataclass_fields(data_dict, dataclass_type):
     """Filter a dictionary to only include keys that are fields in the dataclass."""
     valid_fields = {f.name for f in dataclass_type.__dataclass_fields__.values()}
     return {k: v for k, v in data_dict.items() if k in valid_fields}
+
 
 @dataclass
 class EncodecConfig:
@@ -42,7 +44,6 @@ class EncodecConfig:
     chunk_length_s: Optional[float] = None
     overlap: Optional[float] = None
     architectures: List[str] = None
-
 
 
 def preprocess_audio(

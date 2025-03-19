@@ -8,10 +8,10 @@ import mlx.nn as nn
 import numpy as np
 import tqdm
 
-from ..base import adjust_speed
-from .isftnet import codec_decode
 from mlx_audio.codec.models.encodec.encodec import Encodec
 
+from ..base import adjust_speed
+from .isftnet import codec_decode
 
 TEXT_ENCODING_OFFSET = 10_048
 SEMANTIC_PAD_TOKEN = 10_000
