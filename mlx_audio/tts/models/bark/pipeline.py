@@ -58,6 +58,8 @@ for _, lang in SUPPORTED_LANGS:
             ALLOWED_PROMPTS.add(f"{prefix}{lang}_speaker_{n}")
 
 
+
+
 @dataclass
 class Result:
     audio: mx.array
@@ -85,7 +87,11 @@ def _load_voice_prompt(voice_prompt_input):
             raise ValueError("voice prompt not found")
 
         path = f"{voice_prompt_input}.npz"
-        
+
+        # TODO: Get the path from the Hugging Face cache directory
+        # TODO: If not found, download the voice from Hugging Face
+        # TODO: If still not found, raise an error
+
         if not os.path.exists(path):
             raise ValueError("voice prompt not found")
         voice_prompt = np.load(path)
