@@ -730,7 +730,7 @@ class Encodec(nn.Module):
         model.load_weights(str(path / "model.safetensors"))
         processor = functools.partial(
             preprocess_audio,
-            sampling_rate=config["sampling_rate"],
+            sampling_rate=config.sampling_rate,
             chunk_length=model.chunk_length,
             chunk_stride=model.chunk_stride,
         )
