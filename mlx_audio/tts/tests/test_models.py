@@ -334,5 +334,173 @@ class TestKokoroPipeline(unittest.TestCase):
         self.assertIs(items[2], audio)
 
 
+@patch("importlib.resources.open_text", patched_open_text)
+class TestBarkModel(unittest.TestCase):
+    @patch("mlx_audio.tts.models.bark.bark.BertTokenizer")
+    @patch("mlx_audio.tts.models.bark.bark.EncodecModel")
+    def test_init(self, mock_encodec, mock_tokenizer):
+        """Test BarkModel initialization."""
+        from mlx_audio.tts.models.bark.bark import Model, ModelConfig, SemanticConfig, CoarseAcousticsConfig, FineAcousticsConfig, CodecConfig
+
+        # Create mock configs
+        semantic_config = SemanticConfig()
+        coarse_config = CoarseAcousticsConfig()
+        fine_config = FineAcousticsConfig()
+        codec_config = CodecConfig()
+
+        config = ModelConfig(
+            semantic_config=semantic_config,
+            coarse_acoustics_config=coarse_config,
+            fine_acoustics_config=fine_config,
+            codec_config=codec_config
+        )
+
+        # Initialize model
+        model = Model(config)
+
+        # Check that components were initialized correctly
+        self.assertIsNotNone(model.semantic)
+        self.assertIsNotNone(model.coarse_acoustics)
+        self.assertIsNotNone(model.fine_acoustics)
+        self.assertIsNotNone(model.codec_model)
+        self.assertIsNotNone(model.tokenizer)
+
+    def test_sanitize_weights(self):
+        """Test weight sanitization."""
+        from mlx_audio.tts.models.bark.bark import Model, ModelConfig
+
+        # Create a minimal config
+        config = ModelConfig(
+            semantic_config={},
+            coarse_acoustics_config={},
+            fine_acoustics_config={},
+            codec_config={}
+        )
+
+        model = Model(config)
+
+        # Test with transformer weights
+        weights = {
+            "_orig_mod.transformer.h.0.mlp.weight": mx.zeros((10, 10)),
+            "_orig_mod.transformer.h.1.mlp.weight": mx.zeros((10, 10)),
+            "lm_head.weight": mx.zeros((10, 10)),
+            "0.weight": mx.zeros((10, 10)),  # fine acoustics weight
+        }
+
+        sanitized = model.sanitize(weights)
+
+        # Check that weights were properly renamed
+        self.assertIn("layers.0.mlp.weight", sanitized)
+        self.assertIn("layers.1.mlp.weight", sanitized)
+        self.assertIn("lm_head.weight", sanitized)
+        self.assertIn("fine_acoustics.lm_heads.0.weight", sanitized)
+
+@patch("importlib.resources.open_text", patched_open_text)
+class TestBarkPipeline(unittest.TestCase):
+    def setUp(self):
+        """Set up test fixtures."""
+        from mlx_audio.tts.models.bark.pipeline import Pipeline
+        from mlx_audio.tts.models.bark.bark import Model, ModelConfig
+
+        # Create mock model with required attributes
+        self.mock_model = MagicMock(spec=Model)
+
+        # Add the required mock attributes/methods
+        self.mock_model.semantic = MagicMock()
+        self.mock_model.coarse_acoustics = MagicMock()
+        self.mock_model.fine_acoustics = MagicMock()
+        self.mock_model.codec_model = MagicMock()
+
+        self.mock_tokenizer = MagicMock()
+
+        # Initialize pipeline
+        self.pipeline = Pipeline(model=self.mock_model, tokenizer=self.mock_tokenizer)
+
+    def test_generate_text_semantic(self):
+        """Test semantic token generation."""
+        # Mock tokenizer output
+        self.mock_tokenizer.encode.return_value = [1, 2, 3]
+
+        # Create logits with proper shape including SEMANTIC_PAD_TOKEN
+        logits = mx.zeros((1, 1, 129596))  # Large enough to include SEMANTIC_PAD_TOKEN
+        # Mock model output
+        self.mock_model.semantic.return_value = (
+            logits,  # logits with correct shape
+            None  # kv_cache
+        )
+
+        # Test generation
+        semantic_tokens, text_tokens = self.pipeline.generate_text_semantic(
+            "test text",
+            temperature=0.7,
+            use_kv_caching=True,
+            voice=None,
+        )
+
+        # Verify tokenizer was called
+        self.mock_tokenizer.encode.assert_called_once_with("test text", add_special_tokens=False)
+
+        # Verify model was called
+        self.mock_model.semantic.assert_called()
+
+        # Check output types
+        self.assertIsInstance(semantic_tokens, mx.array)
+        self.assertIsInstance(text_tokens, mx.array)
+
+    @patch('mlx.core.random.categorical')  # Add this patch since we use mx alias
+    def test_generate_coarse(self, mock_mlx_categorical):
+        """Test coarse token generation."""
+        # Create mock semantic tokens
+        semantic_tokens = mx.array([1, 2, 3])
+
+        # Create logits with proper shape
+        logits = mx.zeros((1, 1, 12096))
+
+        # Mock both categorical functions to return predictable values
+        mock_mlx_categorical.return_value = mx.array([10000])  # Return token index
+
+        # Set up the mock to return proper values for each call
+        self.mock_model.coarse_acoustics.return_value = (logits, None)
+
+        # Test generation with minimal parameters to reduce test time
+        coarse_tokens = self.pipeline.generate_coarse(
+            semantic_tokens,
+            temperature=0.7,
+            use_kv_caching=True,
+            voice=None,
+            max_coarse_history=60,
+            sliding_window_len=2,  # Reduce this to minimum
+        )
+
+        # Verify model was called at least once
+        self.mock_model.coarse_acoustics.assert_called()
+
+        # Check output type and shape
+        self.assertIsInstance(coarse_tokens, mx.array)
+        self.assertEqual(coarse_tokens.shape[0], 2)  # N_COARSE_CODEBOOKS
+
+    def test_generate_fine(self):
+        """Test fine token generation."""
+        # Create mock coarse tokens
+        coarse_tokens = mx.zeros((2, 100))  # N_COARSE_CODEBOOKS x sequence_length
+
+        # Mock model output with proper shape
+        self.mock_model.fine_acoustics.return_value = mx.zeros((1, 1024, 1024))
+
+        # Test generation
+        fine_tokens = self.pipeline.generate_fine(
+            coarse_tokens,
+            temperature=0.7
+        )
+
+        # Verify model was called
+        self.mock_model.fine_acoustics.assert_called()
+
+        # Check output type and shape
+        self.assertIsInstance(fine_tokens, mx.array)
+        self.assertEqual(fine_tokens.shape[0], 8)  # N_FINE_CODEBOOKS (corrected from 10 to 8)
+        self.assertEqual(fine_tokens.shape[1], 100)  # sequence_length
+
+
 if __name__ == "__main__":
     unittest.main()
