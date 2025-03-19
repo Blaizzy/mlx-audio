@@ -244,11 +244,10 @@ class Model(nn.Module):
     def generate(
         self,
         text: str,
-        voice: str = "af_heart",
+        voice: str = None,
         speed: float = 1.0,
         lang_code: str = "af",
         split_pattern: str = r"\n+",
-        verbose: bool = False,
         **kwargs,
     ):
         pipeline = KokoroPipeline(
@@ -256,6 +255,9 @@ class Model(nn.Module):
             repo_id=self.REPO_ID if self.repo_id is None else self.repo_id,
             lang_code=lang_code,
         )
+
+        if voice is None:
+            voice = "af_heart"
 
         # Track overall generation time
         start_time = time.time()
