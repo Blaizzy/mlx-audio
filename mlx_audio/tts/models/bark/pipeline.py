@@ -34,7 +34,6 @@ SAMPLE_RATE = 24_000
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
 
 
-
 SUPPORTED_LANGS = [
     ("English", "en"),
     ("German", "de"),
@@ -56,8 +55,6 @@ for _, lang in SUPPORTED_LANGS:
     for prefix in ("", f"v2{os.path.sep}"):
         for n in range(10):
             ALLOWED_PROMPTS.add(f"{prefix}{lang}_speaker_{n}")
-
-
 
 
 @dataclass

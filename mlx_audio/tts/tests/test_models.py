@@ -403,7 +403,14 @@ class TestBarkModel(unittest.TestCase):
 class TestBarkPipeline(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
-        from mlx_audio.tts.models.bark.bark import Model, ModelConfig, SemanticConfig, CoarseAcousticsConfig, FineAcousticsConfig, CodecConfig
+        from mlx_audio.tts.models.bark.bark import (
+            CoarseAcousticsConfig,
+            CodecConfig,
+            FineAcousticsConfig,
+            Model,
+            ModelConfig,
+            SemanticConfig,
+        )
         from mlx_audio.tts.models.bark.pipeline import Pipeline
 
         # Create mock model with required attributes
@@ -418,12 +425,16 @@ class TestBarkPipeline(unittest.TestCase):
         self.mock_tokenizer = MagicMock()
 
         # Initialize pipeline
-        self.pipeline = Pipeline(model=self.mock_model, tokenizer=self.mock_tokenizer, config=ModelConfig(
-            semantic_config=SemanticConfig(),
-            coarse_acoustics_config=CoarseAcousticsConfig(),
-            fine_acoustics_config=FineAcousticsConfig(),
-            codec_config=CodecConfig(),
-        ))
+        self.pipeline = Pipeline(
+            model=self.mock_model,
+            tokenizer=self.mock_tokenizer,
+            config=ModelConfig(
+                semantic_config=SemanticConfig(),
+                coarse_acoustics_config=CoarseAcousticsConfig(),
+                fine_acoustics_config=FineAcousticsConfig(),
+                codec_config=CodecConfig(),
+            ),
+        )
 
     def test_generate_text_semantic(self):
         """Test semantic token generation."""
