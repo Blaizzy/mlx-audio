@@ -1,13 +1,15 @@
-import mlx.nn as nn
-import mlx.core as mx
-import numpy as np
-import os
-import tqdm
 import math
-from .isftnet import codec_decode
-from ..base import adjust_speed
+import os
 from dataclasses import dataclass
 from typing import Optional
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+import tqdm
+
+from ..base import adjust_speed
+from .isftnet import codec_decode
 
 TEXT_ENCODING_OFFSET = 10_048
 SEMANTIC_PAD_TOKEN = 10_000
@@ -29,7 +31,9 @@ SAMPLE_RATE = 24_000
 
 CUR_PATH = os.path.dirname(os.path.abspath(__file__))
 default_cache_dir = os.path.join(os.path.expanduser("~"), ".cache")
-CACHE_DIR = os.path.join(os.getenv("XDG_CACHE_HOME", default_cache_dir), "suno", "bark_v0")
+CACHE_DIR = os.path.join(
+    os.getenv("XDG_CACHE_HOME", default_cache_dir), "suno", "bark_v0"
+)
 
 
 SUPPORTED_LANGS = [
@@ -55,8 +59,6 @@ for _, lang in SUPPORTED_LANGS:
             ALLOWED_PROMPTS.add(f"{prefix}{lang}_speaker_{n}")
 
 
-
-
 @dataclass
 class Result:
     audio: mx.array
@@ -73,6 +75,7 @@ class Result:
     def __len__(self):
         return 2
 
+
 def _load_voice_prompt(voice_prompt_input):
     if isinstance(voice_prompt_input, str) and voice_prompt_input.endswith(".npz"):
         voice_prompt = np.load(voice_prompt_input)
@@ -82,18 +85,22 @@ def _load_voice_prompt(voice_prompt_input):
         if voice_prompt_input not in ALLOWED_PROMPTS:
             raise ValueError("voice prompt not found")
 
-        path = os.path.join("/Users/prince_canuma/bark-small/speaker_embeddings", f"{voice_prompt_input}.npz")
+        path = os.path.join(
+            "/Users/prince_canuma/bark-small/speaker_embeddings",
+            f"{voice_prompt_input}.npz",
+        )
         if not os.path.exists(path):
             raise ValueError("voice prompt not found")
         voice_prompt = np.load(path)
     elif isinstance(voice_prompt_input, dict):
-        assert("semantic_prompt" in voice_prompt_input)
-        assert("coarse_prompt" in voice_prompt_input)
-        assert("fine_prompt" in voice_prompt_input)
+        assert "semantic_prompt" in voice_prompt_input
+        assert "coarse_prompt" in voice_prompt_input
+        assert "fine_prompt" in voice_prompt_input
         voice_prompt = voice_prompt_input
     else:
         raise ValueError("voice prompt format unrecognized")
     return voice_prompt
+
 
 def _flatten_codebooks(arr, offset_size=CODEBOOK_SIZE):
     assert len(arr.shape) == 2
@@ -183,7 +190,8 @@ class Pipeline:
             if allow_early_stop:
                 # Early stop
                 relevant_logits = mx.concatenate(
-                    [relevant_logits, logits[0, 0, SEMANTIC_PAD_TOKEN].reshape(1)], axis=-1
+                    [relevant_logits, logits[0, 0, SEMANTIC_PAD_TOKEN].reshape(1)],
+                    axis=-1,
                 )
             next_token = mx.random.categorical(
                 relevant_logits * 1 / (temperature), num_samples=1
@@ -197,7 +205,6 @@ class Pipeline:
                 break
         out = x.squeeze()[256 + 256 + 1 :]
         return out, encoded_text
-
 
     def generate_coarse(
         self,
@@ -213,7 +220,9 @@ class Pipeline:
         verbose = kwargs.get("verbose", False)
         if verbose:
             print("Generating coarse tokens...")
-        semantic_to_coarse_ratio = COARSE_RATE_HZ / SEMANTIC_RATE_HZ * N_COARSE_CODEBOOKS
+        semantic_to_coarse_ratio = (
+            COARSE_RATE_HZ / SEMANTIC_RATE_HZ * N_COARSE_CODEBOOKS
+        )
         max_semantic_history = int(
             math.floor(max_coarse_history / semantic_to_coarse_ratio)
         )
@@ -238,16 +247,24 @@ class Pipeline:
                     == round(semantic_to_coarse_ratio / N_COARSE_CODEBOOKS, 1)
                 )
             )
-            x_coarse_history = _flatten_codebooks(x_coarse_history) + SEMANTIC_VOCAB_SIZE
+            x_coarse_history = (
+                _flatten_codebooks(x_coarse_history) + SEMANTIC_VOCAB_SIZE
+            )
             # trim histories correctly
             n_semantic_hist_provided = min(
                 max_semantic_history,
                 len(x_semantic_history) - len(x_semantic_history) % 2,
-                int(math.floor(len(x_coarse_history) / semantic_to_coarse_ratio))
+                int(math.floor(len(x_coarse_history) / semantic_to_coarse_ratio)),
             )
-            n_coarse_hist_provided = int(round(n_semantic_hist_provided * semantic_to_coarse_ratio))
-            x_semantic_history = x_semantic_history[-n_semantic_hist_provided:].astype(mx.int32)
-            x_coarse_history = x_coarse_history[-n_coarse_hist_provided:].astype(mx.int32)
+            n_coarse_hist_provided = int(
+                round(n_semantic_hist_provided * semantic_to_coarse_ratio)
+            )
+            x_semantic_history = x_semantic_history[-n_semantic_hist_provided:].astype(
+                mx.int32
+            )
+            x_coarse_history = x_coarse_history[-n_coarse_hist_provided:].astype(
+                mx.int32
+            )
             # TODO: bit of a hack for time alignment (sounds better)
             x_coarse_history = x_coarse_history[:-2]
         else:
@@ -256,7 +273,9 @@ class Pipeline:
 
         n_steps = int(
             round(
-                math.floor(len(x_semantic) * semantic_to_coarse_ratio / N_COARSE_CODEBOOKS)
+                math.floor(
+                    len(x_semantic) * semantic_to_coarse_ratio / N_COARSE_CODEBOOKS
+                )
                 * N_COARSE_CODEBOOKS
             )
         )
@@ -268,8 +287,12 @@ class Pipeline:
         x_coarse_in = x_coarse.reshape(1, -1)
         n_window_steps = int(round(n_steps / sliding_window_len))
         n_step = 0
-        for _ in tqdm.tqdm(range(n_window_steps), total=n_window_steps, disable=not verbose):
-            semantic_idx = base_semantic_idx + int(round(n_step / semantic_to_coarse_ratio))
+        for _ in tqdm.tqdm(
+            range(n_window_steps), total=n_window_steps, disable=not verbose
+        ):
+            semantic_idx = base_semantic_idx + int(
+                round(n_step / semantic_to_coarse_ratio)
+            )
             x_in = x_semantic_in[:, max(0, semantic_idx - max_semantic_history) :]
             x_in = x_in[:, :256]
             x_in = mx.pad(
@@ -290,7 +313,9 @@ class Pipeline:
                 if n_step >= n_steps:
                     continue
                 is_major_step = n_step % N_COARSE_CODEBOOKS == 0
-                x_input = x_in[:, -1:] if use_kv_caching and kv_cache is not None else x_in
+                x_input = (
+                    x_in[:, -1:] if use_kv_caching and kv_cache is not None else x_in
+                )
                 logits, kv_cache = self.model.coarse_acoustics(
                     x_input, use_cache=use_kv_caching, past_kv=kv_cache
                 )
@@ -307,7 +332,9 @@ class Pipeline:
                 ).astype(mx.int32)
 
                 item_next += logit_start_idx
-                x_coarse_in = mx.concatenate([x_coarse_in, item_next.reshape(1, 1)], axis=1)
+                x_coarse_in = mx.concatenate(
+                    [x_coarse_in, item_next.reshape(1, 1)], axis=1
+                )
                 x_in = mx.concatenate([x_in, item_next.reshape(1, 1)], axis=1)
                 n_step += 1
 
@@ -319,7 +346,6 @@ class Pipeline:
             gen_coarse_audio_arr[n, :] -= n * CODEBOOK_SIZE
 
         return gen_coarse_audio_arr
-
 
     def generate_fine(
         self,
@@ -355,7 +381,8 @@ class Pipeline:
             )
         # Inference
         n_loops = (
-            max(0, int(math.ceil((x_coarse_gen.shape[1] - (1024 - n_history)) / 512))) + 1
+            max(0, int(math.ceil((x_coarse_gen.shape[1] - (1024 - n_history)) / 512)))
+            + 1
         )
         in_arr = in_arr.T
         for n in tqdm.tqdm(range(n_loops), disable=not verbose):
@@ -391,9 +418,21 @@ class Pipeline:
         assert gen_fine_arr.shape[-1] == x_coarse_gen.shape[-1]
         return gen_fine_arr
 
-    def __call__(self, text: str, voice: str = None, temperature: float = 0.7, speed: float = 1.0, use_kv_caching: bool = False, **kwargs):
-        semantic_tokens, tokens = self.generate_text_semantic(text, voice, temperature, use_kv_caching, **kwargs)
-        coarse_tokens = self.generate_coarse(semantic_tokens, voice, temperature, use_kv_caching, **kwargs)
+    def __call__(
+        self,
+        text: str,
+        voice: str = None,
+        temperature: float = 0.7,
+        speed: float = 1.0,
+        use_kv_caching: bool = False,
+        **kwargs,
+    ):
+        semantic_tokens, tokens = self.generate_text_semantic(
+            text, voice, temperature, use_kv_caching, **kwargs
+        )
+        coarse_tokens = self.generate_coarse(
+            semantic_tokens, voice, temperature, use_kv_caching, **kwargs
+        )
         fine_tokens = self.generate_fine(coarse_tokens, temperature, **kwargs)
         # TODO: adjust speed
         # audio_arr = adjust_speed(fine_tokens, speed)

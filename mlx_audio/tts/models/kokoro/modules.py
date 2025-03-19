@@ -414,6 +414,7 @@ class DurationEncoder(nn.Module):
 # https://github.com/yl4579/StyleTTS2/blob/main/Utils/PLBERT/util.py
 # TODO: Implement this in MLX
 
+
 @dataclass
 class AlbertModelArgs(BaseModelArgs):
     num_hidden_layers: int

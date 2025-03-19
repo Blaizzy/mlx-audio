@@ -114,11 +114,12 @@ class ConvWeighted(nn.Module):
         self.groups = groups
 
         # Initialize weight magnitude (g) and direction (v) vectors
-        self.weight_g = mx.ones((out_channels, 1, 1))  # Scalar magnitude per output channel
+        self.weight_g = mx.ones(
+            (out_channels, 1, 1)
+        )  # Scalar magnitude per output channel
         self.weight_v = mx.ones(
             (out_channels, kernel_size, in_channels)
         )  # Direction vectors
-
 
         self.bias = mx.zeros(in_channels if encode else out_channels) if bias else None
 

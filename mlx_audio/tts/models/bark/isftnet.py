@@ -1,8 +1,9 @@
-from encodec import EncodecModel
+import warnings
+
 import mlx.core as mx
 import torch
 import torch.nn as nn
-import warnings
+from encodec import EncodecModel
 
 warnings.filterwarnings
 

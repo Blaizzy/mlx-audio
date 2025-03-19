@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import mlx.core as mx
 import numpy as np
 
+
 @dataclass
 class BaseModelArgs:
     @classmethod
@@ -32,6 +33,7 @@ def check_array_shape(arr):
     else:
         return False
 
+
 def adjust_speed(audio_array, speed_factor):
     """
     Adjust the speed of the audio by resampling
@@ -48,7 +50,7 @@ def adjust_speed(audio_array, speed_factor):
 
     # Create new time points
     old_indices = mx.arange(old_length)
-    new_indices = mx.linspace(0, old_length-1, new_length)
+    new_indices = mx.linspace(0, old_length - 1, new_length)
 
     # Resample using linear interpolation
     # Since mx doesn't have interp, we'll implement it directly
@@ -58,8 +60,10 @@ def adjust_speed(audio_array, speed_factor):
     weights_floor = 1.0 - weights_ceil
 
     # Perform the interpolation
-    result = (weights_floor.reshape(-1, 1) * audio_array[indices_floor] +
-              weights_ceil.reshape(-1, 1) * audio_array[indices_ceil])
+    result = (
+        weights_floor.reshape(-1, 1) * audio_array[indices_floor]
+        + weights_ceil.reshape(-1, 1) * audio_array[indices_ceil]
+    )
 
     return result
 
