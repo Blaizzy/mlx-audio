@@ -452,7 +452,7 @@ class Model(nn.Module):
 
 
         for segment_idx, (audio, tokens) in enumerate(
-            pipeline(text, **kwargs)
+            pipeline(text, use_kv_caching=True, silent=True, **kwargs)
         ):
             # Track per-segment generation time
             segment_time = time.time() - start_time

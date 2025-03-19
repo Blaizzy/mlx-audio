@@ -2,7 +2,6 @@ from encodec import EncodecModel
 import mlx.core as mx
 import torch
 import torch.nn as nn
-import numpy as np
 import warnings
 
 warnings.filterwarnings
@@ -18,11 +17,11 @@ def _load_codec_model(device):
 
 # Loads to torch Encodec model
 def codec_decode(codec: nn.Module, fine_tokens: mx.array):
-    arr = torch.from_dlpack(fine_tokens.astype(mx.int32))
+    arr = torch.from_numpy(mx.array(fine_tokens, dtype=mx.int32))[None]
     arr = arr.to("cpu")
     arr = arr.transpose(0, 1)
     emb = codec.quantizer.decode(arr)
     out = codec.decoder(emb)
-    audio_arr = out.detach().cpu().numpy().squeeze()
+    audio_arr = out.detach().cpu().numpy().squeeze(1)
     del arr, emb, out
     return audio_arr

@@ -255,12 +255,12 @@ class Pipeline:
         assert gen_fine_arr.shape[-1] == x_coarse_gen.shape[-1]
         return gen_fine_arr
 
-    def __call__(self, text: str, temperature: float = 0.1, silent: bool = False, speed: float = 1.0, use_kv_caching: bool = False, **kwargs):
+    def __call__(self, text: str, temperature: float = 0.7, silent: bool = False, speed: float = 1.0, use_kv_caching: bool = False, **kwargs):
         semantic_tokens, tokens = self.generate_text_semantic(text, temperature, use_kv_caching)
         coarse_tokens = self.generate_coarse(semantic_tokens, temperature, silent, use_kv_caching)
-        fine_tokens = self.generate_fine(coarse_tokens, temperature)[None, ...]
+        fine_tokens = self.generate_fine(coarse_tokens, temperature)
         # TODO: adjust speed
         # audio_arr = adjust_speed(fine_tokens, speed)
-        audio_arr = codec_decode(self.model.codec_model, fine_tokens)[None, ...]
+        audio_arr = codec_decode(self.model.codec_model, fine_tokens)
 
         yield Result(audio=audio_arr, tokens=tokens)
