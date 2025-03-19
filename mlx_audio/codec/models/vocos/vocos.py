@@ -1,17 +1,16 @@
 from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, List, Optional
 from types import SimpleNamespace
+from typing import Any, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-
-from huggingface_hub import snapshot_download
 import yaml
+from huggingface_hub import snapshot_download
 
 from ..encodec import Encodec
-
-from .mel import log_mel_spectrogram, istft, hanning
+from .mel import hanning, istft, log_mel_spectrogram
 
 
 class FeatureExtractor(nn.Module):
@@ -41,7 +40,12 @@ class MelSpectrogramFeatures(FeatureExtractor):
 
     def __call__(self, audio: mx.array, **kwargs):
         return log_mel_spectrogram(
-            audio, sample_rate=self.sample_rate, n_mels=self.n_mels, n_fft=self.n_fft, hop_length=self.hop_length, padding=0
+            audio,
+            sample_rate=self.sample_rate,
+            n_mels=self.n_mels,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length,
+            padding=0,
         )
 
 
@@ -55,21 +59,33 @@ class EncodecFeatures(FeatureExtractor):
         super().__init__()
 
         if encodec_model == "encodec_24khz":
-            encodec, preprocessor = Encodec.from_pretrained("mlx-community/encodec-24khz-float32")
+            encodec, preprocessor = Encodec.from_pretrained(
+                "mlx-community/encodec-24khz-float32"
+            )
         elif encodec_model == "encodec_48khz":
-            encodec, preprocessor = Encodec.from_pretrained("mlx-community/encodec-48khz-float32")
+            encodec, preprocessor = Encodec.from_pretrained(
+                "mlx-community/encodec-48khz-float32"
+            )
         else:
-            raise ValueError(f"Unsupported encodec_model: {encodec_model}. Supported options are 'encodec_24khz' and 'encodec_48khz'.")
+            raise ValueError(
+                f"Unsupported encodec_model: {encodec_model}. Supported options are 'encodec_24khz' and 'encodec_48khz'."
+            )
 
         self.encodec = encodec
         self.preprocessor = preprocessor
-        self.num_q = self.encodec.quantizer.get_num_quantizers_for_bandwidth(bandwidth=max(bandwidths))
-        self.codebook_weights = mx.concatenate([vq.codebook.embed for vq in self.encodec.quantizer.layers[: self.num_q]])
+        self.num_q = self.encodec.quantizer.get_num_quantizers_for_bandwidth(
+            bandwidth=max(bandwidths)
+        )
+        self.codebook_weights = mx.concatenate(
+            [vq.codebook.embed for vq in self.encodec.quantizer.layers[: self.num_q]]
+        )
         self.bandwidths = bandwidths
 
     def get_encodec_codes(self, audio: mx.array, bandwidth_id: int) -> mx.array:
         features, mask = self.preprocessor(audio)
-        codes, _ = self.encodec.encode(features, mask, bandwidth=self.bandwidths[bandwidth_id])
+        codes, _ = self.encodec.encode(
+            features, mask, bandwidth=self.bandwidths[bandwidth_id]
+        )
         return mx.reshape(codes, (codes.shape[-2], 1, codes.shape[-1]))
 
     def get_features_from_codes(self, codes: mx.array) -> mx.array:
@@ -141,7 +157,9 @@ class ConvNeXtBlock(nn.Module):
         self.pwconv2 = nn.Linear(intermediate_dim, dim)
         self.gamma = layer_scale_init_value * mx.ones(dim)
 
-    def __call__(self, x: mx.array, cond_embedding_id: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self, x: mx.array, cond_embedding_id: Optional[mx.array] = None
+    ) -> mx.array:
         residual = x
         x = self.dwconv(x)
         if self.adanorm:

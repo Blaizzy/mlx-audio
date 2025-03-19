@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from functools import lru_cache
 import math
+from functools import lru_cache
 from typing import Optional
 
 import mlx.core as mx
@@ -68,7 +68,9 @@ def mel_filters(
 
     down_slopes = (-slopes[:, :-2]) / f_diff[:-1]
     up_slopes = slopes[:, 2:] / f_diff[1:]
-    filterbank = mx.maximum(mx.zeros_like(down_slopes), mx.minimum(down_slopes, up_slopes))
+    filterbank = mx.maximum(
+        mx.zeros_like(down_slopes), mx.minimum(down_slopes, up_slopes)
+    )
 
     if norm == "slaney":
         enorm = 2.0 / (f_pts[2 : n_mels + 2] - f_pts[:n_mels])
@@ -80,7 +82,9 @@ def mel_filters(
 
 @lru_cache(maxsize=None)
 def hanning(size):
-    return mx.array([0.5 * (1 - math.cos(2 * math.pi * n / (size - 1))) for n in range(size)])
+    return mx.array(
+        [0.5 * (1 - math.cos(2 * math.pi * n / (size - 1))) for n in range(size)]
+    )
 
 
 def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="constant"):
