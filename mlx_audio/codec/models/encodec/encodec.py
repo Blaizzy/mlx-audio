@@ -9,6 +9,40 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from huggingface_hub import snapshot_download
+from dataclasses import dataclass
+
+def filter_dataclass_fields(data_dict, dataclass_type):
+    """Filter a dictionary to only include keys that are fields in the dataclass."""
+    valid_fields = {f.name for f in dataclass_type.__dataclass_fields__.values()}
+    return {k: v for k, v in data_dict.items() if k in valid_fields}
+
+@dataclass
+class EncodecConfig:
+    model_type: str = "encodec"
+    audio_channels: int = 1
+    num_filters: int = 32
+    kernel_size: int = 7
+    num_residual_layers: int = 1
+    dilation_growth_rate: int = 2
+    codebook_size: int = 1024
+    codebook_dim: int = 128
+    hidden_size: int = 128
+    num_lstm_layers: int = 2
+    residual_kernel_size: int = 3
+    use_causal_conv: bool = True
+    normalize: bool = False
+    pad_mode: str = "reflect"
+    norm_type: str = "weight_norm"
+    last_kernel_size: int = 7
+    trim_right_ratio: float = 1.0
+    compress: int = 2
+    upsampling_ratios: List[int] = None
+    target_bandwidths: List[float] = None
+    sampling_rate: int = 24000
+    chunk_length_s: Optional[float] = None
+    overlap: Optional[float] = None
+    architectures: List[str] = None
+
 
 
 def preprocess_audio(
@@ -513,7 +547,7 @@ class EncodecResidualVectorQuantizer(nn.Module):
 class Encodec(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.config = SimpleNamespace(**config)
+        self.config = config
         self.encoder = EncodecEncoder(self.config)
         self.decoder = EncodecDecoder(self.config)
         self.quantizer = EncodecResidualVectorQuantizer(self.config)
@@ -689,6 +723,8 @@ class Encodec(nn.Module):
         with open(path / "config.json", "r") as f:
             config = json.load(f)
 
+        filtered_config = filter_dataclass_fields(config, EncodecConfig)
+        config = EncodecConfig(**filtered_config)
         model = cls(config)
         model.load_weights(str(path / "model.safetensors"))
         processor = functools.partial(

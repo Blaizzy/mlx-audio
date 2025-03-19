@@ -10,6 +10,8 @@ import tqdm
 
 from ..base import adjust_speed
 from .isftnet import codec_decode
+from mlx_audio.codec.models.encodec.encodec import Encodec
+
 
 TEXT_ENCODING_OFFSET = 10_048
 SEMANTIC_PAD_TOKEN = 10_000
@@ -114,9 +116,10 @@ def _flatten_codebooks(arr, offset_size=CODEBOOK_SIZE):
 
 
 class Pipeline:
-    def __init__(self, model: nn.Module, tokenizer: any):
+    def __init__(self, model: nn.Module, tokenizer: any, config: any):
         self.model = model
         self.tokenizer = tokenizer
+        self.codec_model, _ = Encodec.from_pretrained(config.codec_path)
 
     def generate_text_semantic(
         self,
@@ -436,6 +439,6 @@ class Pipeline:
         fine_tokens = self.generate_fine(coarse_tokens, temperature, **kwargs)
         # TODO: adjust speed
         # audio_arr = adjust_speed(fine_tokens, speed)
-        audio_arr = codec_decode(self.model.codec_model, fine_tokens)
+        audio_arr = codec_decode(self.codec_model, fine_tokens)
 
         yield Result(audio=audio_arr, tokens=tokens)

@@ -10,7 +10,6 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 import tqdm
-from encodec import EncodecModel
 from mlx.utils import tree_map, tree_unflatten
 from mlx_lm.models.base import create_causal_mask
 from scipy.io.wavfile import write as write_wav
@@ -115,6 +114,7 @@ class ModelConfig(BaseModelArgs):
     model_size: str = "base"
     model_type: str = "bark"
     initializer_range: float = 0.02
+    codec_path: str = "mlx-community/encodec-24khz-float32"
 
 
 class LayerNorm(nn.Module):
@@ -423,11 +423,6 @@ class Model(nn.Module):
         self.fine_acoustics = FineGPT(fine_config)
         self.coarse_acoustics = GPT(coarse_config)
 
-        self.codec_model = EncodecModel.encodec_model_24khz()
-        self.codec_model.eval()
-        self.codec_model.to("cpu")
-        self.codec_model.set_target_bandwidth(6.0)
-
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-multilingual-cased")
 
     def sanitize(self, weights):
@@ -460,6 +455,7 @@ class Model(nn.Module):
         pipeline = Pipeline(
             model=self,
             tokenizer=self.tokenizer,
+            config=self.config,
         )
 
         # Track overall generation time
