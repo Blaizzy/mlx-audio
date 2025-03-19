@@ -168,8 +168,7 @@ class CausalSelfAttention(nn.Module):
         else:
             present = None
 
-        mask = create_causal_mask(key.shape[2])[None, None, FULL_T - T : FULL_T, :FULL_T]
-        y = mx.fast.scaled_dot_product_attention(query, key, value, scale=1.0 / math.sqrt(key.shape[3]), mask=mask)
+        y = mx.fast.scaled_dot_product_attention(query, key, value, scale=1.0 / math.sqrt(key.shape[3]), mask=self.bias[:, :, FULL_T - T : FULL_T, :FULL_T])
         y = self.attn_dropout(y)
         y = y.transpose(0, 2, 1, 3).reshape(B, T, C)
         y = self.resid_dropout(self.out_proj(y))
@@ -437,7 +436,7 @@ class Model(nn.Module):
     def generate(
         self,
         text: str,
-        verbose: bool = False,
+        voice: str = None,
         **kwargs
     ):
         pipeline = Pipeline(
@@ -448,11 +447,9 @@ class Model(nn.Module):
         # Track overall generation time
         start_time = time.time()
 
-        metrics = []
-
 
         for segment_idx, (audio, tokens) in enumerate(
-            pipeline(text, use_kv_caching=True, silent=True, **kwargs)
+            pipeline(text, voice=voice, use_kv_caching=True, **kwargs)
         ):
             # Track per-segment generation time
             segment_time = time.time() - start_time
