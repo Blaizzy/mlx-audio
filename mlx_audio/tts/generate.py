@@ -8,26 +8,26 @@ import soundfile as sf
 
 from .audio_player import AudioPlayer
 from .utils import load_model
-import torchaudio
+from scipy.signal import resample
 
 
 def load_audio(
     audio_path: str,
     sample_rate: int=24000
     ) -> mx.array:
-    audio_tensor, orig_sample_rate = torchaudio.load(audio_path)
-    shape = audio_tensor.shape
+    samples, orig_sample_rate = sf.read(audio_path)
+    shape = samples.shape
     # Collapse multi channel as mono
     if len(shape)>1:
-        audio_tensor = audio_tensor.sum(dim=0)
+        samples = samples.sum(axis=1)
         # Divide summed samples by channel count.
-        audio_tensor = audio_tensor/shape[0]
+        samples = samples/shape[1]
     if sample_rate != orig_sample_rate:
         print(f"Resampling from {orig_sample_rate} to {sample_rate}")
-        audio_tensor = torchaudio.functional.resample(
-            audio_tensor, orig_freq=orig_sample_rate, new_freq=sample_rate
-        )
-    audio = mx.array(audio_tensor, dtype=mx.float32)
+        duration = samples.shape[0] / orig_sample_rate
+        num_samples = int(duration * sample_rate)
+        samples = resample(samples, num_samples)
+    audio = mx.array(samples, dtype=mx.float32)
     return audio
 
 
