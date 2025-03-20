@@ -54,7 +54,7 @@ generate_audio(
     speed=1.2,
     lang_code="a", # Kokoro: (a)f_heart, or comment out for auto
     file_prefix="audiobook_chapter1",
-    audio_format="mp3",
+    audio_format="wav",
     sample_rate=24000,
     join_audio=True,
     verbose=True  # Set to False to disable print messages
