@@ -139,7 +139,10 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         weights.update(mx.load(wf))
 
     model_class, model_type = get_model_and_args(model_type=model_type)
-    model_config = model_class.ModelConfig.from_dict(config)
+
+    # Get model config from model class if it exists, otherwise use the config
+    model_config = model_class.ModelConfig.from_dict(config) if hasattr(model_class, "ModelConfig") else config
+
     model = model_class.Model(model_config)
     quantization = config.get("quantization", None)
     if quantization is None:
