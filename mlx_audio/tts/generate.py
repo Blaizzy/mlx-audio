@@ -24,7 +24,8 @@ def generate_audio(
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
-    from_cli: bool = False,
+    temperature: float = 0.7,
+    **kwargs,
 ) -> None:
     """
     Generates audio from text using a specified TTS model.
@@ -85,6 +86,7 @@ def generate_audio(
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
+            temperature=temperature,
             verbose=True,
         )
 
@@ -154,7 +156,7 @@ def parse_args():
         default=None,
         help="Text to generate (leave blank to input via stdin)",
     )
-    parser.add_argument("--voice", type=str, default="af_heart", help="Voice name")
+    parser.add_argument("--voice", type=str, default=None, help="Voice name")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument("--lang_code", type=str, default="a", help="Language code")
     parser.add_argument(
@@ -176,6 +178,9 @@ def parse_args():
     )
     parser.add_argument(
         "--ref_text", type=str, default=None, help="Caption for reference audio"
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0.7, help="Temperature for the model"
     )
 
     args = parser.parse_args()
