@@ -17,3 +17,4 @@ soundfile>=0.13.1
 fastapi>=0.95.0
 uvicorn>=0.22.0
 encodec>=0.1.1
+mlx_whisper

@@ -8,6 +8,27 @@ import soundfile as sf
 
 from .audio_player import AudioPlayer
 from .utils import load_model
+import torchaudio
+
+
+def load_audio(
+    audio_path: str,
+    sample_rate: int=24000
+    ) -> mx.array:
+    audio_tensor, orig_sample_rate = torchaudio.load(audio_path)
+    shape = audio_tensor.shape
+    # Collapse multi channel as mono
+    if len(shape)>1:
+        audio_tensor = audio_tensor.sum(dim=0)
+        # Divide summed samples by channel count.
+        audio_tensor = audio_tensor/shape[0]
+    if sample_rate != orig_sample_rate:
+        print(f"Resampling from {orig_sample_rate} to {sample_rate}")
+        audio_tensor = torchaudio.functional.resample(
+            audio_tensor, orig_freq=orig_sample_rate, new_freq=sample_rate
+        )
+    audio = mx.array(audio_tensor, dtype=mx.float32)
+    return audio
 
 
 def generate_audio(
@@ -54,17 +75,13 @@ def generate_audio(
         if ref_audio:
             if not os.path.exists(ref_audio):
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
+            ref_audio = load_audio(ref_audio)
             if not ref_text:
-                raise ValueError(
-                    "Reference text is required when using reference audio."
-                )
-
-            ref_audio, ref_sr = sf.read(ref_audio)
-            if ref_sr != 24000:
-                raise ValueError(
-                    f"Reference audio sample rate must be 24000 Hz, but got {ref_sr} Hz."
-                )
-            ref_audio = mx.array(ref_audio, dtype=mx.float32)
+                print("Ref_text not found. Transcribing ref_audio...")
+                # mlx_whisper seems takes long time to import. Import only necessary.
+                import mlx_whisper
+                ref_text = mlx_whisper.transcribe(ref_audio, path_or_hf_repo="mlx-community/whisper-large-v3-turbo")["text"]
+                print("Ref_text", ref_text)
 
         # Load AudioPlayer
         player = AudioPlayer() if play else None
