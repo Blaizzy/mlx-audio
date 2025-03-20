@@ -1,13 +1,13 @@
-
-
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 import torch
+from snac import SNAC
 from transformers import AutoTokenizer
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models import cache as cache_utils
@@ -41,6 +41,8 @@ class ModelConfig(BaseModelArgs):
             self.num_key_value_heads = self.num_attention_heads
 
 
+snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
+snac_model = snac_model.to("cpu")
 def redistribute_codes(code_list):
     layer_1 = []
     layer_2 = []
@@ -57,6 +59,8 @@ def redistribute_codes(code_list):
     codes = [torch.tensor(layer_1).unsqueeze(0),
             torch.tensor(layer_2).unsqueeze(0),
             torch.tensor(layer_3).unsqueeze(0)]
+
+    print(codes)
     audio_hat = snac_model.decode(codes)
     return audio_hat
 
@@ -235,7 +239,7 @@ class Model(nn.Module):
         return self.model.layers
 
 
-    def generate(self, text, voice: str, temperature: float = 1.0, split_pattern: str = "\n", max_new_tokens: int = 200, verbose: bool = False, **kwargs):
+    def generate(self, text, voice: str, temperature: float = 1.0, split_pattern: str = "\n", max_new_tokens: int = 50, verbose: bool = False, **kwargs):
         prompt_cache = cache_utils.make_prompt_cache(
             self.model
         )
@@ -262,7 +266,10 @@ class Model(nn.Module):
         for modified_input_ids in all_modified_input_ids:
             padding = max_length - modified_input_ids.shape[1]
             padded_tensor = mx.concatenate([mx.full((1, padding), 128263, dtype=mx.int64), modified_input_ids], axis=1)
+            # Create causal mask that also accounts for padding
             attention_mask = mx.concatenate([mx.zeros((1, padding), dtype=mx.int64), mx.ones((1, modified_input_ids.shape[1]), dtype=mx.int64)], axis=1)
+            # Convert to float and unsqueeze for broadcasting
+            attention_mask = attention_mask[:, None, None, :]  # Shape: (batch_size, 1, 1, seq_len)
             all_padded_tensors.append(padded_tensor)
             all_attention_masks.append(attention_mask)
 
@@ -278,8 +285,11 @@ class Model(nn.Module):
         mx.async_eval(next_token)
         input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
 
+        # Let create_attention_mask handle the mask creation
+        attention_mask = None
+
         for _ in tqdm(range(max_new_tokens), disable=not verbose):
-            output = self.model(input_ids, cache=prompt_cache)
+            output = self.model(input_ids, attention_mask, cache=prompt_cache)
             logits = output[:, -1, :]
 
             # Apply temperature scaling
@@ -288,20 +298,31 @@ class Model(nn.Module):
 
             next_token = mx.argmax(logits, axis=-1)
             mx.async_eval(next_token)
-            if next_token == self.tokenizer.eos_token_id:
+            if next_token == 128258:
                 break
 
             input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
+            # Let the model's create_attention_mask handle mask creation
+            attention_mask = None
+
+        print(input_ids.tolist())
 
         token_to_find = 128257
         token_to_remove = 128258
 
         generated_ids = input_ids[:, all_padded_tensors.shape[1]:]
 
-        token_indices = (generated_ids == token_to_find).nonzero(as_tuple=True)
+        # MLX doesn't have nonzero function or a direct equivalent to torch.where(condition)
+        # We need to manually find indices where token appears
+        token_indices = np.nonzero(generated_ids == token_to_find)
+        print(token_indices)
+        token_indices = mx.array(token_indices)
+
+
+
 
         if len(token_indices[1]) > 0:
-            last_occurrence_idx = token_indices[1][-1].item()
+            last_occurrence_idx = token_indices[1][-1]
             cropped_tensor = generated_ids[:, last_occurrence_idx+1:]
         else:
             cropped_tensor = generated_ids
@@ -311,13 +332,15 @@ class Model(nn.Module):
         processed_rows = []
 
         for row in cropped_tensor:
-            masked_row = row[row != token_to_remove]
+            # Create a mask and filter manually since boolean indexing isn't supported
+            row_list = row.tolist()
+            masked_row = mx.array([val for val in row_list if val != token_to_remove])
             processed_rows.append(masked_row)
 
         code_lists = []
 
         for row in processed_rows:
-            row_length = row.size(0)
+            row_length = row.shape[0]
             new_length = (row_length // 7) * 7
             trimmed_row = row[:new_length]
             trimmed_row = [t - 128266 for t in trimmed_row]
@@ -325,7 +348,9 @@ class Model(nn.Module):
 
         my_samples = []
         for code_list in code_lists:
+            code_list = torch.from_dlpack(mx.array(code_list))
             samples = redistribute_codes(code_list)
+            samples = mx.array(samples)
             my_samples.append(samples)
 
         if len(prompts) != len(my_samples):
