@@ -1,21 +1,23 @@
-# Copyright © 2023-2024 Apple Inc.
+
 
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from tqdm import tqdm
 
-from .base import BaseModelArgs, create_attention_mask
-
+import torch
+from transformers import AutoTokenizer
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models import cache as cache_utils
 from mlx_lm.utils import stream_generate
-from ..base import GenerationResponse
+from mlx_lm.models.base import BaseModelArgs, create_attention_mask
+from ..base import GenerationResult
 
 
 @dataclass
-class ModelArgs(BaseModelArgs):
+class ModelConfig(BaseModelArgs):
     model_type: str
     hidden_size: int
     num_hidden_layers: int
@@ -39,27 +41,27 @@ class ModelArgs(BaseModelArgs):
             self.num_key_value_heads = self.num_attention_heads
 
 
- def redistribute_codes(code_list):
-        layer_1 = []
-        layer_2 = []
-        layer_3 = []
-        for i in range((len(code_list)+1)//7):
-            layer_1.append(code_list[7*i])
-            layer_2.append(code_list[7*i+1]-4096)
-            layer_3.append(code_list[7*i+2]-(2*4096))
-            layer_3.append(code_list[7*i+3]-(3*4096))
-            layer_2.append(code_list[7*i+4]-(4*4096))
-            layer_3.append(code_list[7*i+5]-(5*4096))
-            layer_3.append(code_list[7*i+6]-(6*4096))
+def redistribute_codes(code_list):
+    layer_1 = []
+    layer_2 = []
+    layer_3 = []
+    for i in range((len(code_list)+1)//7):
+        layer_1.append(code_list[7*i])
+        layer_2.append(code_list[7*i+1]-4096)
+        layer_3.append(code_list[7*i+2]-(2*4096))
+        layer_3.append(code_list[7*i+3]-(3*4096))
+        layer_2.append(code_list[7*i+4]-(4*4096))
+        layer_3.append(code_list[7*i+5]-(5*4096))
+        layer_3.append(code_list[7*i+6]-(6*4096))
 
-        codes = [torch.tensor(layer_1).unsqueeze(0),
-                torch.tensor(layer_2).unsqueeze(0),
-                torch.tensor(layer_3).unsqueeze(0)]
-        audio_hat = snac_model.decode(codes)
-        return audio_hat
+    codes = [torch.tensor(layer_1).unsqueeze(0),
+            torch.tensor(layer_2).unsqueeze(0),
+            torch.tensor(layer_3).unsqueeze(0)]
+    audio_hat = snac_model.decode(codes)
+    return audio_hat
 
 class Attention(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelConfig):
         super().__init__()
 
         dim = args.hidden_size
@@ -110,8 +112,8 @@ class Attention(nn.Module):
             queries = self.rope(queries)
             keys = self.rope(keys)
 
-        output = scaled_dot_product_attention(
-            queries, keys, values, cache=cache, scale=self.scale, mask=mask
+        output = mx.fast.scaled_dot_product_attention(
+            queries, keys, values, scale=self.scale, mask=mask
         )
 
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
@@ -119,7 +121,7 @@ class Attention(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelConfig):
         super().__init__()
 
         dim = args.hidden_size
@@ -138,7 +140,7 @@ class MLP(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelConfig):
         super().__init__()
         self.num_attention_heads = args.num_attention_heads
         self.hidden_size = args.hidden_size
@@ -164,7 +166,7 @@ class TransformerBlock(nn.Module):
 
 
 class LlamaModel(nn.Module):
-    def __init__(self, args: ModelArgs):
+    def __init__(self, args: ModelConfig):
         super().__init__()
         self.args = args
         self.vocab_size = args.vocab_size
@@ -197,11 +199,11 @@ class LlamaModel(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, args: ModelArgs, **kwargs):
+    def __init__(self, args: ModelConfig, **kwargs):
         super().__init__()
         self.args = args
         self.model_type = args.model_type
-        self.tokenizer = kwargs.get("tokenizer", None)
+        self.tokenizer = AutoTokenizer.from_pretrained(args.tokeniser_name)
         self.model = LlamaModel(args)
         if not args.tie_word_embeddings:
             self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
@@ -232,64 +234,69 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def make_cache(self):
-        for layer in self.model.layers:
 
-    def generate(self, text, max_new_tokens: int, voice: str, temperature: float = 1.0, split_pattern: str = "\n", verbose: bool = False, **kwargs):
+    def generate(self, text, voice: str, temperature: float = 1.0, split_pattern: str = "\n", max_new_tokens: int = 200, verbose: bool = False, **kwargs):
         prompt_cache = cache_utils.make_prompt_cache(
-            model,
-            max_kv_size=max_kv_size,
+            self.model
         )
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
         prompts = [f"{voice}: " + p for p in prompts]
 
-
+        all_input_ids = []
         for prompt in prompts:
-            input_ids = tokenizer(prompt, return_tensors="pt").input_ids
-            all_input_ids.append(input_ids)
+            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
+            all_input_ids.append(mx.array(input_ids))
 
-        start_token = torch.tensor([[ 128259]], dtype=torch.int64) # Start of human
-        end_tokens = torch.tensor([[128009, 128260]], dtype=torch.int64) # End of text, End of human
+        start_token = mx.array([[ 128259]], dtype=mx.int64) # Start of human
+        end_tokens = mx.array([[128009, 128260]], dtype=mx.int64) # End of text, End of human
 
         all_modified_input_ids = []
         for input_ids in all_input_ids:
-        modified_input_ids = torch.cat([start_token, input_ids, end_tokens], dim=1) # SOH SOT Text EOT EOH
-        all_modified_input_ids.append(modified_input_ids)
+            modified_input_ids = mx.concatenate([start_token, input_ids, end_tokens], axis=1) # SOH SOT Text EOT EOH
+            all_modified_input_ids.append(modified_input_ids)
 
         all_padded_tensors = []
         all_attention_masks = []
         max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
         for modified_input_ids in all_modified_input_ids:
             padding = max_length - modified_input_ids.shape[1]
-            padded_tensor = torch.cat([torch.full((1, padding), 128263, dtype=torch.int64), modified_input_ids], dim=1)
-            attention_mask = torch.cat([torch.zeros((1, padding), dtype=torch.int64), torch.ones((1, modified_input_ids.shape[1]), dtype=torch.int64)], dim=1)
+            padded_tensor = mx.concatenate([mx.full((1, padding), 128263, dtype=mx.int64), modified_input_ids], axis=1)
+            attention_mask = mx.concatenate([mx.zeros((1, padding), dtype=mx.int64), mx.ones((1, modified_input_ids.shape[1]), dtype=mx.int64)], axis=1)
             all_padded_tensors.append(padded_tensor)
             all_attention_masks.append(attention_mask)
 
-        all_padded_tensors = torch.cat(all_padded_tensors, dim=0)
-        all_attention_masks = torch.cat(all_attention_masks, dim=0)
+        all_padded_tensors = mx.concatenate(all_padded_tensors, axis=0)
+        all_attention_masks = mx.concatenate(all_attention_masks, axis=0)
 
         input_ids = all_padded_tensors
         attention_mask = all_attention_masks
 
-        for _ in range(max_new_tokens):
-            output = self.model(input_ids, attention_mask, prompt_cache)
+        output = self.model(input_ids, attention_mask, prompt_cache)
+        logits = output[:, -1, :]
+        next_token = mx.argmax(logits, axis=-1)
+        mx.async_eval(next_token)
+        input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
+
+        for _ in tqdm(range(max_new_tokens), disable=not verbose):
+            output = self.model(input_ids, cache=prompt_cache)
             logits = output[:, -1, :]
 
             # Apply temperature scaling
             if temperature > 0:
                 logits = logits / temperature
 
-            next_token = torch.argmax(logits, dim=-1)
+            next_token = mx.argmax(logits, axis=-1)
+            mx.async_eval(next_token)
             if next_token == self.tokenizer.eos_token_id:
                 break
 
-            input_ids = torch.cat([input_ids, next_token.unsqueeze(0)], dim=1)
-            attention_mask = torch.cat([attention_mask, torch.ones((1, 1), dtype=torch.int64)], dim=1)
+            input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
 
         token_to_find = 128257
         token_to_remove = 128258
+
+        generated_ids = input_ids[:, all_padded_tensors.shape[1]:]
 
         token_indices = (generated_ids == token_to_find).nonzero(as_tuple=True)
 
@@ -333,7 +340,7 @@ class Model(nn.Module):
                 duration_secs = int(audio_duration_seconds % 60)
                 duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}"
 
-                yield GenerationResponse(
+                yield GenerationResult(
                     tokens=len(input_ids),
                     audio=samples,
                     text=prompts[i],
