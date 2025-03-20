@@ -45,13 +45,14 @@ To generate audio with an LLM use:
 ```python
 from mlx_audio.tts.generate import generate_audio
 
-# Example: Generate an audiobook chapter as audio
+# Example: Generate an audiobook chapter as mp3 audio
 generate_audio(
-    text="In the beginning, the universe was created...",
+    text=("In the beginning, the universe was created...\n"
+        "...or the simulation was booted up."),
     model_path="prince-canuma/Kokoro-82M",
     voice="af_heart",
     speed=1.2,
-    lang_code="en",
+    lang_code="a", # Kokoro: (a)f_heart, or comment out for auto
     file_prefix="audiobook_chapter1",
     audio_format="wav",
     sample_rate=24000,
