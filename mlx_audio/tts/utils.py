@@ -104,6 +104,7 @@ def load_model(model_path: Path, lazy: bool = False, **kwargs) -> nn.Module:
     if isinstance(model_path, str):
         name = model_path.split("/")[-1].split("-")[0].lower()
         model_path = get_model_path(model_path)
+
     config = load_config(model_path, **kwargs)
 
     model_type = config.get("model_type", name)
@@ -138,7 +139,8 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         weights.update(mx.load(wf))
 
     model_class, model_type = get_model_and_args(model_type=model_type)
-    model = model_class.Model(config)
+    model_config = model_class.ModelConfig.from_dict(config)
+    model = model_class.Model(model_config)
     quantization = config.get("quantization", None)
     if quantization is None:
         weights = model.sanitize(weights)
