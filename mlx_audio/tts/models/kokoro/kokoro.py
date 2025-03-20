@@ -246,7 +246,7 @@ class Model(nn.Module):
         text: str,
         voice: str = "af_heart",
         speed: float = 1.0,
-        lang_code: str = "af",
+        lang_code: str = "a",
         split_pattern: str = r"\n+",
         verbose: bool = False,
         **kwargs,
