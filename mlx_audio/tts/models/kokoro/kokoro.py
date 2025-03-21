@@ -10,12 +10,7 @@ from loguru import logger
 
 from ..base import BaseModelArgs, GenerationResult, check_array_shape
 from .istftnet import Decoder
-from .modules import (
-    AlbertModelArgs,
-    CustomAlbert,
-    ProsodyPredictor,
-    TextEncoder,
-)
+from .modules import AlbertModelArgs, CustomAlbert, ProsodyPredictor, TextEncoder
 from .pipeline import KokoroPipeline
 
 # Force reset logger configuration at the top of your file
@@ -47,6 +42,7 @@ def sanitize_lstm_weights(key: str, state_dict: mx.array) -> dict:
 
     return {key: state_dict}
 
+
 @dataclass
 class ModelConfig(BaseModelArgs):
     istftnet: dict
@@ -63,6 +59,7 @@ class ModelConfig(BaseModelArgs):
     text_encoder_kernel_size: int
     plbert: dict
     vocab: Dict[str, int]
+
 
 class Model(nn.Module):
     """
@@ -90,9 +87,7 @@ class Model(nn.Module):
             AlbertModelArgs(vocab_size=config.n_token, **config.plbert)
         )
 
-        self.bert_encoder = nn.Linear(
-            self.bert.config.hidden_size, config.hidden_dim
-        )
+        self.bert_encoder = nn.Linear(self.bert.config.hidden_size, config.hidden_dim)
         self.context_length = self.bert.config.max_position_embeddings
         self.predictor = ProsodyPredictor(
             style_dim=config.style_dim,
