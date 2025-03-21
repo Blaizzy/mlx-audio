@@ -1,1 +1,1 @@
-from .models import Mimi
+from .models import Encodec, Mimi, Vocos
