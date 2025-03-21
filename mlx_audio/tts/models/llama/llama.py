@@ -59,11 +59,9 @@ def redistribute_codes(code_list):
         layer_2.append(code_list[7*i+4]-(4*4096))
         layer_3.append(code_list[7*i+5]-(5*4096))
         layer_3.append(code_list[7*i+6]-(6*4096))
-
     codes = [torch.tensor(layer_1).unsqueeze(0),
             torch.tensor(layer_2).unsqueeze(0),
             torch.tensor(layer_3).unsqueeze(0)]
-
     audio_hat = snac_model.decode(codes)
     return audio_hat
 
@@ -250,10 +248,10 @@ class Model(nn.Module):
         # We need to manually find indices where token appears
         token_indices = np.nonzero(input_ids == token_to_find)
         print(token_indices)
-        token_indices = mx.array(token_indices)
+        token_indices = mx.array(np.array(token_indices))
 
         if len(token_indices[1]) > 0:
-            last_occurrence_idx = token_indices[1][-1]
+            last_occurrence_idx = int(token_indices[1][-1])
             cropped_tensor = input_ids[:, last_occurrence_idx+1:]
         else:
             cropped_tensor = input_ids
@@ -280,9 +278,9 @@ class Model(nn.Module):
         return code_lists
 
 
-    def generate(self, text, voice: str, temperature: float = 1.0, top_p: float = 0.95, split_pattern: str = "\n", max_new_tokens: int = 100, verbose: bool = False, **kwargs):
+    def generate(self, text, voice: str, temperature: float = 1.0, top_p: float = 0.95, split_pattern: str = "\n", max_tokens: int = 200, verbose: bool = False, **kwargs):
         prompt_cache = cache_utils.make_prompt_cache(
-            self.model
+            self
         )
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
@@ -325,31 +323,34 @@ class Model(nn.Module):
 
         sampler = make_sampler(temperature, top_p, 0.0, 1)
 
-        output = self.model(input_ids, mask=None, cache=prompt_cache)
+        output = self(input_ids, mask=None, cache=None)
         logits = output[:, -1, :]
         mx.async_eval(logits)
         next_token = sampler(logits)
 
         input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
 
-        for _ in tqdm(range(max_new_tokens), disable=not verbose):
-            output = self.model(input_ids, cache=prompt_cache)
+        for n in tqdm(range(max_tokens), disable=not verbose):
+            output = self(input_ids, cache=None)
             logits = output[:, -1, :]
             mx.async_eval(logits)
             next_token = sampler(logits)
-            if next_token == 128258:
-                break
-
             input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
             attention_mask = mx.concatenate([attention_mask, mx.ones((1, 1), dtype=mx.int64)], axis=1)
 
+            if n % 50 == 0:
+                mx.metal.clear_cache()
+
+            if next_token == 128258:
+                break
+
+
         print("="*100)
-        print("text: ", self.tokenizer.decode(input_ids.tolist()[0], skip_special_tokens=True))
+        print("text: ", self.tokenizer.decode(input_ids.tolist()[0]))
         print("input_ids: ", input_ids.tolist())
         print("="*100)
 
-        generated_ids = input_ids[:, all_padded_tensors.shape[1]:]
-        code_lists = self.parse_output(generated_ids)
+        code_lists = self.parse_output(input_ids)
 
         my_samples = []
         for code_list in code_lists:
@@ -362,21 +363,48 @@ class Model(nn.Module):
             raise Exception("Number of prompts and samples do not match")
         else:
             for i in range(len(my_samples)):
-                print(prompts[i])
-                samples = my_samples[i]
-                audio_duration_seconds = samples /  24000 * samples.shape[1]
-                duration_hours = int(audio_duration_seconds // 3600)
-                duration_mins = int(audio_duration_seconds % 3600 // 60)
-                duration_secs = int(audio_duration_seconds % 60)
-                duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}"
+                audio = my_samples[i][0]
 
+                samples = audio.shape[0] if audio is not None else 0
+                assert samples > 0, "No audio generated"
+
+                # Calculate token count
+                token_count = len(input_ids) if input_ids is not None else 0
+
+                # Calculate audio duration in seconds
+                sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+                audio_duration_seconds = samples / sample_rate * audio.shape[1]
+
+                # Format duration as HH:MM:SS.mmm
+                duration_mins = int(audio_duration_seconds // 60)
+                duration_secs = int(audio_duration_seconds % 60)
+                duration_ms = int((audio_duration_seconds % 1) * 1000)
+                duration_hours = int(audio_duration_seconds // 3600)
+                duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+                print(audio.shape)
                 yield GenerationResult(
-                    tokens=len(input_ids),
-                    audio=samples,
-                    text=prompts[i],
-                    voice=voice,
-                    temperature=temperature,
-                    duration=duration_str,
+                    audio=audio[0],
+                    samples=samples,
+                    segment_idx=i,
+                    token_count=token_count,
+                    audio_duration=duration_str,
+                    real_time_factor=0,
+                    prompt={
+                        "tokens": token_count,
+                        "tokens-per-sec": (
+                            round(token_count / audio_duration_seconds, 2) if audio_duration_seconds > 0 else 0
+                        ),
+                    },
+                    audio_samples={
+                        "samples": samples,
+                        "samples-per-sec": (
+                            round(samples / audio_duration_seconds, 2) if audio_duration_seconds > 0 else 0
+                        ),
+                    },
+                    processing_time_seconds=audio_duration_seconds,
+                    peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
                 )
+
 
 
