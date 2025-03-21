@@ -231,7 +231,7 @@ def parse_args():
 def main():
     args = parse_args()
     generate_audio(model_path=args.model, **vars(args))
-    
-    
+
+
 if __name__ == "__main__":
     main()
