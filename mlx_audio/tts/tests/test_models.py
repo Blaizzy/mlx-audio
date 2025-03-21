@@ -524,9 +524,14 @@ class TestBarkPipeline(unittest.TestCase):
 
 
 class TestLlamaModel(unittest.TestCase):
-    def test_init(self):
+    @patch("mlx_audio.tts.models.llama.llama.LlamaTokenizer")
+    def test_init(self, mock_tokenizer):
         """Test LlamaModel initialization."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
+
+        # Mock the tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
 
         # Create a minimal config
         config = ModelConfig(
@@ -554,13 +559,21 @@ class TestLlamaModel(unittest.TestCase):
         # Check that components were initialized correctly
         self.assertIsNotNone(model.transformer)
         self.assertIsNotNone(model.lm_head)
+        # Verify tokenizer was initialized
+        mock_tokenizer.assert_called_once()
 
-    def test_generate(self):
+    @patch("mlx_audio.tts.models.llama.llama.LlamaTokenizer")
+    def test_generate(self, mock_tokenizer):
         """Test generate method."""
         from mlx_audio.tts.models.llama.llama import Model
 
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
+
         # Create a mock model
         mock_model = MagicMock(spec=Model)
+        mock_model.tokenizer = mock_tokenizer_instance
 
         # Mock the language model output
         # Shape (batch_size, sequence_length, vocab_size)
@@ -575,9 +588,14 @@ class TestLlamaModel(unittest.TestCase):
         result = mock_model.generate(mx.array([1, 2, 3]))
         self.assertEqual(result, logits)
 
-    def test_sanitize(self):
+    @patch("mlx_audio.tts.models.llama.llama.LlamaTokenizer")
+    def test_sanitize(self, mock_tokenizer):
         """Test sanitize method."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
 
         # Create a config with tie_word_embeddings=True
         config = ModelConfig(
