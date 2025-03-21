@@ -1,4 +1,3 @@
-import json
 import sys
 import time
 from dataclasses import dataclass
@@ -7,14 +6,11 @@ from typing import Dict, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from loguru import logger
 
-from ...utils import get_class_predicate
-from ..base import GenerationResult, check_array_shape
+from ..base import BaseModelArgs, GenerationResult, check_array_shape
 from .istftnet import Decoder
 from .modules import (
-    AdaLayerNorm,
     AlbertModelArgs,
     CustomAlbert,
     ProsodyPredictor,
@@ -51,6 +47,22 @@ def sanitize_lstm_weights(key: str, state_dict: mx.array) -> dict:
 
     return {key: state_dict}
 
+@dataclass
+class ModelConfig(BaseModelArgs):
+    istftnet: dict
+    dim_in: int
+    dropout: float
+    hidden_dim: int
+    max_conv_dim: int
+    max_dur: int
+    multispeaker: bool
+    n_layer: int
+    n_mels: int
+    n_token: int
+    style_dim: int
+    text_encoder_kernel_size: int
+    plbert: dict
+    vocab: Dict[str, int]
 
 class Model(nn.Module):
     """
@@ -69,37 +81,37 @@ class Model(nn.Module):
 
     REPO_ID = "prince-canuma/Kokoro-82M"
 
-    def __init__(self, config: dict, repo_id: str = None):
+    def __init__(self, config: ModelConfig, repo_id: str = None):
         super().__init__()
         self.repo_id = repo_id
         self.config = config
-        self.vocab = config["vocab"]
+        self.vocab = config.vocab
         self.bert = CustomAlbert(
-            AlbertModelArgs(vocab_size=config["n_token"], **config["plbert"])
+            AlbertModelArgs(vocab_size=config.n_token, **config.plbert)
         )
 
         self.bert_encoder = nn.Linear(
-            self.bert.config.hidden_size, config["hidden_dim"]
+            self.bert.config.hidden_size, config.hidden_dim
         )
         self.context_length = self.bert.config.max_position_embeddings
         self.predictor = ProsodyPredictor(
-            style_dim=config["style_dim"],
-            d_hid=config["hidden_dim"],
-            nlayers=config["n_layer"],
-            max_dur=config["max_dur"],
-            dropout=config["dropout"],
+            style_dim=config.style_dim,
+            d_hid=config.hidden_dim,
+            nlayers=config.n_layer,
+            max_dur=config.max_dur,
+            dropout=config.dropout,
         )
         self.text_encoder = TextEncoder(
-            channels=config["hidden_dim"],
-            kernel_size=config["text_encoder_kernel_size"],
-            depth=config["n_layer"],
-            n_symbols=config["n_token"],
+            channels=config.hidden_dim,
+            kernel_size=config.text_encoder_kernel_size,
+            depth=config.n_layer,
+            n_symbols=config.n_token,
         )
         self.decoder = Decoder(
-            dim_in=config["hidden_dim"],
-            style_dim=config["style_dim"],
-            dim_out=config["n_mels"],
-            **config["istftnet"],
+            dim_in=config.hidden_dim,
+            style_dim=config.style_dim,
+            dim_out=config.n_mels,
+            **config.istftnet,
         )
 
     @dataclass
