@@ -5,23 +5,20 @@ from typing import Optional
 
 import mlx.core as mx
 import soundfile as sf
+from scipy.signal import resample
 
 from .audio_player import AudioPlayer
 from .utils import load_model
-from scipy.signal import resample
 
 
-def load_audio(
-    audio_path: str,
-    sample_rate: int=24000
-    ) -> mx.array:
+def load_audio(audio_path: str, sample_rate: int = 24000) -> mx.array:
     samples, orig_sample_rate = sf.read(audio_path)
     shape = samples.shape
     # Collapse multi channel as mono
-    if len(shape)>1:
+    if len(shape) > 1:
         samples = samples.sum(axis=1)
         # Divide summed samples by channel count.
-        samples = samples/shape[1]
+        samples = samples / shape[1]
     if sample_rate != orig_sample_rate:
         print(f"Resampling from {orig_sample_rate} to {sample_rate}")
         duration = samples.shape[0] / orig_sample_rate
@@ -46,6 +43,7 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
+    whisper_model: str = "mlx-community/whisper-large-v3-turbo",
     **kwargs,
 ) -> None:
     """
@@ -65,7 +63,7 @@ def generate_audio(
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
-
+    whisper_model (str): A mlx whisper model to use to transcribe.
     Returns:
     - None: The function writes the generated audio to a file.
     """
@@ -80,7 +78,10 @@ def generate_audio(
                 print("Ref_text not found. Transcribing ref_audio...")
                 # mlx_whisper seems takes long time to import. Import only necessary.
                 import mlx_whisper
-                ref_text = mlx_whisper.transcribe(ref_audio, path_or_hf_repo="mlx-community/whisper-large-v3-turbo")["text"]
+
+                ref_text = mlx_whisper.transcribe(
+                    ref_audio, path_or_hf_repo=whisper_model
+                )["text"]
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer
