@@ -565,7 +565,9 @@ class TestLlamaModel(unittest.TestCase):
         # Mock the language model output
         # Shape (batch_size, sequence_length, vocab_size)
         vocab_size = 32000  # Typical vocab size for Llama models
-        logits = mx.random.normal((1, 3, vocab_size))  # 1 batch, 3 tokens, vocab_size dimensions
+        logits = mx.random.normal(
+            (1, 3, vocab_size)
+        )  # 1 batch, 3 tokens, vocab_size dimensions
 
         mock_model.generate.return_value = logits
 
@@ -604,7 +606,7 @@ class TestLlamaModel(unittest.TestCase):
         weights = {
             "self_attn.rotary_emb.inv_freq": mx.zeros(10),
             "lm_head.weight": mx.zeros((32000, 4096)),
-            "model.layers.0.input_layernorm.weight": mx.zeros(4096)
+            "model.layers.0.input_layernorm.weight": mx.zeros(4096),
         }
 
         # Test sanitize method
