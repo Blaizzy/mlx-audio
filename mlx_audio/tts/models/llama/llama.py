@@ -12,6 +12,7 @@ from transformers import AutoTokenizer
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models import cache as cache_utils
 from mlx_lm.utils import stream_generate
+from mlx_lm.sample_utils import make_sampler
 from mlx_lm.models.base import BaseModelArgs, create_attention_mask
 from ..base import GenerationResult
 
@@ -30,19 +31,22 @@ class ModelConfig(BaseModelArgs):
     num_key_value_heads: Optional[int] = None
     attention_bias: bool = False
     mlp_bias: bool = False
-    rope_theta: float = 10000
+    rope_theta: float = 500000.0
     rope_traditional: bool = False
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
     tie_word_embeddings: bool = True
-    tokeniser_name: str = "meta-llama/Llama-3.2-3B-Instruct"
+    tokeniser_name: str = "canopylabs/orpheus-3b-0.1-ft"
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.num_attention_heads
 
 
+# TODO: Convert to mlx
 snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
 snac_model = snac_model.to("cpu")
+
+# TODO: Convert to mlx
 def redistribute_codes(code_list):
     layer_1 = []
     layer_2 = []
@@ -60,9 +64,9 @@ def redistribute_codes(code_list):
             torch.tensor(layer_2).unsqueeze(0),
             torch.tensor(layer_3).unsqueeze(0)]
 
-    print(codes)
     audio_hat = snac_model.decode(codes)
     return audio_hat
+
 
 class Attention(nn.Module):
     def __init__(self, args: ModelConfig):
@@ -238,94 +242,21 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-
-    def generate(self, text, voice: str, temperature: float = 1.0, split_pattern: str = "\n", max_new_tokens: int = 50, verbose: bool = False, **kwargs):
-        prompt_cache = cache_utils.make_prompt_cache(
-            self.model
-        )
-        prompt = text.replace("\\n", "\n").replace("\\t", "\t")
-        prompts = prompt.split(split_pattern)
-        prompts = [f"{voice}: " + p for p in prompts]
-
-        all_input_ids = []
-        for prompt in prompts:
-            input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids
-            all_input_ids.append(mx.array(input_ids))
-
-        start_token = mx.array([[ 128259]], dtype=mx.int64) # Start of human
-        end_tokens = mx.array([[128009, 128260]], dtype=mx.int64) # End of text, End of human
-
-        all_modified_input_ids = []
-        for input_ids in all_input_ids:
-            modified_input_ids = mx.concatenate([start_token, input_ids, end_tokens], axis=1) # SOH SOT Text EOT EOH
-            all_modified_input_ids.append(modified_input_ids)
-
-        all_padded_tensors = []
-        all_attention_masks = []
-        max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
-        for modified_input_ids in all_modified_input_ids:
-            padding = max_length - modified_input_ids.shape[1]
-            padded_tensor = mx.concatenate([mx.full((1, padding), 128263, dtype=mx.int64), modified_input_ids], axis=1)
-            # Create causal mask that also accounts for padding
-            attention_mask = mx.concatenate([mx.zeros((1, padding), dtype=mx.int64), mx.ones((1, modified_input_ids.shape[1]), dtype=mx.int64)], axis=1)
-            # Convert to float and unsqueeze for broadcasting
-            attention_mask = attention_mask[:, None, None, :]  # Shape: (batch_size, 1, 1, seq_len)
-            all_padded_tensors.append(padded_tensor)
-            all_attention_masks.append(attention_mask)
-
-        all_padded_tensors = mx.concatenate(all_padded_tensors, axis=0)
-        all_attention_masks = mx.concatenate(all_attention_masks, axis=0)
-
-        input_ids = all_padded_tensors
-        attention_mask = all_attention_masks
-
-        output = self.model(input_ids, attention_mask, prompt_cache)
-        logits = output[:, -1, :]
-        next_token = mx.argmax(logits, axis=-1)
-        mx.async_eval(next_token)
-        input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-
-        # Let create_attention_mask handle the mask creation
-        attention_mask = None
-
-        for _ in tqdm(range(max_new_tokens), disable=not verbose):
-            output = self.model(input_ids, attention_mask, cache=prompt_cache)
-            logits = output[:, -1, :]
-
-            # Apply temperature scaling
-            if temperature > 0:
-                logits = logits / temperature
-
-            next_token = mx.argmax(logits, axis=-1)
-            mx.async_eval(next_token)
-            if next_token == 128258:
-                break
-
-            input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-            # Let the model's create_attention_mask handle mask creation
-            attention_mask = None
-
-        print(input_ids.tolist())
-
+    def parse_output(self, input_ids):
         token_to_find = 128257
         token_to_remove = 128258
 
-        generated_ids = input_ids[:, all_padded_tensors.shape[1]:]
-
         # MLX doesn't have nonzero function or a direct equivalent to torch.where(condition)
         # We need to manually find indices where token appears
-        token_indices = np.nonzero(generated_ids == token_to_find)
+        token_indices = np.nonzero(input_ids == token_to_find)
         print(token_indices)
         token_indices = mx.array(token_indices)
 
-
-
-
         if len(token_indices[1]) > 0:
             last_occurrence_idx = token_indices[1][-1]
-            cropped_tensor = generated_ids[:, last_occurrence_idx+1:]
+            cropped_tensor = input_ids[:, last_occurrence_idx+1:]
         else:
-            cropped_tensor = generated_ids
+            cropped_tensor = input_ids
 
         mask = cropped_tensor != token_to_remove
 
@@ -345,6 +276,80 @@ class Model(nn.Module):
             trimmed_row = row[:new_length]
             trimmed_row = [t - 128266 for t in trimmed_row]
             code_lists.append(trimmed_row)
+
+        return code_lists
+
+
+    def generate(self, text, voice: str, temperature: float = 1.0, top_p: float = 0.95, split_pattern: str = "\n", max_new_tokens: int = 100, verbose: bool = False, **kwargs):
+        prompt_cache = cache_utils.make_prompt_cache(
+            self.model
+        )
+        prompt = text.replace("\\n", "\n").replace("\\t", "\t")
+        prompts = prompt.split(split_pattern)
+        prompts = [f"{voice}: " + p for p in prompts]
+        if verbose:
+            print(prompts)
+
+
+        all_input_ids = []
+
+        for prompt in prompts:
+            input_ids = mx.array(self.tokenizer(prompt, return_tensors="pt").input_ids)
+            all_input_ids.append(input_ids)
+
+        start_token = mx.array([[128259]], dtype=mx.int64) # Start of human
+        end_tokens = mx.array([[128009, 128260]], dtype=mx.int64) # End of text, End of human
+
+        all_modified_input_ids = []
+        for input_ids in all_input_ids:
+            modified_input_ids = mx.concatenate([start_token, input_ids, end_tokens], axis=1) # SOH SOT Text EOT EOH
+            all_modified_input_ids.append(modified_input_ids)
+
+
+        all_padded_tensors = []
+        all_attention_masks = []
+        max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
+        for modified_input_ids in all_modified_input_ids:
+            padding = max_length - modified_input_ids.shape[1]
+            padded_tensor = mx.pad(modified_input_ids, [(0, 0), (padding, 0)], constant_values=128263)
+            attention_mask = mx.concatenate([mx.zeros((1, padding), dtype=mx.int64), mx.ones((1, modified_input_ids.shape[1]), dtype=mx.int64)], axis=1)
+            all_padded_tensors.append(padded_tensor)
+            all_attention_masks.append(attention_mask)
+
+        all_padded_tensors = mx.concatenate(all_padded_tensors, axis=0)
+        all_attention_masks = mx.concatenate(all_attention_masks, axis=0)
+
+
+        input_ids = all_padded_tensors
+        attention_mask = all_attention_masks
+
+        sampler = make_sampler(temperature, top_p, 0.0, 1)
+
+        output = self.model(input_ids, mask=None, cache=prompt_cache)
+        logits = output[:, -1, :]
+        mx.async_eval(logits)
+        next_token = sampler(logits)
+
+        input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
+
+        for _ in tqdm(range(max_new_tokens), disable=not verbose):
+            output = self.model(input_ids, cache=prompt_cache)
+            logits = output[:, -1, :]
+            mx.async_eval(logits)
+            next_token = sampler(logits)
+            if next_token == 128258:
+                break
+
+            input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
+            attention_mask = mx.concatenate([attention_mask, mx.ones((1, 1), dtype=mx.int64)], axis=1)
+
+        print("="*100)
+        print("text: ", self.tokenizer.decode(input_ids.tolist()[0], skip_special_tokens=True))
+        print("input_ids: ", input_ids.tolist())
+        print("="*100)
+
+        generated_ids = input_ids[:, all_padded_tensors.shape[1]:]
+        code_lists = self.parse_output(generated_ids)
 
         my_samples = []
         for code_list in code_lists:
