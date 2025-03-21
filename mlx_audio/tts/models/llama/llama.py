@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
-
+import time
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
@@ -313,8 +313,8 @@ class Model(nn.Module):
             kwargs.get("logit_bias", None), kwargs.get("repetition_penalty", 1.1), kwargs.get("repetition_context_size", 20)
         )
 
+        time_start = time.time()
         # TODO: Support batch processing as in the Colab: https://github.com/canopyai/Orpheus-TTS
-        # TODO: Add repetition penalty
         for i, response in enumerate(tqdm(stream_generate(self, tokenizer=self.tokenizer, prompt=input_ids.squeeze(0), max_tokens=max_tokens, sampler=sampler, logits_processors=logits_processors), total=max_tokens, disable=not verbose)):
             next_token = mx.array([response.token])
             input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
@@ -333,6 +333,8 @@ class Model(nn.Module):
             samples = mx.array(samples)
             my_samples.append(samples)
 
+        time_end = time.time()
+
         if len(prompts) != len(my_samples):
             raise Exception("Number of prompts and samples do not match")
         else:
@@ -349,6 +351,9 @@ class Model(nn.Module):
                 sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
                 audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
+                # Calculate real-time factor (RTF)
+                rtf = audio_duration_seconds / (time_end - time_start)
+
                 # Format duration as HH:MM:SS.mmm
                 duration_mins = int(audio_duration_seconds // 60)
                 duration_secs = int(audio_duration_seconds % 60)
@@ -362,7 +367,7 @@ class Model(nn.Module):
                     segment_idx=i,
                     token_count=token_count,
                     audio_duration=duration_str,
-                    real_time_factor=0,
+                    real_time_factor=rtf,
                     prompt={
                         "tokens": token_count,
                         "tokens-per-sec": (
@@ -375,7 +380,7 @@ class Model(nn.Module):
                             round(samples / audio_duration_seconds, 2) if audio_duration_seconds > 0 else 0
                         ),
                     },
-                    processing_time_seconds=audio_duration_seconds,
+                    processing_time_seconds=time_end - time_start,
                     peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
                 )
 
