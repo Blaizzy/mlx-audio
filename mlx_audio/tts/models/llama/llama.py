@@ -12,7 +12,7 @@ from transformers import AutoTokenizer
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models import cache as cache_utils
 from mlx_lm.utils import stream_generate
-from mlx_lm.sample_utils import make_sampler
+from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from mlx_lm.models.base import BaseModelArgs, create_attention_mask
 from ..base import GenerationResult
 
@@ -244,11 +244,20 @@ class Model(nn.Module):
         token_to_find = 128257
         token_to_remove = 128258
 
-        # MLX doesn't have nonzero function or a direct equivalent to torch.where(condition)
-        # We need to manually find indices where token appears
-        token_indices = np.nonzero(input_ids == token_to_find)
-        print(token_indices)
-        token_indices = mx.array(np.array(token_indices))
+
+        # MLX doesn't have nonzero, so we need to create indices manually
+        mask = input_ids == token_to_find
+        indices = []
+        for i in range(mask.shape[0]):
+            for j in range(mask.shape[1]):
+                if mask[i, j]:
+                    indices.append((i, j))
+        token_indices = [[], []]
+        for i, j in indices:
+            token_indices[0].append(i)
+            token_indices[1].append(j)
+
+        token_indices = mx.array(token_indices)
 
         if len(token_indices[1]) > 0:
             last_occurrence_idx = int(token_indices[1][-1])
@@ -282,9 +291,6 @@ class Model(nn.Module):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
         prompts = [f"{voice}: " + p for p in prompts]
-        if verbose:
-            print(prompts)
-
 
         all_input_ids = []
 
@@ -300,52 +306,23 @@ class Model(nn.Module):
             modified_input_ids = mx.concatenate([start_token, input_ids, end_tokens], axis=1) # SOH SOT Text EOT EOH
             all_modified_input_ids.append(modified_input_ids)
 
+        input_ids = mx.concatenate(all_modified_input_ids, axis=0)
 
-        all_padded_tensors = []
-        all_attention_masks = []
-        max_length = max([modified_input_ids.shape[1] for modified_input_ids in all_modified_input_ids])
-        for modified_input_ids in all_modified_input_ids:
-            padding = max_length - modified_input_ids.shape[1]
-            padded_tensor = mx.pad(modified_input_ids, [(0, 0), (padding, 0)], constant_values=128263)
-            attention_mask = mx.concatenate([mx.zeros((1, padding), dtype=mx.int64), mx.ones((1, modified_input_ids.shape[1]), dtype=mx.int64)], axis=1)
-            all_padded_tensors.append(padded_tensor)
-            all_attention_masks.append(attention_mask)
+        sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", 1))
+        logits_processors = make_logits_processors(
+            kwargs.get("logit_bias", None), kwargs.get("repetition_penalty", 1.1), kwargs.get("repetition_context_size", 20)
+        )
 
-        all_padded_tensors = mx.concatenate(all_padded_tensors, axis=0)
-        all_attention_masks = mx.concatenate(all_attention_masks, axis=0)
-
-
-        input_ids = all_padded_tensors
-        attention_mask = all_attention_masks
-
-        sampler = make_sampler(temperature, top_p, 0.0, 1)
-
-        output = self(input_ids)
-        logits = output[:, -1, :]
-        mx.async_eval(logits)
-        next_token = sampler(logits)
-
-        input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-
-        for n in tqdm(range(max_tokens), disable=not verbose):
-            output = self(input_ids)
-            logits = output[:, -1, :]
-            mx.async_eval(logits)
-            next_token = sampler(logits)
+        # TODO: Support batch processing as in the Colab: https://github.com/canopyai/Orpheus-TTS
+        # TODO: Add repetition penalty
+        for i, response in enumerate(tqdm(stream_generate(self, tokenizer=self.tokenizer, prompt=input_ids.squeeze(0), max_tokens=max_tokens, sampler=sampler, logits_processors=logits_processors), total=max_tokens, disable=not verbose)):
+            next_token = mx.array([response.token])
             input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-            attention_mask = mx.concatenate([attention_mask, mx.ones((1, 1), dtype=mx.int64)], axis=1)
-
-            if n % 50 == 0:
+            if i % 50 == 0:
                 mx.metal.clear_cache()
 
             if next_token == 128258:
                 break
-
-
-        print("="*100)
-        print("text: ", self.tokenizer.decode(input_ids.tolist()[0]))
-        print("input_ids: ", input_ids.tolist())
-        print("="*100)
 
         code_lists = self.parse_output(input_ids)
 
@@ -379,7 +356,6 @@ class Model(nn.Module):
                 duration_hours = int(audio_duration_seconds // 3600)
                 duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
-                print(audio.shape)
                 yield GenerationResult(
                     audio=audio[0],
                     samples=samples,
