@@ -36,7 +36,7 @@ class ModelConfig(BaseModelArgs):
     rope_traditional: bool = False
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
     tie_word_embeddings: bool = True
-    tokeniser_name: str = "canopylabs/orpheus-3b-0.1-ft"
+    tokeniser_name: str = "mlx-community/orpheus-3b-0.1-ft-bf16"
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
