@@ -523,5 +523,111 @@ class TestBarkPipeline(unittest.TestCase):
         self.assertEqual(fine_tokens.shape[1], 100)  # sequence_length
 
 
+class TestLlamaModel(unittest.TestCase):
+    def test_init(self):
+        """Test LlamaModel initialization."""
+        from mlx_audio.tts.models.llama.llama import Model, ModelConfig
+
+        # Create a minimal config
+        config = ModelConfig(
+            model_type="llama",
+            hidden_size=4096,
+            num_hidden_layers=32,
+            intermediate_size=16384,
+            num_attention_heads=32,
+            rms_norm_eps=1e-5,
+            vocab_size=32000,
+            head_dim=128,
+            max_position_embeddings=1024,
+            num_key_value_heads=32,
+            attention_bias=True,
+            mlp_bias=True,
+            rope_theta=500000.0,
+            rope_traditional=False,
+            rope_scaling=None,
+            tie_word_embeddings=True,
+        )
+
+        # Initialize model
+        model = Model(config)
+
+        # Check that components were initialized correctly
+        self.assertIsNotNone(model.transformer)
+        self.assertIsNotNone(model.lm_head)
+
+    def test_generate(self):
+        """Test generate method."""
+        from mlx_audio.tts.models.llama.llama import Model
+
+        # Create a mock model
+        mock_model = MagicMock(spec=Model)
+
+        # Mock the language model output
+        # Shape (batch_size, sequence_length, vocab_size)
+        vocab_size = 32000  # Typical vocab size for Llama models
+        logits = mx.random.normal((1, 3, vocab_size))  # 1 batch, 3 tokens, vocab_size dimensions
+
+        mock_model.generate.return_value = logits
+
+        # Test generation
+        result = mock_model.generate(mx.array([1, 2, 3]))
+        self.assertEqual(result, logits)
+
+    def test_sanitize(self):
+        """Test sanitize method."""
+        from mlx_audio.tts.models.llama.llama import Model, ModelConfig
+
+        # Create a config with tie_word_embeddings=True
+        config = ModelConfig(
+            model_type="llama",
+            hidden_size=4096,
+            num_hidden_layers=32,
+            intermediate_size=16384,
+            num_attention_heads=32,
+            rms_norm_eps=1e-5,
+            vocab_size=32000,
+            head_dim=128,
+            max_position_embeddings=1024,
+            num_key_value_heads=32,
+            attention_bias=True,
+            mlp_bias=True,
+            rope_theta=500000.0,
+            rope_traditional=False,
+            rope_scaling=None,
+            tie_word_embeddings=True,
+        )
+
+        # Initialize the actual model (not a mock)
+        model = Model(config)
+
+        # Create test weights with rotary embeddings and lm_head
+        weights = {
+            "self_attn.rotary_emb.inv_freq": mx.zeros(10),
+            "lm_head.weight": mx.zeros((32000, 4096)),
+            "model.layers.0.input_layernorm.weight": mx.zeros(4096)
+        }
+
+        # Test sanitize method
+        sanitized = model.sanitize(weights)
+
+        # Assert rotary embeddings are removed
+        self.assertNotIn("self_attn.rotary_emb.inv_freq", sanitized)
+
+        # Assert lm_head weights are removed with tie_word_embeddings=True
+        self.assertNotIn("lm_head.weight", sanitized)
+
+        # Assert other weights remain
+        self.assertIn("model.layers.0.input_layernorm.weight", sanitized)
+
+        # Now test with tie_word_embeddings=False
+        config.tie_word_embeddings = False
+        model2 = Model(config)
+
+        sanitized2 = model2.sanitize(weights)
+
+        # lm_head should be kept with tie_word_embeddings=False
+        self.assertIn("lm_head.weight", sanitized2)
+
+
 if __name__ == "__main__":
     unittest.main()
