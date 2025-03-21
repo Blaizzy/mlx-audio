@@ -86,7 +86,7 @@ class TestKokoroModel(unittest.TestCase):
     def test_init(self, mock_load_weights, mock_mx_load, mock_open, mock_json_load):
         """Test KokoroModel initialization."""
         # Import inside the test method
-        from mlx_audio.tts.models.kokoro.kokoro import Model
+        from mlx_audio.tts.models.kokoro.kokoro import Model, ModelConfig
 
         # Mock the config loading
         config = {
@@ -129,7 +129,7 @@ class TestKokoroModel(unittest.TestCase):
         mock_load_weights.return_value = None
 
         # Initialize the model with the config parameter
-        model = Model(config)
+        model = Model(ModelConfig.from_dict(config))
 
         # Check that the model was initialized correctly
         self.assertIsInstance(model, nn.Module)
