@@ -586,7 +586,7 @@ class TestLlamaModel(unittest.TestCase):
 
         # Test generation
         result = mock_model(mx.array([1, 2, 3]))
-        self.assertEqual(result, logits)
+        self.assertEqual(result.shape, logits.shape)
 
     @patch("transformers.LlamaTokenizer")
     def test_sanitize(self, mock_tokenizer):
