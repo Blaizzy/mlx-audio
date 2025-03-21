@@ -36,6 +36,7 @@ def generate_audio(
     lang_code: str = "a",
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
+    stt_model: str = "mlx-community/whisper-large-v3-turbo",
     file_prefix: str = "audio",
     audio_format: str = "wav",
     sample_rate: int = 24000,
@@ -43,7 +44,6 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
-    whisper_model: str = "mlx-community/whisper-large-v3-turbo",
     **kwargs,
 ) -> None:
     """
@@ -57,13 +57,13 @@ def generate_audio(
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
     - ref_text (str): Caption for reference audio.
+    stt_model (str): A mlx whisper model to use to transcribe.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
     - sample_rate (int): Sampling rate in Hz.
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
-    whisper_model (str): A mlx whisper model to use to transcribe.
     Returns:
     - None: The function writes the generated audio to a file.
     """
@@ -79,9 +79,9 @@ def generate_audio(
                 # mlx_whisper seems takes long time to import. Import only necessary.
                 import mlx_whisper
 
-                ref_text = mlx_whisper.transcribe(
-                    ref_audio, path_or_hf_repo=whisper_model
-                )["text"]
+                ref_text = mlx_whisper.transcribe(ref_audio, path_or_hf_repo=stt_model)[
+                    "text"
+                ]
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer
@@ -198,6 +198,12 @@ def parse_args():
         "--ref_text", type=str, default=None, help="Caption for reference audio"
     )
     parser.add_argument(
+        "--stt_model",
+        type=str,
+        default="mlx-community/whisper-large-v3-turbo",
+        help="STT model to use to transcribe reference audio",
+    )
+    parser.add_argument(
         "--temperature", type=float, default=0.7, help="Temperature for the model"
     )
 
@@ -224,6 +230,7 @@ def main():
         lang_code=args.lang_code,
         ref_audio=args.ref_audio,
         ref_text=args.ref_text,
+        stt_model=args.stt_model,
         file_prefix=args.file_prefix,
         audio_format=args.audio_format,
         sample_rate=args.sample_rate,
