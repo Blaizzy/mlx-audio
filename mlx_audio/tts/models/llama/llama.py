@@ -1,19 +1,20 @@
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Union
-import time
+
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from tqdm import tqdm
-
 import torch
-from snac import SNAC
-from transformers import AutoTokenizer
-from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.models import cache as cache_utils
-from mlx_lm.utils import stream_generate
-from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from mlx_lm.models.base import BaseModelArgs, create_attention_mask
+from mlx_lm.models.rope_utils import initialize_rope
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
+from mlx_lm.utils import stream_generate
+from snac import SNAC
+from tqdm import tqdm
+from transformers import AutoTokenizer
+
 from ..base import GenerationResult
 
 
@@ -46,22 +47,25 @@ class ModelConfig(BaseModelArgs):
 snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
 snac_model = snac_model.to("cpu")
 
+
 # TODO: Convert to mlx
 def redistribute_codes(code_list):
     layer_1 = []
     layer_2 = []
     layer_3 = []
-    for i in range((len(code_list)+1)//7):
-        layer_1.append(code_list[7*i])
-        layer_2.append(code_list[7*i+1]-4096)
-        layer_3.append(code_list[7*i+2]-(2*4096))
-        layer_3.append(code_list[7*i+3]-(3*4096))
-        layer_2.append(code_list[7*i+4]-(4*4096))
-        layer_3.append(code_list[7*i+5]-(5*4096))
-        layer_3.append(code_list[7*i+6]-(6*4096))
-    codes = [torch.tensor(layer_1).unsqueeze(0),
-            torch.tensor(layer_2).unsqueeze(0),
-            torch.tensor(layer_3).unsqueeze(0)]
+    for i in range((len(code_list) + 1) // 7):
+        layer_1.append(code_list[7 * i])
+        layer_2.append(code_list[7 * i + 1] - 4096)
+        layer_3.append(code_list[7 * i + 2] - (2 * 4096))
+        layer_3.append(code_list[7 * i + 3] - (3 * 4096))
+        layer_2.append(code_list[7 * i + 4] - (4 * 4096))
+        layer_3.append(code_list[7 * i + 5] - (5 * 4096))
+        layer_3.append(code_list[7 * i + 6] - (6 * 4096))
+    codes = [
+        torch.tensor(layer_1).unsqueeze(0),
+        torch.tensor(layer_2).unsqueeze(0),
+        torch.tensor(layer_3).unsqueeze(0),
+    ]
     audio_hat = snac_model.decode(codes)
     return audio_hat
 
@@ -244,7 +248,6 @@ class Model(nn.Module):
         token_to_find = 128257
         token_to_remove = 128258
 
-
         # MLX doesn't have nonzero, so we need to create indices manually
         mask = input_ids == token_to_find
         indices = []
@@ -261,7 +264,7 @@ class Model(nn.Module):
 
         if len(token_indices[1]) > 0:
             last_occurrence_idx = int(token_indices[1][-1])
-            cropped_tensor = input_ids[:, last_occurrence_idx+1:]
+            cropped_tensor = input_ids[:, last_occurrence_idx + 1 :]
         else:
             cropped_tensor = input_ids
 
@@ -286,8 +289,17 @@ class Model(nn.Module):
 
         return code_lists
 
-
-    def generate(self, text, voice: str, temperature: float = 1.0, top_p: float = 0.95, split_pattern: str = "\n", max_tokens: int = 1200, verbose: bool = False, **kwargs):
+    def generate(
+        self,
+        text,
+        voice: str,
+        temperature: float = 1.0,
+        top_p: float = 0.95,
+        split_pattern: str = "\n",
+        max_tokens: int = 1200,
+        verbose: bool = False,
+        **kwargs,
+    ):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
         prompts = [f"{voice}: " + p for p in prompts]
@@ -298,24 +310,43 @@ class Model(nn.Module):
             input_ids = mx.array(self.tokenizer(prompt, return_tensors="pt").input_ids)
             all_input_ids.append(input_ids)
 
-        start_token = mx.array([[128259]], dtype=mx.int64) # Start of human
-        end_tokens = mx.array([[128009, 128260]], dtype=mx.int64) # End of text, End of human
+        start_token = mx.array([[128259]], dtype=mx.int64)  # Start of human
+        end_tokens = mx.array(
+            [[128009, 128260]], dtype=mx.int64
+        )  # End of text, End of human
 
         all_modified_input_ids = []
         for input_ids in all_input_ids:
-            modified_input_ids = mx.concatenate([start_token, input_ids, end_tokens], axis=1) # SOH SOT Text EOT EOH
+            modified_input_ids = mx.concatenate(
+                [start_token, input_ids, end_tokens], axis=1
+            )  # SOH SOT Text EOT EOH
             all_modified_input_ids.append(modified_input_ids)
 
         input_ids = mx.concatenate(all_modified_input_ids, axis=0)
 
         sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", 1))
         logits_processors = make_logits_processors(
-            kwargs.get("logit_bias", None), kwargs.get("repetition_penalty", 1.1), kwargs.get("repetition_context_size", 20)
+            kwargs.get("logit_bias", None),
+            kwargs.get("repetition_penalty", 1.1),
+            kwargs.get("repetition_context_size", 20),
         )
 
         time_start = time.time()
         # TODO: Support batch processing as in the Colab: https://github.com/canopyai/Orpheus-TTS
-        for i, response in enumerate(tqdm(stream_generate(self, tokenizer=self.tokenizer, prompt=input_ids.squeeze(0), max_tokens=max_tokens, sampler=sampler, logits_processors=logits_processors), total=max_tokens, disable=not verbose)):
+        for i, response in enumerate(
+            tqdm(
+                stream_generate(
+                    self,
+                    tokenizer=self.tokenizer,
+                    prompt=input_ids.squeeze(0),
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                    logits_processors=logits_processors,
+                ),
+                total=max_tokens,
+                disable=not verbose,
+            )
+        ):
             next_token = mx.array([response.token])
             input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
             if i % 50 == 0:
@@ -371,18 +402,19 @@ class Model(nn.Module):
                     prompt={
                         "tokens": token_count,
                         "tokens-per-sec": (
-                            round(token_count / audio_duration_seconds, 2) if audio_duration_seconds > 0 else 0
+                            round(token_count / audio_duration_seconds, 2)
+                            if audio_duration_seconds > 0
+                            else 0
                         ),
                     },
                     audio_samples={
                         "samples": samples,
                         "samples-per-sec": (
-                            round(samples / audio_duration_seconds, 2) if audio_duration_seconds > 0 else 0
+                            round(samples / audio_duration_seconds, 2)
+                            if audio_duration_seconds > 0
+                            else 0
                         ),
                     },
                     processing_time_seconds=time_end - time_start,
                     peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
                 )
-
-
-
