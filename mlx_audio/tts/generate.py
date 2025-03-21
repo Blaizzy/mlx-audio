@@ -34,6 +34,7 @@ def generate_audio(
     - text (str): The input text to be converted to speech.
     - model (str): The TTS model to use.
     - voice (str): The voice style to use.
+    - temperature (float): The temperature for the model.
     - speed (float): Playback speed multiplier.
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
@@ -182,6 +183,16 @@ def parse_args():
     parser.add_argument(
         "--temperature", type=float, default=0.7, help="Temperature for the model"
     )
+    parser.add_argument(
+        "--top_p", type=float, default=0.9, help="Top-p for the model"
+    )
+    parser.add_argument(
+        "--top_k", type=int, default=50, help="Top-k for the model"
+    )
+    parser.add_argument(
+        "--repetition_penalty", type=float, default=1.1, help="Repetition penalty for the model"
+    )
+
 
     args = parser.parse_args()
 
@@ -199,19 +210,8 @@ def main():
     args = parse_args()
 
     generate_audio(
-        text=args.text,
         model_path=args.model,
-        voice=args.voice,
-        speed=args.speed,
-        lang_code=args.lang_code,
-        ref_audio=args.ref_audio,
-        ref_text=args.ref_text,
-        file_prefix=args.file_prefix,
-        audio_format=args.audio_format,
-        sample_rate=args.sample_rate,
-        join_audio=args.join_audio,
-        play=args.play,
-        verbose=args.verbose,
+        **vars(args)
     )
 
 
