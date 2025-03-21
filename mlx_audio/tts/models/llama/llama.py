@@ -278,10 +278,7 @@ class Model(nn.Module):
         return code_lists
 
 
-    def generate(self, text, voice: str, temperature: float = 1.0, top_p: float = 0.95, split_pattern: str = "\n", max_tokens: int = 200, verbose: bool = False, **kwargs):
-        prompt_cache = cache_utils.make_prompt_cache(
-            self
-        )
+    def generate(self, text, voice: str, temperature: float = 1.0, top_p: float = 0.95, split_pattern: str = "\n", max_tokens: int = 1200, verbose: bool = False, **kwargs):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
         prompts = [f"{voice}: " + p for p in prompts]
@@ -323,7 +320,7 @@ class Model(nn.Module):
 
         sampler = make_sampler(temperature, top_p, 0.0, 1)
 
-        output = self(input_ids, mask=None, cache=None)
+        output = self(input_ids)
         logits = output[:, -1, :]
         mx.async_eval(logits)
         next_token = sampler(logits)
@@ -331,7 +328,7 @@ class Model(nn.Module):
         input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
 
         for n in tqdm(range(max_tokens), disable=not verbose):
-            output = self(input_ids, cache=None)
+            output = self(input_ids)
             logits = output[:, -1, :]
             mx.async_eval(logits)
             next_token = sampler(logits)
