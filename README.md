@@ -172,7 +172,6 @@ for _, _, audio in pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+
 
 ### CSM (Conversational Speech Model)
 
-
 CSM is a model from Sesame that allows you text-to-speech and to customize voices using reference audio samples.
 
 #### Example Usage
