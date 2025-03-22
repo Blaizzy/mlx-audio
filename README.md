@@ -181,7 +181,7 @@ CSM is a model from Sesame that allows you text-to-speech and to customize voice
 python -m mlx_audio.tts.generate --model mlx-community/csm-1b --text "Hello from Sesame." --play --ref_audio ./conversational_a.wav
 ```
 
-You can download sample reference audio files from the [Sesame CSM-1B](https://huggingface.co/sesame/csm-1b) Hugging Face repository.
+You can pass any audio to clone the voice from or download sample audio file from the [Sesame CSM-1B](https://huggingface.co/mlx-community/csm-1b/tree/main/prompts) Hugging Face repository.
 
 ## Advanced Features
 
