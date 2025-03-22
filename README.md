@@ -170,6 +170,19 @@ for _, _, audio in pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+
 - 🇯🇵 `'j'` - Japanese (requires `pip install misaki[ja]`)
 - 🇨🇳 `'z'` - Mandarin Chinese (requires `pip install misaki[zh]`)
 
+### CSM (Conversational Speech Model)
+
+CSM is a model from Sesame that allows you text-to-speech and to customize voices using reference audio samples.
+
+#### Example Usage
+
+```bash
+# Generate speech using CSM-1B model with reference audio
+python -m mlx_audio.tts.generate --model mlx-community/csm-1b --text "Hello from Sesame." --play --ref_audio ./conversational_a.wav
+```
+
+You can pass any audio to clone the voice from or download sample audio file from [here](https://huggingface.co/mlx-community/csm-1b/tree/main/prompts).
+
 ## Advanced Features
 
 ### Quantization

@@ -289,7 +289,9 @@ class Vocos(nn.Module):
             weights = mx.load(f)
 
         config_path = path / "config.yaml"
-        model = cls.from_hparams(config_path)
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+        model = cls.from_hparams(config)
 
         # remove unused weights
         try:
