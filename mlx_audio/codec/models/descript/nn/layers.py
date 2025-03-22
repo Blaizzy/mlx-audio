@@ -96,8 +96,14 @@ class WNConvTranspose1d(nn.Module):
         )
 
     def __call__(self, x):
-        weight = self.weight_g * self.weight_v / normalize_weight(self.weight_v, except_dim=2)
-        y = mx.conv_transpose1d(x, weight, self.stride, self.padding, self.dilation, self.groups)
+        weight = (
+            self.weight_g
+            * self.weight_v
+            / normalize_weight(self.weight_v, except_dim=2)
+        )
+        y = mx.conv_transpose1d(
+            x, weight, self.stride, self.padding, self.dilation, self.groups
+        )
         if self.bias is not None:
             y = y + self.bias
         return y

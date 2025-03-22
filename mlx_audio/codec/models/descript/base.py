@@ -5,12 +5,9 @@ from typing import Union
 
 import mlx.core as mx
 import mlx.nn as nn
-
 import numpy as np
-
-from einops.array_api import rearrange
-
 import soundfile as sf
+from einops.array_api import rearrange
 
 SUPPORTED_VERSIONS = ["1.0.0"]
 
@@ -140,22 +137,20 @@ class CodecMixin:
             raise ValueError(
                 f"Sample rate of the audio signal ({original_sr}) does not match the sample rate of the model ({self.sample_rate})."
             )
-        
+
         audio_data = mx.array(audio_signal)
-        
+
         rms = mx.sqrt(mx.mean(mx.power(audio_data, 2), axis=-1) + 1e-12)
         input_db = 20 * mx.log10(rms / 1.0 + 1e-12)
-        
+
         if normalize_db is not None:
             audio_data = audio_data * mx.power(10, (normalize_db - input_db) / 20)
-        
+
         audio_data = rearrange(audio_data, "n -> 1 1 n")
         nb, nac, nt = audio_data.shape
         audio_data = rearrange(audio_data, "nb nac nt -> (nb nac) 1 nt")
-        
-        win_duration = (
-            signal_duration if win_duration is None else win_duration
-        )
+
+        win_duration = signal_duration if win_duration is None else win_duration
 
         if signal_duration <= win_duration:
             self.padding = True
@@ -164,7 +159,7 @@ class CodecMixin:
         else:
             self.padding = False
             audio_data = mx.pad(audio_data, [(0, 0), (0, 0), (self.delay, self.delay)])
-            
+
             n_samples = int(win_duration * self.sample_rate)
             n_samples = int(math.ceil(n_samples / self.hop_length) * self.hop_length)
             hop = self.get_output_length(n_samples)
@@ -198,13 +193,10 @@ class CodecMixin:
         self.padding = original_padding
         return dac_file
 
-    def decompress(
-        self,
-        obj: Union[str, Path, DACFile]
-    ) -> mx.array:
+    def decompress(self, obj: Union[str, Path, DACFile]) -> mx.array:
         if isinstance(obj, (str, Path)):
             obj = DACFile.load(obj)
-            
+
         if self.sample_rate != obj.sample_rate:
             raise ValueError(
                 f"Sample rate of the audio signal ({obj.sample_rate}) does not match the sample rate of the model ({self.sample_rate})."
@@ -225,10 +217,10 @@ class CodecMixin:
 
         recons = mx.concatenate(recons, axis=1)
         recons = rearrange(recons, "1 n 1 -> 1 n")
-        
+
         target_db = obj.input_db
         normalize_db = -16
-        
+
         if normalize_db is not None:
             recons = recons * mx.power(10, (target_db - normalize_db) / 20)
 

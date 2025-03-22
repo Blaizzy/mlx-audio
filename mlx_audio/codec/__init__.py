@@ -1,1 +1,1 @@
-from .models import Encodec, DAC, Mimi, Vocos
+from .models import DAC, Encodec, Mimi, Vocos

@@ -5,12 +5,11 @@ from typing import List, Literal, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from huggingface_hub import snapshot_download
 
 from .base import CodecMixin
 from .nn.layers import Snake1d, WNConv1d, WNConvTranspose1d
 from .nn.quantize import ResidualVectorQuantize
-
-from huggingface_hub import snapshot_download
 
 
 class ResidualUnit(nn.Module):
@@ -194,7 +193,9 @@ class DAC(nn.Module, CodecMixin):
         n_quantizers: int = None,
     ):
         z = self.encoder(audio_data.moveaxis(1, 2))
-        z, codes, latents, commitment_loss, codebook_loss = self.quantizer(z, n_quantizers)
+        z, codes, latents, commitment_loss, codebook_loss = self.quantizer(
+            z, n_quantizers
+        )
         return z, codes, latents, commitment_loss, codebook_loss
 
     def decode(self, z: mx.array):
@@ -224,7 +225,9 @@ class DAC(nn.Module, CodecMixin):
         audio_data = self.preprocess(audio_data, sample_rate)
 
         if use_rvq:
-            z, codes, latents, commitment_loss, codebook_loss = self.encode(audio_data, n_quantizers)
+            z, codes, latents, commitment_loss, codebook_loss = self.encode(
+                audio_data, n_quantizers
+            )
         else:
             z = self.encoder(audio_data.moveaxis(1, 2))
 
@@ -274,7 +277,9 @@ class DAC(nn.Module, CodecMixin):
         return new_weights
 
     @classmethod
-    def from_pretrained(cls, model: Literal["16khz", "24khz", "44khz"] = "24khz") -> "DAC":
+    def from_pretrained(
+        cls, model: Literal["16khz", "24khz", "44khz"] = "24khz"
+    ) -> "DAC":
         if model == "16khz":
             model_name = "mlx-community/descript-audio-codec-16khz"
             encoder_dim = 64

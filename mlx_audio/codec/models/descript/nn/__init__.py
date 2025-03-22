@@ -1,2 +1,1 @@
-from . import layers
-from . import quantize
+from . import layers, quantize
