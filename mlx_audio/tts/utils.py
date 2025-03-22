@@ -169,3 +169,53 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
 
     model.eval()
     return model
+
+
+def resample_audio(audio, orig_sr, target_sr):
+    """
+    Resample audio from orig_sr to target_sr using MLX.
+    
+    Args:
+        audio: MLX array of audio samples
+        orig_sr: Original sample rate in Hz
+        target_sr: Target sample rate in Hz
+        
+    Returns:
+        MLX array of resampled audio
+    """
+    # Ensure the audio is an MLX array
+    if not isinstance(audio, mx.array):
+        audio = mx.array(audio, dtype=mx.float32)
+    
+    # If sample rates are the same, return the original audio
+    if orig_sr == target_sr:
+        return audio
+    
+    # Calculate the resample ratio and new length
+    ratio = target_sr / orig_sr
+    old_length = audio.shape[0]
+    new_length = int(old_length * ratio)
+    
+    # Create evenly spaced indices for the new audio
+    new_indices = mx.linspace(0, old_length - 1, new_length)
+    
+    # Get the indices for interpolation
+    indices_floor = mx.floor(new_indices).astype(mx.int32)
+    indices_ceil = mx.minimum(indices_floor + 1, old_length - 1)
+    
+    # Calculate the weights for interpolation
+    weights_ceil = new_indices - indices_floor
+    weights_floor = 1.0 - weights_ceil
+    
+    # Handle multi-dimensional audio (e.g., stereo)
+    if len(audio.shape) > 1:
+        weights_floor = weights_floor.reshape(-1, 1)
+        weights_ceil = weights_ceil.reshape(-1, 1)
+    
+    # Perform linear interpolation
+    resampled = (
+        weights_floor * audio[indices_floor]
+        + weights_ceil * audio[indices_ceil]
+    )
+    
+    return resampled

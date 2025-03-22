@@ -2,29 +2,30 @@ import argparse
 import os
 import sys
 from typing import Optional
+from dataclasses import dataclass
 
 import mlx.core as mx
 import soundfile as sf
 
 from .audio_player import AudioPlayer
-from .utils import load_model
+from .utils import load_model, resample_audio
 
 
 def generate_audio(
     text: str,
-    model_path: str = "prince-canuma/Kokoro-82M",
+    model_path: str = "mlx-community/Kokoro-82M-bf16",
     voice: str = "af_heart",
     speed: float = 1.0,
-    lang_code: str = "a",
+    lang_code: str = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
-    file_prefix: str = "audio",
+    file_prefix: str = "output",
     audio_format: str = "wav",
     sample_rate: int = 24000,
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
-    temperature: float = 0.7,
+    temperature: float = 0.4,
     **kwargs,
 ) -> None:
     """
@@ -60,11 +61,14 @@ def generate_audio(
                 )
 
             ref_audio, ref_sr = sf.read(ref_audio)
+            # Instead of raising an error, resample the audio to 24000 Hz
             if ref_sr != 24000:
-                raise ValueError(
-                    f"Reference audio sample rate must be 24000 Hz, but got {ref_sr} Hz."
-                )
-            ref_audio = mx.array(ref_audio, dtype=mx.float32)
+                if verbose:
+                    print(f"Resampling reference audio from {ref_sr} Hz to 24000 Hz")
+                ref_audio = mx.array(ref_audio, dtype=mx.float32)
+                ref_audio = resample_audio(ref_audio, ref_sr, 24000)
+            else:
+                ref_audio = mx.array(ref_audio, dtype=mx.float32)
 
         # Load AudioPlayer
         player = AudioPlayer() if play else None

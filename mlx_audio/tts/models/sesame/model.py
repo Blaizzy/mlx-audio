@@ -358,7 +358,8 @@ class Model(nn.Module):
 
         start_time = time.time()
 
-        sampler = sampler or make_sampler(temp=0.9, top_k=50)
+        # temperature to 0.7 helps to avoid audio artifacts
+        sampler = sampler or make_sampler(temp=0.7, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
 
         tokens, tokens_mask = [], []
