@@ -31,13 +31,21 @@
             margin: 4px 2px;
             cursor: pointer;
             border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            background-color: #45a049;
         }
         button:disabled {
             background-color: #cccccc;
+            color: #666;
             cursor: not-allowed;
         }
         #stopBtn {
             background-color: #f44336;
+        }
+        #stopBtn:hover {
+            background-color: #d32f2f;
         }
         #status {
             margin-top: 10px;
@@ -239,19 +247,20 @@
         const audioUpload = document.getElementById('audioUpload');
         const playBtn = document.getElementById('playBtn');
         const stopBtn = document.getElementById('stopBtn');
-        const statusElement = document.getElementById('status');
-
-        // TTS elements
         const textInput = document.getElementById('text');
         const voiceSelect = document.getElementById('voice');
         const modelSelect = document.getElementById('model');
         const speedInput = document.getElementById('speed');
         const speedValue = document.getElementById('speed-value');
+        const statusElement = document.getElementById('status');
         const generateBtn = document.getElementById('generateBtn');
         const openFolderBtn = document.getElementById('openFolderBtn');
-        const ttsErrorElement = document.getElementById('ttsError');
         const ttsStatusElement = document.getElementById('ttsStatus');
-
+        const ttsErrorElement = document.getElementById('ttsError');
+        
+        // Initialize active tab
+        let activeTab = 'textToSpeech';
+        
         // Audio variables
         let audioContext;
         let analyser;
@@ -259,146 +268,343 @@
         let audioElement;
         let audioSource;
 
-        // Three.js setup
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setClearColor(0x000000);
-        document.body.appendChild(renderer.domElement);
-
-        // Add orbit controls
-        const controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.05;
-
-        // Position camera
-        camera.position.set(0, 0, 100);
-        camera.lookAt(0, 0, 0);
-
-        // Add lights
-        const ambientLight = new THREE.AmbientLight(0x404040);
-        scene.add(ambientLight);
-
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(1, 1, 1);
-        scene.add(directionalLight);
-
-        const pointLight = new THREE.PointLight(0xffffff, 1, 100);
-        pointLight.position.set(0, 0, 0);
-        scene.add(pointLight);
-
-        // Create particle system instead of sphere mesh
-        const particleCount = 2000; // More particles for a dense, wild look
-        const particlesGeometry = new THREE.BufferGeometry();
-        const positions = new Float32Array(particleCount * 3);
-        const colors = new Float32Array(particleCount * 3);
-
-        // Distribute particles in a spherical cloud with some randomness
-        for (let i = 0; i < particleCount; i++) {
-            const theta = Math.random() * Math.PI * 2;
-            const phi = Math.acos(2 * Math.random() - 1);
-            const r = 30 * (0.7 + Math.random() * 0.6); // Vary radius for a chaotic, cloud-like effect
-
-            const x = r * Math.sin(phi) * Math.cos(theta);
-            const y = r * Math.sin(phi) * Math.sin(theta);
-            const z = r * Math.cos(phi);
-
-            positions[i * 3] = x;
-            positions[i * 3 + 1] = y;
-            positions[i * 3 + 2] = z;
-
-            // White particles for glowing effect
-            colors[i * 3] = 1.0;     // R
-            colors[i * 3 + 1] = 1.0; // G
-            colors[i * 3 + 2] = 1.0; // B
-        }
-
-        particlesGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-        particlesGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-
-        // Square particle material (using a simple white square texture)
-        const particleMaterial = new THREE.PointsMaterial({
-            size: 0.6, // Slightly larger for visibility
-            vertexColors: true,
-            map: new THREE.TextureLoader().load('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFElEQVR42mNgwAJSMA/9f4HgY2BgguBJmgQHoAbpQJQcP8AARCcAUsn3dr4AAAAASUVORK5CYII='), // 1x1 white square
-            transparent: true,
-            opacity: 0.9,
-            depthWrite: false,
-            blending: THREE.AdditiveBlending // Glowing, ethereal effect
-        });
-
-        const particles = new THREE.Points(particlesGeometry, particleMaterial);
-        scene.add(particles);
-
-        // Store original positions for reset and animation
-        const originalPositions = positions.slice();        
+        // Three.js variables
+        let scene, camera, renderer, controls;
+        let particleSystem, originalPositions;
+        let animationId;
+        let timeValue = 0;
         
-        // Create connecting lines for the surge effect
-        const linesGeometry = new THREE.BufferGeometry();
-        const linePositions = new Float32Array(particleCount * 6); // Each line has 2 points
-        let lineIndex = 0;
+        // Animation parameters
+        const particleCount = 8000;  
+        let baseAmplitude = 0.05;
+        let baseFrequency = 0.3;
+        let basePull = new THREE.Vector3(0, 0, 1);
+        
+        // Transition parameters
+        let targetAmplitude = 0.05;
+        let targetFrequency = 0.3;
+        let targetPull = new THREE.Vector3(0, 0, 1);
+        let transitionStartTime = 0;
+        let transitionDuration = 1000; 
+        
+        // Text visualization
+        let currentWords = [];
+        let wordParams = [];
+        let animationStartTime = 0;
+        let currentWordIndex = 0;
+        const wordDuration = 1000; 
+        
+        // Initialize Three.js scene
+        function init() {
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+            
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            createParticleSystem();
+            
+            animate();
+        }
+        
+        // Create particle system
+        function createParticleSystem() {
+            const positions = new Float32Array(particleCount * 3);
+            originalPositions = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
+            const sizes = new Float32Array(particleCount);
+            
+            const radius = 1;
+            
+            for (let i = 0; i < particleCount; i++) {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta);
+                const z = radius * Math.cos(phi);
+                
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+                
+                originalPositions[i * 3] = x;
+                originalPositions[i * 3 + 1] = y;
+                originalPositions[i * 3 + 2] = z;
+                
+                // Add variation to particle colors (blue/white hues)
+                colors[i * 3] = 0.7 + Math.random() * 0.3;     // R: high amount for white
+                colors[i * 3 + 1] = 0.7 + Math.random() * 0.3; // G: high amount for white
+                colors[i * 3 + 2] = 0.9 + Math.random() * 0.1; // B: highest for blue tint
+                
+                // Vary particle sizes slightly
+                sizes[i] = 0.02 + Math.random() * 0.03;
+            }
+            
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+            
+            const material = new THREE.PointsMaterial({
+                size: 0.03,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                sizeAttenuation: true,
+                blending: THREE.AdditiveBlending // Add glow effect
+            });
+            
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+        }
+        
+        // Generate a unique sequence of numbers for each word or frequency band
+        function generateFingerprint(input) {
+            const length = 6 + Math.floor((input.length || 5) % 5); 
+            const result = [];
+            
+            for (let i = 0; i < length; i++) {
+                const charCode = typeof input === 'string' 
+                    ? input.charCodeAt(i % input.length) 
+                    : (input * 100 + i);
+                const position = i + 1;
+                const inputLength = typeof input === 'string' ? input.length : 5;
+                
+                const number = ((charCode * position * (i + 1) * inputLength) % 15) + 1;
+                result.push(number);
+            }
+            
+            return result;
+        }
+        
+        // Compute parameters for cosmic wave deformation based on the fingerprint
+        function computeParams(input) {
+            const fingerprint = generateFingerprint(input);
+            const avg = fingerprint.reduce((acc, n) => acc + n, 0) / fingerprint.length;
+            
+            const minAmplitude = 0.1, maxAmplitude = 0.5;
+            const amplitude = minAmplitude + (avg / 15) * (maxAmplitude - minAmplitude);
+            
+            const rawFrequency = fingerprint[0] / 15; 
+            const minFrequency = 0.2, maxFrequency = 0.6;
+            const frequency = minFrequency + rawFrequency * (maxFrequency - minFrequency);
+            
+            const pullX = fingerprint[0] / 15 - 0.5;
+            const pullY = fingerprint[1] / 15 - 0.5;
+            const pullZ = fingerprint[2] / 15 - 0.5;
+            const pull = new THREE.Vector3(pullX, pullY, pullZ).normalize();
+            
+            return { amplitude, frequency, pull };
+        }
+        
+        // Reset sphere to original state
+        function resetSphere() {
+            if (!particleSystem) return;
+            
+            const positions = particleSystem.geometry.attributes.position.array;
+            
+            for (let i = 0; i < particleCount; i++) {
+                positions[i * 3] = originalPositions[i * 3];
+                positions[i * 3 + 1] = originalPositions[i * 3 + 1];
+                positions[i * 3 + 2] = originalPositions[i * 3 + 2];
+            }
+            
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            
+            baseAmplitude = 0.05;
+            baseFrequency = 0.3;
+            basePull = new THREE.Vector3(0, 0, 1);
+        }
+        
+        // Process text into words and compute parameters for each word
+        function processText(text) {
+            if (!text || text.trim() === '') return;
+            
+            const words = text.split(/\s+/).filter(word => word.length > 0);
+            if (words.length === 0) return;
+            
+            currentWords = words;
+            wordParams = words.map(word => computeParams(word));
+            
+            animationStartTime = performance.now();
+            currentWordIndex = 0;
+        }
+        
+        // Animation loop
+        function animate() {
+            animationId = requestAnimationFrame(animate);
 
-        // Connect nearby particles (wild, organic web)
-        for (let i = 0; i < particleCount; i++) {
-            for (let j = i + 1; j < particleCount; j++) {
-                const iPos = new THREE.Vector3(
-                    positions[i * 3],
-                    positions[i * 3 + 1],
-                    positions[i * 3 + 2]
-                );
-                const jPos = new THREE.Vector3(
-                    positions[j * 3],
-                    positions[j * 3 + 1],
-                    positions[j * 3 + 2]
-                );
-                const distance = iPos.distanceTo(jPos);
+            controls.update();
 
-                if (distance < 12 && Math.random() > 0.9) { // Sparse connections for a wild look
-                    linePositions[lineIndex++] = iPos.x;
-                    linePositions[lineIndex++] = iPos.y;
-                    linePositions[lineIndex++] = iPos.z;
-                    linePositions[lineIndex++] = jPos.x;
-                    linePositions[lineIndex++] = jPos.y;
-                    linePositions[lineIndex++] = jPos.z;
+            timeValue += 0.01;
+            
+            let effectiveAmplitude = baseAmplitude;
+            let effectiveFrequency = baseFrequency;
+            let effectivePull = basePull.clone();
+            
+            if (audioContext && analyser) {
+                analyser.getByteFrequencyData(dataArray);
+                
+                const bass = getAverageFrequency(dataArray, 0, 10) / 256;
+                const mid = getAverageFrequency(dataArray, 11, 100) / 256;
+                const treble = getAverageFrequency(dataArray, 101, 255) / 256;
+                
+                targetAmplitude = 0.1 + bass * 0.4;
+                targetFrequency = 0.2 + mid * 0.4;
+                
+                const pullX = bass - 0.5;
+                const pullY = mid - 0.5;
+                const pullZ = treble - 0.5;
+                targetPull = new THREE.Vector3(pullX, pullY, pullZ).normalize();
+                
+                if (transitionStartTime === 0) {
+                    transitionStartTime = performance.now();
                 }
             }
+            else if (currentWords.length > 0 && animationStartTime > 0) {
+                const elapsed = performance.now() - animationStartTime;
+                const totalWords = currentWords.length;
+                const totalDuration = totalWords * wordDuration;
+                
+                if (elapsed >= totalDuration) {
+                    currentWords = [];
+                    animationStartTime = 0;
+                    
+                    targetAmplitude = 0.05;
+                    targetFrequency = 0.3;
+                    targetPull = new THREE.Vector3(0, 0, 1);
+                    
+                    transitionStartTime = performance.now();
+                } else {
+                    let wordIndex = Math.floor(elapsed / wordDuration);
+                    let phaseTime = elapsed % wordDuration;
+                    let currentParams, nextParams;
+                    
+                    if (wordIndex < totalWords - 1) {
+                        currentParams = wordParams[wordIndex];
+                        nextParams = wordParams[wordIndex + 1];
+                    } else {
+                        currentParams = wordParams[wordIndex];
+                        nextParams = {
+                            amplitude: 0.05,
+                            frequency: 0.3,
+                            pull: new THREE.Vector3(0, 0, 1)
+                        };
+                    }
+                    
+                    const t = phaseTime / wordDuration; 
+                    const easeInOutQuad = v => v < 0.5 ? 2 * v * v : -1 + (4 - 2 * v) * v;
+                    const easedT = easeInOutQuad(t);
+                    
+                    targetAmplitude = currentParams.amplitude + (nextParams.amplitude - currentParams.amplitude) * easedT;
+                    targetFrequency = currentParams.frequency + (nextParams.frequency - currentParams.frequency) * easedT;
+                    targetPull = currentParams.pull.clone().lerp(nextParams.pull, easedT).normalize();
+                    
+                    if (wordIndex !== currentWordIndex) {
+                        currentWordIndex = wordIndex;
+                    }
+                }
+            }
+            else {
+                particleSystem.rotation.y += 0.001;
+                particleSystem.rotation.x += 0.0005;
+            }
+            
+            if (audioContext) {
+                const elapsed = performance.now() - transitionStartTime;
+                const t = Math.min(elapsed / transitionDuration, 1.0);
+                const easeOutQuad = t => t * (2 - t);
+                const easedT = easeOutQuad(t);
+                
+                effectiveAmplitude = baseAmplitude + (targetAmplitude - baseAmplitude) * easedT;
+                effectiveFrequency = baseFrequency + (targetFrequency - baseFrequency) * easedT;
+                effectivePull = basePull.clone().lerp(targetPull, easedT);
+                
+                if (elapsed >= transitionDuration) {
+                    baseAmplitude = targetAmplitude;
+                    baseFrequency = targetFrequency;
+                    basePull = targetPull.clone();
+                    transitionStartTime = 0;
+                }
+            }
+            
+            if (particleSystem) {
+                const positions = particleSystem.geometry.attributes.position.array;
+                
+                for (let i = 0; i < particleCount; i++) {
+                    const ox = originalPositions[i * 3];
+                    const oy = originalPositions[i * 3 + 1];
+                    const oz = originalPositions[i * 3 + 2];
+                    
+                    const base = new THREE.Vector3(ox, oy, oz);
+                    
+                    const dotVal = base.dot(effectivePull);
+                    const parallel = effectivePull.clone().multiplyScalar(dotVal);
+                    const perpendicular = base.clone().sub(parallel);
+                    
+                    const phase = timeValue * effectiveFrequency + (ox + oy + oz) * 2.0;
+                    const deformation = effectiveAmplitude * Math.sin(phase);
+                    
+                    const newParallel = parallel.multiplyScalar(1 + 2 * deformation);
+                    const newPerp = perpendicular.multiplyScalar(1 - deformation);
+                    const newPos = newParallel.add(newPerp);
+                    
+                    positions[i * 3] = newPos.x;
+                    positions[i * 3 + 1] = newPos.y;
+                    positions[i * 3 + 2] = newPos.z;
+                }
+                
+                particleSystem.geometry.attributes.position.needsUpdate = true;
+            }
+            
+            renderer.render(scene, camera);
         }
-
-        linesGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions.slice(0, lineIndex), 3));
-        const lineMaterial = new THREE.LineBasicMaterial({
-            color: 0xffa500, // Vibrant orange
-            transparent: true,
-            opacity: 0.4,
-            depthWrite: false,
-            blending: THREE.AdditiveBlending // Glowing lines
+        
+        // Helper function to get average frequency in a range
+        function getAverageFrequency(dataArray, startIndex, endIndex) {
+            let sum = 0;
+            for (let i = startIndex; i <= endIndex; i++) {
+                sum += dataArray[i];
+            }
+            return sum / (endIndex - startIndex + 1);
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
-        const lines = new THREE.LineSegments(linesGeometry, lineMaterial);
-        scene.add(lines);        
-
-        // Define rotation speed variables
-        let rotationSpeedY = 0.002;
-        let rotationSpeedX = 0.001;
-        let isGenerating = false;
+        // Initialize the scene
+        init();
 
         // Tab functionality
         function openTab(evt, tabName) {
-            // Hide all tabcontent
             const tabcontent = document.getElementsByClassName("tabcontent");
             for (let i = 0; i < tabcontent.length; i++) {
                 tabcontent[i].style.display = "none";
             }
             
-            // Remove active class from all tablinks
             const tablinks = document.getElementsByClassName("tablinks");
             for (let i = 0; i < tablinks.length; i++) {
                 tablinks[i].className = tablinks[i].className.replace(" active", "");
             }
             
-            // Show the current tab and add active class to the button
             document.getElementById(tabName).style.display = "block";
             evt.currentTarget.className += " active";
+            
+            // Update active tab
+            activeTab = tabName;
         }
         
         // Speed slider update
@@ -418,23 +624,15 @@
                 return;
             }
             
-            // Hide previous error
             ttsErrorElement.style.display = 'none';
             ttsStatusElement.textContent = 'Generating speech...';
             
-            // Increase rotation speed to indicate processing
-            isGenerating = true;
-            rotationSpeedY = 0.01;
-            rotationSpeedX = 0.005;
-            
-            // Create form data
             const formData = new FormData();
             formData.append('text', text);
             formData.append('voice', voice);
             formData.append('model', model);
             formData.append('speed', speed);
             
-            // Send request to server
             fetch('/tts', {
                 method: 'POST',
                 body: formData
@@ -450,35 +648,13 @@
             .then(data => {
                 ttsStatusElement.textContent = 'Speech generated successfully!';
                 
-                // Reset rotation speed
-                isGenerating = false;
-                rotationSpeedY = 0.002;
-                rotationSpeedX = 0.001;
-                
-                // Clean up previous audio resources
-                if (audioElement) {
-                    audioElement.pause();
-                    audioElement.removeAttribute('src');
-                    audioElement.load();
-                }
-                
-                if (audioSource) {
-                    audioSource.disconnect();
-                    audioSource = null;
-                }
-                
-                // Create new audio element to avoid source node issues
                 audioElement = new Audio();
-                
-                // Set audio source with absolute path
                 audioElement.src = `/audio/${data.filename}`;
                 audioElement.loop = false;
                 
-                // Enable play button
                 playBtn.disabled = false;
                 stopBtn.disabled = true;
                 
-                // Add ended event listener
                 audioElement.addEventListener('ended', function() {
                     statusElement.textContent = "Audio finished playing.";
                     playBtn.disabled = false;
@@ -486,16 +662,10 @@
                     resetSphere();
                 });
                 
-                // Auto-play the generated audio
                 playAudio();
             })
             .catch(error => {
                 showTtsError(error.message);
-                
-                // Reset rotation speed on error too
-                isGenerating = false;
-                rotationSpeedY = 0.002;
-                rotationSpeedX = 0.001;
             });
         });
         
@@ -527,52 +697,35 @@
         
         // Function to play audio (reused for both upload and TTS)
         function playAudio() {
-            if (!audioElement || !audioElement.src) {
-                statusElement.textContent = "No audio available to play.";
-                return;
+            if (audioContext) {
+                audioContext.close();
             }
             
-            statusElement.textContent = "Playing audio...";
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 512;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
             
-            // Initialize audio context if needed
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaElementSource(audioElement);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+            
+            audioElement.playbackRate = parseFloat(speedInput.value);
+            audioElement.play();
+            
+            // Reset the sphere first
+            resetSphere();
+            
+            // If playing TTS, process the text for word animation
+            if (activeTab === 'textToSpeech' && textInput.value) {
+                processText(textInput.value);
             }
             
-            // Create analyser if needed
-            if (!analyser) {
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
-            }
-            
-            // Connect audio element to analyser if not already connected
-            if (!audioSource) {
-                try {
-                    audioSource = audioContext.createMediaElementSource(audioElement);
-                    audioSource.connect(analyser);
-                    analyser.connect(audioContext.destination);
-                } catch (error) {
-                    console.error("Error connecting audio source:", error);
-                    statusElement.textContent = "Error setting up audio visualization. Try refreshing the page.";
-                    
-                    // Still try to play the audio even if visualization fails
-                    audioElement.play().catch(playError => {
-                        statusElement.textContent = "Error playing audio: " + playError.message;
-                    });
-                    return;
-                }
-            }
-            
-            // Play audio
-            audioElement.play().then(() => {
-                playBtn.disabled = true;
-                stopBtn.disabled = false;
-            }).catch(error => {
-                statusElement.textContent = "Error playing audio: " + error.message;
-            });
+            playBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusElement.textContent = 'Playing...';
         }
-
+        
         // Handle audio upload
         audioUpload.addEventListener('change', function(e) {
             const file = e.target.files[0];
@@ -580,7 +733,6 @@
 
             statusElement.textContent = "Audio file loaded. Press Play to start.";
 
-            // Clean up previous audio resources
             if (audioElement) {
                 audioElement.pause();
                 audioElement.removeAttribute('src');
@@ -592,16 +744,13 @@
                 audioSource = null;
             }
             
-            // Create new audio element
             audioElement = new Audio();
             audioElement.src = URL.createObjectURL(file);
             audioElement.loop = false;
 
-            // Enable play button
             playBtn.disabled = false;
             stopBtn.disabled = true;
 
-            // Add ended event listener
             audioElement.addEventListener('ended', function() {
                 statusElement.textContent = "Audio finished playing.";
                 playBtn.disabled = false;
@@ -624,195 +773,9 @@
                 playBtn.disabled = false;
                 stopBtn.disabled = true;
 
-                // Reset sphere to original state
                 resetSphere();
             }
         });
-
-        // Reset sphere to original state
-// Reset particle positions
-        function resetSphere() {
-            const positionAttribute = particlesGeometry.attributes.position;
-            for (let i = 0; i < particleCount; i++) {
-                positionAttribute.setXYZ(
-                    i,
-                    originalPositions[i * 3],
-                    originalPositions[i * 3 + 1],
-                    originalPositions[i * 3 + 2]
-                );
-            }
-            positionAttribute.needsUpdate = true;
-
-            const linePositionAttribute = linesGeometry.attributes.position;
-            for (let i = 0; i < lineIndex / 3; i++) {
-                const particle1Index = Math.floor(i * 2);
-                const particle2Index = particle1Index + 1;
-
-                linePositionAttribute.setXYZ(
-                    i * 2,
-                    positionAttribute.getX(particle1Index),
-                    positionAttribute.getY(particle1Index),
-                    positionAttribute.getZ(particle1Index)
-                );
-                linePositionAttribute.setXYZ(
-                    i * 2 + 1,
-                    positionAttribute.getX(particle2Index),
-                    positionAttribute.getY(particle2Index),
-                    positionAttribute.getZ(particle2Index)
-                );
-            }
-            linePositionAttribute.needsUpdate = true;
-        }
-
-        // Animation loop
-        // Animation loop
-        function animate() {
-            requestAnimationFrame(animate);
-
-            controls.update();
-
-            const time = performance.now() * 0.001;
-
-            // Rotate particles and lines together
-            particles.rotation.y += rotationSpeedY;
-            particles.rotation.x += rotationSpeedX;
-            lines.rotation.copy(particles.rotation);
-
-            if (analyser && dataArray && !audioElement.paused) {
-                analyser.getByteFrequencyData(dataArray);
-
-                const bassAvg = getAverageFrequency(dataArray, 0, 5);
-                const midAvg = getAverageFrequency(dataArray, 6, 20);
-                const trebleAvg = getAverageFrequency(dataArray, 21, 40);
-
-                const pulseFactor = Math.sin(time * 2) * 0.05 + 1; // Faster pulsation for energy
-
-                // Update particle positions for wild surge effect
-                const positionAttribute = particlesGeometry.attributes.position;
-                for (let i = 0; i < particleCount; i++) {
-                    const originalX = originalPositions[i * 3];
-                    const originalY = originalPositions[i * 3 + 1];
-                    const originalZ = originalPositions[i * 3 + 2];
-
-                    const vertexLength = Math.sqrt(originalX * originalX + originalY * originalY + originalZ * originalZ);
-                    let surgeFactor;
-
-                    // Creative surge: outer particles react to treble, inner to bass
-                    if (vertexLength > 25) {
-                        surgeFactor = trebleAvg / 255 * 2.5; // Outer surge
-                    } else if (vertexLength > 15) {
-                        surgeFactor = midAvg / 255 * 2; // Middle surge
-                    } else {
-                        surgeFactor = bassAvg / 255 * 3; // Inner surge (big kick!)
-                    }
-
-                    const scaleFactor = pulseFactor * (1 + surgeFactor);
-
-                    positionAttribute.setXYZ(
-                        i,
-                        originalX * scaleFactor,
-                        originalY * scaleFactor,
-                        originalZ * scaleFactor
-                    );
-                }
-                positionAttribute.needsUpdate = true;
-
-                // Update line positions to follow particles
-                const linePositionAttribute = linesGeometry.attributes.position;
-                for (let i = 0; i < lineIndex / 3; i++) {
-                    const particle1Index = Math.floor(i * 2);
-                    const particle2Index = particle1Index + 1;
-
-                    linePositionAttribute.setXYZ(
-                        i * 2,
-                        positionAttribute.getX(particle1Index),
-                        positionAttribute.getY(particle1Index),
-                        positionAttribute.getZ(particle1Index)
-                    );
-                    linePositionAttribute.setXYZ(
-                        i * 2 + 1,
-                        positionAttribute.getX(particle2Index),
-                        positionAttribute.getY(particle2Index),
-                        positionAttribute.getZ(particle2Index)
-                    );
-                }
-                linePositionAttribute.needsUpdate = true;
-
-                // Dynamic colors for a wild vibe
-                const hue = (bassAvg / 255) * 0.2; // Subtle hue shift
-                particleMaterial.color.setHSL(hue, 0.8, 0.6 + (trebleAvg / 255) * 0.3);
-                lineMaterial.color.setHSL(0.1, 0.9, 0.5 + (midAvg / 255) * 0.2); // Orange with brightness variation
-
-                // Point light reacts wildly
-                pointLight.intensity = 1 + (bassAvg / 255) * 2;
-                pointLight.color.setHSL(hue, 0.8, 0.5);
-            } else {
-                // Subtle pulsation when idle
-                const pulseFactor = Math.sin(time * 2) * 0.05 + 1;
-
-                const positionAttribute = particlesGeometry.attributes.position;
-                for (let i = 0; i < particleCount; i++) {
-                    const originalX = originalPositions[i * 3];
-                    const originalY = originalPositions[i * 3 + 1];
-                    const originalZ = originalPositions[i * 3 + 2];
-
-                    positionAttribute.setXYZ(
-                        i,
-                        originalX * pulseFactor,
-                        originalY * pulseFactor,
-                        originalZ * pulseFactor
-                    );
-                }
-                positionAttribute.needsUpdate = true;
-
-                // Update line positions
-                const linePositionAttribute = linesGeometry.attributes.position;
-                for (let i = 0; i < lineIndex / 3; i++) {
-                    const particle1Index = Math.floor(i * 2);
-                    const particle2Index = particle1Index + 1;
-
-                    linePositionAttribute.setXYZ(
-                        i * 2,
-                        positionAttribute.getX(particle1Index),
-                        positionAttribute.getY(particle1Index),
-                        positionAttribute.getZ(particle1Index)
-                    );
-                    linePositionAttribute.setXYZ(
-                        i * 2 + 1,
-                        positionAttribute.getX(particle2Index),
-                        positionAttribute.getY(particle2Index),
-                        positionAttribute.getZ(particle2Index)
-                    );
-                }
-                linePositionAttribute.needsUpdate = true;
-
-                // Idle colors
-                particleMaterial.color.setHSL(0.6, 0.8, 0.5 + Math.sin(time) * 0.1);
-                lineMaterial.color.setHSL(0.1, 0.8, 0.4);
-                pointLight.intensity = 0.8 + Math.sin(time * 1.5) * 0.3;
-            }
-
-            renderer.render(scene, camera);
-        }
-
-        // Helper function to get average frequency in a range
-        function getAverageFrequency(dataArray, startIndex, endIndex) {
-            let sum = 0;
-            for (let i = startIndex; i <= endIndex; i++) {
-                sum += dataArray[i];
-            }
-            return sum / (endIndex - startIndex + 1);
-        }
-
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // Start animation loop
-        animate();
     </script>
 </body>
 </html>
