@@ -270,6 +270,7 @@
         let particleSystem, originalPositions;
         let animationId;
         let timeValue = 0;
+        let currentPlaybackRate = 1.0;
         
         // Animation parameters
         const particleCount = 8000;  
@@ -442,7 +443,9 @@
 
             controls.update();
 
-            timeValue += 0.01;
+            // Adjust animation speed based on playback rate
+            const speedFactor = audioElement && audioElement.playbackRate ? audioElement.playbackRate : 1.0;
+            timeValue += 0.01 * speedFactor;
             
             let effectiveAmplitude = baseAmplitude;
             let effectiveFrequency = baseFrequency;
@@ -704,7 +707,13 @@
             source.connect(analyser);
             analyser.connect(audioContext.destination);
             
-            audioElement.playbackRate = parseFloat(speedInput.value);
+            const newPlaybackRate = parseFloat(speedInput.value);
+            // Reset timeValue if playback rate has changed
+            if (currentPlaybackRate !== newPlaybackRate) {
+                timeValue = 0;
+                currentPlaybackRate = newPlaybackRate;
+            }
+            audioElement.playbackRate = newPlaybackRate;
             audioElement.play();
             
             // Reset the sphere first
