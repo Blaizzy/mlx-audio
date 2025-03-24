@@ -288,40 +288,94 @@
         pointLight.position.set(0, 0, 0);
         scene.add(pointLight);
 
-        // Create orb mesh
-        const sphereGeometry = new THREE.IcosahedronGeometry(30, 4); // Higher detail icosahedron
-        const sphereMaterial = new THREE.MeshPhongMaterial({
-            color: 0x0088ff,
-            emissive: 0x222222,
-            shininess: 30,
-            wireframe: false,
-            flatShading: true
-        });
-        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-        scene.add(sphere);
+        // Create particle system instead of sphere mesh
+        const particleCount = 2000; // More particles for a dense, wild look
+        const particlesGeometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        const colors = new Float32Array(particleCount * 3);
 
-        // Store original vertex positions
-        const originalVertices = [];
-        for (let i = 0; i < sphereGeometry.attributes.position.count; i++) {
-            originalVertices.push(
-                new THREE.Vector3(
-                    sphereGeometry.attributes.position.getX(i),
-                    sphereGeometry.attributes.position.getY(i),
-                    sphereGeometry.attributes.position.getZ(i)
-                )
-            );
+        // Distribute particles in a spherical cloud with some randomness
+        for (let i = 0; i < particleCount; i++) {
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = 30 * (0.7 + Math.random() * 0.6); // Vary radius for a chaotic, cloud-like effect
+
+            const x = r * Math.sin(phi) * Math.cos(theta);
+            const y = r * Math.sin(phi) * Math.sin(theta);
+            const z = r * Math.cos(phi);
+
+            positions[i * 3] = x;
+            positions[i * 3 + 1] = y;
+            positions[i * 3 + 2] = z;
+
+            // White particles for glowing effect
+            colors[i * 3] = 1.0;     // R
+            colors[i * 3 + 1] = 1.0; // G
+            colors[i * 3 + 2] = 1.0; // B
         }
 
-        // Create a glow effect
-        const glowGeometry = new THREE.SphereGeometry(32, 32, 32);
-        const glowMaterial = new THREE.MeshBasicMaterial({
-            color: 0x0088ff,
+        particlesGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        particlesGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+        // Square particle material (using a simple white square texture)
+        const particleMaterial = new THREE.PointsMaterial({
+            size: 0.6, // Slightly larger for visibility
+            vertexColors: true,
+            map: new THREE.TextureLoader().load('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAFElEQVR42mNgwAJSMA/9f4HgY2BgguBJmgQHoAbpQJQcP8AARCcAUsn3dr4AAAAASUVORK5CYII='), // 1x1 white square
             transparent: true,
-            opacity: 0.15,
-            side: THREE.BackSide
+            opacity: 0.9,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending // Glowing, ethereal effect
         });
-        const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
-        scene.add(glowMesh);
+
+        const particles = new THREE.Points(particlesGeometry, particleMaterial);
+        scene.add(particles);
+
+        // Store original positions for reset and animation
+        const originalPositions = positions.slice();        
+        
+        // Create connecting lines for the surge effect
+        const linesGeometry = new THREE.BufferGeometry();
+        const linePositions = new Float32Array(particleCount * 6); // Each line has 2 points
+        let lineIndex = 0;
+
+        // Connect nearby particles (wild, organic web)
+        for (let i = 0; i < particleCount; i++) {
+            for (let j = i + 1; j < particleCount; j++) {
+                const iPos = new THREE.Vector3(
+                    positions[i * 3],
+                    positions[i * 3 + 1],
+                    positions[i * 3 + 2]
+                );
+                const jPos = new THREE.Vector3(
+                    positions[j * 3],
+                    positions[j * 3 + 1],
+                    positions[j * 3 + 2]
+                );
+                const distance = iPos.distanceTo(jPos);
+
+                if (distance < 12 && Math.random() > 0.9) { // Sparse connections for a wild look
+                    linePositions[lineIndex++] = iPos.x;
+                    linePositions[lineIndex++] = iPos.y;
+                    linePositions[lineIndex++] = iPos.z;
+                    linePositions[lineIndex++] = jPos.x;
+                    linePositions[lineIndex++] = jPos.y;
+                    linePositions[lineIndex++] = jPos.z;
+                }
+            }
+        }
+
+        linesGeometry.setAttribute('position', new THREE.BufferAttribute(linePositions.slice(0, lineIndex), 3));
+        const lineMaterial = new THREE.LineBasicMaterial({
+            color: 0xffa500, // Vibrant orange
+            transparent: true,
+            opacity: 0.4,
+            depthWrite: false,
+            blending: THREE.AdditiveBlending // Glowing lines
+        });
+
+        const lines = new THREE.LineSegments(linesGeometry, lineMaterial);
+        scene.add(lines);        
 
         // Define rotation speed variables
         let rotationSpeedY = 0.002;
@@ -576,150 +630,166 @@
         });
 
         // Reset sphere to original state
+// Reset particle positions
         function resetSphere() {
-            const positionAttribute = sphereGeometry.attributes.position;
-
-            for (let i = 0; i < positionAttribute.count; i++) {
-                const originalVertex = originalVertices[i];
-                positionAttribute.setXYZ(i, originalVertex.x, originalVertex.y, originalVertex.z);
+            const positionAttribute = particlesGeometry.attributes.position;
+            for (let i = 0; i < particleCount; i++) {
+                positionAttribute.setXYZ(
+                    i,
+                    originalPositions[i * 3],
+                    originalPositions[i * 3 + 1],
+                    originalPositions[i * 3 + 2]
+                );
             }
-
             positionAttribute.needsUpdate = true;
-            sphereGeometry.computeVertexNormals();
 
-            // Reset colors
-            sphere.material.color.set(0x0088ff);
-            sphere.material.emissive.set(0x222222);
-            glowMesh.material.color.set(0x0088ff);
+            const linePositionAttribute = linesGeometry.attributes.position;
+            for (let i = 0; i < lineIndex / 3; i++) {
+                const particle1Index = Math.floor(i * 2);
+                const particle2Index = particle1Index + 1;
+
+                linePositionAttribute.setXYZ(
+                    i * 2,
+                    positionAttribute.getX(particle1Index),
+                    positionAttribute.getY(particle1Index),
+                    positionAttribute.getZ(particle1Index)
+                );
+                linePositionAttribute.setXYZ(
+                    i * 2 + 1,
+                    positionAttribute.getX(particle2Index),
+                    positionAttribute.getY(particle2Index),
+                    positionAttribute.getZ(particle2Index)
+                );
+            }
+            linePositionAttribute.needsUpdate = true;
         }
 
+        // Animation loop
         // Animation loop
         function animate() {
             requestAnimationFrame(animate);
 
-            // Update controls
             controls.update();
 
-            // Get current time for pulsating effect
-            const time = performance.now() * 0.001; // Convert to seconds
+            const time = performance.now() * 0.001;
 
-            // Rotate sphere with current speed
-            sphere.rotation.y += rotationSpeedY;
-            sphere.rotation.x += rotationSpeedX;
-            glowMesh.rotation.copy(sphere.rotation);
+            // Rotate particles and lines together
+            particles.rotation.y += rotationSpeedY;
+            particles.rotation.x += rotationSpeedX;
+            lines.rotation.copy(particles.rotation);
 
-            // Update visualization if audio is playing
             if (analyser && dataArray && !audioElement.paused) {
                 analyser.getByteFrequencyData(dataArray);
 
-                // Calculate average frequency values for different ranges
                 const bassAvg = getAverageFrequency(dataArray, 0, 5);
                 const midAvg = getAverageFrequency(dataArray, 6, 20);
                 const trebleAvg = getAverageFrequency(dataArray, 21, 40);
 
-                // Calculate base pulsating factor (same as when no audio is playing)
-                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
-                
-                // Update sphere vertices based on frequency data
-                const positionAttribute = sphereGeometry.attributes.position;
+                const pulseFactor = Math.sin(time * 2) * 0.05 + 1; // Faster pulsation for energy
 
-                for (let i = 0; i < positionAttribute.count; i++) {
-                    const originalVertex = originalVertices[i];
+                // Update particle positions for wild surge effect
+                const positionAttribute = particlesGeometry.attributes.position;
+                for (let i = 0; i < particleCount; i++) {
+                    const originalX = originalPositions[i * 3];
+                    const originalY = originalPositions[i * 3 + 1];
+                    const originalZ = originalPositions[i * 3 + 2];
 
-                    // Calculate normalized distance from center (0-1)
-                    const vertexLength = originalVertex.length();
+                    const vertexLength = Math.sqrt(originalX * originalX + originalY * originalY + originalZ * originalZ);
+                    let surgeFactor;
 
-                    // Get frequency value based on vertex position
-                    let frequencyFactor;
-
-                    // Use different frequency ranges based on vertex position
-                    if (Math.abs(originalVertex.y) > vertexLength * 0.7) {
-                        // Top/bottom vertices - use treble
-                        frequencyFactor = trebleAvg / 255;
-                    } else if (Math.abs(originalVertex.x) > vertexLength * 0.7) {
-                        // Left/right vertices - use mids
-                        frequencyFactor = midAvg / 255;
+                    // Creative surge: outer particles react to treble, inner to bass
+                    if (vertexLength > 25) {
+                        surgeFactor = trebleAvg / 255 * 2.5; // Outer surge
+                    } else if (vertexLength > 15) {
+                        surgeFactor = midAvg / 255 * 2; // Middle surge
                     } else {
-                        // Other vertices - use bass
-                        frequencyFactor = bassAvg / 255;
+                        surgeFactor = bassAvg / 255 * 3; // Inner surge (big kick!)
                     }
 
-                    // Scale vertex based on both pulsation and frequency
-                    // First apply the pulsating effect, then add audio reactivity
-                    const scaleFactor = pulseFactor * (1 + frequencyFactor * 0.5);
+                    const scaleFactor = pulseFactor * (1 + surgeFactor);
 
                     positionAttribute.setXYZ(
                         i,
-                        originalVertex.x * scaleFactor,
-                        originalVertex.y * scaleFactor,
-                        originalVertex.z * scaleFactor
+                        originalX * scaleFactor,
+                        originalY * scaleFactor,
+                        originalZ * scaleFactor
                     );
                 }
-
                 positionAttribute.needsUpdate = true;
-                sphereGeometry.computeVertexNormals();
 
-                // Update colors based on frequency
-                const hue = (bassAvg / 255) * 0.3;
-                const saturation = 0.8;
-                const lightness = 0.4 + (midAvg / 255) * 0.2;
+                // Update line positions to follow particles
+                const linePositionAttribute = linesGeometry.attributes.position;
+                for (let i = 0; i < lineIndex / 3; i++) {
+                    const particle1Index = Math.floor(i * 2);
+                    const particle2Index = particle1Index + 1;
 
-                sphere.material.color.setHSL(hue, saturation, lightness);
-                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
+                    linePositionAttribute.setXYZ(
+                        i * 2,
+                        positionAttribute.getX(particle1Index),
+                        positionAttribute.getY(particle1Index),
+                        positionAttribute.getZ(particle1Index)
+                    );
+                    linePositionAttribute.setXYZ(
+                        i * 2 + 1,
+                        positionAttribute.getX(particle2Index),
+                        positionAttribute.getY(particle2Index),
+                        positionAttribute.getZ(particle2Index)
+                    );
+                }
+                linePositionAttribute.needsUpdate = true;
 
-                // Update glow with both pulsation and audio reactivity
-                glowMesh.material.color.setHSL(hue, saturation, lightness);
-                const glowPulseFactor = 1 + Math.sin(time * 1.2) * 0.04;
-                glowMesh.scale.set(
-                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
-                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
-                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1)
-                );
+                // Dynamic colors for a wild vibe
+                const hue = (bassAvg / 255) * 0.2; // Subtle hue shift
+                particleMaterial.color.setHSL(hue, 0.8, 0.6 + (trebleAvg / 255) * 0.3);
+                lineMaterial.color.setHSL(0.1, 0.9, 0.5 + (midAvg / 255) * 0.2); // Orange with brightness variation
 
-                // Update point light with both pulsation and audio reactivity
-                const lightPulseFactor = 0.5 + Math.sin(time * 1.8) * 0.2;
-                pointLight.intensity = lightPulseFactor + (bassAvg / 255) * 1.5;
-                pointLight.color.setHSL(hue, saturation, lightness);
+                // Point light reacts wildly
+                pointLight.intensity = 1 + (bassAvg / 255) * 2;
+                pointLight.color.setHSL(hue, 0.8, 0.5);
             } else {
-                // Apply subtle pulsating effect when no audio is playing
-                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
-                
-                // Update sphere vertices for pulsating effect
-                const positionAttribute = sphereGeometry.attributes.position;
-                
-                for (let i = 0; i < positionAttribute.count; i++) {
-                    const originalVertex = originalVertices[i];
-                    
+                // Subtle pulsation when idle
+                const pulseFactor = Math.sin(time * 2) * 0.05 + 1;
+
+                const positionAttribute = particlesGeometry.attributes.position;
+                for (let i = 0; i < particleCount; i++) {
+                    const originalX = originalPositions[i * 3];
+                    const originalY = originalPositions[i * 3 + 1];
+                    const originalZ = originalPositions[i * 3 + 2];
+
                     positionAttribute.setXYZ(
                         i,
-                        originalVertex.x * pulseFactor,
-                        originalVertex.y * pulseFactor,
-                        originalVertex.z * pulseFactor
+                        originalX * pulseFactor,
+                        originalY * pulseFactor,
+                        originalZ * pulseFactor
                     );
                 }
-                
                 positionAttribute.needsUpdate = true;
-                sphereGeometry.computeVertexNormals();
-                
-                // Subtle color pulsation
-                const hue = 0.6; // Blue hue
-                const saturation = 0.8;
-                const lightness = 0.4 + Math.sin(time * 2) * 0.05; // Subtle brightness pulsation
-                
-                sphere.material.color.setHSL(hue, saturation, lightness);
-                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
-                
-                // Update glow with subtle pulsation
-                glowMesh.material.color.setHSL(hue, saturation, lightness);
-                glowMesh.scale.set(
-                    1 + Math.sin(time * 1.2) * 0.04, // Slightly different frequency for interesting effect
-                    1 + Math.sin(time * 1.2) * 0.04,
-                    1 + Math.sin(time * 1.2) * 0.04
-                );
-                
-                // Subtle point light pulsation
-                pointLight.intensity = 0.5 + Math.sin(time * 1.8) * 0.2;
-                pointLight.color.setHSL(hue, saturation, lightness);
+
+                // Update line positions
+                const linePositionAttribute = linesGeometry.attributes.position;
+                for (let i = 0; i < lineIndex / 3; i++) {
+                    const particle1Index = Math.floor(i * 2);
+                    const particle2Index = particle1Index + 1;
+
+                    linePositionAttribute.setXYZ(
+                        i * 2,
+                        positionAttribute.getX(particle1Index),
+                        positionAttribute.getY(particle1Index),
+                        positionAttribute.getZ(particle1Index)
+                    );
+                    linePositionAttribute.setXYZ(
+                        i * 2 + 1,
+                        positionAttribute.getX(particle2Index),
+                        positionAttribute.getY(particle2Index),
+                        positionAttribute.getZ(particle2Index)
+                    );
+                }
+                linePositionAttribute.needsUpdate = true;
+
+                // Idle colors
+                particleMaterial.color.setHSL(0.6, 0.8, 0.5 + Math.sin(time) * 0.1);
+                lineMaterial.color.setHSL(0.1, 0.8, 0.4);
+                pointLight.intensity = 0.8 + Math.sin(time * 1.5) * 0.3;
             }
 
             renderer.render(scene, camera);
