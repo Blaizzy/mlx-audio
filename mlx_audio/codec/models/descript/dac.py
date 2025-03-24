@@ -1,3 +1,4 @@
+import json
 import math
 from pathlib import Path
 from typing import List, Literal, Union
@@ -245,71 +246,16 @@ class DAC(nn.Module, CodecMixin):
             "vq/codebook_loss": codebook_loss,
         }
 
-    def convert_weights(weights: mx.array):
-        new_weights = {}
-        for k, v in weights.items():
-            if "block." in k:
-                k = k.replace("block.", "block.layers.")
-
-            if "model." in k:
-                k = k.replace("model.", "model.layers.")
-
-            if k.endswith(".weight_g") or k.endswith(".weight_v"):
-                if (
-                    k == "decoder.model.layers.1.block.layers.1.weight_g"
-                    or k == "decoder.model.layers.1.block.layers.1.weight_v"
-                    or k == "decoder.model.layers.2.block.layers.1.weight_g"
-                    or k == "decoder.model.layers.2.block.layers.1.weight_v"
-                    or k == "decoder.model.layers.3.block.layers.1.weight_g"
-                    or k == "decoder.model.layers.3.block.layers.1.weight_v"
-                    or k == "decoder.model.layers.4.block.layers.1.weight_g"
-                    or k == "decoder.model.layers.4.block.layers.1.weight_v"
-                ):
-                    v = v.transpose(1, 2, 0)
-                else:
-                    v = v.transpose(0, 2, 1)
-
-            if k.endswith("alpha"):
-                v = v.transpose(0, 2, 1)
-
-            new_weights[k] = v
-
-        return new_weights
-
     @classmethod
     def from_pretrained(
         cls, model: Literal["16khz", "24khz", "44khz"] = "24khz"
     ) -> "DAC":
         if model == "16khz":
             model_name = "mlx-community/descript-audio-codec-16khz"
-            encoder_dim = 64
-            encoder_rates = [2, 4, 5, 8]
-            decoder_dim = 1536
-            decoder_rates = [8, 5, 4, 2]
-            n_codebooks = 12
-            codebook_size = 1024
-            codebook_dim = 8
-            sample_rate = 16_000
         elif model == "24khz":
             model_name = "mlx-community/descript-audio-codec-24khz"
-            encoder_dim = 64
-            encoder_rates = [2, 4, 5, 8]
-            decoder_dim = 1536
-            decoder_rates = [8, 5, 4, 2]
-            n_codebooks = 32
-            codebook_size = 1024
-            codebook_dim = 8
-            sample_rate = 24_000
         elif model == "44khz":
             model_name = "mlx-community/descript-audio-codec-44khz"
-            encoder_dim = 64
-            encoder_rates = [2, 4, 8, 8]
-            decoder_dim = 1536
-            decoder_rates = [8, 8, 4, 2]
-            n_codebooks = 9
-            codebook_size = 1024
-            codebook_dim = 8
-            sample_rate = 44_100
         else:
             raise ValueError(f"Model is not supported: {model}")
 
@@ -318,17 +264,12 @@ class DAC(nn.Module, CodecMixin):
             raise ValueError(f"Could not find model {path}")
 
         model_path = path / "model.safetensors"
+        config_path = path / "config.json"
 
-        dac = DAC(
-            encoder_dim=encoder_dim,
-            encoder_rates=encoder_rates,
-            decoder_dim=decoder_dim,
-            decoder_rates=decoder_rates,
-            n_codebooks=n_codebooks,
-            codebook_size=codebook_size,
-            codebook_dim=codebook_dim,
-            sample_rate=sample_rate,
-        )
+        with open(config_path) as f:
+            config = json.load(f)
+
+        dac = DAC(**config)
 
         weights = mx.load(model_path.as_posix(), format="safetensors")
         dac.load_weights(list(weights.items()))
