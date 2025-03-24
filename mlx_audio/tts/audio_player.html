@@ -121,6 +121,7 @@
             margin: 0;
             background: transparent;
             -webkit-appearance: none;
+            appearance: none;
         }
         input[type="range"]:focus {
             outline: none;
@@ -422,9 +423,15 @@
             
             particleSystem.geometry.attributes.position.needsUpdate = true;
             
+            // Reset all animation parameters
+            timeValue = 0;
             baseAmplitude = 0.05;
             baseFrequency = 0.3;
             basePull = new THREE.Vector3(0, 0, 1);
+            targetAmplitude = 0.05;
+            targetFrequency = 0.3;
+            targetPull = new THREE.Vector3(0, 0, 1);
+            transitionStartTime = 0;
         }
         
         // Process text into words and compute parameters for each word
@@ -720,11 +727,9 @@
             analyser.connect(audioContext.destination);
             
             const newPlaybackRate = parseFloat(speedInput.value);
-            // Reset timeValue if playback rate has changed
-            if (currentPlaybackRate !== newPlaybackRate) {
-                timeValue = 0;
-                currentPlaybackRate = newPlaybackRate;
-            }
+            // Always reset timeValue when starting playback to ensure consistent animation speed
+            timeValue = 0;
+            currentPlaybackRate = newPlaybackRate;
             audioElement.playbackRate = newPlaybackRate;
             audioElement.play();
             
@@ -736,6 +741,7 @@
                 processText(textInput.value);
             }
             
+            // Update UI state
             playBtn.disabled = true;
             stopBtn.disabled = false;
             statusElement.textContent = 'Playing...';
@@ -788,7 +794,18 @@
                 playBtn.disabled = false;
                 stopBtn.disabled = true;
 
+                // Ensure animation state is completely reset
                 resetSphere();
+                timeValue = 0;
+                
+                // Reset all animation parameters
+                baseAmplitude = 0.05;
+                baseFrequency = 0.3;
+                basePull = new THREE.Vector3(0, 0, 1);
+                targetAmplitude = 0.05;
+                targetFrequency = 0.3;
+                targetPull = new THREE.Vector3(0, 0, 1);
+                transitionStartTime = 0;
             }
         });
     </script>
