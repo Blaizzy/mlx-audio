@@ -377,7 +377,8 @@
                 const position = i + 1;
                 const inputLength = typeof input === 'string' ? input.length : 5;
                 
-                const number = ((charCode * position * (i + 1) * inputLength) % 15) + 1;
+                // Use a more varied calculation to increase uniqueness
+                const number = ((charCode * position * (i + 1) * inputLength) % 100) / 100;
                 result.push(number);
             }
             
@@ -389,16 +390,19 @@
             const fingerprint = generateFingerprint(input);
             const avg = fingerprint.reduce((acc, n) => acc + n, 0) / fingerprint.length;
             
-            const minAmplitude = 0.1, maxAmplitude = 0.5;
-            const amplitude = minAmplitude + (avg / 15) * (maxAmplitude - minAmplitude);
+            // Wider range for amplitude
+            const minAmplitude = 0.05, maxAmplitude = 0.7;
+            const amplitude = minAmplitude + avg * (maxAmplitude - minAmplitude);
             
-            const rawFrequency = fingerprint[0] / 15; 
-            const minFrequency = 0.2, maxFrequency = 0.6;
+            // More varied frequency
+            const rawFrequency = fingerprint[0]; 
+            const minFrequency = 0.1, maxFrequency = 0.8;
             const frequency = minFrequency + rawFrequency * (maxFrequency - minFrequency);
             
-            const pullX = fingerprint[0] / 15 - 0.5;
-            const pullY = fingerprint[1] / 15 - 0.5;
-            const pullZ = fingerprint[2] / 15 - 0.5;
+            // More varied pull directions
+            const pullX = (fingerprint[0] - 0.5) * 2;
+            const pullY = (fingerprint[1] - 0.5) * 2;
+            const pullZ = (fingerprint[2] - 0.5) * 2;
             const pull = new THREE.Vector3(pullX, pullY, pullZ).normalize();
             
             return { amplitude, frequency, pull };
@@ -454,16 +458,24 @@
             if (audioContext && analyser) {
                 analyser.getByteFrequencyData(dataArray);
                 
-                const bass = getAverageFrequency(dataArray, 0, 10) / 256;
-                const mid = getAverageFrequency(dataArray, 11, 100) / 256;
-                const treble = getAverageFrequency(dataArray, 101, 255) / 256;
+                // More granular frequency analysis
+                const lowBass = getAverageFrequency(dataArray, 0, 5) / 256;
+                const highBass = getAverageFrequency(dataArray, 6, 15) / 256;
+                const lowMid = getAverageFrequency(dataArray, 16, 50) / 256;
+                const highMid = getAverageFrequency(dataArray, 51, 100) / 256;
+                const lowTreble = getAverageFrequency(dataArray, 101, 175) / 256;
+                const highTreble = getAverageFrequency(dataArray, 176, 255) / 256;
                 
-                targetAmplitude = 0.1 + bass * 0.4;
-                targetFrequency = 0.2 + mid * 0.4;
+                // Create more dynamic amplitude response
+                targetAmplitude = 0.05 + (lowBass * 0.3 + highBass * 0.4);
                 
-                const pullX = bass - 0.5;
-                const pullY = mid - 0.5;
-                const pullZ = treble - 0.5;
+                // Create more varied frequency response
+                targetFrequency = 0.1 + (lowMid * 0.3 + highMid * 0.5);
+                
+                // Create more varied pull directions
+                const pullX = (lowBass + highMid) - 0.5;
+                const pullY = (highBass + lowTreble) - 0.5;
+                const pullZ = (lowMid + highTreble) - 0.5;
                 targetPull = new THREE.Vector3(pullX, pullY, pullZ).normalize();
                 
                 if (transitionStartTime === 0) {
