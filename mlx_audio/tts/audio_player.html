@@ -258,9 +258,6 @@
         const ttsStatusElement = document.getElementById('ttsStatus');
         const ttsErrorElement = document.getElementById('ttsError');
         
-        // Initialize active tab
-        let activeTab = 'textToSpeech';
-        
         // Audio variables
         let audioContext;
         let analyser;
@@ -602,9 +599,6 @@
             
             document.getElementById(tabName).style.display = "block";
             evt.currentTarget.className += " active";
-            
-            // Update active tab
-            activeTab = tabName;
         }
         
         // Speed slider update
@@ -716,8 +710,8 @@
             // Reset the sphere first
             resetSphere();
             
-            // If playing TTS, process the text for word animation
-            if (activeTab === 'textToSpeech' && textInput.value) {
+            // Process text for word animation if we have text input
+            if (textInput.value && document.getElementById('textToSpeech').style.display === 'block') {
                 processText(textInput.value);
             }
             
