@@ -33,7 +33,6 @@ class LocalMHA(nn.Module):
             pos_emb, scale = self.rel_pos(k)
             q, k = apply_rotary_pos_emb(q, k, pos_emb, scale)
 
-        # TODO: Use mx.fast.sdpa
         scale = mx.sqrt(mx.array(q.shape[-1], dtype=mx.float32))
         scores = mx.matmul(q, k.transpose(0, 1, 2, 4, 3)) / scale
         attn_weights = mx.softmax(scores, axis=-1)
