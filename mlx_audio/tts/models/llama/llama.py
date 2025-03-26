@@ -4,16 +4,15 @@ from typing import Any, Dict, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
-import torch
 from mlx_lm.models import cache as cache_utils
 from mlx_lm.models.base import BaseModelArgs, create_attention_mask
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.utils import stream_generate
-from snac import SNAC
 from tqdm import tqdm
 from transformers import AutoTokenizer
+
+from mlx_audio.codec.models.snac import SNAC
 
 from ..base import GenerationResult
 
@@ -43,12 +42,9 @@ class ModelConfig(BaseModelArgs):
             self.num_key_value_heads = self.num_attention_heads
 
 
-# TODO: Convert to mlx
-snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz")
-snac_model = snac_model.to("cpu")
+snac_model = SNAC.from_pretrained("mlx-community/snac_24khz").eval()
 
 
-# TODO: Convert to mlx
 def redistribute_codes(code_list):
     layer_1 = []
     layer_2 = []
@@ -62,11 +58,11 @@ def redistribute_codes(code_list):
         layer_3.append(code_list[7 * i + 5] - (5 * 4096))
         layer_3.append(code_list[7 * i + 6] - (6 * 4096))
     codes = [
-        torch.tensor(layer_1).unsqueeze(0),
-        torch.tensor(layer_2).unsqueeze(0),
-        torch.tensor(layer_3).unsqueeze(0),
+        mx.expand_dims(mx.array(layer_1), 0),
+        mx.expand_dims(mx.array(layer_2), 0),
+        mx.expand_dims(mx.array(layer_3), 0),
     ]
-    audio_hat = snac_model.decode(codes)
+    audio_hat = snac_model.decode(codes).squeeze(-1)
     return audio_hat
 
 
@@ -359,9 +355,7 @@ class Model(nn.Module):
 
         my_samples = []
         for code_list in code_lists:
-            code_list = torch.from_dlpack(mx.array(code_list))
             samples = redistribute_codes(code_list)
-            samples = mx.array(samples)
             my_samples.append(samples)
 
         time_end = time.time()
@@ -380,7 +374,7 @@ class Model(nn.Module):
 
                 # Calculate audio duration in seconds
                 sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
-                audio_duration_seconds = samples / sample_rate * audio.shape[1]
+                audio_duration_seconds = samples / sample_rate
 
                 # Calculate real-time factor (RTF)
                 rtf = audio_duration_seconds / (time_end - time_start)
@@ -393,7 +387,7 @@ class Model(nn.Module):
                 duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
                 yield GenerationResult(
-                    audio=audio[0],
+                    audio=audio,
                     samples=samples,
                     segment_idx=i,
                     token_count=token_count,
