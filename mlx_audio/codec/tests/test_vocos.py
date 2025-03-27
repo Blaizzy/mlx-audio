@@ -55,10 +55,10 @@ config_encodec = {
 }
 
 
-class TesEncodec(unittest.TestCase):
+class TestVocos(unittest.TestCase):
     """Test Vocos model encoding and decoding."""
 
-    def test_encodec_24khz(self):
+    def test_vocos_24khz(self):
         audio = mx.zeros((120_000))
 
         model = Vocos.from_hparams(config_mel)

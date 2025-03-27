@@ -31,7 +31,7 @@ config = EncodecConfig(
 )
 
 
-class TesEncodec(unittest.TestCase):
+class TestEncodec(unittest.TestCase):
     """Test EnCodec model encoding and decoding."""
 
     def test_encodec_24khz(self):
