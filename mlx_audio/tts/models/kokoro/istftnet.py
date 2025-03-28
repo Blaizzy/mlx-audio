@@ -478,22 +478,24 @@ def mlx_istft(
     if w.shape[0] < win_length:
         w = mx.concatenate([w, mx.zeros((win_length - w.shape[0],))], axis=0)
 
-    x = mx.array(x).transpose(1, 0)
-    t = (x.shape[0] - 1) * hop_length + win_length
+    num_frames = x.shape[1]
+    t = (num_frames - 1) * hop_length + win_length
+
     reconstructed = mx.zeros(t)
     window_sum = mx.zeros(t)
 
-    for i in range(x.shape[0]):
-        # inverse FFT of each frame
-        frame_time = mx.fft.irfft(x[i])
+    # inverse FFT of each frame
+    frames_time = mx.fft.irfft(x, axis=0).transpose(1, 0)
+    frame_window_sum = w**2
 
+    for i in range(num_frames):
         # get the position in the time-domain signal to add the frame
         start = i * hop_length
-        end = start + win_length
+        window_indicies = start + mx.arange(win_length)
 
         # overlap-add the inverse transformed frame, scaled by the window
-        reconstructed[start:end] += frame_time * w
-        window_sum[start:end] += w**2
+        reconstructed = reconstructed.at[window_indicies].add(frames_time[i] * w)
+        window_sum = window_sum.at[window_indicies].add(frame_window_sum)
 
     # normalize by the sum of the window values
     reconstructed = mx.where(window_sum != 0, reconstructed / window_sum, reconstructed)
