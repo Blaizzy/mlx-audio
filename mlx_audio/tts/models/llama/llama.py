@@ -289,8 +289,8 @@ class Model(nn.Module):
         self,
         text,
         voice: str,
-        temperature: float = 1.0,
-        top_p: float = 0.95,
+        temperature: float = 0.6,
+        top_p: float = 0.8,
         split_pattern: str = "\n",
         max_tokens: int = 1200,
         verbose: bool = False,
@@ -320,10 +320,10 @@ class Model(nn.Module):
 
         input_ids = mx.concatenate(all_modified_input_ids, axis=0)
 
-        sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", 1))
+        sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
         logits_processors = make_logits_processors(
             kwargs.get("logit_bias", None),
-            kwargs.get("repetition_penalty", 1.1),
+            kwargs.get("repetition_penalty", 1.3),
             kwargs.get("repetition_context_size", 20),
         )
 
