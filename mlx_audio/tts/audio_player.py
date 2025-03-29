@@ -55,7 +55,13 @@ class AudioPlayer:
     def wait_for_drain(self):
         return self.drain_event.wait()
 
-    def stop(self):
+    def stop(self, force=False):
+        if force:
+            self.stream.stop()
+            self.stream.close()
+            self.playing = False
+            return
+
         if self.playing:
             self.wait_for_drain()
             sd.sleep(100)

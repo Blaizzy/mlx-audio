@@ -1,0 +1,104 @@
+
+# Speech-to-Speech Architecture Approaches
+
+There are two main approaches to speech-based AI interfaces:
+
+1. **End-to-End Speech-to-Speech Models**: A direct approach using dedicated STS architectures like Moshi that can transform spoken input directly to spoken output.
+
+2. **Modular Voice Pipeline**: A composable approach combining Speech-to-Text, LLM processing, and Text-to-Speech.
+
+
+# Voice Interface (Modular Voice Pipeline)
+The Voice Interface implementation uses the second approach - the Modular Voice Pipeline - which breaks the process into discrete components:
+- Speech recognition (Whisper)
+- Language understanding and generation (Qwen)
+- Speech synthesis (Kokoro)
+
+This modular approach offers greater flexibility, allowing each component to be independently optimized or replaced as needed.
+
+## Overview
+
+This project provides a voice interface that:
+- Listens for spoken input using microphone
+- Transcribes speech to text using Whisper
+- Generates intelligent responses using a language model
+- Converts responses to natural-sounding speech
+- Supports real-time interaction with voice activity detection
+
+## Features
+
+- **Real-time Voice Detection**: Automatically detects when you start and stop speaking
+- **Speech-to-Text**: High-quality transcription using MLX Whisper
+- **Natural Language Understanding**: Processes queries with Qwen language model
+- **Text-to-Speech**: Generates natural voice responses with Kokoro
+- **Interruptible Conversations**: Can be interrupted during response generation
+
+## Requirements
+
+- Python 3.8+
+- MLX framework
+- PyAudio
+- WebRTC VAD
+
+## Usage
+
+Run the voice interface with default settings:
+
+```bash
+python voice_interface.py --stt_model mlx-community/whisper-large-v3-turbo --llm_model Qwen/Qwen2.5-0.5B-Instruct --tts_model mlx-community/Kokoro-82M-bf16
+```
+
+## Configuration
+
+The voice interface can be customized by modifying parameters in the `main()` function:
+
+```python
+interface = VoiceInterface(
+    silence_threshold=0.02,        # Energy threshold for detecting silence
+    silence_duration=1.2,          # Seconds of silence to end recording
+    interruptible=True,            # Allow interrupting the assistant
+    vad_mode=3,                    # WebRTC VAD aggressiveness (0-3)
+    stt_model="mlx-community/whisper-large-v3-turbo",  # Speech recognition model
+    llm_model="Qwen/Qwen2.5-0.5B-Instruct",           # Language model
+    tts_model="mlx-community/Kokoro-82M-bf16"         # Text-to-speech model
+)
+```
+
+## Models
+
+This project uses the following models:
+
+- **Speech-to-Text**: `mlx-community/whisper-large-v3-turbo` - A fast and accurate speech recognition model
+- **Language Model**: `Qwen/Qwen2.5-0.5B-Instruct` - A compact but capable instruction-following LLM
+- **Text-to-Speech**: `mlx-community/Kokoro-82M-bf16` - A voice synthesis model for natural-sounding speech
+
+## How It Works
+
+1. The system continuously monitors audio input
+2. When speech is detected, it begins recording
+3. After detecting a pause in speech, the recording is transcribed
+4. The transcribed text is sent to the language model for processing
+5. The response is synthesized as speech and played through speakers
+6. The system returns to listening mode
+
+## Limitations and Future Work
+
+- Currently optimized for quiet environments
+- Limited to a single voice for TTS output
+- Future improvements could include:
+  - Multiple voice options
+  - Customizable wake word detection
+  - Support for longer conversations with memory
+  - Improved noise handling
+  - Exploration of end-to-end speech-to-speech models
+
+## Troubleshooting
+
+If you encounter audio issues:
+- Ensure your microphone is properly connected and set as default input
+- Check that your speakers/headphones are working correctly
+- Try adjusting the `silence_threshold` for your environment
+
+## License
+
+MIT License
