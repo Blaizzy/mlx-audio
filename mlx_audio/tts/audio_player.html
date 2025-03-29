@@ -158,7 +158,6 @@
     </style>
 </head>
 <body>
-
     <div id="controls">
         <h1>MLX-Audio Player</h1>
         
@@ -174,30 +173,32 @@
             </div>
             
             <div class="form-group">
-                <label for="voice">Voice:</label>
-                <select id="voice">
-                    <option value="af_bella">AF Bella</option>
-                    <option value="af_heart">AF Heart</option>
-                    <option value="af_nicole">AF Nicole</option>
-                    <option value="af_nova">AF Nova</option>
-                    <option value="af_sarah">AF Sarah</option>
-                    <option value="af_sky">AF Sky</option>
-                    <option value="am_adam">AM Adam</option>
-                    <option value="am_michael">AM Michael</option>
-                    <option value="bf_emma">BF Emma</option>
-                    <option value="bf_isabella">BF Isabella</option>
-                    <option value="bm_george">BM George</option>
-                    <option value="bm_lewis">BM Lewis</option>
-                  </select>
+                <label for="model">Model:</label>
+                <select id="model">
+                    <!-- Model options will be populated by JavaScript -->
+                    <option value="">Loading models...</option>
+                </select>
             </div>
             
             <div class="form-group">
-                <label for="model">Model:</label>
-                <select id="model">
-                    <option value="mlx-community/Kokoro-82M-4bit">Kokoro 82M 4bit</option>
-                    <option value="mlx-community/Kokoro-82M-6bit">Kokoro 82M 6bit</option>
-                    <option value="mlx-community/Kokoro-82M-8bit">Kokoro 82M 8bit</option>
-                    <option value="mlx-community/Kokoro-82M-bf16">Kokoro 82M bf16</option>
+                <label for="language">Language:</label>
+                <select id="language">
+                    <option value="a" selected>American English</option>
+                    <option value="b">British English</option>
+                    <option value="h">Hindi</option>
+                    <option value="e">Spanish</option>
+                    <option value="f">French</option>
+                    <option value="i">Italian</option>
+                    <option value="p">Brazilian Portuguese</option>
+                    <option value="j">Japanese</option>
+                    <option value="z">Mandarin Chinese</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <label for="voice">Voice:</label>
+                <select id="voice">
+                    <!-- Voice options will be populated by JavaScript based on selected language -->
                 </select>
             </div>
             
@@ -245,6 +246,7 @@
         const textInput = document.getElementById('text');
         const voiceSelect = document.getElementById('voice');
         const modelSelect = document.getElementById('model');
+        const languageSelect = document.getElementById('language');
         const speedInput = document.getElementById('speed');
         const speedValue = document.getElementById('speed-value');
         const generateBtn = document.getElementById('generateBtn');
@@ -328,6 +330,194 @@
         let rotationSpeedX = 0.001;
         let isGenerating = false;
 
+        // Function to load models from the API
+        function loadModels() {
+            // Show loading state
+            modelSelect.innerHTML = '<option value="">Loading models...</option>';
+            
+            fetch('/models')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to fetch models');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Clear loading state
+                    modelSelect.innerHTML = '';
+                    
+                    // Add model options from API response
+                    if (data.models && Array.isArray(data.models)) {
+                        data.models.forEach(model => {
+                            const option = document.createElement('option');
+                            option.value = model.id;
+                            option.textContent = model.name;
+                            modelSelect.appendChild(option);
+                        });
+                        
+                        // Set default selection to first model
+                        if (data.models.length > 0) {
+                            modelSelect.value = data.models[0].id;
+                        }
+                        
+                        // After loading models, update language options and voices
+                        modelSelect.dispatchEvent(new Event('change'));
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching models:', error);
+                    
+                    // Show error state
+                    modelSelect.innerHTML = '<option value="">Failed to load models</option>';
+                    
+                    // Add a default fallback model
+                    const defaultModel = {
+                        id: "mlx-community/Kokoro-82M-4bit",
+                        name: "Kokoro 82M 4bit (Default)"
+                    };
+                    
+                    const option = document.createElement('option');
+                    option.value = defaultModel.id;
+                    option.textContent = defaultModel.name;
+                    modelSelect.appendChild(option);
+                    
+                    // Update language options and voices for the fallback model
+                    modelSelect.dispatchEvent(new Event('change'));
+                });
+        }
+
+        // Function to update voice options based on selected language
+        function updateVoiceOptions() {
+            const selectedLanguage = languageSelect.value;
+            const selectedModel = modelSelect.value;
+            
+            // Clear current options
+            voiceSelect.innerHTML = '';
+            
+            // Show loading state
+            voiceSelect.innerHTML = '<option value="">Loading voices...</option>';
+            
+            // Fetch voices from API with language code for filtering and model for determining voice set
+            fetch(`/voices?language=${selectedLanguage}&repo_id=${selectedModel}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to fetch voices');
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    // Clear loading state
+                    voiceSelect.innerHTML = '';
+                    
+                    // Add voice options from API response
+                    if (data.voices && Array.isArray(data.voices)) {
+                        data.voices.forEach(voice => {
+                            const option = document.createElement('option');
+                            option.value = voice;
+                            
+                            // Format voice name for display (e.g., "af_heart" → "AF Heart")
+                            let displayName = voice;
+                            if (voice.includes('_')) {
+                                const parts = voice.split('_');
+                                const prefix = parts[0].toUpperCase();
+                                const name = parts[1].charAt(0).toUpperCase() + parts[1].slice(1);
+                                displayName = prefix + ' ' + name;
+                            } else {
+                                // For Orpheus voices that don't follow the prefix_name pattern
+                                displayName = voice.charAt(0).toUpperCase() + voice.slice(1);
+                            }
+                            
+                            option.textContent = displayName;
+                            voiceSelect.appendChild(option);
+                        });
+                    }
+                    
+                    // If no voices available, add a default option
+                    if (!data.voices || data.voices.length === 0) {
+                        const option = document.createElement('option');
+                        option.value = 'af_heart';
+                        option.textContent = 'AF Heart (Default)';
+                        voiceSelect.appendChild(option);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching voices:', error);
+                    
+                    // Show error state
+                    voiceSelect.innerHTML = '';
+                    
+                    // Add default fallback voices for any language
+                    const fallbackVoices = [
+                        { value: 'af_heart', text: 'AF Heart (Default)' },
+                        { value: 'am_adam', text: 'AM Adam' }
+                    ];
+                    
+                    fallbackVoices.forEach(voice => {
+                        const option = document.createElement('option');
+                        option.value = voice.value;
+                        option.textContent = voice.text;
+                        voiceSelect.appendChild(option);
+                    });
+                });
+        }
+        
+        // Update voices when language changes
+        languageSelect.addEventListener('change', updateVoiceOptions);
+        
+        // Update voices when model changes
+        modelSelect.addEventListener('change', function() {
+            // Check if model is Orpheus and update language options accordingly
+            const isOrpheus = modelSelect.value.toLowerCase().includes('orpheus');
+            
+            // Save current language selection if not switching to/from Orpheus
+            const currentLanguage = languageSelect.value;
+            
+            // Clear and update language options
+            languageSelect.innerHTML = '';
+            
+            if (isOrpheus) {
+                // For Orpheus models, only show English
+                const option = document.createElement('option');
+                option.value = 'a';
+                option.textContent = 'American English';
+                languageSelect.appendChild(option);
+            } else {
+                // For other models, show all languages
+                const languages = [
+                    { value: 'a', text: 'American English' },
+                    { value: 'b', text: 'British English' },
+                    { value: 'h', text: 'Hindi' },
+                    { value: 'e', text: 'Spanish' },
+                    { value: 'f', text: 'French' },
+                    { value: 'i', text: 'Italian' },
+                    { value: 'p', text: 'Brazilian Portuguese' },
+                    { value: 'j', text: 'Japanese' },
+                    { value: 'z', text: 'Mandarin Chinese' }
+                ];
+                
+                languages.forEach(lang => {
+                    const option = document.createElement('option');
+                    option.value = lang.value;
+                    option.textContent = lang.text;
+                    languageSelect.appendChild(option);
+                });
+                
+                // Try to restore previous selection if valid
+                if (currentLanguage && !isOrpheus) {
+                    languageSelect.value = currentLanguage;
+                }
+            }
+            
+            // Update voice options based on new model/language
+            updateVoiceOptions();
+        });
+        
+        // Initialize voice options on page load
+        updateVoiceOptions();
+        
+        // Load models from API
+        loadModels();
+        
         // Tab functionality
         function openTab(evt, tabName) {
             // Hide all tabcontent
@@ -357,6 +547,7 @@
             const text = textInput.value;
             const voice = voiceSelect.value;
             const model = modelSelect.value;
+            const language = languageSelect.value;
             const speed = speedInput.value;
             
             if (!text.trim()) {
@@ -370,7 +561,7 @@
             
             // Increase rotation speed to indicate processing
             isGenerating = true;
-            rotationSpeedY = 0.01;
+            rotationSpeedY = 0.015;
             rotationSpeedX = 0.005;
             
             // Create form data
@@ -378,6 +569,7 @@
             formData.append('text', text);
             formData.append('voice', voice);
             formData.append('model', model);
+            formData.append('language', language);
             formData.append('speed', speed);
             
             // Send request to server

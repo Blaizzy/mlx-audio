@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Tuple
@@ -278,6 +279,45 @@ class Model(nn.Module):
 
         self.sample_rate = mimi.cfg.sample_rate
 
+    def _split_text_into_chunks(self, text: str, max_chars: int = 300) -> List[str]:
+        """
+        Split text into smaller chunks that can be processed individually.
+        Tries to split on sentence boundaries when possible.
+
+        Args:
+            text (str): The text to split
+            max_chars (int): Maximum characters per chunk
+
+        Returns:
+            List[str]: List of text chunks
+        """
+        # Try to split on sentence boundaries first
+        chunks = []
+        sentences = re.split(r"([.!?]+)", text)
+        current_chunk = ""
+
+        for i in range(0, len(sentences), 2):
+            sentence = sentences[i]
+            # Add the punctuation back if it exists
+            if i + 1 < len(sentences):
+                sentence += sentences[i + 1]
+
+            if len(current_chunk) + len(sentence) <= max_chars:
+                current_chunk += sentence
+            else:
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                current_chunk = sentence
+
+        if current_chunk:
+            chunks.append(current_chunk.strip())
+
+        # If no chunks were created (no sentence boundaries), fall back to character-based chunking
+        if not chunks:
+            chunks = [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+        return [chunk for chunk in chunks if chunk.strip()]
+
     def _tokenize_text_segment(
         self, text: str, speaker: int
     ) -> Tuple[mx.array, mx.array]:
@@ -349,131 +389,154 @@ class Model(nn.Module):
         ref_text: str = None,
         **kwargs,
     ):
-        self.model.reset_caches()
+        # Split long text into chunks
+        text_chunks = self._split_text_into_chunks(text)
+        results = []
 
-        # if reference audio is provided, use it as the first segment
+        # Process each chunk separately
+        for chunk_idx, chunk in enumerate(text_chunks):
+            self.model.reset_caches()
 
-        if len(context) == 0 and ref_audio is not None and ref_text is not None:
-            context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
+            # if reference audio is provided, use it as the first segment
+            # but only for the first chunk
+            current_context = []
+            if (
+                chunk_idx == 0
+                and len(context) == 0
+                and ref_audio is not None
+                and ref_text is not None
+            ):
+                current_context = [
+                    Segment(speaker=speaker, text=ref_text, audio=ref_audio)
+                ]
 
-        start_time = time.time()
+            start_time = time.time()
 
-        sampler = sampler or make_sampler(temp=0.9, top_k=50)
-        max_audio_frames = int(max_audio_length_ms / 80)
+            sampler = sampler or make_sampler(temp=0.9, top_k=50)
+            max_audio_frames = int(max_audio_length_ms / 80)
 
-        tokens, tokens_mask = [], []
-        for segment in context:
-            segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
-            tokens.append(segment_tokens)
-            tokens_mask.append(segment_tokens_mask)
+            tokens, tokens_mask = [], []
+            for segment in current_context:
+                segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
+                tokens.append(segment_tokens)
+                tokens_mask.append(segment_tokens_mask)
 
-        gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
-            text, speaker
-        )
-        tokens.append(gen_segment_tokens)
-        tokens_mask.append(gen_segment_tokens_mask)
-
-        prompt_tokens = mx.concat(tokens, axis=0).astype(mx.int32)
-        prompt_tokens_mask = mx.concat(tokens_mask, axis=0).astype(mx.bool_)
-
-        samples = []
-        curr_tokens = mx.expand_dims(prompt_tokens, axis=0)
-        curr_tokens_mask = mx.expand_dims(prompt_tokens_mask, axis=0)
-        curr_pos = mx.expand_dims(mx.arange(0, prompt_tokens.shape[0]), axis=0).astype(
-            mx.int32
-        )
-
-        max_seq_len = 2048 - max_audio_frames
-        if curr_tokens.shape[1] >= max_seq_len:
-            raise ValueError(
-                f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
+            gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
+                chunk, speaker
             )
+            tokens.append(gen_segment_tokens)
+            tokens_mask.append(gen_segment_tokens_mask)
 
-        for _ in range(max_audio_frames):
-            sample = self.model.generate_frame(
-                curr_tokens, curr_tokens_mask, curr_pos, sampler
-            )
-            if mx.all(sample == 0):
-                break  # eos
+            prompt_tokens = mx.concat(tokens, axis=0).astype(mx.int32)
+            prompt_tokens_mask = mx.concat(tokens_mask, axis=0).astype(mx.bool_)
 
-            samples.append(sample)
+            samples = []
+            curr_tokens = mx.expand_dims(prompt_tokens, axis=0)
+            curr_tokens_mask = mx.expand_dims(prompt_tokens_mask, axis=0)
+            curr_pos = mx.expand_dims(
+                mx.arange(0, prompt_tokens.shape[0]), axis=0
+            ).astype(mx.int32)
 
-            curr_tokens = mx.expand_dims(
-                mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1), axis=1
-            )
-            curr_tokens_mask = mx.expand_dims(
-                mx.concat(
-                    [
-                        mx.ones_like(sample).astype(mx.bool_),
-                        mx.zeros((1, 1)).astype(mx.bool_),
-                    ],
+            max_seq_len = 2048 - max_audio_frames
+            if curr_tokens.shape[1] >= max_seq_len:
+                raise ValueError(
+                    f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
+                )
+
+            for _ in range(max_audio_frames):
+                sample = self.model.generate_frame(
+                    curr_tokens, curr_tokens_mask, curr_pos, sampler
+                )
+                if mx.all(sample == 0):
+                    break  # eos
+
+                samples.append(sample)
+
+                curr_tokens = mx.expand_dims(
+                    mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1),
                     axis=1,
-                ),
-                axis=1,
-            )
-            curr_pos = curr_pos[:, -1:] + 1
-
-        transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
-        audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
-
-        # This applies an imperceptible watermark to identify audio as AI-generated.
-        # Watermarking ensures transparency, dissuades misuse, and enables traceability.
-        # Please be a responsible AI citizen and keep the watermarking in place.
-        # If using CSM 1B in another application, use your own private key and keep it secret.
-        if self._watermarker is not None:
-            audio = watermark(
-                self._watermarker,
-                audio,
-                self.sample_rate,
-                CSM_1B_GH_WATERMARK,
-            )
-            audio = mx.array(audio, dtype=mx.float32)
-
-        mx.eval(audio)
-
-        segment_time = time.time() - start_time
-
-        samples = audio.shape[0] if audio is not None else 0
-        assert samples > 0, "No audio generated"
-
-        # Calculate token count
-        token_count = curr_tokens.shape[2]
-
-        # Calculate audio duration in seconds
-        sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
-        audio_duration_seconds = samples / sample_rate
-
-        # Calculate real-time factor (RTF)
-        rtf = segment_time / audio_duration_seconds if audio_duration_seconds > 0 else 0
-
-        # Format duration as HH:MM:SS.mmm
-        duration_mins = int(audio_duration_seconds // 60)
-        duration_secs = int(audio_duration_seconds % 60)
-        duration_ms = int((audio_duration_seconds % 1) * 1000)
-        duration_hours = int(audio_duration_seconds // 3600)
-        duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
-
-        return [
-            GenerationResult(
-                audio=audio,
-                samples=samples,
-                segment_idx=0,
-                token_count=token_count,
-                audio_duration=duration_str,
-                real_time_factor=round(rtf, 2),
-                prompt={
-                    "tokens": token_count,
-                    "tokens-per-sec": (
-                        round(token_count / segment_time, 2) if segment_time > 0 else 0
+                )
+                curr_tokens_mask = mx.expand_dims(
+                    mx.concat(
+                        [
+                            mx.ones_like(sample).astype(mx.bool_),
+                            mx.zeros((1, 1)).astype(mx.bool_),
+                        ],
+                        axis=1,
                     ),
-                },
-                audio_samples={
-                    "samples": samples,
-                    "samples-per-sec": (
-                        round(samples / segment_time, 2) if segment_time > 0 else 0
-                    ),
-                },
-                processing_time_seconds=segment_time,
-                peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
+                    axis=1,
+                )
+                curr_pos = curr_pos[:, -1:] + 1
+
+            transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
+            audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
+
+            # This applies an imperceptible watermark to identify audio as AI-generated.
+            # Watermarking ensures transparency, dissuades misuse, and enables traceability.
+            # Please be a responsible AI citizen and keep the watermarking in place.
+            # If using CSM 1B in another application, use your own private key and keep it secret.
+            if self._watermarker is not None:
+                audio = watermark(
+                    self._watermarker,
+                    audio,
+                    self.sample_rate,
+                    CSM_1B_GH_WATERMARK,
+                )
+                audio = mx.array(audio, dtype=mx.float32)
+
+            mx.eval(audio)
+
+            segment_time = time.time() - start_time
+
+            samples = audio.shape[0] if audio is not None else 0
+            assert samples > 0, "No audio generated"
+
+            # Calculate token count
+            token_count = curr_tokens.shape[2]
+
+            # Calculate audio duration in seconds
+            sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+            audio_duration_seconds = samples / sample_rate
+
+            # Calculate real-time factor (RTF)
+            rtf = (
+                segment_time / audio_duration_seconds
+                if audio_duration_seconds > 0
+                else 0
             )
-        ]
+
+            # Format duration as HH:MM:SS.mmm
+            duration_mins = int(audio_duration_seconds // 60)
+            duration_secs = int(audio_duration_seconds % 60)
+            duration_ms = int((audio_duration_seconds % 1) * 1000)
+            duration_hours = int(audio_duration_seconds // 3600)
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+            results.append(
+                GenerationResult(
+                    audio=audio,
+                    samples=samples,
+                    segment_idx=chunk_idx,
+                    token_count=token_count,
+                    audio_duration=duration_str,
+                    real_time_factor=round(rtf, 2),
+                    prompt={
+                        "tokens": token_count,
+                        "tokens-per-sec": (
+                            round(token_count / segment_time, 2)
+                            if segment_time > 0
+                            else 0
+                        ),
+                    },
+                    audio_samples={
+                        "samples": samples,
+                        "samples-per-sec": (
+                            round(samples / segment_time, 2) if segment_time > 0 else 0
+                        ),
+                    },
+                    processing_time_seconds=segment_time,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                )
+            )
+
+        return results

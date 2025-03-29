@@ -44,6 +44,7 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
+    max_audio_length: float = 90.0,
     **kwargs,
 ) -> None:
     """
@@ -106,6 +107,7 @@ def generate_audio(
             ref_audio=ref_audio,
             ref_text=ref_text,
             temperature=temperature,
+            max_audio_length_ms=max_audio_length * 1000,
             verbose=True,
         )
 
@@ -214,6 +216,12 @@ def parse_args():
         type=float,
         default=1.1,
         help="Repetition penalty for the model",
+    )
+    parser.add_argument(
+        "--max_audio_length",
+        type=float,
+        default=90.0,
+        help="Maximum audio length per segment in seconds",
     )
 
     args = parser.parse_args()

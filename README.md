@@ -167,8 +167,24 @@ for _, _, audio in pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+
 
 - 🇺🇸 `'a'` - American English
 - 🇬🇧 `'b'` - British English
-- 🇯🇵 `'j'` - Japanese (requires `pip install misaki[ja]`)
-- 🇨🇳 `'z'` - Mandarin Chinese (requires `pip install misaki[zh]`)
+- 🇯🇵 `'j'` - Japanese (requires additional packages)
+- 🇨🇳 `'z'` - Mandarin Chinese (requires additional packages)
+
+#### Language-Specific Requirements
+
+For Japanese audio files, you need to install:
+```bash
+pip install pyopenjtalk>=0.4.0 fugashi[unidic-lite]>=1.4.0
+# or
+pip install misaki[ja]
+```
+
+For Chinese audio files, you need to install:
+```bash
+pip install pypinyin>=0.53.0
+# or
+pip install misaki[zh]
+```
 
 ### CSM (Conversational Speech Model)
 

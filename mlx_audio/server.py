@@ -12,6 +12,7 @@ from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from huggingface_hub import list_repo_files
 
 
 # Configure logging
@@ -64,9 +65,10 @@ def tts_endpoint(
     voice: str = Form("af_heart"),
     speed: float = Form(1.0),
     model: str = Form("mlx-community/Kokoro-82M-4bit"),
+    language: str = Form("american_english"),
 ):
     """
-    POST an x-www-form-urlencoded form with 'text' (and optional 'voice', 'speed', and 'model').
+    POST an x-www-form-urlencoded form with 'text' (and optional 'voice', 'speed', 'model', and 'language').
     We run TTS on the text, save the audio in a unique file,
     and return JSON with the filename so the client can retrieve it.
     """
@@ -91,6 +93,10 @@ def tts_endpoint(
         "mlx-community/Kokoro-82M-6bit",
         "mlx-community/Kokoro-82M-8bit",
         "mlx-community/Kokoro-82M-bf16",
+        "mlx-community/orpheus-3b-0.1-ft-bf16",
+        "mlx-community/orpheus-3b-0.1-ft-8bit",
+        "mlx-community/orpheus-3b-0.1-ft-6bit",
+        "mlx-community/orpheus-3b-0.1-ft-4bit",
     ]
     if model not in valid_models:
         return JSONResponse(
@@ -122,21 +128,42 @@ def tts_endpoint(
     output_path = os.path.join(OUTPUT_FOLDER, filename)
 
     logger.debug(
-        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}"
+        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}, language: {language}"
     )
     logger.debug(f"Output file will be: {output_path}")
+
+    # Map language parameter to language code
+    language_to_code = {
+        "american_english": "a",
+        "british_english": "b",
+        "hindi": "h",
+        "spanish": "s",
+        "french": "f",
+        "italian": "i",
+        "brazilian_portuguese": "p",
+        "japanese": "j",
+        "mandarin_chinese": "c",
+    }
+
+    # Set language code based on model type
+    # For Orpheus models, always use "a" (American English)
+    # For other models, use the language mapping
+    if "orpheus" in model.lower():
+        lang_code = "a"  # Always use American English for Orpheus
+    else:
+        # Use language code from mapping, or fall back to first char of voice
+        lang_code = language_to_code.get(language, voice[0])
 
     # We'll use the high-level "model.generate" method:
     results = tts_model.generate(
         text=text,
         voice=voice,
         speed=speed_float,
-        lang_code=voice[0],
+        lang_code=lang_code,
         verbose=False,
     )
 
     # We'll just gather all segments (if any) into a single wav
-    # It's typical for multi-segment text to produce multiple wave segments:
     audio_arrays = []
     for segment in results:
         audio_arrays.append(segment.audio)
@@ -384,9 +411,63 @@ def open_output_folder():
         )
 
 
+def get_voice_names(repo_id):
+    """Fetches and returns a list of voice names (without extensions) from the given Hugging Face repository."""
+    return [
+        os.path.splitext(file.replace("voices/", ""))[0]
+        for file in list_repo_files(repo_id)
+        if file.startswith("voices/")
+    ]
+
+
+# Global variable to store the available voices
+available_voices = []
+
+# List of supported models
+available_models = [
+    {"id": "mlx-community/Kokoro-82M-4bit", "name": "Kokoro 82M 4bit"},
+    {"id": "mlx-community/Kokoro-82M-6bit", "name": "Kokoro 82M 6bit"},
+    {"id": "mlx-community/Kokoro-82M-8bit", "name": "Kokoro 82M 8bit"},
+    {"id": "mlx-community/Kokoro-82M-bf16", "name": "Kokoro 82M bf16"},
+    {"id": "mlx-community/orpheus-3b-0.1-ft-bf16", "name": "Orpheus 3B bf16"},
+    {"id": "mlx-community/orpheus-3b-0.1-ft-8bit", "name": "Orpheus 3B 8bit"},
+    {"id": "mlx-community/orpheus-3b-0.1-ft-6bit", "name": "Orpheus 3B 6bit"},
+    {"id": "mlx-community/orpheus-3b-0.1-ft-4bit", "name": "Orpheus 3B 4bit"},
+]
+
+
+@app.get("/voices")
+def get_voices(repo_id: str = "hexgrad/Kokoro-82M", language: str = None):
+    """
+    Return a list of available voice names.
+    If language parameter is provided, filter voices starting with that language code.
+    """
+    global available_voices
+
+    # For orpheus models, return a fixed list of voices
+    if "orpheus" in repo_id.lower():
+        voices = ["tara", "leah", "jess", "leo", "dan", "mia", "zac", "zoe"]
+        return {"voices": voices}
+    else:
+        # Use the voices loaded during server startup
+        voices = available_voices
+
+        # Filter voices by language code if provided
+        if language:
+            voices = [voice for voice in voices if voice.startswith(language)]
+
+        return {"voices": voices}
+
+
+@app.get("/models")
+def get_models():
+    """Return a list of available models."""
+    return {"models": available_models}
+
+
 def setup_server():
     """Setup the server by loading the model and creating the output directory."""
-    global tts_model, audio_player, OUTPUT_FOLDER
+    global tts_model, audio_player, OUTPUT_FOLDER, available_voices
 
     # Make sure the output folder for generated TTS files exists
     try:
@@ -408,6 +489,17 @@ def setup_server():
             logger.debug(f"Using fallback output directory: {OUTPUT_FOLDER}")
         except Exception as fallback_error:
             logger.error(f"Error with fallback directory: {str(fallback_error)}")
+
+    # Load available voices
+    try:
+        default_repo = "hexgrad/Kokoro-82M"
+        logger.debug(f"Loading voices from {default_repo}")
+        available_voices = get_voice_names(default_repo)
+        logger.debug(f"Successfully loaded {len(available_voices)} voices")
+    except Exception as e:
+        logger.error(f"Error loading voices: {str(e)}")
+        logger.info("No voices loaded during startup")
+        # We'll leave available_voices as an empty list
 
     # Load the model if not already loaded
     if tts_model is None:
