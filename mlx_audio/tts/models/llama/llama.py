@@ -1,6 +1,7 @@
+import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -13,8 +14,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from mlx_audio.codec.models.snac import SNAC
-
-from ..base import GenerationResult
+from mlx_audio.tts.models.base import GenerationResult, split_text_into_chunks
 
 
 @dataclass
@@ -297,8 +297,20 @@ class Model(nn.Module):
         **kwargs,
     ):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
+
+        # Split by newlines first if needed
         prompts = prompt.split(split_pattern)
-        prompts = [f"{voice}: " + p for p in prompts]
+
+        # Further split long prompts into smaller chunks
+        all_prompts = []
+        for p in prompts:
+            if len(p) > 300:  # Only split if text is longer than 300 chars
+                chunks = split_text_into_chunks(p)
+                all_prompts.extend(chunks)
+            else:
+                all_prompts.append(p)
+
+        prompts = [f"{voice}: " + p for p in all_prompts if p.strip()]
 
         all_input_ids = []
 
@@ -318,7 +330,8 @@ class Model(nn.Module):
             )  # SOH SOT Text EOT EOH
             all_modified_input_ids.append(modified_input_ids)
 
-        input_ids = mx.concatenate(all_modified_input_ids, axis=0)
+        time_start = time.time()
+        all_code_lists = []
 
         sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
         logits_processors = make_logits_processors(
@@ -327,88 +340,103 @@ class Model(nn.Module):
             kwargs.get("repetition_context_size", 20),
         )
 
-        time_start = time.time()
-        # TODO: Support batch processing as in the Colab: https://github.com/canopyai/Orpheus-TTS
-        for i, response in enumerate(
-            tqdm(
-                stream_generate(
-                    self,
-                    tokenizer=self.tokenizer,
-                    prompt=input_ids.squeeze(0),
-                    max_tokens=max_tokens,
-                    sampler=sampler,
-                    logits_processors=logits_processors,
-                ),
-                total=max_tokens,
-                disable=not verbose,
-            )
-        ):
-            next_token = mx.array([response.token])
-            input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-            if i % 50 == 0:
-                mx.metal.clear_cache()
+        for chunk_idx, input_ids in enumerate(all_modified_input_ids):
+            chunk_input_ids = input_ids
 
-            if next_token == 128258:
-                break
+            # TODO: Support batch processing as in the Colab: https://github.com/canopyai/Orpheus-TTS
+            for i, response in enumerate(
+                tqdm(
+                    stream_generate(
+                        self,
+                        tokenizer=self.tokenizer,
+                        prompt=chunk_input_ids.squeeze(0),
+                        max_tokens=max_tokens,
+                        sampler=sampler,
+                        logits_processors=logits_processors,
+                    ),
+                    total=max_tokens,
+                    disable=not verbose,
+                )
+            ):
+                next_token = mx.array([response.token])
+                chunk_input_ids = mx.concatenate(
+                    [chunk_input_ids, next_token[None, :]], axis=1
+                )
+                if i % 50 == 0:
+                    mx.clear_cache()
 
-        code_lists = self.parse_output(input_ids)
+                if next_token == 128258:
+                    break
+
+            code_lists = self.parse_output(chunk_input_ids)
+            all_code_lists.extend(code_lists)
+
+            # Clear cache between chunks to prevent memory buildup
+            mx.clear_cache()
 
         my_samples = []
-        for code_list in code_lists:
+        for code_list in all_code_lists:
             samples = redistribute_codes(code_list)
             my_samples.append(samples)
 
         time_end = time.time()
 
-        if len(prompts) != len(my_samples):
-            raise Exception("Number of prompts and samples do not match")
-        else:
-            for i in range(len(my_samples)):
-                audio = my_samples[i][0]
+        if len(all_prompts) != len(my_samples):
+            # Raise an error when there's a mismatch between prompts and generated samples
+            available_samples = len(my_samples)
+            raise RuntimeError(
+                f"Error: Number of prompts ({len(all_prompts)}) and samples ({available_samples}) do not match"
+            )
 
-                samples = audio.shape[0] if audio is not None else 0
-                assert samples > 0, "No audio generated"
+        for i in range(len(my_samples)):
+            audio = my_samples[i][0]
 
-                # Calculate token count
-                token_count = len(input_ids) if input_ids is not None else 0
+            samples = audio.shape[0] if audio is not None else 0
+            assert samples > 0, "No audio generated"
 
-                # Calculate audio duration in seconds
-                sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
-                audio_duration_seconds = samples / sample_rate
+            # Calculate token count - use the input_ids from the last chunk as an approximation
+            token_count = chunk_input_ids.shape[1] if chunk_input_ids is not None else 0
 
-                # Calculate real-time factor (RTF)
-                rtf = audio_duration_seconds / (time_end - time_start)
+            # Calculate audio duration in seconds
+            sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+            audio_duration_seconds = samples / sample_rate
 
-                # Format duration as HH:MM:SS.mmm
-                duration_mins = int(audio_duration_seconds // 60)
-                duration_secs = int(audio_duration_seconds % 60)
-                duration_ms = int((audio_duration_seconds % 1) * 1000)
-                duration_hours = int(audio_duration_seconds // 3600)
-                duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+            # Calculate processing time for this segment
+            segment_time = (time_end - time_start) / len(my_samples)
 
-                yield GenerationResult(
-                    audio=audio,
-                    samples=samples,
-                    segment_idx=i,
-                    token_count=token_count,
-                    audio_duration=duration_str,
-                    real_time_factor=rtf,
-                    prompt={
-                        "tokens": token_count,
-                        "tokens-per-sec": (
-                            round(token_count / audio_duration_seconds, 2)
-                            if audio_duration_seconds > 0
-                            else 0
-                        ),
-                    },
-                    audio_samples={
-                        "samples": samples,
-                        "samples-per-sec": (
-                            round(samples / audio_duration_seconds, 2)
-                            if audio_duration_seconds > 0
-                            else 0
-                        ),
-                    },
-                    processing_time_seconds=time_end - time_start,
-                    peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
-                )
+            # Calculate real-time factor (RTF)
+            rtf = (
+                segment_time / audio_duration_seconds
+                if audio_duration_seconds > 0
+                else 0
+            )
+
+            # Format duration as HH:MM:SS.mmm
+            duration_mins = int(audio_duration_seconds // 60)
+            duration_secs = int(audio_duration_seconds % 60)
+            duration_ms = int((audio_duration_seconds % 1) * 1000)
+            duration_hours = int(audio_duration_seconds // 3600)
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+            yield GenerationResult(
+                audio=audio,
+                samples=samples,
+                segment_idx=i,
+                token_count=token_count,
+                audio_duration=duration_str,
+                real_time_factor=round(rtf, 2),
+                prompt={
+                    "tokens": token_count,
+                    "tokens-per-sec": (
+                        round(token_count / segment_time, 2) if segment_time > 0 else 0
+                    ),
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": (
+                        round(samples / segment_time, 2) if segment_time > 0 else 0
+                    ),
+                },
+                processing_time_seconds=segment_time,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )

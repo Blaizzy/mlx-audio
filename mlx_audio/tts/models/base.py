@@ -1,5 +1,7 @@
 import inspect
+import re
 from dataclasses import dataclass
+from typing import List
 
 import mlx.core as mx
 import numpy as np
@@ -32,6 +34,46 @@ def check_array_shape(arr):
         return True
     else:
         return False
+
+
+def split_text_into_chunks(text: str, max_chars: int = 300) -> List[str]:
+    """
+    Split text into smaller chunks that can be processed individually.
+    Tries to split on sentence boundaries when possible.
+
+    Args:
+        text (str): The text to split
+        max_chars (int): Maximum characters per chunk
+
+    Returns:
+        List[str]: List of text chunks
+    """
+    # Try to split on sentence boundaries first
+    chunks = []
+    sentences = re.split(r"([.!?]+)", text)
+    current_chunk = ""
+
+    for i in range(0, len(sentences), 2):
+        sentence = sentences[i]
+        # Add the punctuation back if it exists
+        if i + 1 < len(sentences):
+            sentence += sentences[i + 1]
+
+        if len(current_chunk) + len(sentence) <= max_chars:
+            current_chunk += sentence
+        else:
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+            current_chunk = sentence
+
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+
+    # If no chunks were created (no sentence boundaries), fall back to character-based chunking
+    if not chunks:
+        chunks = [text[i : i + max_chars] for i in range(0, len(text), max_chars)]
+
+    return [chunk for chunk in chunks if chunk.strip()]
 
 
 def adjust_speed(audio_array, speed_factor):
