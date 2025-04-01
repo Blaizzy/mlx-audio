@@ -486,16 +486,18 @@ def mlx_istft(
 
     # inverse FFT of each frame
     frames_time = mx.fft.irfft(x, axis=0).transpose(1, 0)
-    frame_window_sum = w**2
 
-    for i in range(num_frames):
-        # get the position in the time-domain signal to add the frame
-        start = i * hop_length
-        window_indicies = start + mx.arange(win_length)
+    # get the position in the time-domain signal to add the frame
+    frame_offsets = mx.arange(num_frames) * hop_length
+    indices = frame_offsets[:, None] + mx.arange(win_length)
+    indices_flat = indices.flatten()
 
-        # overlap-add the inverse transformed frame, scaled by the window
-        reconstructed = reconstructed.at[window_indicies].add(frames_time[i] * w)
-        window_sum = window_sum.at[window_indicies].add(frame_window_sum)
+    updates_reconstructed = (frames_time * w).flatten()
+    updates_window = mx.tile(w, (num_frames,)).flatten()
+
+    # overlap-add the inverse transformed frame, scaled by the window
+    reconstructed = reconstructed.at[indices_flat].add(updates_reconstructed)
+    window_sum = window_sum.at[indices_flat].add(updates_window)
 
     # normalize by the sum of the window values
     reconstructed = mx.where(window_sum != 0, reconstructed / window_sum, reconstructed)
