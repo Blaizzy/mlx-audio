@@ -2,6 +2,7 @@ import argparse
 import importlib.util
 import logging
 import os
+import re
 import sys
 import uuid
 
@@ -53,9 +54,18 @@ audio_player = None  # Will be initialized when the server starts
 
 # Make sure the output folder for generated TTS files exists
 # Use an absolute path that's guaranteed to be writable
-OUTPUT_FOLDER = os.path.join(os.path.expanduser("~"), ".mlx_audio", "outputs")
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
+DEFAULT_OUTPUT_FOLDER = os.path.join(os.path.expanduser("~"), ".mlx_audio", "outputs")
+DEFAULT_FILE_PREFIX = "tts"
+DEFAULT_AUDIO_FORMAT = "wav"
+DEFAULT_GENERATION_VERBOSE = False
+
+# Get from environment variables with defaults
+OUTPUT_FOLDER = os.environ.get("MLX_AUDIO_OUTPUT_FOLDER", DEFAULT_OUTPUT_FOLDER)
+FILE_PREFIX = os.environ.get("MLX_AUDIO_FILE_PREFIX", DEFAULT_FILE_PREFIX)
+AUDIO_FORMAT = os.environ.get("MLX_AUDIO_FILE_FORMAT", DEFAULT_AUDIO_FORMAT)
+GENERATION_VERBOSE = os.environ.get(
+    "MLX_AUDIO_GENERATION_VERBOSE", str(DEFAULT_GENERATION_VERBOSE)
+).lower() in ("true", "yes", "1", "t")
 
 
 @app.post("/tts")
@@ -64,6 +74,8 @@ def tts_endpoint(
     voice: str = Form("af_heart"),
     speed: float = Form(1.0),
     model: str = Form("mlx-community/Kokoro-82M-4bit"),
+    file_prefix: str = Form("tts"),
+    filename: str = Form(None),
 ):
     """
     POST an x-www-form-urlencoded form with 'text' (and optional 'voice', 'speed', and 'model').
@@ -71,6 +83,9 @@ def tts_endpoint(
     and return JSON with the filename so the client can retrieve it.
     """
     global tts_model
+
+    # Use the provided file_prefix or the default one
+    prefix = file_prefix if file_prefix else FILE_PREFIX
 
     if not text.strip():
         return JSONResponse({"error": "Text is empty"}, status_code=400)
@@ -115,14 +130,29 @@ def tts_endpoint(
                 {"error": f"Failed to load model: {str(e)}"}, status_code=500
             )
 
-    # We'll do something like the code in model.generate() from the TTS library:
-    # Generate the unique filename
-    unique_id = str(uuid.uuid4())
-    filename = f"tts_{unique_id}.wav"
-    output_path = os.path.join(OUTPUT_FOLDER, filename)
+    # Use specified filename if provided, otherwise generate a unique one
+    if filename:
+        # Sanitize filename - keep only alphanumeric chars, underscore, hyphen, and period
+        filename = re.sub(r"[^\w\-\.]", "_", os.path.basename(filename))
 
+        # Limit filename length
+        if len(filename) > 100:
+            logger.warning(
+                f"Filename length exceeds 100 characters. Truncating filename: {filename}"
+            )
+            filename = filename[:100]
+
+        # Ensure the filename has the correct extension
+        if not filename.endswith(f".{AUDIO_FORMAT}"):
+            filename = f"{filename}.{AUDIO_FORMAT}"
+    else:
+        # Generate a unique filename with the prefix
+        unique_id = str(uuid.uuid4())
+        filename = f"{prefix}_{unique_id}.{AUDIO_FORMAT}"
+
+    output_path = os.path.join(OUTPUT_FOLDER, filename)
     logger.debug(
-        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}"
+        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}, audio format: {AUDIO_FORMAT}"
     )
     logger.debug(f"Output file will be: {output_path}")
 
@@ -132,7 +162,8 @@ def tts_endpoint(
         voice=voice,
         speed=speed_float,
         lang_code=voice[0],
-        verbose=False,
+        verbose=GENERATION_VERBOSE,
+        audio_format=AUDIO_FORMAT,
     )
 
     # We'll just gather all segments (if any) into a single wav
@@ -200,8 +231,11 @@ def get_audio_file(filename: str):
 
         return JSONResponse({"error": "File not found"}, status_code=404)
 
-    logger.debug(f"Serving audio file: {file_path}")
-    return FileResponse(file_path, media_type="audio/wav")
+    # Determine the correct media type based on file extension
+    media_type = "audio/mp3" if filename.endswith(".mp3") else "audio/wav"
+
+    logger.debug(f"Serving audio file: {file_path} with media type {media_type}")
+    return FileResponse(file_path, media_type=media_type)
 
 
 @app.get("/")
@@ -446,6 +480,9 @@ def setup_server():
 
 def main(host="127.0.0.1", port=8000, verbose=False):
     """Parse command line arguments for the server and start it."""
+
+    global logger, OUTPUT_FOLDER, AUDIO_FORMAT, GENERATION_VERBOSE
+
     parser = argparse.ArgumentParser(description="Start the MLX-Audio TTS server")
     parser.add_argument(
         "--host",
@@ -464,10 +501,36 @@ def main(host="127.0.0.1", port=8000, verbose=False):
         action="store_true",
         help="Enable verbose logging with detailed debug information",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=OUTPUT_FOLDER,
+        help=f"Output directory for audio files (default: {OUTPUT_FOLDER}, can also be set via MLX_AUDIO_OUTPUT_FOLDER env var)",
+    )
+    parser.add_argument(
+        "--audio-format",
+        type=str,
+        default=AUDIO_FORMAT,
+        choices=["wav", "mp3"],
+        help=f"File format for audio files (default: {AUDIO_FORMAT}, can also be set via MLX_AUDIO_AUDIO_FORMAT env var)",
+    )
     args = parser.parse_args()
 
+    # Update OUTPUT_FOLDER if specified via command line
+    if args.output_dir and args.output_dir != OUTPUT_FOLDER:
+        OUTPUT_FOLDER = args.output_dir
+        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+        logger.debug(f"Using command-line specified output directory: {OUTPUT_FOLDER}")
+
+    if args.audio_format and args.audio_format != AUDIO_FORMAT:
+        AUDIO_FORMAT = args.audio_format
+        logger.debug(f"Using command-line specified file format: {AUDIO_FORMAT}")
+
+    if args.verbose:
+        GENERATION_VERBOSE = True
+        logger.debug(f"Using command-line specified verbose mode: {GENERATION_VERBOSE}")
+
     # Update logger with verbose setting
-    global logger
     logger = setup_logging(args.verbose)
 
     # Start the server with the parsed arguments
