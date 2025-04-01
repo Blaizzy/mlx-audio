@@ -31,13 +31,21 @@
             margin: 4px 2px;
             cursor: pointer;
             border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+        button:hover {
+            background-color: #45a049;
         }
         button:disabled {
             background-color: #cccccc;
+            color: #666;
             cursor: not-allowed;
         }
         #stopBtn {
             background-color: #f44336;
+        }
+        #stopBtn:hover {
+            background-color: #d32f2f;
         }
         #status {
             margin-top: 10px;
@@ -113,6 +121,7 @@
             margin: 0;
             background: transparent;
             -webkit-appearance: none;
+            appearance: none;
         }
         input[type="range"]:focus {
             outline: none;
@@ -239,19 +248,17 @@
         const audioUpload = document.getElementById('audioUpload');
         const playBtn = document.getElementById('playBtn');
         const stopBtn = document.getElementById('stopBtn');
-        const statusElement = document.getElementById('status');
-
-        // TTS elements
         const textInput = document.getElementById('text');
         const voiceSelect = document.getElementById('voice');
         const modelSelect = document.getElementById('model');
         const speedInput = document.getElementById('speed');
         const speedValue = document.getElementById('speed-value');
+        const statusElement = document.getElementById('status');
         const generateBtn = document.getElementById('generateBtn');
         const openFolderBtn = document.getElementById('openFolderBtn');
-        const ttsErrorElement = document.getElementById('ttsError');
         const ttsStatusElement = document.getElementById('ttsStatus');
-
+        const ttsErrorElement = document.getElementById('ttsError');
+        
         // Audio variables
         let audioContext;
         let analyser;
@@ -259,90 +266,359 @@
         let audioElement;
         let audioSource;
 
-        // Three.js setup
-        const scene = new THREE.Scene();
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        const renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setClearColor(0x000000);
-        document.body.appendChild(renderer.domElement);
-
-        // Add orbit controls
-        const controls = new THREE.OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
-        controls.dampingFactor = 0.05;
-
-        // Position camera
-        camera.position.set(0, 0, 100);
-        camera.lookAt(0, 0, 0);
-
-        // Add lights
-        const ambientLight = new THREE.AmbientLight(0x404040);
-        scene.add(ambientLight);
-
-        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        directionalLight.position.set(1, 1, 1);
-        scene.add(directionalLight);
-
-        const pointLight = new THREE.PointLight(0xffffff, 1, 100);
-        pointLight.position.set(0, 0, 0);
-        scene.add(pointLight);
-
-        // Create orb mesh
-        const sphereGeometry = new THREE.IcosahedronGeometry(30, 4); // Higher detail icosahedron
-        const sphereMaterial = new THREE.MeshPhongMaterial({
-            color: 0x0088ff,
-            emissive: 0x222222,
-            shininess: 30,
-            wireframe: false,
-            flatShading: true
-        });
-        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
-        scene.add(sphere);
-
-        // Store original vertex positions
-        const originalVertices = [];
-        for (let i = 0; i < sphereGeometry.attributes.position.count; i++) {
-            originalVertices.push(
-                new THREE.Vector3(
-                    sphereGeometry.attributes.position.getX(i),
-                    sphereGeometry.attributes.position.getY(i),
-                    sphereGeometry.attributes.position.getZ(i)
-                )
-            );
+        // Three.js variables
+        let scene, camera, renderer, controls;
+        let particleSystem, originalPositions;
+        let animationId;
+        let timeValue = 0;
+        let currentPlaybackRate = 1.0;
+        
+        // Animation parameters
+        const particleCount = 8000;  
+        let baseAmplitude = 0.05;
+        let baseFrequency = 0.3;
+        let basePull = new THREE.Vector3(0, 0, 1);
+        
+        // Transition parameters
+        let targetAmplitude = 0.05;
+        let targetFrequency = 0.3;
+        let targetPull = new THREE.Vector3(0, 0, 1);
+        let transitionStartTime = 0;
+        let transitionDuration = 1000; 
+        
+        // Text visualization
+        let currentWords = [];
+        let wordParams = [];
+        let animationStartTime = 0;
+        let currentWordIndex = 0;
+        const wordDuration = 1000; 
+        
+        // Initialize Three.js scene
+        function init() {
+            scene = new THREE.Scene();
+            
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 5;
+            
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            document.body.appendChild(renderer.domElement);
+            
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            
+            createParticleSystem();
+            
+            animate();
         }
+        
+        // Create particle system
+        function createParticleSystem() {
+            const positions = new Float32Array(particleCount * 3);
+            originalPositions = new Float32Array(particleCount * 3);
+            const colors = new Float32Array(particleCount * 3);
+            const sizes = new Float32Array(particleCount);
+            
+            const radius = 1;
+            
+            for (let i = 0; i < particleCount; i++) {
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(2 * Math.random() - 1);
+                
+                const x = radius * Math.sin(phi) * Math.cos(theta);
+                const y = radius * Math.sin(phi) * Math.sin(theta);
+                const z = radius * Math.cos(phi);
+                
+                positions[i * 3] = x;
+                positions[i * 3 + 1] = y;
+                positions[i * 3 + 2] = z;
+                
+                originalPositions[i * 3] = x;
+                originalPositions[i * 3 + 1] = y;
+                originalPositions[i * 3 + 2] = z;
+                
+                // Add variation to particle colors (blue/white hues)
+                colors[i * 3] = 0.7 + Math.random() * 0.3;     // R: high amount for white
+                colors[i * 3 + 1] = 0.7 + Math.random() * 0.3; // G: high amount for white
+                colors[i * 3 + 2] = 0.9 + Math.random() * 0.1; // B: highest for blue tint
+                
+                // Vary particle sizes slightly
+                sizes[i] = 0.02 + Math.random() * 0.03;
+            }
+            
+            const geometry = new THREE.BufferGeometry();
+            geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.BufferAttribute(sizes, 1));
+            
+            const material = new THREE.PointsMaterial({
+                size: 0.03,
+                vertexColors: true,
+                transparent: true,
+                opacity: 0.8,
+                sizeAttenuation: true,
+                blending: THREE.AdditiveBlending // Add glow effect
+            });
+            
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+        }
+        
+        // Generate a unique sequence of numbers for each word or frequency band
+        function generateFingerprint(input) {
+            const length = 6 + Math.floor((input.length || 5) % 5); 
+            const result = [];
+            
+            for (let i = 0; i < length; i++) {
+                const charCode = typeof input === 'string' 
+                    ? input.charCodeAt(i % input.length) 
+                    : (input * 100 + i);
+                const position = i + 1;
+                const inputLength = typeof input === 'string' ? input.length : 5;
+                
+                // Use a more varied calculation to increase uniqueness
+                const number = ((charCode * position * (i + 1) * inputLength) % 100) / 100;
+                result.push(number);
+            }
+            
+            return result;
+        }
+        
+        // Compute parameters for cosmic wave deformation based on the fingerprint
+        function computeParams(input) {
+            const fingerprint = generateFingerprint(input);
+            const avg = fingerprint.reduce((acc, n) => acc + n, 0) / fingerprint.length;
+            
+            // Wider range for amplitude
+            const minAmplitude = 0.05, maxAmplitude = 0.7;
+            const amplitude = minAmplitude + avg * (maxAmplitude - minAmplitude);
+            
+            // More varied frequency
+            const rawFrequency = fingerprint[0]; 
+            const minFrequency = 0.1, maxFrequency = 0.8;
+            const frequency = minFrequency + rawFrequency * (maxFrequency - minFrequency);
+            
+            // More varied pull directions
+            const pullX = (fingerprint[0] - 0.5) * 2;
+            const pullY = (fingerprint[1] - 0.5) * 2;
+            const pullZ = (fingerprint[2] - 0.5) * 2;
+            const pull = new THREE.Vector3(pullX, pullY, pullZ).normalize();
+            
+            return { amplitude, frequency, pull };
+        }
+        
+        // Reset sphere to original state
+        function resetSphere() {
+            if (!particleSystem) return;
+            
+            const positions = particleSystem.geometry.attributes.position.array;
+            
+            for (let i = 0; i < particleCount; i++) {
+                positions[i * 3] = originalPositions[i * 3];
+                positions[i * 3 + 1] = originalPositions[i * 3 + 1];
+                positions[i * 3 + 2] = originalPositions[i * 3 + 2];
+            }
+            
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            
+            // Reset all animation parameters
+            timeValue = 0;
+            baseAmplitude = 0.05;
+            baseFrequency = 0.3;
+            basePull = new THREE.Vector3(0, 0, 1);
+            targetAmplitude = 0.05;
+            targetFrequency = 0.3;
+            targetPull = new THREE.Vector3(0, 0, 1);
+            transitionStartTime = 0;
+        }
+        
+        // Process text into words and compute parameters for each word
+        function processText(text) {
+            if (!text || text.trim() === '') return;
+            
+            const words = text.split(/\s+/).filter(word => word.length > 0);
+            if (words.length === 0) return;
+            
+            currentWords = words;
+            wordParams = words.map(word => computeParams(word));
+            
+            animationStartTime = performance.now();
+            currentWordIndex = 0;
+        }
+        
+        // Animation loop
+        function animate() {
+            animationId = requestAnimationFrame(animate);
 
-        // Create a glow effect
-        const glowGeometry = new THREE.SphereGeometry(32, 32, 32);
-        const glowMaterial = new THREE.MeshBasicMaterial({
-            color: 0x0088ff,
-            transparent: true,
-            opacity: 0.15,
-            side: THREE.BackSide
+            controls.update();
+
+            // Adjust animation speed based on playback rate
+            const speedFactor = audioElement && audioElement.playbackRate ? audioElement.playbackRate : 1.0;
+            timeValue += 0.01 * speedFactor;
+            
+            let effectiveAmplitude = baseAmplitude;
+            let effectiveFrequency = baseFrequency;
+            let effectivePull = basePull.clone();
+            
+            if (audioContext && analyser) {
+                analyser.getByteFrequencyData(dataArray);
+                
+                // More granular frequency analysis
+                const lowBass = getAverageFrequency(dataArray, 0, 5) / 256;
+                const highBass = getAverageFrequency(dataArray, 6, 15) / 256;
+                const lowMid = getAverageFrequency(dataArray, 16, 50) / 256;
+                const highMid = getAverageFrequency(dataArray, 51, 100) / 256;
+                const lowTreble = getAverageFrequency(dataArray, 101, 175) / 256;
+                const highTreble = getAverageFrequency(dataArray, 176, 255) / 256;
+                
+                // Create more dynamic amplitude response
+                targetAmplitude = 0.05 + (lowBass * 0.3 + highBass * 0.4);
+                
+                // Create more varied frequency response
+                targetFrequency = 0.1 + (lowMid * 0.3 + highMid * 0.5);
+                
+                // Create more varied pull directions
+                const pullX = (lowBass + highMid) - 0.5;
+                const pullY = (highBass + lowTreble) - 0.5;
+                const pullZ = (lowMid + highTreble) - 0.5;
+                targetPull = new THREE.Vector3(pullX, pullY, pullZ).normalize();
+                
+                if (transitionStartTime === 0) {
+                    transitionStartTime = performance.now();
+                }
+            }
+            else if (currentWords.length > 0 && animationStartTime > 0) {
+                const elapsed = performance.now() - animationStartTime;
+                const totalWords = currentWords.length;
+                const totalDuration = totalWords * wordDuration;
+                
+                if (elapsed >= totalDuration) {
+                    currentWords = [];
+                    animationStartTime = 0;
+                    
+                    targetAmplitude = 0.05;
+                    targetFrequency = 0.3;
+                    targetPull = new THREE.Vector3(0, 0, 1);
+                    
+                    transitionStartTime = performance.now();
+                } else {
+                    let wordIndex = Math.floor(elapsed / wordDuration);
+                    let phaseTime = elapsed % wordDuration;
+                    let currentParams, nextParams;
+                    
+                    if (wordIndex < totalWords - 1) {
+                        currentParams = wordParams[wordIndex];
+                        nextParams = wordParams[wordIndex + 1];
+                    } else {
+                        currentParams = wordParams[wordIndex];
+                        nextParams = {
+                            amplitude: 0.05,
+                            frequency: 0.3,
+                            pull: new THREE.Vector3(0, 0, 1)
+                        };
+                    }
+                    
+                    const t = phaseTime / wordDuration; 
+                    const easeInOutQuad = v => v < 0.5 ? 2 * v * v : -1 + (4 - 2 * v) * v;
+                    const easedT = easeInOutQuad(t);
+                    
+                    targetAmplitude = currentParams.amplitude + (nextParams.amplitude - currentParams.amplitude) * easedT;
+                    targetFrequency = currentParams.frequency + (nextParams.frequency - currentParams.frequency) * easedT;
+                    targetPull = currentParams.pull.clone().lerp(nextParams.pull, easedT).normalize();
+                    
+                    if (wordIndex !== currentWordIndex) {
+                        currentWordIndex = wordIndex;
+                    }
+                }
+            }
+            else {
+                particleSystem.rotation.y += 0.001;
+                particleSystem.rotation.x += 0.0005;
+            }
+            
+            if (audioContext) {
+                const elapsed = performance.now() - transitionStartTime;
+                const t = Math.min(elapsed / transitionDuration, 1.0);
+                const easeOutQuad = t => t * (2 - t);
+                const easedT = easeOutQuad(t);
+                
+                effectiveAmplitude = baseAmplitude + (targetAmplitude - baseAmplitude) * easedT;
+                effectiveFrequency = baseFrequency + (targetFrequency - baseFrequency) * easedT;
+                effectivePull = basePull.clone().lerp(targetPull, easedT);
+                
+                if (elapsed >= transitionDuration) {
+                    baseAmplitude = targetAmplitude;
+                    baseFrequency = targetFrequency;
+                    basePull = targetPull.clone();
+                    transitionStartTime = 0;
+                }
+            }
+            
+            if (particleSystem) {
+                const positions = particleSystem.geometry.attributes.position.array;
+                
+                for (let i = 0; i < particleCount; i++) {
+                    const ox = originalPositions[i * 3];
+                    const oy = originalPositions[i * 3 + 1];
+                    const oz = originalPositions[i * 3 + 2];
+                    
+                    const base = new THREE.Vector3(ox, oy, oz);
+                    
+                    const dotVal = base.dot(effectivePull);
+                    const parallel = effectivePull.clone().multiplyScalar(dotVal);
+                    const perpendicular = base.clone().sub(parallel);
+                    
+                    const phase = timeValue * effectiveFrequency + (ox + oy + oz) * 2.0;
+                    const deformation = effectiveAmplitude * Math.sin(phase);
+                    
+                    const newParallel = parallel.multiplyScalar(1 + 2 * deformation);
+                    const newPerp = perpendicular.multiplyScalar(1 - deformation);
+                    const newPos = newParallel.add(newPerp);
+                    
+                    positions[i * 3] = newPos.x;
+                    positions[i * 3 + 1] = newPos.y;
+                    positions[i * 3 + 2] = newPos.z;
+                }
+                
+                particleSystem.geometry.attributes.position.needsUpdate = true;
+            }
+            
+            renderer.render(scene, camera);
+        }
+        
+        // Helper function to get average frequency in a range
+        function getAverageFrequency(dataArray, startIndex, endIndex) {
+            let sum = 0;
+            for (let i = startIndex; i <= endIndex; i++) {
+                sum += dataArray[i];
+            }
+            return sum / (endIndex - startIndex + 1);
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
         });
-        const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
-        scene.add(glowMesh);
 
-        // Define rotation speed variables
-        let rotationSpeedY = 0.002;
-        let rotationSpeedX = 0.001;
-        let isGenerating = false;
+        // Initialize the scene
+        init();
 
         // Tab functionality
         function openTab(evt, tabName) {
-            // Hide all tabcontent
             const tabcontent = document.getElementsByClassName("tabcontent");
             for (let i = 0; i < tabcontent.length; i++) {
                 tabcontent[i].style.display = "none";
             }
             
-            // Remove active class from all tablinks
             const tablinks = document.getElementsByClassName("tablinks");
             for (let i = 0; i < tablinks.length; i++) {
                 tablinks[i].className = tablinks[i].className.replace(" active", "");
             }
             
-            // Show the current tab and add active class to the button
             document.getElementById(tabName).style.display = "block";
             evt.currentTarget.className += " active";
         }
@@ -364,23 +640,15 @@
                 return;
             }
             
-            // Hide previous error
             ttsErrorElement.style.display = 'none';
             ttsStatusElement.textContent = 'Generating speech...';
             
-            // Increase rotation speed to indicate processing
-            isGenerating = true;
-            rotationSpeedY = 0.01;
-            rotationSpeedX = 0.005;
-            
-            // Create form data
             const formData = new FormData();
             formData.append('text', text);
             formData.append('voice', voice);
             formData.append('model', model);
             formData.append('speed', speed);
             
-            // Send request to server
             fetch('/tts', {
                 method: 'POST',
                 body: formData
@@ -396,35 +664,13 @@
             .then(data => {
                 ttsStatusElement.textContent = 'Speech generated successfully!';
                 
-                // Reset rotation speed
-                isGenerating = false;
-                rotationSpeedY = 0.002;
-                rotationSpeedX = 0.001;
-                
-                // Clean up previous audio resources
-                if (audioElement) {
-                    audioElement.pause();
-                    audioElement.removeAttribute('src');
-                    audioElement.load();
-                }
-                
-                if (audioSource) {
-                    audioSource.disconnect();
-                    audioSource = null;
-                }
-                
-                // Create new audio element to avoid source node issues
                 audioElement = new Audio();
-                
-                // Set audio source with absolute path
                 audioElement.src = `/audio/${data.filename}`;
                 audioElement.loop = false;
                 
-                // Enable play button
                 playBtn.disabled = false;
                 stopBtn.disabled = true;
                 
-                // Add ended event listener
                 audioElement.addEventListener('ended', function() {
                     statusElement.textContent = "Audio finished playing.";
                     playBtn.disabled = false;
@@ -432,16 +678,10 @@
                     resetSphere();
                 });
                 
-                // Auto-play the generated audio
                 playAudio();
             })
             .catch(error => {
                 showTtsError(error.message);
-                
-                // Reset rotation speed on error too
-                isGenerating = false;
-                rotationSpeedY = 0.002;
-                rotationSpeedX = 0.001;
             });
         });
         
@@ -473,52 +713,40 @@
         
         // Function to play audio (reused for both upload and TTS)
         function playAudio() {
-            if (!audioElement || !audioElement.src) {
-                statusElement.textContent = "No audio available to play.";
-                return;
+            if (audioContext) {
+                audioContext.close();
             }
             
-            statusElement.textContent = "Playing audio...";
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 512;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
             
-            // Initialize audio context if needed
-            if (!audioContext) {
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const source = audioContext.createMediaElementSource(audioElement);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+            
+            const newPlaybackRate = parseFloat(speedInput.value);
+            // Always reset timeValue when starting playback to ensure consistent animation speed
+            timeValue = 0;
+            currentPlaybackRate = newPlaybackRate;
+            audioElement.playbackRate = newPlaybackRate;
+            audioElement.play();
+            
+            // Reset the sphere first
+            resetSphere();
+            
+            // Process text for word animation if we have text input
+            if (textInput.value && document.getElementById('textToSpeech').style.display === 'block') {
+                processText(textInput.value);
             }
             
-            // Create analyser if needed
-            if (!analyser) {
-                analyser = audioContext.createAnalyser();
-                analyser.fftSize = 256;
-                dataArray = new Uint8Array(analyser.frequencyBinCount);
-            }
-            
-            // Connect audio element to analyser if not already connected
-            if (!audioSource) {
-                try {
-                    audioSource = audioContext.createMediaElementSource(audioElement);
-                    audioSource.connect(analyser);
-                    analyser.connect(audioContext.destination);
-                } catch (error) {
-                    console.error("Error connecting audio source:", error);
-                    statusElement.textContent = "Error setting up audio visualization. Try refreshing the page.";
-                    
-                    // Still try to play the audio even if visualization fails
-                    audioElement.play().catch(playError => {
-                        statusElement.textContent = "Error playing audio: " + playError.message;
-                    });
-                    return;
-                }
-            }
-            
-            // Play audio
-            audioElement.play().then(() => {
-                playBtn.disabled = true;
-                stopBtn.disabled = false;
-            }).catch(error => {
-                statusElement.textContent = "Error playing audio: " + error.message;
-            });
+            // Update UI state
+            playBtn.disabled = true;
+            stopBtn.disabled = false;
+            statusElement.textContent = 'Playing...';
         }
-
+        
         // Handle audio upload
         audioUpload.addEventListener('change', function(e) {
             const file = e.target.files[0];
@@ -526,7 +754,6 @@
 
             statusElement.textContent = "Audio file loaded. Press Play to start.";
 
-            // Clean up previous audio resources
             if (audioElement) {
                 audioElement.pause();
                 audioElement.removeAttribute('src');
@@ -538,16 +765,13 @@
                 audioSource = null;
             }
             
-            // Create new audio element
             audioElement = new Audio();
             audioElement.src = URL.createObjectURL(file);
             audioElement.loop = false;
 
-            // Enable play button
             playBtn.disabled = false;
             stopBtn.disabled = true;
 
-            // Add ended event listener
             audioElement.addEventListener('ended', function() {
                 statusElement.textContent = "Audio finished playing.";
                 playBtn.disabled = false;
@@ -570,179 +794,20 @@
                 playBtn.disabled = false;
                 stopBtn.disabled = true;
 
-                // Reset sphere to original state
+                // Ensure animation state is completely reset
                 resetSphere();
+                timeValue = 0;
+                
+                // Reset all animation parameters
+                baseAmplitude = 0.05;
+                baseFrequency = 0.3;
+                basePull = new THREE.Vector3(0, 0, 1);
+                targetAmplitude = 0.05;
+                targetFrequency = 0.3;
+                targetPull = new THREE.Vector3(0, 0, 1);
+                transitionStartTime = 0;
             }
         });
-
-        // Reset sphere to original state
-        function resetSphere() {
-            const positionAttribute = sphereGeometry.attributes.position;
-
-            for (let i = 0; i < positionAttribute.count; i++) {
-                const originalVertex = originalVertices[i];
-                positionAttribute.setXYZ(i, originalVertex.x, originalVertex.y, originalVertex.z);
-            }
-
-            positionAttribute.needsUpdate = true;
-            sphereGeometry.computeVertexNormals();
-
-            // Reset colors
-            sphere.material.color.set(0x0088ff);
-            sphere.material.emissive.set(0x222222);
-            glowMesh.material.color.set(0x0088ff);
-        }
-
-        // Animation loop
-        function animate() {
-            requestAnimationFrame(animate);
-
-            // Update controls
-            controls.update();
-
-            // Get current time for pulsating effect
-            const time = performance.now() * 0.001; // Convert to seconds
-
-            // Rotate sphere with current speed
-            sphere.rotation.y += rotationSpeedY;
-            sphere.rotation.x += rotationSpeedX;
-            glowMesh.rotation.copy(sphere.rotation);
-
-            // Update visualization if audio is playing
-            if (analyser && dataArray && !audioElement.paused) {
-                analyser.getByteFrequencyData(dataArray);
-
-                // Calculate average frequency values for different ranges
-                const bassAvg = getAverageFrequency(dataArray, 0, 5);
-                const midAvg = getAverageFrequency(dataArray, 6, 20);
-                const trebleAvg = getAverageFrequency(dataArray, 21, 40);
-
-                // Calculate base pulsating factor (same as when no audio is playing)
-                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
-                
-                // Update sphere vertices based on frequency data
-                const positionAttribute = sphereGeometry.attributes.position;
-
-                for (let i = 0; i < positionAttribute.count; i++) {
-                    const originalVertex = originalVertices[i];
-
-                    // Calculate normalized distance from center (0-1)
-                    const vertexLength = originalVertex.length();
-
-                    // Get frequency value based on vertex position
-                    let frequencyFactor;
-
-                    // Use different frequency ranges based on vertex position
-                    if (Math.abs(originalVertex.y) > vertexLength * 0.7) {
-                        // Top/bottom vertices - use treble
-                        frequencyFactor = trebleAvg / 255;
-                    } else if (Math.abs(originalVertex.x) > vertexLength * 0.7) {
-                        // Left/right vertices - use mids
-                        frequencyFactor = midAvg / 255;
-                    } else {
-                        // Other vertices - use bass
-                        frequencyFactor = bassAvg / 255;
-                    }
-
-                    // Scale vertex based on both pulsation and frequency
-                    // First apply the pulsating effect, then add audio reactivity
-                    const scaleFactor = pulseFactor * (1 + frequencyFactor * 0.5);
-
-                    positionAttribute.setXYZ(
-                        i,
-                        originalVertex.x * scaleFactor,
-                        originalVertex.y * scaleFactor,
-                        originalVertex.z * scaleFactor
-                    );
-                }
-
-                positionAttribute.needsUpdate = true;
-                sphereGeometry.computeVertexNormals();
-
-                // Update colors based on frequency
-                const hue = (bassAvg / 255) * 0.3;
-                const saturation = 0.8;
-                const lightness = 0.4 + (midAvg / 255) * 0.2;
-
-                sphere.material.color.setHSL(hue, saturation, lightness);
-                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
-
-                // Update glow with both pulsation and audio reactivity
-                glowMesh.material.color.setHSL(hue, saturation, lightness);
-                const glowPulseFactor = 1 + Math.sin(time * 1.2) * 0.04;
-                glowMesh.scale.set(
-                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
-                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
-                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1)
-                );
-
-                // Update point light with both pulsation and audio reactivity
-                const lightPulseFactor = 0.5 + Math.sin(time * 1.8) * 0.2;
-                pointLight.intensity = lightPulseFactor + (bassAvg / 255) * 1.5;
-                pointLight.color.setHSL(hue, saturation, lightness);
-            } else {
-                // Apply subtle pulsating effect when no audio is playing
-                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
-                
-                // Update sphere vertices for pulsating effect
-                const positionAttribute = sphereGeometry.attributes.position;
-                
-                for (let i = 0; i < positionAttribute.count; i++) {
-                    const originalVertex = originalVertices[i];
-                    
-                    positionAttribute.setXYZ(
-                        i,
-                        originalVertex.x * pulseFactor,
-                        originalVertex.y * pulseFactor,
-                        originalVertex.z * pulseFactor
-                    );
-                }
-                
-                positionAttribute.needsUpdate = true;
-                sphereGeometry.computeVertexNormals();
-                
-                // Subtle color pulsation
-                const hue = 0.6; // Blue hue
-                const saturation = 0.8;
-                const lightness = 0.4 + Math.sin(time * 2) * 0.05; // Subtle brightness pulsation
-                
-                sphere.material.color.setHSL(hue, saturation, lightness);
-                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
-                
-                // Update glow with subtle pulsation
-                glowMesh.material.color.setHSL(hue, saturation, lightness);
-                glowMesh.scale.set(
-                    1 + Math.sin(time * 1.2) * 0.04, // Slightly different frequency for interesting effect
-                    1 + Math.sin(time * 1.2) * 0.04,
-                    1 + Math.sin(time * 1.2) * 0.04
-                );
-                
-                // Subtle point light pulsation
-                pointLight.intensity = 0.5 + Math.sin(time * 1.8) * 0.2;
-                pointLight.color.setHSL(hue, saturation, lightness);
-            }
-
-            renderer.render(scene, camera);
-        }
-
-        // Helper function to get average frequency in a range
-        function getAverageFrequency(dataArray, startIndex, endIndex) {
-            let sum = 0;
-            for (let i = startIndex; i <= endIndex; i++) {
-                sum += dataArray[i];
-            }
-            return sum / (endIndex - startIndex + 1);
-        }
-
-        // Handle window resize
-        window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        });
-
-        // Start animation loop
-        animate();
     </script>
 </body>
 </html>
