@@ -1,9 +1,10 @@
 import argparse
 import os
 import sys
-from typing import Optional
+from typing import Optional, Union
 
 import mlx.core as mx
+import mlx.nn as nn
 import soundfile as sf
 from scipy.signal import resample
 
@@ -30,7 +31,7 @@ def load_audio(audio_path: str, sample_rate: int = 24000) -> mx.array:
 
 def generate_audio(
     text: str,
-    model_path: str = "prince-canuma/Kokoro-82M",
+    model_path: Union[str, nn.Module] = "prince-canuma/Kokoro-82M",
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
@@ -89,9 +90,15 @@ def generate_audio(
         player = AudioPlayer() if play else None
 
         # Load model
-        model = load_model(model_path=model_path)
+        if isinstance(model_path, str):
+            model = load_model(model_path=model_path)
+            print(f"\033[94mModel:\033[0m {model_path}")
+        elif isinstance(model_path, nn.Module):
+            model = model_path
+        else:
+            raise ValueError(f"Invalid model path: {model_path}")
+
         print(
-            f"\n\033[94mModel:\033[0m {model_path}\n"
             f"\033[94mText:\033[0m {text}\n"
             f"\033[94mVoice:\033[0m {voice}\n"
             f"\033[94mSpeed:\033[0m {speed}x\n"
@@ -119,7 +126,7 @@ def generate_audio(
 
             else:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
-                sf.write(file_name, result.audio, 24000)
+                sf.write(file_name, result.audio, sample_rate)
 
             if verbose:
 
@@ -143,11 +150,14 @@ def generate_audio(
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(f"{file_prefix}.{audio_format}", audio, 24000)
+            sf.write(f"{file_prefix}.{audio_format}", audio, sample_rate)
 
         if play:
             player.wait_for_drain()
             player.stop()
+
+        if kwargs.get("return_player", False):
+            return player
 
     except ImportError as e:
         print(f"Import error: {e}")
