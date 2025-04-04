@@ -1,14 +1,14 @@
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_lm.generate import stream_generate
 from mlx_lm.models import cache as cache_utils
 from mlx_lm.models.base import BaseModelArgs, create_attention_mask
 from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
-from mlx_lm.utils import stream_generate
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
@@ -45,7 +45,7 @@ class ModelConfig(BaseModelArgs):
 snac_model = SNAC.from_pretrained("mlx-community/snac_24khz").eval()
 
 
-def redistribute_codes(code_list):
+def decode_audio_from_codes(code_list):
     layer_1 = []
     layer_2 = []
     layer_3 = []
@@ -64,6 +64,29 @@ def redistribute_codes(code_list):
     ]
     audio_hat = snac_model.decode(codes).squeeze(-1)
     return audio_hat
+
+
+def encode_audio_to_codes(audio):
+    audio = audio[None, None, :]
+
+    codes = snac_model.encode(audio)
+
+    layer_1 = codes[0].squeeze(0).tolist()
+    layer_2 = codes[1].squeeze(0).tolist()
+    layer_3 = codes[2].squeeze(0).tolist()
+
+    code_list = []
+    num_groups = len(layer_1)
+    for i in range(num_groups):
+        code_list.append(layer_1[i])
+        code_list.append(layer_2[2 * i] + 4096)
+        code_list.append(layer_3[4 * i] + 2 * 4096)
+        code_list.append(layer_3[4 * i + 1] + 3 * 4096)
+        code_list.append(layer_2[2 * i + 1] + 4 * 4096)
+        code_list.append(layer_3[4 * i + 2] + 5 * 4096)
+        code_list.append(layer_3[4 * i + 3] + 6 * 4096)
+
+    return mx.array(code_list)[None, :]
 
 
 class Attention(nn.Module):
@@ -285,6 +308,77 @@ class Model(nn.Module):
 
         return code_lists
 
+    def prepare_input_ids(
+        self,
+        prompts: List[str],
+        voice: Optional[str] = None,
+        ref_audio: Optional[mx.array] = None,
+        ref_text: Optional[str] = None,
+    ):
+        audio_input_ids = None
+        if ref_audio is not None and ref_text is not None:
+            print(
+                "\033[93mWARNING: Audio cloning doesn't work reliably on Orpheus.\033[0m \nA known issue affecting Torch and MLX versions. \nWill be fixed once the Canopy labs repo update their code or the model."
+            )
+            audio_input_ids = encode_audio_to_codes(ref_audio) + 128266
+            audio_transcript_ids = self.tokenizer(
+                ref_text, return_tensors="mlx"
+            ).input_ids
+        elif voice is not None:
+            prompts = [f"{voice}: " + p for p in prompts]
+
+        start_token = mx.array([[128259]], dtype=mx.int64)  # Start of human
+        end_tokens = mx.array(
+            [[128009, 128260]], dtype=mx.int64
+        )  # End of text, End of human
+
+        prompt_input_ids = []
+        for prompt in prompts:
+            prompt_input_ids.append(
+                self.tokenizer(prompt, return_tensors="mlx").input_ids
+            )
+
+        batch_input_ids = []
+        pad_token = mx.array([128263], dtype=mx.int64)
+        max_len = max([p.shape[1] for p in prompt_input_ids])
+
+        for input_ids in prompt_input_ids:
+            modified_input_ids = []
+
+            padding_len = max_len - input_ids.shape[1]
+            if padding_len > 0:
+                modified_input_ids.append(mx.repeat(pad_token, padding_len)[None, :])
+
+            # reference audio and transcript
+            if audio_input_ids is not None:
+                audio_start_tokens = mx.array([[128261, 128257]], dtype=mx.int64)
+                audio_end_tokens = mx.array([[128258, 128262]], dtype=mx.int64)
+                ref_input_ids = mx.concatenate(
+                    [
+                        start_token,
+                        audio_transcript_ids,
+                        end_tokens,
+                        audio_start_tokens,
+                        audio_input_ids,
+                        audio_end_tokens,
+                    ],
+                    axis=1,
+                )
+                modified_input_ids.append(ref_input_ids)
+
+            # prompt
+            one_prompt_input_ids = mx.concatenate(
+                [start_token, input_ids, end_tokens], axis=1
+            )  # SOH SOT Text EOT EOH
+            modified_input_ids.append(one_prompt_input_ids)
+
+            batch_input_ids.append(mx.concatenate(modified_input_ids, axis=1))
+
+        batch_input_ids = mx.concatenate(batch_input_ids, axis=0)
+        batch_mask = mx.where(batch_input_ids == pad_token, False, True)
+
+        return batch_input_ids, batch_mask
+
     def generate(
         self,
         text,
@@ -294,31 +388,19 @@ class Model(nn.Module):
         split_pattern: str = "\n",
         max_tokens: int = 1200,
         verbose: bool = False,
+        ref_audio: mx.array = None,
+        ref_text: Optional[str] = None,
         **kwargs,
     ):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
-        prompts = [f"{voice}: " + p for p in prompts]
 
-        all_input_ids = []
-
-        for prompt in prompts:
-            input_ids = mx.array(self.tokenizer(prompt, return_tensors="pt").input_ids)
-            all_input_ids.append(input_ids)
-
-        start_token = mx.array([[128259]], dtype=mx.int64)  # Start of human
-        end_tokens = mx.array(
-            [[128009, 128260]], dtype=mx.int64
-        )  # End of text, End of human
-
-        all_modified_input_ids = []
-        for input_ids in all_input_ids:
-            modified_input_ids = mx.concatenate(
-                [start_token, input_ids, end_tokens], axis=1
-            )  # SOH SOT Text EOT EOH
-            all_modified_input_ids.append(modified_input_ids)
-
-        input_ids = mx.concatenate(all_modified_input_ids, axis=0)
+        input_ids, _ = self.prepare_input_ids(
+            prompts,
+            voice,
+            ref_audio,
+            ref_text,
+        )
 
         sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
         logits_processors = make_logits_processors(
@@ -346,7 +428,7 @@ class Model(nn.Module):
             next_token = mx.array([response.token])
             input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
             if i % 50 == 0:
-                mx.metal.clear_cache()
+                mx.clear_cache()
 
             if next_token == 128258:
                 break
@@ -355,7 +437,7 @@ class Model(nn.Module):
 
         my_samples = []
         for code_list in code_lists:
-            samples = redistribute_codes(code_list)
+            samples = decode_audio_from_codes(code_list)
             my_samples.append(samples)
 
         time_end = time.time()
@@ -370,7 +452,7 @@ class Model(nn.Module):
                 assert samples > 0, "No audio generated"
 
                 # Calculate token count
-                token_count = len(input_ids) if input_ids is not None else 0
+                token_count = input_ids.shape[1] if input_ids is not None else 0
 
                 # Calculate audio duration in seconds
                 sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
@@ -410,5 +492,5 @@ class Model(nn.Module):
                         ),
                     },
                     processing_time_seconds=time_end - time_start,
-                    peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
                 )
