@@ -11,8 +11,8 @@ from mlx_lm.models.llama import LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
 from mlx_lm.sample_utils import make_sampler
 from tokenizers.processors import TemplateProcessing
-from transformers import AutoTokenizer
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from mlx_audio.codec import Mimi
 
@@ -335,13 +335,13 @@ class Model(nn.Module):
 
     def sanitize(self, weights):
         sanitized_weights = {}
-        
+
         for k, v in weights.items():
-            if 'model.' in k:
-                k = k.replace('model.', '')
+            if "model." in k:
+                k = k.replace("model.", "")
 
             sanitized_weights[k] = v
-        
+
         return sanitized_weights
 
     def load_weights(self, weights):
