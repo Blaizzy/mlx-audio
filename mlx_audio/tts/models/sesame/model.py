@@ -12,6 +12,7 @@ from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
 from mlx_lm.sample_utils import make_sampler
 from tokenizers.processors import TemplateProcessing
 from transformers import AutoTokenizer
+from tqdm import tqdm
 
 from mlx_audio.codec import Mimi
 
@@ -333,7 +334,15 @@ class Model(nn.Module):
         )
 
     def sanitize(self, weights):
-        return weights
+        sanitized_weights = {}
+        
+        for k, v in weights.items():
+            if 'model.' in k:
+                k = k.replace('model.', '')
+
+            sanitized_weights[k] = v
+        
+        return sanitized_weights
 
     def load_weights(self, weights):
         self.model.load_weights(weights)
@@ -389,7 +398,7 @@ class Model(nn.Module):
                 f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
             )
 
-        for _ in range(max_audio_frames):
+        for _ in tqdm(range(max_audio_frames)):
             sample = self.model.generate_frame(
                 curr_tokens, curr_tokens_mask, curr_pos, sampler
             )
