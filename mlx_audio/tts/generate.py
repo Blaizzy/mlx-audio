@@ -5,9 +5,27 @@ from typing import Optional
 
 import mlx.core as mx
 import soundfile as sf
+from scipy.signal import resample
 
 from .audio_player import AudioPlayer
 from .utils import load_model
+
+
+def load_audio(audio_path: str, sample_rate: int = 24000) -> mx.array:
+    samples, orig_sample_rate = sf.read(audio_path)
+    shape = samples.shape
+    # Collapse multi channel as mono
+    if len(shape) > 1:
+        samples = samples.sum(axis=1)
+        # Divide summed samples by channel count.
+        samples = samples / shape[1]
+    if sample_rate != orig_sample_rate:
+        print(f"Resampling from {orig_sample_rate} to {sample_rate}")
+        duration = samples.shape[0] / orig_sample_rate
+        num_samples = int(duration * sample_rate)
+        samples = resample(samples, num_samples)
+    audio = mx.array(samples, dtype=mx.float32)
+    return audio
 
 
 def generate_audio(
@@ -18,13 +36,15 @@ def generate_audio(
     lang_code: str = "a",
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
+    stt_model: str = "mlx-community/whisper-large-v3-turbo",
     file_prefix: str = "audio",
     audio_format: str = "wav",
     sample_rate: int = 24000,
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
-    from_cli: bool = False,
+    temperature: float = 0.7,
+    **kwargs,
 ) -> None:
     """
     Generates audio from text using a specified TTS model.
@@ -33,17 +53,18 @@ def generate_audio(
     - text (str): The input text to be converted to speech.
     - model (str): The TTS model to use.
     - voice (str): The voice style to use.
+    - temperature (float): The temperature for the model.
     - speed (float): Playback speed multiplier.
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
     - ref_text (str): Caption for reference audio.
+    stt_model (str): A mlx whisper model to use to transcribe.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
     - sample_rate (int): Sampling rate in Hz.
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
-
     Returns:
     - None: The function writes the generated audio to a file.
     """
@@ -53,17 +74,16 @@ def generate_audio(
         if ref_audio:
             if not os.path.exists(ref_audio):
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
+            ref_audio = load_audio(ref_audio)
             if not ref_text:
-                raise ValueError(
-                    "Reference text is required when using reference audio."
-                )
+                print("Ref_text not found. Transcribing ref_audio...")
+                # mlx_whisper seems takes long time to import. Import only necessary.
+                import mlx_whisper
 
-            ref_audio, ref_sr = sf.read(ref_audio)
-            if ref_sr != 24000:
-                raise ValueError(
-                    f"Reference audio sample rate must be 24000 Hz, but got {ref_sr} Hz."
-                )
-            ref_audio = mx.array(ref_audio, dtype=mx.float32)
+                ref_text = mlx_whisper.transcribe(ref_audio, path_or_hf_repo=stt_model)[
+                    "text"
+                ]
+                print("Ref_text", ref_text)
 
         # Load AudioPlayer
         player = AudioPlayer() if play else None
@@ -85,6 +105,7 @@ def generate_audio(
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
+            temperature=temperature,
             verbose=True,
         )
 
@@ -154,7 +175,7 @@ def parse_args():
         default=None,
         help="Text to generate (leave blank to input via stdin)",
     )
-    parser.add_argument("--voice", type=str, default="af_heart", help="Voice name")
+    parser.add_argument("--voice", type=str, default=None, help="Voice name")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument("--lang_code", type=str, default="a", help="Language code")
     parser.add_argument(
@@ -177,6 +198,23 @@ def parse_args():
     parser.add_argument(
         "--ref_text", type=str, default=None, help="Caption for reference audio"
     )
+    parser.add_argument(
+        "--stt_model",
+        type=str,
+        default="mlx-community/whisper-large-v3-turbo",
+        help="STT model to use to transcribe reference audio",
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0.7, help="Temperature for the model"
+    )
+    parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
+    parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
+    parser.add_argument(
+        "--repetition_penalty",
+        type=float,
+        default=1.1,
+        help="Repetition penalty for the model",
+    )
 
     args = parser.parse_args()
 
@@ -192,22 +230,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-
-    generate_audio(
-        text=args.text,
-        model_path=args.model,
-        voice=args.voice,
-        speed=args.speed,
-        lang_code=args.lang_code,
-        ref_audio=args.ref_audio,
-        ref_text=args.ref_text,
-        file_prefix=args.file_prefix,
-        audio_format=args.audio_format,
-        sample_rate=args.sample_rate,
-        join_audio=args.join_audio,
-        play=args.play,
-        verbose=args.verbose,
-    )
+    generate_audio(model_path=args.model, **vars(args))
 
 
 if __name__ == "__main__":

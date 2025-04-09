@@ -114,14 +114,12 @@ class ConvWeighted(nn.Module):
         self.groups = groups
 
         # Initialize weight magnitude (g) and direction (v) vectors
-        weight_g = mx.ones((out_channels, 1, 1))  # Scalar magnitude per output channel
-        weight_v = mx.ones(
+        self.weight_g = mx.ones(
+            (out_channels, 1, 1)
+        )  # Scalar magnitude per output channel
+        self.weight_v = mx.ones(
             (out_channels, kernel_size, in_channels)
         )  # Direction vectors
-
-        # Store parameters
-        self.weight_g = mx.array(weight_g)
-        self.weight_v = mx.array(weight_v)
 
         self.bias = mx.zeros(in_channels if encode else out_channels) if bias else None
 
@@ -480,22 +478,26 @@ def mlx_istft(
     if w.shape[0] < win_length:
         w = mx.concatenate([w, mx.zeros((win_length - w.shape[0],))], axis=0)
 
-    x = mx.array(x).transpose(1, 0)
-    t = (x.shape[0] - 1) * hop_length + win_length
+    num_frames = x.shape[1]
+    t = (num_frames - 1) * hop_length + win_length
+
     reconstructed = mx.zeros(t)
     window_sum = mx.zeros(t)
 
-    for i in range(x.shape[0]):
-        # inverse FFT of each frame
-        frame_time = mx.fft.irfft(x[i])
+    # inverse FFT of each frame
+    frames_time = mx.fft.irfft(x, axis=0).transpose(1, 0)
 
-        # get the position in the time-domain signal to add the frame
-        start = i * hop_length
-        end = start + win_length
+    # get the position in the time-domain signal to add the frame
+    frame_offsets = mx.arange(num_frames) * hop_length
+    indices = frame_offsets[:, None] + mx.arange(win_length)
+    indices_flat = indices.flatten()
 
-        # overlap-add the inverse transformed frame, scaled by the window
-        reconstructed[start:end] += frame_time * w
-        window_sum[start:end] += w**2
+    updates_reconstructed = (frames_time * w).flatten()
+    updates_window = mx.tile(w, (num_frames,)).flatten()
+
+    # overlap-add the inverse transformed frame, scaled by the window
+    reconstructed = reconstructed.at[indices_flat].add(updates_reconstructed)
+    window_sum = window_sum.at[indices_flat].add(updates_window)
 
     # normalize by the sum of the window values
     reconstructed = mx.where(window_sum != 0, reconstructed / window_sum, reconstructed)

@@ -45,13 +45,14 @@ To generate audio with an LLM use:
 ```python
 from mlx_audio.tts.generate import generate_audio
 
-# Example: Generate an audiobook chapter as audio
+# Example: Generate an audiobook chapter as mp3 audio
 generate_audio(
-    text="In the beginning, the universe was created...",
+    text=("In the beginning, the universe was created...\n"
+        "...or the simulation was booted up."),
     model_path="prince-canuma/Kokoro-82M",
     voice="af_heart",
     speed=1.2,
-    lang_code="en",
+    lang_code="a", # Kokoro: (a)f_heart, or comment out for auto
     file_prefix="audiobook_chapter1",
     audio_format="wav",
     sample_rate=24000,
@@ -168,6 +169,19 @@ for _, _, audio in pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+
 - 🇬🇧 `'b'` - British English
 - 🇯🇵 `'j'` - Japanese (requires `pip install misaki[ja]`)
 - 🇨🇳 `'z'` - Mandarin Chinese (requires `pip install misaki[zh]`)
+
+### CSM (Conversational Speech Model)
+
+CSM is a model from Sesame that allows you text-to-speech and to customize voices using reference audio samples.
+
+#### Example Usage
+
+```bash
+# Generate speech using CSM-1B model with reference audio
+python -m mlx_audio.tts.generate --model mlx-community/csm-1b --text "Hello from Sesame." --play --ref_audio ./conversational_a.wav
+```
+
+You can pass any audio to clone the voice from or download sample audio file from [here](https://huggingface.co/mlx-community/csm-1b/tree/main/prompts).
 
 ## Advanced Features
 

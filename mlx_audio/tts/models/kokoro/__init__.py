@@ -1,4 +1,4 @@
-from .kokoro import Model
+from .kokoro import Model, ModelConfig
 from .pipeline import KokoroPipeline
 
-__all__ = ["KokoroPipeline", "Model"]
+__all__ = ["KokoroPipeline", "Model", "ModelConfig"]
