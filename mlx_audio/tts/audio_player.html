@@ -155,6 +155,52 @@
             margin-top: 5px;
             font-size: 14px;
         }
+        /* Add tab styling if not already present */
+        .tab {
+            overflow: hidden;
+            background-color: #333;
+            border-radius: 5px 5px 0 0;
+        }
+        
+        .tab button {
+            background-color: inherit;
+            float: left;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 14px 16px;
+            transition: 0.3s;
+            color: white;
+        }
+        
+        .tab button:hover {
+            background-color: #555;
+        }
+        
+        .tab button.active {
+            background-color: #4CAF50;
+        }
+        
+        .tabcontent {
+            display: none;
+            padding: 20px;
+            border-top: none;
+        }
+        
+        /* WebRTC specific styles */
+        #streamStatus {
+            margin-top: 10px;
+            color: #4CAF50;
+            font-weight: bold;
+        }
+        
+        #startStreamBtn {
+            background-color: #4CAF50;
+        }
+        
+        #startStreamBtn.streaming {
+            background-color: #f44336;
+        }
     </style>
 </head>
 <body>
@@ -165,6 +211,7 @@
         <div class="tab">
             <button class="tablinks active" onclick="openTab(event, 'textToSpeech')">Text to Speech</button>
             <button class="tablinks" onclick="openTab(event, 'fileUpload')">File Upload</button>
+            <button class="tablinks" onclick="openTab(event, 'speechToSpeech')">Speech to Speech</button>
         </div>
         
         <div id="textToSpeech" class="tabcontent" style="display: block;">
@@ -228,6 +275,50 @@
             </div>
             <div id="status">Upload an audio file to begin visualization</div>
         </div>
+        
+        <!-- Speech to Speech Tab (New) -->
+        <div id="speechToSpeech" class="tabcontent">
+            <h3>Real-time Speech Conversion</h3>
+            
+            <div>
+                <label for="s2sVoice">Voice:</label>
+                <select id="s2sVoice" class="form-control">
+                    <option value="af_bella">AF Bella</option>
+                    <option value="af_heart">AF Heart</option>
+                    <option value="af_nicole">AF Nicole</option>
+                    <option value="af_nova">AF Nova</option>
+                    <option value="af_sarah">AF Sarah</option>
+                    <option value="af_sky">AF Sky</option>
+                    <option value="am_adam">AM Adam</option>
+                    <option value="am_michael">AM Michael</option>
+                    <option value="bf_emma">BF Emma</option>
+                    <option value="bf_isabella">BF Isabella</option>
+                    <option value="bm_george">BM George</option>
+                    <option value="bm_lewis">BM Lewis</option>
+                </select>
+            </div>
+            
+            <div>
+                <label for="s2sModel">Model:</label>
+                <select id="s2sModel" class="form-control">
+                    <option value="kokoro_82m_4bit">Kokoro 82M 4bit</option>
+                </select>
+            </div>
+            
+            <div>
+                <label for="s2sSpeed">Speech Speed:</label>
+                <div class="speed-control">
+                    <span>Slower</span>
+                    <input type="range" id="s2sSpeed" min="0.5" max="2.0" step="0.1" value="1.0">
+                    <span>Faster</span>
+                </div>
+                <div id="s2sSpeedValue">1.0x</div>
+            </div>
+            
+            <button id="startStreamBtn">Start Stream</button>
+            <div id="streamStatus"></div>
+        </div>
+        <audio id="audioElement" autoplay style="display: none;"></audio>
     </div>
 
     <!-- Load Three.js from CDN -->
@@ -256,7 +347,7 @@
         let audioContext;
         let analyser;
         let dataArray;
-        let audioElement;
+        let audioElement = document.getElementById('audioElement');
         let audioSource;
 
         // Three.js setup
@@ -345,6 +436,9 @@
             // Show the current tab and add active class to the button
             document.getElementById(tabName).style.display = "block";
             evt.currentTarget.className += " active";
+            if (tabName != "speechToSpeech") {
+                closeWebRTCStream();
+            }
         }
         
         // Speed slider update
@@ -410,10 +504,8 @@
                 
                 if (audioSource) {
                     audioSource.disconnect();
-                    audioSource = null;
+                    audioSource = null; // Reset the variable
                 }
-                
-                // Create new audio element to avoid source node issues
                 audioElement = new Audio();
                 
                 // Set audio source with absolute path
@@ -432,8 +524,8 @@
                     resetSphere();
                 });
                 
-                // Auto-play the generated audio
-                playAudio();
+                // Auto-play the generated audio x
+                playAudio(); // playAudio will now create a fresh connection
             })
             .catch(error => {
                 showTtsError(error.message);
@@ -530,16 +622,15 @@
             if (audioElement) {
                 audioElement.pause();
                 audioElement.removeAttribute('src');
+                audioElement.disconnect();
                 audioElement.load();
             }
             
             if (audioSource) {
                 audioSource.disconnect();
-                audioSource = null;
+                audioSource = null; // Reset the variable
             }
             
-            // Create new audio element
-            audioElement = new Audio();
             audioElement.src = URL.createObjectURL(file);
             audioElement.loop = false;
 
@@ -594,7 +685,7 @@
         }
 
         // Animation loop
-        function animate() {
+        function  animate() {
             requestAnimationFrame(animate);
 
             // Update controls
@@ -743,6 +834,240 @@
 
         // Start animation loop
         animate();
+
+        // WebRTC variables
+        let webrtcConnection = null;
+        let webrtcId = null;
+        let dataChannel = null;
+        let analyzer = null;
+
+        // Speech to Speech functionality
+        document.getElementById('s2sSpeed').addEventListener('input', function() {
+            document.getElementById('s2sSpeedValue').textContent = this.value + 'x';
+        });
+
+        document.getElementById('startStreamBtn').addEventListener('click', function() {
+            if (!webrtcConnection) {
+                startWebRTCStream();
+                this.textContent = "Connecting...";
+                this.disabled = true;
+            } else {
+                closeWebRTCStream();
+                this.textContent = "Start Stream";
+                this.classList.remove('streaming');
+            }
+        });
+
+        async function startWebRTCStream() {
+            try {
+                const streamStatus = document.getElementById('streamStatus');
+                streamStatus.textContent = "Initializing connection...";
+                
+                // Get user media for microphone
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Create RTCPeerConnection
+                webrtcConnection = new RTCPeerConnection({});
+                
+                // Add local stream tracks to connection
+                stream.getAudioTracks().forEach(track => {
+                    webrtcConnection.addTrack(track, stream);
+                });
+                
+                // Set up data channel
+                dataChannel = webrtcConnection.createDataChannel("text");
+                dataChannel.onopen = handleDataChannelOpen;
+                dataChannel.onmessage = handleDataChannelMessage;
+                dataChannel.onclose = () => {
+                    console.log("Data channel closed");
+                };
+                
+                // Handle ICE candidate events
+                webrtcConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        // We'll handle ICE candidates in the offer
+                    }
+                };
+                
+                // Handle track events for receiving audio
+                webrtcConnection.ontrack = event => {
+                    const remoteStream = new MediaStream();
+                    event.streams[0].getTracks().forEach(track => {
+                        remoteStream.addTrack(track);
+                    });
+
+                    if (!audioContext) {
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+
+                    if (audioSource) {
+                        audioSource.disconnect();
+                    }
+
+                    audioSource = audioContext.createMediaStreamSource(remoteStream);
+                    
+                    if (!analyser) {
+                        analyser = audioContext.createAnalyser();
+                        analyser.fftSize = 256;
+                        dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    }
+                    
+                    audioSource.connect(analyser);
+                    analyser.connect(audioContext.destination);
+
+                    audioElement.srcObject = remoteStream;
+                    audioElement.play();
+                };
+                
+                // Create offer
+                const offer = await webrtcConnection.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: false
+                });
+                
+                await webrtcConnection.setLocalDescription(offer);
+                
+                // Wait for ICE gathering to complete
+                await new Promise(resolve => {
+                    if (webrtcConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        webrtcConnection.addEventListener('icegatheringstatechange', () => {
+                            if (webrtcConnection.iceGatheringState === 'complete') {
+                                resolve();
+                            }
+                        });
+                    }
+                });
+                
+                // Send offer to server
+                const response = await fetch('/webrtc/offer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sdp: webrtcConnection.localDescription.sdp,
+                        type: webrtcConnection.localDescription.type,
+                        webrtc_id: generateWebRTCId(),
+                    }),
+                });
+                
+                const responseData = await response.json();
+                
+                if (responseData.status === 'failed') {
+                    throw new Error(responseData.meta?.error || 'Connection failed');
+                }
+                
+                // Set remote description
+                await webrtcConnection.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: responseData.sdp,
+                }));
+                
+                streamStatus.textContent = "Connecting...";
+                
+            } catch (error) {
+                console.error('Error starting WebRTC stream:', error);
+                document.getElementById('streamStatus').textContent = "Error: " + error.message;
+                document.getElementById('startStreamBtn').disabled = false;
+                document.getElementById('startStreamBtn').textContent = "Start Stream";
+                closeWebRTCStream();
+            }
+        }
+
+        function handleDataChannelOpen() {
+            console.log("Data channel opened!");
+            const streamStatus = document.getElementById('streamStatus');
+            streamStatus.textContent = "Connected! Speak into your microphone.";
+            
+            const startStreamBtn = document.getElementById('startStreamBtn');
+            startStreamBtn.disabled = false;
+            startStreamBtn.textContent = "Close Stream";
+            startStreamBtn.classList.add('streaming');
+            
+            // Send initial configuration
+            sendInputConfiguration();
+        }
+
+        function handleDataChannelMessage(event) {
+            try {
+                const message = JSON.parse(event.data);
+                console.log("Received message:", message);
+                
+                if (message.type === 'send_input') {
+                    // Server is requesting updated input parameters
+                    sendInputConfiguration();
+                } else if (message.type === 'error') {
+                    document.getElementById('streamStatus').textContent = "Error: " + message.data;
+                } else if (message.type === 'log') {
+                    // Handle different log types
+                    if (message.data === 'pause_detected') {
+                        document.getElementById('streamStatus').textContent = "Pause detected, processing...";
+                    } else if (message.data === 'response_starting') {
+                        document.getElementById('streamStatus').textContent = "Generating response...";
+                    } else if (message.data === 'started_talking') {
+                        document.getElementById('streamStatus').textContent = "Speaking...";
+                    }
+                }
+            } catch (e) {
+                console.error("Error parsing message:", e);
+            }
+        }
+
+        function sendInputConfiguration() {
+            if (!dataChannel || dataChannel.readyState !== 'open') return;
+            
+            // Get current configuration values
+            const voice = document.getElementById('s2sVoice').value;
+            const model = document.getElementById('s2sModel').value;
+            const speed = parseFloat(document.getElementById('s2sSpeed').value);
+            
+            // Send POST request to the specified endpoint
+            fetch('/speech_to_speech_input', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    voice: voice,
+                    model: model,
+                    speed: speed,
+                    webrtc_id: webrtcId
+                })
+            }).catch(error => {
+                console.error('Error sending configuration:', error);
+            });
+        }
+
+        function closeWebRTCStream() {
+            if (webrtcConnection) {
+                webrtcConnection.close();
+                webrtcConnection = null;
+            }
+            
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+            dataChannel = null;
+            analyzer = null;
+            
+            document.getElementById('streamStatus').textContent = "";
+            webrtcId = null;
+            audioContext = null;
+            analyser = null;
+            audioSource = null;
+        }
+
+        function generateWebRTCId() {
+            webrtcId = 'webrtc-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
+            return webrtcId;
+        }
+
+        // Initialize tabs
+        const defaultTab = document.getElementsByClassName("tablinks")[0];
+        defaultTab.click();
     </script>
 </body>
 </html>
