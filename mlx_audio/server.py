@@ -3,15 +3,20 @@ import importlib.util
 import logging
 import os
 import sys
+import tempfile
 import uuid
 
 import numpy as np
+import requests
 import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastrtc import ReplyOnPause, Stream, get_stt_model
+from numpy.typing import NDArray
+from pydantic import BaseModel
 
 
 # Configure logging
@@ -50,12 +55,48 @@ app.add_middleware(
 # For performance, load once globally:
 tts_model = None  # Will be loaded when the server starts
 audio_player = None  # Will be initialized when the server starts
-
+stt_model = get_stt_model()
 # Make sure the output folder for generated TTS files exists
 # Use an absolute path that's guaranteed to be writable
 OUTPUT_FOLDER = os.path.join(os.path.expanduser("~"), ".mlx_audio", "outputs")
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
+
+
+def speech_to_speech_handler(
+    audio: tuple[int, NDArray[np.int16]], voice: str, speed: float, model: str
+):
+    text = stt_model.stt(audio)
+    for segment in tts_model.generate(
+        text=text,
+        voice=voice,
+        speed=speed,
+        lang_code=voice[0],
+        verbose=False,
+    ):
+        yield (24_000, np.array(segment.audio, copy=False))
+        yield (24_000, np.zeros(2_400, dtype=np.float32))
+
+
+stream = Stream(
+    ReplyOnPause(speech_to_speech_handler, output_sample_rate=24_000),
+    mode="send-receive",
+    modality="audio",
+)
+stream.mount(app)
+
+
+class SpeechToSpeechArgs(BaseModel):
+    voice: str
+    speed: float
+    model: str
+    webrtc_id: str
+
+
+@app.post("/speech_to_speech_input")
+def speech_to_speech_endpoint(args: SpeechToSpeechArgs):
+    stream.set_input(args.webrtc_id, args.voice, args.speed, args.model)
+    return {"status": "success"}
 
 
 @app.post("/tts")
