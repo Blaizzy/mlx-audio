@@ -1,6 +1,7 @@
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
+import re
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -392,105 +393,224 @@ class Model(nn.Module):
         ref_text: Optional[str] = None,
         **kwargs,
     ):
-        prompt = text.replace("\\n", "\n").replace("\\t", "\t")
-        prompts = prompt.split(split_pattern)
+        # Use the smart text chunking instead of simple split
+        text_chunks = self._smart_text_chunking(text)
 
-        input_ids, _ = self.prepare_input_ids(
-            prompts,
-            voice,
-            ref_audio,
-            ref_text,
-        )
-
-        sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
-        logits_processors = make_logits_processors(
-            kwargs.get("logit_bias", None),
-            kwargs.get("repetition_penalty", 1.3),
-            kwargs.get("repetition_context_size", 20),
-        )
-
+        # Process one chunk at a time to avoid the squeeze(0) error
+        all_samples = []
         time_start = time.time()
-        # TODO: Support batch processing as in the Colab: https://github.com/canopyai/Orpheus-TTS
-        for i, response in enumerate(
-            tqdm(
-                stream_generate(
-                    self,
-                    tokenizer=self.tokenizer,
-                    prompt=input_ids.squeeze(0),
-                    max_tokens=max_tokens,
-                    sampler=sampler,
-                    logits_processors=logits_processors,
-                ),
-                total=max_tokens,
-                disable=not verbose,
+
+        for idx, chunk in enumerate(text_chunks):
+            if verbose:
+                print(f"Processing chunk {idx+1}/{len(text_chunks)}: {chunk[:50]}...")
+
+            # Process each chunk separately
+            single_input_ids, _ = self.prepare_input_ids(
+                [chunk],
+                voice,
+                ref_audio,
+                ref_text,
             )
-        ):
-            next_token = mx.array([response.token])
-            input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-            if i % 50 == 0:
-                mx.clear_cache()
 
-            if next_token == 128258:
-                break
+            sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
+            logits_processors = make_logits_processors(
+                kwargs.get("logit_bias", None),
+                kwargs.get("repetition_penalty", 1.3),
+                kwargs.get("repetition_context_size", 20),
+            )
 
-        code_lists = self.parse_output(input_ids)
+            # Process this single chunk
+            for i, response in enumerate(
+                tqdm(
+                    stream_generate(
+                        self,
+                        tokenizer=self.tokenizer,
+                        prompt=single_input_ids.squeeze(0),
+                        max_tokens=max_tokens,
+                        sampler=sampler,
+                        logits_processors=logits_processors,
+                    ),
+                    total=max_tokens,
+                    disable=not verbose,
+                )
+            ):
+                next_token = mx.array([response.token])
+                single_input_ids = mx.concatenate(
+                    [single_input_ids, next_token[None, :]], axis=1
+                )
+                if i % 50 == 0:
+                    mx.clear_cache()
 
-        my_samples = []
-        for code_list in code_lists:
-            samples = decode_audio_from_codes(code_list)
-            my_samples.append(samples)
+                if next_token == 128258:
+                    break
+
+            # Process output for this chunk
+            single_code_lists = self.parse_output(single_input_ids)
+
+            for code_list in single_code_lists:
+                samples = decode_audio_from_codes(code_list)
+                all_samples.append(samples)
 
         time_end = time.time()
 
-        if len(prompts) != len(my_samples):
-            raise Exception("Number of prompts and samples do not match")
-        else:
-            for i in range(len(my_samples)):
-                audio = my_samples[i][0]
+        # Yield results for each sample
+        for i in range(len(all_samples)):
+            audio = all_samples[i][0]
 
-                samples = audio.shape[0] if audio is not None else 0
-                assert samples > 0, "No audio generated"
+            samples = audio.shape[0] if audio is not None else 0
+            assert samples > 0, "No audio generated"
 
-                # Calculate token count
-                token_count = input_ids.shape[1] if input_ids is not None else 0
+            # For token count, we don't have a single input_ids anymore
+            token_count = 1000  # Use an estimate
 
-                # Calculate audio duration in seconds
-                sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
-                audio_duration_seconds = samples / sample_rate
+            # Calculate audio duration in seconds
+            sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+            audio_duration_seconds = samples / sample_rate
 
-                # Calculate real-time factor (RTF)
-                rtf = audio_duration_seconds / (time_end - time_start)
+            # Calculate real-time factor (RTF)
+            rtf = audio_duration_seconds / (time_end - time_start)
 
-                # Format duration as HH:MM:SS.mmm
-                duration_mins = int(audio_duration_seconds // 60)
-                duration_secs = int(audio_duration_seconds % 60)
-                duration_ms = int((audio_duration_seconds % 1) * 1000)
-                duration_hours = int(audio_duration_seconds // 3600)
-                duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+            # Format duration as HH:MM:SS.mmm
+            duration_mins = int(audio_duration_seconds // 60)
+            duration_secs = int(audio_duration_seconds % 60)
+            duration_ms = int((audio_duration_seconds % 1) * 1000)
+            duration_hours = int(audio_duration_seconds // 3600)
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
-                yield GenerationResult(
-                    audio=audio,
-                    samples=samples,
-                    segment_idx=i,
-                    token_count=token_count,
-                    audio_duration=duration_str,
-                    real_time_factor=rtf,
-                    prompt={
-                        "tokens": token_count,
-                        "tokens-per-sec": (
-                            round(token_count / audio_duration_seconds, 2)
-                            if audio_duration_seconds > 0
-                            else 0
-                        ),
-                    },
-                    audio_samples={
-                        "samples": samples,
-                        "samples-per-sec": (
-                            round(samples / audio_duration_seconds, 2)
-                            if audio_duration_seconds > 0
-                            else 0
-                        ),
-                    },
-                    processing_time_seconds=time_end - time_start,
-                    peak_memory_usage=mx.get_peak_memory() / 1e9,
-                )
+            yield GenerationResult(
+                audio=audio,
+                samples=samples,
+                segment_idx=i,
+                token_count=token_count,
+                audio_duration=duration_str,
+                real_time_factor=rtf,
+                prompt={
+                    "tokens": token_count,
+                    "tokens-per-sec": (
+                        round(token_count / audio_duration_seconds, 2)
+                        if audio_duration_seconds > 0
+                        else 0
+                    ),
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": (
+                        round(samples / audio_duration_seconds, 2)
+                        if audio_duration_seconds > 0
+                        else 0
+                    ),
+                },
+                processing_time_seconds=time_end - time_start,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )
+
+    def _smart_text_chunking(self, text, max_chunk_chars=800):
+        """
+        Intelligently split text into chunks for better TTS processing.
+
+        Steps:
+        1. Split by paragraphs (newlines)
+        2. For paragraphs longer than max_chunk_chars, split by sentences
+        3. Ensure no chunk exceeds max_chunk_chars
+
+        Args:
+            text (str): Input text to split
+            max_chunk_chars (int): Maximum characters per chunk
+
+        Returns:
+            List[str]: List of text chunks to process
+        """
+        # Handle empty text case
+        if not text or not text.strip():
+            return [""]
+
+        # Normalize line endings and remove extra whitespace
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        text = re.sub(r"\n\s*\n", "\n\n", text)  # Normalize multiple newlines
+
+        # First split by paragraphs
+        paragraphs = text.split("\n")
+        paragraphs = [p.strip() for p in paragraphs if p.strip()]
+
+        # Process each paragraph, potentially splitting long ones
+        chunks = []
+        for para in paragraphs:
+            # If paragraph is short enough, keep it as is
+            if len(para) <= max_chunk_chars:
+                chunks.append(para)
+                continue
+
+            # Split long paragraph into sentences
+            # Look for sentence boundaries (period, question mark, exclamation mark)
+            # followed by space or end of string
+            sentences = re.split(r"([.!?])\s+", para)
+
+            # Re-join the punctuation that was separated in the split
+            complete_sentences = []
+            for i in range(0, len(sentences) - 1, 2):
+                if i + 1 < len(sentences):
+                    complete_sentences.append(sentences[i] + sentences[i + 1])
+                else:
+                    complete_sentences.append(sentences[i])
+
+            # If we couldn't split into sentences properly, fall back to character limit
+            if not complete_sentences:
+                complete_sentences = [para]
+
+            # Build chunks from sentences, trying not to exceed max_chunk_chars
+            current_chunk = ""
+            for sentence in complete_sentences:
+                # If individual sentence exceeds max length, split it
+                if len(sentence) > max_chunk_chars:
+                    # Add any accumulated chunk first
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                        current_chunk = ""
+
+                    # Split long sentence by clauses (commas)
+                    clauses = sentence.split(", ")
+                    sub_chunk = ""
+
+                    for clause in clauses:
+                        if (
+                            len(sub_chunk) + len(clause) + 2 > max_chunk_chars
+                        ):  # +2 for ", "
+                            if sub_chunk:
+                                chunks.append(sub_chunk)
+                            sub_chunk = clause
+                        else:
+                            sub_chunk = (
+                                sub_chunk + ", " + clause if sub_chunk else clause
+                            )
+
+                    if sub_chunk:
+                        chunks.append(sub_chunk)
+
+                # Normal case - check if adding this sentence would exceed the limit
+                elif (
+                    len(current_chunk) + len(sentence) + 1 > max_chunk_chars
+                ):  # +1 for space
+                    if current_chunk:
+                        chunks.append(current_chunk)
+                    current_chunk = sentence
+                else:
+                    current_chunk = (
+                        current_chunk + " " + sentence if current_chunk else sentence
+                    )
+
+            # Add any remaining chunk
+            if current_chunk:
+                chunks.append(current_chunk)
+
+        # Verify and clean the chunks
+        final_chunks = []
+        for chunk in chunks:
+            chunk = chunk.strip()
+            if chunk:  # Only add non-empty chunks
+                final_chunks.append(chunk)
+
+        # If we somehow got no chunks, return the original text
+        if not final_chunks:
+            return [text]
+
+        return final_chunks

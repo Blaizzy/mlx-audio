@@ -128,11 +128,21 @@ def tts_endpoint(
 
     # Validate model parameter
     valid_models = [
+        # Kokoro models
         "mlx-community/Kokoro-82M-4bit",
         "mlx-community/Kokoro-82M-6bit",
         "mlx-community/Kokoro-82M-8bit",
         "mlx-community/Kokoro-82M-bf16",
+        # Bark models
+        "mlx-community/bark-small",
+        # Sesame models
+        "mlx-community/csm-1b",
+        # Llama models
+        "mlx-community/llama-tts-1B",
+        # Orpheus model
+        "canopylabs/orpheus-3b-0.1-ft",
     ]
+
     if model not in valid_models:
         return JSONResponse(
             {"error": f"Invalid model. Must be one of: {', '.join(valid_models)}"},

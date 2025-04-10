@@ -7,7 +7,7 @@
             font-family: Arial, sans-serif;
         }
         #controls {
-            position: fixed;
+            /* position: fixed; */
             top: 20px;
             left: 20px;
             z-index: 10;
@@ -15,8 +15,8 @@
             background-color: rgba(0, 0, 0, 0.5);
             padding: 15px;
             border-radius: 10px;
-            max-width: 350px;
-            max-height: 80vh;
+            max-width: 1350px;
+            max-height: 98vh;
             overflow-y: auto;
         }
         button {
@@ -241,10 +241,19 @@
             <div class="form-group">
                 <label for="model">Model:</label>
                 <select id="model">
+                    <!-- Kokoro models -->
                     <option value="mlx-community/Kokoro-82M-4bit">Kokoro 82M 4bit</option>
                     <option value="mlx-community/Kokoro-82M-6bit">Kokoro 82M 6bit</option>
                     <option value="mlx-community/Kokoro-82M-8bit">Kokoro 82M 8bit</option>
                     <option value="mlx-community/Kokoro-82M-bf16">Kokoro 82M bf16</option>
+                    <!-- Bark models -->
+                    <option value="mlx-community/bark-small">Bark Small</option>
+                    <!-- Sesame models -->
+                    <option value="mlx-community/csm-1b">Sesame CSM-1B</option>
+                    <!-- Llama models -->
+                    <option value="mlx-community/llama-tts-1B">Llama TTS 1B</option>
+                    <!-- Orpheus model -->
+                    <option value="canopylabs/orpheus-3b-0.1-ft">Orpheus 3B</option>
                 </select>
             </div>
             
@@ -301,7 +310,16 @@
             <div>
                 <label for="s2sModel">Model:</label>
                 <select id="s2sModel" class="form-control">
+                    <!-- Kokoro models -->
                     <option value="kokoro_82m_4bit">Kokoro 82M 4bit</option>
+                    <!-- Bark models -->
+                    <option value="mlx-community/bark-small">Bark Small</option>
+                    <!-- Sesame models -->
+                    <option value="mlx-community/csm-1b">Sesame CSM-1B</option>
+                    <!-- Llama models -->
+                    <option value="mlx-community/llama-tts-1B">Llama TTS 1B</option>
+                    <!-- Orpheus model -->
+                    <option value="canopylabs/orpheus-3b-0.1-ft">Orpheus 3B</option>
                 </select>
             </div>
             

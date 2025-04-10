@@ -11,7 +11,10 @@ import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_unflatten
 from mlx_lm.utils import get_model_path, load_config, make_shards
 
-MODEL_REMAPPING = {"mlx-community/csm-1b": "sesame"}
+MODEL_REMAPPING = {
+    "mlx-community/csm-1b": "sesame",
+    "canopylabs/orpheus-3b-0.1-ft": "orpheus",
+}
 MAX_FILE_SIZE_GB = 5
 
 
