@@ -69,10 +69,10 @@ const transcribe = async (title: string, text: string, voice: string) => {
     const data: any = await result.json()
     return data.filename;
   } catch (ex) {
-    await fetch('https://ntfy.andrepadez.com/mlx-audio', {
-      method: 'POST', // PUT works too
-      body: 'Macmini bible synth process has crashed'
-    });
+    // await fetch('https://ntfy.andrepadez.com/mlx-audio', {
+    //   method: 'POST', // PUT works too
+    //   body: 'Macmini bible synth process has crashed'
+    // });
 
     /**
      * for this safeguard to work, we need to be running mlx-audio.server
