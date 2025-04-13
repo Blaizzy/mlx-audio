@@ -140,6 +140,7 @@ class DAC(nn.Module, CodecMixin):
         codebook_size: int = 1024,
         codebook_dim: Union[int, list] = 8,
         sample_rate: int = 44100,
+        **kwargs,
     ):
         super().__init__()
 
@@ -248,18 +249,10 @@ class DAC(nn.Module, CodecMixin):
 
     @classmethod
     def from_pretrained(
-        cls, model: Literal["16khz", "24khz", "44khz"] = "24khz"
+        cls,
+        repo_id: str,
     ) -> "DAC":
-        if model == "16khz":
-            model_name = "mlx-community/descript-audio-codec-16khz"
-        elif model == "24khz":
-            model_name = "mlx-community/descript-audio-codec-24khz"
-        elif model == "44khz":
-            model_name = "mlx-community/descript-audio-codec-44khz"
-        else:
-            raise ValueError(f"Model is not supported: {model}")
-
-        path = fetch_from_hub(model_name)
+        path = fetch_from_hub(repo_id)
         if path is None:
             raise ValueError(f"Could not find model {path}")
 
