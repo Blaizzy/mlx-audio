@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		261E20862DAC272A000711D0 /* readme.md in Resources */ = {isa = PBXBuildFile; fileRef = 261E20852DAC2726000711D0 /* readme.md */; };
 		26942DF82DABD4B600B82507 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 26942DF72DABD4B600B82507 /* MLX */; };
 		26942DFA2DABD4B600B82507 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 26942DF92DABD4B600B82507 /* MLXFFT */; };
 		26942DFC2DABD4B600B82507 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 26942DFB2DABD4B600B82507 /* MLXFast */; };
@@ -28,6 +29,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		261E20852DAC2726000711D0 /* readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = readme.md; sourceTree = "<group>"; };
 		26942CF62DABD3B400B82507 /* Swift-TTS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift-TTS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -74,6 +76,7 @@
 		26942CED2DABD3B400B82507 = {
 			isa = PBXGroup;
 			children = (
+				261E20852DAC2726000711D0 /* readme.md */,
 				26942CF82DABD3B400B82507 /* Swift-TTS */,
 				26942CF72DABD3B400B82507 /* Products */,
 			);
@@ -160,6 +163,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				261E20862DAC272A000711D0 /* readme.md in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
