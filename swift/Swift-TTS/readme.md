@@ -7,3 +7,8 @@ This is an example of MLX-Swift running local TTS models.
 Implemented and working. Based on [Kokoro TTS for iOS](https://github.com/mlalma/kokoro-ios).  All credit to mlalma for that work!
 
 Uses MLX Swift and eSpeak NG.  M1 chip or better is requied.
+
+
+# Kokoro
+
+Test implementation - not working.  Unexpected layer shapes.

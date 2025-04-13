@@ -6,7 +6,7 @@ import MLX
 import MLXNN
 
 // Utility class for loading and preprocessing the weights for the model
-class WeightLoader {
+class KokoroWeightLoader {
   private init() {}
 
   static func loadWeights() -> [String: MLXArray] {

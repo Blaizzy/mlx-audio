@@ -10,6 +10,8 @@ import SwiftUI
 struct ContentView: View {
     
     private let kokoroTTSModel = KokoroTTSModel()
+    private let orpheusTTSModel = OrpheusTTSModel()
+    
     @State private var sayThis : String = "Hello Everybody"
     @State private var status : String = ""
     
@@ -33,7 +35,11 @@ struct ContentView: View {
             }
             
             Button("Orpheus") {
-                
+                Task {
+                    status = "Generating..."
+                    await orpheusTTSModel.say(sayThis, .tara)
+                    status = "Done"
+                }
             }
             
             Text(status)

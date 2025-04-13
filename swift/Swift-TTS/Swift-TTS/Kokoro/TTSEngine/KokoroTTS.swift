@@ -39,7 +39,7 @@ public class KokoroTTS {
   private var voice: MLXArray!
 
   init() {
-    let sanitizedWeights = WeightLoader.loadWeights()
+    let sanitizedWeights = KokoroWeightLoader.loadWeights()
 
     bert = CustomAlbert(weights: sanitizedWeights, config: AlbertModelArgs())
     bertEncoder = Linear(weight: sanitizedWeights["bert_encoder.weight"]!, bias: sanitizedWeights["bert_encoder.bias"]!)
