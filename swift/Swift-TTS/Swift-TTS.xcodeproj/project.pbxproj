@@ -15,7 +15,27 @@
 		26942E002DABD4B600B82507 /* MLXNN in Frameworks */ = {isa = PBXBuildFile; productRef = 26942DFF2DABD4B600B82507 /* MLXNN */; };
 /* End PBXBuildFile section */
 
+/* Begin PBXContainerItemProxy section */
+		2648361D2DAD10AA004DA2A4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 26942CEE2DABD3B400B82507 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 26942CF52DABD3B400B82507;
+			remoteInfo = "Swift-TTS";
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXCopyFilesBuildPhase section */
+		264836292DAD1252004DA2A4 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		26942E032DABD5AE00B82507 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
@@ -30,10 +50,31 @@
 
 /* Begin PBXFileReference section */
 		261E20852DAC2726000711D0 /* readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = readme.md; sourceTree = "<group>"; };
+		264836192DAD10AA004DA2A4 /* Swift-TTS-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Swift-TTS-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		26942CF62DABD3B400B82507 /* Swift-TTS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift-TTS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		2648362A2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Swift-TTS-Tests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Kokoro/Frameworks/ESpeakNG.xcframework,
+			);
+			target = 264836182DAD10AA004DA2A4 /* Swift-TTS-Tests */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		2648362B2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS-Tests" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			attributesByRelativePath = {
+				Kokoro/Frameworks/ESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
+			};
+			buildPhase = 264836292DAD1252004DA2A4 /* Embed Frameworks */;
+			membershipExceptions = (
+				Kokoro/Frameworks/ESpeakNG.xcframework,
+			);
+		};
 		26942E042DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS" target */ = {
 			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
 			attributesByRelativePath = {
@@ -47,10 +88,17 @@
 /* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		2648361A2DAD10AA004DA2A4 /* Swift-TTS-Tests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Swift-TTS-Tests";
+			sourceTree = "<group>";
+		};
 		26942CF82DABD3B400B82507 /* Swift-TTS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				26942E042DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS" target */,
+				2648362A2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Swift-TTS-Tests" target */,
+				2648362B2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS-Tests" target */,
 			);
 			path = "Swift-TTS";
 			sourceTree = "<group>";
@@ -58,6 +106,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		264836162DAD10AA004DA2A4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		26942CF32DABD3B400B82507 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -73,11 +128,20 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		264836262DAD1252004DA2A4 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		26942CED2DABD3B400B82507 = {
 			isa = PBXGroup;
 			children = (
 				261E20852DAC2726000711D0 /* readme.md */,
 				26942CF82DABD3B400B82507 /* Swift-TTS */,
+				2648361A2DAD10AA004DA2A4 /* Swift-TTS-Tests */,
+				264836262DAD1252004DA2A4 /* Frameworks */,
 				26942CF72DABD3B400B82507 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -86,6 +150,7 @@
 			isa = PBXGroup;
 			children = (
 				26942CF62DABD3B400B82507 /* Swift-TTS.app */,
+				264836192DAD10AA004DA2A4 /* Swift-TTS-Tests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -93,6 +158,30 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		264836182DAD10AA004DA2A4 /* Swift-TTS-Tests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 264836212DAD10AA004DA2A4 /* Build configuration list for PBXNativeTarget "Swift-TTS-Tests" */;
+			buildPhases = (
+				264836152DAD10AA004DA2A4 /* Sources */,
+				264836162DAD10AA004DA2A4 /* Frameworks */,
+				264836172DAD10AA004DA2A4 /* Resources */,
+				264836292DAD1252004DA2A4 /* Embed Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				2648361E2DAD10AA004DA2A4 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				2648361A2DAD10AA004DA2A4 /* Swift-TTS-Tests */,
+			);
+			name = "Swift-TTS-Tests";
+			packageProductDependencies = (
+			);
+			productName = "Swift-TTS-Tests";
+			productReference = 264836192DAD10AA004DA2A4 /* Swift-TTS-Tests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		26942CF52DABD3B400B82507 /* Swift-TTS */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 26942D052DABD3B600B82507 /* Build configuration list for PBXNativeTarget "Swift-TTS" */;
@@ -131,6 +220,10 @@
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
 				TargetAttributes = {
+					264836182DAD10AA004DA2A4 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 26942CF52DABD3B400B82507;
+					};
 					26942CF52DABD3B400B82507 = {
 						CreatedOnToolsVersion = 16.0;
 					};
@@ -154,11 +247,19 @@
 			projectRoot = "";
 			targets = (
 				26942CF52DABD3B400B82507 /* Swift-TTS */,
+				264836182DAD10AA004DA2A4 /* Swift-TTS-Tests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		264836172DAD10AA004DA2A4 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		26942CF42DABD3B400B82507 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -170,6 +271,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		264836152DAD10AA004DA2A4 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		26942CF22DABD3B400B82507 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -179,7 +287,53 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		2648361E2DAD10AA004DA2A4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 26942CF52DABD3B400B82507 /* Swift-TTS */;
+			targetProxy = 2648361D2DAD10AA004DA2A4 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		2648361F2DAD10AA004DA2A4 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = 793V7A9UA3;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.Swift-TTS-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Swift-TTS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Swift-TTS";
+			};
+			name = Debug;
+		};
+		264836202DAD10AA004DA2A4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUILD_LIBRARY_FOR_DISTRIBUTION = NO;
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DEVELOPMENT_TEAM = 793V7A9UA3;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.Swift-TTS-Tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Swift-TTS.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Swift-TTS";
+			};
+			name = Release;
+		};
 		26942D032DABD3B600B82507 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -355,6 +509,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		264836212DAD10AA004DA2A4 /* Build configuration list for PBXNativeTarget "Swift-TTS-Tests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2648361F2DAD10AA004DA2A4 /* Debug */,
+				264836202DAD10AA004DA2A4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		26942CF12DABD3B400B82507 /* Build configuration list for PBXProject "Swift-TTS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

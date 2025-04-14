@@ -9,8 +9,8 @@ import SwiftUI
 
 struct ContentView: View {
     
-    private let kokoroTTSModel = KokoroTTSModel()
-    private let orpheusTTSModel = OrpheusTTSModel()
+    @State private var kokoroTTSModel: KokoroTTSModel? = nil
+    @State private var orpheusTTSModel: OrpheusTTSModel? = nil
     
     @State private var sayThis : String = "Hello Everybody"
     @State private var status : String = ""
@@ -29,7 +29,10 @@ struct ContentView: View {
             Button("Kokoro") {
                 Task {
                     status = "Generating..."
-                    await kokoroTTSModel.say(sayThis, .bmGeorge)
+                    if kokoroTTSModel == nil {
+                        kokoroTTSModel = KokoroTTSModel()
+                    }
+                    await kokoroTTSModel!.say(sayThis, .bmGeorge)
                     status = "Done"
                 }
             }
@@ -37,7 +40,10 @@ struct ContentView: View {
             Button("Orpheus") {
                 Task {
                     status = "Generating..."
-                    await orpheusTTSModel.say(sayThis, .tara)
+                    if orpheusTTSModel == nil {
+                        orpheusTTSModel = OrpheusTTSModel()
+                    }
+                    await orpheusTTSModel!.say(sayThis, .tara)
                     status = "Done"
                 }
             }
