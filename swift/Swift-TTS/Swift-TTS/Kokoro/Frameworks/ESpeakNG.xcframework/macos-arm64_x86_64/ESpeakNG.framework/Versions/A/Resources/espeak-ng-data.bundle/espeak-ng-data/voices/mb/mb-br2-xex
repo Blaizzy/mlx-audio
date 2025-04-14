@@ -1,0 +1,16 @@
+language xex 4
+name brazil-xextan-2
+gender female
+
+phonemes pt-br
+phonemes pt
+pitch 115 195
+voicing 120
+speed 80
+
+dictrules 2 5
+
+tunes s7 c7 q7 e7
+
+mbrola br2 ptbr2xex_phtrans
+
