@@ -1,11 +1,10 @@
 import math
 
 import mlx.core as mx
-
 import numpy as np
 import pyloudnorm as pyln
-import soundfile as sf
 import scipy.signal
+import soundfile as sf
 
 from mlx_audio.codec import DAC
 
@@ -38,7 +37,9 @@ def process_audio_array(
     # measure and normalize loudness
     meter = pyln.Meter(sample_rate, block_size=block_size)
     measured_loudness = meter.integrated_loudness(audio_padded)
-    normalized = pyln.normalize.loudness(audio_padded, measured_loudness, target_loudness)
+    normalized = pyln.normalize.loudness(
+        audio_padded, measured_loudness, target_loudness
+    )
 
     # apply peak limiting if necessary
     peak_value = np.max(np.abs(normalized))
@@ -58,7 +59,9 @@ class DacInterface:
         self.model = DAC.from_pretrained(repo_id)
         self.sr = 24000
 
-    def convert_audio(self, audio: mx.array, sr: int, target_sr: int, target_channels: int):
+    def convert_audio(
+        self, audio: mx.array, sr: int, target_sr: int, target_channels: int
+    ):
         audio_np = np.array(audio)
 
         if len(audio_np.shape) < 2:
@@ -111,7 +114,9 @@ class DacInterface:
         nb, nac, nt = x.shape
         x = x.reshape(nb * nac, 1, nt)
         n_samples = int(win_duration * self.sr)
-        n_samples = int(math.ceil(n_samples / self.model.hop_length) * self.model.hop_length)
+        n_samples = int(
+            math.ceil(n_samples / self.model.hop_length) * self.model.hop_length
+        )
         hop = n_samples
         codes_list = []
 

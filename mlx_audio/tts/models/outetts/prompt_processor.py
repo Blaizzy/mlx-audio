@@ -1,5 +1,6 @@
-from transformers import AutoTokenizer
 import re
+
+from transformers import AutoTokenizer
 
 from .tokens import SpecialTokens
 
@@ -19,22 +20,42 @@ class PromptProcessor:
         self.global_features = "{fs}{codes}{fe}\n"
 
     def get_audio_token_map(self):
-        self.c1 = {self.tokenizer.encode(self.special_tokens.c1.format(i), add_special_tokens=False)[0]: i for i in range(1025)}
-        self.c2 = {self.tokenizer.encode(self.special_tokens.c2.format(i), add_special_tokens=False)[0]: i for i in range(1025)}
+        self.c1 = {
+            self.tokenizer.encode(
+                self.special_tokens.c1.format(i), add_special_tokens=False
+            )[0]: i
+            for i in range(1025)
+        }
+        self.c2 = {
+            self.tokenizer.encode(
+                self.special_tokens.c2.format(i), add_special_tokens=False
+            )[0]: i
+            for i in range(1025)
+        }
 
     def get_features(self, f: dict):
-        features = {"energy": f.get("energy", 0), "spectral_centroid": f.get("spectral_centroid", 0), "pitch": f.get("pitch", 0)}
+        features = {
+            "energy": f.get("energy", 0),
+            "spectral_centroid": f.get("spectral_centroid", 0),
+            "pitch": f.get("pitch", 0),
+        }
         return [f"<|{k}_{v}|>" for k, v in features.items()]
 
     def get_global_features(self, f: dict):
         return self.global_features.format(
-            fs=self.special_tokens.global_features_start, codes="".join(self.get_features(f)), fe=self.special_tokens.global_features_end
+            fs=self.special_tokens.global_features_start,
+            codes="".join(self.get_features(f)),
+            fe=self.special_tokens.global_features_end,
         )
 
     def create_codes(self, words: dict):
         codes = []
         for i in words:
-            word = i["word"] + self.special_tokens.features + self.special_tokens.time.format(i["duration"])
+            word = (
+                i["word"]
+                + self.special_tokens.features
+                + self.special_tokens.time.format(i["duration"])
+            )
             word += "".join(self.get_features(i["features"]))
             pairs = []
 
@@ -44,7 +65,9 @@ class PromptProcessor:
                 pairs.append(f"{c1}{c2}")
 
             word += self.special_tokens.code + "".join(pairs)
-            codes.append(self.special_tokens.word_start + word + self.special_tokens.word_end)
+            codes.append(
+                self.special_tokens.word_start + word + self.special_tokens.word_end
+            )
 
         return "\n".join(codes)
 
@@ -134,7 +157,9 @@ class PromptProcessor:
         prompt = self._init_prompt(text)
         prompt += self.get_global_features(global_features)
         prompt += self.create_codes(words)
-        prompt += "\n" + self.special_tokens.audio_end + "\n" + self.special_tokens.eos + "\n"
+        prompt += (
+            "\n" + self.special_tokens.audio_end + "\n" + self.special_tokens.eos + "\n"
+        )
 
         return prompt
 

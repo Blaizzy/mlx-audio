@@ -13,10 +13,9 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+from ..base import GenerationResult
 from .dac_interface import DacInterface
 from .prompt_processor import PromptProcessor
-
-from ..base import GenerationResult
 
 
 @dataclass
@@ -91,7 +90,9 @@ class Attention(nn.Module):
             queries = self.rope(queries)
             keys = self.rope(keys)
 
-        output = mx.fast.scaled_dot_product_attention(queries, keys, values, scale=self.scale, mask=mask)
+        output = mx.fast.scaled_dot_product_attention(
+            queries, keys, values, scale=self.scale, mask=mask
+        )
 
         output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
         return self.o_proj(output)
@@ -124,7 +125,9 @@ class TransformerBlock(nn.Module):
         self.self_attn = Attention(args)
         self.mlp = MLP(args)
         self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-        self.post_attention_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
+            args.hidden_size, eps=args.rms_norm_eps
+        )
         self.args = args
 
     def __call__(
@@ -148,7 +151,9 @@ class LlamaModel(nn.Module):
         self.num_hidden_layers = args.num_hidden_layers
         assert self.vocab_size > 0
         self.embed_tokens = nn.Embedding(args.vocab_size, args.hidden_size)
-        self.layers = [TransformerBlock(args=args) for _ in range(args.num_hidden_layers)]
+        self.layers = [
+            TransformerBlock(args=args) for _ in range(args.num_hidden_layers)
+        ]
         self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
     def __call__(
@@ -224,7 +229,12 @@ class Model(nn.Module):
         with open(voice, "r") as f:
             speaker = json.load(f)
 
-        sampler = make_sampler(temperature, top_p, min_p=kwargs.get("min_p", 0.05), top_k=kwargs.get("top_k", 40))
+        sampler = make_sampler(
+            temperature,
+            top_p,
+            min_p=kwargs.get("min_p", 0.05),
+            top_k=kwargs.get("top_k", 40),
+        )
         logits_processors = make_logits_processors(
             kwargs.get("logit_bias", None),
             kwargs.get("repetition_penalty", 1.1),
@@ -234,8 +244,12 @@ class Model(nn.Module):
         all_audio = []
 
         for prompt in prompts:
-            completion_prompt = self.prompt_processor.get_completion_prompt(prompt, speaker)
-            input_ids = self.tokenizer.encode(completion_prompt, add_special_tokens=False, return_tensors="mlx")
+            completion_prompt = self.prompt_processor.get_completion_prompt(
+                prompt, speaker
+            )
+            input_ids = self.tokenizer.encode(
+                completion_prompt, add_special_tokens=False, return_tensors="mlx"
+            )
             input_length = input_ids.shape[1]
 
             time_start = time.time()
@@ -293,11 +307,15 @@ class Model(nn.Module):
                 real_time_factor=rtf,
                 prompt={
                     "tokens": token_count,
-                    "tokens-per-sec": (round(token_count / elapsed_time, 2) if elapsed_time > 0 else 0),
+                    "tokens-per-sec": (
+                        round(token_count / elapsed_time, 2) if elapsed_time > 0 else 0
+                    ),
                 },
                 audio_samples={
                     "samples": samples,
-                    "samples-per-sec": (round(samples / elapsed_time, 2) if elapsed_time > 0 else 0),
+                    "samples-per-sec": (
+                        round(samples / elapsed_time, 2) if elapsed_time > 0 else 0
+                    ),
                 },
                 processing_time_seconds=time_end - time_start,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,

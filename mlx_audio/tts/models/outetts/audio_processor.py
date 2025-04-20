@@ -110,7 +110,9 @@ def extract_single_pitch_value(
     Returns:
         A single float value representing the normalized average pitch (0.0-1.0).
     """
-    pitch_array = calculate_pitch(audio_array, sr, min_freq, max_freq, frame_length, hop_length, threshold)
+    pitch_array = calculate_pitch(
+        audio_array, sr, min_freq, max_freq, frame_length, hop_length, threshold
+    )
 
     # calculate the average pitch across frames
     average_pitch = float(mx.mean(pitch_array))
