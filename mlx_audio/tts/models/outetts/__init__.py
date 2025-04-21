@@ -1,1 +1,1 @@
-from .model import Model, ModelConfig
+from .outetts import Model, ModelConfig
