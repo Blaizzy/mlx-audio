@@ -4,28 +4,38 @@ import importlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, Tuple, Union, List
 
 import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_unflatten
 from mlx_lm.utils import get_model_path, load_config, make_shards
 
-MODEL_REMAPPING = {"OuteAI/Llama-OuteTTS-1.0-1B": "outetts"}
+MODEL_REMAPPING = {"outetts": "outetts"}
 MAX_FILE_SIZE_GB = 5
 
 
-def get_model_and_args(model_path: str, model_type: str):
+def get_model_and_args(model_type: str, model_name: List[str]):
     """
     Retrieve the model object based on the configuration.
 
     Args:
-        config (dict): The model configuration.
+        model_type (str): The model type.
+        model_name (List[str]): The model name.
 
     Returns:
         A tuple containing the Model class and the ModelArgs class.
     """
-    model_type = MODEL_REMAPPING.get(model_path, model_type)
+
+    model_type = MODEL_REMAPPING.get(model_type, model_type)
+
+    # Check for partial matches in segments of the model name
+    for part in model_name:
+        if part in MODEL_REMAPPING:
+            model_type = MODEL_REMAPPING[part]
+            break
+
+
     try:
         arch = importlib.import_module(f"mlx_audio.tts.models.{model_type}")
     except ImportError:
@@ -100,15 +110,14 @@ def load_model(model_path: Path, lazy: bool = False, **kwargs) -> nn.Module:
         FileNotFoundError: If the weight files (.safetensors) are not found.
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
-    name = None
-    original_model_path = model_path
+    model_name = None
     if isinstance(model_path, str):
-        name = model_path.split("/")[-1].split("-")[0].lower()
+        model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
 
     config = load_config(model_path, **kwargs)
 
-    model_type = config.get("model_type", name)
+    model_type = config.get("model_type", model_name[0])
 
     quantization = config.get("quantization", None)
 
@@ -139,9 +148,7 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
     for wf in weight_files:
         weights.update(mx.load(wf))
 
-    model_class, model_type = get_model_and_args(
-        model_path=original_model_path, model_type=model_type
-    )
+    model_class, model_type = get_model_and_args(model_type=model_type, model_name=model_name)
 
     # Get model config from model class if it exists, otherwise use the config
     model_config = (
