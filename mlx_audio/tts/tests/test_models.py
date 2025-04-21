@@ -722,7 +722,7 @@ class TestOuteTTSModel(unittest.TestCase):
     @patch("transformers.LlamaTokenizer")
     def test_generate(self, mock_tokenizer):
         """Test generate method."""
-        from mlx_audio.tts.models.outetts.model import Model, ModelConfig
+        from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
