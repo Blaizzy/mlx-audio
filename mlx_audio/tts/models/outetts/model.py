@@ -14,30 +14,14 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from ..base import GenerationResult
-from ..llama import Model as LlamaModel
+from ..llama import Model as LlamaModel, ModelConfig as LlamaModelConfig
 from .dac_interface import DacInterface
 from .prompt_processor import PromptProcessor
 
 
 @dataclass
-class ModelConfig(BaseModelArgs):
-    model_type: str
-    hidden_size: int
-    num_hidden_layers: int
-    intermediate_size: int
-    num_attention_heads: int
-    rms_norm_eps: float
-    vocab_size: int
-    head_dim: Optional[int] = None
-    max_position_embeddings: Optional[int] = None
-    num_key_value_heads: Optional[int] = None
-    attention_bias: bool = False
-    mlp_bias: bool = False
-    rope_theta: float = 500000.0
-    rope_traditional: bool = False
-    rope_scaling: Optional[Dict[str, Union[float, str]]] = None
-    tie_word_embeddings: bool = True
-    tokenizer_path: str = "OuteAI/Llama-OuteTTS-1.0-1B"
+class ModelConfig(LlamaModelConfig):
+    tokenizer_name: str = "OuteAI/Llama-OuteTTS-1.0-1B"
 
 
 class Model(LlamaModel):
@@ -62,7 +46,7 @@ class Model(LlamaModel):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
 
-        self.prompt_processor = PromptProcessor(self.config.tokenizer_path)
+        self.prompt_processor = PromptProcessor(self.tokenizer)
         self.audio_codec = DacInterface()
 
         if voice is None:
