@@ -2,16 +2,12 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Optional
 
 import mlx.core as mx
-import mlx.nn as nn
 from mlx_lm.generate import stream_generate
-from mlx_lm.models.base import BaseModelArgs, create_attention_mask
-from mlx_lm.models.rope_utils import initialize_rope
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
-from transformers import AutoTokenizer
 
 from ..base import GenerationResult
 from ..llama import Model as LlamaModel
