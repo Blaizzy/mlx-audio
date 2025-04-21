@@ -1,16 +1,21 @@
 import re
-
-from transformers import AutoTokenizer
+from typing import Union
+from transformers import AutoTokenizer, PreTrainedTokenizer, PreTrainedTokenizerFast
 
 from .tokens import SpecialTokens
 
 
 class PromptProcessor:
-    def __init__(self, tokenizer_path: str):
+    def __init__(self, tokenizer: Union[str, PreTrainedTokenizer, PreTrainedTokenizerFast]):
         self.special_tokens = SpecialTokens()
 
-        if tokenizer_path:
-            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        if tokenizer:
+            if isinstance(tokenizer, (PreTrainedTokenizer, PreTrainedTokenizerFast)):
+                self.tokenizer = tokenizer
+            elif isinstance(tokenizer, str):
+                self.tokenizer = AutoTokenizer.from_pretrained(tokenizer)
+            else:
+                raise ValueError(f"Invalid tokenizer: {type(tokenizer)}")
 
             self.c1 = {}
             self.c2 = {}
