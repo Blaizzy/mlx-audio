@@ -4,7 +4,7 @@ import importlib
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, Tuple, Union, List
+from typing import Any, Dict, List, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -34,7 +34,6 @@ def get_model_and_args(model_type: str, model_name: List[str]):
         if part in MODEL_REMAPPING:
             model_type = MODEL_REMAPPING[part]
             break
-
 
     try:
         arch = importlib.import_module(f"mlx_audio.tts.models.{model_type}")
@@ -148,7 +147,9 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
     for wf in weight_files:
         weights.update(mx.load(wf))
 
-    model_class, model_type = get_model_and_args(model_type=model_type, model_name=model_name)
+    model_class, model_type = get_model_and_args(
+        model_type=model_type, model_name=model_name
+    )
 
     # Get model config from model class if it exists, otherwise use the config
     model_config = (
