@@ -17,19 +17,29 @@ MAX_FILE_SIZE_GB = 5
 
 def get_model_and_args(model_type: str, model_name: List[str]):
     """
-    Retrieve the model object based on the configuration.
+    Retrieve the model architecture module based on the model type and name.
+
+    This function attempts to find the appropriate model architecture by:
+    1. Checking if the model_type is directly in the MODEL_REMAPPING dictionary
+    2. Looking for partial matches in segments of the model_name
 
     Args:
-        model_type (str): The model type.
-        model_name (List[str]): The model name.
+        model_type (str): The type of model to load (e.g., "outetts").
+        model_name (List[str]): List of model name components that might contain
+                               remapping information.
 
     Returns:
-        A tuple containing the Model class and the ModelArgs class.
-    """
+        Tuple[module, str]: A tuple containing:
+            - The imported architecture module
+            - The resolved model_type string after remapping
 
+    Raises:
+        ValueError: If the model type is not supported (module import fails).
+    """
+    # Stage 1: Check if the model type is in the remapping
     model_type = MODEL_REMAPPING.get(model_type, model_type)
 
-    # Check for partial matches in segments of the model name
+    # Stage 2: Check for partial matches in segments of the model name
     for part in model_name:
         if part in MODEL_REMAPPING:
             model_type = MODEL_REMAPPING[part]
