@@ -13,8 +13,8 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from ..llama import Model as LlamaModel
 from ..base import GenerationResult
+from ..llama import Model as LlamaModel
 from .dac_interface import DacInterface
 from .prompt_processor import PromptProcessor
 
