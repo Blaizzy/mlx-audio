@@ -14,7 +14,8 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from ..base import GenerationResult
-from ..llama import Model as LlamaModel, ModelConfig as LlamaModelConfig
+from ..llama import Model as LlamaModel
+from ..llama import ModelConfig as LlamaModelConfig
 from .dac_interface import DacInterface
 from .prompt_processor import PromptProcessor
 
