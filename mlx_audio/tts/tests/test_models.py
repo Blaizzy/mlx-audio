@@ -704,7 +704,7 @@ class TestOuteTTSModel(unittest.TestCase):
     @patch("transformers.LlamaTokenizer")
     def test_init(self, mock_tokenizer):
         """Test initialization."""
-        from mlx_audio.tts.models.outetts.model import Model, ModelConfig
+        from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
 
         # Mock the tokenizer instance
         mock_tokenizer_instance = MagicMock()
