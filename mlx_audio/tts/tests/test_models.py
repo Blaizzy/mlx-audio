@@ -674,5 +674,67 @@ class TestLlamaModel(unittest.TestCase):
             self.assertIn("lm_head.weight", sanitized2)
 
 
+class TestOuteTTSModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "attention_bias": False,
+            "head_dim": 64,
+            "hidden_size": 2048,
+            "intermediate_size": 8192,
+            "max_position_embeddings": 131072,
+            "mlp_bias": False,
+            "model_type": "llama",
+            "num_attention_heads": 32,
+            "num_hidden_layers": 16,
+            "num_key_value_heads": 8,
+            "rms_norm_eps": 1e-05,
+            "rope_scaling": {
+                "factor": 32.0,
+                "high_freq_factor": 4.0,
+                "low_freq_factor": 1.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+            "rope_theta": 500000.0,
+            "tie_word_embeddings": True,
+            "vocab_size": 134400,
+        }
+
+    @patch("transformers.LlamaTokenizer")
+    def test_init(self, mock_tokenizer):
+        """Test initialization."""
+        from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
+
+        # Mock the tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
+
+        # Create a minimal config
+        config = ModelConfig(**self._default_config)
+
+        # Initialize model
+        model = Model(config)
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
+
+    @patch("transformers.LlamaTokenizer")
+    def test_generate(self, mock_tokenizer):
+        """Test generate method."""
+        from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+
+        input_ids = mx.random.randint(0, config.vocab_size, (2, 9))
+        logits = model(input_ids)
+        self.assertEqual(logits.shape, (2, 9, config.vocab_size))
+
+
 if __name__ == "__main__":
     unittest.main()

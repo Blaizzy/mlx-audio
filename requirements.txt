@@ -19,4 +19,5 @@ uvicorn>=0.22.0
 encodec>=0.1.1
 mlx_whisper>=0.4.2
 tqdm>=4.67.1
+pyloudnorm>=0.1.1
 fastrtc[vad, stt]
