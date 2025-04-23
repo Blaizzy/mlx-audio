@@ -77,13 +77,7 @@ class Dia:
         dia = cls(config)
 
         try:
-            # TODO: Use safetensors
-            import torch
-
-            state_dict = torch.load(checkpoint_path, map_location="cpu")
-            weights = {}
-            for k, v in state_dict.items():
-                weights[k] = mx.array(v.numpy())
+            weights = mx.load(checkpoint_path)
             dia.model.load_weights(list(weights.items()))
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
@@ -97,7 +91,7 @@ class Dia:
         return dia
 
     @classmethod
-    def from_pretrained(cls, model_name: str = "nari-labs/Dia-1.6B") -> "Dia":
+    def from_pretrained(cls, model_name: str = "mlx-community/Dia-1.6B") -> "Dia":
         """Loads the Dia model from a Hugging Face Hub repository.
 
         Downloads the configuration and checkpoint files from the specified
@@ -114,7 +108,7 @@ class Dia:
             RuntimeError: If there is an error loading the checkpoint.
         """
         config_path = hf_hub_download(repo_id=model_name, filename="config.json")
-        checkpoint_path = hf_hub_download(repo_id=model_name, filename="dia-v0_1.pth")
+        checkpoint_path = hf_hub_download(repo_id=model_name, filename="model.safetensors")
         return cls.from_local(config_path, checkpoint_path)
 
     def _create_attn_mask(
