@@ -407,11 +407,11 @@ class Attention(nn.Module):
         all_attn_output = []
         for batch in range(Xq_BxNxTxH.shape[0]):
             attn_output = mx.fast.scaled_dot_product_attention(
-                Xq_BxNxTxH[batch:batch+1],
-                attn_k[batch:batch+1],
-                attn_v[batch:batch+1],
+                Xq_BxNxTxH[batch : batch + 1],
+                attn_k[batch : batch + 1],
+                attn_v[batch : batch + 1],
                 scale=1.0,
-                mask=attn_mask[batch:batch+1] if attn_mask is not None else None,
+                mask=attn_mask[batch : batch + 1] if attn_mask is not None else None,
             )
             all_attn_output.append(attn_output)
         attn_output = mx.concat(all_attn_output, axis=0)

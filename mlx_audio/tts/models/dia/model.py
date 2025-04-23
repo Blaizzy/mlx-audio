@@ -108,7 +108,9 @@ class Dia:
             RuntimeError: If there is an error loading the checkpoint.
         """
         config_path = hf_hub_download(repo_id=model_name, filename="config.json")
-        checkpoint_path = hf_hub_download(repo_id=model_name, filename="model.safetensors")
+        checkpoint_path = hf_hub_download(
+            repo_id=model_name, filename="model.safetensors"
+        )
         return cls.from_local(config_path, checkpoint_path)
 
     def _create_attn_mask(
