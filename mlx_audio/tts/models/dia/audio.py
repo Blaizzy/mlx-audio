@@ -1,10 +1,13 @@
 import typing as tp
+
 import mlx.core as mx
 
 from .config import DataConfig
 
 
-def build_delay_indices(B: int, T: int, C: int, delay_pattern: tp.List[int]) -> tp.Tuple[mx.array, mx.array]:
+def build_delay_indices(
+    B: int, T: int, C: int, delay_pattern: tp.List[int]
+) -> tp.Tuple[mx.array, mx.array]:
     """
     Precompute (t_idx_BxTxC, indices_BTCx3) so that out[t, c] = in[t - delay[c], c].
     Negative t_idx => BOS; t_idx >= T => PAD.
@@ -83,7 +86,9 @@ def apply_audio_delay(
     pad_tensor = mx.full(1, pad_value, dtype=audio_BxTxC.dtype)
 
     # Apply masks (if mask_bos, BOS; else if mask_pad, PAD; else original gather)
-    result_BxTxC = mx.where(mask_bos, bos_tensor, mx.where(mask_pad, pad_tensor, gathered_BxTxC))
+    result_BxTxC = mx.where(
+        mask_bos, bos_tensor, mx.where(mask_pad, pad_tensor, gathered_BxTxC)
+    )
 
     return result_BxTxC
 
@@ -138,7 +143,9 @@ def audio_to_codebook(
     return encoded_frame
 
 
-def build_revert_indices(B: int, T: int, C: int, delay_pattern: tp.List[int]) -> tp.Tuple[mx.array, mx.array]:
+def build_revert_indices(
+    B: int, T: int, C: int, delay_pattern: tp.List[int]
+) -> tp.Tuple[mx.array, mx.array]:
     """
     Precompute indices for the revert operation using MLX.
 
@@ -218,7 +225,7 @@ def decode(
     """
     Decodes the given frames into an output audio waveform
     """
-    
+
     if len(audio_codes) != 1:
         raise ValueError(f"Expected one frame, got {len(audio_codes)}")
 
@@ -232,7 +239,9 @@ def decode(
         raise
 
 
-def codebook_to_audio(generated_codes: mx.array, model, delay_pattern, B=1, T=2600, C=9):
+def codebook_to_audio(
+    generated_codes: mx.array, model, delay_pattern, B=1, T=2600, C=9
+):
     """Process a single codebook file to generate audio"""
     # Remove BOS token
     generated_codes = generated_codes[:, 1:]
@@ -243,7 +252,9 @@ def codebook_to_audio(generated_codes: mx.array, model, delay_pattern, B=1, T=26
     seq_length = generated_codes.shape[1]
 
     # Build revert indices
-    t_idx_BxTxC, indices_BTCx3 = build_revert_indices(B=B, T=seq_length, C=C, delay_pattern=delay_pattern)
+    t_idx_BxTxC, indices_BTCx3 = build_revert_indices(
+        B=B, T=seq_length, C=C, delay_pattern=delay_pattern
+    )
 
     # Transpose and add batch dimension
     audio_BxTxC = mx.expand_dims(mx.transpose(generated_codes, (1, 0)), 0)
@@ -263,12 +274,14 @@ def codebook_to_audio(generated_codes: mx.array, model, delay_pattern, B=1, T=26
 
     num_invalid = mx.sum(invalid_mask).item()
     if num_invalid > 0:
-        print(f"Warning: Clamping {num_invalid} indices outside range [{min_valid_index}, {max_valid_index}] to 0.")
+        print(
+            f"Warning: Clamping {num_invalid} indices outside range [{min_valid_index}, {max_valid_index}] to 0."
+        )
 
     # Set invalid values to 0
     zeros = mx.zeros_like(codebook)
     codebook = mx.where(invalid_mask, zeros, codebook)
-    
+
     audio_array = decode(model, codebook)
 
     return audio_array

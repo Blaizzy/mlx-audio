@@ -1,18 +1,16 @@
 import mlx.core as mx
 import numpy as np
-
-from huggingface_hub import hf_hub_download
-from scipy import signal
 import soundfile as sf
+from huggingface_hub import hf_hub_download
+from mlx_lm.sample_utils import make_sampler
+from scipy import signal
 from tqdm import trange
+
+from mlx_audio.codec.models import DAC
 
 from .audio import audio_to_codebook, codebook_to_audio
 from .config import DiaConfig
 from .layers import DiaModel, KVCache
-
-from mlx_audio.codec.models import DAC
-
-from mlx_lm.sample_utils import make_sampler
 
 
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
@@ -32,7 +30,7 @@ def _sample_next_token(
 ) -> mx.array:
     if temperature == 0.0:
         return mx.argmax(logits_BCxV, axis=-1)
-    
+
     top_k = -1
     if use_cfg_filter and cfg_filter_top_k is not None:
         top_k = cfg_filter_top_k
@@ -81,6 +79,7 @@ class Dia:
         try:
             # TODO: Use safetensors
             import torch
+
             state_dict = torch.load(checkpoint_path, map_location="cpu")
             weights = {}
             for k, v in state_dict.items():
@@ -89,7 +88,9 @@ class Dia:
         except FileNotFoundError:
             raise FileNotFoundError(f"Checkpoint file not found at {checkpoint_path}")
         except Exception as e:
-            raise RuntimeError(f"Error loading checkpoint from {checkpoint_path}") from e
+            raise RuntimeError(
+                f"Error loading checkpoint from {checkpoint_path}"
+            ) from e
 
         dia.dac_model = DAC.from_pretrained("mlx-community/descript-audio-codec-24khz")
 
@@ -133,27 +134,43 @@ class Dia:
         p_mask_k = mx.expand_dims(k_padding_mask_1d, 1)  # Shape [B, 1, Tk]
 
         # Condition A: Non-padding query attends to non-padding key
-        non_pad_attends_non_pad = mx.logical_and(p_mask_q, p_mask_k)  # Shape [B, Tq, Tk]
+        non_pad_attends_non_pad = mx.logical_and(
+            p_mask_q, p_mask_k
+        )  # Shape [B, Tq, Tk]
 
         # Condition B: Padding query attends to padding key
-        pad_attends_pad = mx.logical_and(mx.logical_not(p_mask_q), mx.logical_not(p_mask_k))  # Shape [B, Tq, Tk]
+        pad_attends_pad = mx.logical_and(
+            mx.logical_not(p_mask_q), mx.logical_not(p_mask_k)
+        )  # Shape [B, Tq, Tk]
 
         # Combine: True if padding status is compatible (both non-pad OR both pad)
         # This implementation follows Jax TPU splash attention kernel
-        mask = mx.logical_or(non_pad_attends_non_pad, pad_attends_pad)  # Shape [B, Tq, Tk]
+        mask = mx.logical_or(
+            non_pad_attends_non_pad, pad_attends_pad
+        )  # Shape [B, Tq, Tk]
 
         if is_causal:
             # Ensure causality for self-attention (Tq == Tk)
-            assert Tq == Tk, "Causal mask requires query and key sequence lengths to be equal"
+            assert (
+                Tq == Tk
+            ), "Causal mask requires query and key sequence lengths to be equal"
             # Standard lower-triangular causal mask (True means allow)
-            causal_mask_2d = mx.tril(mx.ones((Tq, Tk), dtype=mx.bool_))  # Shape [Tq, Tk]
+            causal_mask_2d = mx.tril(
+                mx.ones((Tq, Tk), dtype=mx.bool_)
+            )  # Shape [Tq, Tk]
             causal_mask = mx.logical_and(mask, causal_mask_2d)  # Shape [B, Tq, Tk]
-            return mx.expand_dims(causal_mask, 1)  # Shape [B, 1, Tq, Tk] for broadcasting across heads
+            return mx.expand_dims(
+                causal_mask, 1
+            )  # Shape [B, 1, Tq, Tk] for broadcasting across heads
         else:
             # For cross-attention or non-causal self-attention
-            return mx.expand_dims(mask, 1)  # Shape [B, 1, Tq, Tk] for broadcasting across heads
+            return mx.expand_dims(
+                mask, 1
+            )  # Shape [B, 1, Tq, Tk] for broadcasting across heads
 
-    def _prepare_text_input(self, text: str) -> tuple[mx.array, mx.array, mx.array, mx.array]:
+    def _prepare_text_input(
+        self, text: str
+    ) -> tuple[mx.array, mx.array, mx.array, mx.array]:
         """Encodes text prompt, pads, and creates attention mask and positions."""
         text_pad_value = self.config.data.text_pad_value
         max_len = self.config.data.text_length
@@ -181,7 +198,9 @@ class Dia:
 
         src_padding_mask = src_tokens != text_pad_value  # [1, S]
 
-        enc_self_attn_mask = self._create_attn_mask(src_padding_mask, src_padding_mask, is_causal=False)  # [1, S, S]
+        enc_self_attn_mask = self._create_attn_mask(
+            src_padding_mask, src_padding_mask, is_causal=False
+        )  # [1, S, S]
 
         return src_tokens, src_positions, src_padding_mask, enc_self_attn_mask
 
@@ -220,9 +239,15 @@ class Dia:
 
         unc_src_BxS = mx.zeros_like(cond_src_BxS)
         src_BxS = mx.concatenate([unc_src_BxS, cond_src_BxS], axis=0)
-        src_positions_BxS = mx.concatenate([cond_src_positions_BxS, cond_src_positions_BxS], axis=0)
-        src_padding_mask_BxS = mx.concatenate([cond_src_padding_mask_BxS, cond_src_padding_mask_BxS], axis=0)
-        enc_self_attn_mask_Bx1xSxS = mx.concatenate([cond_enc_self_attn_mask_Bx1xSxS, cond_enc_self_attn_mask_Bx1xSxS], axis=0)
+        src_positions_BxS = mx.concatenate(
+            [cond_src_positions_BxS, cond_src_positions_BxS], axis=0
+        )
+        src_padding_mask_BxS = mx.concatenate(
+            [cond_src_padding_mask_BxS, cond_src_padding_mask_BxS], axis=0
+        )
+        enc_self_attn_mask_Bx1xSxS = mx.concatenate(
+            [cond_enc_self_attn_mask_Bx1xSxS, cond_enc_self_attn_mask_Bx1xSxS], axis=0
+        )
 
         # 2. Encoder Pass
         encoder_out = self.model.encoder(
@@ -234,8 +259,10 @@ class Dia:
 
         # 3. Prepare Decoder Inputs
         # 3-1. Allocate KV Cache (Static)
-        decoder_cross_attention_cache: list[KVCache] = self.model.decoder.precompute_cross_attention_kv(
-            max_tokens, encoder_out, src_positions_BxS
+        decoder_cross_attention_cache: list[KVCache] = (
+            self.model.decoder.precompute_cross_attention_kv(
+                max_tokens, encoder_out, src_positions_BxS
+            )
         )
 
         decoder_self_attention_cache: list[KVCache] = []
@@ -265,7 +292,9 @@ class Dia:
                 audio_prompt = resample_audio(audio_prompt, sr, 44100)
             audio_prompt = audio_prompt.unsqueeze(0)  # 1, C, T
 
-            audio_prompt_codebook = audio_to_codebook(self.dac_model, audio_prompt, data_config=self.config.data)
+            audio_prompt_codebook = audio_to_codebook(
+                self.dac_model, audio_prompt, data_config=self.config.data
+            )
             audio_prompt_mx = mx.array(audio_prompt_codebook.numpy())
 
             audio_prompt_mx = mx.concatenate([audio_prompt_mx, audio_prompt_mx], axis=0)
@@ -273,8 +302,12 @@ class Dia:
 
             prefill_len = generated_BxTxC.shape[1]
             prompt_len_inc_bos = prefill_len
-            prefill_tgt_pos = mx.broadcast_to(mx.expand_dims(mx.arange(prefill_len), 0), (2, prefill_len))
-            prefill_tgt_padding_mask = mx.any(generated_BxTxC != audio_pad_value, axis=2)
+            prefill_tgt_pos = mx.broadcast_to(
+                mx.expand_dims(mx.arange(prefill_len), 0), (2, prefill_len)
+            )
+            prefill_tgt_padding_mask = mx.any(
+                generated_BxTxC != audio_pad_value, axis=2
+            )
 
             prefill_self_attn_mask = self._create_attn_mask(
                 prefill_tgt_padding_mask,
@@ -317,7 +350,9 @@ class Dia:
 
         decode_step = self.model.decoder.decode_step
 
-        tgt_padding_mask = mx.any(mx.expand_dims(generated_BxTxC[:, -1, :], 1) != audio_pad_value, axis=2)  # [B, 1]
+        tgt_padding_mask = mx.any(
+            mx.expand_dims(generated_BxTxC[:, -1, :], 1) != audio_pad_value, axis=2
+        )  # [B, 1]
 
         # Generated tokens are never PAD, so we use fixed mask
         decoder_cross_attn_mask = self._create_attn_mask(
@@ -333,7 +368,7 @@ class Dia:
                 vals=step,
                 dtype=mx.int32,
             )
-            
+
             logits_Bx1xCxV, new_cache = decode_step(
                 tgt_ids_Bx1xC=tgt_ids_Bx1xC,
                 tgt_pos_Bx1=tgt_pos_Bx1,
@@ -353,14 +388,20 @@ class Dia:
             uncond_logits_CxV = logits_last_BxCxV[0, :, :]
             cond_logits_CxV = logits_last_BxCxV[1, :, :]
 
-            cfg_logits_CxV = cond_logits_CxV + cfg_scale * (cond_logits_CxV - uncond_logits_CxV)
+            cfg_logits_CxV = cond_logits_CxV + cfg_scale * (
+                cond_logits_CxV - uncond_logits_CxV
+            )
 
             logits_CxV = mx.reshape(cfg_logits_CxV, (-1, V))  # C, V
 
             # Create a mask for setting tokens beyond 1025 to -inf
             inf_mask = mx.full(logits_CxV.shape, -float("inf"), dtype=logits_CxV.dtype)
             keep_mask = mx.concatenate(
-                [mx.ones((logits_CxV.shape[0], 1025)), mx.zeros((logits_CxV.shape[0], logits_CxV.shape[1] - 1025))], axis=1
+                [
+                    mx.ones((logits_CxV.shape[0], 1025)),
+                    mx.zeros((logits_CxV.shape[0], logits_CxV.shape[1] - 1025)),
+                ],
+                axis=1,
             )
             logits_CxV = mx.where(keep_mask == 1, logits_CxV, inf_mask)
 
@@ -382,13 +423,19 @@ class Dia:
                 )
 
             # Update generated tokens for next step
-            pred_C_expanded = mx.broadcast_to(mx.expand_dims(pred_C, 0), (2, num_channels))
-            
+            pred_C_expanded = mx.broadcast_to(
+                mx.expand_dims(pred_C, 0), (2, num_channels)
+            )
+
             # Split the tensor into parts: before the update, the update itself, and after the update
-            before_update = generated_BxTxC[:, :step+1, :]
-            new_token = mx.expand_dims(pred_C_expanded, 1)  # Shape: (2, 1, num_channels)
-            after_update = generated_BxTxC[:, step+2:, :]
-            generated_BxTxC = mx.concatenate([before_update, new_token, after_update], axis=1)
+            before_update = generated_BxTxC[:, : step + 1, :]
+            new_token = mx.expand_dims(
+                pred_C_expanded, 1
+            )  # Shape: (2, 1, num_channels)
+            after_update = generated_BxTxC[:, step + 2 :, :]
+            generated_BxTxC = mx.concatenate(
+                [before_update, new_token, after_update], axis=1
+            )
 
             if not eos_detected_channel_0 and pred_C[0] == audio_eos_value:
                 print(f"EOS detected at step {step} for channel 0")
@@ -405,7 +452,9 @@ class Dia:
                         eos_values = eos_values.at[:, i].add(audio_eos_value)
                         # Replace the values at step+1
                         generated_BxTxC = generated_BxTxC.astype(mx.int32)
-                        generated_BxTxC = generated_BxTxC.at[:, step + 1, :].add(eos_values) 
+                        generated_BxTxC = generated_BxTxC.at[:, step + 1, :].add(
+                            eos_values
+                        )
                     elif step_after_eos > d:
                         # Update PAD token
                         # Create new array with updated value at position i in the current sequence
@@ -413,8 +462,10 @@ class Dia:
                         pad_values = pad_values.at[:, i].add(audio_pad_value)
                         # Replace the values at step+1
                         generated_BxTxC = generated_BxTxC.astype(mx.int32)
-                        generated_BxTxC = generated_BxTxC.at[:, step + 1, :].add(pad_values)
-                
+                        generated_BxTxC = generated_BxTxC.at[:, step + 1, :].add(
+                            pad_values
+                        )
+
                 eos_countdown -= 1
                 if eos_countdown == 0:
                     break
@@ -424,5 +475,12 @@ class Dia:
         output_codes = generated_BxTxC[:, prompt_len_inc_bos : step + 1, :]
         generated_codes = output_codes[0]
 
-        audio = codebook_to_audio(generated_codes.transpose(1, 0), self.dac_model, delay_pattern, B=1, T=max_tokens, C=num_channels)
+        audio = codebook_to_audio(
+            generated_codes.transpose(1, 0),
+            self.dac_model,
+            delay_pattern,
+            B=1,
+            T=max_tokens,
+            C=num_channels,
+        )
         return audio.squeeze()

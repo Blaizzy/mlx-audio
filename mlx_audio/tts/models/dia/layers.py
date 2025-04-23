@@ -1,13 +1,12 @@
 import math
-from typing import Any, List, Tuple, Optional
+from typing import Any, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
+from einops.array_api import repeat
 
 from .config import DiaConfig
-
-from einops.array_api import repeat
-import numpy as np
 
 
 def _normalize_axes(axes: tuple[int, ...], ndim: int) -> tuple[int, ...]:
@@ -178,7 +177,9 @@ class RotaryEmbedding(nn.Module):
         half_embedding_dim = embedding_dims // 2
         fraction = (2.0 * mx.arange(half_embedding_dim)) / embedding_dims
 
-        self._timescale = self.min_timescale * (self.max_timescale / self.min_timescale) ** fraction
+        self._timescale = (
+            self.min_timescale * (self.max_timescale / self.min_timescale) ** fraction
+        )
 
     def __call__(self, inputs: mx.array, position: mx.array):
         """Applies RoPE."""
@@ -256,7 +257,9 @@ class Attention(nn.Module):
         self.projected_query_dim = num_query_heads * head_dim
 
         if num_query_heads % num_kv_heads != 0:
-            raise ValueError(f"num_query_heads ({num_query_heads}) must be divisible by num_kv_heads ({num_kv_heads})")
+            raise ValueError(
+                f"num_query_heads ({num_query_heads}) must be divisible by num_kv_heads ({num_kv_heads})"
+            )
 
         self.num_gqa_groups = num_query_heads // num_kv_heads
 
@@ -305,7 +308,9 @@ class Attention(nn.Module):
         q_positions: mx.array,  # (B, T)
         kv_positions: Optional[mx.array] = None,  # (B, S)
         deterministic: bool = True,
-        attn_mask: Optional[mx.array] = None,  # None in Decoder Self Attention, Valid mask in Others
+        attn_mask: Optional[
+            mx.array
+        ] = None,  # None in Decoder Self Attention, Valid mask in Others
         cache: Optional[KVCache] = None,  # None in Encoder, KVCache in Decoder
         prefill: bool = False,  # True only when prefilling KV Cache
     ) -> Tuple[mx.array, Optional[Tuple[mx.array, mx.array]]]:
@@ -345,7 +350,10 @@ class Attention(nn.Module):
         if self.is_cross_attn:
             # Directly use cache (no need to check index)
             attn_k, attn_v = cache.k, cache.v
-            if attn_k.shape[1] != self.num_query_heads or attn_v.shape[1] != self.num_query_heads:
+            if (
+                attn_k.shape[1] != self.num_query_heads
+                or attn_v.shape[1] != self.num_query_heads
+            ):
                 raise ValueError(
                     f"Cross-attention cache head dimension ({attn_k.shape[1]}) "
                     f"does not match num_query_heads ({self.num_query_heads}). "
@@ -355,15 +363,21 @@ class Attention(nn.Module):
         else:
             Xk_BxSxKxH = self.k_proj(Xkv)  # (B, S, K, H)
             Xv_BxSxKxH = self.v_proj(Xkv)  # (B, S, K, H)
-            Xk_BxSxKxH = self.rotary_emb(Xk_BxSxKxH, position=kv_positions)  # (B, S, K, H)
+            Xk_BxSxKxH = self.rotary_emb(
+                Xk_BxSxKxH, position=kv_positions
+            )  # (B, S, K, H)
 
             Xk_BxKxSxH = mx.transpose(Xk_BxSxKxH, (0, 2, 1, 3))  # (B, K, S, H)
             Xv_BxKxSxH = mx.transpose(Xv_BxSxKxH, (0, 2, 1, 3))  # (B, K, S, H)
             # S=1 for Decode Step
 
             if self.num_gqa_groups > 1:
-                Xk_BxNxSxH = repeat(Xk_BxKxSxH, "b k s h -> b (k g) s h", g=self.num_gqa_groups)
-                Xv_BxNxSxH = repeat(Xv_BxKxSxH, "b k s h -> b (k g) s h", g=self.num_gqa_groups)
+                Xk_BxNxSxH = repeat(
+                    Xk_BxKxSxH, "b k s h -> b (k g) s h", g=self.num_gqa_groups
+                )
+                Xv_BxNxSxH = repeat(
+                    Xv_BxKxSxH, "b k s h -> b (k g) s h", g=self.num_gqa_groups
+                )
             else:
                 Xk_BxNxSxH = Xk_BxKxSxH
                 Xv_BxNxSxH = Xv_BxKxSxH
@@ -648,7 +662,10 @@ class Decoder(nn.Module):
         self.num_channels = data_config.channels
         self.num_layers = dec_config.n_layer
 
-        self.embeddings = [nn.Embedding(model_config.tgt_vocab_size, dec_config.n_embd) for _ in range(self.num_channels)]
+        self.embeddings = [
+            nn.Embedding(model_config.tgt_vocab_size, dec_config.n_embd)
+            for _ in range(self.num_channels)
+        ]
         self.dropout = nn.Dropout(model_config.dropout)
         self.layers = [DecoderLayer(config=config) for _ in range(self.num_layers)]
         self.norm = RMSNorm(
@@ -718,7 +735,9 @@ class Decoder(nn.Module):
             - logits_Bx1xCV: The final output logits for the current step (B, 1, C*V), cast to float32.
             - new_cache: The updated KV cache for the next decoding step.
         """
-        assert self_attn_mask is None, "Self-attention mask should be None, kept for pattern"
+        assert (
+            self_attn_mask is None
+        ), "Self-attention mask should be None, kept for pattern"
 
         x = None
         for i in range(self.num_channels):
@@ -857,7 +876,11 @@ class DiaModel(nn.Module):
 
         for layer in self.decoder.layers:
             self_attn_module = layer.self_attention
-            self_attention_cache.append(KVCache(self_attn_module.num_query_heads, max_len, self_attn_module.head_dim))
+            self_attention_cache.append(
+                KVCache(
+                    self_attn_module.num_query_heads, max_len, self_attn_module.head_dim
+                )
+            )
 
         logits = self.decoder(
             tgt_ids_BxTxC=tgt_BxTxC,

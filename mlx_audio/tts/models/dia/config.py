@@ -33,14 +33,20 @@ class DataConfig(BaseModel, frozen=True):
         delay_pattern: List of delay values for each audio channel.
     """
 
-    text_length: Annotated[int, BeforeValidator(lambda x: (x + 127) // 128 * 128)] = Field(gt=0, multiple_of=128)
-    audio_length: Annotated[int, BeforeValidator(lambda x: (x + 127) // 128 * 128)] = Field(gt=0, multiple_of=128)
+    text_length: Annotated[int, BeforeValidator(lambda x: (x + 127) // 128 * 128)] = (
+        Field(gt=0, multiple_of=128)
+    )
+    audio_length: Annotated[int, BeforeValidator(lambda x: (x + 127) // 128 * 128)] = (
+        Field(gt=0, multiple_of=128)
+    )
     channels: int = Field(default=9, gt=0, multiple_of=1)
     text_pad_value: int = Field(default=0)
     audio_eos_value: int = Field(default=1024)
     audio_pad_value: int = Field(default=1025)
     audio_bos_value: int = Field(default=1026)
-    delay_pattern: list[Annotated[int, Field(ge=0)]] = Field(default_factory=lambda: [0, 8, 9, 10, 11, 12, 13, 14, 15])
+    delay_pattern: list[Annotated[int, Field(ge=0)]] = Field(
+        default_factory=lambda: [0, 8, 9, 10, 11, 12, 13, 14, 15]
+    )
 
     def __hash__(self) -> int:
         """Generate a hash based on all fields of the config."""
@@ -130,8 +136,12 @@ class ModelConfig(BaseModel, frozen=True):
     dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
     normalization_layer_epsilon: float = Field(default=1.0e-5, ge=0.0)
     weight_dtype: str = Field(default="float32", description="Weight precision")
-    rope_min_timescale: int = Field(default=1, description="Timescale For global Attention")
-    rope_max_timescale: int = Field(default=10_000, description="Timescale For global Attention")
+    rope_min_timescale: int = Field(
+        default=1, description="Timescale For global Attention"
+    )
+    rope_max_timescale: int = Field(
+        default=10_000, description="Timescale For global Attention"
+    )
 
 
 class TrainingConfig(BaseModel, frozen=True):
