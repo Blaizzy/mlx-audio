@@ -1,9 +1,7 @@
-import math
 from typing import Any, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from einops.array_api import repeat
 
 from .config import DiaConfig
@@ -397,13 +395,26 @@ class Attention(nn.Module):
                     new_kv_cache = (Xk_BxNxSxH, Xv_BxNxSxH)
                     attn_k, attn_v = cache.get_kv_for_attention(Xk_BxNxSxH, Xv_BxNxSxH)
 
-        attn_output = mx.fast.scaled_dot_product_attention(
-            Xq_BxNxTxH,
-            attn_k,
-            attn_v,
-            scale=1.0,
-            mask=attn_mask,
-        )
+        # mx.fast.scaled_dot_product_attention doesn't handle the batches correctly here (?)
+        # attn_output = mx.fast.scaled_dot_product_attention(
+        #     Xq_BxNxTxH,
+        #     attn_k,
+        #     attn_v,
+        #     scale=1.0,
+        #     mask=attn_mask,
+        # )
+
+        all_attn_output = []
+        for batch in range(Xq_BxNxTxH.shape[0]):
+            attn_output = mx.fast.scaled_dot_product_attention(
+                Xq_BxNxTxH[batch:batch+1],
+                attn_k[batch:batch+1],
+                attn_v[batch:batch+1],
+                scale=1.0,
+                mask=attn_mask[batch:batch+1] if attn_mask is not None else None,
+            )
+            all_attn_output.append(attn_output)
+        attn_output = mx.concat(all_attn_output, axis=0)
 
         attn_output = mx.transpose(attn_output, (0, 2, 1, 3))  # (B, T, N, H)
         output = self.o_proj(attn_output)

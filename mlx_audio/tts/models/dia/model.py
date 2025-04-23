@@ -92,7 +92,7 @@ class Dia:
                 f"Error loading checkpoint from {checkpoint_path}"
             ) from e
 
-        dia.dac_model = DAC.from_pretrained("mlx-community/descript-audio-codec-24khz")
+        dia.dac_model = DAC.from_pretrained("mlx-community/descript-audio-codec-44khz")
 
         return dia
 
@@ -209,7 +209,7 @@ class Dia:
         text: str,
         max_tokens: int | None = None,
         cfg_scale: float = 3.0,
-        temperature: float = 0.0,
+        temperature: float = 1.3,
         top_p: float = 0.95,
         use_cfg_filter: bool = True,
         cfg_filter_top_k: int = 35,
