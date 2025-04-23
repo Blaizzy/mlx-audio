@@ -72,6 +72,7 @@ def adjust_speed(audio_array, speed_factor):
 class GenerationResult:
     audio: mx.array
     samples: int
+    sample_rate: int
     segment_idx: int
     token_count: int
     audio_samples: int

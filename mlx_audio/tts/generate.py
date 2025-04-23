@@ -86,7 +86,7 @@ def generate_audio(
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer
-        player = AudioPlayer() if play else None
+        player = AudioPlayer(sample_rate=sample_rate) if play else None
 
         # Load model
         model = load_model(model_path=model_path)
@@ -119,7 +119,7 @@ def generate_audio(
 
             else:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
-                sf.write(file_name, result.audio, 24000)
+                sf.write(file_name, result.audio, result.sample_rate)
 
             if verbose:
 

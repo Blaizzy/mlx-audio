@@ -13,6 +13,7 @@ Key components:
 - DiaConfig: Master configuration combining all components.
 """
 
+import json
 import os
 from typing import Annotated
 
@@ -192,6 +193,14 @@ class DiaConfig(BaseModel, frozen=True):
         config_json = self.model_dump_json(indent=2)
         with open(path, "w") as f:
             f.write(config_json)
+
+    @classmethod
+    def load_dict(cls, config: dict) -> "DiaConfig | None":
+        try:
+            content = json.dumps(config)
+            return cls.model_validate_json(content)
+        except FileNotFoundError:
+            return None
 
     @classmethod
     def load(cls, path: str) -> "DiaConfig | None":

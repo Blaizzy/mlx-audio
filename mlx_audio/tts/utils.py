@@ -93,7 +93,7 @@ def load_model(
     # Determine model_type from config or model_name
     model_type = config.get("model_type", None)
     if model_type is None:
-        model_type = model_name[0] if model_name is not None else None
+        model_type = model_name[0].lower() if model_name is not None else None
 
     quantization = config.get("quantization", None)
 

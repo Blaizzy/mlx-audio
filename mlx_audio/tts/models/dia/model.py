@@ -1,3 +1,6 @@
+import time
+from typing import Optional
+
 import mlx.core as mx
 import numpy as np
 import soundfile as sf
@@ -8,6 +11,7 @@ from tqdm import trange
 
 from mlx_audio.codec.models import DAC
 
+from ..base import GenerationResult
 from .audio import audio_to_codebook, codebook_to_audio
 from .config import DiaConfig
 from .layers import DiaModel, KVCache
@@ -40,8 +44,8 @@ def _sample_next_token(
     return sampled
 
 
-class Dia:
-    def __init__(self, config: DiaConfig):
+class Model:
+    def __init__(self, config: dict):
         """Initializes the Dia model.
 
         Args:
@@ -51,9 +55,9 @@ class Dia:
             RuntimeError: If there is an error loading the DAC model.
         """
         super().__init__()
-        self.config = config
-        self.model = DiaModel(config)
-        self.dac_model = None
+        self.config = DiaConfig.load_dict(config)
+        self.model = DiaModel(self.config)
+        self.dac_model = DAC.from_pretrained("mlx-community/descript-audio-codec-44khz")
 
     @classmethod
     def from_local(cls, config_path: str, checkpoint_path: str) -> "Dia":
@@ -112,6 +116,18 @@ class Dia:
             repo_id=model_name, filename="model.safetensors"
         )
         return cls.from_local(config_path, checkpoint_path)
+
+    def load_weights(self, weights, strict: bool = True):
+        self.model.load_weights(weights, strict=strict)
+
+    def sanitize(self, weights):
+        return weights
+
+    def parameters(self):
+        return self.model.parameters()
+
+    def eval(self):
+        self.model.eval()
 
     def _create_attn_mask(
         self,
@@ -201,6 +217,77 @@ class Dia:
         return src_tokens, src_positions, src_padding_mask, enc_self_attn_mask
 
     def generate(
+        self,
+        text,
+        voice: Optional[str] = None,
+        temperature: float = 1.3,
+        top_p: float = 0.95,
+        split_pattern: str = "\n",
+        max_tokens: int | None = None,
+        verbose: bool = False,
+        **kwargs,
+    ):
+        prompt = text.replace("\\n", "\n").replace("\\t", "\t")
+        prompts = prompt.split(split_pattern)
+
+        all_audio = []
+
+        for prompt in prompts:
+            time_start = time.time()
+
+            audio = self._generate(
+                prompt,
+                max_tokens=max_tokens,
+            )
+            all_audio.append(audio[None, ...])
+
+        time_end = time.time()
+
+        for i in range(len(all_audio)):
+            audio = all_audio[i][0]
+
+            samples = audio.shape[0] if audio is not None else 0
+            assert samples > 0, "No audio generated"
+
+            token_count = audio.shape[0] if audio is not None else 0
+
+            sample_rate = 44100
+            audio_duration_seconds = samples / sample_rate
+
+            elapsed_time = time_end - time_start
+            rtf = audio_duration_seconds / elapsed_time
+
+            duration_mins = int(audio_duration_seconds // 60)
+            duration_secs = int(audio_duration_seconds % 60)
+            duration_ms = int((audio_duration_seconds % 1) * 1000)
+            duration_hours = int(audio_duration_seconds // 3600)
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+            yield GenerationResult(
+                audio=audio,
+                samples=samples,
+                sample_rate=sample_rate,
+                segment_idx=i,
+                token_count=token_count,
+                audio_duration=duration_str,
+                real_time_factor=rtf,
+                prompt={
+                    "tokens": token_count,
+                    "tokens-per-sec": (
+                        round(token_count / elapsed_time, 2) if elapsed_time > 0 else 0
+                    ),
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": (
+                        round(samples / elapsed_time, 2) if elapsed_time > 0 else 0
+                    ),
+                },
+                processing_time_seconds=time_end - time_start,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )
+
+    def _generate(
         self,
         text: str,
         max_tokens: int | None = None,
