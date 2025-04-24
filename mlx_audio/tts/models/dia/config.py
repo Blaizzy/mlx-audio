@@ -41,7 +41,9 @@ class DataConfig:
     audio_eos_value: int = 1024
     audio_pad_value: int = 1025
     audio_bos_value: int = 1026
-    delay_pattern: List[int] = field(default_factory=lambda: [0, 8, 9, 10, 11, 12, 13, 14, 15])
+    delay_pattern: List[int] = field(
+        default_factory=lambda: [0, 8, 9, 10, 11, 12, 13, 14, 15]
+    )
 
     def __post_init__(self):
         # Ensure text_length and audio_length are multiples of 128
@@ -215,13 +217,17 @@ class DiaConfig:
             model_config = ModelConfig(
                 encoder=EncoderConfig(**config["model"]["encoder"]),
                 decoder=DecoderConfig(**config["model"]["decoder"]),
-                **{k: v for k, v in config["model"].items() if k not in ["encoder", "decoder"]}
+                **{
+                    k: v
+                    for k, v in config["model"].items()
+                    if k not in ["encoder", "decoder"]
+                },
             )
             return cls(
                 version=config.get("version", "1.0"),
                 model=model_config,
                 training=TrainingConfig(**config["training"]),
-                data=DataConfig(**config["data"])
+                data=DataConfig(**config["data"]),
             )
         except (KeyError, TypeError):
             return None
