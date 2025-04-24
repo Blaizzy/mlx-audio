@@ -2,14 +2,13 @@ import time
 from typing import Optional
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 import soundfile as sf
 from huggingface_hub import hf_hub_download
 from mlx_lm.sample_utils import make_sampler
 from scipy import signal
 from tqdm import trange
-
-import mlx.nn as nn
 
 from mlx_audio.codec.models import DAC
 

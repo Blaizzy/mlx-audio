@@ -25,7 +25,6 @@ def _str_to_dtype(dtype_str: str):
         raise ValueError(f"Unsupported dtype string: {dtype_str}")
 
 
-
 class DenseGeneral(nn.Module):
     def __init__(
         self,
@@ -393,7 +392,9 @@ class Attention(nn.Module):
         # Apply Attention Mask
         if attn_mask is not None:
             # Add large negative value where mask is False/0
-            attn_scores = mx.where(attn_mask, attn_scores, -1e9) # Using -1e9 for numerical stability
+            attn_scores = mx.where(
+                attn_mask, attn_scores, -1e9
+            )  # Using -1e9 for numerical stability
 
         attn_weights = mx.softmax(attn_scores, axis=-1)
         attn_output = mx.matmul(attn_weights, attn_v)

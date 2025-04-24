@@ -22,6 +22,7 @@ from mlx_vlm.utils import load_config
 MODEL_REMAPPING = {"outetts": "outetts"}
 MAX_FILE_SIZE_GB = 5
 
+
 # Get a list of all available model types from the models directory
 def get_available_models():
     """
@@ -39,6 +40,7 @@ def get_available_models():
                 available_models.append(item.name)
 
     return available_models
+
 
 def get_model_and_args(model_type: str, model_name: List[str]):
     """
@@ -111,8 +113,8 @@ def load_model(
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
     elif isinstance(model_path, Path):
-        index = model_path.parts.index('hub')
-        model_name = model_path.parts[index+1].lower().split("--")[-1].split("-")
+        index = model_path.parts.index("hub")
+        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
@@ -278,10 +280,21 @@ def convert(
 
     # Skip layers that are not divisible by 64
     if quant_predicate is None:
-        quant_predicate = lambda p, m, config: hasattr(m, 'weight') and m.weight.shape[-1] % 64 == 0 and hasattr(m, "to_quantized") and f"{p}.scales" in weights
+        quant_predicate = (
+            lambda p, m, config: hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0
+            and hasattr(m, "to_quantized")
+            and f"{p}.scales" in weights
+        )
     else:
         original_predicate = quant_predicate
-        quant_predicate = lambda p, m, config: original_predicate(p, m, config) and hasattr(m, 'weight') and m.weight.shape[-1] % 64 == 0 and hasattr(m, "to_quantized") and f"{p}.scales" in weights
+        quant_predicate = (
+            lambda p, m, config: original_predicate(p, m, config)
+            and hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0
+            and hasattr(m, "to_quantized")
+            and f"{p}.scales" in weights
+        )
 
     weights = dict(tree_flatten(model.parameters()))
     dtype = getattr(mx, dtype)
