@@ -466,6 +466,7 @@ class Model(nn.Module):
             GenerationResult(
                 audio=audio,
                 samples=samples,
+                sample_rate=sample_rate,
                 segment_idx=0,
                 token_count=token_count,
                 audio_duration=duration_str,

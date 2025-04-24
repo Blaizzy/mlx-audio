@@ -471,6 +471,7 @@ class Model(nn.Module):
                 yield GenerationResult(
                     audio=audio,
                     samples=samples,
+                    sample_rate=sample_rate,
                     segment_idx=i,
                     token_count=token_count,
                     audio_duration=duration_str,
