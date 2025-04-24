@@ -778,7 +778,7 @@ class TestDiaModel(unittest.TestCase):
 
     def test_init(self):
         """Test DiaModel initialization."""
-        from mlx_audio.tts.models.dia.model import Model
+        from mlx_audio.tts.models.dia.dia import Model
 
         # Initialize model
         config = self._default_config
