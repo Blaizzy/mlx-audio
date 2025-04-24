@@ -1,1 +1,1 @@
-from .model import Model
+from .dia import Model

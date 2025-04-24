@@ -44,7 +44,7 @@ def _sample_next_token(
     return sampled
 
 
-class Model:
+class Model(nn.Module):
     def __init__(self, config: dict):
         """Initializes the Dia model.
 
