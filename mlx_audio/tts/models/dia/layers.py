@@ -383,26 +383,25 @@ class Attention(nn.Module):
                     new_kv_cache = (Xk_BxNxSxH, Xv_BxNxSxH)
                     attn_k, attn_v = cache.get_kv_for_attention(Xk_BxNxSxH, Xv_BxNxSxH)
 
-        # mx.fast.scaled_dot_product_attention doesn't handle the batches correctly here (?)
-        # attn_output = mx.fast.scaled_dot_product_attention(
-        #     Xq_BxNxTxH,
-        #     attn_k,
-        #     attn_v,
-        #     scale=1.0,
-        #     mask=attn_mask,
-        # )
 
-        all_attn_output = []
-        for batch in range(Xq_BxNxTxH.shape[0]):
-            attn_output = mx.fast.scaled_dot_product_attention(
-                Xq_BxNxTxH[batch : batch + 1],
-                attn_k[batch : batch + 1],
-                attn_v[batch : batch + 1],
-                scale=1.0,
-                mask=attn_mask[batch : batch + 1] if attn_mask is not None else None,
-            )
-            all_attn_output.append(attn_output)
-        attn_output = mx.concat(all_attn_output, axis=0)
+        B = Xq_BxNxTxH.shape[0]
+
+        # Repeat by batch size for each batch dimension
+        q = mx.tile(Xq_BxNxTxH, (B, 1, 1, 1))
+        k = mx.tile(attn_k, (B, 1, 1, 1))
+        v = mx.tile(attn_v, (B, 1, 1, 1))
+
+
+        if attn_mask is not None:
+            attn_mask = mx.tile(attn_mask, (B, 1, 1, 1))
+
+        attn_output = mx.fast.scaled_dot_product_attention(
+            q,
+            k,
+            v,
+            scale=1.0,
+            mask=attn_mask,
+        )[:B, ...]
 
         attn_output = mx.transpose(attn_output, (0, 2, 1, 3))  # (B, T, N, H)
         output = self.o_proj(attn_output)
