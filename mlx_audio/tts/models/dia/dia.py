@@ -9,6 +9,8 @@ from mlx_lm.sample_utils import make_sampler
 from scipy import signal
 from tqdm import trange
 
+import mlx.nn as nn
+
 from mlx_audio.codec.models import DAC
 
 from ..base import GenerationResult
