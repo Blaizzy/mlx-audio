@@ -87,6 +87,11 @@ def load_model(
     if isinstance(model_path, str):
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
+    elif isinstance(model_path, Path):
+        index = model_path.parts.index('hub')
+        model_name = model_path.parts[index+1].split("--")[-1].split("-")
+    else:
+        raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path, **kwargs)
 
