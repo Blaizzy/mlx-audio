@@ -734,6 +734,67 @@ class TestOuteTTSModel(unittest.TestCase):
         input_ids = mx.random.randint(0, config.vocab_size, (2, 9))
         logits = model(input_ids)
         self.assertEqual(logits.shape, (2, 9, config.vocab_size))
+        
+class TestDiaModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "version": "0.1",
+            "model": {
+                "encoder": {
+                    "n_layer": 12,
+                    "n_embd": 1024,
+                    "n_hidden": 4096,
+                    "n_head": 16,
+                    "head_dim": 128
+                },
+                "decoder": {
+                    "n_layer": 18,
+                    "n_embd": 2048,
+                    "n_hidden": 8192,
+                    "gqa_query_heads": 16,
+                    "cross_query_heads": 16,
+                    "kv_heads": 4,
+                    "gqa_head_dim": 128,
+                    "cross_head_dim": 128
+                },
+                "src_vocab_size": 256,
+                "tgt_vocab_size": 1028,
+                "dropout": 0.0
+            },
+            "training": {},
+            "data": {
+                "text_length": 1024,
+                "audio_length": 3072,
+                "channels": 9,
+                "text_pad_value": 0,
+                "audio_eos_value": 1024,
+                "audio_pad_value": 1025,
+                "audio_bos_value": 1026,
+                "delay_pattern": [
+                    0,
+                    8,
+                    9,
+                    10,
+                    11,
+                    12,
+                    13,
+                    14,
+                    15
+                ]
+            }
+        }
+
+    def test_init(self):
+        """Test DiaModel initialization."""
+        from mlx_audio.tts.models.dia.model import Model
+
+        # Initialize model
+        config = self._default_config
+        model = Model(config)
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
 
 
 if __name__ == "__main__":
