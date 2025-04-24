@@ -383,25 +383,20 @@ class Attention(nn.Module):
                     new_kv_cache = (Xk_BxNxSxH, Xv_BxNxSxH)
                     attn_k, attn_v = cache.get_kv_for_attention(Xk_BxNxSxH, Xv_BxNxSxH)
 
+        # Attention Calculation
+        attn_scores = mx.matmul(Xq_BxNxTxH, attn_k.swapaxes(2, 3))
 
-        B = Xq_BxNxTxH.shape[0]
+        # Apply Scaling
+        scale_factor = 1.0
+        attn_scores = attn_scores * scale_factor
 
-        # Repeat by batch size for each batch dimension
-        q = mx.tile(Xq_BxNxTxH, (B, 1, 1, 1))
-        k = mx.tile(attn_k, (B, 1, 1, 1))
-        v = mx.tile(attn_v, (B, 1, 1, 1))
-
-
+        # Apply Attention Mask
         if attn_mask is not None:
-            attn_mask = mx.tile(attn_mask, (B, 1, 1, 1))
+            # Add large negative value where mask is False/0
+            attn_scores = mx.where(attn_mask, attn_scores, -1e9) # Using -1e9 for numerical stability
 
-        attn_output = mx.fast.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            scale=1.0,
-            mask=attn_mask,
-        )[:B, ...]
+        attn_weights = mx.softmax(attn_scores, axis=-1)
+        attn_output = mx.matmul(attn_weights, attn_v)
 
         attn_output = mx.transpose(attn_output, (0, 2, 1, 3))  # (B, T, N, H)
         output = self.o_proj(attn_output)
