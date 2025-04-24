@@ -1,7 +1,7 @@
 """Configuration management module for the Dia model.
 
 This module provides comprehensive configuration management for the Dia model,
-utilizing Pydantic for validation. It defines configurations for data processing,
+utilizing dataclasses for validation. It defines configurations for data processing,
 model architecture (encoder and decoder), and training settings.
 
 Key components:
@@ -15,12 +15,12 @@ Key components:
 
 import json
 import os
-from typing import Annotated
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 
-from pydantic import BaseModel, BeforeValidator, Field
 
-
-class DataConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class DataConfig:
     """Configuration for data loading and preprocessing.
 
     Attributes:
@@ -34,20 +34,19 @@ class DataConfig(BaseModel, frozen=True):
         delay_pattern: List of delay values for each audio channel.
     """
 
-    text_length: Annotated[int, BeforeValidator(lambda x: (x + 127) // 128 * 128)] = (
-        Field(gt=0, multiple_of=128)
-    )
-    audio_length: Annotated[int, BeforeValidator(lambda x: (x + 127) // 128 * 128)] = (
-        Field(gt=0, multiple_of=128)
-    )
-    channels: int = Field(default=9, gt=0, multiple_of=1)
-    text_pad_value: int = Field(default=0)
-    audio_eos_value: int = Field(default=1024)
-    audio_pad_value: int = Field(default=1025)
-    audio_bos_value: int = Field(default=1026)
-    delay_pattern: list[Annotated[int, Field(ge=0)]] = Field(
-        default_factory=lambda: [0, 8, 9, 10, 11, 12, 13, 14, 15]
-    )
+    text_length: int
+    audio_length: int
+    channels: int = 9
+    text_pad_value: int = 0
+    audio_eos_value: int = 1024
+    audio_pad_value: int = 1025
+    audio_bos_value: int = 1026
+    delay_pattern: List[int] = field(default_factory=lambda: [0, 8, 9, 10, 11, 12, 13, 14, 15])
+
+    def __post_init__(self):
+        # Ensure text_length and audio_length are multiples of 128
+        object.__setattr__(self, "text_length", (self.text_length + 127) // 128 * 128)
+        object.__setattr__(self, "audio_length", (self.audio_length + 127) // 128 * 128)
 
     def __hash__(self) -> int:
         """Generate a hash based on all fields of the config."""
@@ -65,7 +64,8 @@ class DataConfig(BaseModel, frozen=True):
         )
 
 
-class EncoderConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class EncoderConfig:
     """Configuration for the encoder component of the Dia model.
 
     Attributes:
@@ -78,16 +78,17 @@ class EncoderConfig(BaseModel, frozen=True):
         use_pre_norm: Whether to use pre-normalization (LayerNorm before attention/MLP).
     """
 
-    n_layer: int = Field(gt=0)
-    n_embd: int = Field(gt=0)
-    n_hidden: int = Field(gt=0)
-    n_head: int = Field(gt=0)
-    head_dim: int = Field(gt=0)
-    mlp_activations: list[str] = Field(default=["silu", "linear"])
-    use_pre_norm: bool = Field(default=False)
+    n_layer: int
+    n_embd: int
+    n_hidden: int
+    n_head: int
+    head_dim: int
+    mlp_activations: List[str] = field(default_factory=lambda: ["silu", "linear"])
+    use_pre_norm: bool = False
 
 
-class DecoderConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class DecoderConfig:
     """Configuration for the decoder component of the Dia model.
 
     Attributes:
@@ -103,19 +104,20 @@ class DecoderConfig(BaseModel, frozen=True):
         use_pre_norm: Whether to use pre-normalization.
     """
 
-    n_layer: int = Field(gt=0)
-    n_embd: int = Field(gt=0)
-    n_hidden: int = Field(gt=0)
-    gqa_query_heads: int = Field(gt=0)
-    kv_heads: int = Field(gt=0)
-    gqa_head_dim: int = Field(gt=0)
-    cross_query_heads: int = Field(gt=0)
-    cross_head_dim: int = Field(gt=0)
-    mlp_activations: list[str] = Field(default=["silu", "linear"])
-    use_pre_norm: bool = Field(default=False)
+    n_layer: int
+    n_embd: int
+    n_hidden: int
+    gqa_query_heads: int
+    kv_heads: int
+    gqa_head_dim: int
+    cross_query_heads: int
+    cross_head_dim: int
+    mlp_activations: List[str] = field(default_factory=lambda: ["silu", "linear"])
+    use_pre_norm: bool = False
 
 
-class ModelConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class ModelConfig:
     """Main configuration container for the Dia model architecture.
 
     Attributes:
@@ -132,20 +134,17 @@ class ModelConfig(BaseModel, frozen=True):
 
     encoder: EncoderConfig
     decoder: DecoderConfig
-    src_vocab_size: int = Field(default=128, gt=0)
-    tgt_vocab_size: int = Field(default=1028, gt=0)
-    dropout: float = Field(default=0.0, ge=0.0, lt=1.0)
-    normalization_layer_epsilon: float = Field(default=1.0e-5, ge=0.0)
-    weight_dtype: str = Field(default="float32", description="Weight precision")
-    rope_min_timescale: int = Field(
-        default=1, description="Timescale For global Attention"
-    )
-    rope_max_timescale: int = Field(
-        default=10_000, description="Timescale For global Attention"
-    )
+    src_vocab_size: int = 128
+    tgt_vocab_size: int = 1028
+    dropout: float = 0.0
+    normalization_layer_epsilon: float = 1.0e-5
+    weight_dtype: str = "float32"
+    rope_min_timescale: int = 1
+    rope_max_timescale: int = 10_000
 
 
-class TrainingConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class TrainingConfig:
     """Training process configuration and hyperparameters.
 
     Note: This configuration currently only includes precision settings.
@@ -157,11 +156,12 @@ class TrainingConfig(BaseModel, frozen=True):
         logits_dot_in_fp32: Whether to compute the final logits dot product in fp32 for stability.
     """
 
-    dtype: str = Field(default="bfloat16", description="Activation precision")
-    logits_dot_in_fp32: bool = Field(default=False)
+    dtype: str = "bfloat16"
+    logits_dot_in_fp32: bool = False
 
 
-class DiaConfig(BaseModel, frozen=True):
+@dataclass(frozen=True)
+class DiaConfig:
     """Master configuration for the Dia model.
 
     Combines all sub-configurations into a single validated object.
@@ -173,10 +173,10 @@ class DiaConfig(BaseModel, frozen=True):
         data: Data loading and processing configuration.
     """
 
-    version: str = Field(default="1.0")
     model: ModelConfig
     training: TrainingConfig
     data: DataConfig
+    version: str = "1.0"
 
     def save(self, path: str) -> None:
         """Save the current configuration instance to a JSON file.
@@ -190,20 +190,44 @@ class DiaConfig(BaseModel, frozen=True):
             ValueError: If the path is not a file with a .json extension.
         """
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        config_json = self.model_dump_json(indent=2)
+        config_dict = {
+            "version": self.version,
+            "model": {
+                "encoder": vars(self.model.encoder),
+                "decoder": vars(self.model.decoder),
+                "src_vocab_size": self.model.src_vocab_size,
+                "tgt_vocab_size": self.model.tgt_vocab_size,
+                "dropout": self.model.dropout,
+                "normalization_layer_epsilon": self.model.normalization_layer_epsilon,
+                "weight_dtype": self.model.weight_dtype,
+                "rope_min_timescale": self.model.rope_min_timescale,
+                "rope_max_timescale": self.model.rope_max_timescale,
+            },
+            "training": vars(self.training),
+            "data": vars(self.data),
+        }
         with open(path, "w") as f:
-            f.write(config_json)
+            json.dump(config_dict, f, indent=2)
 
     @classmethod
-    def load_dict(cls, config: dict) -> "DiaConfig | None":
+    def load_dict(cls, config: dict) -> Optional["DiaConfig"]:
         try:
-            content = json.dumps(config)
-            return cls.model_validate_json(content)
-        except FileNotFoundError:
+            model_config = ModelConfig(
+                encoder=EncoderConfig(**config["model"]["encoder"]),
+                decoder=DecoderConfig(**config["model"]["decoder"]),
+                **{k: v for k, v in config["model"].items() if k not in ["encoder", "decoder"]}
+            )
+            return cls(
+                version=config.get("version", "1.0"),
+                model=model_config,
+                training=TrainingConfig(**config["training"]),
+                data=DataConfig(**config["data"])
+            )
+        except (KeyError, TypeError):
             return None
 
     @classmethod
-    def load(cls, path: str) -> "DiaConfig | None":
+    def load(cls, path: str) -> Optional["DiaConfig"]:
         """Load and validate a Dia configuration from a JSON file.
 
         Args:
@@ -214,12 +238,11 @@ class DiaConfig(BaseModel, frozen=True):
             otherwise None if the file is not found.
 
         Raises:
-            ValueError: If the path does not point to an existing .json file.
-            pydantic.ValidationError: If the JSON content fails validation against the DiaConfig schema.
+            ValueError: If the JSON content fails validation against the DiaConfig schema.
         """
         try:
             with open(path, "r") as f:
-                content = f.read()
-            return cls.model_validate_json(content)
+                config = json.load(f)
+            return cls.load_dict(config)
         except FileNotFoundError:
             return None
