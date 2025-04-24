@@ -734,7 +734,8 @@ class TestOuteTTSModel(unittest.TestCase):
         input_ids = mx.random.randint(0, config.vocab_size, (2, 9))
         logits = model(input_ids)
         self.assertEqual(logits.shape, (2, 9, config.vocab_size))
-        
+
+
 class TestDiaModel(unittest.TestCase):
     @property
     def _default_config(self):
@@ -746,7 +747,7 @@ class TestDiaModel(unittest.TestCase):
                     "n_embd": 1024,
                     "n_hidden": 4096,
                     "n_head": 16,
-                    "head_dim": 128
+                    "head_dim": 128,
                 },
                 "decoder": {
                     "n_layer": 18,
@@ -756,11 +757,11 @@ class TestDiaModel(unittest.TestCase):
                     "cross_query_heads": 16,
                     "kv_heads": 4,
                     "gqa_head_dim": 128,
-                    "cross_head_dim": 128
+                    "cross_head_dim": 128,
                 },
                 "src_vocab_size": 256,
                 "tgt_vocab_size": 1028,
-                "dropout": 0.0
+                "dropout": 0.0,
             },
             "training": {},
             "data": {
@@ -771,18 +772,8 @@ class TestDiaModel(unittest.TestCase):
                 "audio_eos_value": 1024,
                 "audio_pad_value": 1025,
                 "audio_bos_value": 1026,
-                "delay_pattern": [
-                    0,
-                    8,
-                    9,
-                    10,
-                    11,
-                    12,
-                    13,
-                    14,
-                    15
-                ]
-            }
+                "delay_pattern": [0, 8, 9, 10, 11, 12, 13, 14, 15],
+            },
         }
 
     def test_init(self):
