@@ -25,17 +25,6 @@ def _str_to_dtype(dtype_str: str):
         raise ValueError(f"Unsupported dtype string: {dtype_str}")
 
 
-class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6, dtype: Optional[mx.Dtype] = None):
-        super().__init__()
-        self.eps = eps
-        self.weight = mx.ones((dim,), dtype=dtype)
-        self.dtype = dtype
-
-    def __call__(self, x):
-        x = mx.fast.rms_norm(x, self.weight, eps=self.eps)
-        return x
-
 
 class DenseGeneral(nn.Module):
     def __init__(
@@ -104,10 +93,9 @@ class MlpBlock(nn.Module):
         self.dtype = compute_dtype
 
         if use_pre_norm:
-            self.pre_norm = RMSNorm(
+            self.pre_norm = nn.RMSNorm(
                 embed_dim,
                 eps=config.model.normalization_layer_epsilon,
-                dtype=mx.float32,
             )
 
         self.wi_fused = DenseGeneral(
@@ -433,10 +421,9 @@ class EncoderLayer(nn.Module):
         enc_config = config.model.encoder
         embed_dim = enc_config.n_embd
 
-        self.pre_sa_norm = RMSNorm(
+        self.pre_sa_norm = nn.RMSNorm(
             embed_dim,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
 
         self.self_attention = Attention(
@@ -451,10 +438,9 @@ class EncoderLayer(nn.Module):
             out_embed_dim=embed_dim,
         )
 
-        self.post_sa_norm = RMSNorm(
+        self.post_sa_norm = nn.RMSNorm(
             embed_dim,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
 
         self.mlp = MlpBlock(
@@ -512,10 +498,9 @@ class Encoder(nn.Module):
         )
         self.dropout = nn.Dropout(model_config.dropout)
         self.layers = [EncoderLayer(config=config) for _ in range(enc_config.n_layer)]
-        self.norm = RMSNorm(
+        self.norm = nn.RMSNorm(
             enc_config.n_embd,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
 
     def __call__(
@@ -557,20 +542,17 @@ class DecoderLayer(nn.Module):
         enc_embed_dim = enc_config.n_embd
 
         # Norms
-        self.pre_sa_norm = RMSNorm(
+        self.pre_sa_norm = nn.RMSNorm(
             dec_embed_dim,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
-        self.pre_ca_norm = RMSNorm(
+        self.pre_ca_norm = nn.RMSNorm(
             dec_embed_dim,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
-        self.pre_mlp_norm = RMSNorm(
+        self.pre_mlp_norm = nn.RMSNorm(
             dec_embed_dim,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
 
         # Self-Attention (GQA) with Causal Masking
@@ -679,10 +661,9 @@ class Decoder(nn.Module):
         ]
         self.dropout = nn.Dropout(model_config.dropout)
         self.layers = [DecoderLayer(config=config) for _ in range(self.num_layers)]
-        self.norm = RMSNorm(
+        self.norm = nn.RMSNorm(
             dec_config.n_embd,
             eps=model_config.normalization_layer_epsilon,
-            dtype=mx.float32,
         )
 
         # Final Logits Projection using DenseGeneral
