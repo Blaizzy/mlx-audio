@@ -10,7 +10,7 @@ from torch.amp import autocast
 from einx import get_at
 from einops import rearrange, reduce, pack, unpack
 
-from sparktts.modules.fsq.finite_scalar_quantization import FSQ
+from .finite_scalar_quantization import FSQ
 
 
 def exists(val):

@@ -8,18 +8,21 @@ from pathlib import Path
 from dataclasses import dataclass
 # from transformers import AutoTokenizer
 
-from sparktts.models.audio_tokenizer import BiCodecTokenizer
-from sparktts.utils.token_parser import LEVELS_MAP, GENDER_MAP, TASK_TOKEN_MAP
+from .audio_tokenizer import BiCodecTokenizer
+from .utils.token_parser import LEVELS_MAP, GENDER_MAP, TASK_TOKEN_MAP
 
+import torch
 # from mlx_lm.models.qwen2 import Model as Qwen2Model
-from mlx_lm.utils import load_model
+from mlx_lm.utils import load
+from mlx_lm.generate import stream_generate
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_audio.tts.utils import get_model_path
 from mlx_audio.tts.models.base import GenerationResult
 
 @dataclass
 class ModelConfig:
     model_repo: str = "SparkAudio/Spark-TTS-0.5B"
-    sample_rate: int = 24000
+    sample_rate: int = 16000
 
 
 class Model(nn.Module):
@@ -36,10 +39,13 @@ class Model(nn.Module):
         """
         self.configs = config
         self.model_dir = get_model_path(config.model_repo)
+        self.device = "cpu"
 
         # self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir / "LLM")
-        self.model, self.tokenizer = load_model(self.model_dir / "LLM") #Qwen2Model()
+        self.model, self.tokenizer = load(self.model_dir / "LLM") #Qwen2Model()
+        print("Model loaded successfully")
         self.audio_tokenizer = BiCodecTokenizer(self.model_dir)
+
 
     def process_prompt(
         self,
@@ -184,7 +190,8 @@ class Model(nn.Module):
             prompt, global_token_ids = self.process_prompt(
                 text, prompt_speech_path, prompt_text
             )
-        inputs = self.tokenizer([prompt], return_tensors="pt")
+
+        inputs = self.tokenizer._tokenizer([prompt], return_tensors="pt")
 
         input_ids = mx.array(inputs.input_ids)
 
@@ -203,7 +210,7 @@ class Model(nn.Module):
         for i, response in enumerate(
             tqdm(
                 stream_generate(
-                    self,
+                    self.model,
                     tokenizer=self.tokenizer,
                     prompt=input_ids.squeeze(0),
                     max_tokens=max_tokens,
@@ -222,14 +229,16 @@ class Model(nn.Module):
             if next_token == 128258:
                 break
 
+        time_end = time.time()
         # Trim the output tokens to remove the input tokens
-        generated_ids = [
-            output_ids[len(input_ids) :]
-            for input_ids, output_ids in zip(inputs.input_ids, generated_ids)
-        ]
+        generated_ids = mx.array([
+            output[len(input) :]
+            for input, output in zip(inputs.input_ids, input_ids)
+        ]).tolist()
+
 
         # Decode the generated tokens into text
-        predicts = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        predicts = self.tokenizer._tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
 
         # Extract semantic token IDs from the generated text
         pred_semantic_ids = (
@@ -254,27 +263,7 @@ class Model(nn.Module):
 
         yield GenerationResult(
             audio=audio,
-            samples=samples,
-            segment_idx=i,
-            token_count=token_count,
-            audio_duration=duration_str,
-            real_time_factor=rtf,
-            prompt={
-                "tokens": token_count,
-                "tokens-per-sec": (
-                    round(token_count / audio_duration_seconds, 2)
-                    if audio_duration_seconds > 0
-                    else 0
-                ),
-            },
-            audio_samples={
-                "samples": samples,
-                "samples-per-sec": (
-                    round(samples / audio_duration_seconds, 2)
-                    if audio_duration_seconds > 0
-                    else 0
-                ),
-            },
+            sample_rate=self.configs.sample_rate,
             processing_time_seconds=time_end - time_start,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
         )

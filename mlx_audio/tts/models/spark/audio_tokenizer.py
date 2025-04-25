@@ -9,7 +9,7 @@ from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
 
 from .utils.file import load_config
 from .utils.audio import load_audio
-from .models.bicodec import BiCodec
+from .bicodec import BiCodec
 
 
 class BiCodecTokenizer:

@@ -19,7 +19,7 @@ from mlx_lm.utils import (
 )
 from mlx_vlm.utils import load_config
 
-MODEL_REMAPPING = {"outetts": "outetts"}
+MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark"}
 MAX_FILE_SIZE_GB = 5
 
 
