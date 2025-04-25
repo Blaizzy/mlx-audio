@@ -8,7 +8,6 @@ mlx>=0.22.0
 mlx-vlm>=0.1.21
 mlx-lm>=0.22.2
 numpy>=1.26.4
-torch>=2.5.1
 transformers>=4.49.0
 sentencepiece>=0.2.0
 huggingface_hub>=0.27.0
