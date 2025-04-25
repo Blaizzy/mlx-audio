@@ -16,11 +16,11 @@
 
 from typing import List
 
-import torch
-import torch.nn as nn
+import mlx.core as mx
+import mlx.nn as nn
 
-from ..blocks.sampler import SamplingBlock
-from ..blocks.vocos import VocosBackbone
+from mlx_audio.codec.models.vocos.vocos import VocosBackbone
+from mlx_audio.tts.models.spark.modules.blocks.sampler import SamplingBlock
 
 
 class Encoder(nn.Module):
@@ -48,22 +48,22 @@ class Encoder(nn.Module):
             dim=vocos_dim,
             intermediate_dim=vocos_intermediate_dim,
             num_layers=vocos_num_layers,
-            condition_dim=None,
         )
 
         modules = [
             nn.Sequential(
+                lambda x: x.transpose(0, 2, 1),
                 SamplingBlock(
                     dim=vocos_dim,
                     groups=vocos_dim,
                     downsample_scale=ratio,
                 ),
+                lambda x: x.transpose(0, 2, 1),
                 VocosBackbone(
                     input_channels=vocos_dim,
                     dim=vocos_dim,
                     intermediate_dim=vocos_intermediate_dim,
                     num_layers=2,
-                    condition_dim=None,
                 ),
             )
             for ratio in sample_ratios
@@ -73,23 +73,25 @@ class Encoder(nn.Module):
 
         self.project = nn.Linear(vocos_dim, out_channels)
 
-    def forward(self, x: torch.Tensor, *args):
+    def __call__(self, x: mx.array, *args):
         """
         Args:
-            x (torch.Tensor): (batch_size, input_channels, length)
+            x (mx.array): (batch_size, input_channels, length)
 
         Returns:
-            x (torch.Tensor): (batch_size, encode_channels, length)
+            x (mx.array): (batch_size, encode_channels, length)
         """
-        x = self.encoder(x)
+        x = self.encoder(x.transpose(0, 2, 1))
         x = self.downsample(x)
         x = self.project(x)
-        return x.transpose(1, 2)
+        return x.transpose(0, 2, 1)
 
 
 # test
 if __name__ == "__main__":
-    test_input = torch.randn(8, 1024, 50)  # Batch size = 8, 1024 channels, length = 50
+    test_input = mx.random.normal(
+        (8, 1024, 50), dtype=mx.float32
+    )  # Batch size = 8, 1024 channels, length = 50
     encoder = Encoder(
         input_channels=1024,
         vocos_dim=384,
@@ -101,5 +103,7 @@ if __name__ == "__main__":
 
     output = encoder(test_input)
     print(output.shape)  # torch.Size([8, 256, 12])
-    if output.shape == torch.Size([8, 256, 12]):
+    if output.shape == (8, 256, 12):
         print("test successful")
+    else:
+        print("test failed")
