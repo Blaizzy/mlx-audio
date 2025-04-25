@@ -23,6 +23,25 @@ MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark"}
 MAX_FILE_SIZE_GB = 5
 
 
+# Get a list of all available model types from the models directory
+def get_available_models():
+    """
+    Get a list of all available TTS model types by scanning the models directory.
+
+    Returns:
+        List[str]: A list of available model type names
+    """
+    models_dir = Path(__file__).parent / "models"
+    available_models = []
+
+    if models_dir.exists() and models_dir.is_dir():
+        for item in models_dir.iterdir():
+            if item.is_dir() and not item.name.startswith("__"):
+                available_models.append(item.name)
+
+    return available_models
+
+
 def get_model_and_args(model_type: str, model_name: List[str]):
     """
     Retrieve the model architecture module based on the model type and name.
@@ -48,8 +67,14 @@ def get_model_and_args(model_type: str, model_name: List[str]):
     model_type = MODEL_REMAPPING.get(model_type, model_type)
 
     # Stage 2: Check for partial matches in segments of the model name
+    models = get_available_models()
     if model_name is not None:
         for part in model_name:
+            # First check if the part matches an available model directory name
+            if part in models:
+                model_type = part
+
+            # Then check if the part is in our custom remapping dictionary
             if part in MODEL_REMAPPING:
                 model_type = MODEL_REMAPPING[part]
                 break
@@ -87,13 +112,18 @@ def load_model(
     if isinstance(model_path, str):
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
+    elif isinstance(model_path, Path):
+        index = model_path.parts.index("hub")
+        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+    else:
+        raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path, **kwargs)
 
     # Determine model_type from config or model_name
     model_type = config.get("model_type", None)
     if model_type is None:
-        model_type = model_name[0] if model_name is not None else None
+        model_type = model_name[0].lower() if model_name is not None else None
 
     quantization = config.get("quantization", None)
 
@@ -147,6 +177,9 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
             if p in config["quantization"]:
                 return config["quantization"][p]
             if not hasattr(m, "to_quantized"):
+                return False
+            # Skip layers not divisible by 64
+            if hasattr(m, "weight") and m.weight.size % 64 != 0:
                 return False
             # Handle legacy models which may not have everything quantized
             return f"{p}.scales" in weights
@@ -234,6 +267,7 @@ def convert(
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
+    skip_non_divisible: bool = False,
 ):
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
@@ -243,6 +277,24 @@ def convert(
 
     if isinstance(quant_predicate, str):
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
+
+    # Skip layers that are not divisible by 64
+    if quant_predicate is None:
+        quant_predicate = (
+            lambda p, m, config: hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0
+            and hasattr(m, "to_quantized")
+            and f"{p}.scales" in weights
+        )
+    else:
+        original_predicate = quant_predicate
+        quant_predicate = (
+            lambda p, m, config: original_predicate(p, m, config)
+            and hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0
+            and hasattr(m, "to_quantized")
+            and f"{p}.scales" in weights
+        )
 
     weights = dict(tree_flatten(model.parameters()))
     dtype = getattr(mx, dtype)
