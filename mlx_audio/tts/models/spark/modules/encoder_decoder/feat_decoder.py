@@ -14,13 +14,14 @@
 # limitations under the License.
 
 
+from collections import OrderedDict
 from typing import List
 
-import torch
-import torch.nn as nn
+import mlx.core as mx
+import mlx.nn as nn
 
-from ..blocks.sampler import SamplingBlock
-from ..blocks.vocos import VocosBackbone
+from mlx_audio.codec.models.vocos.vocos import VocosBackbone
+from mlx_audio.tts.models.spark.modules.blocks.sampler import SamplingBlock
 
 
 class Decoder(nn.Module):
@@ -47,17 +48,18 @@ class Decoder(nn.Module):
         self.linear_pre = nn.Linear(input_channels, vocos_dim)
         modules = [
             nn.Sequential(
+                lambda x: x.transpose(0, 2, 1),
                 SamplingBlock(
                     dim=vocos_dim,
                     groups=vocos_dim,
                     upsample_scale=ratio,
                 ),
+                lambda x: x.transpose(0, 2, 1),
                 VocosBackbone(
                     input_channels=vocos_dim,
                     dim=vocos_dim,
                     intermediate_dim=vocos_intermediate_dim,
                     num_layers=2,
-                    condition_dim=None,
                 ),
             )
             for ratio in sample_ratios
@@ -70,34 +72,36 @@ class Decoder(nn.Module):
             dim=vocos_dim,
             intermediate_dim=vocos_intermediate_dim,
             num_layers=vocos_num_layers,
-            condition_dim=condition_dim,
+            adanorm_num_embeddings=condition_dim,
         )
         self.linear = nn.Linear(vocos_dim, out_channels)
         self.use_tanh_at_final = use_tanh_at_final
 
-    def forward(self, x: torch.Tensor, c: torch.Tensor = None):
+    def __call__(self, x: mx.array, c: mx.array = None):
         """encoder forward.
 
         Args:
-            x (torch.Tensor): (batch_size, input_channels, length)
+            x (mx.array): (batch_size, input_channels, length)
 
         Returns:
-            x (torch.Tensor): (batch_size, encode_channels, length)
+            x (mx.array): (batch_size, encode_channels, length)
         """
-        x = self.linear_pre(x.transpose(1, 2))
-        x = self.downsample(x).transpose(1, 2)
-        x = self.vocos_backbone(x, condition=c)
-        x = self.linear(x).transpose(1, 2)
+        x = self.linear_pre(x.transpose(0, 2, 1))
+        x = self.downsample(x).transpose(0, 2, 1)
+        x = self.vocos_backbone(x.transpose(0, 2, 1), bandwidth_id=c)
+        x = self.linear(x).transpose(0, 2, 1)
         if self.use_tanh_at_final:
-            x = torch.tanh(x)
+            x = mx.tanh(x)
 
         return x
 
 
 # test
 if __name__ == "__main__":
-    test_input = torch.randn(8, 1024, 50)  # Batch size = 8, 1024 channels, length = 50
-    condition = torch.randn(8, 256)
+    test_input = mx.random.normal(
+        (8, 1024, 50), dtype=mx.float32
+    )  # Batch size = 8, 1024 channels, length = 50
+    condition = mx.random.randint(0, 100, (8, 200))  # 8, 256
     decoder = Decoder(
         input_channels=1024,
         vocos_dim=384,
@@ -109,7 +113,7 @@ if __name__ == "__main__":
     )
     output = decoder(test_input, condition)
     print(output.shape)  # torch.Size([8, 256, 200])
-    if output.shape == torch.Size([8, 256, 200]):
+    if output.shape == (8, 256, 200):
         print("Decoder test passed")
     else:
         print("Decoder test failed")
