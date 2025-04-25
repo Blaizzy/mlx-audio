@@ -261,9 +261,20 @@ class Model(nn.Module):
             pred_semantic_ids.to(self.device),
         )
 
+        # Calculate audio samples and duration
+        audio_samples = len(audio)
+        audio_duration = audio_samples / self.configs.sample_rate
+
         yield GenerationResult(
             audio=audio,
             sample_rate=self.configs.sample_rate,
+            samples=audio_samples,
+            segment_idx=0,  # Default segment index
+            token_count=len(pred_semantic_ids.squeeze()),
+            audio_samples=audio_samples,
+            audio_duration=audio_duration,
+            real_time_factor=audio_duration / (time_end - time_start) if (time_end - time_start) > 0 else 0,
+            prompt=inputs,
             processing_time_seconds=time_end - time_start,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
         )
