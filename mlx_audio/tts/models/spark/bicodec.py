@@ -1,18 +1,17 @@
-
+from pathlib import Path
+from typing import Any, Dict
 
 import torch
 import torch.nn as nn
-from pathlib import Path
-from typing import Dict, Any
 from omegaconf import DictConfig
 from safetensors.torch import load_file
 
-from .utils.file import load_config
-from .modules.speaker.speaker_encoder import SpeakerEncoder
-from .modules.encoder_decoder.feat_encoder import Encoder
 from .modules.encoder_decoder.feat_decoder import Decoder
+from .modules.encoder_decoder.feat_encoder import Encoder
 from .modules.encoder_decoder.wave_generator import WaveGenerator
 from .modules.factorized_vector_quantize import FactorizedVectorQuantize
+from .modules.speaker.speaker_encoder import SpeakerEncoder
+from .utils.file import load_config
 
 
 class BiCodec(nn.Module):
@@ -30,7 +29,7 @@ class BiCodec(nn.Module):
         speaker_encoder: nn.Module,
         prenet: nn.Module,
         postnet: nn.Module,
-        **kwargs
+        **kwargs,
     ) -> None:
         """
         Initializes the BiCodec model with the required components.
@@ -64,8 +63,8 @@ class BiCodec(nn.Module):
         Returns:
             BiCodec: The initialized BiCodec model.
         """
-        ckpt_path = f'{model_dir}/model.safetensors'
-        config = load_config(f'{model_dir}/config.yaml')['audio_tokenizer']
+        ckpt_path = f"{model_dir}/model.safetensors"
+        config = load_config(f"{model_dir}/config.yaml")["audio_tokenizer"]
         mel_params = config["mel_params"]
         encoder = Encoder(**config["encoder"])
         quantizer = FactorizedVectorQuantize(**config["quantizer"])
@@ -199,6 +198,7 @@ class BiCodec(nn.Module):
 
     def remove_weight_norm(self):
         """Removes weight normalization from all layers."""
+
         def _remove_weight_norm(m):
             try:
                 torch.nn.utils.remove_weight_norm(m)

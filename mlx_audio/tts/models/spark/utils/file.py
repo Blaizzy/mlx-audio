@@ -20,15 +20,14 @@ Description:
 """
 
 
-import os
-import json
-import json
 import csv
-
-from tqdm import tqdm
-from typing import List, Dict, Any, Set, Union
+import json
+import os
 from pathlib import Path
-from omegaconf import OmegaConf, DictConfig
+from typing import Any, Dict, List, Set, Union
+
+from omegaconf import DictConfig, OmegaConf
+from tqdm import tqdm
 
 
 def resolve_symbolic_link(symbolic_link_path: Path) -> Path:
@@ -91,16 +90,16 @@ def read_jsonl(file_path: Path) -> List[dict]:
     # Return the list of metadata
     return metadata
 
+
 def read_json_as_jsonl(file_path: Path) -> List[dict]:
     metadata = []
-    with open(file_path, 'r', encoding='utf-8') as infile:
+    with open(file_path, "r", encoding="utf-8") as infile:
         data = json.load(infile)
     for k in sorted(data.keys()):
-        meta = {'index': k}
+        meta = {"index": k}
         meta.update(data[k])
         metadata.append(meta)
     return metadata
-
 
 
 def decode_unicode_strings(meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -130,7 +129,6 @@ def load_config(config_path: Path) -> DictConfig:
     return config
 
 
-
 def jsonl_to_csv(jsonl_file_path: str, csv_file_path: str) -> None:
     """
     Converts a JSONL file to a CSV file.
@@ -143,7 +141,7 @@ def jsonl_to_csv(jsonl_file_path: str, csv_file_path: str) -> None:
     data_rows = []
 
     # Read the JSONL file once to extract keys and collect data
-    with open(jsonl_file_path, 'r') as file:
+    with open(jsonl_file_path, "r") as file:
         for line in file:
             data = json.loads(line.strip())
             data_rows.append(data)
@@ -153,7 +151,7 @@ def jsonl_to_csv(jsonl_file_path: str, csv_file_path: str) -> None:
     sorted_keys = sorted(all_keys)
 
     # Write the data to a CSV file
-    with open(csv_file_path, 'w', newline='') as csvfile:
+    with open(csv_file_path, "w", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=sorted_keys)
 
         # Write the header row
@@ -184,7 +182,9 @@ def save_metadata(data, filename, headers=None):
         file.write("|".join(headers) + "\n")
         for entry in data:
             # Retrieve values in the order of headers, replacing any '|' characters with a space to prevent formatting errors
-            formatted_values = [str(entry.get(key, "")).replace("|", " ") for key in headers]
+            formatted_values = [
+                str(entry.get(key, "")).replace("|", " ") for key in headers
+            ]
             # Write the formatted values to the file
             file.write("|".join(formatted_values) + "\n")
 

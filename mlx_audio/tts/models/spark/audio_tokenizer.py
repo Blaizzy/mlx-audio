@@ -1,15 +1,13 @@
-
-
-import torch
-import numpy as np
-
 from pathlib import Path
 from typing import Any, Dict, Tuple
+
+import numpy as np
+import torch
 from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
 
-from .utils.file import load_config
-from .utils.audio import load_audio
 from .bicodec import BiCodec
+from .utils.audio import load_audio
+from .utils.file import load_config
 
 
 class BiCodecTokenizer:
@@ -130,4 +128,3 @@ class BiCodecTokenizer:
         global_tokens = global_tokens.unsqueeze(1)
         wav_rec = self.model.detokenize(semantic_tokens, global_tokens)
         return wav_rec.detach().squeeze().cpu().numpy()
-

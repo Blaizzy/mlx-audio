@@ -14,13 +14,11 @@
 # limitations under the License.
 
 
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-
-from typing import Tuple
-from torch.nn.utils import weight_norm, remove_weight_norm
-
-from typing import Optional
+from torch.nn.utils import remove_weight_norm, weight_norm
 
 
 class ConvNeXtBlock(nn.Module):

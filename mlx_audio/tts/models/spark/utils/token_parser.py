@@ -19,13 +19,7 @@ LEVELS_MAP = {
     "very_high": 4,
 }
 
-LEVELS_MAP_UI = {
-    1: 'very_low',
-    2: 'low',
-    3: 'moderate',
-    4: 'high',
-    5: 'very_high'
-}
+LEVELS_MAP_UI = {1: "very_low", 2: "low", 3: "moderate", 4: "high", 5: "very_high"}
 
 GENDER_MAP = {
     "female": 0,

@@ -4,17 +4,17 @@ Code adapted from Jax version in Appendix A.1
 """
 
 from __future__ import annotations
-from functools import wraps, partial
+
 from contextlib import nullcontext
+from functools import partial, wraps
 from typing import List, Tuple
 
 import torch
 import torch.nn as nn
-from torch.nn import Module
+from einops import pack, rearrange, unpack
 from torch import Tensor, int32
 from torch.amp import autocast
-
-from einops import rearrange, pack, unpack
+from torch.nn import Module
 
 # helper functions
 

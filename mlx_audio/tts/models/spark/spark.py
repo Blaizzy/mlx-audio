@@ -1,23 +1,27 @@
 import re
 import time
-from tqdm import tqdm
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Tuple
+
 import mlx.core as mx
 import mlx.nn as nn
-from typing import Tuple
-from pathlib import Path
-from dataclasses import dataclass
-# from transformers import AutoTokenizer
-
-from .audio_tokenizer import BiCodecTokenizer
-from .utils.token_parser import LEVELS_MAP, GENDER_MAP, TASK_TOKEN_MAP
-
 import torch
-# from mlx_lm.models.qwen2 import Model as Qwen2Model
-from mlx_lm.utils import load
 from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
-from mlx_audio.tts.utils import get_model_path
+
+# from mlx_lm.models.qwen2 import Model as Qwen2Model
+from mlx_lm.utils import load
+from tqdm import tqdm
+
 from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.tts.utils import get_model_path
+
+from .audio_tokenizer import BiCodecTokenizer
+from .utils.token_parser import GENDER_MAP, LEVELS_MAP, TASK_TOKEN_MAP
+
+# from transformers import AutoTokenizer
+
 
 @dataclass
 class ModelConfig:
@@ -42,10 +46,9 @@ class Model(nn.Module):
         self.device = "cpu"
 
         # self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir / "LLM")
-        self.model, self.tokenizer = load(self.model_dir / "LLM") #Qwen2Model()
+        self.model, self.tokenizer = load(self.model_dir / "LLM")  # Qwen2Model()
         print("Model loaded successfully")
         self.audio_tokenizer = BiCodecTokenizer(self.model_dir)
-
 
     def process_prompt(
         self,
@@ -231,25 +234,35 @@ class Model(nn.Module):
 
         time_end = time.time()
         # Trim the output tokens to remove the input tokens
-        generated_ids = mx.array([
-            output[len(input) :]
-            for input, output in zip(inputs.input_ids, input_ids)
-        ]).tolist()
-
+        generated_ids = mx.array(
+            [output[len(input) :] for input, output in zip(inputs.input_ids, input_ids)]
+        ).tolist()
 
         # Decode the generated tokens into text
-        predicts = self.tokenizer._tokenizer.batch_decode(generated_ids, skip_special_tokens=True)[0]
+        predicts = self.tokenizer._tokenizer.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )[0]
 
         # Extract semantic token IDs from the generated text
         pred_semantic_ids = (
-            torch.tensor([int(token) for token in re.findall(r"bicodec_semantic_(\d+)", predicts)])
+            torch.tensor(
+                [
+                    int(token)
+                    for token in re.findall(r"bicodec_semantic_(\d+)", predicts)
+                ]
+            )
             .long()
             .unsqueeze(0)
         )
 
         if gender is not None:
             global_token_ids = (
-                torch.tensor([int(token) for token in re.findall(r"bicodec_global_(\d+)", predicts)])
+                torch.tensor(
+                    [
+                        int(token)
+                        for token in re.findall(r"bicodec_global_(\d+)", predicts)
+                    ]
+                )
                 .long()
                 .unsqueeze(0)
                 .unsqueeze(0)
@@ -273,7 +286,11 @@ class Model(nn.Module):
             token_count=len(pred_semantic_ids.squeeze()),
             audio_samples=audio_samples,
             audio_duration=audio_duration,
-            real_time_factor=audio_duration / (time_end - time_start) if (time_end - time_start) > 0 else 0,
+            real_time_factor=(
+                audio_duration / (time_end - time_start)
+                if (time_end - time_start) > 0
+                else 0
+            ),
             prompt=inputs,
             processing_time_seconds=time_end - time_start,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
