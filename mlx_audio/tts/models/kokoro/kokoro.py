@@ -283,7 +283,9 @@ class Model(nn.Module):
             token_count = len(phonemes) if phonemes is not None else 0
 
             # Calculate audio duration in seconds
-            sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+            sample_rate = kwargs.get(
+                "sample_rate", 24000
+            )  # Assuming 24kHz sample rate, adjust if different
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
             # Calculate real-time factor (RTF)
@@ -321,5 +323,5 @@ class Model(nn.Module):
                     ),
                 },
                 processing_time_seconds=segment_time,
-                peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
