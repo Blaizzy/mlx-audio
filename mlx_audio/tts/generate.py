@@ -74,7 +74,7 @@ def generate_audio(
         if ref_audio:
             if not os.path.exists(ref_audio):
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
-            ref_audio = load_audio(ref_audio)
+            ref_audio = load_audio(ref_audio, sample_rate=sample_rate)
             if not ref_text:
                 print("Ref_text not found. Transcribing ref_audio...")
                 # mlx_whisper seems takes long time to import. Import only necessary.

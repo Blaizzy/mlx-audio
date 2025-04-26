@@ -344,8 +344,8 @@ class Model(nn.Module):
 
         return sanitized_weights
 
-    def load_weights(self, weights):
-        self.model.load_weights(weights)
+    def load_weights(self, weights, strict: bool = True):
+        self.model.load_weights(weights, strict=strict)
 
     def generate(
         self,

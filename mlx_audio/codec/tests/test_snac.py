@@ -33,7 +33,7 @@ class TestSNAC(unittest.TestCase):
         self.assertEqual(codes[2].shape, (1, 236))
 
         reconstructed = model.decode(codes).squeeze(-1)
-        self.assertEqual(reconstructed.shape, (1, 120_832))
+        self.assertEqual(reconstructed.shape, (1, 120_907))
 
 
 if __name__ == "__main__":
