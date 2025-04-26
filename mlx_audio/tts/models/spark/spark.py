@@ -46,7 +46,9 @@ class Model(nn.Module):
         self.device = "cpu"
 
         # self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir / "LLM")
-        self.model, self.tokenizer = load(self.model_dir / "LLM")  # Qwen2Model()
+        self.model, self.tokenizer = load(
+            self.model_dir / "LLM"
+        )  # Qwen2Model() # TODO: use this
         print("Model loaded successfully")
         self.audio_tokenizer = BiCodecTokenizer(self.model_dir)
 
@@ -153,6 +155,10 @@ class Model(nn.Module):
         ]
 
         return "".join(control_tts_inputs)
+
+    def load_weights(self, weights, strict=True):
+        pass
+        # self.model.load_weights(weights, strict=strict)
 
     def generate(
         self,
