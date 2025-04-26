@@ -171,21 +171,20 @@ class MHASTP(nn.Module):
             d_s = 1
         self.d_s = d_s
         channel_dims[0], channel_dims[-1] = d_model, d_s
-        heads_att_trans = []
+        self.heads_att_trans = []
         for i in range(self.head_num):
-            att_trans = nn.Sequential()
-            for i in range(layer_num - 1):
-                att_trans.add_module(
-                    "att_" + str(i),
-                    nn.Conv1d(channel_dims[i], channel_dims[i + 1], 1, 1),
+            layers = []
+            for j in range(layer_num - 1):
+                layers.extend(
+                    [
+                        nn.Conv1d(channel_dims[j], channel_dims[j + 1], 1, 1),
+                        nn.Tanh(),
+                    ]
                 )
-                att_trans.add_module("tanh" + str(i), nn.Tanh())
-            att_trans.add_module(
-                "att_" + str(layer_num - 1),
-                nn.Conv1d(channel_dims[layer_num - 1], channel_dims[layer_num], 1, 1),
+            layers.append(
+                nn.Conv1d(channel_dims[layer_num - 1], channel_dims[layer_num], 1, 1)
             )
-            heads_att_trans.append(att_trans)
-        self.heads_att_trans = heads_att_trans
+            self.heads_att_trans.append(nn.Sequential(*layers))
 
     def __call__(self, input):
         """
@@ -202,14 +201,12 @@ class MHASTP(nn.Module):
         chunks = mx.split(input, self.head_num, axis=1)
         # split
         chunks_out = []
-        # for i in range(self.head_num):
-        #     att_score = self.heads_att_trans[i](chunks[i])
         for i, layer in enumerate(self.heads_att_trans):
-            att_score = layer(chunks[i])
+            att_score = layer(chunks[i].transpose(0, 2, 1)).transpose(0, 2, 1)
             alpha = mx.softmax(att_score, axis=-1)
             mean = mx.sum(alpha * chunks[i], axis=2)
             var = mx.sum(alpha * chunks[i] ** 2, axis=2) - mean**2
-            std = mx.sqrt(var.clamp(min=1e-7))
+            std = mx.sqrt(mx.clip(var, 1e-7, None))
             chunks_out.append(mx.concatenate((mean, std), axis=1))
         out = mx.concatenate(chunks_out, axis=1)
         return out
@@ -288,7 +285,7 @@ class MQMHASTP(nn.Module):
 
 
 if __name__ == "__main__":
-    data = mx.random.randn(16, 512, 10, 35)
+    data = mx.random.normal(shape=(16, 512, 10, 35))
     # model = StatisticsPooling()
     model = MQMHASTP(512 * 10)
     model = MHASTP(512 * 10)
