@@ -18,12 +18,9 @@
 from collections import namedtuple
 from functools import wraps
 
-import torch
-import torch.nn.functional as F
+import mlx.core as mx
+import mlx.nn as nn
 from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-from packaging import version
-from torch import einsum, nn
 
 
 def exists(val):
@@ -50,89 +47,22 @@ print_once = once(print)
 
 
 class Attend(nn.Module):
-    def __init__(self, dropout=0.0, causal=False, use_flash=False):
+    def __init__(self, dropout=0.0, causal=False):
         super().__init__()
         self.dropout = dropout
         self.attn_dropout = nn.Dropout(dropout)
-
         self.causal = causal
-        self.register_buffer("mask", None, persistent=False)
+        self.mask = None
 
-        self.use_flash = use_flash
-        assert not (
-            use_flash and version.parse(torch.__version__) < version.parse("2.0.0")
-        ), "in order to use flash attention, you must be using pytorch 2.0 or above"
-
-        # determine efficient attention configs for cuda and cpu
-        self.config = namedtuple(
-            "EfficientAttentionConfig",
-            ["enable_flash", "enable_math", "enable_mem_efficient"],
-        )
-        self.cpu_config = self.config(True, True, True)
-        self.cuda_config = None
-
-        if not torch.cuda.is_available() or not use_flash:
-            return
-
-        device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
-
-        if device_properties.major == 8 and device_properties.minor == 0:
-            print_once(
-                "A100 GPU detected, using flash attention if input tensor is on cuda"
-            )
-            self.cuda_config = self.config(True, False, False)
-        else:
-            print_once(
-                "Non-A100 GPU detected, using math or mem efficient attention if input tensor is on cuda"
-            )
-            self.cuda_config = self.config(False, True, True)
-
-    def get_mask(self, n, device):
+    def get_mask(self, n, device=None):
         if exists(self.mask) and self.mask.shape[-1] >= n:
             return self.mask[:n, :n]
 
-        mask = torch.ones((n, n), device=device, dtype=torch.bool).triu(1)
-        self.register_buffer("mask", mask, persistent=False)
+        mask = mx.triu(mx.ones((n, n), dtype=mx.bool_), 1)
+        self.mask = mask
         return mask
 
-    def flash_attn(self, q, k, v, mask=None):
-        _, heads, q_len, _, k_len, is_cuda = *q.shape, k.shape[-2], q.is_cuda
-
-        # Recommended for multi-query single-key-value attention by Tri Dao
-        # kv shape torch.Size([1, 512, 64]) -> torch.Size([1, 8, 512, 64])
-
-        if k.ndim == 3:
-            k = rearrange(k, "b ... -> b 1 ...").expand_as(q)
-
-        if v.ndim == 3:
-            v = rearrange(v, "b ... -> b 1 ...").expand_as(q)
-
-        # Check if mask exists and expand to compatible shape
-        # The mask is B L, so it would have to be expanded to B H N L
-
-        if exists(mask):
-            mask = rearrange(mask, "b j -> b 1 1 j")
-            mask = mask.expand(-1, heads, q_len, -1)
-
-        # Check if there is a compatible device for flash attention
-
-        config = self.cuda_config if is_cuda else self.cpu_config
-
-        # pytorch 2.0 flash attn: q, k, v, mask, dropout, causal, softmax_scale
-
-        with torch.backends.cuda.sdp_kernel(**config._asdict()):
-            out = F.scaled_dot_product_attention(
-                q,
-                k,
-                v,
-                attn_mask=mask,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=self.causal,
-            )
-
-        return out
-
-    def forward(self, q, k, v, mask=None):
+    def __call__(self, q, k, v, mask=None):
         """
         einstein notation
         b - batch
@@ -140,50 +70,49 @@ class Attend(nn.Module):
         n, i, j - sequence length (base sequence length, source, target)
         d - feature dimension
         """
-
-        n, device = q.shape[-2], q.device
+        n = q.shape[-2]
 
         scale = q.shape[-1] ** -0.5
 
-        if self.use_flash:
-            return self.flash_attn(q, k, v, mask=mask)
-
+        # Handle different dimensions for k and v
         kv_einsum_eq = "b j d" if k.ndim == 3 else "b h j d"
 
         # similarity
+        if k.ndim == 3:
+            k = mx.expand_dims(k, axis=1)
+            k = mx.broadcast_to(k, q.shape)
 
-        sim = einsum(f"b h i d, {kv_einsum_eq} -> b h i j", q, k) * scale
+        if v.ndim == 3:
+            v = mx.expand_dims(v, axis=1)
+            v = mx.broadcast_to(v, q.shape[:-1] + (v.shape[-1],))
+
+        # q: [b h i d], k: [b h j d]
+        sim = mx.matmul(q, mx.transpose(k, (0, 1, 3, 2))) * scale
 
         # key padding mask
-
         if exists(mask):
-            mask = rearrange(mask, "b j -> b 1 1 j")
-            sim = sim.masked_fill(~mask, -torch.finfo(sim.dtype).max)
+            mask = mx.reshape(mask, (mask.shape[0], 1, 1, mask.shape[1]))
+            sim = mx.where(mask, sim, -1e9)
 
         # causal mask
-
         if self.causal:
-            causal_mask = self.get_mask(n, device)
-            sim = sim.masked_fill(causal_mask, -torch.finfo(sim.dtype).max)
+            causal_mask = self.get_mask(n)
+            sim = mx.where(causal_mask, -1e9, sim)
 
         # attention
+        attn = mx.softmax(sim, axis=-1)
 
-        attn = sim.softmax(dim=-1)
-        attn = self.attn_dropout(attn)
+        if self.dropout > 0 and self.training:
+            attn = self.attn_dropout(attn)
 
         # aggregate values
-
-        out = einsum(f"b h i j, {kv_einsum_eq} -> b h i d", attn, v)
+        out = mx.matmul(attn, v)
 
         return out
 
 
 def Sequential(*mods):
-    return nn.Sequential(*filter(exists, mods))
-
-
-def exists(x):
-    return x is not None
+    return nn.Sequential(*[mod for mod in mods if exists(mod)])
 
 
 def default(val, d):
@@ -199,40 +128,45 @@ class RMSNorm(nn.Module):
         self.to_gamma_beta = nn.Linear(dim_cond, dim * 2) if self.cond else None
 
         self.scale = dim**0.5
-        self.gamma = nn.Parameter(torch.ones(dim)) if scale else None
+        self.gamma = mx.ones((dim,)) if scale else None
 
-    def forward(self, x, cond=None):
+    def __call__(self, x, cond=None):
         gamma = default(self.gamma, 1)
-        out = F.normalize(x, dim=-1) * self.scale * gamma
+        # Normalize along the last dimension
+        norm = mx.rsqrt(mx.mean(x * x, axis=-1, keepdims=True) + 1e-5)
+        out = x * norm * self.scale * gamma
 
         if not self.cond:
             return out
 
         assert exists(cond)
-        gamma, beta = self.to_gamma_beta(cond).chunk(2, dim=-1)
-        gamma, beta = map(lambda t: rearrange(t, "b d -> b 1 d"), (gamma, beta))
+        gamma, beta = mx.split(self.to_gamma_beta(cond), 2, axis=-1)
+        gamma = mx.expand_dims(gamma, axis=1)
+        beta = mx.expand_dims(beta, axis=1)
         return out * gamma + beta
 
 
-class CausalConv1d(nn.Conv1d):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        (kernel_size,) = self.kernel_size
-        (dilation,) = self.dilation
-        (stride,) = self.stride
-
+class CausalConv1d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, dilation=1, stride=1):
+        super().__init__()
+        self.conv = nn.Conv1d(
+            in_channels, out_channels, kernel_size, stride=stride, dilation=dilation
+        )
+        self.kernel_size = kernel_size
+        self.dilation = dilation
+        self.stride = stride
         assert stride == 1
         self.causal_padding = dilation * (kernel_size - 1)
 
-    def forward(self, x):
-        causal_padded_x = F.pad(x, (self.causal_padding, 0), value=0.0)
-        return super().forward(causal_padded_x)
+    def __call__(self, x):
+        causal_padded_x = mx.pad(x, [(0, 0), (0, 0), (self.causal_padding, 0)])
+        return self.conv(causal_padded_x)
 
 
 class GEGLU(nn.Module):
-    def forward(self, x):
-        x, gate = x.chunk(2, dim=-1)
-        return F.gelu(gate) * x
+    def __call__(self, x):
+        x, gate = mx.split(x, 2, axis=-1)
+        return nn.gelu(gate) * x
 
 
 def FeedForward(dim, mult=4, causal_conv=False):
@@ -241,9 +175,9 @@ def FeedForward(dim, mult=4, causal_conv=False):
     conv = None
     if causal_conv:
         conv = nn.Sequential(
-            Rearrange("b n d -> b d n"),
+            lambda x: mx.transpose(x, (0, 2, 1)),  # b n d -> b d n
             CausalConv1d(dim_inner, dim_inner, 3),
-            Rearrange("b d n -> b n d"),
+            lambda x: mx.transpose(x, (0, 2, 1)),  # b d n -> b n d
         )
 
     return Sequential(
@@ -261,7 +195,6 @@ class Attention(nn.Module):
         dim_head=64,
         heads=8,
         dropout=0.0,
-        use_flash=False,
         cross_attn_include_queries=False,
     ):
         super().__init__()
@@ -272,25 +205,38 @@ class Attention(nn.Module):
         dim_inner = dim_head * heads
         dim_context = default(dim_context, dim)
 
-        self.attend = Attend(causal=causal, dropout=dropout, use_flash=use_flash)
+        self.attend = Attend(causal=causal, dropout=dropout)
         self.to_q = nn.Linear(dim, dim_inner, bias=False)
         self.to_kv = nn.Linear(dim_context, dim_inner * 2, bias=False)
         self.to_out = nn.Linear(dim_inner, dim, bias=False)
 
-    def forward(self, x, context=None, mask=None):
+    def __call__(self, x, context=None, mask=None):
         h, has_context = self.heads, exists(context)
 
         context = default(context, x)
 
         if has_context and self.cross_attn_include_queries:
-            context = torch.cat((x, context), dim=-2)
+            context = mx.concatenate([x, context], axis=-2)
 
-        q, k, v = (self.to_q(x), *self.to_kv(context).chunk(2, dim=-1))
-        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=h), (q, k, v))
+        q = self.to_q(x)
+        kv = self.to_kv(context)
+        k, v = mx.split(kv, 2, axis=-1)
+
+        # Reshape for multi-head attention
+        q = mx.reshape(q, (q.shape[0], q.shape[1], h, -1))
+        q = mx.transpose(q, (0, 2, 1, 3))  # b n (h d) -> b h n d
+
+        k = mx.reshape(k, (k.shape[0], k.shape[1], h, -1))
+        k = mx.transpose(k, (0, 2, 1, 3))  # b n (h d) -> b h n d
+
+        v = mx.reshape(v, (v.shape[0], v.shape[1], h, -1))
+        v = mx.transpose(v, (0, 2, 1, 3))  # b n (h d) -> b h n d
 
         out = self.attend(q, k, v, mask=mask)
 
-        out = rearrange(out, "b h n d -> b n (h d)")
+        out = mx.transpose(out, (0, 2, 1, 3))  # b h n d -> b n h d
+        out = mx.reshape(out, (out.shape[0], out.shape[1], -1))  # b n h d -> b n (h d)
+
         return self.to_out(out)
 
 
@@ -305,7 +251,6 @@ class PerceiverResampler(nn.Module):
         dim_head=64,
         heads=8,
         ff_mult=4,
-        use_flash_attn=False,
     ):
         super().__init__()
         dim_context = default(dim_context, dim)
@@ -314,34 +259,31 @@ class PerceiverResampler(nn.Module):
             nn.Linear(dim_context, dim) if dim_context != dim else nn.Identity()
         )
 
-        self.latents = nn.Parameter(torch.randn(num_latents, dim))
-        nn.init.normal_(self.latents, std=0.02)
+        # Fix the random.normal call to match MLX's API
+        self.latents = mx.random.normal(shape=(num_latents, dim), scale=0.02)
 
-        self.layers = nn.ModuleList([])
+        self.layers = []
         for _ in range(depth):
             self.layers.append(
-                nn.ModuleList(
-                    [
-                        Attention(
-                            dim=dim,
-                            dim_head=dim_head,
-                            heads=heads,
-                            use_flash=use_flash_attn,
-                            cross_attn_include_queries=True,
-                        ),
-                        FeedForward(dim=dim, mult=ff_mult),
-                    ]
-                )
+                [
+                    Attention(
+                        dim=dim,
+                        dim_head=dim_head,
+                        heads=heads,
+                        cross_attn_include_queries=True,
+                    ),
+                    FeedForward(dim=dim, mult=ff_mult),
+                ]
             )
 
         self.norm = RMSNorm(dim)
 
-    def forward(self, x, mask=None):
+    def __call__(self, x, mask=None):
         batch = x.shape[0]
 
         x = self.proj_context(x)
 
-        latents = repeat(self.latents, "n d -> b n d", b=batch)
+        latents = mx.broadcast_to(self.latents, (batch,) + self.latents.shape)
 
         for attn, ff in self.layers:
             latents = attn(latents, x, mask=mask) + latents
@@ -351,10 +293,18 @@ class PerceiverResampler(nn.Module):
 
 
 if __name__ == "__main__":
+    from mlx.utils import tree_flatten
+
     model = PerceiverResampler(dim=256, dim_context=80)
-    x = torch.randn(8, 200, 80)
+    x = mx.random.normal(shape=(8, 200, 80))
     out = model(x)
     print(out.shape)  # [8, 32, 80]
 
-    num_params = sum(param.numel() for param in model.parameters())
+    # Count parameters for MLX model
+    num_params = 0
+
+    weights = dict(tree_flatten(model.parameters()))
+
+    for k, v in weights.items():
+        num_params += v.size
     print("{} M".format(num_params / 1e6))
