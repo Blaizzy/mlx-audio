@@ -172,7 +172,7 @@ processor.save_pretrained("<local_dir>")
 ```
 Then use the <local_dir> as the --hf-path in the convert script.
 ```
-python -m mlx_audio.convert --hf-path <local_dir> --mlx-path <mlx_dir>
+python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
 ```
         """
         raise FileNotFoundError(message)
