@@ -3,11 +3,13 @@ from typing import Any, Dict
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 import torch
 from omegaconf import DictConfig
 from safetensors.torch import load_file
 
 from mlx_audio.codec.models.descript.nn.quantize import ResidualVectorQuantize
+from mlx_audio.tts.models.spark.mel_spec import MelSpectrogram
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_decoder import Decoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_encoder import Encoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
@@ -70,6 +72,7 @@ class BiCodec(nn.Module):
         ckpt_path = f"{model_dir}/model.safetensors"
         config = load_config(f"{model_dir}/config.yaml")["audio_tokenizer"]
         mel_params = config["mel_params"]
+
         encoder = Encoder(**config["encoder"])
         quantizer = ResidualVectorQuantize(**config["quantizer"])
         prenet = Decoder(**config["prenet"])
@@ -88,9 +91,7 @@ class BiCodec(nn.Module):
         )
 
         weights = load_file(ckpt_path)
-        model.load_weights(weights, strict=False)
-
-        model.eval()
+        # model.load_weights(list(weights.items()), strict=False)
 
         return model
 
@@ -105,20 +106,36 @@ class BiCodec(nn.Module):
             dict: A dictionary containing the reconstruction, features, and other metrics.
         """
         feat = mx.array(batch["feat"])
-        mel = self.mel_transformer(torch.from_dlpack(batch["ref_wav"])).squeeze(1)
-        mel = mx.array(mel)
+        # Use MLX mel transformer directly
+        ref_wav = mx.array(batch["ref_wav"])
+        mel = self.mel_transformer(ref_wav).squeeze(1)
 
         z = self.encoder(feat.transpose(0, 2, 1))
-        vq_outputs = self.quantizer(z)
+        z_q, codes, latents, commitment_loss, codebook_loss = self.quantizer(z)
+        vq_outputs = {
+            "z_q": z_q,
+            "codes": codes,
+            "latents": latents,
+            "vq_loss": commitment_loss + codebook_loss,
+            "perplexity": 0.0,  # Placeholder for perplexity
+            "active_num": 0.0,  # Placeholder for active cluster size
+        }
 
         x_vector, d_vector = self.speaker_encoder(mel.transpose(0, 2, 1))
 
         conditions = d_vector
         with_speaker_loss = False
 
+        # Ensure conditions is an integer type for embedding lookup
+        # The error shows that the embedding layer expects integral indices
+        if isinstance(conditions, mx.array) and conditions.dtype == mx.float32:
+            # Convert to integer type if needed for the embedding layer
+            # or ensure it's properly formatted for the prenet
+            conditions = conditions.astype(mx.int32)
+
         x = self.prenet(vq_outputs["z_q"], conditions)
         pred_feat = self.postnet(x)
-        x = x + conditions[:, None]
+        x = x + conditions[..., None]
         wav_recon = self.decoder(x)
 
         return {
@@ -144,7 +161,8 @@ class BiCodec(nn.Module):
             tuple: Semantic tokens and global tokens.
         """
         feat = mx.array(batch["feat"])
-        mel = self.mel_transformer(mx.array(batch["ref_wav"])).squeeze(1)
+        ref_wav = mx.array(batch["ref_wav"])
+        mel = self.mel_transformer(ref_wav).squeeze(1)
 
         z = self.encoder(feat.transpose(0, 2, 1))
         semantic_tokens = self.quantizer.tokenize(z)
@@ -168,10 +186,10 @@ class BiCodec(nn.Module):
         z_q = self.quantizer.detokenize(semantic_tokens)
         d_vector = self.speaker_encoder.detokenize(global_tokens)
         x = self.prenet(z_q, d_vector)
-        x = x + d_vector[:, None]
+        x = x + d_vector[..., None]
         wav_recon = self.decoder(x)
 
-        return torch.from_numpy(wav_recon)
+        return wav_recon  # Return MLX array directly
 
     def init_mel_transformer(self, config: Dict[str, Any]):
         """
@@ -180,15 +198,13 @@ class BiCodec(nn.Module):
         Args:
             config (dict): Configuration parameters for MelSpectrogram.
         """
-        import torchaudio.transforms as TT
-
-        self.mel_transformer = TT.MelSpectrogram(
-            config["sample_rate"],
-            config["n_fft"],
-            config["win_length"],
-            config["hop_length"],
-            config["mel_fmin"],
-            config["mel_fmax"],
+        self.mel_transformer = MelSpectrogram(
+            sample_rate=config["sample_rate"],
+            n_fft=config["n_fft"],
+            win_length=config["win_length"],
+            hop_length=config["hop_length"],
+            f_min=config["mel_fmin"],
+            f_max=config["mel_fmax"],
             n_mels=config["num_mels"],
             power=1,
             norm="slaney",
@@ -198,7 +214,22 @@ class BiCodec(nn.Module):
 
 if __name__ == "__main__":
     model_path = get_model_path("SparkAudio/Spark-TTS-0.5B")
-    model = BiCodec.load_from_checkpoint(model_path)
+    print(model_path)
+    model = BiCodec.load_from_checkpoint(model_path / "BiCodec")
     wav = mx.random.normal((1, 16000), dtype=mx.float32)
     mel = model.mel_transformer(wav)
     print(mel.shape)
+
+    # Generate random inputs for testing
+    duration = 0.96
+    x = torch.randn(20, 1, int(duration * 16000))
+    feat = torch.randn(20, int(duration * 50), 1024)
+    inputs = {"feat": feat, "wav": x, "ref_wav": x}
+
+    # Forward pass
+    outputs = model(inputs)
+    semantic_tokens, global_tokens = model.tokenize(inputs)
+    wav_recon = model.detokenize(semantic_tokens, global_tokens)
+
+    print(outputs["recons"].shape)
+    print(wav_recon.shape)

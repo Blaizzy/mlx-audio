@@ -27,9 +27,7 @@ class BiCodecTokenizer:
 
     def _initialize_model(self):
         """Load and initialize the BiCodec model and Wav2Vec2 feature extractor."""
-        self.model = BiCodec.load_from_checkpoint(f"{self.model_dir}/BiCodec").to(
-            self.device
-        )
+        self.model = BiCodec.load_from_checkpoint(f"{self.model_dir}/BiCodec")
         self.processor = Wav2Vec2FeatureExtractor.from_pretrained(
             f"{self.model_dir}/wav2vec2-large-xlsr-53"
         )
@@ -96,6 +94,7 @@ class BiCodecTokenizer:
         """
         feats = self.extract_wav2vec2_features(batch["wav"])
         batch["feat"] = feats
+
         semantic_tokens, global_tokens = self.model.tokenize(batch)
 
         return global_tokens, semantic_tokens
@@ -109,6 +108,11 @@ class BiCodecTokenizer:
             "ref_wav": ref_wav.to(self.device),
             "feat": feat.to(self.device),
         }
+
+        # convert to mlx array
+        batch["wav"] = mx.array(batch["wav"])
+        batch["ref_wav"] = mx.array(batch["ref_wav"])
+        batch["feat"] = mx.array(batch["feat"])
         semantic_tokens, global_tokens = self.model.tokenize(batch)
 
         return global_tokens, semantic_tokens
@@ -126,5 +130,9 @@ class BiCodecTokenizer:
             wav_rec: waveform. shape: (batch_size, seq_len) for batch or (seq_len,) for single
         """
         global_tokens = global_tokens.unsqueeze(1)
+
+        # convert to mlx array
+        global_tokens = mx.array(global_tokens)
+        semantic_tokens = mx.array(semantic_tokens)
         wav_rec = self.model.detokenize(semantic_tokens, global_tokens)
         return wav_rec.detach().squeeze().cpu().numpy()

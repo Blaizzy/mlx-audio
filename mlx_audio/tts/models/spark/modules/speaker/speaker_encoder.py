@@ -92,7 +92,7 @@ class SpeakerEncoder(nn.Module):
 
         x_vector, features = self.speaker_encoder(mels, True)
         x = self.perceiver_sampler(features.transpose(0, 2, 1)).transpose(0, 2, 1)
-        zq, indices = self.quantizer(x)  # zq: (B, latent_dim, T2, latent_dim)
+        zq, indices, _, _, _ = self.quantizer(x)  # zq: (B, latent_dim, T2, latent_dim)
         x = zq.reshape(zq.shape[0], -1)
         d_vector = self.project(x)
 
@@ -102,15 +102,18 @@ class SpeakerEncoder(nn.Module):
         """tokenize the input mel spectrogram"""
         _, features = self.speaker_encoder(mels, True)
         x = self.perceiver_sampler(features.transpose(0, 2, 1)).transpose(0, 2, 1)
-        zq, indices = self.quantizer(x)
+        zq, indices, _, _, _ = self.quantizer(x)
         return indices
 
     def detokenize(self, indices: mx.array) -> mx.array:
         """detokenize the input indices to d-vector"""
+        print("Indices detokenize", indices.shape)
         zq = self.quantizer.get_output_from_indices(
             indices.transpose(0, 2, 1)
         ).transpose(0, 2, 1)
+        print("ZQ detokenize", zq.shape)
         x = zq.reshape(zq.shape[0], -1)
+        print("X detokenize", x.shape)
         d_vector = self.project(x)
         return d_vector
 

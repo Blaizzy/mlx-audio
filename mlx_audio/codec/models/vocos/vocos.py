@@ -187,8 +187,9 @@ class AdaLayerNorm(nn.Module):
         self.shift.weight = mx.zeros((num_embeddings, embedding_dim))
 
     def __call__(self, x: mx.array, cond_embedding_id: mx.array) -> mx.array:
-        scale = self.scale(cond_embedding_id)
-        shift = self.shift(cond_embedding_id)
+
+        scale = self.scale(cond_embedding_id)[:, :1, :]
+        shift = self.shift(cond_embedding_id)[:, :1, :]
         x = mx.fast.layer_norm(x, weight=None, bias=None, eps=self.eps)
         x = x * scale + shift
         return x
