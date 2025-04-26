@@ -1,0 +1,1092 @@
+<title>3D Orb Audio Visualization</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: Arial, sans-serif;
+        }
+        #controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.5);
+            padding: 15px;
+            border-radius: 10px;
+            max-width: 350px;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        button {
+            background-color: #4CAF50;
+            border: none;
+            color: white;
+            padding: 8px 16px;
+            text-align: center;
+            text-decoration: none;
+            display: inline-block;
+            font-size: 14px;
+            margin: 4px 2px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #stopBtn {
+            background-color: #f44336;
+        }
+        #status {
+            margin-top: 10px;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"], select, textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+            background-color: rgba(255, 255, 255, 0.9);
+        }
+        textarea {
+            height: 80px;
+            resize: vertical;
+        }
+        .tab-container {
+            margin-top: 15px;
+        }
+        .tab {
+            overflow: hidden;
+            border-bottom: 1px solid #ccc;
+            margin-bottom: 10px;
+        }
+        .tab button {
+            background-color: inherit;
+            float: left;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 8px 16px;
+            transition: 0.3s;
+            color: #ddd;
+        }
+        .tab button:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .tab button.active {
+            background-color: rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+        .tabcontent {
+            display: none;
+            padding: 10px 0;
+        }
+        .error {
+            color: #ff6b6b;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        /* Improved slider styling */
+        .slider-container {
+            margin-top: 10px;
+            position: relative;
+        }
+        .slider-labels {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 12px;
+            color: #ddd;
+        }
+        input[type="range"] {
+            width: 100%;
+            margin: 0;
+            background: transparent;
+            -webkit-appearance: none;
+        }
+        input[type="range"]:focus {
+            outline: none;
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 6px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+            -webkit-appearance: none;
+            margin-top: -5px;
+        }
+        input[type="range"]::-moz-range-track {
+            width: 100%;
+            height: 6px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 3px;
+        }
+        input[type="range"]::-moz-range-thumb {
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+        }
+        .speed-value-display {
+            position: relative;
+            text-align: center;
+            font-weight: bold;
+            color: white;
+            margin-top: 5px;
+            font-size: 14px;
+        }
+        /* Add tab styling if not already present */
+        .tab {
+            overflow: hidden;
+            background-color: #333;
+            border-radius: 5px 5px 0 0;
+        }
+
+        .tab button {
+            background-color: inherit;
+            float: left;
+            border: none;
+            outline: none;
+            cursor: pointer;
+            padding: 14px 16px;
+            transition: 0.3s;
+            color: white;
+        }
+
+        .tab button:hover {
+            background-color: #555;
+        }
+
+        .tab button.active {
+            background-color: #4CAF50;
+        }
+
+        .tabcontent {
+            display: none;
+            padding: 20px;
+            border-top: none;
+        }
+
+        /* WebRTC specific styles */
+        #streamStatus {
+            margin-top: 10px;
+            color: #4CAF50;
+            font-weight: bold;
+        }
+
+        #startStreamBtn {
+            background-color: #4CAF50;
+        }
+
+        #startStreamBtn.streaming {
+            background-color: #f44336;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="controls">
+        <h1>MLX-Audio Player</h1>
+
+        <div class="tab">
+            <button class="tablinks active" onclick="openTab(event, 'textToSpeech')">Text to Speech</button>
+            <button class="tablinks" onclick="openTab(event, 'fileUpload')">File Upload</button>
+            <button class="tablinks" onclick="openTab(event, 'speechToSpeech')">Speech to Speech</button>
+        </div>
+
+        <div id="textToSpeech" class="tabcontent" style="display: block;">
+            <div class="form-group">
+                <label for="text">Text to convert:</label>
+                <textarea id="text" placeholder="Enter text here..."></textarea>
+            </div>
+
+            <div class="form-group">
+                <label for="voice">Voice:</label>
+                <select id="voice">
+                    <option value="af_bella">AF Bella</option>
+                    <option value="af_heart">AF Heart</option>
+                    <option value="af_nicole">AF Nicole</option>
+                    <option value="af_nova">AF Nova</option>
+                    <option value="af_sarah">AF Sarah</option>
+                    <option value="af_sky">AF Sky</option>
+                    <option value="am_adam">AM Adam</option>
+                    <option value="am_michael">AM Michael</option>
+                    <option value="bf_emma">BF Emma</option>
+                    <option value="bf_isabella">BF Isabella</option>
+                    <option value="bm_george">BM George</option>
+                    <option value="bm_lewis">BM Lewis</option>
+                  </select>
+            </div>
+
+            <div class="form-group">
+                <label for="model">Model:</label>
+                <select id="model">
+                    <option value="mlx-community/Kokoro-82M-4bit">Kokoro 82M 4bit</option>
+                    <option value="mlx-community/Kokoro-82M-6bit">Kokoro 82M 6bit</option>
+                    <option value="mlx-community/Kokoro-82M-8bit">Kokoro 82M 8bit</option>
+                    <option value="mlx-community/Kokoro-82M-bf16">Kokoro 82M bf16</option>
+                </select>
+            </div>
+
+            <div class="form-group">
+                <label for="speed">Speech Speed:</label>
+                <div class="slider-container">
+                    <div class="slider-labels">
+                        <span>Slower</span>
+                        <span>Normal</span>
+                        <span>Faster</span>
+                    </div>
+                    <input type="range" id="speed" min="0.5" max="2.0" step="0.1" value="1.0">
+                    <div class="speed-value-display"><span id="speed-value">1.0</span>x</div>
+                </div>
+            </div>
+
+            <button id="generateBtn">Generate Speech</button>
+            <button id="openFolderBtn" style="background-color: #2196F3;">Open Output Folder</button>
+            <div id="ttsError" class="error" style="display: none;"></div>
+            <div id="ttsStatus" style="margin-top: 10px; max-width: 350px;"></div>
+        </div>
+
+        <div id="fileUpload" class="tabcontent">
+            <input type="file" id="audioUpload" accept="audio/*">
+            <div style="margin-top: 10px;">
+                <button id="playBtn" disabled>Play</button>
+                <button id="stopBtn" disabled>Stop</button>
+            </div>
+            <div id="status">Upload an audio file to begin visualization</div>
+        </div>
+
+        <!-- Speech to Speech Tab (New) -->
+        <div id="speechToSpeech" class="tabcontent">
+            <h3>Real-time Speech Conversion</h3>
+
+            <div>
+                <label for="s2sVoice">Voice:</label>
+                <select id="s2sVoice" class="form-control">
+                    <option value="af_bella">AF Bella</option>
+                    <option value="af_heart">AF Heart</option>
+                    <option value="af_nicole">AF Nicole</option>
+                    <option value="af_nova">AF Nova</option>
+                    <option value="af_sarah">AF Sarah</option>
+                    <option value="af_sky">AF Sky</option>
+                    <option value="am_adam">AM Adam</option>
+                    <option value="am_michael">AM Michael</option>
+                    <option value="bf_emma">BF Emma</option>
+                    <option value="bf_isabella">BF Isabella</option>
+                    <option value="bm_george">BM George</option>
+                    <option value="bm_lewis">BM Lewis</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="s2sModel">Model:</label>
+                <select id="s2sModel" class="form-control">
+                    <option value="kokoro_82m_4bit">Kokoro 82M 4bit</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="s2sSpeed">Speech Speed:</label>
+                <div class="speed-control">
+                    <span>Slower</span>
+                    <input type="range" id="s2sSpeed" min="0.5" max="2.0" step="0.1" value="1.0">
+                    <span>Faster</span>
+                </div>
+                <div id="s2sSpeedValue">1.0x</div>
+            </div>
+
+            <button id="startStreamBtn">Start Stream</button>
+            <div id="streamStatus"></div>
+        </div>
+        <audio id="audioElement" autoplay style="display: none;"></audio>
+    </div>
+
+    <!-- Load Three.js from CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <script>
+        // DOM elements
+        const audioUpload = document.getElementById('audioUpload');
+        const playBtn = document.getElementById('playBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const statusElement = document.getElementById('status');
+
+        // TTS elements
+        const textInput = document.getElementById('text');
+        const voiceSelect = document.getElementById('voice');
+        const modelSelect = document.getElementById('model');
+        const speedInput = document.getElementById('speed');
+        const speedValue = document.getElementById('speed-value');
+        const generateBtn = document.getElementById('generateBtn');
+        const openFolderBtn = document.getElementById('openFolderBtn');
+        const ttsErrorElement = document.getElementById('ttsError');
+        const ttsStatusElement = document.getElementById('ttsStatus');
+
+        // Audio variables
+        let audioContext;
+        let analyser;
+        let dataArray;
+        let audioElement = document.getElementById('audioElement');
+        let audioSource;
+
+        // Three.js setup
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x000000);
+        document.body.appendChild(renderer.domElement);
+
+        // Add orbit controls
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Position camera
+        camera.position.set(0, 0, 100);
+        camera.lookAt(0, 0, 0);
+
+        // Add lights
+        const ambientLight = new THREE.AmbientLight(0x404040);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        const pointLight = new THREE.PointLight(0xffffff, 1, 100);
+        pointLight.position.set(0, 0, 0);
+        scene.add(pointLight);
+
+        // Create orb mesh
+        const sphereGeometry = new THREE.IcosahedronGeometry(30, 4); // Higher detail icosahedron
+        const sphereMaterial = new THREE.MeshPhongMaterial({
+            color: 0x0088ff,
+            emissive: 0x222222,
+            shininess: 30,
+            wireframe: false,
+            flatShading: true
+        });
+        const sphere = new THREE.Mesh(sphereGeometry, sphereMaterial);
+        scene.add(sphere);
+
+        // Store original vertex positions
+        const originalVertices = [];
+        for (let i = 0; i < sphereGeometry.attributes.position.count; i++) {
+            originalVertices.push(
+                new THREE.Vector3(
+                    sphereGeometry.attributes.position.getX(i),
+                    sphereGeometry.attributes.position.getY(i),
+                    sphereGeometry.attributes.position.getZ(i)
+                )
+            );
+        }
+
+        // Create a glow effect
+        const glowGeometry = new THREE.SphereGeometry(32, 32, 32);
+        const glowMaterial = new THREE.MeshBasicMaterial({
+            color: 0x0088ff,
+            transparent: true,
+            opacity: 0.15,
+            side: THREE.BackSide
+        });
+        const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
+        scene.add(glowMesh);
+
+        // Define rotation speed variables
+        let rotationSpeedY = 0.002;
+        let rotationSpeedX = 0.001;
+        let isGenerating = false;
+
+        // Tab functionality
+        function openTab(evt, tabName) {
+            // Hide all tabcontent
+            const tabcontent = document.getElementsByClassName("tabcontent");
+            for (let i = 0; i < tabcontent.length; i++) {
+                tabcontent[i].style.display = "none";
+            }
+
+            // Remove active class from all tablinks
+            const tablinks = document.getElementsByClassName("tablinks");
+            for (let i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+            }
+
+            // Show the current tab and add active class to the button
+            document.getElementById(tabName).style.display = "block";
+            evt.currentTarget.className += " active";
+            if (tabName != "speechToSpeech") {
+                closeWebRTCStream();
+            }
+        }
+
+        // Speed slider update
+        speedInput.addEventListener('input', function() {
+            speedValue.textContent = this.value;
+        });
+
+        // Generate speech button handler
+        generateBtn.addEventListener('click', function() {
+            const text = textInput.value;
+            const voice = voiceSelect.value;
+            const model = modelSelect.value;
+            const speed = speedInput.value;
+
+            if (!text.trim()) {
+                showTtsError('Please enter some text');
+                return;
+            }
+
+            // Hide previous error
+            ttsErrorElement.style.display = 'none';
+            ttsStatusElement.textContent = 'Generating speech...';
+
+            // Increase rotation speed to indicate processing
+            isGenerating = true;
+            rotationSpeedY = 0.01;
+            rotationSpeedX = 0.005;
+
+            // Create form data
+            const formData = new FormData();
+            formData.append('text', text);
+            formData.append('voice', voice);
+            formData.append('model', model);
+            formData.append('speed', speed);
+
+            // Send request to server
+            fetch('/tts', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to generate speech');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                ttsStatusElement.textContent = 'Speech generated successfully!';
+
+                // Reset rotation speed
+                isGenerating = false;
+                rotationSpeedY = 0.002;
+                rotationSpeedX = 0.001;
+
+                // Clean up previous audio resources
+                if (audioElement) {
+                    audioElement.pause();
+                    audioElement.removeAttribute('src');
+                }
+
+                if (audioSource) {
+                    audioSource.disconnect();
+                    audioSource = null; // Reset the variable explicitly
+                }
+                // Recreate audioElement to avoid potential issues with re-using the same element
+                // This helps ensure createMediaElementSource works consistently.
+                const oldAudioElement = document.getElementById('audioElement');
+                if (oldAudioElement) {
+                    oldAudioElement.remove();
+                }
+                audioElement = document.createElement('audio');
+                audioElement.id = 'audioElement';
+                audioElement.autoplay = false; // Don't autoplay immediately
+                audioElement.style.display = 'none';
+                document.getElementById('controls').appendChild(audioElement);
+
+                // Set audio source with absolute path
+                audioElement.src = `/audio/${data.filename}`;
+                audioElement.loop = false;
+
+                // Enable play button
+                playBtn.disabled = false;
+                stopBtn.disabled = true;
+
+                // Add ended event listener
+                audioElement.addEventListener('ended', function() {
+                    statusElement.textContent = "Audio finished playing.";
+                    playBtn.disabled = false;
+                    stopBtn.disabled = true;
+                    resetSphere();
+                });
+
+                // Auto-play the generated audio
+                playAudio(); // playAudio will now create a fresh connection
+            })
+            .catch(error => {
+                showTtsError(error.message);
+
+                // Reset rotation speed on error too
+                isGenerating = false;
+                rotationSpeedY = 0.002;
+                rotationSpeedX = 0.001;
+            });
+        });
+
+        // Open output folder button handler
+        openFolderBtn.addEventListener('click', function() {
+            fetch('/open_output_folder', {
+                method: 'POST'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Failed to open output folder');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                ttsStatusElement.textContent = `Opened output folder: ${data.path}`;
+            })
+            .catch(error => {
+                showTtsError(error.message);
+            });
+        });
+
+        function showTtsError(message) {
+            ttsErrorElement.textContent = message;
+            ttsErrorElement.style.display = 'block';
+        }
+
+        // Function to play audio (reused for both upload and TTS)
+        function playAudio() {
+            if (!audioElement || !audioElement.src) {
+                statusElement.textContent = "No audio available to play.";
+                return;
+            }
+
+            statusElement.textContent = "Playing audio...";
+
+            // Initialize audio context if needed
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+
+            // Create analyser if needed
+            if (!analyser) {
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 256;
+                dataArray = new Uint8Array(analyser.frequencyBinCount);
+            }
+
+            // Connect audio element to analyser if not already connected
+            if (!audioSource) {
+                try {
+                    audioSource = audioContext.createMediaElementSource(audioElement);
+                    audioSource.connect(analyser);
+                    analyser.connect(audioContext.destination);
+                } catch (error) {
+                    console.error("Error connecting audio source:", error);
+                    statusElement.textContent = "Error setting up audio visualization. Try refreshing the page.";
+
+                    // Still try to play the audio even if visualization fails
+                    audioElement.play().catch(playError => {
+                        statusElement.textContent = "Error playing audio: " + playError.message;
+                    });
+                    return;
+                }
+            }
+
+            // Play audio
+            audioElement.play().then(() => {
+                playBtn.disabled = true;
+                stopBtn.disabled = false;
+            }).catch(error => {
+                statusElement.textContent = "Error playing audio: " + error.message;
+            });
+        }
+
+        // Handle audio upload
+        audioUpload.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            statusElement.textContent = "Audio file loaded. Press Play to start.";
+
+            // Clean up previous audio resources
+            if (audioElement) {
+                audioElement.pause();
+                audioElement.removeAttribute('src');
+            }
+
+            if (audioSource) {
+                audioSource.disconnect();
+                audioSource = null; // Reset the variable explicitly
+            }
+
+            // Recreate audioElement to avoid potential issues with re-using the same element
+            // This helps ensure createMediaElementSource works consistently.
+            const oldAudioElement = document.getElementById('audioElement');
+            if (oldAudioElement) {
+                oldAudioElement.remove();
+            }
+            audioElement = document.createElement('audio');
+            audioElement.id = 'audioElement';
+            audioElement.autoplay = false; // Don't autoplay immediately
+            audioElement.style.display = 'none';
+            document.getElementById('controls').appendChild(audioElement);
+
+            audioElement.src = URL.createObjectURL(file);
+            audioElement.loop = false;
+
+            // Enable play button
+            playBtn.disabled = false;
+            stopBtn.disabled = true;
+
+            // Add ended event listener
+            audioElement.addEventListener('ended', function() {
+                statusElement.textContent = "Audio finished playing.";
+                playBtn.disabled = false;
+                stopBtn.disabled = true;
+                resetSphere();
+            });
+        });
+
+        // Play button handler
+        playBtn.addEventListener('click', function() {
+            playAudio();
+        });
+
+        // Stop button handler
+        stopBtn.addEventListener('click', function() {
+            if (audioElement) {
+                audioElement.pause();
+                audioElement.currentTime = 0;
+                statusElement.textContent = "Audio stopped. Press Play to restart.";
+                playBtn.disabled = false;
+                stopBtn.disabled = true;
+
+                // Reset sphere to original state
+                resetSphere();
+            }
+        });
+
+        // Reset sphere to original state
+        function resetSphere() {
+            const positionAttribute = sphereGeometry.attributes.position;
+
+            for (let i = 0; i < positionAttribute.count; i++) {
+                const originalVertex = originalVertices[i];
+                positionAttribute.setXYZ(i, originalVertex.x, originalVertex.y, originalVertex.z);
+            }
+
+            positionAttribute.needsUpdate = true;
+            sphereGeometry.computeVertexNormals();
+
+            // Reset colors
+            sphere.material.color.set(0x0088ff);
+            sphere.material.emissive.set(0x222222);
+            glowMesh.material.color.set(0x0088ff);
+        }
+
+        // Animation loop
+        function  animate() {
+            requestAnimationFrame(animate);
+
+            // Update controls
+            controls.update();
+
+            // Get current time for pulsating effect
+            const time = performance.now() * 0.001; // Convert to seconds
+
+            // Rotate sphere with current speed
+            sphere.rotation.y += rotationSpeedY;
+            sphere.rotation.x += rotationSpeedX;
+            glowMesh.rotation.copy(sphere.rotation);
+
+            // Update visualization if audio is playing
+            if (analyser && dataArray && !audioElement.paused) {
+                analyser.getByteFrequencyData(dataArray);
+
+                // Calculate average frequency values for different ranges
+                const bassAvg = getAverageFrequency(dataArray, 0, 5);
+                const midAvg = getAverageFrequency(dataArray, 6, 20);
+                const trebleAvg = getAverageFrequency(dataArray, 21, 40);
+
+                // Calculate base pulsating factor (same as when no audio is playing)
+                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
+
+                // Update sphere vertices based on frequency data
+                const positionAttribute = sphereGeometry.attributes.position;
+
+                for (let i = 0; i < positionAttribute.count; i++) {
+                    const originalVertex = originalVertices[i];
+
+                    // Calculate normalized distance from center (0-1)
+                    const vertexLength = originalVertex.length();
+
+                    // Get frequency value based on vertex position
+                    let frequencyFactor;
+
+                    // Use different frequency ranges based on vertex position
+                    if (Math.abs(originalVertex.y) > vertexLength * 0.7) {
+                        // Top/bottom vertices - use treble
+                        frequencyFactor = trebleAvg / 255;
+                    } else if (Math.abs(originalVertex.x) > vertexLength * 0.7) {
+                        // Left/right vertices - use mids
+                        frequencyFactor = midAvg / 255;
+                    } else {
+                        // Other vertices - use bass
+                        frequencyFactor = bassAvg / 255;
+                    }
+
+                    // Scale vertex based on both pulsation and frequency
+                    // First apply the pulsating effect, then add audio reactivity
+                    const scaleFactor = pulseFactor * (1 + frequencyFactor * 0.5);
+
+                    positionAttribute.setXYZ(
+                        i,
+                        originalVertex.x * scaleFactor,
+                        originalVertex.y * scaleFactor,
+                        originalVertex.z * scaleFactor
+                    );
+                }
+
+                positionAttribute.needsUpdate = true;
+                sphereGeometry.computeVertexNormals();
+
+                // Update colors based on frequency
+                const hue = (bassAvg / 255) * 0.3;
+                const saturation = 0.8;
+                const lightness = 0.4 + (midAvg / 255) * 0.2;
+
+                sphere.material.color.setHSL(hue, saturation, lightness);
+                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
+
+                // Update glow with both pulsation and audio reactivity
+                glowMesh.material.color.setHSL(hue, saturation, lightness);
+                const glowPulseFactor = 1 + Math.sin(time * 1.2) * 0.04;
+                glowMesh.scale.set(
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1),
+                    glowPulseFactor * (1 + (bassAvg / 255) * 0.1)
+                );
+
+                // Update point light with both pulsation and audio reactivity
+                const lightPulseFactor = 0.5 + Math.sin(time * 1.8) * 0.2;
+                pointLight.intensity = lightPulseFactor + (bassAvg / 255) * 1.5;
+                pointLight.color.setHSL(hue, saturation, lightness);
+            } else {
+                // Apply subtle pulsating effect when no audio is playing
+                const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
+
+                // Update sphere vertices for pulsating effect
+                const positionAttribute = sphereGeometry.attributes.position;
+
+                for (let i = 0; i < positionAttribute.count; i++) {
+                    const originalVertex = originalVertices[i];
+
+                    positionAttribute.setXYZ(
+                        i,
+                        originalVertex.x * pulseFactor,
+                        originalVertex.y * pulseFactor,
+                        originalVertex.z * pulseFactor
+                    );
+                }
+
+                positionAttribute.needsUpdate = true;
+                sphereGeometry.computeVertexNormals();
+
+                // Subtle color pulsation
+                const hue = 0.6; // Blue hue
+                const saturation = 0.8;
+                const lightness = 0.4 + Math.sin(time * 2) * 0.05; // Subtle brightness pulsation
+
+                sphere.material.color.setHSL(hue, saturation, lightness);
+                sphere.material.emissive.setHSL(hue, saturation, lightness * 0.5);
+
+                // Update glow with subtle pulsation
+                glowMesh.material.color.setHSL(hue, saturation, lightness);
+                glowMesh.scale.set(
+                    1 + Math.sin(time * 1.2) * 0.04, // Slightly different frequency for interesting effect
+                    1 + Math.sin(time * 1.2) * 0.04,
+                    1 + Math.sin(time * 1.2) * 0.04
+                );
+
+                // Subtle point light pulsation
+                pointLight.intensity = 0.5 + Math.sin(time * 1.8) * 0.2;
+                pointLight.color.setHSL(hue, saturation, lightness);
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Helper function to get average frequency in a range
+        function getAverageFrequency(dataArray, startIndex, endIndex) {
+            let sum = 0;
+            for (let i = startIndex; i <= endIndex; i++) {
+                sum += dataArray[i];
+            }
+            return sum / (endIndex - startIndex + 1);
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start animation loop
+        animate();
+
+        // WebRTC variables
+        let webrtcConnection = null;
+        let webrtcId = null;
+        let dataChannel = null;
+        let analyzer = null;
+
+        // Speech to Speech functionality
+        document.getElementById('s2sSpeed').addEventListener('input', function() {
+            document.getElementById('s2sSpeedValue').textContent = this.value + 'x';
+        });
+
+        document.getElementById('startStreamBtn').addEventListener('click', function() {
+            if (!webrtcConnection) {
+                startWebRTCStream();
+                this.textContent = "Connecting...";
+                this.disabled = true;
+            } else {
+                closeWebRTCStream();
+                this.textContent = "Start Stream";
+                this.classList.remove('streaming');
+            }
+        });
+
+        async function startWebRTCStream() {
+            try {
+                const streamStatus = document.getElementById('streamStatus');
+                streamStatus.textContent = "Initializing connection...";
+
+                // Get user media for microphone
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // Create RTCPeerConnection
+                webrtcConnection = new RTCPeerConnection({});
+
+                // Add local stream tracks to connection
+                stream.getAudioTracks().forEach(track => {
+                    webrtcConnection.addTrack(track, stream);
+                });
+
+                // Set up data channel
+                dataChannel = webrtcConnection.createDataChannel("text");
+                dataChannel.onopen = handleDataChannelOpen;
+                dataChannel.onmessage = handleDataChannelMessage;
+                dataChannel.onclose = () => {
+                    console.log("Data channel closed");
+                };
+
+                // Handle ICE candidate events
+                webrtcConnection.onicecandidate = event => {
+                    if (event.candidate) {
+                        // We'll handle ICE candidates in the offer
+                    }
+                };
+
+                // Handle track events for receiving audio
+                webrtcConnection.ontrack = event => {
+                    const remoteStream = new MediaStream();
+                    event.streams[0].getTracks().forEach(track => {
+                        remoteStream.addTrack(track);
+                    });
+
+                    if (!audioContext) {
+                        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    }
+
+                    if (audioSource) {
+                        audioSource.disconnect();
+                    }
+
+                    audioSource = audioContext.createMediaStreamSource(remoteStream);
+
+                    if (!analyser) {
+                        analyser = audioContext.createAnalyser();
+                        analyser.fftSize = 256;
+                        dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    }
+
+                    audioSource.connect(analyser);
+                    analyser.connect(audioContext.destination);
+
+                    audioElement.srcObject = remoteStream;
+                    audioElement.play();
+                };
+
+                // Create offer
+                const offer = await webrtcConnection.createOffer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: false
+                });
+
+                await webrtcConnection.setLocalDescription(offer);
+
+                // Wait for ICE gathering to complete
+                await new Promise(resolve => {
+                    if (webrtcConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        webrtcConnection.addEventListener('icegatheringstatechange', () => {
+                            if (webrtcConnection.iceGatheringState === 'complete') {
+                                resolve();
+                            }
+                        });
+                    }
+                });
+
+                // Send offer to server
+                const response = await fetch('/webrtc/offer', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        sdp: webrtcConnection.localDescription.sdp,
+                        type: webrtcConnection.localDescription.type,
+                        webrtc_id: generateWebRTCId(),
+                    }),
+                });
+
+                const responseData = await response.json();
+
+                if (responseData.status === 'failed') {
+                    throw new Error(responseData.meta?.error || 'Connection failed');
+                }
+
+                // Set remote description
+                await webrtcConnection.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: responseData.sdp,
+                }));
+
+                streamStatus.textContent = "Connecting...";
+
+            } catch (error) {
+                console.error('Error starting WebRTC stream:', error);
+                document.getElementById('streamStatus').textContent = "Error: " + error.message;
+                document.getElementById('startStreamBtn').disabled = false;
+                document.getElementById('startStreamBtn').textContent = "Start Stream";
+                closeWebRTCStream();
+            }
+        }
+
+        function handleDataChannelOpen() {
+            console.log("Data channel opened!");
+            const streamStatus = document.getElementById('streamStatus');
+            streamStatus.textContent = "Connected! Speak into your microphone.";
+
+            const startStreamBtn = document.getElementById('startStreamBtn');
+            startStreamBtn.disabled = false;
+            startStreamBtn.textContent = "Close Stream";
+            startStreamBtn.classList.add('streaming');
+
+            // Send initial configuration
+            sendInputConfiguration();
+        }
+
+        function handleDataChannelMessage(event) {
+            try {
+                const message = JSON.parse(event.data);
+                console.log("Received message:", message);
+
+                if (message.type === 'send_input') {
+                    // Server is requesting updated input parameters
+                    sendInputConfiguration();
+                } else if (message.type === 'error') {
+                    document.getElementById('streamStatus').textContent = "Error: " + message.data;
+                } else if (message.type === 'log') {
+                    // Handle different log types
+                    if (message.data === 'pause_detected') {
+                        document.getElementById('streamStatus').textContent = "Pause detected, processing...";
+                    } else if (message.data === 'response_starting') {
+                        document.getElementById('streamStatus').textContent = "Generating response...";
+                    } else if (message.data === 'started_talking') {
+                        document.getElementById('streamStatus').textContent = "Speaking...";
+                    }
+                }
+            } catch (e) {
+                console.error("Error parsing message:", e);
+            }
+        }
+
+        function sendInputConfiguration() {
+            if (!dataChannel || dataChannel.readyState !== 'open') return;
+
+            // Get current configuration values
+            const voice = document.getElementById('s2sVoice').value;
+            const model = document.getElementById('s2sModel').value;
+            const speed = parseFloat(document.getElementById('s2sSpeed').value);
+
+            // Send POST request to the specified endpoint
+            fetch('/speech_to_speech_input', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    voice: voice,
+                    model: model,
+                    speed: speed,
+                    webrtc_id: webrtcId
+                })
+            }).catch(error => {
+                console.error('Error sending configuration:', error);
+            });
+        }
+
+        function closeWebRTCStream() {
+            if (webrtcConnection) {
+                webrtcConnection.close();
+                webrtcConnection = null;
+            }
+
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+            dataChannel = null;
+            analyzer = null;
+
+            document.getElementById('streamStatus').textContent = "";
+            webrtcId = null;
+            audioContext = null;
+            analyser = null;
+            audioSource = null;
+        }
+
+        function generateWebRTCId() {
+            webrtcId = 'webrtc-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
+            return webrtcId;
+        }
+
+        // Initialize tabs
+        const defaultTab = document.getElementsByClassName("tablinks")[0];
+        defaultTab.click();
+    </script>
+</body>
+</html>
