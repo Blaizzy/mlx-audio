@@ -285,10 +285,12 @@ class Model(nn.Module):
         frame_tokens = []
         frame_masks = []
 
-        text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
+        text_tokens = self._text_tokenizer.encode(
+            f"[{speaker}]{text}", return_tensors="mlx"
+        ).squeeze(0)
         text_frame = mx.zeros((len(text_tokens), 33)).astype(mx.int32)
         text_frame_mask = mx.zeros((len(text_tokens), 33)).astype(mx.bool_)
-        text_frame[:, -1] = mx.array(text_tokens)
+        text_frame[:, -1] = text_tokens
         text_frame_mask[:, -1] = True
 
         frame_tokens.append(text_frame)
