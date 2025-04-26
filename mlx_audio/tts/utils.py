@@ -1,5 +1,6 @@
 import glob
 import importlib
+import inspect
 import logging
 import shutil
 from pathlib import Path
@@ -191,7 +192,13 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
             class_predicate=get_class_predicate,
         )
 
-    model.load_weights(list(weights.items()), strict=strict)
+    load_weights_sig = inspect.signature(model.load_weights)
+
+    kwargs = {"weights": list(weights.items())}
+    if "strict" in load_weights_sig.parameters:
+        kwargs["strict"] = strict
+
+    model.load_weights(**kwargs)
 
     if not lazy:
         mx.eval(model.parameters())
