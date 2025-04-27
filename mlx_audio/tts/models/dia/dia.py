@@ -1,5 +1,6 @@
+import re
 import time
-from typing import Optional
+from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -19,18 +20,11 @@ from .layers import DiaModel, KVCache
 def _sample_next_token(
     logits_BCxV: mx.array,
     temperature: float,
-    top_p: float,
-    use_cfg_filter: bool,
-    cfg_filter_top_k: int | None = None,
+    sampler: callable,
 ) -> mx.array:
     if temperature == 0.0:
         return mx.argmax(logits_BCxV, axis=-1)
 
-    top_k = -1
-    if use_cfg_filter and cfg_filter_top_k is not None:
-        top_k = cfg_filter_top_k
-
-    sampler = make_sampler(temperature, top_p, top_k=top_k)
     sampled = sampler(logits_BCxV)
     return sampled
 
@@ -207,6 +201,18 @@ class Model(nn.Module):
 
         return src_tokens, src_positions, src_padding_mask, enc_self_attn_mask
 
+    def _split_turns(self, text: str) -> List[str]:
+        """
+        Splits a conversation text into segments each containing one [S1] and one [S2] chunk.
+        """
+        pattern = re.compile(
+            r"\[S1\]\s*(.*?)\s*\[S2\]\s*(.*?)(?=(?:\[S1\])|$)", re.DOTALL
+        )
+        segments = []
+        for s1_chunk, s2_chunk in pattern.findall(text):
+            segments.append(f"[S1] {s1_chunk.strip()} [S2] {s2_chunk.strip()}")
+        return segments
+
     def generate(
         self,
         text,
@@ -223,23 +229,24 @@ class Model(nn.Module):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
 
-        all_audio = []
+        segments = []
+        for p in prompts:
+            if "[S1]" in p and "[S2]" in p:
+                segments.extend(self._split_turns(p))
+            else:
+                segments.append(p)
 
-        for prompt in prompts:
-            time_start = time.time()
+        for segment_index, segment in enumerate(segments):
+            time_start = time.perf_counter()
 
             audio = self._generate(
-                prompt,
+                segment,
                 max_tokens=max_tokens,
                 ref_audio=ref_audio,
                 ref_text=ref_text,
             )
-            all_audio.append(audio[None, ...])
 
-        time_end = time.time()
-
-        for i in range(len(all_audio)):
-            audio = all_audio[i][0]
+            time_end = time.perf_counter()
 
             samples = audio.shape[0] if audio is not None else 0
             assert samples > 0, "No audio generated"
@@ -262,7 +269,7 @@ class Model(nn.Module):
                 audio=audio,
                 samples=samples,
                 sample_rate=sample_rate,
-                segment_idx=i,
+                segment_idx=segment_index,
                 token_count=token_count,
                 audio_duration=duration_str,
                 real_time_factor=rtf,
@@ -442,6 +449,11 @@ class Model(nn.Module):
             is_causal=False,
         )  # [B, 1, 1, S]
 
+        top_k = -1
+        if use_cfg_filter and cfg_filter_top_k is not None:
+            top_k = cfg_filter_top_k
+        sampler = make_sampler(temperature, top_p, top_k=top_k)
+
         for step in trange(current_step, current_step + max_tokens):
             tgt_ids_Bx1xC = mx.expand_dims(generated_BxTxC[:, step, :], 1)
             tgt_pos_Bx1 = mx.full(
@@ -490,9 +502,7 @@ class Model(nn.Module):
             pred_C = _sample_next_token(
                 logits_CxV,
                 temperature=temperature,
-                top_p=top_p,
-                use_cfg_filter=use_cfg_filter,
-                cfg_filter_top_k=cfg_filter_top_k,
+                sampler=sampler,
             )
 
             generation_step_index = step - current_step
