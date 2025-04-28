@@ -211,7 +211,7 @@ class Model(nn.Module):
         segments = []
         for s1_chunk, s2_chunk in pattern.findall(text):
             segments.append(f"[S1] {s1_chunk.strip()} [S2] {s2_chunk.strip()}")
-        
+
         if len(segments) > 1:
             merged_segments = []
             for i in range(0, len(segments), 2):
@@ -265,7 +265,11 @@ class Model(nn.Module):
             audio_duration_seconds = samples / sample_rate
 
             elapsed_time = time_end - time_start
-            rtf = elapsed_time / audio_duration_seconds if audio_duration_seconds > 0 else 0
+            rtf = (
+                elapsed_time / audio_duration_seconds
+                if audio_duration_seconds > 0
+                else 0
+            )
 
             duration_mins = int(audio_duration_seconds // 60)
             duration_secs = int(audio_duration_seconds % 60)
