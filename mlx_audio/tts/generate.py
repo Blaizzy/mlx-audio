@@ -77,12 +77,10 @@ def generate_audio(
             ref_audio = load_audio(ref_audio, sample_rate=sample_rate)
             if not ref_text:
                 print("Ref_text not found. Transcribing ref_audio...")
-                # mlx_whisper seems takes long time to import. Import only necessary.
-                import mlx_whisper
+                from mlx_audio.stt import Whisper
 
-                ref_text = mlx_whisper.transcribe(ref_audio, path_or_hf_repo=stt_model)[
-                    "text"
-                ]
+                stt_model = Whisper.from_pretrained(path_or_hf_repo=stt_model)
+                ref_text = stt_model.transcribe(ref_audio)["text"]
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer

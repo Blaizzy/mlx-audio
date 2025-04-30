@@ -33,7 +33,13 @@ setup(
     packages=find_packages(where=root_dir),
     include_package_data=True,
     package_data={
-        "mlx_audio": ["tts/*.html", "tts/*.js", "tts/*.css", "tts/static/**/*"],
+        "mlx_audio": [
+            "tts/*.html",
+            "tts/*.js",
+            "tts/*.css",
+            "tts/static/**/*",
+            "stt/**/*.tiktoken",
+        ],
     },
     classifiers=[
         "Programming Language :: Python :: 3",
