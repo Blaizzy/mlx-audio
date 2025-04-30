@@ -134,7 +134,7 @@ class MlpBlock(nn.Module):
         up = self.activation_fn_1(up_input)
         hidden = mx.multiply(gate, up)
 
-        if self.dtype is not None:
+        if self.dtype is not None and self.dtype != hidden.dtype:
             hidden = hidden.astype(self.dtype)
 
         if not deterministic:
@@ -191,21 +191,12 @@ class KVCache:
         self.current_idx = 0
         self.max_len = max_len
 
-    def get_kv_for_attention(self, current_k, current_v):
-        if self.current_idx == 0:
-            return current_k, current_v
-        else:
-            past_k = self.k[:, :, : self.current_idx, :]
-            past_v = self.v[:, :, : self.current_idx, :]
-            attn_k = mx.concat((past_k, current_k), axis=2)
-            attn_v = mx.concat((past_v, current_v), axis=2)
-            return attn_k, attn_v
-
-    def update_cache(self, k, v):
+    def update_and_fetch(self, k, v):
         assert self.current_idx < self.max_len
         self.k[:, :, self.current_idx : self.current_idx + 1, :] = k
         self.v[:, :, self.current_idx : self.current_idx + 1, :] = v
         self.current_idx += 1
+        return self.k[:, :, : self.current_idx, :], self.v[:, :, : self.current_idx, :]
 
     def prefill_kv(self, k, v):
         prefill_len = k.shape[2]
@@ -329,7 +320,6 @@ class Attention(nn.Module):
         # Input values into attention calculation
         attn_k = None
         attn_v = None
-        new_kv_cache = None
 
         # Decoder Cross Attention
         if self.is_cross_attn:
@@ -379,8 +369,7 @@ class Attention(nn.Module):
                     cache.prefill_kv(attn_k, attn_v)
                 # In decode step, we add current K/V to cache step by step
                 else:
-                    new_kv_cache = (Xk_BxNxSxH, Xv_BxNxSxH)
-                    attn_k, attn_v = cache.get_kv_for_attention(Xk_BxNxSxH, Xv_BxNxSxH)
+                    attn_k, attn_v = cache.update_and_fetch(Xk_BxNxSxH, Xv_BxNxSxH)
 
         # Attention Calculation
         attn_scores = mx.matmul(Xq_BxNxTxH, attn_k.swapaxes(2, 3))
@@ -405,7 +394,7 @@ class Attention(nn.Module):
         if output.dtype != original_dtype:
             output = output.astype(original_dtype)
 
-        return output, new_kv_cache
+        return output
 
 
 class EncoderLayer(nn.Module):
@@ -459,7 +448,7 @@ class EncoderLayer(nn.Module):
         residual = x
         x_norm = self.pre_sa_norm(x)
 
-        sa_out, _ = self.self_attention(
+        sa_out = self.self_attention(
             Xq=x_norm,
             Xkv=x_norm,
             q_positions=src_positions,
@@ -603,7 +592,7 @@ class DecoderLayer(nn.Module):
         residual = x
         x_norm = self.pre_sa_norm(x)
 
-        sa_out, new_kv_cache = self.self_attention(
+        sa_out = self.self_attention(
             Xq=x_norm,  # (2, 1, D)
             Xkv=x_norm,  # (2, 1, D)
             q_positions=tgt_positions,  # (2, 1)
@@ -618,7 +607,7 @@ class DecoderLayer(nn.Module):
         # 2. Cross-Attention
         residual = x
         x_norm = self.pre_ca_norm(x)
-        ca_out, _ = self.cross_attention(
+        ca_out = self.cross_attention(
             Xq=x_norm,
             Xkv=encoder_out,
             q_positions=tgt_positions,
@@ -635,7 +624,7 @@ class DecoderLayer(nn.Module):
         mlp_out = self.mlp(x_norm, deterministic=deterministic)
         x = residual + mlp_out
 
-        return x, new_kv_cache
+        return x
 
 
 class Decoder(nn.Module):
@@ -713,7 +702,7 @@ class Decoder(nn.Module):
         cross_attn_mask: mx.array,  # [B, 1, 1, S]
         self_attention_cache: List[KVCache],
         cross_attention_cache: List[KVCache],
-    ) -> Tuple[mx.array, List[Tuple[mx.array, mx.array]]]:
+    ) -> mx.array:
         """
         Performs a single decoding step, managing KV caches layer by layer.
 
@@ -732,12 +721,10 @@ class Decoder(nn.Module):
             channel_embed = self.embeddings[i](channel_tokens)
             x = channel_embed if x is None else x + channel_embed
 
-        new_cache = []
-
         for i, layer in enumerate(self.layers):
             self_cache = self_attention_cache[i]
             cross_cache = cross_attention_cache[i]
-            x, new_kv_cache = layer(
+            x = layer(
                 x,  # (2, 1, D)
                 encoder_out,  # (2, S, E)
                 src_positions=None,  # CA KV is already computed
@@ -748,7 +735,6 @@ class Decoder(nn.Module):
                 self_attn_cache=self_cache,
                 cross_attn_cache=cross_cache,
             )
-            new_cache.append(new_kv_cache)
 
         x = self.norm(x)
         logits_Bx1xCxV = self.logits_dense(x)
@@ -757,7 +743,7 @@ class Decoder(nn.Module):
         if logits_Bx1xCxV.dtype != mx.float32:
             logits_Bx1xCxV = logits_Bx1xCxV.astype(mx.float32)
 
-        return logits_Bx1xCxV, new_cache
+        return logits_Bx1xCxV
 
     def __call__(
         self,
@@ -804,7 +790,7 @@ class Decoder(nn.Module):
 
         # Process through each decoder layer
         for i, layer in enumerate(self.layers):
-            x, _ = layer(
+            x = layer(
                 x,
                 encoder_out,
                 tgt_positions=tgt_positions,

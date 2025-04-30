@@ -203,7 +203,7 @@ class Model(nn.Module):
 
     def _split_turns(self, text: str) -> List[str]:
         """
-        Splits a conversation text into segments each containing one [S1] and one [S2] chunk.
+        Splits a conversation text into segments each containing a maximum of two [S1]/[S2] chunks.
         """
         pattern = re.compile(
             r"\[S1\]\s*(.*?)\s*\[S2\]\s*(.*?)(?=(?:\[S1\])|$)", re.DOTALL
@@ -211,6 +211,16 @@ class Model(nn.Module):
         segments = []
         for s1_chunk, s2_chunk in pattern.findall(text):
             segments.append(f"[S1] {s1_chunk.strip()} [S2] {s2_chunk.strip()}")
+
+        if len(segments) > 1:
+            merged_segments = []
+            for i in range(0, len(segments), 2):
+                if i + 1 < len(segments):
+                    merged_segments.append(f"{segments[i]} {segments[i + 1]}")
+                else:
+                    merged_segments.append(segments[i])
+            segments = merged_segments
+
         return segments
 
     def generate(
@@ -239,7 +249,7 @@ class Model(nn.Module):
         for segment_index, segment in enumerate(segments):
             time_start = time.perf_counter()
 
-            audio = self._generate(
+            audio, token_count = self._generate(
                 segment,
                 max_tokens=max_tokens,
                 ref_audio=ref_audio,
@@ -251,13 +261,15 @@ class Model(nn.Module):
             samples = audio.shape[0] if audio is not None else 0
             assert samples > 0, "No audio generated"
 
-            token_count = audio.shape[0] if audio is not None else 0
-
             sample_rate = 44100
             audio_duration_seconds = samples / sample_rate
 
             elapsed_time = time_end - time_start
-            rtf = audio_duration_seconds / elapsed_time
+            rtf = (
+                elapsed_time / audio_duration_seconds
+                if audio_duration_seconds > 0
+                else 0
+            )
 
             duration_mins = int(audio_duration_seconds // 60)
             duration_secs = int(audio_duration_seconds % 60)
@@ -462,7 +474,7 @@ class Model(nn.Module):
                 dtype=mx.int32,
             )
 
-            logits_Bx1xCxV, new_cache = decode_step(
+            logits_Bx1xCxV = decode_step(
                 tgt_ids_Bx1xC=tgt_ids_Bx1xC,
                 tgt_pos_Bx1=tgt_pos_Bx1,
                 encoder_out=encoder_out,
@@ -471,10 +483,6 @@ class Model(nn.Module):
                 self_attention_cache=decoder_self_attention_cache,
                 cross_attention_cache=decoder_cross_attention_cache,
             )
-
-            if new_cache is not None:
-                for i, layer_cache in enumerate(decoder_self_attention_cache):
-                    layer_cache.update_cache(new_cache[i][0], new_cache[i][1])
 
             V = self.config.model.tgt_vocab_size
             logits_last_BxCxV = logits_Bx1xCxV[:, -1, :, :]  # B, C, V
@@ -574,4 +582,4 @@ class Model(nn.Module):
             T=max_tokens,
             C=num_channels,
         )
-        return audio.squeeze()
+        return audio.squeeze(), generation_step_index
