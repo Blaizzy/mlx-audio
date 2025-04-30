@@ -18,11 +18,13 @@ from typing import List, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_audio.codec.models.descript.nn.quantize import ResidualVectorQuantize
+# from mlx_audio.codec.models.descript.nn.quantize import ResidualVectorQuantize
+
 from mlx_audio.tts.models.spark.modules.speaker.ecapa_tdnn import ECAPA_TDNN_GLOB_c512
 from mlx_audio.tts.models.spark.modules.speaker.perceiver_encoder import (
     PerceiverResampler,
 )
+from mlx_audio.tts.models.spark.modules.residual_fsq import ResidualFSQ
 
 """
 x-vector + d-vector
@@ -30,19 +32,7 @@ x-vector + d-vector
 
 
 class SpeakerEncoder(nn.Module):
-    """
 
-    Args:
-        input_dim (int): acoustic feature dimension
-        out_dim (int): output dimension of x-vector and d-vector
-        latent_dim (int): latent dimension before quantization
-        token_num (int): sequence length of speaker tokens
-        fsq_levels (List[int]): number of levels for each quantizer
-        fsq_num_quantizers (int): number of quantizers
-
-    Return:
-        speaker_embs: (B, T2, out_dim)
-    """
 
     def __init__(
         self,
@@ -61,10 +51,12 @@ class SpeakerEncoder(nn.Module):
         self.perceiver_sampler = PerceiverResampler(
             dim=latent_dim, dim_context=512 * 3, num_latents=token_num
         )
-        self.quantizer = ResidualVectorQuantize(
-            input_dim=latent_dim,
-            n_codebooks=fsq_num_quantizers,
-            codebook_dim=fsq_levels,
+        self.quantizer = ResidualFSQ(
+            dim=latent_dim,
+            num_quantizers=fsq_num_quantizers,
+            levels=fsq_levels,
+            is_channel_first=True,
+            quantize_dropout=False
         )
 
         self.project = nn.Linear(latent_dim * token_num, out_dim)
@@ -92,8 +84,8 @@ class SpeakerEncoder(nn.Module):
 
         x_vector, features = self.speaker_encoder(mels, True)
         x = self.perceiver_sampler(features.transpose(0, 2, 1)).transpose(0, 2, 1)
-        zq, indices, _, _, _ = self.quantizer(x)  # zq: (B, latent_dim, T2, latent_dim)
-        x = zq.reshape(zq.shape[0], -1)
+        out = self.quantizer(x)  # zq: (B, latent_dim, T2, latent_dim)
+        x = out["z_q"].reshape(out["z_q"].shape[0], -1)
         d_vector = self.project(x)
 
         return x_vector, d_vector
@@ -102,23 +94,29 @@ class SpeakerEncoder(nn.Module):
         """tokenize the input mel spectrogram"""
         _, features = self.speaker_encoder(mels, True)
         x = self.perceiver_sampler(features.transpose(0, 2, 1)).transpose(0, 2, 1)
-        zq, indices, _, _, _ = self.quantizer(x)
-        return indices
+        out = self.quantizer(x)
+        return out["indices"]
 
     def detokenize(self, indices: mx.array) -> mx.array:
         """detokenize the input indices to d-vector"""
-        print("Indices detokenize", indices.shape)
-        zq = self.quantizer.get_output_from_indices(
-            indices.transpose(0, 2, 1)
-        ).transpose(0, 2, 1)
-        print("ZQ detokenize", zq.shape)
+        if indices.ndim == 2:
+            indices = indices.transpose(0, 1)
+        elif indices.ndim == 3:
+            indices = indices.squeeze(0).transpose(0, 1)
+        else:
+            raise ValueError("indices must be 2D or 3D")
+
+        zq = self.quantizer.get_output_from_indices(indices).transpose(0, 2, 1)
         x = zq.reshape(zq.shape[0], -1)
-        print("X detokenize", x.shape)
         d_vector = self.project(x)
         return d_vector
 
 
+
+
 if __name__ == "__main__":
+    from mlx.utils import tree_flatten
+
     model = SpeakerEncoder(
         input_dim=100,
         latent_dim=128,
@@ -139,5 +137,12 @@ if __name__ == "__main__":
         print("d-vector post and d-vector are the same")
     else:
         print("d-vector post and d-vector are different")
-    num_params = sum(param.numel() for param in model.parameters())
+
+    num_params = 0
+
+    weights = dict(tree_flatten(model.parameters()))
+
+    for k, v in weights.items():
+        num_params += v.size
     print("{} M".format(num_params / 1e6))
+

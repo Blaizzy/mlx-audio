@@ -174,15 +174,24 @@ def FeedForward(dim, mult=4, causal_conv=False):
 
     conv = None
     if causal_conv:
-        conv = nn.Sequential(
+        conv = [
             lambda x: mx.transpose(x, (0, 2, 1)),  # b n d -> b d n
             CausalConv1d(dim_inner, dim_inner, 3),
             lambda x: mx.transpose(x, (0, 2, 1)),  # b d n -> b n d
-        )
+        ]
 
-    return Sequential(
-        nn.Linear(dim, dim_inner * 2), GEGLU(), conv, nn.Linear(dim_inner, dim)
-    )
+        return [
+            nn.Linear(dim, dim_inner * 2),
+            GEGLU(),
+            conv,
+            nn.Linear(dim_inner, dim),
+        ]
+    else:
+        return [
+            nn.Linear(dim, dim_inner * 2),
+            GEGLU(),
+            nn.Linear(dim_inner, dim),
+        ]
 
 
 class Attention(nn.Module):
@@ -287,7 +296,11 @@ class PerceiverResampler(nn.Module):
 
         for attn, ff in self.layers:
             latents = attn(latents, x, mask=mask) + latents
-            latents = ff(latents) + latents
+            skip_connect = latents
+            for module in ff:
+                skip_connect = module(skip_connect)
+
+            latents = skip_connect + latents
 
         return self.norm(latents)
 
@@ -298,7 +311,7 @@ if __name__ == "__main__":
     model = PerceiverResampler(dim=256, dim_context=80)
     x = mx.random.normal(shape=(8, 200, 80))
     out = model(x)
-    print(out.shape)  # [8, 32, 80]
+    print("Output shape:", out.shape)  # [8, 32, 80]
 
     # Count parameters for MLX model
     num_params = 0

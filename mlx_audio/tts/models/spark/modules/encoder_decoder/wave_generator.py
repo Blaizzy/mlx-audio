@@ -18,7 +18,7 @@ class DecoderBlock(nn.Module):
         stride: int = 1,
     ):
         super().__init__()
-        self.block = nn.Sequential(
+        self.block = [
             Snake1d(input_dim),
             WNConvTranspose1d(
                 input_dim,
@@ -30,10 +30,12 @@ class DecoderBlock(nn.Module):
             ResidualUnit(output_dim, dilation=1),
             ResidualUnit(output_dim, dilation=3),
             ResidualUnit(output_dim, dilation=9),
-        )
+        ]
 
     def __call__(self, x):
-        return self.block(x)
+        for module in self.block:
+            x = module(x)
+        return x
 
 
 class WaveGenerator(nn.Module):
@@ -63,10 +65,13 @@ class WaveGenerator(nn.Module):
             nn.Tanh(),
         ]
 
-        self.model = nn.Sequential(*layers)
+        self.model = layers
 
     def __call__(self, x):
-        return self.model(x.transpose(0, 2, 1)).transpose(0, 2, 1)
+        x = x.transpose(0, 2, 1)
+        for module in self.model:
+            x = module(x)
+        return x.transpose(0, 2, 1)
 
 
 if __name__ == "__main__":

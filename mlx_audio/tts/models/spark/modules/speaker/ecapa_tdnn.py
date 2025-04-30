@@ -61,8 +61,8 @@ class Res2Conv1dReluBn(nn.Module):
                 )
             )
             self.bns.append(nn.BatchNorm(self.width))
-        self.convs = [*self.convs]  # nn.ModuleList(self.convs)
-        self.bns = [*self.bns]  # nn.ModuleList(self.bns)
+        # self.convs = [*self.convs]  # nn.ModuleList(self.convs)
+        # self.bns = [*self.bns]  # nn.ModuleList(self.bns)
 
     def __call__(self, x):
         out = []
@@ -141,21 +141,23 @@ class SE_Res2Block(nn.Module):
 
     def __init__(self, channels, kernel_size, stride, padding, dilation, scale):
         super().__init__()
-        self.se_res2block = nn.Sequential(
+        self.se_res2block = [
             Conv1dReluBn(channels, channels, kernel_size=1, stride=1, padding=0),
-            lambda x: x.transpose(0, 2, 1),
+
             Res2Conv1dReluBn(
                 channels, kernel_size, stride, padding, dilation, scale=scale
             ),
-            lambda x: x.transpose(0, 2, 1),
+
             Conv1dReluBn(channels, channels, kernel_size=1, stride=1, padding=0),
-            lambda x: x.transpose(0, 2, 1),
             SE_Connect(channels),
-            lambda x: x.transpose(0, 2, 1),
-        )
+        ]
 
     def __call__(self, x):
-        return x + self.se_res2block(x)
+        res = x
+        for module in self.se_res2block:
+            res = module(res)
+            res = res.transpose(0, 2, 1)
+        return x + res
 
 
 class ECAPA_TDNN(nn.Module):

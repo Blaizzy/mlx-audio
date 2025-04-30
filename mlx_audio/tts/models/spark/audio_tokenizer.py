@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
+import mlx.core as mx
 import numpy as np
 import torch
 from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
@@ -135,4 +136,4 @@ class BiCodecTokenizer:
         global_tokens = mx.array(global_tokens)
         semantic_tokens = mx.array(semantic_tokens)
         wav_rec = self.model.detokenize(semantic_tokens, global_tokens)
-        return wav_rec.detach().squeeze().cpu().numpy()
+        return wav_rec.squeeze()

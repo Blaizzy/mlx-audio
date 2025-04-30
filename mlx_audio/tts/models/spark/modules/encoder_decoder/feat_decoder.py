@@ -46,26 +46,24 @@ class Decoder(nn.Module):
         super().__init__()
 
         self.linear_pre = nn.Linear(input_channels, vocos_dim)
-        modules = [
-            nn.Sequential(
-                lambda x: x.transpose(0, 2, 1),
+        modules = []
+        for ratio in sample_ratios:
+            module_list = [
                 SamplingBlock(
                     dim=vocos_dim,
                     groups=vocos_dim,
                     upsample_scale=ratio,
                 ),
-                lambda x: x.transpose(0, 2, 1),
                 VocosBackbone(
                     input_channels=vocos_dim,
                     dim=vocos_dim,
                     intermediate_dim=vocos_intermediate_dim,
                     num_layers=2,
                 ),
-            )
-            for ratio in sample_ratios
-        ]
+            ]
+            modules.append(module_list)
 
-        self.downsample = nn.Sequential(*modules)
+        self.downsample = modules
 
         self.vocos_backbone = VocosBackbone(
             input_channels=vocos_dim,
@@ -87,13 +85,17 @@ class Decoder(nn.Module):
             x (mx.array): (batch_size, encode_channels, length)
         """
         x = self.linear_pre(x.transpose(0, 2, 1))
-        x = self.downsample(x).transpose(0, 2, 1)
-        x = self.vocos_backbone(x.transpose(0, 2, 1), bandwidth_id=c)
-        x = self.linear(x).transpose(0, 2, 1)
+        for modules in self.downsample:
+            for module in modules:
+                x = x.transpose(0, 2, 1)
+                x = module(x)
+
+        x = self.vocos_backbone(x, bandwidth_id=c)
+        x = self.linear(x)
         if self.use_tanh_at_final:
             x = mx.tanh(x)
 
-        return x
+        return x.transpose(0, 2, 1)
 
 
 # test

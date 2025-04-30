@@ -8,7 +8,7 @@ import torch
 from omegaconf import DictConfig
 from safetensors.torch import load_file
 
-from mlx_audio.codec.models.descript.nn.quantize import ResidualVectorQuantize
+from mlx_audio.tts.models.spark.modules.residual import FactorizedVectorQuantize
 from mlx_audio.tts.models.spark.mel_spec import MelSpectrogram
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_decoder import Decoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_encoder import Encoder
@@ -18,6 +18,8 @@ from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
 from mlx_audio.tts.models.spark.modules.speaker.speaker_encoder import SpeakerEncoder
 from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
+
+
 
 
 class BiCodec(nn.Module):
@@ -74,7 +76,7 @@ class BiCodec(nn.Module):
         mel_params = config["mel_params"]
 
         encoder = Encoder(**config["encoder"])
-        quantizer = ResidualVectorQuantize(**config["quantizer"])
+        quantizer = FactorizedVectorQuantize(**config["quantizer"])
         prenet = Decoder(**config["prenet"])
         postnet = Decoder(**config["postnet"])
         decoder = WaveGenerator(**config["decoder"])
@@ -91,7 +93,15 @@ class BiCodec(nn.Module):
         )
 
         weights = load_file(ckpt_path)
-        # model.load_weights(list(weights.items()), strict=False)
+        sanitized_weights = {}
+        
+        for k, v in weights.items():
+            if "num_batches_tracked" in k:
+                continue
+            sanitized_weights[k] = v
+
+        model.load_weights(list(sanitized_weights.items()), strict=True)
+
 
         return model
 
@@ -107,8 +117,9 @@ class BiCodec(nn.Module):
         """
         feat = mx.array(batch["feat"])
         # Use MLX mel transformer directly
-        ref_wav = mx.array(batch["ref_wav"])
-        mel = self.mel_transformer(ref_wav).squeeze(1)
+        ref_wav = batch["ref_wav"]
+        mel = mx.array(self.mel_transformer(ref_wav).squeeze(1))
+
 
         z = self.encoder(feat.transpose(0, 2, 1))
         z_q, codes, latents, commitment_loss, codebook_loss = self.quantizer(z)
@@ -161,8 +172,8 @@ class BiCodec(nn.Module):
             tuple: Semantic tokens and global tokens.
         """
         feat = mx.array(batch["feat"])
-        ref_wav = mx.array(batch["ref_wav"])
-        mel = self.mel_transformer(ref_wav).squeeze(1)
+        ref_wav = batch["ref_wav"]
+        mel = mx.array(self.mel_transformer(ref_wav).squeeze(1))
 
         z = self.encoder(feat.transpose(0, 2, 1))
         semantic_tokens = self.quantizer.tokenize(z)
@@ -198,13 +209,15 @@ class BiCodec(nn.Module):
         Args:
             config (dict): Configuration parameters for MelSpectrogram.
         """
-        self.mel_transformer = MelSpectrogram(
-            sample_rate=config["sample_rate"],
-            n_fft=config["n_fft"],
-            win_length=config["win_length"],
-            hop_length=config["hop_length"],
-            f_min=config["mel_fmin"],
-            f_max=config["mel_fmax"],
+        import torchaudio.transforms as TT
+
+        self.mel_transformer = TT.MelSpectrogram(
+            config["sample_rate"],
+            config["n_fft"],
+            config["win_length"],
+            config["hop_length"],
+            config["mel_fmin"],
+            config["mel_fmax"],
             n_mels=config["num_mels"],
             power=1,
             norm="slaney",
@@ -212,13 +225,22 @@ class BiCodec(nn.Module):
         )
 
 
+    def remove_weight_norm(self):
+        for name, module in self.named_modules():
+            if isinstance(module, WNConv1d) or isinstance(module, WNConvTranspose1d):
+                print(f"Removing weight norm from {name}")
+                module = remove_weight_norm_from_module(module)
+
+
+
 if __name__ == "__main__":
+    import torch
     model_path = get_model_path("SparkAudio/Spark-TTS-0.5B")
-    print(model_path)
+
     model = BiCodec.load_from_checkpoint(model_path / "BiCodec")
     wav = mx.random.normal((1, 16000), dtype=mx.float32)
-    mel = model.mel_transformer(wav)
-    print(mel.shape)
+    mel = model.mel_transformer(torch.from_dlpack(wav))
+
 
     # Generate random inputs for testing
     duration = 0.96
@@ -229,7 +251,14 @@ if __name__ == "__main__":
     # Forward pass
     outputs = model(inputs)
     semantic_tokens, global_tokens = model.tokenize(inputs)
+
+
     wav_recon = model.detokenize(semantic_tokens, global_tokens)
 
     print(outputs["recons"].shape)
     print(wav_recon.shape)
+
+    if np.allclose(outputs["recons"], wav_recon):
+        print("Test successful")
+    else:
+        print("Test failed")

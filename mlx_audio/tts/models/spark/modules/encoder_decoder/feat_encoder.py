@@ -50,26 +50,27 @@ class Encoder(nn.Module):
             num_layers=vocos_num_layers,
         )
 
-        modules = [
-            nn.Sequential(
-                lambda x: x.transpose(0, 2, 1),
-                SamplingBlock(
-                    dim=vocos_dim,
-                    groups=vocos_dim,
-                    downsample_scale=ratio,
-                ),
-                lambda x: x.transpose(0, 2, 1),
-                VocosBackbone(
-                    input_channels=vocos_dim,
-                    dim=vocos_dim,
-                    intermediate_dim=vocos_intermediate_dim,
-                    num_layers=2,
-                ),
-            )
-            for ratio in sample_ratios
-        ]
+        modules = []
 
-        self.downsample = nn.Sequential(*modules)
+        for ratio in sample_ratios:
+            modules.append(
+                [
+                    SamplingBlock(
+                        dim=vocos_dim,
+                        groups=vocos_dim,
+                        downsample_scale=ratio,
+                    ),
+                    VocosBackbone(
+                        input_channels=vocos_dim,
+                        dim=vocos_dim,
+                        intermediate_dim=vocos_intermediate_dim,
+                        num_layers=2,
+                        bias=False,
+                    ),
+                ]
+            )
+
+        self.downsample = modules
 
         self.project = nn.Linear(vocos_dim, out_channels)
 
@@ -82,9 +83,16 @@ class Encoder(nn.Module):
             x (mx.array): (batch_size, encode_channels, length)
         """
         x = self.encoder(x.transpose(0, 2, 1))
-        x = self.downsample(x)
+
+        for modules in self.downsample:
+            for module in modules:
+                x = x.transpose(0, 2, 1)
+                x = module(x)
+
         x = self.project(x)
         return x.transpose(0, 2, 1)
+
+    
 
 
 # test

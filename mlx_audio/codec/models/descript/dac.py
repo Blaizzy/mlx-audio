@@ -17,15 +17,17 @@ class ResidualUnit(nn.Module):
     def __init__(self, dim: int = 16, dilation: int = 1):
         super().__init__()
         pad = ((7 - 1) * dilation) // 2
-        self.block = nn.Sequential(
+        self.block = [
             Snake1d(dim),
             WNConv1d(dim, dim, kernel_size=7, dilation=dilation, padding=pad),
             Snake1d(dim),
             WNConv1d(dim, dim, kernel_size=1),
-        )
+        ]
 
     def __call__(self, x):
-        y = self.block(x)
+        y = x
+        for module in self.block:
+            y = module(y)
         pad = (x.shape[-1] - y.shape[-1]) // 2
         if pad > 0:
             x = x[..., pad:-pad]

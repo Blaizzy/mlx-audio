@@ -68,7 +68,6 @@ class ResidualVectorQuantize(nn.Module):
         n_codebooks: int = 9,
         codebook_size: int = 1024,
         codebook_dim: Union[int, list] = 8,
-        **kwargs,
     ):
         super().__init__()
         if isinstance(codebook_dim, int):
@@ -129,14 +128,6 @@ class ResidualVectorQuantize(nn.Module):
             z_q = z_q + z_q_i
         return z_q, mx.concatenate(z_p, axis=1), codes
 
-    def tokenize(self, z: mx.array):
-        z_q, codes, latents, commitment_loss, codebook_loss = self(z)
-        return codes
-
-    def detokenize(self, codes: mx.array):
-        z_q, z_p, codes = self.from_codes(codes)
-        return z_q
-
     def from_latents(self, latents: mx.array):
         z_q = 0
         z_p = []
@@ -156,52 +147,3 @@ class ResidualVectorQuantize(nn.Module):
             z_q = z_q + z_q_i
 
         return z_q, mx.concatenate(z_p, axis=1), mx.stack(codes, axis=1)
-
-    def get_codes_from_indices(self, indices: mx.array):
-        """
-        Get codes from indices.
-
-        Args:
-            indices: Indices of shape (batch, n_codebooks, time)
-
-        Returns:
-            Codes of shape (n_codebooks, batch, time, codebook_dim)
-        """
-        batch_size = indices.shape[0]
-        n_codebooks = indices.shape[1]
-        time_dim = indices.shape[2]
-
-        # Handle the case where n_codebooks (e.g., 32) is greater than len(self.quantizers) (e.g., 1)
-        # This suggests we're using a single quantizer for multiple codebook entries
-
-        all_codes = []
-        for i in range(n_codebooks):
-            # Use modulo to cycle through available quantizers
-            quantizer_idx = i % len(self.quantizers)
-
-            # Get the codes for this codebook
-            codes_i = self.quantizers[quantizer_idx].embed_code(indices[:, i, :])
-            # Reshape to (batch, time, codebook_dim)
-            codes_i = codes_i.reshape(
-                batch_size, time_dim, self.codebook_dim[quantizer_idx]
-            )
-            all_codes.append(codes_i)
-
-        # Stack along codebook dimension
-        return mx.stack(all_codes, axis=0)
-
-    def get_output_from_indices(self, indices: mx.array):
-        """
-        Get output from indices by summing across codebooks.
-
-        Args:
-            indices: Indices of shape (batch, n_codebooks, time)
-
-        Returns:
-            Output of shape (batch, codebook_dim, time)
-        """
-        codes = self.get_codes_from_indices(indices)
-        # Sum across codebooks dimension (dim 0)
-        codes_summed = mx.sum(codes, axis=0)
-        # Transpose to get (batch, codebook_dim, time)
-        return codes_summed.transpose(0, 2, 1)

@@ -187,6 +187,8 @@ class AdaLayerNorm(nn.Module):
         self.shift.weight = mx.zeros((num_embeddings, embedding_dim))
 
     def __call__(self, x: mx.array, cond_embedding_id: mx.array) -> mx.array:
+        if cond_embedding_id.dtype != mx.int32:
+            cond_embedding_id = cond_embedding_id.astype(mx.int32)
 
         scale = self.scale(cond_embedding_id)[:, :1, :]
         shift = self.shift(cond_embedding_id)[:, :1, :]
@@ -204,6 +206,7 @@ class VocosBackbone(nn.Module):
         num_layers: int,
         layer_scale_init_value: Optional[float] = None,
         adanorm_num_embeddings: Optional[int] = None,
+        bias: bool = True,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -223,7 +226,7 @@ class VocosBackbone(nn.Module):
             )
             for _ in range(num_layers)
         ]
-        self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6)
+        self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6, bias=bias)
 
     def __call__(self, x: mx.array, **kwargs) -> mx.array:
         bandwidth_id = kwargs.get("bandwidth_id", None)
