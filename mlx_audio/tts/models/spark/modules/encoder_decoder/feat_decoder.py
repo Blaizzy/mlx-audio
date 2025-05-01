@@ -84,11 +84,14 @@ class Decoder(nn.Module):
         Returns:
             x (mx.array): (batch_size, encode_channels, length)
         """
-        x = self.linear_pre(x.transpose(0, 2, 1))
+        x = self.linear_pre(x.transpose(0, 2, 1)).transpose(0, 2, 1)
         for modules in self.downsample:
             for module in modules:
-                x = x.transpose(0, 2, 1)
-                x = module(x)
+                if isinstance(module, SamplingBlock):
+                    x = module(x)
+                else:
+                    x = module(x).transpose(0, 2, 1)
+
 
         x = self.vocos_backbone(x, bandwidth_id=c)
         x = self.linear(x)
