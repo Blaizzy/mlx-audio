@@ -94,13 +94,13 @@ class BiCodec(nn.Module):
 
         weights = load_file(ckpt_path)
         sanitized_weights = {}
-        
+
         for k, v in weights.items():
             if "num_batches_tracked" in k:
                 continue
-            sanitized_weights[k] = v
+            sanitized_weights[k] = mx.array(v)
 
-        model.load_weights(list(sanitized_weights.items()), strict=True)
+        model.load_weights(list(sanitized_weights.items()), strict=False)
 
 
         return model
@@ -122,15 +122,8 @@ class BiCodec(nn.Module):
 
 
         z = self.encoder(feat.transpose(0, 2, 1))
-        z_q, codes, latents, commitment_loss, codebook_loss = self.quantizer(z)
-        vq_outputs = {
-            "z_q": z_q,
-            "codes": codes,
-            "latents": latents,
-            "vq_loss": commitment_loss + codebook_loss,
-            "perplexity": 0.0,  # Placeholder for perplexity
-            "active_num": 0.0,  # Placeholder for active cluster size
-        }
+        vq_outputs = self.quantizer(z)
+
 
         x_vector, d_vector = self.speaker_encoder(mel.transpose(0, 2, 1))
 
@@ -176,6 +169,7 @@ class BiCodec(nn.Module):
         mel = mx.array(self.mel_transformer(ref_wav).squeeze(1))
 
         z = self.encoder(feat.transpose(0, 2, 1))
+        print("z", z.shape)
         semantic_tokens = self.quantizer.tokenize(z)
         global_tokens = self.speaker_encoder.tokenize(mel.transpose(0, 2, 1))
 
@@ -194,6 +188,7 @@ class BiCodec(nn.Module):
         """
         semantic_tokens = mx.array(semantic_tokens)
         global_tokens = mx.array(global_tokens)
+
         z_q = self.quantizer.detokenize(semantic_tokens)
         d_vector = self.speaker_encoder.detokenize(global_tokens)
         x = self.prenet(z_q, d_vector)
@@ -224,12 +219,6 @@ class BiCodec(nn.Module):
             mel_scale="slaney",
         )
 
-
-    def remove_weight_norm(self):
-        for name, module in self.named_modules():
-            if isinstance(module, WNConv1d) or isinstance(module, WNConvTranspose1d):
-                print(f"Removing weight norm from {name}")
-                module = remove_weight_norm_from_module(module)
 
 
 
