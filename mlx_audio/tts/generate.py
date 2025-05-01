@@ -80,7 +80,7 @@ def generate_audio(
                 from mlx_audio.stt import Whisper
 
                 stt_model = Whisper.from_pretrained(path_or_hf_repo=stt_model)
-                ref_text = stt_model.transcribe(ref_audio)["text"]
+                ref_text = stt_model.generate(ref_audio)["text"]
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer

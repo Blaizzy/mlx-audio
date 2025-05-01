@@ -345,7 +345,7 @@ class Whisper(nn.Module):
         mx.eval(model.parameters())
         return model
 
-    def transcribe(
+    def generate(
         self,
         audio: Union[str, np.ndarray, mx.array],
         *,
