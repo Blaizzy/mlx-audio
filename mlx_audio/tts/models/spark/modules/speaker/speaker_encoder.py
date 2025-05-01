@@ -84,8 +84,8 @@ class SpeakerEncoder(nn.Module):
 
         x_vector, features = self.speaker_encoder(mels, True)
         x = self.perceiver_sampler(features.transpose(0, 2, 1)).transpose(0, 2, 1)
-        out = self.quantizer(x)  # zq: (B, latent_dim, T2, latent_dim)
-        x = out["z_q"].reshape(out["z_q"].shape[0], -1)
+        z_q, indices = self.quantizer(x)  # zq: (B, latent_dim, T2, latent_dim)
+        x = z_q.reshape(z_q.shape[0], -1)
         d_vector = self.project(x)
 
         return x_vector, d_vector
@@ -94,24 +94,28 @@ class SpeakerEncoder(nn.Module):
         """tokenize the input mel spectrogram"""
         _, features = self.speaker_encoder(mels, True)
         x = self.perceiver_sampler(features.transpose(0, 2, 1)).transpose(0, 2, 1)
-        out = self.quantizer(x)
-        return out["indices"]
+        z_q, indices = self.quantizer(x)
+        return indices
 
     def detokenize(self, indices: mx.array) -> mx.array:
-        """detokenize the input indices to d-vector"""
-        if indices.ndim == 2:
-            indices = indices.transpose(0, 1)
-        elif indices.ndim == 3:
-            indices = indices.squeeze(0).transpose(0, 1)
-        else:
-            raise ValueError("indices must be 2D or 3D")
 
-        zq = self.quantizer.get_output_from_indices(indices).transpose(0, 2, 1)
+        zq = self.quantizer.get_output_from_indices(indices.transpose(0, 2, 1)).transpose(0, 2, 1)
         x = zq.reshape(zq.shape[0], -1)
         d_vector = self.project(x)
         return d_vector
 
 
+    def sanitize(self, weights):
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if ".conv.weight" in k or ("convs." in k and "weight" in k) or ("speaker_encoder.pool.linear" in k and "weight" in k):
+                if v.shape[1] > v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(0, 2, 1)
+                else:
+                    sanitized_weights[k] = v
+            else:
+                sanitized_weights[k] = v
+        return sanitized_weights
 
 
 if __name__ == "__main__":
