@@ -43,6 +43,7 @@ class Encoder(nn.Module):
             sample_ratios (List[int]): sample ratios
                 example: [2, 2] means downsample by 2x and then upsample by 2x
         """
+
         self.encoder = VocosBackbone(
             input_channels=input_channels,
             dim=vocos_dim,
@@ -65,7 +66,7 @@ class Encoder(nn.Module):
                         dim=vocos_dim,
                         intermediate_dim=vocos_intermediate_dim,
                         num_layers=2,
-                        bias=False,
+                        bias=True,
                     ),
                 ]
             )
@@ -82,7 +83,8 @@ class Encoder(nn.Module):
         Returns:
             x (mx.array): (batch_size, encode_channels, length)
         """
-        x = self.encoder(x.transpose(0, 2, 1))
+
+        x = self.encoder(x)
 
         for modules in self.downsample:
             for module in modules:
@@ -92,7 +94,24 @@ class Encoder(nn.Module):
         x = self.project(x)
         return x.transpose(0, 2, 1)
 
-    
+    def sanitize(self, weights):
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if "dwconv.weight" in k:
+                if v.shape[1] < v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(0, 2, 1)
+                else:
+                    sanitized_weights[k] = v
+            elif "embed.weight" in k:
+                if v.shape[1] > v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(0, 2, 1)
+                else:
+                    sanitized_weights[k] = v
+
+            else:
+                sanitized_weights[k] = v
+
+        return sanitized_weights
 
 
 # test

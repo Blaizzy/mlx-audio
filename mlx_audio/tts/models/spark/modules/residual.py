@@ -112,21 +112,21 @@ class FactorizedVectorQuantize(nn.Module):
 
     def tokenize(self, z: mx.array) -> mx.array:
         """tokenize the input tensor"""
-        z_e = self.in_project(z)
+        z_e = self.in_project(z).transpose(0, 2, 1)
         _, indices, _ = self.decode_latents(z_e)
         return indices
 
     def detokenize(self, indices):
         """detokenize the input indices"""
         z_q = self.decode_code(indices)
-        z_q = self.out_project(z_q)
+        z_q = self.out_project(z_q.transpose(2, 1, 0)).transpose(2, 1, 0)
         return z_q
 
     def get_emb(self):
         return self.codebook.weight
 
     def embed_code(self, embed_id):
-        return self.codebook.weight[embed_id]
+        return mx.take(self.codebook.weight, embed_id, axis=0)
 
     def decode_code(self, embed_id):
 
@@ -182,3 +182,14 @@ class FactorizedVectorQuantize(nn.Module):
         return self.out_project(z_q.transpose(0, 2, 1)).transpose(0, 2, 1)
 
 
+    def sanitize(self, weights):
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if "weight_v" in k:
+                if v.shape[1] > v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(0, 2, 1)
+                else:
+                    sanitized_weights[k] = v
+            else:
+                sanitized_weights[k] = v
+        return sanitized_weights

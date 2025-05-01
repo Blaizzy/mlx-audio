@@ -93,14 +93,20 @@ class BiCodec(nn.Module):
         )
 
         weights = load_file(ckpt_path)
-        sanitized_weights = {}
 
-        for k, v in weights.items():
-            if "num_batches_tracked" in k:
-                continue
-            sanitized_weights[k] = mx.array(v)
 
-        model.load_weights(list(sanitized_weights.items()), strict=False)
+        # Convert PyTorch weights to MLX arrays and sanitize
+        weights = {
+            k: mx.array(v) for k, v in weights.items()
+            if "num_batches_tracked" not in k
+        }
+
+
+        weights = encoder.sanitize(weights)
+        weights = quantizer.sanitize(weights)
+        weights = speaker_encoder.sanitize(weights)
+
+        model.load_weights(list(weights.items()), strict=False)
 
 
         return model
