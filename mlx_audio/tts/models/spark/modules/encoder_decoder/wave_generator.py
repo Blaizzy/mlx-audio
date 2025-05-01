@@ -33,9 +33,10 @@ class DecoderBlock(nn.Module):
         ]
 
     def __call__(self, x):
+        x = x.transpose(0, 2, 1)
         for module in self.block:
             x = module(x)
-        return x
+        return x.transpose(0, 2, 1)
 
 
 class WaveGenerator(nn.Module):
