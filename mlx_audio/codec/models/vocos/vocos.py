@@ -161,6 +161,7 @@ class ConvNeXtBlock(nn.Module):
         self, x: mx.array, cond_embedding_id: Optional[mx.array] = None
     ) -> mx.array:
         residual = x
+
         x = self.dwconv(x)
         if self.adanorm:
             assert cond_embedding_id is not None
@@ -181,8 +182,8 @@ class AdaLayerNorm(nn.Module):
         self.eps = eps
         self.dim = embedding_dim
 
-        self.scale = nn.Embedding(num_embeddings=num_embeddings, dims=embedding_dim)
-        self.shift = nn.Embedding(num_embeddings=num_embeddings, dims=embedding_dim)
+        self.scale = nn.Linear(num_embeddings, embedding_dim)
+        self.shift = nn.Linear(num_embeddings, embedding_dim)
         self.scale.weight = mx.ones((num_embeddings, embedding_dim))
         self.shift.weight = mx.zeros((num_embeddings, embedding_dim))
 
@@ -190,10 +191,10 @@ class AdaLayerNorm(nn.Module):
         if cond_embedding_id.dtype != mx.int32:
             cond_embedding_id = cond_embedding_id.astype(mx.int32)
 
-        scale = self.scale(cond_embedding_id)[:, :1, :]
-        shift = self.shift(cond_embedding_id)[:, :1, :]
+        scale = (cond_embedding_id @ self.scale.weight.T + self.scale.bias)
+        shift = (cond_embedding_id @ self.shift.weight.T + self.shift.bias)
         x = mx.fast.layer_norm(x, weight=None, bias=None, eps=self.eps)
-        x = x * scale + shift
+        x = x * scale[:, None, :] + shift[:, None, :]
         return x
 
 
@@ -231,6 +232,10 @@ class VocosBackbone(nn.Module):
     def __call__(self, x: mx.array, **kwargs) -> mx.array:
         bandwidth_id = kwargs.get("bandwidth_id", None)
 
+        # Transpose if the input is not in the correct shape
+        if x.shape[-1] != self.input_channels:
+            x = x.transpose(0, 2, 1)
+
         x = self.embed(x)
 
         if self.adanorm:
@@ -238,6 +243,7 @@ class VocosBackbone(nn.Module):
             x = self.norm(x, bandwidth_id)
         else:
             x = self.norm(x)
+
         for conv_block in self.convnext:
             x = conv_block(x, cond_embedding_id=bandwidth_id)
         x = self.final_layer_norm(x)
