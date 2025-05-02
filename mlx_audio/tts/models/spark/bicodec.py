@@ -103,6 +103,7 @@ class BiCodec(nn.Module):
 
 
         weights = encoder.sanitize(weights)
+        weights = decoder.sanitize(weights)
         weights = quantizer.sanitize(weights)
         weights = speaker_encoder.sanitize(weights)
 
@@ -175,8 +176,7 @@ class BiCodec(nn.Module):
         mel = mx.array(self.mel_transformer(ref_wav).squeeze(1))
 
         z = self.encoder(feat.transpose(0, 2, 1))
-        print("z", z.shape)
-        semantic_tokens = self.quantizer.tokenize(z)
+        semantic_tokens = self.quantizer.tokenize(z.transpose(0, 2, 1))
         global_tokens = self.speaker_encoder.tokenize(mel.transpose(0, 2, 1))
 
         return semantic_tokens, global_tokens
@@ -195,7 +195,7 @@ class BiCodec(nn.Module):
         semantic_tokens = mx.array(semantic_tokens)
         global_tokens = mx.array(global_tokens)
 
-        z_q = self.quantizer.detokenize(semantic_tokens)
+        z_q = self.quantizer.detokenize(semantic_tokens.transpose(0, 1)).transpose(0, 2, 1)
         d_vector = self.speaker_encoder.detokenize(global_tokens)
         x = self.prenet(z_q, d_vector)
         x = x + d_vector[..., None]

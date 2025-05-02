@@ -33,10 +33,19 @@ class DecoderBlock(nn.Module):
         ]
 
     def __call__(self, x):
-        x = x.transpose(0, 2, 1)
+        print("DecoderBlock x", x.shape)
+
         for module in self.block:
-            x = module(x)
-        return x.transpose(0, 2, 1)
+            if isinstance(module, Snake1d) or isinstance(module, ResidualUnit):
+                # print("DecoderBlock x before module", x.shape)
+                x = module(x)
+                # print("DecoderBlock x after module", x.shape)
+            elif isinstance(module, WNConvTranspose1d):
+                # print("DecoderBlock x before WNConvTranspose1d", x.shape)
+                x = module(x)
+                # print("DecoderBlock x after WNConvTranspose1d", x.shape)
+
+        return x
 
 
 class WaveGenerator(nn.Module):
@@ -74,6 +83,22 @@ class WaveGenerator(nn.Module):
             x = module(x)
         return x.transpose(0, 2, 1)
 
+    def sanitize(self, weights):
+        sanitized_weights = {}
+        for k, v in weights.items():
+            if ".alpha" in k:
+                if v.shape[1] > v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(0, 2, 1)
+                else:
+                    sanitized_weights[k] = v
+            elif "decoder.model" in k and "block.1" in k and ("weight_v" in k or "weight_g" in k):
+                if v.shape[0] > v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(1, 2, 0)
+                else:
+                    sanitized_weights[k] = v
+            else:
+                sanitized_weights[k] = v
+        return sanitized_weights
 
 if __name__ == "__main__":
     test_input = mx.random.normal((8, 1024, 50), dtype=mx.float32)

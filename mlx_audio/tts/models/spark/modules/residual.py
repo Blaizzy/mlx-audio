@@ -118,8 +118,10 @@ class FactorizedVectorQuantize(nn.Module):
 
     def detokenize(self, indices):
         """detokenize the input indices"""
-        z_q = self.decode_code(indices)
-        z_q = self.out_project(z_q.transpose(2, 1, 0)).transpose(2, 1, 0)
+        
+        z_q = self.decode_code(indices).transpose(0, 2, 1)
+
+        z_q = self.out_project(z_q)
         return z_q
 
     def get_emb(self):
