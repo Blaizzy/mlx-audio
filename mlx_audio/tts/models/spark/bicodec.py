@@ -101,14 +101,11 @@ class BiCodec(nn.Module):
             if "num_batches_tracked" not in k
         }
 
-
-        weights = encoder.sanitize(weights)
-        weights = decoder.sanitize(weights)
-        weights = quantizer.sanitize(weights)
-        weights = speaker_encoder.sanitize(weights)
+        for module in [encoder, decoder, quantizer, speaker_encoder]:
+            if hasattr(module, "sanitize"):
+                weights = module.sanitize(weights)
 
         model.load_weights(list(weights.items()), strict=False)
-
 
         return model
 

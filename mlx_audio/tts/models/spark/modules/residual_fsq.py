@@ -211,8 +211,6 @@ class ResidualFSQ(nn.Module):
             null_indices = mx.full(x.shape[:2], -1, dtype=mx.int32)
 
         # go through the layers
-
-
         for quantizer_index, (layer, scale) in enumerate(
             zip(self.layers, self.scales)
         ):

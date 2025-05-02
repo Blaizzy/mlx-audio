@@ -101,12 +101,13 @@ class Decoder(nn.Module):
         return x.transpose(0, 2, 1)
 
 
+
 # test
 if __name__ == "__main__":
     test_input = mx.random.normal(
         (8, 1024, 50), dtype=mx.float32
     )  # Batch size = 8, 1024 channels, length = 50
-    condition = mx.random.randint(0, 100, (8, 200))  # 8, 256
+    condition = mx.random.randint(0, 100, (256, 8))  # 8, 256
     decoder = Decoder(
         input_channels=1024,
         vocos_dim=384,

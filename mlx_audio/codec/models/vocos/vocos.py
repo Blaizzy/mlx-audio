@@ -191,8 +191,8 @@ class AdaLayerNorm(nn.Module):
         if cond_embedding_id.dtype != mx.int32:
             cond_embedding_id = cond_embedding_id.astype(mx.int32)
 
-        scale = (cond_embedding_id @ self.scale.weight.T + self.scale.bias)
-        shift = (cond_embedding_id @ self.shift.weight.T + self.shift.bias)
+        scale = (cond_embedding_id @ self.scale.weight + self.scale.bias)
+        shift = (cond_embedding_id @ self.shift.weight + self.shift.bias)
         x = mx.fast.layer_norm(x, weight=None, bias=None, eps=self.eps)
         x = x * scale[:, None, :] + shift[:, None, :]
         return x
