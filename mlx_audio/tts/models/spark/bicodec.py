@@ -9,7 +9,6 @@ from omegaconf import DictConfig
 from safetensors.torch import load_file
 
 from mlx_audio.tts.models.spark.modules.residual import FactorizedVectorQuantize
-from mlx_audio.tts.models.spark.mel_spec import MelSpectrogram
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_decoder import Decoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_encoder import Encoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
@@ -18,6 +17,7 @@ from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
 from mlx_audio.tts.models.spark.modules.speaker.speaker_encoder import SpeakerEncoder
 from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
+from mlx_audio.codec.models.vocos.mel import log_mel_spectrogram
 
 
 
@@ -58,7 +58,7 @@ class BiCodec(nn.Module):
         self.speaker_encoder = speaker_encoder
         self.prenet = prenet
         self.postnet = postnet
-        self.init_mel_transformer(mel_params)
+        self.mel_params = mel_params
 
     @classmethod
     def load_from_checkpoint(cls, model_dir: Path, **kwargs) -> "BiCodec":
@@ -94,7 +94,6 @@ class BiCodec(nn.Module):
 
         weights = load_file(ckpt_path)
 
-
         # Convert PyTorch weights to MLX arrays and sanitize
         weights = {
             k: mx.array(v) for k, v in weights.items()
@@ -121,15 +120,12 @@ class BiCodec(nn.Module):
         """
         feat = mx.array(batch["feat"])
         # Use MLX mel transformer directly
-        ref_wav = batch["ref_wav"]
-        mel = mx.array(self.mel_transformer(ref_wav).squeeze(1))
-
-
+        ref_wav = mx.array(batch["ref_wav"])
+        mel = self.get_mel_spectrogram(ref_wav)
         z = self.encoder(feat.transpose(0, 2, 1))
         vq_outputs = self.quantizer(z)
 
-
-        x_vector, d_vector = self.speaker_encoder(mel.transpose(0, 2, 1))
+        x_vector, d_vector = self.speaker_encoder(mel)
 
         conditions = d_vector
         with_speaker_loss = False
@@ -169,12 +165,11 @@ class BiCodec(nn.Module):
             tuple: Semantic tokens and global tokens.
         """
         feat = mx.array(batch["feat"])
-        ref_wav = batch["ref_wav"]
-        mel = mx.array(self.mel_transformer(ref_wav).squeeze(1))
-
+        ref_wav = mx.array(batch["ref_wav"])
+        mel = self.get_mel_spectrogram(ref_wav)
         z = self.encoder(feat.transpose(0, 2, 1))
         semantic_tokens = self.quantizer.tokenize(z.transpose(0, 2, 1))
-        global_tokens = self.speaker_encoder.tokenize(mel.transpose(0, 2, 1))
+        global_tokens = self.speaker_encoder.tokenize(mel)
 
         return semantic_tokens, global_tokens
 
@@ -200,28 +195,19 @@ class BiCodec(nn.Module):
 
         return wav_recon  # Return MLX array directly
 
-    def init_mel_transformer(self, config: Dict[str, Any]):
-        """
-        Initializes the MelSpectrogram transformer based on the provided configuration.
-
-        Args:
-            config (dict): Configuration parameters for MelSpectrogram.
-        """
-        import torchaudio.transforms as TT
-
-        self.mel_transformer = TT.MelSpectrogram(
-            config["sample_rate"],
-            config["n_fft"],
-            config["win_length"],
-            config["hop_length"],
-            config["mel_fmin"],
-            config["mel_fmax"],
-            n_mels=config["num_mels"],
-            power=1,
-            norm="slaney",
-            mel_scale="slaney",
-        )
-
+    def get_mel_spectrogram(self, wav):
+        mels = []
+        for i in range(wav.shape[0]):
+            audio_sample = mx.squeeze(wav[i])
+            mel = log_mel_spectrogram(
+                audio=audio_sample,
+                sample_rate=self.mel_params["sample_rate"],
+                n_mels=self.mel_params["num_mels"],
+                n_fft=self.mel_params["n_fft"],
+                hop_length=self.mel_params["hop_length"],
+            )
+            mels.append(mel)
+        return mx.concatenate(mels, axis=0)
 
 
 
@@ -231,7 +217,6 @@ if __name__ == "__main__":
 
     model = BiCodec.load_from_checkpoint(model_path / "BiCodec")
     wav = mx.random.normal((1, 16000), dtype=mx.float32)
-    mel = model.mel_transformer(torch.from_dlpack(wav))
 
 
     # Generate random inputs for testing
