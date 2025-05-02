@@ -33,18 +33,8 @@ class DecoderBlock(nn.Module):
         ]
 
     def __call__(self, x):
-        print("DecoderBlock x", x.shape)
-
         for module in self.block:
-            if isinstance(module, Snake1d) or isinstance(module, ResidualUnit):
-                # print("DecoderBlock x before module", x.shape)
-                x = module(x)
-                # print("DecoderBlock x after module", x.shape)
-            elif isinstance(module, WNConvTranspose1d):
-                # print("DecoderBlock x before WNConvTranspose1d", x.shape)
-                x = module(x)
-                # print("DecoderBlock x after WNConvTranspose1d", x.shape)
-
+            x = module(x)
         return x
 
 
