@@ -91,11 +91,19 @@ class WaveGenerator(nn.Module):
                     sanitized_weights[k] = v.transpose(0, 2, 1)
                 else:
                     sanitized_weights[k] = v
+
             elif "decoder.model" in k and "block.1" in k and ("weight_v" in k or "weight_g" in k):
                 if v.shape[0] > v.shape[-1]:
                     sanitized_weights[k] = v.transpose(1, 2, 0)
                 else:
                     sanitized_weights[k] = v
+
+            elif "scale.weight" in k or "shift.weight" in k:
+                if v.shape[0] < v.shape[-1]:
+                    sanitized_weights[k] = v.transpose(1, 0)
+                else:
+                    sanitized_weights[k] = v
+
             else:
                 sanitized_weights[k] = v
         return sanitized_weights
