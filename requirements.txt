@@ -15,8 +15,8 @@ sounddevice>=0.5.1
 soundfile>=0.13.1
 fastapi>=0.95.0
 uvicorn>=0.22.0
-encodec>=0.1.1
-mlx_whisper>=0.4.2
+einops>=0.8.1
+tiktoken>=0.9.0
 tqdm>=4.67.1
 pyloudnorm>=0.1.1
 fastrtc[vad, stt]
