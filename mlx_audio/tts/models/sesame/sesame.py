@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -349,81 +350,8 @@ class Model(nn.Module):
     def load_weights(self, weights, strict: bool = True):
         self.model.load_weights(weights, strict=strict)
 
-    def generate(
-        self,
-        text: str,
-        speaker: int = 0,
-        context: List[Segment] = [],
-        max_audio_length_ms: float = 90_000,
-        sampler: Callable[..., mx.array] = None,
-        ref_audio: mx.array = None,
-        ref_text: str = None,
-        **kwargs,
-    ):
-        self.model.reset_caches()
-
-        # if reference audio is provided, use it as the first segment
-
-        if len(context) == 0 and ref_audio is not None and ref_text is not None:
-            context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
-
-        start_time = time.time()
-
-        sampler = sampler or make_sampler(temp=0.9, top_k=50)
-        max_audio_frames = int(max_audio_length_ms / 80)
-
-        tokens, tokens_mask = [], []
-        for segment in context:
-            segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
-            tokens.append(segment_tokens)
-            tokens_mask.append(segment_tokens_mask)
-
-        gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
-            text, speaker
-        )
-        tokens.append(gen_segment_tokens)
-        tokens_mask.append(gen_segment_tokens_mask)
-
-        prompt_tokens = mx.concat(tokens, axis=0).astype(mx.int32)
-        prompt_tokens_mask = mx.concat(tokens_mask, axis=0).astype(mx.bool_)
-
-        samples = []
-        curr_tokens = mx.expand_dims(prompt_tokens, axis=0)
-        curr_tokens_mask = mx.expand_dims(prompt_tokens_mask, axis=0)
-        curr_pos = mx.expand_dims(mx.arange(0, prompt_tokens.shape[0]), axis=0).astype(
-            mx.int32
-        )
-
-        max_seq_len = 2048 - max_audio_frames
-        if curr_tokens.shape[1] >= max_seq_len:
-            raise ValueError(
-                f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
-            )
-
-        for _ in tqdm(range(max_audio_frames)):
-            sample = self.model.generate_frame(
-                curr_tokens, curr_tokens_mask, curr_pos, sampler
-            )
-            if mx.all(sample == 0):
-                break  # eos
-
-            samples.append(sample)
-
-            curr_tokens = mx.expand_dims(
-                mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1), axis=1
-            )
-            curr_tokens_mask = mx.expand_dims(
-                mx.concat(
-                    [
-                        mx.ones_like(sample).astype(mx.bool_),
-                        mx.zeros((1, 1)).astype(mx.bool_),
-                    ],
-                    axis=1,
-                ),
-                axis=1,
-            )
-            curr_pos = curr_pos[:, -1:] + 1
-
+    def generate_result(self, samples, start_time: float) -> GenerationResult:
+        token_count = len(samples)
         transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
         audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
 
@@ -442,16 +370,13 @@ class Model(nn.Module):
 
         mx.eval(audio)
 
-        segment_time = time.time() - start_time
+        segment_time = time.perf_counter() - start_time
 
         samples = audio.shape[0] if audio is not None else 0
         assert samples > 0, "No audio generated"
 
-        # Calculate token count
-        token_count = curr_tokens.shape[2]
-
         # Calculate audio duration in seconds
-        sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+        sample_rate = 24000
         audio_duration_seconds = samples / sample_rate
 
         # Calculate real-time factor (RTF)
@@ -464,28 +389,127 @@ class Model(nn.Module):
         duration_hours = int(audio_duration_seconds // 3600)
         duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
-        return [
-            GenerationResult(
-                audio=audio,
-                samples=samples,
-                sample_rate=sample_rate,
-                segment_idx=0,
-                token_count=token_count,
-                audio_duration=duration_str,
-                real_time_factor=round(rtf, 2),
-                prompt={
-                    "tokens": token_count,
-                    "tokens-per-sec": (
-                        round(token_count / segment_time, 2) if segment_time > 0 else 0
-                    ),
-                },
-                audio_samples={
-                    "samples": samples,
-                    "samples-per-sec": (
-                        round(samples / segment_time, 2) if segment_time > 0 else 0
-                    ),
-                },
-                processing_time_seconds=segment_time,
-                peak_memory_usage=mx.get_peak_memory() / 1e9,
+        return GenerationResult(
+            audio=audio,
+            samples=samples,
+            sample_rate=sample_rate,
+            segment_idx=0,
+            token_count=token_count,
+            audio_duration=duration_str,
+            real_time_factor=round(rtf, 2),
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": (
+                    round(token_count / segment_time, 2) if segment_time > 0 else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (
+                    round(samples / segment_time, 2) if segment_time > 0 else 0
+                ),
+            },
+            processing_time_seconds=segment_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
+
+    def generate(
+        self,
+        text: List[str] | str,
+        speaker: int = 0,
+        context: List[Segment] = [],
+        split_pattern: Optional[str] = r"\n+",
+        sampler: Callable[..., mx.array] = None,
+        max_audio_length_ms: float = 90_000,
+        ref_audio: mx.array = None,
+        ref_text: str = None,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
+        **kwargs,
+    ):
+        # if reference audio is provided, use it as the first segment
+
+        if len(context) == 0 and ref_audio is not None and ref_text is not None:
+            context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
+
+        sampler = sampler or make_sampler(temp=0.9, top_k=50)
+        max_audio_frames = int(max_audio_length_ms / 80)
+        streaming_interval_tokens = int(streaming_interval * 12.5)
+
+        if isinstance(text, str):
+            text = re.split(split_pattern, text.strip()) if split_pattern else [text]
+
+        for prompt in text:
+            start_time = time.perf_counter()
+
+            self.model.reset_caches()
+
+            tokens, tokens_mask = [], []
+            for segment in context:
+                segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
+                tokens.append(segment_tokens)
+                tokens_mask.append(segment_tokens_mask)
+
+            gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
+                prompt, speaker
             )
-        ]
+            tokens.append(gen_segment_tokens)
+            tokens_mask.append(gen_segment_tokens_mask)
+
+            prompt_tokens = mx.concat(tokens, axis=0).astype(mx.int32)
+            prompt_tokens_mask = mx.concat(tokens_mask, axis=0).astype(mx.bool_)
+
+            samples = []
+            curr_tokens = mx.expand_dims(prompt_tokens, axis=0)
+            curr_tokens_mask = mx.expand_dims(prompt_tokens_mask, axis=0)
+            curr_pos = mx.expand_dims(
+                mx.arange(0, prompt_tokens.shape[0]), axis=0
+            ).astype(mx.int32)
+            generated_frame_count = 0
+            yielded_frame_count = 0
+
+            max_seq_len = 2048 - max_audio_frames
+            if curr_tokens.shape[1] >= max_seq_len:
+                raise ValueError(
+                    f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
+                )
+
+            for _ in tqdm(range(max_audio_frames)):
+                sample = self.model.generate_frame(
+                    curr_tokens, curr_tokens_mask, curr_pos, sampler
+                )
+                if mx.all(sample == 0):
+                    break  # eos
+
+                samples.append(sample)
+
+                curr_tokens = mx.expand_dims(
+                    mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1),
+                    axis=1,
+                )
+                curr_tokens_mask = mx.expand_dims(
+                    mx.concat(
+                        [
+                            mx.ones_like(sample).astype(mx.bool_),
+                            mx.zeros((1, 1)).astype(mx.bool_),
+                        ],
+                        axis=1,
+                    ),
+                    axis=1,
+                )
+                curr_pos = curr_pos[:, -1:] + 1
+                generated_frame_count += 1
+
+                # send a partial result in streaming mode
+                if (
+                    stream
+                    and (generated_frame_count - yielded_frame_count)
+                    >= streaming_interval_tokens
+                ):
+                    yielded_frame_count = generated_frame_count
+                    yield self.generate_result(samples, start_time)
+                    samples = []
+                    start_time = time.perf_counter()
+
+            if len(samples) > 0:
+                yield self.generate_result(samples, start_time)
