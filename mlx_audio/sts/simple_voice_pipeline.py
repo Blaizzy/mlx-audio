@@ -6,7 +6,6 @@ import mlx.core as mx
 import numpy as np
 import sounddevice as sd
 import webrtcvad
-
 from mlx_lm.generate import generate as generate_text
 from mlx_lm.utils import load as load_llm
 
@@ -14,7 +13,9 @@ from mlx_audio.stt import Whisper
 from mlx_audio.tts.audio_player import AudioPlayer
 from mlx_audio.tts.utils import load_model as load_tts
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +26,7 @@ class SimpleVoicePipeline:
         silence_duration=1.5,
         input_sample_rate=16_000,
         output_sample_rate=24_000,
-        streaming_interval=4,
+        streaming_interval=3,
         frame_duration_ms=30,
         vad_mode=3,
         stt_model="mlx-community/whisper-large-v3-turbo",
@@ -53,7 +54,9 @@ class SimpleVoicePipeline:
 
     async def init_models(self):
         logger.info(f"Loading text generation model: {self.llm_model}")
-        self.llm, self.tokenizer = await asyncio.to_thread(lambda: load_llm(self.llm_model))
+        self.llm, self.tokenizer = await asyncio.to_thread(
+            lambda: load_llm(self.llm_model)
+        )
 
         logger.info(f"Loading text-to-speech model: {self.tts_model}")
         self.tts = await asyncio.to_thread(lambda: load_tts(self.tts_model))
@@ -100,7 +103,11 @@ class SimpleVoicePipeline:
     async def _listener(self):
         frame_size = int(self.input_sample_rate * (self.frame_duration_ms / 1000.0))
         stream = sd.InputStream(
-            samplerate=self.input_sample_rate, blocksize=frame_size, channels=1, dtype="int16", callback=self._sd_callback
+            samplerate=self.input_sample_rate,
+            blocksize=frame_size,
+            channels=1,
+            dtype="int16",
+            callback=self._sd_callback,
         )
         stream.start()
 
@@ -108,7 +115,9 @@ class SimpleVoicePipeline:
 
         frames = []
         silent_frames = 0
-        frames_until_silence = int(self.silence_duration * 1000 / self.frame_duration_ms)
+        frames_until_silence = int(
+            self.silence_duration * 1000 / self.frame_duration_ms
+        )
         speaking_detected = False
 
         try:
@@ -152,7 +161,9 @@ class SimpleVoicePipeline:
         self.loop.call_soon_threadsafe(_enqueue)
 
     async def _process_audio(self, frames):
-        audio = np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float32) / 32768.0
+        audio = (
+            np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float32) / 32768.0
+        )
 
         async with self.mlx_lock:
             result = await asyncio.to_thread(self.stt.generate, mx.array(audio))
@@ -172,7 +183,9 @@ class SimpleVoicePipeline:
 
     async def _generate_response(self, text):
         def _get_llm_response(llm, tokenizer, messages, *, verbose=False):
-            prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
             return generate_text(llm, tokenizer, prompt, verbose=verbose).strip()
 
         try:
@@ -181,12 +194,14 @@ class SimpleVoicePipeline:
             messages = [
                 {
                     "role": "system",
-                    "content": "You are a helpful voice assistant. You always respond with short sentences and never use punctation like parentheses that wouldn't show up in a spoken transcript.",
+                    "content": "You are a helpful voice assistant. You always respond with short sentences and never use punctuation like parentheses or colons that wouldn't appear in conversational speech.",
                 },
                 {"role": "user", "content": text},
             ]
             async with self.mlx_lock:
-                response_text = await asyncio.to_thread(_get_llm_response, self.llm, self.tokenizer, messages, verbose=False)
+                response_text = await asyncio.to_thread(
+                    _get_llm_response, self.llm, self.tokenizer, messages, verbose=False
+                )
 
             logger.info(f"Generated response: {response_text}")
 
@@ -201,7 +216,13 @@ class SimpleVoicePipeline:
         loop = self.loop
 
         def _tts_stream(tts, text, sample_rate, queue):
-            for chunk in tts.generate(text, sample_rate=sample_rate, stream=True, streaming_interval=2, verbose=False):
+            for chunk in tts.generate(
+                text,
+                sample_rate=sample_rate,
+                stream=True,
+                streaming_interval=self.streaming_interval,
+                verbose=False,
+            ):
                 loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
 
             logger.info("Speech generation complete")
@@ -210,7 +231,13 @@ class SimpleVoicePipeline:
             logger.info("Converting response to speech...")
 
             async with self.mlx_lock:
-                await asyncio.to_thread(_tts_stream, self.tts, text, self.output_sample_rate, self.output_audio_queue)
+                await asyncio.to_thread(
+                    _tts_stream,
+                    self.tts,
+                    text,
+                    self.output_sample_rate,
+                    self.output_audio_queue,
+                )
         except Exception as e:
             logger.error(f"Speech synthesis error: {e}")
 
@@ -229,13 +256,31 @@ class SimpleVoicePipeline:
 
 async def main():
     parser = argparse.ArgumentParser(description="Voice Pipeline")
-    parser.add_argument("--stt_model", type=str, default="mlx-community/whisper-large-v3-turbo", help="STT model")
-    parser.add_argument("--tts_model", type=str, default="mlx-community/csm-1b-fp16", help="TTS model")
-    parser.add_argument("--llm_model", type=str, default="mlx-community/Qwen2.5-0.5B-Instruct-4bit", help="LLM model")
+    parser.add_argument(
+        "--stt_model",
+        type=str,
+        default="mlx-community/whisper-large-v3-turbo",
+        help="STT model",
+    )
+    parser.add_argument(
+        "--tts_model", type=str, default="mlx-community/csm-1b-fp16", help="TTS model"
+    )
+    parser.add_argument(
+        "--llm_model",
+        type=str,
+        default="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
+        help="LLM model",
+    )
     parser.add_argument("--vad_mode", type=int, default=3, help="VAD mode")
-    parser.add_argument("--silence_duration", type=float, default=1.5, help="Silence duration")
-    parser.add_argument("--silence_threshold", type=float, default=0.03, help="Silence threshold")
-    parser.add_argument("--streaming_interval", type=int, default=4, help="Streaming interval")
+    parser.add_argument(
+        "--silence_duration", type=float, default=1.5, help="Silence duration"
+    )
+    parser.add_argument(
+        "--silence_threshold", type=float, default=0.03, help="Silence threshold"
+    )
+    parser.add_argument(
+        "--streaming_interval", type=int, default=3, help="Streaming interval"
+    )
     args = parser.parse_args()
 
     pipeline = SimpleVoicePipeline(
