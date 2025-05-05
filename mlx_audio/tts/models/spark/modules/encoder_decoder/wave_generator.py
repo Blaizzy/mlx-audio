@@ -88,13 +88,6 @@ class WaveGenerator(nn.Module):
                     sanitized_weights[k] = v.transpose(1, 2, 0)
                 else:
                     sanitized_weights[k] = v
-
-            elif "scale.weight" in k or "shift.weight" in k:
-                if v.shape[0] < v.shape[-1]:
-                    sanitized_weights[k] = v.transpose(1, 0)
-                else:
-                    sanitized_weights[k] = v
-
             else:
                 sanitized_weights[k] = v
         return sanitized_weights

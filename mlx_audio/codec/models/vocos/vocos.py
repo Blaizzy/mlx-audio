@@ -155,7 +155,7 @@ class ConvNeXtBlock(nn.Module):
         self.pwconv1 = nn.Linear(dim, intermediate_dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(intermediate_dim, dim)
-        self.gamma = layer_scale_init_value * mx.ones(dim)
+        self.gamma = layer_scale_init_value * mx.ones(dim) if layer_scale_init_value > 0 else None
 
     def __call__(
         self, x: mx.array, cond_embedding_id: Optional[mx.array] = None
@@ -171,7 +171,8 @@ class ConvNeXtBlock(nn.Module):
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        x = self.gamma * x
+        if self.gamma is not None:
+            x = self.gamma * x
         x = residual + x
         return x
 
@@ -184,16 +185,15 @@ class AdaLayerNorm(nn.Module):
 
         self.scale = nn.Linear(num_embeddings, embedding_dim)
         self.shift = nn.Linear(num_embeddings, embedding_dim)
-        self.scale.weight = mx.ones((num_embeddings, embedding_dim))
-        self.shift.weight = mx.zeros((num_embeddings, embedding_dim))
 
     def __call__(self, x: mx.array, cond_embedding_id: mx.array) -> mx.array:
         if cond_embedding_id.dtype != mx.int32:
             cond_embedding_id = cond_embedding_id.astype(mx.int32)
 
-        scale = (cond_embedding_id @ self.scale.weight + self.scale.bias)
-        shift = (cond_embedding_id @ self.shift.weight + self.shift.bias)
+        scale = self.scale(cond_embedding_id)
+        shift = self.shift(cond_embedding_id)
         x = mx.fast.layer_norm(x, weight=None, bias=None, eps=self.eps)
+
         x = x * scale[:, None, :] + shift[:, None, :]
         return x
 
