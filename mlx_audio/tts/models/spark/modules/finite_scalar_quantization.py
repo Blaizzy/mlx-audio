@@ -103,7 +103,7 @@ class FSQ(nn.Module):
         if return_indices:
             self.codebook_size = self._levels.prod().item()
             implicit_codebook = self._indices_to_codes(mx.arange(self.codebook_size))
-            self.implicit_codebook = implicit_codebook
+            self._implicit_codebook = implicit_codebook
 
         self.allowed_dtypes = allowed_dtypes
         self.force_quantization_f32 = force_quantization_f32

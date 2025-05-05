@@ -74,7 +74,7 @@ class ResidualFSQ(nn.Module):
 
         self.codebook_size = self.layers[0].codebook_size
 
-        self.scales = mx.array(scales)
+        self._scales = mx.array(scales)
 
         self.quantize_dropout = quantize_dropout and num_quantizers > 1
 
@@ -85,7 +85,7 @@ class ResidualFSQ(nn.Module):
 
     @property
     def codebooks(self):
-        codebooks = [layer.implicit_codebook for layer in self.layers]
+        codebooks = [layer._implicit_codebook for layer in self.layers]
         codebooks = mx.stack(codebooks, axis=0)
         return codebooks
 
@@ -135,7 +135,7 @@ class ResidualFSQ(nn.Module):
 
         # scale the codes
         # Reshape scales for broadcasting: q 1 1 d
-        scales = mx.reshape(self.scales, (self.scales.shape[0], 1, 1, self.scales.shape[1]))
+        scales = mx.reshape(self._scales, (self._scales.shape[0], 1, 1, self._scales.shape[1]))
         all_codes = all_codes * scales
 
         # if (accept_image_fmap = True) then return shape (quantize, batch, height, width, dimension)
@@ -212,7 +212,7 @@ class ResidualFSQ(nn.Module):
 
         # go through the layers
         for quantizer_index, (layer, scale) in enumerate(
-            zip(self.layers, self.scales)
+            zip(self.layers, self._scales)
         ):
 
             if (
