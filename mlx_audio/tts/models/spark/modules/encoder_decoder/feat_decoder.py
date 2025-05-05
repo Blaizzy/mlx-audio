@@ -94,11 +94,11 @@ class Decoder(nn.Module):
 
 
         x = self.vocos_backbone(x, bandwidth_id=c)
-        x = self.linear(x)
+        x = self.linear(x).transpose(0, 2, 1)
         if self.use_tanh_at_final:
             x = mx.tanh(x)
 
-        return x.transpose(0, 2, 1)
+        return x
 
 
 
