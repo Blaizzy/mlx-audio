@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -17,8 +17,38 @@ from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
 from mlx_audio.tts.models.spark.modules.speaker.speaker_encoder import SpeakerEncoder
 from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
-from mlx_audio.codec.models.vocos.mel import log_mel_spectrogram
+from mlx_audio.codec.models.vocos.mel import hanning, mel_filters, stft
 
+
+def log_mel_spectrogram(
+    audio: mx.array,
+    sample_rate: int = 16_000,
+    n_mels: int = 128,
+    n_fft: int = 1024,
+    f_min: int = 10,
+    f_max: Optional[int] = None,
+    hop_length: int = 320,
+    win_length: int = 640,
+    padding: int = 0,
+):
+    if not isinstance(audio, mx.array):
+        audio = mx.array(audio)
+    if padding > 0:
+        audio = mx.pad(audio, (0, padding))
+    freqs = stft(audio, hanning(win_length), nperseg=n_fft, noverlap=hop_length)
+    magnitudes = freqs[:-1, :].abs()
+    filters = mel_filters(
+        sample_rate=sample_rate,
+        n_fft=n_fft,
+        n_mels=n_mels,
+        f_min=f_min,
+        f_max=f_max,
+        norm="slaney",
+        mel_scale="slaney",
+    )
+    mel_spec = magnitudes @ filters.T
+    log_spec = mx.maximum(mel_spec, 1e-5).log()
+    return mx.expand_dims(log_spec, axis=0)
 
 
 
@@ -59,6 +89,7 @@ class BiCodec(nn.Module):
         self.prenet = prenet
         self.postnet = postnet
         self.mel_params = mel_params
+
 
     @classmethod
     def load_from_checkpoint(cls, model_dir: Path, **kwargs) -> "BiCodec":
@@ -104,7 +135,8 @@ class BiCodec(nn.Module):
             if hasattr(module, "sanitize"):
                 weights = module.sanitize(weights)
 
-        model.load_weights(list(weights.items()), strict=False)
+
+        model.load_weights(list(weights.items()), strict=True)
 
         return model
 
@@ -205,6 +237,9 @@ class BiCodec(nn.Module):
                 n_mels=self.mel_params["num_mels"],
                 n_fft=self.mel_params["n_fft"],
                 hop_length=self.mel_params["hop_length"],
+                win_length=self.mel_params["win_length"],
+                f_min=self.mel_params["mel_fmin"],
+                f_max=self.mel_params["mel_fmax"],
             )
             mels.append(mel)
         return mx.concatenate(mels, axis=0)
