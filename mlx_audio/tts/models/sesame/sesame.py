@@ -7,10 +7,14 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
+import soundfile as sf
+from huggingface_hub import hf_hub_download
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.models.llama import LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
 from mlx_lm.sample_utils import make_sampler
+from scipy import signal
 from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -43,6 +47,14 @@ def index_causal_mask(mask: mx.array, input_pos: mx.array) -> mx.array:
 
     # reshape to (batch_size, 1, seq_len, seq_len) for broadcasting across heads
     return mx.expand_dims(mask_indexed, axis=1)
+
+
+def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    gcd = np.gcd(orig_sr, target_sr)
+    up = target_sr // gcd
+    down = orig_sr // gcd
+    resampled = signal.resample_poly(audio, up, down, padtype="edge")
+    return resampled
 
 
 @dataclass
@@ -350,6 +362,46 @@ class Model(nn.Module):
     def load_weights(self, weights, strict: bool = True):
         self.model.load_weights(weights, strict=strict)
 
+    def prepare_prompt(
+        self, text: str, speaker: int, audio_path: str, sample_rate: int
+    ) -> Segment:
+        audio, sr = sf.read(audio_path)
+        if sr != sample_rate:
+            audio = resample_audio(audio, sr, sample_rate)
+        return Segment(text=text, speaker=speaker, audio=mx.array(audio))
+
+    def default_speaker_prompt(self, voice: str) -> List[Segment]:
+        SPEAKER_PROMPTS = {
+            "conversational_a": {
+                "text": (
+                    "like revising for an exam I'd have to try and like keep up the momentum because I'd "
+                    "start really early I'd be like okay I'm gonna start revising now and then like "
+                    "you're revising for ages and then I just like start losing steam I didn't do that "
+                    "for the exam we had recently to be fair that was a more of a last minute scenario "
+                    "but like yeah I'm trying to like yeah I noticed this yesterday that like Mondays I "
+                    "sort of start the day with this not like a panic but like a"
+                ),
+            },
+            "conversational_b": {
+                "text": (
+                    "like a super Mario level. Like it's very like high detail. And like, once you get "
+                    "into the park, it just like, everything looks like a computer game and they have all "
+                    "these, like, you know, if, if there's like a, you know, like in a Mario game, they "
+                    "will have like a question block. And if you like, you know, punch it, a coin will "
+                    "come out. So like everyone, when they come into the park, they get like this little "
+                    "bracelet and then you can go punching question blocks around."
+                ),
+            },
+        }
+
+        prompt_path = hf_hub_download(
+            repo_id="sesame/csm-1b", filename=f"prompts/{voice}.wav"
+        )
+        prompt = self.prepare_prompt(
+            SPEAKER_PROMPTS[voice]["text"], 0, prompt_path, 24_000
+        )
+        return [prompt]
+
     def generate_result(self, samples, start_time: float) -> GenerationResult:
         token_count = len(samples)
         transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
@@ -416,6 +468,7 @@ class Model(nn.Module):
     def generate(
         self,
         text: List[str] | str,
+        voice: Optional[str] = None,
         speaker: int = 0,
         context: List[Segment] = [],
         split_pattern: Optional[str] = r"\n+",
@@ -428,9 +481,13 @@ class Model(nn.Module):
         **kwargs,
     ):
         # if reference audio is provided, use it as the first segment
-
         if len(context) == 0 and ref_audio is not None and ref_text is not None:
             context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
+        elif ref_audio is None:
+            # otherwise, use the provided or default voice
+            if voice is None:
+                voice = "conversational_a"
+            context = self.default_speaker_prompt(voice)
 
         sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
