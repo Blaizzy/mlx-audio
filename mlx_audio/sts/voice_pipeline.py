@@ -134,6 +134,16 @@ class SimpleVoicePipeline:
                     frames.append(frame)
 
                     if silent_frames > frames_until_silence:
+
+                        # Clear the output audio queue
+                        self.loop.call_soon_threadsafe(self.player.flush)
+
+                        # Cancel the current TTS task
+                        if hasattr(self, 'current_tts_task') and self.current_tts_task:
+                            # Signal the generator loop to stop
+                            self.current_tts_cancel.set()
+
+                        # Process the voice input
                         if frames:
                             logger.info("Processing voice input...")
                             await self._process_audio(frames)
@@ -206,30 +216,34 @@ class SimpleVoicePipeline:
             logger.info(f"Generated response: {response_text}")
 
             if response_text:
-                asyncio.create_task(self._speak_response(response_text))
+                self.current_tts_cancel = asyncio.Event()
+                self.current_tts_task = asyncio.create_task(self._speak_response(response_text, self.current_tts_cancel))
         except Exception as e:
             logger.error(f"Generation error: {e}")
 
     # speech generation
 
-    async def _speak_response(self, text):
+    async def _speak_response(self, text: str, cancel_event: asyncio.Event):
+        """
+        Speak `text`, yielding PCM chunks into `self.output_audio_queue`.
+        Playback can be interrupted at any moment by setting `cancel_event`.
+        """
         loop = self.loop
 
-        def _tts_stream(tts, text, sample_rate, queue):
+        def _tts_stream(tts, txt, rate, queue, cancel_ev: asyncio.Event):
+            # This runs in a worker thread, so we *must* poll a thread‑safe flag.
             for chunk in tts.generate(
-                text,
-                sample_rate=sample_rate,
+                txt,
+                sample_rate=rate,
                 stream=True,
                 streaming_interval=self.streaming_interval,
                 verbose=False,
             ):
+                if cancel_ev.is_set():          # <-- stop immediately
+                    break
                 loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
 
-            logger.info("Speech generation complete")
-
         try:
-            logger.info("Converting response to speech...")
-
             async with self.mlx_lock:
                 await asyncio.to_thread(
                     _tts_stream,
@@ -237,9 +251,13 @@ class SimpleVoicePipeline:
                     text,
                     self.output_sample_rate,
                     self.output_audio_queue,
+                    cancel_event,
                 )
-        except Exception as e:
-            logger.error(f"Speech synthesis error: {e}")
+        except asyncio.CancelledError:
+            # The coroutine itself was cancelled from outside → just exit cleanly.
+            pass
+        except Exception as exc:
+            logger.error("Speech synthesis error: %s", exc)
 
     async def _audio_output_processor(self):
         self.player = AudioPlayer(sample_rate=self.output_sample_rate)

@@ -63,3 +63,22 @@ class AudioPlayer:
             self.stream.stop()
             self.stream.close()
             self.playing = False
+
+    def flush(self):
+        """Discard everything and stop playback immediately."""
+        if not self.playing:
+            return
+
+        with self.buffer_lock:
+            self.audio_buffer.clear()
+
+        #  abort() is instantaneous; stop() waits for drain
+        try:
+            self.stream.abort()
+        except AttributeError:           # older sounddevice
+            self.stream.stop(ignore_errors=True)
+            
+        self.stream.stop()
+        self.stream.close()
+        self.playing = False
+        self.drain_event.set()
