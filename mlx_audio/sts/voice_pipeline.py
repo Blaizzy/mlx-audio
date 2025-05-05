@@ -137,7 +137,10 @@ class SimpleVoicePipeline:
                         # Process the voice input
                         if frames:
                             # Cancel the current TTS task
-                            if hasattr(self, 'current_tts_task') and self.current_tts_task:
+                            if (
+                                hasattr(self, "current_tts_task")
+                                and self.current_tts_task
+                            ):
                                 # Signal the generator loop to stop
                                 self.current_tts_cancel.set()
 
@@ -216,7 +219,9 @@ class SimpleVoicePipeline:
 
             if response_text:
                 self.current_tts_cancel = asyncio.Event()
-                self.current_tts_task = asyncio.create_task(self._speak_response(response_text, self.current_tts_cancel))
+                self.current_tts_task = asyncio.create_task(
+                    self._speak_response(response_text, self.current_tts_cancel)
+                )
         except Exception as e:
             logger.error(f"Generation error: {e}")
 
@@ -238,7 +243,7 @@ class SimpleVoicePipeline:
                 streaming_interval=self.streaming_interval,
                 verbose=False,
             ):
-                if cancel_ev.is_set():          # <-- stop immediately
+                if cancel_ev.is_set():  # <-- stop immediately
                     break
                 loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
 
