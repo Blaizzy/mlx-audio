@@ -134,17 +134,16 @@ class SimpleVoicePipeline:
                     frames.append(frame)
 
                     if silent_frames > frames_until_silence:
-
-                        # Clear the output audio queue
-                        self.loop.call_soon_threadsafe(self.player.flush)
-
-                        # Cancel the current TTS task
-                        if hasattr(self, "current_tts_task") and self.current_tts_task:
-                            # Signal the generator loop to stop
-                            self.current_tts_cancel.set()
-
                         # Process the voice input
                         if frames:
+                            # Cancel the current TTS task
+                            if hasattr(self, 'current_tts_task') and self.current_tts_task:
+                                # Signal the generator loop to stop
+                                self.current_tts_cancel.set()
+
+                            # Clear the output audio queue
+                            self.loop.call_soon_threadsafe(self.player.flush)
+
                             logger.info("Processing voice input...")
                             await self._process_audio(frames)
 
@@ -217,9 +216,7 @@ class SimpleVoicePipeline:
 
             if response_text:
                 self.current_tts_cancel = asyncio.Event()
-                self.current_tts_task = asyncio.create_task(
-                    self._speak_response(response_text, self.current_tts_cancel)
-                )
+                self.current_tts_task = asyncio.create_task(self._speak_response(response_text, self.current_tts_cancel))
         except Exception as e:
             logger.error(f"Generation error: {e}")
 
@@ -241,7 +238,7 @@ class SimpleVoicePipeline:
                 streaming_interval=self.streaming_interval,
                 verbose=False,
             ):
-                if cancel_ev.is_set():  # <-- stop immediately
+                if cancel_ev.is_set():          # <-- stop immediately
                     break
                 loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
 
