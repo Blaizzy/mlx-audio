@@ -129,6 +129,14 @@ class SimpleVoicePipeline:
                     speaking_detected = True
                     silent_frames = 0
                     frames.append(frame)
+
+                    # Cancel the current TTS task
+                    if hasattr(self, "current_tts_task") and self.current_tts_task:
+                        # Signal the generator loop to stop
+                        self.current_tts_cancel.set()
+
+                    # Clear the output audio queue
+                    self.loop.call_soon_threadsafe(self.player.flush)
                 elif speaking_detected:
                     silent_frames += 1
                     frames.append(frame)
@@ -136,16 +144,6 @@ class SimpleVoicePipeline:
                     if silent_frames > frames_until_silence:
                         # Process the voice input
                         if frames:
-                            # Cancel the current TTS task
-                            if (
-                                hasattr(self, "current_tts_task")
-                                and self.current_tts_task
-                            ):
-                                # Signal the generator loop to stop
-                                self.current_tts_cancel.set()
-
-                            # Clear the output audio queue
-                            self.loop.call_soon_threadsafe(self.player.flush)
 
                             logger.info("Processing voice input...")
                             await self._process_audio(frames)
