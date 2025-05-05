@@ -75,9 +75,9 @@ class AudioPlayer:
         #  abort() is instantaneous; stop() waits for drain
         try:
             self.stream.abort()
-        except AttributeError:           # older sounddevice
+        except AttributeError:  # older sounddevice
             self.stream.stop(ignore_errors=True)
-            
+
         self.stream.stop()
         self.stream.close()
         self.playing = False
