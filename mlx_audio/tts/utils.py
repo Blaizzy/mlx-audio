@@ -20,8 +20,9 @@ from mlx_lm.utils import (
 )
 from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts"}
+MODEL_REMAPPING = {"outetts": "outetts", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
+MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 # Get a list of all available model types from the models directory
@@ -288,13 +289,12 @@ def convert(
     quantize: bool = False,
     q_group_size: int = 64,
     q_bits: int = 4,
-    dtype: str = "float16",
+    dtype: str = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
-    skip_non_divisible: bool = False,
 ):
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
@@ -305,27 +305,37 @@ def convert(
     if isinstance(quant_predicate, str):
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
 
-    # Skip layers that are not divisible by 64
-    if quant_predicate is None:
-        quant_predicate = (
-            lambda p, m, config: hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0
+    # Get model-specific quantization predicate if available
+    model_quant_predicate = getattr(
+        model, "model_quant_predicate", lambda p, m, config: True
+    )
+
+    # Define base quantization requirements
+    def base_quant_requirements(p, m, config):
+        return (
+            hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
             and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
+            and model_quant_predicate(p, m, config)
         )
+
+    # Combine with user-provided predicate if available
+    if quant_predicate is None:
+        quant_predicate = base_quant_requirements
     else:
         original_predicate = quant_predicate
-        quant_predicate = (
-            lambda p, m, config: original_predicate(p, m, config)
-            and hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0
-            and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
+        quant_predicate = lambda p, m, config: (
+            base_quant_requirements(p, m, config) and original_predicate(p, m, config)
         )
 
     weights = dict(tree_flatten(model.parameters()))
-    dtype = getattr(mx, dtype)
-    weights = {k: v.astype(dtype) for k, v in weights.items()}
+
+    if dtype is None:
+        dtype = config.get("torch_dtype", None)
+    if dtype in MODEL_CONVERSION_DTYPES:
+        print("[INFO] Using dtype:", dtype)
+        dtype = getattr(mx, dtype)
+        weights = {k: v.astype(dtype) for k, v in weights.items()}
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
@@ -333,6 +343,8 @@ def convert(
     if quantize:
         print("[INFO] Quantizing")
         model.load_weights(list(weights.items()))
+        if hasattr(model, "skip_quantize"):
+            model.skip_quantize()
         weights, config = quantize_model(
             model, config, q_group_size, q_bits, quant_predicate=quant_predicate
         )
