@@ -54,6 +54,15 @@ class SesameModelArgs:
     audio_vocab_size: int
     audio_num_codebooks: int
 
+    def __init__(self, model_type, backbone_flavor, decoder_flavor, text_vocab_size,
+                 audio_vocab_size, audio_num_codebooks, **kwargs):
+        self.model_type = model_type
+        self.backbone_flavor = backbone_flavor
+        self.decoder_flavor = decoder_flavor
+        self.text_vocab_size = text_vocab_size
+        self.audio_vocab_size = audio_vocab_size
+        self.audio_num_codebooks = audio_num_codebooks
+
 
 def create_llama_model_args(flavor: str) -> LlamaModelArgs:
     if flavor == "llama-1B":
@@ -266,6 +275,7 @@ class Model(nn.Module):
         self,
         config: Dict,
     ):
+        super().__init__()
         self.model = SesameModel(config)
         self.model.setup_caches(1)
 
@@ -278,7 +288,13 @@ class Model(nn.Module):
         except Exception:
             self._watermarker = None
 
-        self.sample_rate = mimi.cfg.sample_rate
+        self._sample_rate = mimi.cfg.sample_rate
+
+    @property
+    def layers(self):
+        """Return the backbone layers of the model."""
+        return self.model.backbone.layers
+
 
     def _tokenize_text_segment(
         self, text: str, speaker: int
@@ -340,15 +356,30 @@ class Model(nn.Module):
         sanitized_weights = {}
 
         for k, v in weights.items():
-            if "model." in k:
-                k = k.replace("model.", "")
+            if not k.startswith("model."):
+                k = "model." + k
+
+            if "attn" in k and not "self_attn" in k:
+                k = k.replace("attn", "self_attn")
+                k = k.replace("output_proj", "o_proj")
+
+            if "mlp" in k:
+                k = k.replace("w1", "gate_proj")
+                k = k.replace("w2", "down_proj")
+                k = k.replace("w3", "up_proj")
+
+            if "sa_norm" in k or "mlp_norm" in k:
+                k = k.replace("sa_norm", "input_layernorm").replace("scale", "weight")
+                k = k.replace("mlp_norm", "post_attention_layernorm").replace("scale", "weight")
+
+            if "decoder.norm" in k or "backbone.norm" in k:
+                k = k.replace("scale", "weight")
 
             sanitized_weights[k] = v
 
         return sanitized_weights
 
-    def load_weights(self, weights, strict: bool = True):
-        self.model.load_weights(weights, strict=strict)
+
 
     def generate_result(self, samples, start_time: float) -> GenerationResult:
         token_count = len(samples)
@@ -363,7 +394,7 @@ class Model(nn.Module):
             audio = watermark(
                 self._watermarker,
                 audio,
-                self.sample_rate,
+                self._sample_rate,
                 CSM_1B_GH_WATERMARK,
             )
             audio = mx.array(audio, dtype=mx.float32)
