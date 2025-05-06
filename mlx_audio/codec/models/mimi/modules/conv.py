@@ -141,6 +141,7 @@ class NormConv1d(nn.Module):
         dilation: int = 1,
         bias: bool = True,
     ):
+        super().__init__()
         self.conv = Conv1d(
             in_channels,
             out_channels,
@@ -167,6 +168,7 @@ class NormConvTranspose1d(nn.Module):
         groups: int = 1,
         bias: bool = True,
     ):
+        super().__init__()
         self.convtr = ConvTranspose1d(
             in_channels,
             out_channels,
@@ -215,6 +217,7 @@ class StreamableConv1d(nn.Module):
         causal: bool,
         pad_mode: str,
     ):
+        super().__init__()
         self._causal = causal
         self._pad_mode = pad_mode
         self._ksize = ksize
@@ -298,6 +301,7 @@ class StreamableConvTranspose1d(nn.Module):
         bias: bool,
         causal: bool,
     ):
+        super().__init__()
         self._causal = causal
         self._ksize = ksize
         self.convtr = NormConvTranspose1d(
@@ -346,6 +350,7 @@ class StreamableConvTranspose1d(nn.Module):
 
 class ConvDownsample1d(nn.Module):
     def __init__(self, stride: int, dim: int, causal: bool):
+        super().__init__()
         self.conv = StreamableConv1d(
             in_channels=dim,
             out_channels=dim,
@@ -370,6 +375,7 @@ class ConvDownsample1d(nn.Module):
 
 class ConvTrUpsample1d(nn.Module):
     def __init__(self, stride: int, dim: int, causal: bool):
+        super().__init__()
         self.convtr = StreamableConvTranspose1d(
             in_channels=dim,
             out_channels=dim,
