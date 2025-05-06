@@ -305,13 +305,15 @@ def convert(
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
 
     # Get model-specific quantization predicate if available
-    model_quant_predicate = getattr(model, "model_quant_predicate", lambda p, m, config: True)
+    model_quant_predicate = getattr(
+        model, "model_quant_predicate", lambda p, m, config: True
+    )
 
     # Define base quantization requirements
     def base_quant_requirements(p, m, config):
         return (
             hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0 # Skip layers not divisible by 64
+            and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
             and hasattr(m, "to_quantized")
             and model_quant_predicate(p, m, config)
         )

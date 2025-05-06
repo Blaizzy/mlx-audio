@@ -406,8 +406,6 @@ class Model(nn.Module):
 
         return sanitized_weights
 
-
-
     def prepare_prompt(
         self, text: str, speaker: int, audio_path: str, sample_rate: int
     ) -> Segment:
