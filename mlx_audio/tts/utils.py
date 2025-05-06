@@ -22,6 +22,7 @@ from transformers import AutoConfig
 
 MODEL_REMAPPING = {"outetts": "outetts", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
+MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 # Get a list of all available model types from the models directory
@@ -288,7 +289,7 @@ def convert(
     quantize: bool = False,
     q_group_size: int = 64,
     q_bits: int = 4,
-    dtype: str = "float16",
+    dtype: str = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
@@ -328,8 +329,14 @@ def convert(
         )
 
     weights = dict(tree_flatten(model.parameters()))
-    dtype = getattr(mx, dtype)
-    weights = {k: v.astype(dtype) for k, v in weights.items()}
+
+    if dtype is None:
+        dtype = config.get("torch_dtype", None)
+    if dtype in MODEL_CONVERSION_DTYPES:
+        print("[INFO] Using dtype:", dtype)
+        dtype = getattr(mx, dtype)
+        weights = {k: v.astype(dtype) for k, v in weights.items()}
+
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
