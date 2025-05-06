@@ -86,9 +86,11 @@ class VoicePipeline:
     def _is_silent(self, audio_data):
         if isinstance(audio_data, bytes):
             audio_np = np.frombuffer(audio_data, dtype=np.int16)
-            audio_np = audio_np.astype(np.float32) / 32768.0  # Normalize if input is bytes
+            audio_np = (
+                audio_np.astype(np.float32) / 32768.0
+            )  # Normalize if input is bytes
         else:
-            audio_np = audio_data  
+            audio_np = audio_data
 
         # Ensure audio_np is float32 for energy calculation.
         audio_np = audio_np.astype(np.float32)

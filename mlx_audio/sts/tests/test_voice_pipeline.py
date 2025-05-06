@@ -1,8 +1,7 @@
-import asyncio
-import pytest
 from unittest import mock
 
 import numpy as np
+import pytest
 
 from mlx_audio.sts.voice_pipeline import VoicePipeline
 
@@ -49,13 +48,10 @@ class TestVoicePipeline:
         assert pipeline.llm_model == "custom/llm"
         assert pipeline.tts_model == "custom/tts"
 
-    @pytest.mark.asyncio
     @mock.patch("mlx_audio.sts.voice_pipeline.load_llm")
     @mock.patch("mlx_audio.sts.voice_pipeline.load_tts")
     @mock.patch("mlx_audio.sts.voice_pipeline.Whisper.from_pretrained")
-    async def test_init_models(
-        self, mock_whisper_load, mock_tts_load, mock_llm_load
-    ):
+    async def test_init_models(self, mock_whisper_load, mock_tts_load, mock_llm_load):
         """
         Test that the init_models method initializes the models correctly.
         """
@@ -105,9 +101,7 @@ class TestVoicePipeline:
         """
         pipeline = VoicePipeline(silence_threshold=0.001)
         # Create a non-silent audio frame (higher amplitude)
-        speech_audio_data_np = np.random.uniform(-2, 2, size=480).astype(
-            np.float32
-        )
+        speech_audio_data_np = np.random.uniform(-2, 2, size=480).astype(np.float32)
         speech_audio_data_bytes = (
             (speech_audio_data_np * 32768.0).astype(np.int16).tobytes()
         )
@@ -122,9 +116,7 @@ class TestVoicePipeline:
         """
         pipeline = VoicePipeline()
         mock_is_speech.return_value = True
-        frame = b"\x00\x00" * (
-            16000 * 30 // 1000
-        )  # 30ms of silence at 16kHz, 16-bit
+        frame = b"\x00\x00" * (16000 * 30 // 1000)  # 30ms of silence at 16kHz, 16-bit
         assert pipeline._voice_activity_detection(frame) is True
         mock_is_speech.assert_called_once_with(frame, pipeline.input_sample_rate)
 
@@ -140,9 +132,7 @@ class TestVoicePipeline:
         mock_is_speech.assert_called_once_with(frame, pipeline.input_sample_rate)
 
     @mock.patch("webrtcvad.Vad.is_speech")
-    def test_voice_activity_detection_vad_error_fallback_silent(
-        self, mock_is_speech
-    ):
+    def test_voice_activity_detection_vad_error_fallback_silent(self, mock_is_speech):
         """
         Test that the voice activity detection returns False for silent frames.
         """
@@ -156,14 +146,11 @@ class TestVoicePipeline:
         mock_is_speech.assert_called_once_with(frame_bytes, pipeline.input_sample_rate)
 
     @mock.patch("webrtcvad.Vad.is_speech")
-    def test_voice_activity_detection_vad_error_fallback_speech(
-        self, mock_is_speech
-    ):
+    def test_voice_activity_detection_vad_error_fallback_speech(self, mock_is_speech):
         pipeline = VoicePipeline(silence_threshold=0.01)
         mock_is_speech.side_effect = ValueError("VAD error")
         frame_np = np.full(480, 0.5, dtype=np.float32)
         frame_bytes = (frame_np * 32768.0).astype(np.int16).tobytes()
-
 
         assert pipeline._voice_activity_detection(frame_bytes) is True
         mock_is_speech.assert_called_once_with(frame_bytes, pipeline.input_sample_rate)
