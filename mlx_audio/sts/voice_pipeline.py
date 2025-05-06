@@ -19,7 +19,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-class SimpleVoicePipeline:
+class VoicePipeline:
     def __init__(
         self,
         silence_threshold=0.03,
@@ -86,10 +86,13 @@ class SimpleVoicePipeline:
     def _is_silent(self, audio_data):
         if isinstance(audio_data, bytes):
             audio_np = np.frombuffer(audio_data, dtype=np.int16)
+            audio_np = audio_np.astype(np.float32) / 32768.0  # Normalize if input is bytes
         else:
-            audio_np = audio_data
+            audio_np = audio_data  
 
-        audio_np = audio_np.astype(np.float32) / 32768.0
+        # Ensure audio_np is float32 for energy calculation.
+        audio_np = audio_np.astype(np.float32)
+
         energy = np.linalg.norm(audio_np) / np.sqrt(audio_np.size)
         return energy < self.silence_threshold
 
@@ -303,7 +306,7 @@ async def main():
     )
     args = parser.parse_args()
 
-    pipeline = SimpleVoicePipeline(
+    pipeline = VoicePipeline(
         stt_model=args.stt_model,
         tts_model=args.tts_model,
         llm_model=args.llm_model,
