@@ -310,6 +310,12 @@ class Model(nn.Module):
 
         self._sample_rate = mimi.cfg.sample_rate
 
+    def model_quant_predicate(self, p, m, config):
+        """
+        Model modules to skip during quantization
+        """
+        return not p.startswith("_audio_tokenizer")
+
     @property
     def layers(self):
         """Return the backbone layers of the model."""
