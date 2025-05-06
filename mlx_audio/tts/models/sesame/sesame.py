@@ -54,8 +54,16 @@ class SesameModelArgs:
     audio_vocab_size: int
     audio_num_codebooks: int
 
-    def __init__(self, model_type, backbone_flavor, decoder_flavor, text_vocab_size,
-                 audio_vocab_size, audio_num_codebooks, **kwargs):
+    def __init__(
+        self,
+        model_type,
+        backbone_flavor,
+        decoder_flavor,
+        text_vocab_size,
+        audio_vocab_size,
+        audio_num_codebooks,
+        **kwargs,
+    ):
         self.model_type = model_type
         self.backbone_flavor = backbone_flavor
         self.decoder_flavor = decoder_flavor
@@ -295,7 +303,6 @@ class Model(nn.Module):
         """Return the backbone layers of the model."""
         return self.model.backbone.layers
 
-
     def _tokenize_text_segment(
         self, text: str, speaker: int
     ) -> Tuple[mx.array, mx.array]:
@@ -370,7 +377,9 @@ class Model(nn.Module):
 
             if "sa_norm" in k or "mlp_norm" in k:
                 k = k.replace("sa_norm", "input_layernorm").replace("scale", "weight")
-                k = k.replace("mlp_norm", "post_attention_layernorm").replace("scale", "weight")
+                k = k.replace("mlp_norm", "post_attention_layernorm").replace(
+                    "scale", "weight"
+                )
 
             if "decoder.norm" in k or "backbone.norm" in k:
                 k = k.replace("scale", "weight")
@@ -378,8 +387,6 @@ class Model(nn.Module):
             sanitized_weights[k] = v
 
         return sanitized_weights
-
-
 
     def generate_result(self, samples, start_time: float) -> GenerationResult:
         token_count = len(samples)
