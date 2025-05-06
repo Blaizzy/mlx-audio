@@ -20,7 +20,7 @@ from mlx_lm.utils import (
 )
 from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts"}
+MODEL_REMAPPING = {"outetts": "outetts", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
 
 
@@ -311,7 +311,6 @@ def convert(
             lambda p, m, config: hasattr(m, "weight")
             and m.weight.shape[-1] % 64 == 0
             and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
         )
     else:
         original_predicate = quant_predicate
@@ -320,7 +319,6 @@ def convert(
             and hasattr(m, "weight")
             and m.weight.shape[-1] % 64 == 0
             and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
         )
 
     weights = dict(tree_flatten(model.parameters()))
