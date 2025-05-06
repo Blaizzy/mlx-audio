@@ -337,7 +337,6 @@ def convert(
         dtype = getattr(mx, dtype)
         weights = {k: v.astype(dtype) for k, v in weights.items()}
 
-
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
 
