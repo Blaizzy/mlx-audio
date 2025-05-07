@@ -210,42 +210,32 @@ class TestKokoroPipeline(unittest.TestCase):
         # Setup the pipeline
         with patch.object(KokoroPipeline, "__init__", return_value=None):
             with patch(
-                "mlx_audio.tts.models.kokoro.pipeline.torch.load"
-            ) as mock_torch_load:
+                "mlx_audio.tts.models.kokoro.pipeline.load_voice_tensor"
+            ) as load_voice_tensor:
                 with patch(
                     "mlx_audio.tts.models.kokoro.pipeline.hf_hub_download"
                 ) as mock_hf_hub_download:
-                    with patch(
-                        "mlx_audio.tts.models.kokoro.pipeline.torch.stack"
-                    ) as mock_stack:
-                        with patch(
-                            "mlx_audio.tts.models.kokoro.pipeline.torch.mean"
-                        ) as mock_mean:
-                            pipeline = KokoroPipeline.__new__(KokoroPipeline)
-                            pipeline.lang_code = "a"
-                            pipeline.voices = {}
-                            # Add the missing repo_id attribute
-                            pipeline.repo_id = "mlx-community/kokoro-tts"
+                    pipeline = KokoroPipeline.__new__(KokoroPipeline)
+                    pipeline.lang_code = "a"
+                    pipeline.voices = {}
+                    # Add the missing repo_id attribute
+                    pipeline.repo_id = "mlx-community/kokoro-tts"
 
-                            # Mock the torch.load return value
-                            mock_torch_load.return_value = MagicMock()
+                    # Mock the load voice return value
+                    load_voice_tensor.return_value = mx.zeros((512, 1, 256))
 
-                            # Mock torch.stack and torch.mean to return a MagicMock
-                            mock_stack.return_value = MagicMock()
-                            mock_mean.return_value = MagicMock()
+                    # Test loading a single voice
+                    pipeline.load_single_voice("voice1")
+                    mock_hf_hub_download.assert_called_once()
+                    self.assertIn("voice1", pipeline.voices)
 
-                            # Test loading a single voice
-                            pipeline.load_single_voice("voice1")
-                            mock_hf_hub_download.assert_called_once()
-                            self.assertIn("voice1", pipeline.voices)
-
-                            # Test loading multiple voices
-                            mock_hf_hub_download.reset_mock()
-                            pipeline.voices = {}  # Reset voices
-                            result = pipeline.load_voice("voice1,voice2")
-                            self.assertEqual(mock_hf_hub_download.call_count, 2)
-                            self.assertIn("voice1", pipeline.voices)
-                            self.assertIn("voice2", pipeline.voices)
+                    # Test loading multiple voices
+                    mock_hf_hub_download.reset_mock()
+                    pipeline.voices = {}  # Reset voices
+                    result = pipeline.load_voice("voice1,voice2")
+                    self.assertEqual(mock_hf_hub_download.call_count, 2)
+                    self.assertIn("voice1", pipeline.voices)
+                    self.assertIn("voice2", pipeline.voices)
 
     def test_tokens_to_ps(self):
         """Test tokens_to_ps method."""

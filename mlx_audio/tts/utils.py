@@ -1,10 +1,11 @@
 import glob
 import importlib
+import json
 import logging
 import shutil
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -17,10 +18,11 @@ from mlx_lm.utils import (
     save_config,
     save_weights,
 )
-from mlx_vlm.utils import load_config
+from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark"}
+MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
+MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 # Get a list of all available model types from the models directory
@@ -89,6 +91,32 @@ def get_model_and_args(model_type: str, model_name: List[str]):
     return arch, model_type
 
 
+def load_config(model_path: Union[str, Path], **kwargs) -> dict:
+    """Load model configuration from a path or Hugging Face repo.
+
+    Args:
+        model_path: Local path or Hugging Face repo ID to load config from
+        **kwargs: Additional keyword arguments to pass to the config loader
+
+    Returns:
+        dict: Model configuration
+
+    Raises:
+        FileNotFoundError: If config.json is not found at the path
+    """
+    if isinstance(model_path, str):
+        model_path = get_model_path(model_path)
+
+    try:
+        return AutoConfig.from_pretrained(model_path, **kwargs).to_dict()
+    except ValueError:
+        try:
+            with open(model_path / "config.json", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Config not found at {model_path}") from exc
+
+
 def load_model(
     model_path: Path, lazy: bool = False, strict: bool = True, **kwargs
 ) -> nn.Module:
@@ -145,7 +173,7 @@ processor.save_pretrained("<local_dir>")
 ```
 Then use the <local_dir> as the --hf-path in the convert script.
 ```
-python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
+python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
 ```
         """
         raise FileNotFoundError(message)
@@ -261,13 +289,12 @@ def convert(
     quantize: bool = False,
     q_group_size: int = 64,
     q_bits: int = 4,
-    dtype: str = "float16",
+    dtype: str = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
-    skip_non_divisible: bool = False,
 ):
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
@@ -278,27 +305,37 @@ def convert(
     if isinstance(quant_predicate, str):
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
 
-    # Skip layers that are not divisible by 64
-    if quant_predicate is None:
-        quant_predicate = (
-            lambda p, m, config: hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0
+    # Get model-specific quantization predicate if available
+    model_quant_predicate = getattr(
+        model, "model_quant_predicate", lambda p, m, config: True
+    )
+
+    # Define base quantization requirements
+    def base_quant_requirements(p, m, config):
+        return (
+            hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
             and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
+            and model_quant_predicate(p, m, config)
         )
+
+    # Combine with user-provided predicate if available
+    if quant_predicate is None:
+        quant_predicate = base_quant_requirements
     else:
         original_predicate = quant_predicate
-        quant_predicate = (
-            lambda p, m, config: original_predicate(p, m, config)
-            and hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0
-            and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
+        quant_predicate = lambda p, m, config: (
+            base_quant_requirements(p, m, config) and original_predicate(p, m, config)
         )
 
     weights = dict(tree_flatten(model.parameters()))
-    dtype = getattr(mx, dtype)
-    weights = {k: v.astype(dtype) for k, v in weights.items()}
+
+    if dtype is None:
+        dtype = config.get("torch_dtype", None)
+    if dtype in MODEL_CONVERSION_DTYPES:
+        print("[INFO] Using dtype:", dtype)
+        dtype = getattr(mx, dtype)
+        weights = {k: v.astype(dtype) for k, v in weights.items()}
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
@@ -306,6 +343,8 @@ def convert(
     if quantize:
         print("[INFO] Quantizing")
         model.load_weights(list(weights.items()))
+        if hasattr(model, "skip_quantize"):
+            model.skip_quantize()
         weights, config = quantize_model(
             model, config, q_group_size, q_bits, quant_predicate=quant_predicate
         )
