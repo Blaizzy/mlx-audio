@@ -1,5 +1,6 @@
 from typing import Optional, Union, Any, List
 from enum import Enum
+from collections import UserDict
 
 import mlx.core as mx
 import numpy as np
@@ -9,14 +10,52 @@ import logging
 from mlx_audio.tts.utils import get_model_path
 from dataclasses import dataclass
 
-from transformers.feature_extraction_utils import BatchFeature
-
 logger = logging.getLogger(__name__)
+
+class TensorType(Enum):
+    MX = "mx"
+    NP = "np"
+
+class BatchFeature(UserDict):
+    def __init__(self, data=None, input_values: Any = None, attention_mask: Any = None, tensor_type: Union[str, TensorType] = TensorType.MX, **kwargs):
+        super().__init__()
+        if data:
+            self.data.update(data)
+
+        _input_values_key = "input_values"
+        _attention_mask_key = "attention_mask"
+
+
+        if input_values is not None:
+            # Ensure input_values is a list of items
+            if not (isinstance(input_values, list) and \
+                    (not input_values or isinstance(input_values[0], (np.ndarray, mx.array, list, tuple)))):
+                self.data[_input_values_key] = [input_values]
+            else:
+                self.data[_input_values_key] = input_values
+
+        if attention_mask is not None:
+            # Ensure attention_mask is a list of items
+            if not (isinstance(attention_mask, list) and \
+                    (not attention_mask or isinstance(attention_mask[0], (np.ndarray, mx.array, list, tuple, type(None))))):
+                 self.data[_attention_mask_key] = [attention_mask]
+            else:
+                 self.data[_attention_mask_key] = attention_mask
+
+        if isinstance(tensor_type, str):
+            self.tensor_type = TensorType(tensor_type)
+        else:
+            self.tensor_type = tensor_type
+
+        # Update with any other kwargs passed
+        self.data.update(kwargs)
+
 
 class PaddingStrategy(Enum):
     LONGEST = "longest"
     MAX_LENGTH = "max_length"
     DO_NOT_PAD = "do_not_pad"
+
 
 def load_json(path: os.PathLike) -> dict[str, Any]:
     try:
@@ -571,7 +610,7 @@ class Wav2Vec2FeatureExtractor:
     def from_pretrained(
         cls,
         pretrained_model_name_or_path: Union[str, os.PathLike],
-        file_name: str = "feature_extractor_config.json",
+        file_name: str = "preprocessor_config.json",
         revision: str = "main",
         **kwargs,
     ):
@@ -579,6 +618,10 @@ class Wav2Vec2FeatureExtractor:
             path = get_model_path(pretrained_model_name_or_path)
         else:
             path = pretrained_model_name_or_path
+
+        if not (path / file_name).exists():
+            raise FileNotFoundError(f"File {file_name} not found in {path}")
+
         feature_extractor_dict = load_json(path / file_name)
 
         return cls.from_dict(feature_extractor_dict, **kwargs)
