@@ -18,7 +18,7 @@ class DecoderBlock(nn.Module):
         stride: int = 1,
     ):
         super().__init__()
-        self.block = [
+        self.block = nn.Sequential(
             Snake1d(input_dim),
             WNConvTranspose1d(
                 input_dim,
@@ -30,12 +30,10 @@ class DecoderBlock(nn.Module):
             ResidualUnit(output_dim, dilation=1),
             ResidualUnit(output_dim, dilation=3),
             ResidualUnit(output_dim, dilation=9),
-        ]
+        )
 
     def __call__(self, x):
-        for module in self.block:
-            x = module(x)
-        return x
+        return self.block(x)
 
 
 class WaveGenerator(nn.Module):
@@ -76,6 +74,12 @@ class WaveGenerator(nn.Module):
     def sanitize(self, weights):
         sanitized_weights = {}
         for k, v in weights.items():
+
+            if "decoder.model" in k:
+                if "block.layers" not in k:
+                    k = k.replace("block", "block.layers")
+                    sanitized_weights[k] = v
+
             if ".alpha" in k:
                 if v.shape[1] > v.shape[-1]:
                     sanitized_weights[k] = v.transpose(0, 2, 1)
@@ -84,7 +88,7 @@ class WaveGenerator(nn.Module):
 
             elif (
                 "decoder.model" in k
-                and "block.1" in k
+                and "block.layers.1" in k
                 and ("weight_v" in k or "weight_g" in k)
                 and k.count("block") == 1
             ):
