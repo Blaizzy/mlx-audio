@@ -8,16 +8,16 @@ import torch
 from omegaconf import DictConfig
 from safetensors.torch import load_file
 
-from mlx_audio.tts.models.spark.modules.residual import FactorizedVectorQuantize
+from mlx_audio.codec.models.vocos.mel import hanning, mel_filters, stft
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_decoder import Decoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_encoder import Encoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
     WaveGenerator,
 )
+from mlx_audio.tts.models.spark.modules.residual import FactorizedVectorQuantize
 from mlx_audio.tts.models.spark.modules.speaker.speaker_encoder import SpeakerEncoder
 from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
-from mlx_audio.codec.models.vocos.mel import hanning, mel_filters, stft
 
 
 def log_mel_spectrogram(
@@ -49,7 +49,6 @@ def log_mel_spectrogram(
     mel_spec = magnitudes @ filters.T
     log_spec = mx.maximum(mel_spec, 1e-5).log()
     return mx.expand_dims(log_spec, axis=0)
-
 
 
 class BiCodec(nn.Module):
@@ -90,7 +89,6 @@ class BiCodec(nn.Module):
         self.postnet = postnet
         self.mel_params = mel_params
 
-
     @classmethod
     def load_from_checkpoint(cls, model_dir: Path, **kwargs) -> "BiCodec":
         """
@@ -127,14 +125,12 @@ class BiCodec(nn.Module):
 
         # Convert PyTorch weights to MLX arrays and sanitize
         weights = {
-            k: mx.array(v) for k, v in weights.items()
-            if "num_batches_tracked" not in k
+            k: mx.array(v) for k, v in weights.items() if "num_batches_tracked" not in k
         }
 
         for module in [encoder, decoder, quantizer, speaker_encoder]:
             if hasattr(module, "sanitize"):
                 weights = module.sanitize(weights)
-
 
         model.load_weights(list(weights.items()), strict=True)
 
@@ -219,7 +215,9 @@ class BiCodec(nn.Module):
         semantic_tokens = mx.array(semantic_tokens)
         global_tokens = mx.array(global_tokens)
 
-        z_q = self.quantizer.detokenize(semantic_tokens.transpose(0, 1)).transpose(0, 2, 1)
+        z_q = self.quantizer.detokenize(semantic_tokens.transpose(0, 1)).transpose(
+            0, 2, 1
+        )
         d_vector = self.speaker_encoder.detokenize(global_tokens)
         x = self.prenet(z_q, d_vector)
         x = x + d_vector[..., None]
@@ -245,14 +243,13 @@ class BiCodec(nn.Module):
         return mx.concatenate(mels, axis=0)
 
 
-
 if __name__ == "__main__":
     import torch
+
     model_path = get_model_path("SparkAudio/Spark-TTS-0.5B")
 
     model = BiCodec.load_from_checkpoint(model_path / "BiCodec")
     wav = mx.random.normal((1, 16000), dtype=mx.float32)
-
 
     # Generate random inputs for testing
     duration = 0.96
@@ -263,7 +260,6 @@ if __name__ == "__main__":
     # Forward pass
     outputs = model(inputs)
     semantic_tokens, global_tokens = model.tokenize(inputs)
-
 
     wav_recon = model.detokenize(semantic_tokens, global_tokens)
 

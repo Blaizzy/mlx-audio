@@ -97,7 +97,6 @@ class Decoder(nn.Module):
         return x
 
 
-
 # test
 if __name__ == "__main__":
     test_input = mx.random.normal(

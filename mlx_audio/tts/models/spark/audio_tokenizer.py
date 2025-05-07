@@ -6,11 +6,12 @@ import numpy as np
 import torch
 from transformers import Wav2Vec2Model
 
+from mlx_audio.stt.models.wav2vec.feature_extractor import Wav2Vec2FeatureExtractor
+
 from .bicodec import BiCodec
 from .utils.audio import load_audio
 from .utils.file import load_config
 
-from mlx_audio.stt.models.wav2vec.feature_extractor import Wav2Vec2FeatureExtractor
 
 class BiCodecTokenizer:
     """BiCodec tokenizer for handling audio input and tokenization."""

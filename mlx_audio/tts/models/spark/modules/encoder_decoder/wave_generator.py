@@ -82,7 +82,12 @@ class WaveGenerator(nn.Module):
                 else:
                     sanitized_weights[k] = v
 
-            elif "decoder.model" in k and "block.1" in k and ("weight_v" in k or "weight_g" in k) and k.count("block") == 1:
+            elif (
+                "decoder.model" in k
+                and "block.1" in k
+                and ("weight_v" in k or "weight_g" in k)
+                and k.count("block") == 1
+            ):
 
                 if v.shape[0] > v.shape[-1]:
                     sanitized_weights[k] = v.transpose(1, 2, 0)
@@ -91,6 +96,7 @@ class WaveGenerator(nn.Module):
             else:
                 sanitized_weights[k] = v
         return sanitized_weights
+
 
 if __name__ == "__main__":
     test_input = mx.random.normal((8, 1024, 50), dtype=mx.float32)

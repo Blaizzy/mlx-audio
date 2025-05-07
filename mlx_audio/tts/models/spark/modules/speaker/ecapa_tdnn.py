@@ -143,11 +143,9 @@ class SE_Res2Block(nn.Module):
         super().__init__()
         self.se_res2block = [
             Conv1dReluBn(channels, channels, kernel_size=1, stride=1, padding=0),
-
             Res2Conv1dReluBn(
                 channels, kernel_size, stride, padding, dilation, scale=scale
             ),
-
             Conv1dReluBn(channels, channels, kernel_size=1, stride=1, padding=0),
             SE_Connect(channels),
         ]

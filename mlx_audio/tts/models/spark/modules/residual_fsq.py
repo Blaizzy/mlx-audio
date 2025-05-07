@@ -1,8 +1,8 @@
 import random
+from typing import List
+
 import mlx.core as mx
 import mlx.nn as nn
-
-from typing import List
 
 from mlx_audio.tts.models.spark.modules.finite_scalar_quantization import FSQ
 
@@ -21,7 +21,6 @@ def default(val, d):
 
 def round_up_multiple(num, mult):
     return ceil(num / mult) * mult
-
 
 
 class ResidualFSQ(nn.Module):
@@ -105,13 +104,19 @@ class ResidualFSQ(nn.Module):
             assert (
                 self.quantize_dropout > 0.0
             ), "quantize dropout must be greater than 0 if you wish to reconstruct from a signal with less fine quantizations"
-            indices = mx.pad(indices, ((0, 0), (0, 0), (0, self.num_quantizers - quantize_dim)), constant_value=-1)
+            indices = mx.pad(
+                indices,
+                ((0, 0), (0, 0), (0, self.num_quantizers - quantize_dim)),
+                constant_value=-1,
+            )
 
         # take care of quantizer dropout
 
         mask = indices == -1
         # MLX doesn't have masked_fill, so we use where
-        indices = mx.where(mask, mx.zeros_like(indices), indices)  # have it fetch a dummy code to be masked out later
+        indices = mx.where(
+            mask, mx.zeros_like(indices), indices
+        )  # have it fetch a dummy code to be masked out later
 
         # MLX doesn't have get_at function, so we need to manually gather codes
         all_codes = []
@@ -129,19 +134,31 @@ class ResidualFSQ(nn.Module):
         # mask out any codes that were dropout-ed
         # Reshape mask for broadcasting: q b n 1
 
-        mask_reshaped = mx.reshape(mask, (mask.shape[2], mask.shape[0], mask.shape[1], 1))
+        mask_reshaped = mx.reshape(
+            mask, (mask.shape[2], mask.shape[0], mask.shape[1], 1)
+        )
 
         all_codes = mx.where(mask_reshaped, mx.zeros_like(all_codes), all_codes)
 
         # scale the codes
         # Reshape scales for broadcasting: q 1 1 d
-        scales = mx.reshape(self._scales, (self._scales.shape[0], 1, 1, self._scales.shape[1]))
+        scales = mx.reshape(
+            self._scales, (self._scales.shape[0], 1, 1, self._scales.shape[1])
+        )
         all_codes = all_codes * scales
 
         # if (accept_image_fmap = True) then return shape (quantize, batch, height, width, dimension)
         # Reshape all_codes back to original dimensions
         if len(original_shape) > 3:  # If we had height, width dimensions
-            all_codes = mx.reshape(all_codes, (all_codes.shape[0], original_shape[0], *original_shape[1:-1], all_codes.shape[-1]))
+            all_codes = mx.reshape(
+                all_codes,
+                (
+                    all_codes.shape[0],
+                    original_shape[0],
+                    *original_shape[1:-1],
+                    all_codes.shape[-1],
+                ),
+            )
 
         return all_codes
 
@@ -150,7 +167,9 @@ class ResidualFSQ(nn.Module):
         codes_summed = mx.sum(codes, axis=0)
         return self.project_out(codes_summed)
 
-    def __call__(self, x, return_all_codes=False, rand_quantize_dropout_fixed_seed=None):
+    def __call__(
+        self, x, return_all_codes=False, rand_quantize_dropout_fixed_seed=None
+    ):
         num_quant, quant_dropout_multiple_of = (
             self.num_quantizers,
             self.quantize_dropout_multiple_of,
@@ -174,7 +193,6 @@ class ResidualFSQ(nn.Module):
             for dim in middle_dims:
                 flattened_dim *= dim
             x = mx.reshape(x, (x.shape[0], flattened_dim, x.shape[-1]))
-
 
         # maybe project in
 
@@ -246,10 +264,16 @@ class ResidualFSQ(nn.Module):
             # Assuming ps contains the original batch dimensions
             # Reshape to combine all dimensions between batch and the last dimension
             batch_size = ps[0] if isinstance(ps, tuple) else ps
-            quantized_out = mx.reshape(quantized_out, (batch_size, -1, quantized_out.shape[-1])).swapaxes(2, 1) # swap to match torch output
-            all_indices = mx.reshape(all_indices, (batch_size, -1, all_indices.shape[-1])).swapaxes(2, 1) # swap to match torch output
-
-
+            quantized_out = mx.reshape(
+                quantized_out, (batch_size, -1, quantized_out.shape[-1])
+            ).swapaxes(
+                2, 1
+            )  # swap to match torch output
+            all_indices = mx.reshape(
+                all_indices, (batch_size, -1, all_indices.shape[-1])
+            ).swapaxes(
+                2, 1
+            )  # swap to match torch output
 
         # return
         ret = (quantized_out, all_indices)
@@ -264,7 +288,6 @@ class ResidualFSQ(nn.Module):
         # will return all codes in shape (quantizer, batch, sequence length, codebook dimension)
 
         return (*ret, all_codes)
-
 
 
 if __name__ == "__main__":

@@ -3,12 +3,10 @@ import warnings
 from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
-import numpy as np
 import mlx
+import numpy as np
 from mlx import nn
 from mlx.nn import CrossEntropyLoss
-
-
 from transformers.modeling_outputs import (
     BaseModelOutput,
     CausalLMOutput,
@@ -72,66 +70,64 @@ _XVECTOR_CHECKPOINT = "anton-l/wav2vec2-base-superb-sv"
 _XVECTOR_EXPECTED_OUTPUT = 0.98
 
 
-
 @dataclass
 class ModelConfig:
-    model_type : str = "wav2vec2"
-    vocab_size : int = 32
-    hidden_size : int = 768
-    num_hidden_layers : int = 12
-    num_attention_heads : int = 12
-    intermediate_size : int = 3072
-    hidden_act : str = "gelu"
-    hidden_dropout : float = 0.1
-    activation_dropout : float = 0.1
-    attention_dropout : float = 0.1
-    feat_proj_dropout : float = 0.0
-    feat_quantizer_dropout : float = 0.0
-    final_dropout : float = 0.1
-    layerdrop : float = 0.1
-    initializer_range : float = 0.02
-    layer_norm_eps : float = 1e-5
-    feat_extract_norm : str = "group"
-    feat_extract_activation : str = "gelu"
-    conv_dim : Tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
-    conv_stride : Tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
-    conv_kernel : Tuple[int, ...] = (10, 3, 3, 3, 3, 2, 2)
-    conv_bias : bool = False
-    num_conv_pos_embeddings : int = 128
-    num_conv_pos_embedding_groups : int = 16
-    do_stable_layer_norm : bool = False
-    apply_spec_augment : bool = True
-    mask_time_prob : float = 0.05
-    mask_time_length : int = 10
-    mask_time_min_masks : int = 2
-    mask_feature_prob : float = 0.0
-    mask_feature_length : int = 10
-    mask_feature_min_masks : int = 0
-    num_codevectors_per_group : int = 320
-    num_codevector_groups : int = 2
-    contrastive_logits_temperature : float = 0.1
-    num_negatives : int = 100
-    codevector_dim : int = 256
-    proj_codevector_dim : int = 256
-    diversity_loss_weight : float = 0.1
-    ctc_loss_reduction : str = "sum"
-    ctc_zero_infinity : bool = False
-    use_weighted_layer_sum : bool = False
-    classifier_proj_size : int = 256
-    tdnn_dim : Tuple[int, ...] = (512, 512, 512, 512, 1500)
-    tdnn_kernel : Tuple[int, ...] = (5, 3, 3, 1, 1)
-    tdnn_dilation : Tuple[int, ...] = (1, 2, 3, 1, 1)
-    xvector_output_dim : int = 512
-    pad_token_id : int = 0
-    bos_token_id : int = 1
-    eos_token_id : int = 2
-    add_adapter : bool = False
-    adapter_kernel_size : int = 3
-    adapter_stride : int = 2
-    num_adapter_layers : int = 3
-    output_hidden_size : Optional[int] = None
-    adapter_attn_dim : Optional[int] = None
-
+    model_type: str = "wav2vec2"
+    vocab_size: int = 32
+    hidden_size: int = 768
+    num_hidden_layers: int = 12
+    num_attention_heads: int = 12
+    intermediate_size: int = 3072
+    hidden_act: str = "gelu"
+    hidden_dropout: float = 0.1
+    activation_dropout: float = 0.1
+    attention_dropout: float = 0.1
+    feat_proj_dropout: float = 0.0
+    feat_quantizer_dropout: float = 0.0
+    final_dropout: float = 0.1
+    layerdrop: float = 0.1
+    initializer_range: float = 0.02
+    layer_norm_eps: float = 1e-5
+    feat_extract_norm: str = "group"
+    feat_extract_activation: str = "gelu"
+    conv_dim: Tuple[int, ...] = (512, 512, 512, 512, 512, 512, 512)
+    conv_stride: Tuple[int, ...] = (5, 2, 2, 2, 2, 2, 2)
+    conv_kernel: Tuple[int, ...] = (10, 3, 3, 3, 3, 2, 2)
+    conv_bias: bool = False
+    num_conv_pos_embeddings: int = 128
+    num_conv_pos_embedding_groups: int = 16
+    do_stable_layer_norm: bool = False
+    apply_spec_augment: bool = True
+    mask_time_prob: float = 0.05
+    mask_time_length: int = 10
+    mask_time_min_masks: int = 2
+    mask_feature_prob: float = 0.0
+    mask_feature_length: int = 10
+    mask_feature_min_masks: int = 0
+    num_codevectors_per_group: int = 320
+    num_codevector_groups: int = 2
+    contrastive_logits_temperature: float = 0.1
+    num_negatives: int = 100
+    codevector_dim: int = 256
+    proj_codevector_dim: int = 256
+    diversity_loss_weight: float = 0.1
+    ctc_loss_reduction: str = "sum"
+    ctc_zero_infinity: bool = False
+    use_weighted_layer_sum: bool = False
+    classifier_proj_size: int = 256
+    tdnn_dim: Tuple[int, ...] = (512, 512, 512, 512, 1500)
+    tdnn_kernel: Tuple[int, ...] = (5, 3, 3, 1, 1)
+    tdnn_dilation: Tuple[int, ...] = (1, 2, 3, 1, 1)
+    xvector_output_dim: int = 512
+    pad_token_id: int = 0
+    bos_token_id: int = 1
+    eos_token_id: int = 2
+    add_adapter: bool = False
+    adapter_kernel_size: int = 3
+    adapter_stride: int = 2
+    num_adapter_layers: int = 3
+    output_hidden_size: Optional[int] = None
+    adapter_attn_dim: Optional[int] = None
 
 
 @dataclass
@@ -220,7 +216,11 @@ def _compute_mask_indices(
             dummy_mask_idx = spec_aug_mask_idx[0]
 
         spec_aug_mask_idx = np.concatenate(
-            [spec_aug_mask_idx, np.ones(max_num_masked_span - num_masked_span, dtype=np.int32) * dummy_mask_idx]
+            [
+                spec_aug_mask_idx,
+                np.ones(max_num_masked_span - num_masked_span, dtype=np.int32)
+                * dummy_mask_idx,
+            ]
         )
         spec_aug_mask_idxs.append(spec_aug_mask_idx)
 
@@ -230,18 +230,22 @@ def _compute_mask_indices(
     spec_aug_mask_idxs = np.broadcast_to(
         spec_aug_mask_idxs[:, :, None], (batch_size, max_num_masked_span, mask_length)
     )
-    spec_aug_mask_idxs = spec_aug_mask_idxs.reshape(batch_size, max_num_masked_span * mask_length)
+    spec_aug_mask_idxs = spec_aug_mask_idxs.reshape(
+        batch_size, max_num_masked_span * mask_length
+    )
 
     # add offset to the starting indexes so that indexes now create a span
     offsets = np.arange(mask_length)[None, None, :]
-    offsets = np.broadcast_to(offsets, (batch_size, max_num_masked_span, mask_length)).reshape(
-        batch_size, max_num_masked_span * mask_length
-    )
+    offsets = np.broadcast_to(
+        offsets, (batch_size, max_num_masked_span, mask_length)
+    ).reshape(batch_size, max_num_masked_span * mask_length)
     spec_aug_mask_idxs = spec_aug_mask_idxs + offsets
 
     # ensure that we cannot have indices larger than sequence_length
     if spec_aug_mask_idxs.max() > sequence_length - 1:
-        spec_aug_mask_idxs[spec_aug_mask_idxs > sequence_length - 1] = sequence_length - 1
+        spec_aug_mask_idxs[spec_aug_mask_idxs > sequence_length - 1] = (
+            sequence_length - 1
+        )
 
     # scatter indices to mask
     np.put_along_axis(spec_aug_mask, spec_aug_mask_idxs, 1, -1)
@@ -250,7 +254,9 @@ def _compute_mask_indices(
 
 
 def _sample_negative_indices(
-    features_shape: Tuple, num_negatives: int, mask_time_indices: Optional[np.ndarray] = None
+    features_shape: Tuple,
+    num_negatives: int,
+    mask_time_indices: Optional[np.ndarray] = None,
 ):
     """
     Sample `num_negatives` vectors from feature vectors.
@@ -261,23 +267,31 @@ def _sample_negative_indices(
     sequence_length_range = np.arange(sequence_length)
 
     # get `num_negatives` random vector indices from the same utterance
-    sampled_negative_indices = np.zeros(shape=(batch_size, sequence_length, num_negatives), dtype=np.int32)
+    sampled_negative_indices = np.zeros(
+        shape=(batch_size, sequence_length, num_negatives), dtype=np.int32
+    )
 
     mask_time_indices = (
-        mask_time_indices.astype(bool) if mask_time_indices is not None else np.ones(features_shape, dtype=bool)
+        mask_time_indices.astype(bool)
+        if mask_time_indices is not None
+        else np.ones(features_shape, dtype=bool)
     )
 
     for batch_idx in range(batch_size):
         high = mask_time_indices[batch_idx].sum() - 1
         mapped_masked_indices = sequence_length_range[mask_time_indices[batch_idx]]
 
-        feature_indices = np.broadcast_to(np.arange(high + 1)[:, None], (high + 1, num_negatives))
+        feature_indices = np.broadcast_to(
+            np.arange(high + 1)[:, None], (high + 1, num_negatives)
+        )
         sampled_indices = np.random.randint(0, high, size=(high + 1, num_negatives))
         # avoid sampling the same positive vector, but keep the distribution uniform
         sampled_indices[sampled_indices >= feature_indices] += 1
 
         # remap to actual indices
-        sampled_negative_indices[batch_idx][mask_time_indices[batch_idx]] = mapped_masked_indices[sampled_indices]
+        sampled_negative_indices[batch_idx][mask_time_indices[batch_idx]] = (
+            mapped_masked_indices[sampled_indices]
+        )
 
         # correct for batch size
         sampled_negative_indices[batch_idx] += batch_idx * sequence_length
@@ -348,7 +362,12 @@ class Wav2Vec2GroupNormConvLayer(nn.Module):
         )
         self.activation = nn.GELU()
 
-        self.layer_norm = nn.GroupNorm(num_groups=self.out_conv_dim, dims=self.out_conv_dim, affine=True, pytorch_compatible=True)
+        self.layer_norm = nn.GroupNorm(
+            num_groups=self.out_conv_dim,
+            dims=self.out_conv_dim,
+            affine=True,
+            pytorch_compatible=True,
+        )
 
     def __call__(self, hidden_states):
         hidden_states = self.conv(hidden_states)
@@ -401,11 +420,13 @@ class Wav2Vec2FeatureEncoder(nn.Module):
 
         if config.feat_extract_norm == "group":
             conv_layers = [Wav2Vec2GroupNormConvLayer(config, layer_id=0)] + [
-                Wav2Vec2NoLayerNormConvLayer(config, layer_id=i + 1) for i in range(config.num_feat_extract_layers - 1)
+                Wav2Vec2NoLayerNormConvLayer(config, layer_id=i + 1)
+                for i in range(config.num_feat_extract_layers - 1)
             ]
         elif config.feat_extract_norm == "layer":
             conv_layers = [
-                Wav2Vec2LayerNormConvLayer(config, layer_id=i) for i in range(config.num_feat_extract_layers)
+                Wav2Vec2LayerNormConvLayer(config, layer_id=i)
+                for i in range(config.num_feat_extract_layers)
             ]
         else:
             raise ValueError(
@@ -414,7 +435,6 @@ class Wav2Vec2FeatureEncoder(nn.Module):
         self.conv_layers = conv_layers
         self.gradient_checkpointing = False
 
-
     def __call__(self, input_values):
         hidden_states = input_values[:, None]
 
@@ -422,9 +442,6 @@ class Wav2Vec2FeatureEncoder(nn.Module):
             hidden_states = conv_layer(hidden_states)
 
         return hidden_states
-
-
-
 
 
 class Wav2Vec2FeatureProjection(nn.Module):
@@ -478,7 +495,9 @@ class Wav2Vec2Attention(nn.Module):
         self.out_proj = nn.Linear(embed_dim, embed_dim, bias=bias)
 
     def _shape(self, tensor: mx.array, seq_len: int, bsz: int):
-        return tensor.reshape(bsz, seq_len, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
+        return tensor.reshape(bsz, seq_len, self.num_heads, self.head_dim).transpose(
+            0, 2, 1, 3
+        )
 
     def __call__(
         self,
@@ -542,7 +561,9 @@ class Wav2Vec2Attention(nn.Module):
 
         src_len = key_states.shape[1]
 
-        attn_output = mx.fast.scaled_dot_product_attention(query_states, key_states, value_states, attn_mask=attention_mask)
+        attn_output = mx.fast.scaled_dot_product_attention(
+            query_states, key_states, value_states, attn_mask=attention_mask
+        )
 
         attn_output = attn_output.reshape(bsz, self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 2, 1, 3)
@@ -561,7 +582,9 @@ class Wav2Vec2FeedForward(nn.Module):
         super().__init__()
         self.intermediate_dropout = nn.Dropout(config.activation_dropout)
 
-        self.intermediate_dense = nn.Linear(config.hidden_size, config.intermediate_size)
+        self.intermediate_dense = nn.Linear(
+            config.hidden_size, config.intermediate_size
+        )
 
         self.intermediate_act_fn = nn.GELU()
 
@@ -591,13 +614,13 @@ class Wav2Vec2EncoderLayer(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout)
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.feed_forward = Wav2Vec2FeedForward(config)
-        self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.final_layer_norm = nn.LayerNorm(
+            config.hidden_size, eps=config.layer_norm_eps
+        )
 
     def __call__(self, hidden_states, attention_mask=None):
         attn_residual = hidden_states
-        hidden_states, _ = self.attention(
-            hidden_states, attention_mask=attention_mask
-        )
+        hidden_states, _ = self.attention(hidden_states, attention_mask=attention_mask)
         hidden_states = self.dropout(hidden_states)
         hidden_states = attn_residual + hidden_states
 
@@ -622,7 +645,9 @@ class Wav2Vec2EncoderLayerStableLayerNorm(nn.Module):
         self.dropout = nn.Dropout(config.hidden_dropout)
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.feed_forward = Wav2Vec2FeedForward(config)
-        self.final_layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.final_layer_norm = nn.LayerNorm(
+            config.hidden_size, eps=config.layer_norm_eps
+        )
 
         if getattr(config, "adapter_attn_dim", None) is not None:
             self.adapter_layer = Wav2Vec2AttnAdapterLayer(config)
@@ -637,18 +662,17 @@ class Wav2Vec2EncoderLayerStableLayerNorm(nn.Module):
     ):
         attn_residual = hidden_states
         hidden_states = self.layer_norm(hidden_states)
-        hidden_states, _ = self.attention(
-            hidden_states, attention_mask=attention_mask
-        )
+        hidden_states, _ = self.attention(hidden_states, attention_mask=attention_mask)
         hidden_states = self.dropout(hidden_states)
         hidden_states = attn_residual + hidden_states
-        hidden_states = hidden_states + self.feed_forward(self.final_layer_norm(hidden_states))
+        hidden_states = hidden_states + self.feed_forward(
+            self.final_layer_norm(hidden_states)
+        )
 
         if self.adapter_layer is not None:
             hidden_states = hidden_states + self.adapter_layer(hidden_states)
 
         outputs = (hidden_states,)
-
 
         return outputs
 
@@ -660,7 +684,9 @@ class Wav2Vec2Encoder(nn.Module):
         self.pos_conv_embed = Wav2Vec2PositionalConvEmbedding(config)
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout)
-        self.layers = [Wav2Vec2EncoderLayer(config) for _ in range(config.num_hidden_layers)]
+        self.layers = [
+            Wav2Vec2EncoderLayer(config) for _ in range(config.num_hidden_layers)
+        ]
 
     def __call__(
         self,
@@ -676,14 +702,21 @@ class Wav2Vec2Encoder(nn.Module):
         if attention_mask is not None:
             # make sure padded tokens output 0
             expand_attention_mask = attention_mask[..., None]
-            expand_attention_mask = mx.repeat(expand_attention_mask, 1, 1, hidden_states.shape[2])
+            expand_attention_mask = mx.repeat(
+                expand_attention_mask, 1, 1, hidden_states.shape[2]
+            )
             hidden_states[~expand_attention_mask] = 0
 
             # extend attention_mask
-            attention_mask = 1.0 - attention_mask[:, None, None, :].astype(hidden_states.dtype)
+            attention_mask = 1.0 - attention_mask[:, None, None, :].astype(
+                hidden_states.dtype
+            )
             attention_mask = attention_mask * mx.finfo(hidden_states.dtype).min
             attention_mask = attention_mask.expand(
-                attention_mask.shape[0], 1, attention_mask.shape[-1], attention_mask.shape[-1]
+                attention_mask.shape[0],
+                1,
+                attention_mask.shape[-1],
+                attention_mask.shape[-1],
             )
 
         position_embeddings = self.pos_conv_embed(hidden_states)
@@ -696,7 +729,9 @@ class Wav2Vec2Encoder(nn.Module):
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
                 layer_outputs = layer(
-                    hidden_states, attention_mask=attention_mask, output_attentions=output_attentions
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    output_attentions=output_attentions,
                 )
                 hidden_states = layer_outputs[0]
 
@@ -722,7 +757,10 @@ class Wav2Vec2EncoderStableLayerNorm(nn.Module):
         self.layer_norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
         self.dropout = nn.Dropout(config.hidden_dropout)
         self.layers = nn.ModuleList(
-            [Wav2Vec2EncoderLayerStableLayerNorm(config) for _ in range(config.num_hidden_layers)]
+            [
+                Wav2Vec2EncoderLayerStableLayerNorm(config)
+                for _ in range(config.num_hidden_layers)
+            ]
         )
 
     def __call__(
@@ -739,27 +777,37 @@ class Wav2Vec2EncoderStableLayerNorm(nn.Module):
         if attention_mask is not None:
             # make sure padded tokens are not attended to
             expand_attention_mask = attention_mask[..., None]
-            expand_attention_mask = mx.repeat(expand_attention_mask, 1, 1, hidden_states.shape[2])
-            hidden_states = hidden_states * expand_attention_mask.astype(hidden_states.dtype)
+            expand_attention_mask = mx.repeat(
+                expand_attention_mask, 1, 1, hidden_states.shape[2]
+            )
+            hidden_states = hidden_states * expand_attention_mask.astype(
+                hidden_states.dtype
+            )
 
             # extend attention_mask
-            attention_mask = 1.0 - attention_mask[:, None, None, :].astype(hidden_states.dtype)
+            attention_mask = 1.0 - attention_mask[:, None, None, :].astype(
+                hidden_states.dtype
+            )
             attention_mask = attention_mask * mx.finfo(hidden_states.dtype).min
             attention_mask = attention_mask.expand(
-                attention_mask.shape[0], 1, attention_mask.shape[-1], attention_mask.shape[-1]
+                attention_mask.shape[0],
+                1,
+                attention_mask.shape[-1],
+                attention_mask.shape[-1],
             )
 
         position_embeddings = self.pos_conv_embed(hidden_states)
         hidden_states = hidden_states + position_embeddings
         hidden_states = self.dropout(hidden_states)
 
-
         for layer in self.layers:
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
                 layer_outputs = layer(
-                    hidden_states, attention_mask=attention_mask, output_attentions=output_attentions
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    output_attentions=output_attentions,
                 )
                 hidden_states = layer_outputs[0]
 
@@ -797,8 +845,16 @@ class Wav2Vec2GumbelVectorQuantizer(nn.Module):
             )
 
         # storage for codebook variables (codewords)
-        self.codevectors = mx.ones((1, self.num_groups * self.num_vars, config.codevector_dim // self.num_groups))
-        self.weight_proj = nn.Linear(config.conv_dim[-1], self.num_groups * self.num_vars)
+        self.codevectors = mx.ones(
+            (
+                1,
+                self.num_groups * self.num_vars,
+                config.codevector_dim // self.num_groups,
+            )
+        )
+        self.weight_proj = nn.Linear(
+            config.conv_dim[-1], self.num_groups * self.num_vars
+        )
 
         # can be decayed for training
         self.temperature = 2
@@ -813,7 +869,9 @@ class Wav2Vec2GumbelVectorQuantizer(nn.Module):
         else:
             marginal_probs = probs.mean(axis=0)
 
-        perplexity = mx.exp(-mx.sum(marginal_probs * mx.log(marginal_probs + 1e-7), dim=-1)).sum()
+        perplexity = mx.exp(
+            -mx.sum(marginal_probs * mx.log(marginal_probs + 1e-7), dim=-1)
+        ).sum()
         return perplexity
 
     def gumbel_softmax(self, hidden_states, tau=1.0, hard=True):
@@ -831,7 +889,9 @@ class Wav2Vec2GumbelVectorQuantizer(nn.Module):
             be a probability distribution that sums to 1 across classes
         """
         # Sample from Gumbel distribution
-        gumbels = -mx.log(-mx.log(mx.random.uniform(0, 1, hidden_states.shape) + 1e-7) + 1e-7)
+        gumbels = -mx.log(
+            -mx.log(mx.random.uniform(0, 1, hidden_states.shape) + 1e-7) + 1e-7
+        )
 
         # Add gumbel noise
         gumbels = (hidden_states + gumbels) / tau
@@ -853,7 +913,9 @@ class Wav2Vec2GumbelVectorQuantizer(nn.Module):
 
         # project to codevector dim
         hidden_states = self.weight_proj(hidden_states)
-        hidden_states = hidden_states.reshape(batch_size * sequence_length * self.num_groups, -1)
+        hidden_states = hidden_states.reshape(
+            batch_size * sequence_length * self.num_groups, -1
+        )
 
         if self.training:
             # sample code vector probs via gumbel in differentiable way
@@ -863,22 +925,33 @@ class Wav2Vec2GumbelVectorQuantizer(nn.Module):
 
             # compute perplexity
             codevector_soft_dist = mx.softmax(
-                hidden_states.reshape(batch_size * sequence_length, self.num_groups, -1).float(), axis=-1
+                hidden_states.reshape(
+                    batch_size * sequence_length, self.num_groups, -1
+                ).float(),
+                axis=-1,
             )
-            perplexity = self._compute_perplexity(codevector_soft_dist, mask_time_indices)
+            perplexity = self._compute_perplexity(
+                codevector_soft_dist, mask_time_indices
+            )
         else:
             # take argmax in non-differentiable way
             # comptute hard codevector distribution (one hot)
             codevector_idx = mx.argmax(hidden_states, axis=-1)
-            codevector_probs = mx.zeros_like(hidden_states).scatter(-1, codevector_idx.reshape(-1, 1), 1.0)
-            codevector_probs = codevector_probs.reshape(batch_size * sequence_length, self.num_groups, -1)
+            codevector_probs = mx.zeros_like(hidden_states).scatter(
+                -1, codevector_idx.reshape(-1, 1), 1.0
+            )
+            codevector_probs = codevector_probs.reshape(
+                batch_size * sequence_length, self.num_groups, -1
+            )
 
             perplexity = self._compute_perplexity(codevector_probs, mask_time_indices)
 
         codevector_probs = codevector_probs.reshape(batch_size * sequence_length, -1)
         # use probs to retrieve codevectors
         codevectors_per_group = codevector_probs.unsqueeze(-1) * self.codevectors
-        codevectors = codevectors_per_group.reshape(batch_size * sequence_length, self.num_groups, self.num_vars, -1)
+        codevectors = codevectors_per_group.reshape(
+            batch_size * sequence_length, self.num_groups, self.num_vars, -1
+        )
         codevectors = codevectors.sum(-2).reshape(batch_size, sequence_length, -1)
 
         return codevectors, perplexity
@@ -895,7 +968,9 @@ class Wav2Vec2Adapter(nn.Module):
         else:
             self.proj = self.proj_layer_norm = None
 
-        self.layers = [Wav2Vec2AdapterLayer(config) for _ in range(config.num_adapter_layers)]
+        self.layers = [
+            Wav2Vec2AdapterLayer(config) for _ in range(config.num_adapter_layers)
+        ]
         self.layerdrop = config.layerdrop
 
     def __call__(self, hidden_states):
@@ -976,8 +1051,6 @@ class Wav2Vec2Model(nn.Module):
 
         self.adapter = Wav2Vec2Adapter(config) if config.add_adapter else None
 
-
-
     def _mask_hidden_states(
         self,
         hidden_states: mx.array,
@@ -998,11 +1071,11 @@ class Wav2Vec2Model(nn.Module):
 
         if mask_time_indices is not None:
             # apply SpecAugment along time axis with given mask_time_indices
-            hidden_states[mask_time_indices] = self.masked_spec_embed.astype(hidden_states.dtype)
-
+            hidden_states[mask_time_indices] = self.masked_spec_embed.astype(
+                hidden_states.dtype
+            )
 
         return hidden_states
-
 
     def __call__(
         self,
@@ -1013,11 +1086,19 @@ class Wav2Vec2Model(nn.Module):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, Wav2Vec2BaseModelOutput]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
+        output_attentions = (
+            output_attentions
+            if output_attentions is not None
+            else self.config.output_attentions
         )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        output_hidden_states = (
+            output_hidden_states
+            if output_hidden_states is not None
+            else self.config.output_hidden_states
+        )
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         extract_features = self.feature_extractor(input_values)
         extract_features = extract_features.transpose(0, 2, 1)
@@ -1030,7 +1111,9 @@ class Wav2Vec2Model(nn.Module):
 
         hidden_states, extract_features = self.feature_projection(extract_features)
         hidden_states = self._mask_hidden_states(
-            hidden_states, mask_time_indices=mask_time_indices, attention_mask=attention_mask
+            hidden_states,
+            mask_time_indices=mask_time_indices,
+            attention_mask=attention_mask,
         )
 
         encoder_outputs = self.encoder(
@@ -1074,7 +1157,6 @@ class Wav2Vec2ForPreTraining(nn.Module):
         """
         self.quantizer.temperature = temperature
 
-
     @staticmethod
     def compute_contrastive_logits(
         target_features: mx.array,
@@ -1088,14 +1170,13 @@ class Wav2Vec2ForPreTraining(nn.Module):
         """
         target_features = mx.concatenate([target_features, negative_features], axis=0)
 
-        logits = mx.cosine_similarity(predicted_features, target_features, axis=-1).astype(
-            target_features
-        )
+        logits = mx.cosine_similarity(
+            predicted_features, target_features, axis=-1
+        ).astype(target_features)
 
         # apply temperature
         logits = logits / temperature
         return logits
-
 
     def __call__(
         self,
@@ -1108,8 +1189,9 @@ class Wav2Vec2ForPreTraining(nn.Module):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, Wav2Vec2ForPreTrainingOutput]:
 
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if mask_time_indices is not None:
             mask_time_indices = mask_time_indices.astype(mx.bool)
@@ -1180,16 +1262,30 @@ class Wav2Vec2ForPreTraining(nn.Module):
 
             contrastive_loss = mx.nll_loss(logits, target, reduction="sum")
             # 7. compute diversity loss: \mathbf{L}_d
-            num_codevectors = self.config.num_codevectors_per_group * self.config.num_codevector_groups
-            diversity_loss = ((num_codevectors - codevector_perplexity) / num_codevectors) * mask_time_indices.sum()
+            num_codevectors = (
+                self.config.num_codevectors_per_group
+                * self.config.num_codevector_groups
+            )
+            diversity_loss = (
+                (num_codevectors - codevector_perplexity) / num_codevectors
+            ) * mask_time_indices.sum()
 
             # 8. \mathbf{L} = \mathbf{L}_m + \alpha * \mathbf{L}_d
             loss = contrastive_loss + self.config.diversity_loss_weight * diversity_loss
 
         if not return_dict:
             if loss is not None:
-                return (loss, transformer_features, quantized_features, codevector_perplexity) + outputs[2:]
-            return (transformer_features, quantized_features, codevector_perplexity) + outputs[2:]
+                return (
+                    loss,
+                    transformer_features,
+                    quantized_features,
+                    codevector_perplexity,
+                ) + outputs[2:]
+            return (
+                transformer_features,
+                quantized_features,
+                codevector_perplexity,
+            ) + outputs[2:]
 
         return Wav2Vec2ForPreTrainingOutput(
             loss=loss,
@@ -1208,7 +1304,8 @@ class Wav2Vec2ForMaskedLM(nn.Module):
         super().__init__(config)
 
         warnings.warn(
-            "The class `Wav2Vec2ForMaskedLM` is deprecated. Please use `Wav2Vec2ForCTC` instead.", FutureWarning
+            "The class `Wav2Vec2ForMaskedLM` is deprecated. Please use `Wav2Vec2ForCTC` instead.",
+            FutureWarning,
         )
 
         self.wav2vec2 = Wav2Vec2Model(config)
@@ -1224,7 +1321,9 @@ class Wav2Vec2ForMaskedLM(nn.Module):
         return_dict: Optional[bool] = None,
         labels: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, MaskedLMOutput]:
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         outputs = self.wav2vec2(
             input_values,
@@ -1241,7 +1340,11 @@ class Wav2Vec2ForMaskedLM(nn.Module):
             output = (logits,) + outputs[2:]
             return output
 
-        return MaskedLMOutput(logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions)
+        return MaskedLMOutput(
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
+        )
 
 
 class Wav2Vec2ForCTC(nn.Module):
@@ -1261,10 +1364,11 @@ class Wav2Vec2ForCTC(nn.Module):
                 "or define `vocab_size` of your model's configuration."
             )
         output_hidden_size = (
-            config.output_hidden_size if hasattr(config, "add_adapter") and config.add_adapter else config.hidden_size
+            config.output_hidden_size
+            if hasattr(config, "add_adapter") and config.add_adapter
+            else config.hidden_size
         )
         self.lm_head = nn.Linear(output_hidden_size, config.vocab_size)
-
 
     def tie_weights(self):
         """
@@ -1280,14 +1384,21 @@ class Wav2Vec2ForCTC(nn.Module):
         # ok to repurpose this function here.
         target_lang = self.target_lang
 
-        if target_lang is not None and getattr(self.config, "adapter_attn_dim", None) is None:
-            raise ValueError(f"Cannot pass `target_lang`: {target_lang} if `config.adapter_attn_dim` is not defined.")
-        elif target_lang is None and getattr(self.config, "adapter_attn_dim", None) is not None:
+        if (
+            target_lang is not None
+            and getattr(self.config, "adapter_attn_dim", None) is None
+        ):
+            raise ValueError(
+                f"Cannot pass `target_lang`: {target_lang} if `config.adapter_attn_dim` is not defined."
+            )
+        elif (
+            target_lang is None
+            and getattr(self.config, "adapter_attn_dim", None) is not None
+        ):
             logger.info("By default `target_lang` is set to 'eng'.")
         elif target_lang is not None:
             # self.load_adapter(target_lang, force_load=True)
             raise NotImplementedError("Adapter weights are not implemented for MXNet")
-
 
     def __call__(
         self,
@@ -1299,10 +1410,14 @@ class Wav2Vec2ForCTC(nn.Module):
         labels: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, CausalLMOutput]:
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
 
         if labels is not None and labels.max() >= self.config.vocab_size:
-            raise ValueError(f"Label values must be <= vocab_size: {self.config.vocab_size}")
+            raise ValueError(
+                f"Label values must be <= vocab_size: {self.config.vocab_size}"
+            )
 
         outputs = self.wav2vec2(
             input_values,
@@ -1321,9 +1436,13 @@ class Wav2Vec2ForCTC(nn.Module):
         if labels is not None:
             # retrieve loss input_lengths from attention_mask
             attention_mask = (
-                attention_mask if attention_mask is not None else torch.ones_like(input_values, dtype=torch.long)
+                attention_mask
+                if attention_mask is not None
+                else torch.ones_like(input_values, dtype=torch.long)
             )
-            input_lengths = self._get_feat_extract_output_lengths(attention_mask.sum(-1)).to(torch.long)
+            input_lengths = self._get_feat_extract_output_lengths(
+                attention_mask.sum(-1)
+            ).to(torch.long)
 
             # assuming that padded tokens are filled with -100
             # when not being attended to
@@ -1339,7 +1458,9 @@ class Wav2Vec2ForCTC(nn.Module):
             return ((loss,) + output) if loss is not None else output
 
         return CausalLMOutput(
-            logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions
+            logits=logits,
+            hidden_states=outputs.hidden_states,
+            attentions=outputs.attentions,
         )
 
 
@@ -1352,12 +1473,13 @@ class Wav2Vec2ForSequenceClassification(nn.Module):
                 "Sequence classification does not support the use of Wav2Vec2 adapters (config.add_adapter=True)"
             )
         self.wav2vec2 = Wav2Vec2Model(config)
-        num_layers = config.num_hidden_layers + 1  # transformer layers + input embeddings
+        num_layers = (
+            config.num_hidden_layers + 1
+        )  # transformer layers + input embeddings
         if config.use_weighted_layer_sum:
             self.layer_weights = nn.Parameter(torch.ones(num_layers) / num_layers)
         self.projector = nn.Linear(config.hidden_size, config.classifier_proj_size)
         self.classifier = nn.Linear(config.classifier_proj_size, config.num_labels)
-
 
     def __call__(
         self,
@@ -1369,8 +1491,12 @@ class Wav2Vec2ForSequenceClassification(nn.Module):
         labels: Optional[torch.Tensor] = None,
     ) -> Union[Tuple, SequenceClassifierOutput]:
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        output_hidden_states = True if self.config.use_weighted_layer_sum else output_hidden_states
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+        output_hidden_states = (
+            True if self.config.use_weighted_layer_sum else output_hidden_states
+        )
 
         outputs = self.wav2vec2(
             input_values,
@@ -1392,11 +1518,17 @@ class Wav2Vec2ForSequenceClassification(nn.Module):
         if attention_mask is None:
             pooled_output = hidden_states.mean(dim=1)
         else:
-            padding_mask = self._get_feature_vector_attention_mask(hidden_states.shape[1], attention_mask)
+            padding_mask = self._get_feature_vector_attention_mask(
+                hidden_states.shape[1], attention_mask
+            )
             expand_padding_mask = padding_mask[..., None]
-            expand_padding_mask = mx.repeat(expand_padding_mask, 1, 1, hidden_states.shape[2])
+            expand_padding_mask = mx.repeat(
+                expand_padding_mask, 1, 1, hidden_states.shape[2]
+            )
             hidden_states[~expand_padding_mask] = 0.0
-            pooled_output = hidden_states.sum(dim=1) / padding_mask.sum(dim=1)[..., None]
+            pooled_output = (
+                hidden_states.sum(dim=1) / padding_mask.sum(dim=1)[..., None]
+            )
 
         logits = self.classifier(pooled_output)
 
@@ -1425,7 +1557,9 @@ class Wav2Vec2ForAudioFrameClassification(nn.Module):
                 "Audio frame classification does not support the use of Wav2Vec2 adapters (config.add_adapter=True)"
             )
         self.wav2vec2 = Wav2Vec2Model(config)
-        num_layers = config.num_hidden_layers + 1  # transformer layers + input embeddings
+        num_layers = (
+            config.num_hidden_layers + 1
+        )  # transformer layers + input embeddings
         if config.use_weighted_layer_sum:
             self.layer_weights = mx.ones(num_layers) / num_layers
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
@@ -1441,8 +1575,12 @@ class Wav2Vec2ForAudioFrameClassification(nn.Module):
         return_dict: Optional[bool] = None,
     ) -> Union[Tuple, TokenClassifierOutput]:
 
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-        output_hidden_states = True if self.config.use_weighted_layer_sum else output_hidden_states
+        return_dict = (
+            return_dict if return_dict is not None else self.config.use_return_dict
+        )
+        output_hidden_states = (
+            True if self.config.use_weighted_layer_sum else output_hidden_states
+        )
 
         outputs = self.wav2vec2(
             input_values,
@@ -1465,15 +1603,15 @@ class Wav2Vec2ForAudioFrameClassification(nn.Module):
         loss = None
         if labels is not None:
             loss_fct = CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, self.num_labels), mx.argmax(labels.view(-1, self.num_labels), axis=1))
+            loss = loss_fct(
+                logits.view(-1, self.num_labels),
+                mx.argmax(labels.view(-1, self.num_labels), axis=1),
+            )
 
         if not return_dict:
             output = (logits,) + outputs[_HIDDEN_STATES_START_POSITION:]
             return output
 
         return TokenClassifierOutput(
-            loss=loss,
-            logits=logits,
-            hidden_states=outputs.hidden_states
+            loss=loss, logits=logits, hidden_states=outputs.hidden_states
         )
-

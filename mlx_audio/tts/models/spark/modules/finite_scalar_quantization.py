@@ -4,8 +4,9 @@ Code adapted from Jax version in Appendix A.1
 """
 
 from __future__ import annotations
-from functools import wraps, partial
+
 from contextlib import nullcontext
+from functools import partial, wraps
 from typing import List, Tuple
 
 import mlx.core as mx
@@ -115,7 +116,7 @@ class FSQ(nn.Module):
         """Bound `z`, an array of shape (..., d)."""
         half_l = (self._levels - 1) * (1 + eps) / 2
         offset = mx.where(self._levels % 2 == 0, 0.5, 0.0)
-        shift = self.atanh(offset / half_l) # original atanh
+        shift = self.atanh(offset / half_l)  # original atanh
         return mx.tanh(z + shift) * half_l - offset
 
     def quantize(self, z):
@@ -223,7 +224,9 @@ class FSQ(nn.Module):
 
         if need_move_channel_last:
             out = mx.reshape(out, (out.shape[0], -1, out.shape[-1]))
-            out = mx.reshape(out, (out.shape[0], out.shape[1], out.shape[2], out.shape[-1]))
+            out = mx.reshape(
+                out, (out.shape[0], out.shape[1], out.shape[2], out.shape[-1])
+            )
 
             indices = mx.reshape(indices, (indices.shape[0], -1, indices.shape[-1]))
 

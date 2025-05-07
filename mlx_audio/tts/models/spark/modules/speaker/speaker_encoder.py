@@ -18,13 +18,14 @@ from typing import List, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-# from mlx_audio.codec.models.descript.nn.quantize import ResidualVectorQuantize
-
+from mlx_audio.tts.models.spark.modules.residual_fsq import ResidualFSQ
 from mlx_audio.tts.models.spark.modules.speaker.ecapa_tdnn import ECAPA_TDNN_GLOB_c512
 from mlx_audio.tts.models.spark.modules.speaker.perceiver_encoder import (
     PerceiverResampler,
 )
-from mlx_audio.tts.models.spark.modules.residual_fsq import ResidualFSQ
+
+# from mlx_audio.codec.models.descript.nn.quantize import ResidualVectorQuantize
+
 
 """
 x-vector + d-vector
@@ -32,7 +33,6 @@ x-vector + d-vector
 
 
 class SpeakerEncoder(nn.Module):
-
 
     def __init__(
         self,
@@ -56,7 +56,7 @@ class SpeakerEncoder(nn.Module):
             num_quantizers=fsq_num_quantizers,
             levels=fsq_levels,
             is_channel_first=True,
-            quantize_dropout=False
+            quantize_dropout=False,
         )
 
         self.project = nn.Linear(latent_dim * token_num, out_dim)
@@ -99,16 +99,21 @@ class SpeakerEncoder(nn.Module):
 
     def detokenize(self, indices: mx.array) -> mx.array:
 
-        zq = self.quantizer.get_output_from_indices(indices.transpose(0, 2, 1)).transpose(0, 2, 1)
+        zq = self.quantizer.get_output_from_indices(
+            indices.transpose(0, 2, 1)
+        ).transpose(0, 2, 1)
         x = zq.reshape(zq.shape[0], -1)
         d_vector = self.project(x)
         return d_vector
 
-
     def sanitize(self, weights):
         sanitized_weights = {}
         for k, v in weights.items():
-            if ".conv.weight" in k or ("convs." in k and "weight" in k) or ("speaker_encoder.pool.linear" in k and "weight" in k):
+            if (
+                ".conv.weight" in k
+                or ("convs." in k and "weight" in k)
+                or ("speaker_encoder.pool.linear" in k and "weight" in k)
+            ):
                 if v.shape[1] > v.shape[-1]:
                     sanitized_weights[k] = v.transpose(0, 2, 1)
                 else:
@@ -149,4 +154,3 @@ if __name__ == "__main__":
     for k, v in weights.items():
         num_params += v.size
     print("{} M".format(num_params / 1e6))
-

@@ -155,7 +155,11 @@ class ConvNeXtBlock(nn.Module):
         self.pwconv1 = nn.Linear(dim, intermediate_dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(intermediate_dim, dim)
-        self.gamma = layer_scale_init_value * mx.ones(dim) if layer_scale_init_value > 0 else None
+        self.gamma = (
+            layer_scale_init_value * mx.ones(dim)
+            if layer_scale_init_value > 0
+            else None
+        )
 
     def __call__(
         self, x: mx.array, cond_embedding_id: Optional[mx.array] = None

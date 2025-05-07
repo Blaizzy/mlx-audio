@@ -1,18 +1,18 @@
-
-
 from typing import Any, Dict, List
 
-
-import mlx.nn as nn
 import mlx.core as mx
+import mlx.nn as nn
 
 from mlx_audio.codec.models.descript.nn.layers import WNConv1d
+
 
 def exists(val):
     return val is not None
 
+
 def default(val, d):
     return val if exists(val) else d
+
 
 class FactorizedVectorQuantize(nn.Module):
     def __init__(
@@ -37,11 +37,18 @@ class FactorizedVectorQuantize(nn.Module):
         self.threshold_ema_dead_code = threshold_ema_dead_code
         self.momentum = momentum
 
-
         requires_projection = input_dim != codebook_dim
 
-        self.in_project = WNConv1d(in_channels=input_dim, out_channels=codebook_dim, kernel_size=1) if requires_projection else nn.Identity()
-        self.out_project = WNConv1d(in_channels=codebook_dim, out_channels=input_dim, kernel_size=1) if requires_projection else nn.Identity()
+        self.in_project = (
+            WNConv1d(in_channels=input_dim, out_channels=codebook_dim, kernel_size=1)
+            if requires_projection
+            else nn.Identity()
+        )
+        self.out_project = (
+            WNConv1d(in_channels=codebook_dim, out_channels=input_dim, kernel_size=1)
+            if requires_projection
+            else nn.Identity()
+        )
 
         self.codebook = nn.Embedding(self.codebook_size, codebook_dim)
         self.cluster_size = mx.zeros((self.codebook_size,))
@@ -75,7 +82,9 @@ class FactorizedVectorQuantize(nn.Module):
         z_q, indices, dists = self.decode_latents(z_e)
 
         # statistic the usage of codes
-        embed_onehot = mx.zeros((indices.shape[0], indices.shape[1], self.codebook_size), dtype=z_e.dtype)
+        embed_onehot = mx.zeros(
+            (indices.shape[0], indices.shape[1], self.codebook_size), dtype=z_e.dtype
+        )
         for i in range(indices.shape[0]):
             for j in range(indices.shape[1]):
                 embed_onehot[i, j, indices[i, j]] = 1.0
@@ -87,8 +96,8 @@ class FactorizedVectorQuantize(nn.Module):
         commit_loss = mx.zeros(0)
         codebook_loss = mx.zeros(0)
 
-        z_q = (
-            z_e + (z_q - z_e)
+        z_q = z_e + (
+            z_q - z_e
         )  # noop in forward pass, straight-through gradient estimator in backward pass
 
         z_q = self.out_project(z_q.transpose(0, 2, 1)).transpose(0, 2, 1)
@@ -118,7 +127,7 @@ class FactorizedVectorQuantize(nn.Module):
 
     def detokenize(self, indices):
         """detokenize the input indices"""
-        
+
         z_q = self.decode_code(indices).transpose(0, 2, 1)
 
         z_q = self.out_project(z_q)
@@ -140,7 +149,9 @@ class FactorizedVectorQuantize(nn.Module):
         return x / mx.maximum(norm, 1e-12)
 
     def decode_latents(self, latents):
-        encodings = mx.reshape(latents, (latents.shape[0] * latents.shape[2], latents.shape[1]))
+        encodings = mx.reshape(
+            latents, (latents.shape[0] * latents.shape[2], latents.shape[1])
+        )
         codebook = self.codebook.weight
 
         # L2 normalize encodings and codebook
@@ -182,7 +193,6 @@ class FactorizedVectorQuantize(nn.Module):
         """
         z_q = self.get_codes_from_indices(indices)
         return self.out_project(z_q.transpose(0, 2, 1)).transpose(0, 2, 1)
-
 
     def sanitize(self, weights):
         sanitized_weights = {}

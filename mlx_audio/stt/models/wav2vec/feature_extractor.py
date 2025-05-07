@@ -1,23 +1,33 @@
-from typing import Optional, Union, Any, List
-from enum import Enum
+import json
+import logging
+import os
 from collections import UserDict
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, List, Optional, Union
 
 import mlx.core as mx
 import numpy as np
-import os
-import json
-import logging
+
 from mlx_audio.tts.utils import get_model_path
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
 
 class TensorType(Enum):
     MX = "mx"
     NP = "np"
 
+
 class BatchFeature(UserDict):
-    def __init__(self, data=None, input_values: Any = None, attention_mask: Any = None, tensor_type: Union[str, TensorType] = TensorType.MX, **kwargs):
+    def __init__(
+        self,
+        data=None,
+        input_values: Any = None,
+        attention_mask: Any = None,
+        tensor_type: Union[str, TensorType] = TensorType.MX,
+        **kwargs,
+    ):
         super().__init__()
         if data:
             self.data.update(data)
@@ -25,22 +35,34 @@ class BatchFeature(UserDict):
         _input_values_key = "input_values"
         _attention_mask_key = "attention_mask"
 
-
         if input_values is not None:
             # Ensure input_values is a list of items
-            if not (isinstance(input_values, list) and \
-                    (not input_values or isinstance(input_values[0], (np.ndarray, mx.array, list, tuple)))):
+            if not (
+                isinstance(input_values, list)
+                and (
+                    not input_values
+                    or isinstance(input_values[0], (np.ndarray, mx.array, list, tuple))
+                )
+            ):
                 self.data[_input_values_key] = [input_values]
             else:
                 self.data[_input_values_key] = input_values
 
         if attention_mask is not None:
             # Ensure attention_mask is a list of items
-            if not (isinstance(attention_mask, list) and \
-                    (not attention_mask or isinstance(attention_mask[0], (np.ndarray, mx.array, list, tuple, type(None))))):
-                 self.data[_attention_mask_key] = [attention_mask]
+            if not (
+                isinstance(attention_mask, list)
+                and (
+                    not attention_mask
+                    or isinstance(
+                        attention_mask[0],
+                        (np.ndarray, mx.array, list, tuple, type(None)),
+                    )
+                )
+            ):
+                self.data[_attention_mask_key] = [attention_mask]
             else:
-                 self.data[_attention_mask_key] = attention_mask
+                self.data[_attention_mask_key] = attention_mask
 
         if isinstance(tensor_type, str):
             self.tensor_type = TensorType(tensor_type)
@@ -119,7 +141,9 @@ class Wav2Vec2FeatureExtractor:
 
     @staticmethod
     def zero_mean_unit_var_norm(
-        input_values: List[np.ndarray], attention_mask: List[np.ndarray], padding_value: float = 0.0
+        input_values: List[np.ndarray],
+        attention_mask: List[np.ndarray],
+        padding_value: float = 0.0,
     ) -> List[np.ndarray]:
         """
         Every array in the list is normalized to have zero mean and unit variance
@@ -129,16 +153,19 @@ class Wav2Vec2FeatureExtractor:
             normed_input_values = []
 
             for vector, length in zip(input_values, attention_mask.sum(-1)):
-                normed_slice = (vector - vector[:length].mean()) / np.sqrt(vector[:length].var() + 1e-7)
+                normed_slice = (vector - vector[:length].mean()) / np.sqrt(
+                    vector[:length].var() + 1e-7
+                )
                 if length < normed_slice.shape[0]:
                     normed_slice[length:] = padding_value
 
                 normed_input_values.append(normed_slice)
         else:
-            normed_input_values = [(x - x.mean()) / np.sqrt(x.var() + 1e-7) for x in input_values]
+            normed_input_values = [
+                (x - x.mean()) / np.sqrt(x.var() + 1e-7) for x in input_values
+            ]
 
         return normed_input_values
-
 
     def _truncate(
         self,
@@ -166,20 +193,30 @@ class Wav2Vec2FeatureExtractor:
         if not truncation:
             return processed_features
         elif truncation and max_length is None:
-            raise ValueError("When setting ``truncation=True``, make sure that ``max_length`` is defined.")
+            raise ValueError(
+                "When setting ``truncation=True``, make sure that ``max_length`` is defined."
+            )
 
         required_input = processed_features[self.model_input_names[0]]
 
         # find `max_length` that fits `pad_to_multiple_of`
-        if max_length is not None and pad_to_multiple_of is not None and (max_length % pad_to_multiple_of != 0):
+        if (
+            max_length is not None
+            and pad_to_multiple_of is not None
+            and (max_length % pad_to_multiple_of != 0)
+        ):
             max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
 
         needs_to_be_truncated = len(required_input) > max_length
 
         if needs_to_be_truncated:
-            processed_features[self.model_input_names[0]] = processed_features[self.model_input_names[0]][:max_length]
+            processed_features[self.model_input_names[0]] = processed_features[
+                self.model_input_names[0]
+            ][:max_length]
             if "attention_mask" in processed_features:
-                processed_features["attention_mask"] = processed_features["attention_mask"][:max_length]
+                processed_features["attention_mask"] = processed_features[
+                    "attention_mask"
+                ][:max_length]
 
         return processed_features
 
@@ -191,7 +228,9 @@ class Wav2Vec2FeatureExtractor:
         # Get padding strategy
         if padding is not False:
             if padding is True:
-                padding_strategy = PaddingStrategy.LONGEST  # Default to pad to the longest sequence in the batch
+                padding_strategy = (
+                    PaddingStrategy.LONGEST
+                )  # Default to pad to the longest sequence in the batch
             elif not isinstance(padding, PaddingStrategy):
                 padding_strategy = PaddingStrategy(padding)
             elif isinstance(padding, PaddingStrategy):
@@ -207,7 +246,9 @@ class Wav2Vec2FeatureExtractor:
                 )
 
         # Test if we have a padding value
-        if padding_strategy != PaddingStrategy.DO_NOT_PAD and (self.padding_value is None):
+        if padding_strategy != PaddingStrategy.DO_NOT_PAD and (
+            self.padding_value is None
+        ):
             raise ValueError(
                 "Asking to pad but the feature_extractor does not have a padding value. Please select a value to use"
                 " as `padding_value`. For example: `feature_extractor.padding_value = 0.0`."
@@ -287,9 +328,12 @@ class Wav2Vec2FeatureExtractor:
         """
         # If we have a list of dicts, let's convert it in a dict of lists
         # We do this to allow using this method as a collate_fn function in PyTorch Dataloader
-        if isinstance(processed_features, (list, tuple)) and isinstance(processed_features[0], (dict, BatchFeature)):
+        if isinstance(processed_features, (list, tuple)) and isinstance(
+            processed_features[0], (dict, BatchFeature)
+        ):
             processed_features = {
-                key: [example[key] for example in processed_features] for key in processed_features[0].keys()
+                key: [example[key] for example in processed_features]
+                for key in processed_features[0].keys()
             }
 
         # The model's main input name, usually `input_values`, has be passed for padding
@@ -302,7 +346,9 @@ class Wav2Vec2FeatureExtractor:
 
         required_input = processed_features[self.model_input_names[0]]
         return_attention_mask = (
-            return_attention_mask if return_attention_mask is not None else self.return_attention_mask
+            return_attention_mask
+            if return_attention_mask is not None
+            else self.return_attention_mask
         )
 
         if len(required_input) == 0:
@@ -341,13 +387,17 @@ class Wav2Vec2FeatureExtractor:
                 processed_features[key] = [np.array(v) for v in value]
 
         # Convert padding_strategy in PaddingStrategy
-        padding_strategy = self._get_padding_strategies(padding=padding, max_length=max_length)
+        padding_strategy = self._get_padding_strategies(
+            padding=padding, max_length=max_length
+        )
 
         required_input = processed_features[self.model_input_names[0]]
 
         batch_size = len(required_input)
         if not all(len(v) == batch_size for v in processed_features.values()):
-            raise ValueError("Some items in the output dictionary have a different batch size than others.")
+            raise ValueError(
+                "Some items in the output dictionary have a different batch size than others."
+            )
 
         truncated_inputs = []
         for i in range(batch_size):
@@ -363,7 +413,10 @@ class Wav2Vec2FeatureExtractor:
 
         if padding_strategy == PaddingStrategy.LONGEST:
             # make sure that `max_length` cannot be longer than the longest truncated length
-            max_length = max(len(input_slice[self.model_input_names[0]]) for input_slice in truncated_inputs)
+            max_length = max(
+                len(input_slice[self.model_input_names[0]])
+                for input_slice in truncated_inputs
+            )
             padding_strategy = PaddingStrategy.MAX_LENGTH
 
         batch_outputs = {}
@@ -385,7 +438,6 @@ class Wav2Vec2FeatureExtractor:
                 batch_outputs[key].append(value)
 
         return BatchFeature(batch_outputs, tensor_type=return_tensors)
-
 
     def _pad(
         self,
@@ -426,13 +478,22 @@ class Wav2Vec2FeatureExtractor:
         if padding_strategy == PaddingStrategy.LONGEST:
             max_length = len(required_input)
 
-        if max_length is not None and pad_to_multiple_of is not None and (max_length % pad_to_multiple_of != 0):
+        if (
+            max_length is not None
+            and pad_to_multiple_of is not None
+            and (max_length % pad_to_multiple_of != 0)
+        ):
             max_length = ((max_length // pad_to_multiple_of) + 1) * pad_to_multiple_of
 
-        needs_to_be_padded = padding_strategy != PaddingStrategy.DO_NOT_PAD and len(required_input) < max_length
+        needs_to_be_padded = (
+            padding_strategy != PaddingStrategy.DO_NOT_PAD
+            and len(required_input) < max_length
+        )
 
         if return_attention_mask and "attention_mask" not in processed_features:
-            processed_features["attention_mask"] = np.ones(len(required_input), dtype=np.int32)
+            processed_features["attention_mask"] = np.ones(
+                len(required_input), dtype=np.int32
+            )
 
         if needs_to_be_padded:
             difference = max_length - len(required_input)
@@ -441,18 +502,32 @@ class Wav2Vec2FeatureExtractor:
                     processed_features["attention_mask"] = np.pad(
                         processed_features["attention_mask"], (0, difference)
                     )
-                padding_shape = ((0, difference), (0, 0)) if self.feature_size > 1 else (0, difference)
+                padding_shape = (
+                    ((0, difference), (0, 0))
+                    if self.feature_size > 1
+                    else (0, difference)
+                )
                 processed_features[self.model_input_names[0]] = np.pad(
-                    required_input, padding_shape, "constant", constant_values=self.padding_value
+                    required_input,
+                    padding_shape,
+                    "constant",
+                    constant_values=self.padding_value,
                 )
             elif self.padding_side == "left":
                 if return_attention_mask:
                     processed_features["attention_mask"] = np.pad(
                         processed_features["attention_mask"], (difference, 0)
                     )
-                padding_shape = ((difference, 0), (0, 0)) if self.feature_size > 1 else (difference, 0)
+                padding_shape = (
+                    ((difference, 0), (0, 0))
+                    if self.feature_size > 1
+                    else (difference, 0)
+                )
                 processed_features[self.model_input_names[0]] = np.pad(
-                    required_input, padding_shape, "constant", constant_values=self.padding_value
+                    required_input,
+                    padding_shape,
+                    "constant",
+                    constant_values=self.padding_value,
                 )
             else:
                 raise ValueError("Invalid padding strategy:" + str(self.padding_side))
@@ -541,11 +616,16 @@ class Wav2Vec2FeatureExtractor:
                 "Failing to do so can result in silent errors that might be hard to debug."
             )
 
-        is_batched_numpy = isinstance(raw_speech, np.ndarray) and len(raw_speech.shape) > 1
+        is_batched_numpy = (
+            isinstance(raw_speech, np.ndarray) and len(raw_speech.shape) > 1
+        )
         if is_batched_numpy and len(raw_speech.shape) > 2:
-            raise ValueError(f"Only mono-channel audio is supported for input to {self}")
+            raise ValueError(
+                f"Only mono-channel audio is supported for input to {self}"
+            )
         is_batched = is_batched_numpy or (
-            isinstance(raw_speech, (list, tuple)) and (isinstance(raw_speech[0], (np.ndarray, tuple, list)))
+            isinstance(raw_speech, (list, tuple))
+            and (isinstance(raw_speech[0], (np.ndarray, tuple, list)))
         )
 
         # always return batch
@@ -567,30 +647,41 @@ class Wav2Vec2FeatureExtractor:
         # convert input values to correct format
         input_values = padded_inputs["input_values"]
         if not isinstance(input_values[0], np.ndarray):
-            padded_inputs["input_values"] = [np.asarray(array, dtype=np.float32) for array in input_values]
+            padded_inputs["input_values"] = [
+                np.asarray(array, dtype=np.float32) for array in input_values
+            ]
         elif (
             not isinstance(input_values, np.ndarray)
             and isinstance(input_values[0], np.ndarray)
             and input_values[0].dtype is np.dtype(np.float64)
         ):
-            padded_inputs["input_values"] = [array.astype(np.float32) for array in input_values]
-        elif isinstance(input_values, np.ndarray) and input_values.dtype is np.dtype(np.float64):
+            padded_inputs["input_values"] = [
+                array.astype(np.float32) for array in input_values
+            ]
+        elif isinstance(input_values, np.ndarray) and input_values.dtype is np.dtype(
+            np.float64
+        ):
             padded_inputs["input_values"] = input_values.astype(np.float32)
 
         # convert attention_mask to correct format
         attention_mask = padded_inputs.get("attention_mask")
         if attention_mask is not None:
-            padded_inputs["attention_mask"] = [np.asarray(array, dtype=np.int32) for array in attention_mask]
+            padded_inputs["attention_mask"] = [
+                np.asarray(array, dtype=np.int32) for array in attention_mask
+            ]
 
         # zero-mean and unit-variance normalization
         if self.do_normalize:
             attention_mask = (
                 attention_mask
-                if self._get_padding_strategies(padding, max_length=max_length) is not PaddingStrategy.DO_NOT_PAD
+                if self._get_padding_strategies(padding, max_length=max_length)
+                is not PaddingStrategy.DO_NOT_PAD
                 else None
             )
             padded_inputs["input_values"] = self.zero_mean_unit_var_norm(
-                padded_inputs["input_values"], attention_mask=attention_mask, padding_value=self.padding_value
+                padded_inputs["input_values"],
+                attention_mask=attention_mask,
+                padding_value=self.padding_value,
             )
 
         if return_tensors is not None:
@@ -626,10 +717,10 @@ class Wav2Vec2FeatureExtractor:
 
         return cls.from_dict(feature_extractor_dict, **kwargs)
 
-
-
     @classmethod
-    def from_dict(cls, feature_extractor_dict: dict[str, Any], **kwargs) -> "Wav2Vec2FeatureExtractor":
+    def from_dict(
+        cls, feature_extractor_dict: dict[str, Any], **kwargs
+    ) -> "Wav2Vec2FeatureExtractor":
         """
         Instantiates a type of [`~feature_extraction_utils.FeatureExtractionMixin`] from a Python dictionary of
         parameters.
