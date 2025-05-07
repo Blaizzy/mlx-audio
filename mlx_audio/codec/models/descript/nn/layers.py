@@ -22,6 +22,7 @@ class WNConv1d(nn.Module):
         padding: int = 0,
         dilation: int = 1,
         bias: bool = True,
+        groups: int = 1,
     ):
         super().__init__()
 
@@ -52,7 +53,7 @@ class WNConv1d(nn.Module):
 
     def __call__(self, x):
         weight = self.weight_g * self.weight_v / normalize_weight(self.weight_v)
-        y = mx.conv1d(x, weight, self.stride, self.padding, self.dilation)
+        y = mx.conv1d(x, weight, self.stride, self.padding, self.dilation, self.groups)
         if "bias" in self:
             y = y + self.bias
         return y
