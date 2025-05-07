@@ -114,7 +114,12 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
             with open(model_path / "config.json", encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError as exc:
-            raise FileNotFoundError(f"Config not found at {model_path}") from exc
+            try:
+                # For Spark model
+                with open(model_path / "LLM" / "config.json", encoding="utf-8") as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                raise FileNotFoundError(f"Config not found at {model_path}") from exc
 
 
 def load_model(
@@ -137,12 +142,15 @@ def load_model(
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
     model_name = None
+    model_repo = None
     if isinstance(model_path, str):
+        model_repo = model_path
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
     elif isinstance(model_path, Path):
         index = model_path.parts.index("hub")
         model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+        model_repo = model_path.parts[index + 1]
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
@@ -156,6 +164,11 @@ def load_model(
     quantization = config.get("quantization", None)
 
     weight_files = glob.glob(str(model_path / "*.safetensors"))
+    if not weight_files:
+        # Check in LLM directory if no safetensors found in the main directory
+        # For Spark model
+        weight_files = glob.glob(str(model_path / "LLM" / "*.safetensors"))
+
     if not weight_files:
         logging.error(f"No safetensors found in {model_path}")
         message = f"""
@@ -192,6 +205,9 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         if hasattr(model_class, "ModelConfig")
         else config
     )
+
+    if hasattr(model_class.ModelConfig, "model_repo"):
+        model_config.model_repo = model_repo
 
     model = model_class.Model(model_config)
     quantization = config.get("quantization", None)

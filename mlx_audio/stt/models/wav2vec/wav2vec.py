@@ -132,21 +132,21 @@ class ModelConfig:
 
 @dataclass
 class Wav2Vec2ForPreTrainingOutput:
-    loss: Optional[torch.FloatTensor] = None
-    projected_states: Optional[torch.FloatTensor] = None
-    projected_quantized_states: Optional[torch.FloatTensor] = None
-    codevector_perplexity: Optional[torch.FloatTensor] = None
-    hidden_states: Optional[Tuple[torch.FloatTensor]] = None
-    attentions: Optional[Tuple[torch.FloatTensor]] = None
-    contrastive_loss: Optional[torch.FloatTensor] = None
-    diversity_loss: Optional[torch.FloatTensor] = None
+    loss: Optional[mx.array] = None
+    projected_states: Optional[mx.array] = None
+    projected_quantized_states: Optional[mx.array] = None
+    codevector_perplexity: Optional[mx.array] = None
+    hidden_states: Optional[Tuple[mx.array]] = None
+    attentions: Optional[Tuple[mx.array]] = None
+    contrastive_loss: Optional[mx.array] = None
+    diversity_loss: Optional[mx.array] = None
 
 
 def _compute_mask_indices(
     shape: Tuple[int, int],
     mask_prob: float,
     mask_length: int,
-    attention_mask: Optional[torch.LongTensor] = None,
+    attention_mask: Optional[mx.array] = None,
     min_masks: int = 0,
 ) -> np.ndarray:
 
@@ -506,7 +506,7 @@ class Wav2Vec2Attention(nn.Module):
         cache: Optional[Any] = None,
         attention_mask: Optional[Any] = None,
         output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
+    ) -> Tuple[mx.array, Optional[mx.array], Optional[Tuple[mx.array]]]:
         """Input shape: Batch x Time x Channel"""
 
         # if key_value_states are provided this layer is used as a cross-attention layer
@@ -537,8 +537,8 @@ class Wav2Vec2Attention(nn.Module):
             # reuse k, v, self_attention
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
             value_states = self._shape(self.v_proj(hidden_states), -1, bsz)
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+            key_states = mx.concatenate([past_key_value[0], key_states], axis=2)
+            value_states = mx.concatenate([past_key_value[1], value_states], axis=2)
         else:
             # self_attention
             key_states = self._shape(self.k_proj(hidden_states), -1, bsz)
@@ -656,8 +656,8 @@ class Wav2Vec2EncoderLayerStableLayerNorm(nn.Module):
 
     def __call__(
         self,
-        hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
+        hidden_states: mx.array,
+        attention_mask: Optional[mx.array] = None,
         output_attentions: bool = False,
     ):
         attn_residual = hidden_states
@@ -1079,9 +1079,9 @@ class Wav2Vec2Model(nn.Module):
 
     def __call__(
         self,
-        input_values: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        mask_time_indices: Optional[torch.FloatTensor] = None,
+        input_values: Optional[mx.array],
+        attention_mask: Optional[mx.array] = None,
+        mask_time_indices: Optional[mx.array] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -1180,10 +1180,10 @@ class Wav2Vec2ForPreTraining(nn.Module):
 
     def __call__(
         self,
-        input_values: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        mask_time_indices: Optional[torch.BoolTensor] = None,
-        sampled_negative_indices: Optional[torch.BoolTensor] = None,
+        input_values: Optional[mx.array],
+        attention_mask: Optional[mx.array] = None,
+        mask_time_indices: Optional[mx.array] = None,
+        sampled_negative_indices: Optional[mx.array] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
@@ -1314,12 +1314,12 @@ class Wav2Vec2ForMaskedLM(nn.Module):
 
     def __call__(
         self,
-        input_values: torch.FloatTensor,
-        attention_mask: Optional[torch.LongTensor] = None,
+        input_values: mx.array,
+        attention_mask: Optional[mx.array] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        labels: Optional[torch.Tensor] = None,
+        labels: Optional[mx.array] = None,
     ) -> Union[Tuple, MaskedLMOutput]:
         return_dict = (
             return_dict if return_dict is not None else self.config.use_return_dict
@@ -1402,12 +1402,12 @@ class Wav2Vec2ForCTC(nn.Module):
 
     def __call__(
         self,
-        input_values: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
+        input_values: Optional[mx.array],
+        attention_mask: Optional[mx.array] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        labels: Optional[torch.Tensor] = None,
+        labels: Optional[mx.array] = None,
     ) -> Union[Tuple, CausalLMOutput]:
 
         return_dict = (
@@ -1438,11 +1438,11 @@ class Wav2Vec2ForCTC(nn.Module):
             attention_mask = (
                 attention_mask
                 if attention_mask is not None
-                else torch.ones_like(input_values, dtype=torch.long)
+                else mx.ones_like(input_values, dtype=mx.long)
             )
             input_lengths = self._get_feat_extract_output_lengths(
                 attention_mask.sum(-1)
-            ).to(torch.long)
+            ).to(mx.long)
 
             # assuming that padded tokens are filled with -100
             # when not being attended to
@@ -1477,18 +1477,18 @@ class Wav2Vec2ForSequenceClassification(nn.Module):
             config.num_hidden_layers + 1
         )  # transformer layers + input embeddings
         if config.use_weighted_layer_sum:
-            self.layer_weights = nn.Parameter(torch.ones(num_layers) / num_layers)
+            self.layer_weights = mx.ones(num_layers) / num_layers
         self.projector = nn.Linear(config.hidden_size, config.classifier_proj_size)
         self.classifier = nn.Linear(config.classifier_proj_size, config.num_labels)
 
     def __call__(
         self,
-        input_values: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
+        input_values: Optional[mx.array],
+        attention_mask: Optional[mx.array] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        labels: Optional[torch.Tensor] = None,
+        labels: Optional[mx.array] = None,
     ) -> Union[Tuple, SequenceClassifierOutput]:
 
         return_dict = (
@@ -1508,15 +1508,15 @@ class Wav2Vec2ForSequenceClassification(nn.Module):
 
         if self.config.use_weighted_layer_sum:
             hidden_states = outputs[_HIDDEN_STATES_START_POSITION]
-            hidden_states = torch.stack(hidden_states, dim=1)
-            norm_weights = nn.functional.softmax(self.layer_weights, dim=-1)
-            hidden_states = (hidden_states * norm_weights.view(-1, 1, 1)).sum(dim=1)
+            hidden_states = mx.stack(hidden_states, axis=1)
+            norm_weights = mx.softmax(self.layer_weights, axis=-1)
+            hidden_states = (hidden_states * norm_weights.view(-1, 1, 1)).sum(axis=1)
         else:
             hidden_states = outputs[0]
 
         hidden_states = self.projector(hidden_states)
         if attention_mask is None:
-            pooled_output = hidden_states.mean(dim=1)
+            pooled_output = hidden_states.mean(axis=1)
         else:
             padding_mask = self._get_feature_vector_attention_mask(
                 hidden_states.shape[1], attention_mask
@@ -1567,9 +1567,9 @@ class Wav2Vec2ForAudioFrameClassification(nn.Module):
 
     def __call__(
         self,
-        input_values: Optional[torch.Tensor],
-        attention_mask: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None,
+        input_values: Optional[mx.array],
+        attention_mask: Optional[mx.array] = None,
+        labels: Optional[mx.array] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,

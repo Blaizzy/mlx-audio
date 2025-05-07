@@ -108,7 +108,7 @@ def generate_audio(
             ref_audio=ref_audio,
             ref_text=ref_text,
             temperature=temperature,
-            verbose=True,
+            verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
         )

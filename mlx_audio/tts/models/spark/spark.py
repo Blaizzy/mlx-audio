@@ -2,31 +2,63 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Dict, Union, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-import torch
+
 from mlx_lm.generate import stream_generate
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
-# from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.utils import load
 from tqdm import tqdm
 
+
+from mlx_lm.models.qwen2 import Model as Qwen2Model
+from mlx_lm.tokenizer_utils import load_tokenizer
+from mlx_lm.utils import load
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.tts.utils import get_model_path
+
+from mlx_audio.tts.models.base import BaseModelArgs
 
 from .audio_tokenizer import BiCodecTokenizer
 from .utils.token_parser import GENDER_MAP, LEVELS_MAP, TASK_TOKEN_MAP
 
-# from transformers import AutoTokenizer
 
+SPEED_MAP = {
+    0.5: "very_low",
+    0.75: "low",
+    1.0: "moderate",
+    1.25: "high",
+    1.5: "very_high",
+}
 
 @dataclass
-class ModelConfig:
+class ModelConfig(BaseModelArgs):
     model_repo: str = "SparkAudio/Spark-TTS-0.5B"
     sample_rate: int = 16000
+    bos_token_id: int = 151643
+    eos_token_id: int = 151645
+    hidden_act: str = "silu"
+    hidden_size: int = 896
+    initializer_range: float = 0.02
+    intermediate_size: int = 4864
+    max_position_embeddings: int = 32768
+    max_window_layers: int = 21
+    model_type: str = "qwen2"
+    num_attention_heads: int = 14
+    num_hidden_layers: int = 24
+    num_key_value_heads: int = 2
+    rms_norm_eps: float = 1e-06
+    rope_theta: float = 1000000.0
+    sliding_window: int = 32768
+    tie_word_embeddings: bool = True
+    torch_dtype: str = "bfloat16"
+    transformers_version: str = "4.43.1"
+    use_sliding_window: bool = False
+    vocab_size: int = 166000
+    rope_traditional: bool = False
+    rope_scaling: Optional[Dict[str, Union[float, str]]] = None
 
 
 class Model(nn.Module):
@@ -41,37 +73,42 @@ class Model(nn.Module):
         Args:
             config (ModelConfig): The configuration for the model.
         """
-        self.configs = config
-        self.model_dir = get_model_path(config.model_repo)
-        self.device = "cpu"
+        self.config = config
+        model_dir = get_model_path(config.model_repo)
 
-        # self.tokenizer = AutoTokenizer.from_pretrained(self.model_dir / "LLM")
-        self.model, self.tokenizer = load(
-            self.model_dir / "LLM"
-        )  # Qwen2Model() # TODO: use this
-        print("Model loaded successfully")
-        self.audio_tokenizer = BiCodecTokenizer(self.model_dir)
+        self.model = Qwen2Model(config)
+        self.tokenizer = load_tokenizer(model_dir / "LLM", eos_token_ids=config.eos_token_id)
+
+
+        self._audio_tokenizer = BiCodecTokenizer(model_dir)
+
+
+    def load_weights(self, weights, strict=True):
+        self.model.load_weights(weights, strict=True)
+
+    def sanitize(self, weights):
+        return self.model.sanitize(weights)
 
     def process_prompt(
         self,
         text: str,
-        prompt_speech_path: Path,
-        prompt_text: str = None,
+        ref_audio: Path,
+        ref_text: str,
     ) -> Tuple[str, mx.array]:
         """
         Process input for voice cloning.
 
         Args:
             text (str): The text input to be converted to speech.
-            prompt_speech_path (Path): Path to the audio file used as a prompt.
-            prompt_text (str, optional): Transcript of the prompt audio.
+            ref_audio (Path): Path to the audio file used as a reference.
+            ref_text (str, optional): Transcript of the reference audio.
 
         Return:
             Tuple[str, mx.array]: Input prompt; global tokens
         """
 
-        global_token_ids, semantic_token_ids = self.audio_tokenizer.tokenize(
-            prompt_speech_path
+        global_token_ids, semantic_token_ids = self._audio_tokenizer.tokenize(
+            ref_audio
         )
         global_tokens = "".join(
             [f"<|bicodec_global_{i}|>" for i in global_token_ids.squeeze()]
@@ -156,23 +193,20 @@ class Model(nn.Module):
 
         return "".join(control_tts_inputs)
 
-    def load_weights(self, weights, strict=True):
-        pass
-        # self.model.load_weights(weights, strict=strict)
-
     def generate(
         self,
         text: str,
-        prompt_speech_path: Path = None,
-        prompt_text: str = None,
-        gender: str = None,
-        pitch: str = None,
-        speed: str = None,
+        ref_audio: Path = None,
+        ref_text: str = None,
+        gender: str = "male",
+        pitch: str = "moderate",
+        speed: int = 1,
         temperature: float = 0.8,
         top_k: float = 50,
         top_p: float = 0.95,
         max_tokens: int = 3000,
         verbose: bool = False,
+        split_pattern: str = "\n",
         **kwargs,
     ) -> GenerationResult:
         """
@@ -180,8 +214,8 @@ class Model(nn.Module):
 
         Args:
             text (str): The text input to be converted to speech.
-            prompt_speech_path (Path): Path to the audio file used as a prompt.
-            prompt_text (str, optional): Transcript of the prompt audio.
+            ref_audio (Path): Path to the audio file used as a reference.
+            ref_text (str, optional): Transcript of the reference audio.
             gender (str): female | male.
             pitch (str): very_low | low | moderate | high | very_high
             speed (str): very_low | low | moderate | high | very_high
@@ -192,112 +226,137 @@ class Model(nn.Module):
         Returns:
             GenerationResult: Generated waveform as a tensor.
         """
-        if gender is not None:
-            prompt = self.process_prompt_control(gender, pitch, speed, text)
 
-        else:
-            prompt, global_token_ids = self.process_prompt(
-                text, prompt_speech_path, prompt_text
+        speed_factor = SPEED_MAP[speed]
+
+        text_splits = text.split(split_pattern)
+        
+        for text_split in text_splits:
+            if gender is not None:
+                prompt = self.process_prompt_control(gender, pitch, speed_factor, text_split)
+
+            else:
+                prompt, global_token_ids = self.process_prompt(
+                    text_split, ref_audio, ref_text
+                )
+
+
+            inputs = self.tokenizer._tokenizer([prompt], return_tensors="pt")
+
+            input_ids = mx.array(inputs.input_ids)
+
+            sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
+            logits_processors = make_logits_processors(
+                kwargs.get("logit_bias", None),
+                kwargs.get("repetition_penalty", 1.3),
+                kwargs.get("repetition_context_size", 20),
             )
 
-        inputs = self.tokenizer._tokenizer([prompt], return_tensors="pt")
+            time_start = time.time()
 
-        input_ids = mx.array(inputs.input_ids)
+            generated_ids = []
 
-        sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
-        logits_processors = make_logits_processors(
-            kwargs.get("logit_bias", None),
-            kwargs.get("repetition_penalty", 1.3),
-            kwargs.get("repetition_context_size", 20),
-        )
+            # Generate speech using the model
+            for i, response in enumerate(
+                tqdm(
+                    stream_generate(
+                        self.model,
+                        tokenizer=self.tokenizer,
+                        prompt=input_ids.squeeze(0),
+                        max_tokens=max_tokens,
+                        sampler=sampler,
+                        logits_processors=logits_processors,
+                    ),
+                    total=max_tokens,
+                    disable=not verbose,
+                )
+            ):
+                next_token = mx.array([response.token])
+                input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
+                if i % 50 == 0:
+                    mx.clear_cache()
 
-        time_start = time.time()
+                if next_token == 128258:
+                    break
 
-        generated_ids = []
+            time_end = time.time()
+            # Trim the output tokens to remove the input tokens
+            generated_ids = mx.array(
+                [output[len(input) :] for input, output in zip(inputs.input_ids, input_ids)]
+            ).tolist()
 
-        # Generate speech using the model
-        for i, response in enumerate(
-            tqdm(
-                stream_generate(
-                    self.model,
-                    tokenizer=self.tokenizer,
-                    prompt=input_ids.squeeze(0),
-                    max_tokens=max_tokens,
-                    sampler=sampler,
-                    logits_processors=logits_processors,
-                ),
-                total=max_tokens,
-                disable=not verbose,
-            )
-        ):
-            next_token = mx.array([response.token])
-            input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
-            if i % 50 == 0:
-                mx.clear_cache()
+            # Decode the generated tokens into text
+            predicts = self.tokenizer._tokenizer.batch_decode(
+                generated_ids, skip_special_tokens=True
+            )[0]
 
-            if next_token == 128258:
-                break
-
-        time_end = time.time()
-        # Trim the output tokens to remove the input tokens
-        generated_ids = mx.array(
-            [output[len(input) :] for input, output in zip(inputs.input_ids, input_ids)]
-        ).tolist()
-
-        # Decode the generated tokens into text
-        predicts = self.tokenizer._tokenizer.batch_decode(
-            generated_ids, skip_special_tokens=True
-        )[0]
-
-        # Extract semantic token IDs from the generated text
-        pred_semantic_ids = (
-            torch.tensor(
-                [
-                    int(token)
-                    for token in re.findall(r"bicodec_semantic_(\d+)", predicts)
-                ]
-            )
-            .long()
-            .unsqueeze(0)
-        )
-
-        if gender is not None:
-            global_token_ids = (
-                torch.tensor(
+            # Extract semantic token IDs from the generated text
+            pred_semantic_ids = (
+                mx.array(
                     [
                         int(token)
-                        for token in re.findall(r"bicodec_global_(\d+)", predicts)
+                        for token in re.findall(r"bicodec_semantic_(\d+)", predicts)
                     ]
                 )
-                .long()
-                .unsqueeze(0)
-                .unsqueeze(0)
+                [None, ...]
             )
 
-        # Convert semantic tokens back to waveform
-        audio = self.audio_tokenizer.detokenize(
-            global_token_ids.to(self.device).squeeze(0),
-            pred_semantic_ids.to(self.device),
-        )
+            if gender is not None:
+                global_token_ids = (
+                    mx.array(
+                        [
+                            int(token)
+                            for token in re.findall(r"bicodec_global_(\d+)", predicts)
+                        ]
+                    )
+                    [None, ...]
+                )
 
-        # Calculate audio samples and duration
-        audio_samples = len(audio)
-        audio_duration = audio_samples / self.configs.sample_rate
+            # Convert semantic tokens back to waveform
+            audio = self._audio_tokenizer.detokenize(
+                global_token_ids,
+                pred_semantic_ids,
+            )
 
-        yield GenerationResult(
-            audio=audio,
-            sample_rate=self.configs.sample_rate,
-            samples=audio_samples,
-            segment_idx=0,  # Default segment index
-            token_count=len(pred_semantic_ids.squeeze()),
-            audio_samples=audio_samples,
-            audio_duration=audio_duration,
-            real_time_factor=(
-                audio_duration / (time_end - time_start)
-                if (time_end - time_start) > 0
-                else 0
-            ),
-            prompt=inputs,
-            processing_time_seconds=time_end - time_start,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
-        )
+            audio_samples = len(audio)
+            audio_duration_seconds = audio_samples / self.config.sample_rate
+
+            # Format duration as HH:MM:SS.mmm
+            duration_mins = int(audio_duration_seconds // 60)
+            duration_secs = int(audio_duration_seconds % 60)
+            duration_ms = int((audio_duration_seconds % 1) * 1000)
+            duration_hours = int(audio_duration_seconds // 3600)
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+
+            yield GenerationResult(
+                audio=audio,
+                sample_rate=self.config.sample_rate,
+                samples=audio_samples,
+                segment_idx=0,  # Default segment index
+                token_count=len(pred_semantic_ids.squeeze()),
+                audio_samples={
+                    "samples": audio_samples,
+                    "samples-per-sec": (
+                        round(audio_samples / audio_duration_seconds, 2)
+                        if audio_duration_seconds > 0
+                        else 0
+                    ),
+                },
+                audio_duration=duration_str,
+                real_time_factor=(
+                    audio_duration_seconds / (time_end - time_start)
+                    if (time_end - time_start) > 0
+                    else 0
+                ),
+                prompt={
+                    "tokens": len(pred_semantic_ids.squeeze()),
+                    "tokens-per-sec": (
+                    round(len(pred_semantic_ids.squeeze()) / audio_duration_seconds, 2)
+                        if audio_duration_seconds > 0
+                        else 0
+                    ),
+                },
+                processing_time_seconds=time_end - time_start,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )

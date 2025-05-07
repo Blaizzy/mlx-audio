@@ -4,7 +4,6 @@ from typing import Any, Dict, Optional
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import torch
 from omegaconf import DictConfig
 from safetensors.torch import load_file
 
@@ -244,7 +243,6 @@ class BiCodec(nn.Module):
 
 
 if __name__ == "__main__":
-    import torch
 
     model_path = get_model_path("SparkAudio/Spark-TTS-0.5B")
 
@@ -253,8 +251,8 @@ if __name__ == "__main__":
 
     # Generate random inputs for testing
     duration = 0.96
-    x = torch.randn(20, 1, int(duration * 16000))
-    feat = torch.randn(20, int(duration * 50), 1024)
+    x = mx.random.normal((20, 1, int(duration * 16000)), dtype=mx.float32)
+    feat = mx.random.normal((20, int(duration * 50), 1024), dtype=mx.float32)
     inputs = {"feat": feat, "wav": x, "ref_wav": x}
 
     # Forward pass

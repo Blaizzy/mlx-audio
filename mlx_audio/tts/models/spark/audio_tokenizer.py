@@ -3,7 +3,6 @@ from typing import Any, Dict, Tuple
 
 import mlx.core as mx
 import numpy as np
-import torch
 from transformers import Wav2Vec2Model
 
 from mlx_audio.stt.models.wav2vec.feature_extractor import Wav2Vec2FeatureExtractor
@@ -16,14 +15,13 @@ from .utils.file import load_config
 class BiCodecTokenizer:
     """BiCodec tokenizer for handling audio input and tokenization."""
 
-    def __init__(self, model_dir: Path, device: torch.device = None, **kwargs):
+    def __init__(self, model_dir: Path, **kwargs):
         super().__init__()
         """
         Args:
             model_dir: Path to the model directory.
             device: Device to run the model on (default is GPU if available).
         """
-        self.device = device
         self.model_dir = model_dir
         self.config = load_config(f"{model_dir}/config.yaml")
         self._initialize_model()
@@ -36,7 +34,7 @@ class BiCodecTokenizer:
         )
         self.feature_extractor = Wav2Vec2Model.from_pretrained(
             f"{self.model_dir}/wav2vec2-large-xlsr-53"
-        ).to(self.device)
+        )
         self.feature_extractor.config.output_hidden_states = True
 
     def get_ref_clip(self, wav: np.ndarray) -> np.ndarray:
@@ -54,7 +52,7 @@ class BiCodecTokenizer:
 
         return wav[:ref_segment_length]
 
-    def process_audio(self, wav_path: Path) -> Tuple[np.ndarray, torch.Tensor]:
+    def process_audio(self, wav_path: Path) -> Tuple[np.ndarray, mx.array]:
         """load auido and get reference audio from wav path"""
         wav = load_audio(
             wav_path,
@@ -64,10 +62,9 @@ class BiCodecTokenizer:
 
         wav_ref = self.get_ref_clip(wav)
 
-        wav_ref = torch.from_numpy(wav_ref).unsqueeze(0).float()
-        return wav, wav_ref
+        return wav, wav_ref[None, ...]
 
-    def extract_wav2vec2_features(self, wavs: torch.Tensor) -> torch.Tensor:
+    def extract_wav2vec2_features(self, wavs: mx.array) -> mx.array:
         """extract wav2vec2 features"""
         inputs = self.processor(
             wavs,
@@ -83,13 +80,13 @@ class BiCodecTokenizer:
 
         return feats_mix
 
-    def tokenize_batch(self, batch: Dict[str, Any]) -> torch.Tensor:
+    def tokenize_batch(self, batch: Dict[str, Any]) -> Tuple[mx.array, mx.array]:
         """tokenize the batch of audio
 
         Args:
             batch:
                 wavs (List[np.ndarray]): batch of audio
-                ref_wavs (torch.Tensor): reference audio. shape: (batch_size, seq_len)
+                ref_wavs (mx.array): reference audio. shape: (batch_size, seq_len)
 
         Returns:
             semantic_tokens: semantic tokens. shape: (batch_size, seq_len, latent_dim)
@@ -102,26 +99,21 @@ class BiCodecTokenizer:
 
         return global_tokens, semantic_tokens
 
-    def tokenize(self, audio_path: str) -> Tuple[torch.Tensor, torch.Tensor]:
+    def tokenize(self, audio_path: str) -> Tuple[mx.array, mx.array]:
         """tokenize the audio"""
         wav, ref_wav = self.process_audio(audio_path)
         feat = self.extract_wav2vec2_features(wav)
         batch = {
-            "wav": torch.from_numpy(wav).unsqueeze(0).float().to(self.device),
-            "ref_wav": ref_wav.to(self.device),
-            "feat": feat.to(self.device),
+            "wav": wav[None, ...],
+            "ref_wav": ref_wav,
+            "feat": feat,
         }
-
-        # convert to mlx array
-        batch["wav"] = mx.array(batch["wav"])
-        batch["ref_wav"] = mx.array(batch["ref_wav"])
-        batch["feat"] = mx.array(batch["feat"])
         semantic_tokens, global_tokens = self.model.tokenize(batch)
 
         return global_tokens, semantic_tokens
 
     def detokenize(
-        self, global_tokens: torch.Tensor, semantic_tokens: torch.Tensor
+        self, global_tokens: mx.array, semantic_tokens: mx.array
     ) -> np.array:
         """detokenize the tokens to waveform
 
@@ -132,10 +124,8 @@ class BiCodecTokenizer:
         Returns:
             wav_rec: waveform. shape: (batch_size, seq_len) for batch or (seq_len,) for single
         """
-        global_tokens = global_tokens.unsqueeze(1)
+        global_tokens = mx.expand_dims(global_tokens, 1)
 
         # convert to mlx array
-        global_tokens = mx.array(global_tokens)
-        semantic_tokens = mx.array(semantic_tokens)
         wav_rec = self.model.detokenize(semantic_tokens, global_tokens)
         return wav_rec.squeeze()

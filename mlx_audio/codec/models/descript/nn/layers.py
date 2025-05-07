@@ -33,6 +33,7 @@ class WNConv1d(nn.Module):
         self.padding = padding
         self.dilation = dilation
         self.stride = stride
+        self.groups = groups
 
         scale = math.sqrt(1 / (in_channels * kernel_size))
         weight_init = mx.random.uniform(
