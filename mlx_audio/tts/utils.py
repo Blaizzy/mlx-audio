@@ -206,7 +206,8 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         else config
     )
 
-    if hasattr(model_class.ModelConfig, "model_repo"):
+    if model_config is not None and hasattr(model_config, "model_repo"):
+        # For Spark model
         model_config.model_repo = model_repo
 
     model = model_class.Model(model_config)
