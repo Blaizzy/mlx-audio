@@ -2,28 +2,22 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple, Dict, Union, Optional
+from typing import Dict, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-
 from mlx_lm.generate import stream_generate
+from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
+from mlx_lm.tokenizer_utils import load_tokenizer
 from mlx_lm.utils import load
 from tqdm import tqdm
 
-
-from mlx_lm.models.qwen2 import Model as Qwen2Model
-from mlx_lm.tokenizer_utils import load_tokenizer
-from mlx_lm.utils import load
-from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 from mlx_audio.tts.utils import get_model_path
-
-from mlx_audio.tts.models.base import BaseModelArgs
 
 from .audio_tokenizer import BiCodecTokenizer
 from .utils.token_parser import GENDER_MAP, LEVELS_MAP, TASK_TOKEN_MAP
-
 
 SPEED_MAP = {
     0.5: "very_low",
@@ -32,6 +26,7 @@ SPEED_MAP = {
     1.25: "high",
     1.5: "very_high",
 }
+
 
 @dataclass
 class ModelConfig(BaseModelArgs):
@@ -77,11 +72,11 @@ class Model(nn.Module):
         model_dir = get_model_path(config.model_repo)
 
         self.model = Qwen2Model(config)
-        self.tokenizer = load_tokenizer(model_dir / "LLM", eos_token_ids=config.eos_token_id)
-
+        self.tokenizer = load_tokenizer(
+            model_dir / "LLM", eos_token_ids=config.eos_token_id
+        )
 
         self._audio_tokenizer = BiCodecTokenizer(model_dir)
-
 
     def load_weights(self, weights, strict=True):
         self.model.load_weights(weights, strict=True)
@@ -107,9 +102,7 @@ class Model(nn.Module):
             Tuple[str, mx.array]: Input prompt; global tokens
         """
 
-        global_token_ids, semantic_token_ids = self._audio_tokenizer.tokenize(
-            ref_audio
-        )
+        global_token_ids, semantic_token_ids = self._audio_tokenizer.tokenize(ref_audio)
         global_tokens = "".join(
             [f"<|bicodec_global_{i}|>" for i in global_token_ids.squeeze()]
         )
@@ -230,16 +223,17 @@ class Model(nn.Module):
         speed_factor = SPEED_MAP[speed]
 
         text_splits = text.split(split_pattern)
-        
+
         for text_split in text_splits:
             if gender is not None:
-                prompt = self.process_prompt_control(gender, pitch, speed_factor, text_split)
+                prompt = self.process_prompt_control(
+                    gender, pitch, speed_factor, text_split
+                )
 
             else:
                 prompt, global_token_ids = self.process_prompt(
                     text_split, ref_audio, ref_text
                 )
-
 
             inputs = self.tokenizer._tokenizer([prompt], return_tensors="pt")
 
@@ -282,7 +276,10 @@ class Model(nn.Module):
             time_end = time.time()
             # Trim the output tokens to remove the input tokens
             generated_ids = mx.array(
-                [output[len(input) :] for input, output in zip(inputs.input_ids, input_ids)]
+                [
+                    output[len(input) :]
+                    for input, output in zip(inputs.input_ids, input_ids)
+                ]
             ).tolist()
 
             # Decode the generated tokens into text
@@ -291,26 +288,20 @@ class Model(nn.Module):
             )[0]
 
             # Extract semantic token IDs from the generated text
-            pred_semantic_ids = (
-                mx.array(
-                    [
-                        int(token)
-                        for token in re.findall(r"bicodec_semantic_(\d+)", predicts)
-                    ]
-                )
-                [None, ...]
-            )
+            pred_semantic_ids = mx.array(
+                [
+                    int(token)
+                    for token in re.findall(r"bicodec_semantic_(\d+)", predicts)
+                ]
+            )[None, ...]
 
             if gender is not None:
-                global_token_ids = (
-                    mx.array(
-                        [
-                            int(token)
-                            for token in re.findall(r"bicodec_global_(\d+)", predicts)
-                        ]
-                    )
-                    [None, ...]
-                )
+                global_token_ids = mx.array(
+                    [
+                        int(token)
+                        for token in re.findall(r"bicodec_global_(\d+)", predicts)
+                    ]
+                )[None, ...]
 
             # Convert semantic tokens back to waveform
             audio = self._audio_tokenizer.detokenize(
@@ -327,7 +318,6 @@ class Model(nn.Module):
             duration_ms = int((audio_duration_seconds % 1) * 1000)
             duration_hours = int(audio_duration_seconds // 3600)
             duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
-
 
             yield GenerationResult(
                 audio=audio,
@@ -352,7 +342,9 @@ class Model(nn.Module):
                 prompt={
                     "tokens": len(pred_semantic_ids.squeeze()),
                     "tokens-per-sec": (
-                    round(len(pred_semantic_ids.squeeze()) / audio_duration_seconds, 2)
+                        round(
+                            len(pred_semantic_ids.squeeze()) / audio_duration_seconds, 2
+                        )
                         if audio_duration_seconds > 0
                         else 0
                     ),

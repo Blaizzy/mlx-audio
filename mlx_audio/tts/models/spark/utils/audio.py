@@ -22,10 +22,10 @@ import random
 from pathlib import Path
 from typing import Tuple
 
+import mlx.core as mx
 import numpy as np
 import soundfile
 import soxr
-import mlx.core as mx
 from numpy.lib.stride_tricks import sliding_window_view
 
 
@@ -131,8 +131,6 @@ def random_select_audio_segment(audio: np.ndarray, length: int) -> np.ndarray:
     end_index = int(start_index + length)
 
     return audio[start_index:end_index]
-
-
 
 
 def detect_speech_boundaries(

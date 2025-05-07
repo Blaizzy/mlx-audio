@@ -777,6 +777,7 @@ class TestDiaModel(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
+
 class TestSparkTTSModel(unittest.TestCase):
     @property
     def _default_config(self):
@@ -819,8 +820,9 @@ class TestSparkTTSModel(unittest.TestCase):
         mock_get_model_path,
     ):
         """Test SparkTTSModel initialization."""
-        from mlx_audio.tts.models.spark.spark import Model, ModelConfig
         from pathlib import Path
+
+        from mlx_audio.tts.models.spark.spark import Model, ModelConfig
 
         # Mock return values for patched functions
         mock_get_model_path.return_value = Path("/fake/model/path")
