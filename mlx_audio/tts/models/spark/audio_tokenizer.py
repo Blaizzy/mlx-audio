@@ -4,12 +4,13 @@ from typing import Any, Dict, Tuple
 import mlx.core as mx
 import numpy as np
 import torch
-from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Model
+from transformers import Wav2Vec2Model
 
 from .bicodec import BiCodec
 from .utils.audio import load_audio
 from .utils.file import load_config
 
+from mlx_audio.stt.models.wav2vec.feature_extractor import Wav2Vec2FeatureExtractor
 
 class BiCodecTokenizer:
     """BiCodec tokenizer for handling audio input and tokenization."""
@@ -70,11 +71,11 @@ class BiCodecTokenizer:
         inputs = self.processor(
             wavs,
             sampling_rate=16000,
-            return_tensors="pt",
+            return_tensors="mx",
             padding=True,
             output_hidden_states=True,
         ).input_values
-        feat = self.feature_extractor(inputs.to(self.feature_extractor.device))
+        feat = self.feature_extractor(inputs)
         feats_mix = (
             feat.hidden_states[11] + feat.hidden_states[14] + feat.hidden_states[16]
         ) / 3
