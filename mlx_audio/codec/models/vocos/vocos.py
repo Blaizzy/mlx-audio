@@ -83,6 +83,12 @@ class EncodecFeatures(FeatureExtractor):
 
     def get_encodec_codes(self, audio: mx.array, bandwidth_id: int) -> mx.array:
         features, mask = self.preprocessor(audio)
+
+        if isinstance(bandwidth_id, mx.array):
+            bandwidth_id = int(bandwidth_id.flatten().tolist()[0])
+        elif isinstance(bandwidth_id, list):
+            bandwidth_id = bandwidth_id[0]
+
         codes, _ = self.encodec.encode(
             features, mask, bandwidth=self.bandwidths[bandwidth_id]
         )
@@ -196,7 +202,6 @@ class AdaLayerNorm(nn.Module):
         scale = self.scale(cond_embedding)
         shift = self.shift(cond_embedding)
         x = mx.fast.layer_norm(x, weight=None, bias=None, eps=self.eps)
-
         x = x * scale[:, None, :] + shift[:, None, :]
         return x
 
