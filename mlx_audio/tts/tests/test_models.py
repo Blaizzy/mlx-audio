@@ -782,7 +782,7 @@ class TestSparkTTSModel(unittest.TestCase):
     @property
     def _default_config(self):
         return {
-            "model_repo": "SparkAudio/Spark-TTS-0.5B",
+            "model_path": "/fake/model/path",
             "sample_rate": 16000,
             "bos_token_id": 151643,
             "eos_token_id": 151645,
@@ -808,7 +808,6 @@ class TestSparkTTSModel(unittest.TestCase):
             "rope_scaling": None,
         }
 
-    @patch("mlx_audio.tts.models.spark.spark.get_model_path")
     @patch("mlx_audio.tts.models.spark.spark.load_tokenizer")
     @patch("mlx_audio.tts.models.spark.spark.BiCodecTokenizer")
     @patch("mlx_audio.tts.models.spark.spark.Qwen2Model")
@@ -817,7 +816,6 @@ class TestSparkTTSModel(unittest.TestCase):
         mock_qwen2_model,
         mock_bicodec_tokenizer,
         mock_load_tokenizer,
-        mock_get_model_path,
     ):
         """Test SparkTTSModel initialization."""
         from pathlib import Path
@@ -825,24 +823,24 @@ class TestSparkTTSModel(unittest.TestCase):
         from mlx_audio.tts.models.spark.spark import Model, ModelConfig
 
         # Mock return values for patched functions
-        mock_get_model_path.return_value = Path("/fake/model/path")
         mock_load_tokenizer.return_value = MagicMock()
         mock_bicodec_tokenizer.return_value = MagicMock()
         mock_qwen2_model.return_value = MagicMock()
 
         # Create a config instance
         config = ModelConfig(**self._default_config)
+        config.model_path = Path("/fake/model/path")
 
         # Initialize the model
         model = Model(config)
 
         # Check that the model was initialized correctly
         self.assertIsInstance(model, Model)
-        mock_get_model_path.assert_called_once_with(config.model_repo)
+
         mock_load_tokenizer.assert_called_once_with(
-            Path("/fake/model/path") / "LLM", eos_token_ids=config.eos_token_id
+            config.model_path, eos_token_ids=config.eos_token_id
         )
-        mock_bicodec_tokenizer.assert_called_once_with(Path("/fake/model/path"))
+        mock_bicodec_tokenizer.assert_called_once_with(config.model_path)
         mock_qwen2_model.assert_called_once_with(config)
 
 
