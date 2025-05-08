@@ -19,18 +19,18 @@ from mlx_audio.tts.utils import get_model_path
 from .audio_tokenizer import BiCodecTokenizer
 from .utils.token_parser import GENDER_MAP, LEVELS_MAP, TASK_TOKEN_MAP
 
-SPEED_MAP = {
-    0.5: "very_low",
-    0.75: "low",
+PITCH_MAP = SPEED_MAP = {
+    0.0: "very_low",
+    0.5: "low",
     1.0: "moderate",
-    1.25: "high",
-    1.5: "very_high",
+    1.5: "high",
+    2.0: "very_high",
 }
 
 
 @dataclass
 class ModelConfig(BaseModelArgs):
-    model_repo: str = "SparkAudio/Spark-TTS-0.5B"
+    model_path: Path = None
     sample_rate: int = 16000
     bos_token_id: int = 151643
     eos_token_id: int = 151645
@@ -69,7 +69,8 @@ class Model(nn.Module):
             config (ModelConfig): The configuration for the model.
         """
         self.config = config
-        model_dir = get_model_path(config.model_repo)
+
+        model_dir = config.model_path
 
         self.model = Qwen2Model(config)
         self.tokenizer = load_tokenizer(
@@ -192,8 +193,8 @@ class Model(nn.Module):
         ref_audio: Path = None,
         ref_text: str = None,
         gender: str = "male",
-        pitch: str = "moderate",
-        speed: int = 1,
+        pitch: float = 1.0,
+        speed: float = 1.0,
         temperature: float = 0.8,
         top_k: float = 50,
         top_p: float = 0.95,
@@ -221,13 +222,14 @@ class Model(nn.Module):
         """
 
         speed_factor = SPEED_MAP[speed]
+        pitch_factor = PITCH_MAP[pitch]
 
         text_splits = text.split(split_pattern)
 
         for text_split in text_splits:
             if gender is not None:
                 prompt = self.process_prompt_control(
-                    gender, pitch, speed_factor, text_split
+                    gender, pitch_factor, speed_factor, text_split
                 )
 
             else:

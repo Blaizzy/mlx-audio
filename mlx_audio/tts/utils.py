@@ -142,15 +142,12 @@ def load_model(
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
     model_name = None
-    model_repo = None
     if isinstance(model_path, str):
-        model_repo = model_path
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
     elif isinstance(model_path, Path):
         index = model_path.parts.index("hub")
         model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
-        model_repo = model_path.parts[index + 1]
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
@@ -206,9 +203,9 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         else config
     )
 
-    if model_config is not None and hasattr(model_config, "model_repo"):
+    if model_config is not None and hasattr(model_config, "model_path"):
         # For Spark model
-        model_config.model_repo = model_repo
+        model_config.model_path = model_path
 
     model = model_class.Model(model_config)
     quantization = config.get("quantization", None)
