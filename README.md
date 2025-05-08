@@ -2,6 +2,12 @@
 
 A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX framework, providing efficient speech synthesis on Apple Silicon.
 
+
+
+
+uvx --from mlx-audio mlx_audio.tts.generate --model mlx-community/Dia-1.6B-6bit --text "[S1] Dia can now run on your Mac thanks to MLX. [S2] You get full control over scripts and voices. [S1] Wow. Amazing. (laughs)"
+
+
 ## Features
 
 - Fast inference on Apple Silicon (M series chips)
