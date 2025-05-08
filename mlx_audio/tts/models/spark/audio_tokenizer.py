@@ -23,7 +23,7 @@ class BiCodecTokenizer:
             device: Device to run the model on (default is GPU if available).
         """
         self.model_dir = model_dir
-        self.config = load_config(f"{model_dir}/config.yaml")
+        self.config = load_config(f"{model_dir}/audio_tokenizer_config.yaml")
         self._initialize_model()
 
     def _initialize_model(self):

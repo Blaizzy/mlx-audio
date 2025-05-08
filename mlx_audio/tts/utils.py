@@ -13,17 +13,62 @@ from mlx.utils import tree_flatten
 from mlx_lm.convert import mixed_quant_predicate_builder
 from mlx_lm.utils import (
     dequantize_model,
-    get_model_path,
     quantize_model,
+    ModelNotFoundError,
     save_config,
     save_weights,
 )
 from transformers import AutoConfig
+from huggingface_hub import snapshot_download
 
 MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
+
+
+
+def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+    """
+    Ensures the model is available locally. If the path does not exist locally,
+    it is downloaded from the Hugging Face Hub.
+
+    Args:
+        path_or_hf_repo (str): The local path or Hugging Face repository ID of the model.
+        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
+
+    Returns:
+        Path: The path to the model.
+    """
+    model_path = Path(path_or_hf_repo)
+
+    if not model_path.exists():
+        try:
+            model_path = Path(
+                snapshot_download(
+                    path_or_hf_repo,
+                    revision=revision,
+                    allow_patterns=[
+                        "*.json",
+                        "*.safetensors",
+                        "*.py",
+                        "*.model",
+                        "*.tiktoken",
+                        "*.txt",
+                        "*.jsonl",
+                        "*.yaml",
+                    ],
+                )
+            )
+        except:
+            raise ModelNotFoundError(
+                f"Model not found for path or HF repo: {path_or_hf_repo}.\n"
+                "Please make sure you specified the local path or Hugging Face"
+                " repo id correctly.\nIf you are trying to access a private or"
+                " gated Hugging Face repo, make sure you are authenticated:\n"
+                "https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login"
+            ) from None
+    return model_path
 
 # Get a list of all available model types from the models directory
 def get_available_models():
@@ -114,12 +159,7 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
             with open(model_path / "config.json", encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError as exc:
-            try:
-                # For Spark model
-                with open(model_path / "LLM" / "config.json", encoding="utf-8") as f:
-                    return json.load(f)
-            except FileNotFoundError:
-                raise FileNotFoundError(f"Config not found at {model_path}") from exc
+            raise FileNotFoundError(f"Config not found at {model_path}") from exc
 
 
 def load_model(
