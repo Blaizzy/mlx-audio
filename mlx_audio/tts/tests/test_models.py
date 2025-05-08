@@ -837,10 +837,13 @@ class TestSparkTTSModel(unittest.TestCase):
         # Check that the model was initialized correctly
         self.assertIsInstance(model, Model)
 
+        # Verify the tokenizer was loaded correctly
         mock_load_tokenizer.assert_called_once_with(
             config.model_path, eos_token_ids=config.eos_token_id
         )
         mock_bicodec_tokenizer.assert_called_once_with(config.model_path)
+
+        # Verify the model was initialized correctly
         mock_qwen2_model.assert_called_once_with(config)
 
 
