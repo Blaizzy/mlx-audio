@@ -73,9 +73,7 @@ class Model(nn.Module):
         model_dir = config.model_path
 
         self.model = Qwen2Model(config)
-        self.tokenizer = load_tokenizer(
-            model_dir, eos_token_ids=config.eos_token_id
-        )
+        self.tokenizer = load_tokenizer(model_dir, eos_token_ids=config.eos_token_id)
 
         self._audio_tokenizer = BiCodecTokenizer(model_dir)
 

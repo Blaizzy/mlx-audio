@@ -9,23 +9,21 @@ from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 from mlx_lm.convert import mixed_quant_predicate_builder
 from mlx_lm.utils import (
+    ModelNotFoundError,
     dequantize_model,
     quantize_model,
-    ModelNotFoundError,
     save_config,
     save_weights,
 )
 from transformers import AutoConfig
-from huggingface_hub import snapshot_download
 
 MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
-
-
 
 
 def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
@@ -69,6 +67,7 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
                 "https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login"
             ) from None
     return model_path
+
 
 # Get a list of all available model types from the models directory
 def get_available_models():
