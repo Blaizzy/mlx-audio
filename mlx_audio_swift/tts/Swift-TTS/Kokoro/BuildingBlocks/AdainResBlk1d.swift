@@ -115,7 +115,9 @@ class AdainResBlk1d {
       if let idPool = pool as? Identity {
         x = idPool(x)
       } else if let convPool = pool as? ConvWeighted {
-        x = convPool(x, conv: MLX.convTransposed1d)
+          x = convPool.callAsFunction(x, conv: { a, b, c, d, e, f, g in
+               MLX.convTransposed1d(a, b, stride: c, padding: d, dilation: e, outputPadding: 0,groups: f, stream: g) // Ignore the extra parameter `h`
+          })
       }
       x = MLX.padded(x, widths: [IntOrPair([0, 0]), IntOrPair([1, 0]), IntOrPair([0, 0])])
     }

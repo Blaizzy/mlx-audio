@@ -47,38 +47,35 @@ class TextEncoder {
     )
   }
 
-  public func callAsFunction(_ x: MLXArray, inputLengths _: MLXArray, m: MLXArray) -> MLXArray {
-    var x = embedding(x)
-    x = x.transposed(0, 2, 1)
-    let mask = m.expandedDimensions(axis: 1)
-    x = MLX.where(mask, 0.0, x)
+    public func callAsFunction(_ x: MLXArray, inputLengths _: MLXArray, m: MLXArray) -> MLXArray {
+        var features = embedding(x)
+        features = features.transposed(0, 2, 1)
+        let mask = m.expandedDimensions(axis: 1)
+        features = MLX.where(mask, 0.0, features)
 
-    for convBlock in cnn {
-      for layer in convBlock {
-        if layer is ConvWeighted || layer is LayerNormInference {
-          x = MLX.swappedAxes(x, 2, 1)
-          if let convWeighted = layer as? ConvWeighted {
-            x = convWeighted(x, conv: MLX.conv1d)
-          } else if let layer = layer as? LayerNormInference {
-            x = layer(x)
-          }
-          x = MLX.swappedAxes(x, 2, 1)
-        } else if let layer = layer as? LeakyReLU {
-          x = layer(x)
-        } else {
-          fatalError("Unsupported layer type")
+        for convBlock in cnn {
+            for layer in convBlock {
+                if layer is ConvWeighted || layer is LayerNormInference {
+                    features = MLX.swappedAxes(features, 2, 1)
+                    if let conv = layer as? ConvWeighted {
+                        features = conv(features, conv: MLX.conv1d)
+                    } else if let norm = layer as? LayerNormInference {
+                        features = norm(features)
+                    }
+                    features = MLX.swappedAxes(features, 2, 1)
+                } else if let activation = layer as? LeakyReLU {
+                    features = activation(features)
+                } else {
+                    fatalError("Unsupported layer type")
+                }
+                features = MLX.where(mask, 0.0, features)
+            }
         }
-        x = MLX.where(mask, 0.0, x)
-      }
+
+        features = MLX.swappedAxes(features, 2, 1)
+        let (lstmOutput, _) = lstm(features)
+        features = MLX.swappedAxes(lstmOutput, 2, 1)
+
+        return MLX.where(mask, 0.0, features)
     }
-
-    x = MLX.swappedAxes(x, 2, 1)
-    let (lstmOutput, _) = lstm(x)
-    x = MLX.swappedAxes(lstmOutput, 2, 1)
-
-    let xPad = MLX.zeros([x.shape[0], x.shape[1], mask.shape[mask.shape.count - 1]])
-    xPad.update(x)
-
-    return MLX.where(mask, 0.0, xPad)
-  }
 }

@@ -39,6 +39,7 @@ public class KokoroTTS {
   private var voice: MLXArray!
 
   init() {
+      MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
     let sanitizedWeights = KokoroWeightLoader.loadWeights()
 
     bert = CustomAlbert(weights: sanitizedWeights, config: AlbertModelArgs())
@@ -111,18 +112,18 @@ public class KokoroTTS {
     }
 
     let paddedInputIdsBase = [0] + inputIds + [0]
-    let paddedInputIds = MLXArray(paddedInputIdsBase).expandedDimensions(axes: [0])
+      var paddedInputIds:MLXArray? = MLXArray(paddedInputIdsBase).expandedDimensions(axes: [0])
 
-    let inputLengths = MLXArray(paddedInputIds.dim(-1))
+      let inputLengths = MLXArray(paddedInputIds!.dim(-1))
     let inputLengthMax: Int = inputLengths.max().item()
-    var textMask = MLXArray(0 ..< inputLengthMax)
-    textMask = textMask + 1 .> inputLengths
-    textMask = textMask.expandedDimensions(axes: [0])
-    let swiftTextMask: [Bool] = textMask.asArray(Bool.self)
+      var textMask:MLXArray? = MLXArray(0 ..< inputLengthMax)
+    textMask = textMask! + 1 .> inputLengths
+    textMask = textMask!.expandedDimensions(axes: [0])
+    var  swiftTextMask: [Bool] = textMask!.asArray(Bool.self)
     let swiftTextMaskInt = swiftTextMask.map { !$0 ? 1 : 0 }
-    let attentionMask = MLXArray(swiftTextMaskInt).reshaped(textMask.shape)
+    let attentionMask = MLXArray(swiftTextMaskInt).reshaped(textMask!.shape)
 
-    let (bertDur, _) = bert(paddedInputIds, attentionMask: attentionMask)
+      let (bertDur, _) = bert(paddedInputIds!, attentionMask: attentionMask)
     let dEn = bertEncoder(bertDur).transposed(0, 2, 1)
 
     BenchmarkTimer.shared.stop(id: "Phonemization")
@@ -131,7 +132,7 @@ public class KokoroTTS {
     let refS = self.voice[inputIds.count - 1, 0 ... 1, 0...]
     let s = refS[0 ... 1, 128...]
 
-    let d = durationEncoder(dEn, style: s, textLengths: inputLengths, m: textMask)
+    let d = durationEncoder(dEn, style: s, textLengths: inputLengths, m: textMask!)
     let (x, _) = predictorLSTM(d)
     let duration = durationProj(x)
     let durationSigmoid = MLX.sigmoid(duration).sum(axis: -1) / speed
@@ -144,21 +145,21 @@ public class KokoroTTS {
       }
     )
 
-    var swiftPredAlnTrg = [Float](repeating: 0.0, count: indices.shape[0] * paddedInputIds.shape[1])
+      var swiftPredAlnTrg = [Float](repeating: 0.0, count: indices.shape[0] * paddedInputIds!.shape[1])
     for i in 0 ..< indices.shape[0] {
       let indiceValue: Int = indices[i].item()
       swiftPredAlnTrg[indiceValue * indices.shape[0] + i] = 1.0
     }
-    let predAlnTrg = MLXArray(swiftPredAlnTrg).reshaped([paddedInputIds.shape[1], indices.shape[0]])
-    let predAlnTrgBatched = predAlnTrg.expandedDimensions(axis: 0)
+      var predAlnTrg:MLXArray? = MLXArray(swiftPredAlnTrg).reshaped([paddedInputIds!.shape[1], indices.shape[0]])
+    let predAlnTrgBatched = predAlnTrg!.expandedDimensions(axis: 0)
     let en = d.transposed(0, 2, 1).matmul(predAlnTrgBatched)
 
     BenchmarkTimer.shared.stop(id: "Duration")
     BenchmarkTimer.shared.create(id: "Prosody", parent: "TTSGeneration")
 
     let (F0Pred, NPred) = prosodyPredictor.F0NTrain(x: en, s: s)
-    let tEn = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
-    let asr = MLX.matmul(tEn, predAlnTrg)
+      let tEn = textEncoder(paddedInputIds!, inputLengths: inputLengths, m: textMask!)
+    let asr = MLX.matmul(tEn, predAlnTrg!)
 
     BenchmarkTimer.shared.stop(id: "Prosody")
     BenchmarkTimer.shared.create(id: "Decoder", parent: "TTSGeneration")
@@ -167,7 +168,11 @@ public class KokoroTTS {
     audio.eval()
 
     BenchmarkTimer.shared.stop(id: "Decoder")
-
+    paddedInputIds = nil
+      predAlnTrg = nil
+      textMask = nil
+      textMask = nil
+      swiftTextMask.removeAll()
     return audio
   }
 
@@ -203,7 +208,9 @@ public class KokoroTTS {
     }
     
     // Combine all audio chunks along axis 1 (time dimension)
-    return MLX.concatenated(audioChunks, axis: 1)
+    let result =  MLX.concatenated(audioChunks, axis: 1)
+      audioChunks.removeAll()
+    return result
   }
   
   // Helper method to split text into manageable chunks

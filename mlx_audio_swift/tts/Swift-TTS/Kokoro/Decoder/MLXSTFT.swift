@@ -43,6 +43,27 @@ func unwrap(p: MLXArray) -> MLXArray {
   return MLX.concatenated([p[0..., 0 ..< 1], p[0..., 1...] + phCorrect.cumsum(axis: 1)], axis: 1)
 }
 
+func getWindow(window: Any, winLen: Int, nFft: Int) -> MLXArray {
+    var w: MLXArray
+    if let windowStr = window as? String {
+        if windowStr.lowercased() == "hann" {
+            w = hanning(length: winLen + 1)[0 ..< winLen]
+        } else {
+            fatalError("Only hanning is supported for window, not \(windowStr)")
+        }
+    } else if let windowArray = window as? MLXArray {
+        w = windowArray
+    } else {
+        fatalError("Window must be a string or MLXArray")
+    }
+
+    if w.shape[0] < nFft {
+        let padSize = nFft - w.shape[0]
+        w = MLX.concatenated([w, MLXArray.zeros([padSize])], axis: 0)
+    }
+    return w
+}
+
 func mlxStft(
   x: MLXArray,
   nFft: Int = 800,
@@ -55,23 +76,7 @@ func mlxStft(
   let hopLen = hopLength ?? nFft / 4
   let winLen = winLength ?? nFft
 
-  var w: MLXArray
-  if let windowStr = window as? String {
-    if windowStr.lowercased() == "hann" {
-      w = hanning(length: winLen + 1)[0 ..< winLen]
-    } else {
-      fatalError("Only hanning is supported for window, not \(windowStr)")
-    }
-  } else if let windowArray = window as? MLXArray {
-    w = windowArray
-  } else {
-    fatalError("Window must be a string or MLXArray")
-  }
-
-  if w.shape[0] < nFft {
-    let padSize = nFft - w.shape[0]
-    w = MLX.concatenated([w, MLXArray.zeros([padSize])], axis: 0)
-  }
+  let w = getWindow(window: window, winLen: winLen, nFft: nFft)
 
   func pad(_ x: MLXArray, padding: Int, padMode: String = "reflect") -> MLXArray {
     if padMode == "constant" {
@@ -143,22 +148,7 @@ func mlxIstft(
   let winLen = winLength ?? ((x.shape[1] - 1) * 2)
   let hopLen = hopLength ?? (winLen / 4)
 
-  var w: MLXArray
-  if let windowStr = window as? String {
-    if windowStr.lowercased() == "hann" {
-      w = hanning(length: winLen + 1)[0 ..< winLen]
-    } else {
-      fatalError("Only hanning window is supported")
-    }
-  } else if let windowArray = window as? MLXArray {
-    w = windowArray
-  } else {
-    fatalError("Window must be a string or MLXArray")
-  }
-
-  if w.shape[0] < winLen {
-    w = MLX.concatenated([w, MLXArray.zeros([winLen - w.shape[0]])], axis: 0)
-  }
+  let w = getWindow(window: window, winLen: winLen, nFft: winLen)
 
   let xTransposed = x.transposed(1, 0)
   let t = (xTransposed.shape[0] - 1) * hopLen + winLen
@@ -245,33 +235,30 @@ class MLXSTFT {
   func transform(inputData: MLXArray) -> (MLXArray, MLXArray) {
     var audioArray = inputData
     if audioArray.ndim == 1 {
-      audioArray = audioArray.expandedDimensions(axis: 0)
+        audioArray = audioArray.expandedDimensions(axis: 0)
     }
 
-    var magnitudes: [MLXArray] = []
-    var phases: [MLXArray] = []
+    let threadPool = ThreadPool(maxConcurrentTasks: 4)
+    var magnitudes: [MLXArray] = Array(repeating: MLXArray.zeros([1]), count: audioArray.shape[0])
+    var phases: [MLXArray] = Array(repeating: MLXArray.zeros([1]), count: audioArray.shape[0])
 
     for batchIdx in 0 ..< audioArray.shape[0] {
-      // Compute STFT
-      let stft = mlxStft(
-        x: audioArray[batchIdx],
-        nFft: filterLength,
-        hopLength: hopLength,
-        winLength: winLength,
-        window: window,
-        center: true,
-        padMode: "reflect"
-      )
-
-      let magnitude = MLX.abs(stft)
-
-      // Replaces np.angle()
-      let phase = MLX.atan2(stft.imaginaryPart(), stft.realPart())
-
-      magnitudes.append(magnitude)
-      phases.append(phase)
+        threadPool.addTask {
+            let stft = mlxStft(
+                x: audioArray[batchIdx],
+                nFft: self.filterLength,
+                hopLength: self.hopLength,
+                winLength: self.winLength,
+                window: self.window,
+                center: true,
+                padMode: "reflect"
+            )
+            magnitudes[batchIdx] = MLX.abs(stft)
+            phases[batchIdx] = MLX.atan2(stft.imaginaryPart(), stft.realPart())
+        }
     }
 
+    threadPool.waitForAllTasks()
     let magnitudesStacked = MLX.stacked(magnitudes, axis: 0)
     let phasesStacked = MLX.stacked(phases, axis: 0)
 

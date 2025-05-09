@@ -165,8 +165,11 @@ class Generator {
       xSource = noiseRes[i](xSource, s)
 
       newX = MLX.swappedAxes(newX, 2, 1)
-      newX = ups[i](newX, conv: MLX.convTransposed1d)
-      newX = MLX.swappedAxes(newX, 2, 1)
+    let upsi = ups[i]
+        newX = upsi.callAsFunction(newX, conv: { a, b, c, d, e, f, g in
+             MLX.convTransposed1d(a, b, stride: c, padding: d, dilation: e, outputPadding: 0, groups: f, stream: g)
+        })
+        newX = MLX.swappedAxes(newX, 2, 1)
 
       if i == numUpsamples - 1 {
         newX = reflectionPad(newX)
