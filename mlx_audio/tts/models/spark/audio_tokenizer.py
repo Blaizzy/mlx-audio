@@ -72,7 +72,7 @@ class BiCodecTokenizer:
             return_tensors="mx",
             padding=True,
             output_hidden_states=True,
-        ).input_values
+        )["input_values"]
         feat = self.feature_extractor(inputs)
         feats_mix = (
             feat.hidden_states[11] + feat.hidden_states[14] + feat.hidden_states[16]
