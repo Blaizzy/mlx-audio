@@ -120,14 +120,14 @@ class Model(nn.Module):
         )
 
         # Prepare the input tokens for the model
-        if prompt_text is not None:
+        if ref_text is not None:
             semantic_tokens = "".join(
                 [f"<|bicodec_semantic_{i}|>" for i in semantic_token_ids.squeeze()]
             )
             inputs = [
                 TASK_TOKEN_MAP["tts"],
                 "<|start_content|>",
-                prompt_text,
+                ref_text,
                 text,
                 "<|end_content|>",
                 "<|start_global_token|>",
@@ -252,7 +252,7 @@ class Model(nn.Module):
 
             input_ids = mx.array(inputs.input_ids)
 
-            sampler = make_sampler(temperature, top_p, top_k=kwargs.get("top_k", -1))
+            sampler = make_sampler(temperature, top_p=top_p, top_k=top_k)
             logits_processors = make_logits_processors(
                 kwargs.get("logit_bias", None),
                 kwargs.get("repetition_penalty", 1.3),

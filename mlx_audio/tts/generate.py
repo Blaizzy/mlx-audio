@@ -187,7 +187,7 @@ def parse_args():
     parser.add_argument(
         "--gender", type=str, default="male", help="Gender of the voice [male, female]"
     )
-    parser.add_argument("--pitch", type=float, default=0.0, help="Pitch of the voice")
+    parser.add_argument("--pitch", type=float, default=1.0, help="Pitch of the voice")
     parser.add_argument("--lang_code", type=str, default="a", help="Language code")
     parser.add_argument(
         "--file_prefix", type=str, default="audio", help="Output file name prefix"

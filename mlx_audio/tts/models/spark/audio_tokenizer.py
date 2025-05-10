@@ -3,9 +3,9 @@ from typing import Any, Dict, Tuple
 
 import mlx.core as mx
 import numpy as np
-from transformers import Wav2Vec2Model
 
 from mlx_audio.stt.models.wav2vec.feature_extractor import Wav2Vec2FeatureExtractor
+from mlx_audio.stt.models.wav2vec.wav2vec import Wav2Vec2Model
 
 from .bicodec import BiCodec
 from .utils.audio import load_audio
