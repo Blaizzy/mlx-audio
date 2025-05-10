@@ -1,13 +1,12 @@
+import re
 import time
-from typing import Optional
+from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import soundfile as sf
 from huggingface_hub import hf_hub_download
 from mlx_lm.sample_utils import make_sampler
-from scipy import signal
 from tqdm import trange
 
 from mlx_audio.codec.models import DAC
@@ -18,29 +17,14 @@ from .config import DiaConfig
 from .layers import DiaModel, KVCache
 
 
-def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    gcd = np.gcd(orig_sr, target_sr)
-    up = target_sr // gcd
-    down = orig_sr // gcd
-    resampled = signal.resample_poly(audio, up, down, padtype="edge")
-    return resampled
-
-
 def _sample_next_token(
     logits_BCxV: mx.array,
     temperature: float,
-    top_p: float,
-    use_cfg_filter: bool,
-    cfg_filter_top_k: int | None = None,
+    sampler: callable,
 ) -> mx.array:
     if temperature == 0.0:
         return mx.argmax(logits_BCxV, axis=-1)
 
-    top_k = -1
-    if use_cfg_filter and cfg_filter_top_k is not None:
-        top_k = cfg_filter_top_k
-
-    sampler = make_sampler(temperature, top_p, top_k=top_k)
     sampled = sampler(logits_BCxV)
     return sampled
 
@@ -217,6 +201,28 @@ class Model(nn.Module):
 
         return src_tokens, src_positions, src_padding_mask, enc_self_attn_mask
 
+    def _split_turns(self, text: str) -> List[str]:
+        """
+        Splits a conversation text into segments each containing a maximum of two [S1]/[S2] chunks.
+        """
+        pattern = re.compile(
+            r"\[S1\]\s*(.*?)\s*\[S2\]\s*(.*?)(?=(?:\[S1\])|$)", re.DOTALL
+        )
+        segments = []
+        for s1_chunk, s2_chunk in pattern.findall(text):
+            segments.append(f"[S1] {s1_chunk.strip()} [S2] {s2_chunk.strip()}")
+
+        if len(segments) > 1:
+            merged_segments = []
+            for i in range(0, len(segments), 2):
+                if i + 1 < len(segments):
+                    merged_segments.append(f"{segments[i]} {segments[i + 1]}")
+                else:
+                    merged_segments.append(segments[i])
+            segments = merged_segments
+
+        return segments
+
     def generate(
         self,
         text,
@@ -226,37 +232,44 @@ class Model(nn.Module):
         split_pattern: str = "\n",
         max_tokens: int | None = None,
         verbose: bool = False,
+        ref_audio: Optional[mx.array] = None,
+        ref_text: Optional[str] = None,
         **kwargs,
     ):
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
 
-        all_audio = []
+        segments = []
+        for p in prompts:
+            if "[S1]" in p and "[S2]" in p:
+                segments.extend(self._split_turns(p))
+            else:
+                segments.append(p)
 
-        for prompt in prompts:
-            time_start = time.time()
+        for segment_index, segment in enumerate(segments):
+            time_start = time.perf_counter()
 
-            audio = self._generate(
-                prompt,
+            audio, token_count = self._generate(
+                segment,
                 max_tokens=max_tokens,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
             )
-            all_audio.append(audio[None, ...])
 
-        time_end = time.time()
-
-        for i in range(len(all_audio)):
-            audio = all_audio[i][0]
+            time_end = time.perf_counter()
 
             samples = audio.shape[0] if audio is not None else 0
             assert samples > 0, "No audio generated"
-
-            token_count = audio.shape[0] if audio is not None else 0
 
             sample_rate = 44100
             audio_duration_seconds = samples / sample_rate
 
             elapsed_time = time_end - time_start
-            rtf = audio_duration_seconds / elapsed_time
+            rtf = (
+                elapsed_time / audio_duration_seconds
+                if audio_duration_seconds > 0
+                else 0
+            )
 
             duration_mins = int(audio_duration_seconds // 60)
             duration_secs = int(audio_duration_seconds % 60)
@@ -268,7 +281,7 @@ class Model(nn.Module):
                 audio=audio,
                 samples=samples,
                 sample_rate=sample_rate,
-                segment_idx=i,
+                segment_idx=segment_index,
                 token_count=token_count,
                 audio_duration=duration_str,
                 real_time_factor=rtf,
@@ -291,13 +304,14 @@ class Model(nn.Module):
     def _generate(
         self,
         text: str,
-        max_tokens: int | None = None,
+        max_tokens: Optional[int] = None,
         cfg_scale: float = 3.0,
         temperature: float = 1.3,
         top_p: float = 0.95,
         use_cfg_filter: bool = True,
         cfg_filter_top_k: int = 35,
-        audio_prompt_path: str | None = None,
+        ref_audio: Optional[mx.array] = None,
+        ref_text: Optional[str] = None,
     ) -> np.ndarray:
         """
         Generates audio from a text prompt (and optional audio prompt) using the Dia model.
@@ -313,6 +327,9 @@ class Model(nn.Module):
         max_tokens = self.config.data.audio_length if max_tokens is None else max_tokens
         delay_tensor = mx.array(delay_pattern, dtype=mx.int32)
         max_delay_pattern = max(delay_pattern)
+
+        if ref_text is not None:
+            text = ref_text.strip() + " " + text
 
         (
             cond_src_BxS,
@@ -370,19 +387,18 @@ class Model(nn.Module):
         prompt_len_inc_bos = 1  # Start with BOS length
 
         # 3-3. Load Audio Prompt (if provided)
-        if audio_prompt_path is not None:
-            audio_prompt, sr = sf.read(audio_prompt_path)  # C, T
-            if sr != 44100:  # Resample to 44.1kHz
-                audio_prompt = resample_audio(audio_prompt, sr, 44100)
-            audio_prompt = audio_prompt.unsqueeze(0)  # 1, C, T
+        if ref_audio is not None:
+            audio_prompt = mx.array(ref_audio)[None, None, ...]  # 1, C, T
 
             audio_prompt_codebook = audio_to_codebook(
                 self.dac_model, audio_prompt, data_config=self.config.data
             )
-            audio_prompt_mx = mx.array(audio_prompt_codebook.numpy())
-
-            audio_prompt_mx = mx.concatenate([audio_prompt_mx, audio_prompt_mx], axis=0)
-            generated_BxTxC = mx.concatenate([generated_BxTxC, audio_prompt_mx], axis=1)
+            audio_prompt_codebook = mx.concatenate(
+                [audio_prompt_codebook, audio_prompt_codebook], axis=0
+            )
+            generated_BxTxC = mx.concatenate(
+                [generated_BxTxC, audio_prompt_codebook], axis=1
+            )
 
             prefill_len = generated_BxTxC.shape[1]
             prompt_len_inc_bos = prefill_len
@@ -445,6 +461,11 @@ class Model(nn.Module):
             is_causal=False,
         )  # [B, 1, 1, S]
 
+        top_k = -1
+        if use_cfg_filter and cfg_filter_top_k is not None:
+            top_k = cfg_filter_top_k
+        sampler = make_sampler(temperature, top_p, top_k=top_k)
+
         for step in trange(current_step, current_step + max_tokens):
             tgt_ids_Bx1xC = mx.expand_dims(generated_BxTxC[:, step, :], 1)
             tgt_pos_Bx1 = mx.full(
@@ -453,7 +474,7 @@ class Model(nn.Module):
                 dtype=mx.int32,
             )
 
-            logits_Bx1xCxV, new_cache = decode_step(
+            logits_Bx1xCxV = decode_step(
                 tgt_ids_Bx1xC=tgt_ids_Bx1xC,
                 tgt_pos_Bx1=tgt_pos_Bx1,
                 encoder_out=encoder_out,
@@ -462,10 +483,6 @@ class Model(nn.Module):
                 self_attention_cache=decoder_self_attention_cache,
                 cross_attention_cache=decoder_cross_attention_cache,
             )
-
-            if new_cache is not None:
-                for i, layer_cache in enumerate(decoder_self_attention_cache):
-                    layer_cache.update_cache(new_cache[i][0], new_cache[i][1])
 
             V = self.config.model.tgt_vocab_size
             logits_last_BxCxV = logits_Bx1xCxV[:, -1, :, :]  # B, C, V
@@ -493,13 +510,11 @@ class Model(nn.Module):
             pred_C = _sample_next_token(
                 logits_CxV,
                 temperature=temperature,
-                top_p=top_p,
-                use_cfg_filter=use_cfg_filter,
-                cfg_filter_top_k=cfg_filter_top_k,
+                sampler=sampler,
             )
 
             generation_step_index = step - current_step
-            if audio_prompt_path is None:
+            if ref_audio is None:
                 pred_C = mx.where(
                     generation_step_index >= delay_tensor,
                     pred_C,
@@ -567,4 +582,4 @@ class Model(nn.Module):
             T=max_tokens,
             C=num_channels,
         )
-        return audio.squeeze()
+        return audio.squeeze(), generation_step_index

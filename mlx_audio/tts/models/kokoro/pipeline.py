@@ -6,9 +6,10 @@ from typing import Any, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import torch
 from huggingface_hub import hf_hub_download
 from misaki import en, espeak
+
+from .voice import load_voice_tensor
 
 ALIASES = {
     "en-us": "a",
@@ -125,7 +126,7 @@ class KokoroPipeline:
             )
             self.g2p = espeak.EspeakG2P(language=language)
 
-    def load_single_voice(self, voice: str):
+    def load_single_voice(self, voice: str) -> mx.array:
         if voice in self.voices:
             return self.voices[voice]
         if voice.endswith(".pt"):
@@ -138,7 +139,7 @@ class KokoroPipeline:
                 logging.warning(
                     f"Language mismatch, loading {v} voice into {p} pipeline."
                 )
-        pack = torch.load(f, weights_only=True)
+        pack = mx.array(load_voice_tensor(f))
         self.voices[voice] = pack
         return pack
 
@@ -149,14 +150,14 @@ class KokoroPipeline:
     Delimiter is optional and defaults to ','.
     """
 
-    def load_voice(self, voice: str, delimiter: str = ",") -> torch.FloatTensor:
+    def load_voice(self, voice: str, delimiter: str = ",") -> mx.array:
         if voice in self.voices:
             return self.voices[voice]
         logging.debug(f"Loading voice: {voice}")
         packs = [self.load_single_voice(v) for v in voice.split(delimiter)]
         if len(packs) == 1:
             return packs[0]
-        self.voices[voice] = torch.mean(torch.stack(packs), dim=0)
+        self.voices[voice] = mx.mean(mx.stack(packs), axis=0)
         return self.voices[voice]
 
     @classmethod
@@ -229,10 +230,10 @@ class KokoroPipeline:
         cls,
         model: nn.Module,
         ps: str,
-        pack: torch.FloatTensor,
+        pack: mx.array,
         speed: Number = 1,
     ):
-        return model(ps, mx.array(pack[len(ps) - 1]), speed, return_output=True)
+        return model(ps, pack[len(ps) - 1], speed, return_output=True)
 
     def generate_from_tokens(
         self,
@@ -289,7 +290,7 @@ class KokoroPipeline:
             yield self.Result(graphemes=gs, phonemes=ps, tokens=tks, output=output)
 
     @classmethod
-    def join_timestamps(cls, tokens: List[en.MToken], pred_dur: torch.LongTensor):
+    def join_timestamps(cls, tokens: List[en.MToken], pred_dur: mx.array):
         # Multiply by 600 to go from pred_dur frames to sample_rate 24000
         # Equivalent to dividing pred_dur frames by 40 to get timestamp in seconds
         # We will count nice round half-frames, so the divisor is 80
