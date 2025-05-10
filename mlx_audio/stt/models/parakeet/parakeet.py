@@ -14,6 +14,7 @@ from mlx_audio.stt.models.parakeet.alignment import (
     AlignedResult,
     AlignedToken,
     merge_longest_common_subsequence,
+    merge_longest_contiguous,
     sentences_to_result,
     tokens_to_sentences,
 )
@@ -183,9 +184,14 @@ class Model(nn.Module):
                 chunk_tokens.extend(sentence.tokens)
 
             if all_tokens:
-                all_tokens = merge_longest_common_subsequence(
-                    all_tokens, chunk_tokens, overlap_duration=overlap_duration
-                )
+                try:
+                    all_tokens = merge_longest_contiguous(
+                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                    )
+                except RuntimeError:
+                    all_tokens = merge_longest_common_subsequence(
+                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                    )
             else:
                 all_tokens = chunk_tokens
 
@@ -254,7 +260,6 @@ class Model(nn.Module):
 
 
 class ParakeetTDT(Model):
-
     def __init__(self, args: ParakeetTDTArgs):
         super().__init__(args.preprocessor)
 
@@ -362,7 +367,6 @@ class ParakeetTDT(Model):
 
 
 class ParakeetRNNT(Model):
-
     def __init__(self, args: ParakeetRNNTArgs):
         super().__init__(args.preprocessor)
 
@@ -460,7 +464,6 @@ class ParakeetRNNT(Model):
 
 
 class ParakeetCTC(Model):
-
     def __init__(self, args: ParakeetCTCArgs):
         super().__init__(args.preprocessor)
 
