@@ -99,8 +99,8 @@ class SpeakerEncoder(nn.Module):
 
     def detokenize(self, indices: mx.array) -> mx.array:
         zq = self.quantizer.get_output_from_indices(
-            indices.transpose(0, 3, 1, 2)
-        ).transpose(0, 3, 1, 2)
+            indices.swapaxes(-1, -2)
+        ).swapaxes(-1, -2)
         x = zq.reshape(zq.shape[0], -1)
         d_vector = self.project(x)
         return d_vector
