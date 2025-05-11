@@ -112,11 +112,10 @@ class Wav2Vec2LayerNormConvLayer(nn.Module):
     def __call__(self, hidden_states):
         hidden_states = self.conv(hidden_states.swapaxes(-2, -1))
 
-        hidden_states = hidden_states.swapaxes(-2, -1)
         hidden_states = self.layer_norm(hidden_states)
         hidden_states = hidden_states.swapaxes(-2, -1)
 
-        hidden_states = self.activation(hidden_states).swapaxes(-2, -1)
+        hidden_states = self.activation(hidden_states)
         return hidden_states
 
 
@@ -369,16 +368,14 @@ class Wav2Vec2Attention(nn.Module):
 
         query_states = self._shape(query_states, tgt_len, bsz)
 
-        scale = 1.0 / math.sqrt(self.head_dim)
         attn_output = mx.fast.scaled_dot_product_attention(
             q=query_states,
             k=key_states,
             v=value_states,
-            scale=scale,
+            scale=1.0,
             mask=attention_mask,
         )
 
-        attn_output = attn_output.reshape(bsz, self.num_heads, tgt_len, self.head_dim)
         attn_output = attn_output.transpose(0, 2, 1, 3)
 
         # Use the `embed_dim` from the config (stored in the class) rather than `hidden_state` because `attn_output` can be
