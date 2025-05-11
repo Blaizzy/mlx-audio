@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A528F982DD1226700F6F055 /* ESpeakNG.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0A528F962DD1222F00F6F055 /* ESpeakNG.xcframework */; };
+		0A528F992DD1226700F6F055 /* ESpeakNG.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 0A528F962DD1222F00F6F055 /* ESpeakNG.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		261E20862DAC272A000711D0 /* readme.md in Resources */ = {isa = PBXBuildFile; fileRef = 261E20852DAC2726000711D0 /* readme.md */; };
 		26942DF82DABD4B600B82507 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 26942DF72DABD4B600B82507 /* MLX */; };
 		26942DFA2DABD4B600B82507 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 26942DF92DABD4B600B82507 /* MLXFFT */; };
@@ -26,17 +28,18 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		264836292DAD1252004DA2A4 /* Embed Frameworks */ = {
+		0A528DF82DD1215200F6F055 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
+				0A528F992DD1226700F6F055 /* ESpeakNG.xcframework in Embed Frameworks */,
 			);
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		26942E032DABD5AE00B82507 /* Embed Frameworks */ = {
+		264836292DAD1252004DA2A4 /* Embed Frameworks */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
@@ -49,43 +52,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0A528F962DD1222F00F6F055 /* ESpeakNG.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ESpeakNG.xcframework; sourceTree = "<group>"; };
 		261E20852DAC2726000711D0 /* readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = readme.md; sourceTree = "<group>"; };
 		264836192DAD10AA004DA2A4 /* Swift-TTS-Tests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Swift-TTS-Tests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 		26942CF62DABD3B400B82507 /* Swift-TTS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Swift-TTS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
-
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		2648362A2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Swift-TTS-Tests" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Kokoro/Frameworks/ESpeakNG.xcframework,
-			);
-			target = 264836182DAD10AA004DA2A4 /* Swift-TTS-Tests */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
-/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
-		2648362B2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS-Tests" target */ = {
-			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
-			attributesByRelativePath = {
-				Kokoro/Frameworks/ESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
-			};
-			buildPhase = 264836292DAD1252004DA2A4 /* Embed Frameworks */;
-			membershipExceptions = (
-				Kokoro/Frameworks/ESpeakNG.xcframework,
-			);
-		};
-		26942E042DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS" target */ = {
-			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
-			attributesByRelativePath = {
-				Kokoro/Frameworks/ESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
-			};
-			buildPhase = 26942E032DABD5AE00B82507 /* Embed Frameworks */;
-			membershipExceptions = (
-				Kokoro/Frameworks/ESpeakNG.xcframework,
-			);
-		};
-/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		2648361A2DAD10AA004DA2A4 /* Swift-TTS-Tests */ = {
@@ -95,11 +66,6 @@
 		};
 		26942CF82DABD3B400B82507 /* Swift-TTS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				26942E042DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS" target */,
-				2648362A2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Swift-TTS-Tests" target */,
-				2648362B2DAD1252004DA2A4 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS-Tests" target */,
-			);
 			path = "Swift-TTS";
 			sourceTree = "<group>";
 		};
@@ -120,6 +86,7 @@
 				26942E002DABD4B600B82507 /* MLXNN in Frameworks */,
 				26942DFE2DABD4B600B82507 /* MLXLinalg in Frameworks */,
 				26942DF82DABD4B600B82507 /* MLX in Frameworks */,
+				0A528F982DD1226700F6F055 /* ESpeakNG.xcframework in Frameworks */,
 				26942DFC2DABD4B600B82507 /* MLXFast in Frameworks */,
 				26942DFA2DABD4B600B82507 /* MLXFFT in Frameworks */,
 			);
@@ -131,6 +98,7 @@
 		264836262DAD1252004DA2A4 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
+				0A528F962DD1222F00F6F055 /* ESpeakNG.xcframework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -189,7 +157,7 @@
 				26942CF22DABD3B400B82507 /* Sources */,
 				26942CF32DABD3B400B82507 /* Frameworks */,
 				26942CF42DABD3B400B82507 /* Resources */,
-				26942E032DABD5AE00B82507 /* Embed Frameworks */,
+				0A528DF82DD1215200F6F055 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -467,15 +435,23 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
-					"@executable_path/../Frameworks",
+					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.Swift-TTS";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -494,15 +470,23 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
-					"@executable_path/../Frameworks",
+					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.Swift-TTS";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
