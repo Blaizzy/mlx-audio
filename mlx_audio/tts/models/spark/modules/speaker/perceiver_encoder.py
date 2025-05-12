@@ -131,10 +131,14 @@ class RMSNorm(nn.Module):
         self.gamma = mx.ones((dim,)) if scale else None
 
     def __call__(self, x, cond=None):
+        def normalize(input, p=2.0, dim=1, eps=1e-12):
+            norm = mx.power(
+                mx.sum(mx.power(mx.abs(input), p), axis=dim, keepdims=True), 1 / p
+            )
+            return input / mx.maximum(norm, eps)
+
         gamma = default(self.gamma, 1)
-        # Normalize along the last dimension
-        norm = mx.rsqrt(mx.mean(x * x, axis=-1, keepdims=True) + 1e-5)
-        out = x * norm * self.scale * gamma
+        out = normalize(x, dim=-1) * self.scale * gamma
 
         if not self.cond:
             return out
@@ -268,7 +272,6 @@ class PerceiverResampler(nn.Module):
             nn.Linear(dim_context, dim) if dim_context != dim else nn.Identity()
         )
 
-        # Fix the random.normal call to match MLX's API
         self.latents = mx.random.normal(shape=(num_latents, dim), scale=0.02)
 
         self.layers = []
@@ -298,7 +301,7 @@ class PerceiverResampler(nn.Module):
             latents = attn(latents, x, mask=mask) + latents
             skip_connect = latents
             for module in ff:
-                skip_connect = module(skip_connect)
+                latents = module(latents)
 
             latents = skip_connect + latents
 

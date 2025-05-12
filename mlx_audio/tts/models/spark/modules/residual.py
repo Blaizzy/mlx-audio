@@ -2,6 +2,7 @@ from typing import Any, Dict, List
 
 import mlx.core as mx
 import mlx.nn as nn
+from einops.array_api import rearrange
 
 from mlx_audio.codec.models.descript.nn.layers import WNConv1d
 
@@ -121,15 +122,18 @@ class FactorizedVectorQuantize(nn.Module):
 
     def tokenize(self, z: mx.array) -> mx.array:
         """tokenize the input tensor"""
-        z_e = self.in_project(z).transpose(0, 2, 1)
+        z_e = self.in_project(z.transpose(0, 2, 1)).transpose(0, 2, 1)
         _, indices, _ = self.decode_latents(z_e)
         return indices
 
     def detokenize(self, indices):
         """detokenize the input indices"""
+        # Check if indices are empty
+        if indices.shape[0] == 0 or indices.shape[1] == 0:
+            # Return an appropriate empty or placeholder tensor
+            return mx.zeros((1, self.input_dim, 1))
 
         z_q = self.decode_code(indices).transpose(0, 2, 1)
-
         z_q = self.out_project(z_q)
         return z_q
 
@@ -149,9 +153,7 @@ class FactorizedVectorQuantize(nn.Module):
         return x / mx.maximum(norm, 1e-12)
 
     def decode_latents(self, latents):
-        encodings = mx.reshape(
-            latents, (latents.shape[0] * latents.shape[2], latents.shape[1])
-        )
+        encodings = rearrange(latents, "b d t -> (b t) d")
         codebook = self.codebook.weight
 
         # L2 normalize encodings and codebook
