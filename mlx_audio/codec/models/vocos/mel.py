@@ -90,7 +90,7 @@ def hanning(size):
     )
 
 
-def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="constant"):
+def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="reflect"):
     if nfft is None:
         nfft = nperseg
     if noverlap is None:
@@ -107,9 +107,11 @@ def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="constant"):
             raise ValueError(f"Invalid pad_mode {pad_mode}")
 
     if window.shape[0] < nfft:
-        window = mx.pad(window, (0, nfft - window.shape[0]))
+        pad_left = (nfft - window.shape[0]) // 2
+        pad_right = nfft - window.shape[0] - pad_left
+        window = mx.pad(window, (pad_left, pad_right))
 
-    padding = nperseg // 2
+    padding = nfft // 2
     x = _pad(x, padding, pad_mode)
 
     strides = [noverlap, 1]
