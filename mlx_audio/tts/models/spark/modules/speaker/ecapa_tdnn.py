@@ -106,7 +106,10 @@ class Conv1dReluBn(nn.Module):
         self.bn = nn.BatchNorm(out_channels)
 
     def __call__(self, x):
-        return self.bn(nn.relu(self.conv(x)))
+        x = self.conv(x.swapaxes(1, 2)).swapaxes(1, 2)
+        x = nn.relu(x)
+        x = self.bn(x.swapaxes(1, 2)).swapaxes(1, 2)
+        return x
 
 
 """ The SE connection of 1D case.
@@ -121,15 +124,10 @@ class SE_Connect(nn.Module):
         self.linear2 = nn.Linear(se_bottleneck_dim, channels)
 
     def __call__(self, x):
-        # print("x.shape", x.shape)
         out = mx.mean(x, axis=2)
-        # print("out.shape", out.shape)
         out = nn.relu(self.linear1(out))
-        # print("out.shape after linear1", out.shape)
         out = mx.sigmoid(self.linear2(out))
-        # print("out.shape after linear2", out.shape)
         out = x * out[:, :, None]
-        # print("out.shape after se", out.shape)
         return out
 
 
@@ -153,8 +151,7 @@ class SE_Res2Block(nn.Module):
     def __call__(self, x):
         res = x
         for module in self.se_res2block:
-            res = module(res)
-            res = res.transpose(0, 2, 1)
+            x = module(x)
         return x + res
 
 
@@ -198,21 +195,19 @@ class ECAPA_TDNN(nn.Module):
             self.bn2 = nn.Identity()
 
     def __call__(self, x, return_latent=False):
-        # x = x.transpose(0, 2, 1)  # (B,T,F) -> (B,F,T)
+        x = x.transpose(0, 2, 1)  # (B,T,F) -> (B,F,T)
 
         out1 = self.layer1(x)
         out2 = self.layer2(out1)
         out3 = self.layer3(out2)
         out4 = self.layer4(out3)
 
-        out2 = out2.transpose(0, 2, 1)
-        out3 = out3.transpose(0, 2, 1)
-        out4 = out4.transpose(0, 2, 1)
-
         out = mx.concatenate([out2, out3, out4], axis=1)
 
-        latent = nn.relu(self.conv(out.transpose(0, 2, 1))).transpose(0, 2, 1)
-        out = self.bn(self.pool(latent))
+        out = self.conv(out.transpose(0, 2, 1)).transpose(0, 2, 1)
+        latent = nn.relu(out)
+        out = self.pool(latent)
+        out = self.bn(out)
         out = self.linear(out)
         if self.emb_bn:
             out = self.bn2(out)

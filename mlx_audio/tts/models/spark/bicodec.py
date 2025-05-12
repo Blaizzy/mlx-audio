@@ -19,7 +19,7 @@ from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
 
 
-def log_mel_spectrogram(
+def mel_spectrogram(
     audio: mx.array,
     sample_rate: int = 16_000,
     n_mels: int = 128,
@@ -47,8 +47,7 @@ def log_mel_spectrogram(
         mel_scale="slaney",
     )
     mel_spec = magnitudes @ filters.T
-    log_spec = mx.maximum(mel_spec, 1e-5).log()
-    return mx.expand_dims(log_spec, axis=0)
+    return mx.expand_dims(mel_spec, axis=0)
 
 
 class BiCodec(nn.Module):
@@ -196,7 +195,7 @@ class BiCodec(nn.Module):
         ref_wav = mx.array(batch["ref_wav"])
         mel = self.get_mel_spectrogram(ref_wav)
         z = self.encoder(feat.transpose(0, 2, 1))
-        semantic_tokens = self.quantizer.tokenize(z.transpose(0, 2, 1))
+        semantic_tokens = self.quantizer.tokenize(z)
         global_tokens = self.speaker_encoder.tokenize(mel)
 
         return semantic_tokens, global_tokens
@@ -229,7 +228,7 @@ class BiCodec(nn.Module):
         mels = []
         for i in range(wav.shape[0]):
             audio_sample = mx.squeeze(wav[i])
-            mel = log_mel_spectrogram(
+            mel = mel_spectrogram(
                 audio=audio_sample,
                 sample_rate=self.mel_params["sample_rate"],
                 n_mels=self.mel_params["num_mels"],
@@ -248,7 +247,7 @@ if __name__ == "__main__":
     model_path = get_model_path("SparkAudio/Spark-TTS-0.5B")
 
     model = BiCodec.load_from_checkpoint(model_path / "BiCodec")
-    wav = mx.random.normal((1, 16000), dtype=mx.float32)
+    model.eval()
 
     # Generate random inputs for testing
     duration = 0.96
