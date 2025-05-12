@@ -234,6 +234,9 @@ class Model(nn.Module):
         speed_factor = SPEED_MAP[speed]
         pitch_factor = PITCH_MAP[pitch]
 
+        if ref_audio is not None:  # voice cloning
+            gender = None
+
         text_splits = text.split(split_pattern)
 
         for text_split in text_splits:
