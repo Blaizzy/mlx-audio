@@ -2,8 +2,8 @@ from typing import Any, Dict, List
 
 import mlx.core as mx
 import mlx.nn as nn
-
 from einops.array_api import rearrange
+
 from mlx_audio.codec.models.descript.nn.layers import WNConv1d
 
 
@@ -148,7 +148,7 @@ class FactorizedVectorQuantize(nn.Module):
         """Normalize input tensor along dimension 1."""
         norm = mx.sqrt(mx.sum(mx.power(x, 2), axis=1, keepdims=True))
         return x / mx.maximum(norm, 1e-12)
-    
+
     def decode_latents(self, latents):
         encodings = rearrange(latents, "b d t -> (b t) d")
         codebook = self.codebook.weight
