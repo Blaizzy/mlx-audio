@@ -1,26 +1,72 @@
 import glob
 import importlib
+import json
 import logging
 import shutil
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 from mlx_lm.convert import mixed_quant_predicate_builder
 from mlx_lm.utils import (
+    ModelNotFoundError,
     dequantize_model,
-    get_model_path,
     quantize_model,
     save_config,
     save_weights,
 )
-from mlx_vlm.utils import load_config
+from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts"}
+MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
 MAX_FILE_SIZE_GB = 5
+MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
+
+
+def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+    """
+    Ensures the model is available locally. If the path does not exist locally,
+    it is downloaded from the Hugging Face Hub.
+
+    Args:
+        path_or_hf_repo (str): The local path or Hugging Face repository ID of the model.
+        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
+
+    Returns:
+        Path: The path to the model.
+    """
+    model_path = Path(path_or_hf_repo)
+
+    if not model_path.exists():
+        try:
+            model_path = Path(
+                snapshot_download(
+                    path_or_hf_repo,
+                    revision=revision,
+                    allow_patterns=[
+                        "*.json",
+                        "*.safetensors",
+                        "*.py",
+                        "*.model",
+                        "*.tiktoken",
+                        "*.txt",
+                        "*.jsonl",
+                        "*.yaml",
+                    ],
+                )
+            )
+        except:
+            raise ModelNotFoundError(
+                f"Model not found for path or HF repo: {path_or_hf_repo}.\n"
+                "Please make sure you specified the local path or Hugging Face"
+                " repo id correctly.\nIf you are trying to access a private or"
+                " gated Hugging Face repo, make sure you are authenticated:\n"
+                "https://huggingface.co/docs/huggingface_hub/en/guides/cli#huggingface-cli-login"
+            ) from None
+    return model_path
 
 
 # Get a list of all available model types from the models directory
@@ -89,6 +135,32 @@ def get_model_and_args(model_type: str, model_name: List[str]):
     return arch, model_type
 
 
+def load_config(model_path: Union[str, Path], **kwargs) -> dict:
+    """Load model configuration from a path or Hugging Face repo.
+
+    Args:
+        model_path: Local path or Hugging Face repo ID to load config from
+        **kwargs: Additional keyword arguments to pass to the config loader
+
+    Returns:
+        dict: Model configuration
+
+    Raises:
+        FileNotFoundError: If config.json is not found at the path
+    """
+    if isinstance(model_path, str):
+        model_path = get_model_path(model_path)
+
+    try:
+        return AutoConfig.from_pretrained(model_path, **kwargs).to_dict()
+    except ValueError:
+        try:
+            with open(model_path / "config.json", encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Config not found at {model_path}") from exc
+
+
 def load_model(
     model_path: Path, lazy: bool = False, strict: bool = True, **kwargs
 ) -> nn.Module:
@@ -129,6 +201,11 @@ def load_model(
 
     weight_files = glob.glob(str(model_path / "*.safetensors"))
     if not weight_files:
+        # Check in LLM directory if no safetensors found in the main directory
+        # For Spark model
+        weight_files = glob.glob(str(model_path / "LLM" / "*.safetensors"))
+
+    if not weight_files:
         logging.error(f"No safetensors found in {model_path}")
         message = f"""
 No safetensors found in {model_path}
@@ -145,7 +222,7 @@ processor.save_pretrained("<local_dir>")
 ```
 Then use the <local_dir> as the --hf-path in the convert script.
 ```
-python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
+python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
 ```
         """
         raise FileNotFoundError(message)
@@ -164,6 +241,10 @@ python -m mlx_vlm.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         if hasattr(model_class, "ModelConfig")
         else config
     )
+
+    if model_config is not None and hasattr(model_config, "model_path"):
+        # For Spark model
+        model_config.model_path = model_path
 
     model = model_class.Model(model_config)
     quantization = config.get("quantization", None)
@@ -261,13 +342,12 @@ def convert(
     quantize: bool = False,
     q_group_size: int = 64,
     q_bits: int = 4,
-    dtype: str = "float16",
+    dtype: str = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
-    skip_non_divisible: bool = False,
 ):
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
@@ -278,27 +358,37 @@ def convert(
     if isinstance(quant_predicate, str):
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
 
-    # Skip layers that are not divisible by 64
-    if quant_predicate is None:
-        quant_predicate = (
-            lambda p, m, config: hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0
+    # Get model-specific quantization predicate if available
+    model_quant_predicate = getattr(
+        model, "model_quant_predicate", lambda p, m, config: True
+    )
+
+    # Define base quantization requirements
+    def base_quant_requirements(p, m, config):
+        return (
+            hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
             and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
+            and model_quant_predicate(p, m, config)
         )
+
+    # Combine with user-provided predicate if available
+    if quant_predicate is None:
+        quant_predicate = base_quant_requirements
     else:
         original_predicate = quant_predicate
-        quant_predicate = (
-            lambda p, m, config: original_predicate(p, m, config)
-            and hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0
-            and hasattr(m, "to_quantized")
-            and f"{p}.scales" in weights
+        quant_predicate = lambda p, m, config: (
+            base_quant_requirements(p, m, config) and original_predicate(p, m, config)
         )
 
     weights = dict(tree_flatten(model.parameters()))
-    dtype = getattr(mx, dtype)
-    weights = {k: v.astype(dtype) for k, v in weights.items()}
+
+    if dtype is None:
+        dtype = config.get("torch_dtype", None)
+    if dtype in MODEL_CONVERSION_DTYPES:
+        print("[INFO] Using dtype:", dtype)
+        dtype = getattr(mx, dtype)
+        weights = {k: v.astype(dtype) for k, v in weights.items()}
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
@@ -318,14 +408,26 @@ def convert(
     if isinstance(mlx_path, str):
         mlx_path = Path(mlx_path)
 
-    del model
-    save_weights(mlx_path, weights, donate_weights=True)
+    # Ensure the destination directory for MLX model exists before copying files
+    mlx_path.mkdir(parents=True, exist_ok=True)
 
     # Copy Python and JSON files from the model path to the MLX path
-    for pattern in ["*.py", "*.json", "*.wav", "*.pt"]:
+    for pattern in ["*.py", "*.json", "*.wav", "*.pt", "*.safetensors", "*.yaml"]:
         files = glob.glob(str(model_path / pattern))
         for file in files:
             shutil.copy(file, mlx_path)
+
+        # Check files in subdirectories up to two levels deep
+        subdir_files = glob.glob(str(model_path / "**" / pattern), recursive=True)
+        for file in subdir_files:
+            rel_path = Path(file).relative_to(model_path)
+            # Create subdirectories if they don't exist
+            dest_dir = mlx_path / rel_path.parent
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(file, dest_dir)
+
+    del model
+    save_weights(mlx_path, weights, donate_weights=True)
 
     save_config(config, config_path=mlx_path / "config.json")
 

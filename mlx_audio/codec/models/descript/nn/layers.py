@@ -22,6 +22,7 @@ class WNConv1d(nn.Module):
         padding: int = 0,
         dilation: int = 1,
         bias: bool = True,
+        groups: int = 1,
     ):
         super().__init__()
 
@@ -32,6 +33,7 @@ class WNConv1d(nn.Module):
         self.padding = padding
         self.dilation = dilation
         self.stride = stride
+        self.groups = groups
 
         scale = math.sqrt(1 / (in_channels * kernel_size))
         weight_init = mx.random.uniform(
@@ -44,14 +46,15 @@ class WNConv1d(nn.Module):
 
     def _extra_repr(self):
         return (
-            f"kernel_size={self._weight.shape[1]}, stride={self.stride}, "
+            f"in_channels={self.weight_v.shape[2]}, out_channels={self.weight_v.shape[0]}, "
+            f"kernel_size={self.kernel_size}, stride={self.stride}, "
             f"padding={self.padding}, dilation={self.dilation}, "
             f"bias={'bias' in self}"
         )
 
     def __call__(self, x):
         weight = self.weight_g * self.weight_v / normalize_weight(self.weight_v)
-        y = mx.conv1d(x, weight, self.stride, self.padding, self.dilation)
+        y = mx.conv1d(x, weight, self.stride, self.padding, self.dilation, self.groups)
         if "bias" in self:
             y = y + self.bias
         return y
@@ -90,9 +93,10 @@ class WNConvTranspose1d(nn.Module):
 
     def _extra_repr(self):
         return (
-            f"kernel_size={self._weight.shape[1]}, stride={self.stride}, "
+            f"in_channels={self.weight_v.shape[2] * self.groups}, out_channels={self.weight_v.shape[0]}, "
+            f"kernel_size={self.kernel_size}, stride={self.stride}, "
             f"padding={self.padding}, dilation={self.dilation}, "
-            f"groups={'groups' in self}, bias={'bias' in self}"
+            f"groups={self.groups}, bias={'bias' in self}"
         )
 
     def __call__(self, x):

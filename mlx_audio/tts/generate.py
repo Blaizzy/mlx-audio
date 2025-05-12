@@ -44,6 +44,8 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
+    stream: bool = False,
+    streaming_interval: float = 2.0,
     **kwargs,
 ) -> None:
     """
@@ -58,7 +60,7 @@ def generate_audio(
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
     - ref_text (str): Caption for reference audio.
-    stt_model (str): A mlx whisper model to use to transcribe.
+    - stt_model (str): A mlx whisper model to use to transcribe.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
     - sample_rate (int): Sampling rate in Hz.
@@ -69,20 +71,20 @@ def generate_audio(
     - None: The function writes the generated audio to a file.
     """
     try:
+        play = play or stream
+
         # Load reference audio for voice matching if specified
 
         if ref_audio:
             if not os.path.exists(ref_audio):
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
-            ref_audio = load_audio(ref_audio)
+            ref_audio = load_audio(ref_audio, sample_rate=sample_rate)
             if not ref_text:
                 print("Ref_text not found. Transcribing ref_audio...")
-                # mlx_whisper seems takes long time to import. Import only necessary.
-                import mlx_whisper
+                from mlx_audio.stt.models.whisper import Model as Whisper
 
-                ref_text = mlx_whisper.transcribe(ref_audio, path_or_hf_repo=stt_model)[
-                    "text"
-                ]
+                stt_model = Whisper.from_pretrained(path_or_hf_repo=stt_model)
+                ref_text = stt_model.generate(ref_audio).text
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer
@@ -106,7 +108,10 @@ def generate_audio(
             ref_audio=ref_audio,
             ref_text=ref_text,
             temperature=temperature,
-            verbose=True,
+            verbose=verbose,
+            stream=stream,
+            streaming_interval=streaming_interval,
+            **kwargs,
         )
 
         audio_list = []
@@ -114,12 +119,13 @@ def generate_audio(
         for i, result in enumerate(results):
             if play:
                 player.queue_audio(result.audio)
+
             if join_audio:
                 audio_list.append(result.audio)
-
-            else:
+            elif not stream:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
                 sf.write(file_name, result.audio, result.sample_rate)
+                print(f"✅ Audio successfully generated and saving as: {file_name}")
 
             if verbose:
 
@@ -137,13 +143,14 @@ def generate_audio(
                 print(f"Real-time factor:      {result.real_time_factor:.2f}x")
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
-                print(f"✅ Audio successfully generated and saving as: {file_name}")
 
-        if join_audio:
+        if join_audio and not stream:
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
             sf.write(f"{file_prefix}.{audio_format}", audio, 24000)
+            if verbose:
+                print(f"✅ Audio successfully generated and saving as: {file_name}")
 
         if play:
             player.wait_for_drain()
@@ -177,11 +184,15 @@ def parse_args():
     )
     parser.add_argument("--voice", type=str, default=None, help="Voice name")
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
+    parser.add_argument(
+        "--gender", type=str, default="male", help="Gender of the voice [male, female]"
+    )
+    parser.add_argument("--pitch", type=float, default=1.0, help="Pitch of the voice")
     parser.add_argument("--lang_code", type=str, default="a", help="Language code")
     parser.add_argument(
         "--file_prefix", type=str, default="audio", help="Output file name prefix"
     )
-    parser.add_argument("--verbose", action="store_false", help="Print verbose output")
+    parser.add_argument("--verbose", action="store_true", help="Print verbose output")
     parser.add_argument(
         "--join_audio", action="store_true", help="Join all audio files into one"
     )
@@ -214,6 +225,17 @@ def parse_args():
         type=float,
         default=1.1,
         help="Repetition penalty for the model",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream the audio as segments instead of saving to a file",
+    )
+    parser.add_argument(
+        "--streaming_interval",
+        type=float,
+        default=2.0,
+        help="The time interval in seconds for streaming segments",
     )
 
     args = parser.parse_args()

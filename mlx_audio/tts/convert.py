@@ -4,7 +4,7 @@ import argparse
 
 from .utils import convert
 
-QUANT_RECIPES = ["mixed_2_6", "mixed_3_6", "mixed_4_6"]
+QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
 
 
 def configure_parser() -> argparse.ArgumentParser:

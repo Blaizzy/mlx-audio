@@ -47,6 +47,7 @@ struct ContentView: View {
                     status = "Done"
                 }
             }
+            .disabled(true) // Disable the button as it's still WIP
 
             Text(status)
                 .font(.caption)

@@ -45,3 +45,13 @@ jobs:
         run: |
           cd mlx_audio/codec/
           pytest -s ./tests
+
+      - name: Run Python tests (STS)
+        run: |
+          cd mlx_audio/sts/
+          pytest -s ./tests
+
+      - name: Run Python tests (STT)
+        run: |
+          cd mlx_audio/stt/
+          pytest -s ./tests
