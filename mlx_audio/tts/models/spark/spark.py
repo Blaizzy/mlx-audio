@@ -327,6 +327,9 @@ class Model(nn.Module):
                 pred_semantic_ids.astype(mx.int32),
             )
 
+            # Clear cache
+            mx.clear_cache()
+
             audio_samples = len(audio)
             audio_duration_seconds = audio_samples / self.config.sample_rate
 
