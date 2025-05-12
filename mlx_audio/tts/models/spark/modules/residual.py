@@ -128,9 +128,12 @@ class FactorizedVectorQuantize(nn.Module):
 
     def detokenize(self, indices):
         """detokenize the input indices"""
+        # Check if indices are empty
+        if indices.shape[0] == 0 or indices.shape[1] == 0:
+            # Return an appropriate empty or placeholder tensor
+            return mx.zeros((1, self.input_dim, 1))  # Adjust dimensions as needed
 
         z_q = self.decode_code(indices).transpose(0, 2, 1)
-
         z_q = self.out_project(z_q)
         return z_q
 
