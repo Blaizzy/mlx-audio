@@ -145,9 +145,8 @@ class BiCodec(nn.Module):
         Returns:
             dict: A dictionary containing the reconstruction, features, and other metrics.
         """
-        feat = mx.array(batch["feat"])
-        # Use MLX mel transformer directly
-        ref_wav = mx.array(batch["ref_wav"])
+        feat = batch["feat"]
+        ref_wav = batch["ref_wav"]
         mel = self.get_mel_spectrogram(ref_wav)
         z = self.encoder(feat.transpose(0, 2, 1))
         vq_outputs = self.quantizer(z)
@@ -191,7 +190,7 @@ class BiCodec(nn.Module):
         Returns:
             tuple: Semantic tokens and global tokens.
         """
-        feat = mx.array(batch["feat"])
+        feat = batch["feat"]
         ref_wav = mx.array(batch["ref_wav"])
         mel = self.get_mel_spectrogram(ref_wav)
         z = self.encoder(feat.transpose(0, 2, 1))
@@ -211,8 +210,6 @@ class BiCodec(nn.Module):
         Returns:
             tensor: Reconstructed waveform.
         """
-        semantic_tokens = mx.array(semantic_tokens)
-        global_tokens = mx.array(global_tokens)
 
         z_q = self.quantizer.detokenize(semantic_tokens.transpose(0, 1)).transpose(
             0, 2, 1
