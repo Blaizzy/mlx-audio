@@ -82,6 +82,9 @@ class Model(nn.Module):
     def parameters(self):
         return self.model.parameters()
 
+    def model_type(self):
+        return "spark"
+
     def sanitize(self, weights):
         return self.model.sanitize(weights)
 
