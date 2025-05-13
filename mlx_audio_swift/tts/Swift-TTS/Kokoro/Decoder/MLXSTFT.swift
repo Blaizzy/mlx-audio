@@ -117,7 +117,7 @@ class ThreadPool {
 
   init(maxConcurrentTasks: Int) {
     semaphore = DispatchSemaphore(value: maxConcurrentTasks)
-    queue = DispatchQueue(label: "com.threadpool.queue", qos: .default, attributes: .concurrent)
+    queue = DispatchQueue(label: "com.threadpool.queue", qos: .userInteractive, attributes: .concurrent)
     dispatchGroup = DispatchGroup()
   }
 
