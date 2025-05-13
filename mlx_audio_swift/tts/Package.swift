@@ -25,7 +25,7 @@ let package = Package(
              "ESpeakNG"
            ],
             path: "Swift-TTS",
-            exclude: ["Preview Content","Assets.xcassets","Swift_TTSApp.swift","Swift_TTS.entitlements"],),
+            exclude: ["Preview Content","Assets.xcassets","Swift_TTSApp.swift","Swift_TTS.entitlements"]),
         .testTarget(
             name: "MLXSwiftTTSTests",
             dependencies: ["MLXSwiftTTS"]),
