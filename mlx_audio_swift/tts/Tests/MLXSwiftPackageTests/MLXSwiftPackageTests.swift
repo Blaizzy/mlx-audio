@@ -1,10 +1,10 @@
 import XCTest
-@testable import MySwiftPackage
+@testable import MLXSwiftTTS
 
-final class MySwiftPackageTests: XCTestCase {
+final class MLXSwiftPackageTests: XCTestCase {
     func testGreet() {
-        let myPackage = MySwiftPackage()
-        let greeting = myPackage.greet()
-        XCTAssertEqual(greeting, "Hello, World!")
+       
+        let model = MLXSwiftTTS.KokoroTTSModel()
+        //XCTAssertEqual(greeting, "Hello, World!")
     }
 }
