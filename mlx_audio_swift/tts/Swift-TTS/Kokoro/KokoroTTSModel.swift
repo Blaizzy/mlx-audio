@@ -2,7 +2,7 @@ import AVFoundation
 import MLX
 import SwiftUI
 
-class KokoroTTSModel: ObservableObject {
+public class KokoroTTSModel: ObservableObject {
     let kokoroTTSEngine: KokoroTTS!
     let audioEngine: AVAudioEngine!
     let playerNode: AVAudioPlayerNode!
@@ -14,7 +14,7 @@ class KokoroTTSModel: ObservableObject {
         audioEngine.attach(playerNode)
     }
        
-    func say(_ text: String, _ voice: TTSVoice) async {
+    public func say(_ text: String, _ voice: TTSVoice) async {
         let mainTimer = BenchmarkTimer.shared.create(id: "TTSGeneration")
         let audioBuffer = try! kokoroTTSEngine.generateAudio(voice: voice, text: text)
         BenchmarkTimer.shared.stop(id: "TTSGeneration")
