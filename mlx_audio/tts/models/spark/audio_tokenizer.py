@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -52,13 +52,20 @@ class BiCodecTokenizer:
 
         return wav[:ref_segment_length]
 
-    def process_audio(self, wav_path: Path) -> Tuple[np.ndarray, mx.array]:
+    def process_audio(
+        self, wav_path: Union[Path, mx.array]
+    ) -> Tuple[np.ndarray, mx.array]:
         """load auido and get reference audio from wav path"""
-        wav = load_audio(
-            wav_path,
-            sampling_rate=self.config["sample_rate"],
-            volume_normalize=self.config["volume_normalize"],
-        )
+        if isinstance(wav_path, Path) or isinstance(wav_path, str):
+            wav = load_audio(
+                wav_path,
+                sampling_rate=self.config["sample_rate"],
+                volume_normalize=self.config["volume_normalize"],
+            )
+        elif isinstance(wav_path, mx.array):
+            wav = wav_path
+        else:
+            raise ValueError(f"Invalid input type: {type(wav_path)}")
 
         wav_ref = self.get_ref_clip(wav)
 

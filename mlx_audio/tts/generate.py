@@ -1,19 +1,29 @@
 import argparse
 import os
+import random
 import sys
-from typing import Optional
+from typing import Optional, Tuple
 
 import mlx.core as mx
+import numpy as np
 import soundfile as sf
+from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import resample
 
 from .audio_player import AudioPlayer
 from .utils import load_model
 
 
-def load_audio(audio_path: str, sample_rate: int = 24000) -> mx.array:
+def load_audio(
+    audio_path: str,
+    sample_rate: int = 24000,
+    length: int = None,
+    volume_normalize: bool = False,
+    segment_duration: int = None,
+) -> mx.array:
     samples, orig_sample_rate = sf.read(audio_path)
     shape = samples.shape
+
     # Collapse multi channel as mono
     if len(shape) > 1:
         samples = samples.sum(axis=1)
@@ -24,8 +34,170 @@ def load_audio(audio_path: str, sample_rate: int = 24000) -> mx.array:
         duration = samples.shape[0] / orig_sample_rate
         num_samples = int(duration * sample_rate)
         samples = resample(samples, num_samples)
+
+    if segment_duration is not None:
+        seg_length = int(sample_rate * segment_duration)
+        samples = random_select_audio_segment(samples, seg_length)
+
+    # Audio volume normalize
+    if volume_normalize:
+        samples = audio_volume_normalize(samples)
+
+    if length is not None:
+        assert abs(samples.shape[0] - length) < 1000
+        if samples.shape[0] > length:
+            samples = samples[:length]
+        else:
+            samples = np.pad(samples, (0, int(length - samples.shape[0])))
+
     audio = mx.array(samples, dtype=mx.float32)
+
     return audio
+
+
+def audio_volume_normalize(audio: np.ndarray, coeff: float = 0.2) -> np.ndarray:
+    """
+    Normalize the volume of an audio signal.
+
+    Parameters:
+        audio (numpy array): Input audio signal array.
+        coeff (float): Target coefficient for normalization, default is 0.2.
+
+    Returns:
+        numpy array: The volume-normalized audio signal.
+    """
+    # Sort the absolute values of the audio signal
+    temp = np.sort(np.abs(audio))
+
+    # If the maximum value is less than 0.1, scale the array to have a maximum of 0.1
+    if temp[-1] < 0.1:
+        scaling_factor = max(
+            temp[-1], 1e-3
+        )  # Prevent division by zero with a small constant
+        audio = audio / scaling_factor * 0.1
+
+    # Filter out values less than 0.01 from temp
+    temp = temp[temp > 0.01]
+    L = temp.shape[0]  # Length of the filtered array
+
+    # If there are fewer than or equal to 10 significant values, return the audio without further processing
+    if L <= 10:
+        return audio
+
+    # Compute the average of the top 10% to 1% of values in temp
+    volume = np.mean(temp[int(0.9 * L) : int(0.99 * L)])
+
+    # Normalize the audio to the target coefficient level, clamping the scale factor between 0.1 and 10
+    audio = audio * np.clip(coeff / volume, a_min=0.1, a_max=10)
+
+    # Ensure the maximum absolute value in the audio does not exceed 1
+    max_value = np.max(np.abs(audio))
+    if max_value > 1:
+        audio = audio / max_value
+
+    return audio
+
+
+def random_select_audio_segment(audio: np.ndarray, length: int) -> np.ndarray:
+    """get an audio segment given the length
+
+    Args:
+        audio (np.ndarray):
+        length (int): audio length = sampling_rate * duration
+    """
+    if audio.shape[0] < length:
+        audio = np.pad(audio, (0, int(length - audio.shape[0])))
+    start_index = random.randint(0, audio.shape[0] - length)
+    end_index = int(start_index + length)
+
+    return audio[start_index:end_index]
+
+
+def detect_speech_boundaries(
+    wav: np.ndarray,
+    sample_rate: int,
+    window_duration: float = 0.1,
+    energy_threshold: float = 0.01,
+    margin_factor: int = 2,
+) -> Tuple[int, int]:
+    """Detect the start and end points of speech in an audio signal using RMS energy.
+
+    Args:
+        wav: Input audio signal array with values in [-1, 1]
+        sample_rate: Audio sample rate in Hz
+        window_duration: Duration of detection window in seconds
+        energy_threshold: RMS energy threshold for speech detection
+        margin_factor: Factor to determine extra margin around detected boundaries
+
+    Returns:
+        tuple: (start_index, end_index) of speech segment
+
+    Raises:
+        ValueError: If the audio contains only silence
+    """
+    window_size = int(window_duration * sample_rate)
+    margin = margin_factor * window_size
+    step_size = window_size // 10
+
+    # Create sliding windows using stride tricks to avoid loops
+    windows = sliding_window_view(wav, window_size)[::step_size]
+
+    # Calculate RMS energy for each window
+    energy = np.sqrt(np.mean(windows**2, axis=1))
+    speech_mask = energy >= energy_threshold
+
+    if not np.any(speech_mask):
+        raise ValueError("No speech detected in audio (only silence)")
+
+    start = max(0, np.argmax(speech_mask) * step_size - margin)
+    end = min(
+        len(wav),
+        (len(speech_mask) - 1 - np.argmax(speech_mask[::-1])) * step_size + margin,
+    )
+
+    return start, end
+
+
+def remove_silence_on_both_ends(
+    wav: np.ndarray,
+    sample_rate: int,
+    window_duration: float = 0.1,
+    volume_threshold: float = 0.01,
+) -> np.ndarray:
+    """Remove silence from both ends of an audio signal.
+
+    Args:
+        wav: Input audio signal array
+        sample_rate: Audio sample rate in Hz
+        window_duration: Duration of detection window in seconds
+        volume_threshold: Amplitude threshold for silence detection
+
+    Returns:
+        np.ndarray: Audio signal with silence removed from both ends
+
+    Raises:
+        ValueError: If the audio contains only silence
+    """
+    start, end = detect_speech_boundaries(
+        wav, sample_rate, window_duration, volume_threshold
+    )
+    return wav[start:end]
+
+
+def hertz_to_mel(pitch: float) -> float:
+    """
+    Converts a frequency from the Hertz scale to the Mel scale.
+
+    Parameters:
+    - pitch: float or ndarray
+        Frequency in Hertz.
+
+    Returns:
+    - mel: float or ndarray
+        Frequency in Mel scale.
+    """
+    mel = 2595 * np.log10(1 + pitch / 700)
+    return mel
 
 
 def generate_audio(
@@ -73,12 +245,21 @@ def generate_audio(
     try:
         play = play or stream
 
-        # Load reference audio for voice matching if specified
+        # Load model
+        model = load_model(model_path=model_path)
 
+        # Load reference audio for voice matching if specified
         if ref_audio:
             if not os.path.exists(ref_audio):
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
-            ref_audio = load_audio(ref_audio, sample_rate=sample_rate)
+
+            normalize = False
+            if hasattr(model, "model_type") and model.model_type() == "spark":
+                normalize = True
+
+            ref_audio = load_audio(
+                ref_audio, sample_rate=sample_rate, volume_normalize=normalize
+            )
             if not ref_text:
                 print("Ref_text not found. Transcribing ref_audio...")
                 from mlx_audio.stt.models.whisper import Model as Whisper
@@ -90,8 +271,6 @@ def generate_audio(
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=sample_rate) if play else None
 
-        # Load model
-        model = load_model(model_path=model_path)
         print(
             f"\n\033[94mModel:\033[0m {model_path}\n"
             f"\033[94mText:\033[0m {text}\n"

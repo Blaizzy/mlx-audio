@@ -10,7 +10,6 @@ from mlx_lm.generate import stream_generate
 from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from mlx_lm.tokenizer_utils import load_tokenizer
-from mlx_lm.utils import load
 from tqdm import tqdm
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
@@ -82,6 +81,9 @@ class Model(nn.Module):
 
     def parameters(self):
         return self.model.parameters()
+
+    def model_type(self):
+        return "spark"
 
     def sanitize(self, weights):
         return self.model.sanitize(weights)
@@ -235,6 +237,9 @@ class Model(nn.Module):
         speed_factor = SPEED_MAP[speed]
         pitch_factor = PITCH_MAP[pitch]
 
+        if ref_audio is not None:  # voice cloning
+            gender = None
+
         text_splits = text.split(split_pattern)
 
         for text_split in text_splits:
@@ -321,6 +326,9 @@ class Model(nn.Module):
                 global_token_ids.astype(mx.int32),
                 pred_semantic_ids.astype(mx.int32),
             )
+
+            # Clear cache
+            mx.clear_cache()
 
             audio_samples = len(audio)
             audio_duration_seconds = audio_samples / self.config.sample_rate
