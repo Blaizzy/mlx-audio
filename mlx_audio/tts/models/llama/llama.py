@@ -35,7 +35,7 @@ class ModelConfig(BaseModelArgs):
     rope_traditional: bool = False
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
     tie_word_embeddings: bool = True
-    tokeniser_name: str = "mlx-community/orpheus-3b-0.1-ft-bf16"
+    tokenizer_name: str = "mlx-community/orpheus-3b-0.1-ft-bf16"
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
@@ -232,7 +232,7 @@ class Model(nn.Module):
         super().__init__()
         self.args = args
         self.model_type = args.model_type
-        self.tokenizer = AutoTokenizer.from_pretrained(args.tokeniser_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
         self.model = LlamaModel(args)
         if not args.tie_word_embeddings:
             self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
@@ -471,6 +471,7 @@ class Model(nn.Module):
                 yield GenerationResult(
                     audio=audio,
                     samples=samples,
+                    sample_rate=sample_rate,
                     segment_idx=i,
                     token_count=token_count,
                     audio_duration=duration_str,

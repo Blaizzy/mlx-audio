@@ -498,6 +498,7 @@ class Model(nn.Module):
             yield GenerationResult(
                 audio=audio[0],
                 samples=samples,
+                sample_rate=sample_rate,
                 segment_idx=segment_idx,
                 token_count=token_count,
                 audio_duration=duration_str,
@@ -515,5 +516,5 @@ class Model(nn.Module):
                     ),
                 },
                 processing_time_seconds=segment_time,
-                peak_memory_usage=mx.metal.get_peak_memory() / 1e9,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
             )

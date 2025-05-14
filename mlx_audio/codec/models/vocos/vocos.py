@@ -83,6 +83,12 @@ class EncodecFeatures(FeatureExtractor):
 
     def get_encodec_codes(self, audio: mx.array, bandwidth_id: int) -> mx.array:
         features, mask = self.preprocessor(audio)
+
+        if isinstance(bandwidth_id, mx.array):
+            bandwidth_id = int(bandwidth_id.flatten().tolist()[0])
+        elif isinstance(bandwidth_id, list):
+            bandwidth_id = bandwidth_id[0]
+
         codes, _ = self.encodec.encode(
             features, mask, bandwidth=self.bandwidths[bandwidth_id]
         )
@@ -155,12 +161,17 @@ class ConvNeXtBlock(nn.Module):
         self.pwconv1 = nn.Linear(dim, intermediate_dim)
         self.act = nn.GELU()
         self.pwconv2 = nn.Linear(intermediate_dim, dim)
-        self.gamma = layer_scale_init_value * mx.ones(dim)
+        self.gamma = (
+            layer_scale_init_value * mx.ones(dim)
+            if layer_scale_init_value > 0
+            else None
+        )
 
     def __call__(
         self, x: mx.array, cond_embedding_id: Optional[mx.array] = None
     ) -> mx.array:
         residual = x
+
         x = self.dwconv(x)
         if self.adanorm:
             assert cond_embedding_id is not None
@@ -170,7 +181,8 @@ class ConvNeXtBlock(nn.Module):
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        x = self.gamma * x
+        if self.gamma is not None:
+            x = self.gamma * x
         x = residual + x
         return x
 
@@ -181,16 +193,16 @@ class AdaLayerNorm(nn.Module):
         self.eps = eps
         self.dim = embedding_dim
 
-        self.scale = nn.Embedding(num_embeddings=num_embeddings, dims=embedding_dim)
-        self.shift = nn.Embedding(num_embeddings=num_embeddings, dims=embedding_dim)
-        self.scale.weight = mx.ones((num_embeddings, embedding_dim))
-        self.shift.weight = mx.zeros((num_embeddings, embedding_dim))
+        self.scale = nn.Linear(num_embeddings, embedding_dim)
+        self.shift = nn.Linear(num_embeddings, embedding_dim)
+        self.scale.weight = mx.ones(self.scale.weight.shape)
+        self.shift.weight = mx.zeros(self.shift.weight.shape)
 
-    def __call__(self, x: mx.array, cond_embedding_id: mx.array) -> mx.array:
-        scale = self.scale(cond_embedding_id)
-        shift = self.shift(cond_embedding_id)
+    def __call__(self, x: mx.array, cond_embedding: mx.array) -> mx.array:
+        scale = self.scale(cond_embedding)
+        shift = self.shift(cond_embedding)
         x = mx.fast.layer_norm(x, weight=None, bias=None, eps=self.eps)
-        x = x * scale + shift
+        x = x * scale[:, None, :] + shift[:, None, :]
         return x
 
 
@@ -203,6 +215,7 @@ class VocosBackbone(nn.Module):
         num_layers: int,
         layer_scale_init_value: Optional[float] = None,
         adanorm_num_embeddings: Optional[int] = None,
+        bias: bool = True,
     ):
         super().__init__()
         self.input_channels = input_channels
@@ -222,18 +235,24 @@ class VocosBackbone(nn.Module):
             )
             for _ in range(num_layers)
         ]
-        self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6)
+        self.final_layer_norm = nn.LayerNorm(dim, eps=1e-6, bias=bias)
 
     def __call__(self, x: mx.array, **kwargs) -> mx.array:
         bandwidth_id = kwargs.get("bandwidth_id", None)
+
+        # Transpose if the input is not in the correct shape
+        if x.shape[-1] != self.input_channels:
+            x = x.transpose(0, 2, 1)
 
         x = self.embed(x)
 
         if self.adanorm:
             assert bandwidth_id is not None
             x = self.norm(x, bandwidth_id)
+
         else:
             x = self.norm(x)
+
         for conv_block in self.convnext:
             x = conv_block(x, cond_embedding_id=bandwidth_id)
         x = self.final_layer_norm(x)

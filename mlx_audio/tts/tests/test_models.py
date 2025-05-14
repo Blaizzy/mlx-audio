@@ -210,42 +210,32 @@ class TestKokoroPipeline(unittest.TestCase):
         # Setup the pipeline
         with patch.object(KokoroPipeline, "__init__", return_value=None):
             with patch(
-                "mlx_audio.tts.models.kokoro.pipeline.torch.load"
-            ) as mock_torch_load:
+                "mlx_audio.tts.models.kokoro.pipeline.load_voice_tensor"
+            ) as load_voice_tensor:
                 with patch(
                     "mlx_audio.tts.models.kokoro.pipeline.hf_hub_download"
                 ) as mock_hf_hub_download:
-                    with patch(
-                        "mlx_audio.tts.models.kokoro.pipeline.torch.stack"
-                    ) as mock_stack:
-                        with patch(
-                            "mlx_audio.tts.models.kokoro.pipeline.torch.mean"
-                        ) as mock_mean:
-                            pipeline = KokoroPipeline.__new__(KokoroPipeline)
-                            pipeline.lang_code = "a"
-                            pipeline.voices = {}
-                            # Add the missing repo_id attribute
-                            pipeline.repo_id = "mlx-community/kokoro-tts"
+                    pipeline = KokoroPipeline.__new__(KokoroPipeline)
+                    pipeline.lang_code = "a"
+                    pipeline.voices = {}
+                    # Add the missing repo_id attribute
+                    pipeline.repo_id = "mlx-community/kokoro-tts"
 
-                            # Mock the torch.load return value
-                            mock_torch_load.return_value = MagicMock()
+                    # Mock the load voice return value
+                    load_voice_tensor.return_value = mx.zeros((512, 1, 256))
 
-                            # Mock torch.stack and torch.mean to return a MagicMock
-                            mock_stack.return_value = MagicMock()
-                            mock_mean.return_value = MagicMock()
+                    # Test loading a single voice
+                    pipeline.load_single_voice("voice1")
+                    mock_hf_hub_download.assert_called_once()
+                    self.assertIn("voice1", pipeline.voices)
 
-                            # Test loading a single voice
-                            pipeline.load_single_voice("voice1")
-                            mock_hf_hub_download.assert_called_once()
-                            self.assertIn("voice1", pipeline.voices)
-
-                            # Test loading multiple voices
-                            mock_hf_hub_download.reset_mock()
-                            pipeline.voices = {}  # Reset voices
-                            result = pipeline.load_voice("voice1,voice2")
-                            self.assertEqual(mock_hf_hub_download.call_count, 2)
-                            self.assertIn("voice1", pipeline.voices)
-                            self.assertIn("voice2", pipeline.voices)
+                    # Test loading multiple voices
+                    mock_hf_hub_download.reset_mock()
+                    pipeline.voices = {}  # Reset voices
+                    result = pipeline.load_voice("voice1,voice2")
+                    self.assertEqual(mock_hf_hub_download.call_count, 2)
+                    self.assertIn("voice1", pipeline.voices)
+                    self.assertIn("voice2", pipeline.voices)
 
     def test_tokens_to_ps(self):
         """Test tokens_to_ps method."""
@@ -672,6 +662,189 @@ class TestLlamaModel(unittest.TestCase):
 
             # lm_head should be kept with tie_word_embeddings=False
             self.assertIn("lm_head.weight", sanitized2)
+
+
+class TestOuteTTSModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "attention_bias": False,
+            "head_dim": 64,
+            "hidden_size": 2048,
+            "intermediate_size": 8192,
+            "max_position_embeddings": 131072,
+            "mlp_bias": False,
+            "model_type": "llama",
+            "num_attention_heads": 32,
+            "num_hidden_layers": 16,
+            "num_key_value_heads": 8,
+            "rms_norm_eps": 1e-05,
+            "rope_scaling": {
+                "factor": 32.0,
+                "high_freq_factor": 4.0,
+                "low_freq_factor": 1.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+            "rope_theta": 500000.0,
+            "tie_word_embeddings": True,
+            "vocab_size": 134400,
+        }
+
+    @patch("transformers.LlamaTokenizer")
+    def test_init(self, mock_tokenizer):
+        """Test initialization."""
+        from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
+
+        # Mock the tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
+
+        # Create a minimal config
+        config = ModelConfig(**self._default_config)
+
+        # Initialize model
+        model = Model(config)
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
+
+    @patch("transformers.LlamaTokenizer")
+    def test_generate(self, mock_tokenizer):
+        """Test generate method."""
+        from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+
+        input_ids = mx.random.randint(0, config.vocab_size, (2, 9))
+        logits = model(input_ids)
+        self.assertEqual(logits.shape, (2, 9, config.vocab_size))
+
+
+class TestDiaModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "version": "0.1",
+            "model": {
+                "encoder": {
+                    "n_layer": 12,
+                    "n_embd": 1024,
+                    "n_hidden": 4096,
+                    "n_head": 16,
+                    "head_dim": 128,
+                },
+                "decoder": {
+                    "n_layer": 18,
+                    "n_embd": 2048,
+                    "n_hidden": 8192,
+                    "gqa_query_heads": 16,
+                    "cross_query_heads": 16,
+                    "kv_heads": 4,
+                    "gqa_head_dim": 128,
+                    "cross_head_dim": 128,
+                },
+                "src_vocab_size": 256,
+                "tgt_vocab_size": 1028,
+                "dropout": 0.0,
+            },
+            "training": {},
+            "data": {
+                "text_length": 1024,
+                "audio_length": 3072,
+                "channels": 9,
+                "text_pad_value": 0,
+                "audio_eos_value": 1024,
+                "audio_pad_value": 1025,
+                "audio_bos_value": 1026,
+                "delay_pattern": [0, 8, 9, 10, 11, 12, 13, 14, 15],
+            },
+        }
+
+    def test_init(self):
+        """Test DiaModel initialization."""
+        from mlx_audio.tts.models.dia.dia import Model
+
+        # Initialize model
+        config = self._default_config
+        model = Model(config)
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
+
+
+class TestSparkTTSModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "model_path": "/fake/model/path",
+            "sample_rate": 16000,
+            "bos_token_id": 151643,
+            "eos_token_id": 151645,
+            "hidden_act": "silu",
+            "hidden_size": 896,
+            "initializer_range": 0.02,
+            "intermediate_size": 4864,
+            "max_position_embeddings": 32768,
+            "max_window_layers": 21,
+            "model_type": "qwen2",
+            "num_attention_heads": 14,
+            "num_hidden_layers": 24,
+            "num_key_value_heads": 2,
+            "rms_norm_eps": 1e-06,
+            "rope_theta": 1000000.0,
+            "sliding_window": 32768,
+            "tie_word_embeddings": True,
+            "torch_dtype": "bfloat16",
+            "transformers_version": "4.43.1",
+            "use_sliding_window": False,
+            "vocab_size": 166000,
+            "rope_traditional": False,
+            "rope_scaling": None,
+        }
+
+    @patch("mlx_audio.tts.models.spark.spark.load_tokenizer")
+    @patch("mlx_audio.tts.models.spark.spark.BiCodecTokenizer")
+    @patch("mlx_audio.tts.models.spark.spark.Qwen2Model")
+    def test_init(
+        self,
+        mock_qwen2_model,
+        mock_bicodec_tokenizer,
+        mock_load_tokenizer,
+    ):
+        """Test SparkTTSModel initialization."""
+        from pathlib import Path
+
+        from mlx_audio.tts.models.spark.spark import Model, ModelConfig
+
+        # Mock return values for patched functions
+        mock_load_tokenizer.return_value = MagicMock()
+        mock_bicodec_tokenizer.return_value = MagicMock()
+        mock_qwen2_model.return_value = MagicMock()
+
+        # Create a config instance
+        config = ModelConfig(**self._default_config)
+        config.model_path = Path("/fake/model/path")
+
+        # Initialize the model
+        model = Model(config)
+
+        # Check that the model was initialized correctly
+        self.assertIsInstance(model, Model)
+
+        # Verify the tokenizer was loaded correctly
+        mock_load_tokenizer.assert_called_once_with(
+            config.model_path, eos_token_ids=config.eos_token_id
+        )
+        mock_bicodec_tokenizer.assert_called_once_with(config.model_path)
+
+        # Verify the model was initialized correctly
+        mock_qwen2_model.assert_called_once_with(config)
 
 
 if __name__ == "__main__":

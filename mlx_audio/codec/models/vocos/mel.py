@@ -41,8 +41,11 @@ def mel_filters(
         min_log_hz = 1000.0
         min_log_mel = (min_log_hz - f_min) / f_sp
         logstep = math.log(6.4) / 27.0
-        log_t = mels >= min_log_mel
-        freqs[log_t] = min_log_hz * mx.exp(logstep * (mels[log_t] - min_log_mel))
+        freqs = mx.where(
+            mels >= min_log_mel,
+            min_log_hz * mx.exp(logstep * (mels - min_log_mel)),
+            freqs,
+        )
         return freqs
 
     f_max = f_max or sample_rate / 2
@@ -87,7 +90,7 @@ def hanning(size):
     )
 
 
-def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="constant"):
+def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="reflect"):
     if nfft is None:
         nfft = nperseg
     if noverlap is None:
@@ -103,7 +106,12 @@ def stft(x, window, nperseg=256, noverlap=None, nfft=None, pad_mode="constant"):
         else:
             raise ValueError(f"Invalid pad_mode {pad_mode}")
 
-    padding = nperseg // 2
+    if window.shape[0] < nfft:
+        pad_left = (nfft - window.shape[0]) // 2
+        pad_right = nfft - window.shape[0] - pad_left
+        window = mx.pad(window, (pad_left, pad_right))
+
+    padding = nfft // 2
     x = _pad(x, padding, pad_mode)
 
     strides = [noverlap, 1]
