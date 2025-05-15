@@ -22,9 +22,6 @@ class ModelConfig(LlamaModelConfig):
 
 
 class Model(LlamaModel):
-    def __init__(self, config: ModelConfig, **kwargs):
-        super().__init__(config, **kwargs)
-        self.config = config
 
     def sanitize(self, weights):
         return weights

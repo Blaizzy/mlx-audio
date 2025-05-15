@@ -231,7 +231,7 @@ class LlamaModel(nn.Module):
 class Model(nn.Module):
     def __init__(self, config: ModelConfig, **kwargs):
         super().__init__()
-        self.args = config
+        self.config = config
         self.model_type = config.model_type
         self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
         self.model = LlamaModel(config)
