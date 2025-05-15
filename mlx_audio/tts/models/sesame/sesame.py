@@ -321,6 +321,10 @@ class Model(nn.Module):
         """Return the backbone layers of the model."""
         return self.model.backbone.layers
 
+    @property
+    def sample_rate(self):
+        return self._sample_rate
+
     def _tokenize_text_segment(
         self, text: str, speaker: int
     ) -> Tuple[mx.array, mx.array]:

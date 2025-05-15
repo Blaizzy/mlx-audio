@@ -60,6 +60,7 @@ class ModelConfig(BaseModelArgs):
     text_encoder_kernel_size: int
     plbert: dict
     vocab: Dict[str, int]
+    sample_rate: int = 24000
 
 
 class Model(nn.Module):
@@ -249,6 +250,10 @@ class Model(nn.Module):
                 sanitized_weights[key] = self.decoder.sanitize(key, state_dict)
         return sanitized_weights
 
+    @property
+    def sample_rate(self):
+        return self.config.sample_rate
+
     def generate(
         self,
         text: str,
@@ -283,9 +288,8 @@ class Model(nn.Module):
             token_count = len(phonemes) if phonemes is not None else 0
 
             # Calculate audio duration in seconds
-            sample_rate = kwargs.get(
-                "sample_rate", 24000
-            )  # Assuming 24kHz sample rate, adjust if different
+            sample_rate = self.config.sample_rate
+
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
             # Calculate real-time factor (RTF)

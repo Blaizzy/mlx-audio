@@ -211,7 +211,6 @@ def generate_audio(
     stt_model: str = "mlx-community/whisper-large-v3-turbo",
     file_prefix: str = "audio",
     audio_format: str = "wav",
-    sample_rate: int = 24000,
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
@@ -235,7 +234,6 @@ def generate_audio(
     - stt_model (str): A mlx whisper model to use to transcribe.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
-    - sample_rate (int): Sampling rate in Hz.
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
@@ -258,7 +256,7 @@ def generate_audio(
                 normalize = True
 
             ref_audio = load_audio(
-                ref_audio, sample_rate=sample_rate, volume_normalize=normalize
+                ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
             )
             if not ref_text:
                 print("Ref_text not found. Transcribing ref_audio...")
@@ -269,7 +267,7 @@ def generate_audio(
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer
-        player = AudioPlayer(sample_rate=sample_rate) if play else None
+        player = AudioPlayer(sample_rate=model.sample_rate) if play else None
 
         print(
             f"\n\033[94mModel:\033[0m {model_path}\n"
@@ -378,9 +376,6 @@ def parse_args():
     parser.add_argument("--play", action="store_true", help="Play the output audio")
     parser.add_argument(
         "--audio_format", type=str, default="wav", help="Output audio format"
-    )
-    parser.add_argument(
-        "--sample_rate", type=int, default=24000, help="Audio sample rate in Hz"
     )
     parser.add_argument(
         "--ref_audio", type=str, default=None, help="Path to reference audio"

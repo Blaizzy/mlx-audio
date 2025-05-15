@@ -36,6 +36,7 @@ class ModelConfig(BaseModelArgs):
     rope_scaling: Optional[Dict[str, Union[float, str]]] = None
     tie_word_embeddings: bool = True
     tokenizer_name: str = "mlx-community/orpheus-3b-0.1-ft-bf16"
+    sample_rate: int = 24000
 
     def __post_init__(self):
         if self.num_key_value_heads is None:
@@ -228,14 +229,14 @@ class LlamaModel(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, args: ModelConfig, **kwargs):
+    def __init__(self, config: ModelConfig, **kwargs):
         super().__init__()
-        self.args = args
-        self.model_type = args.model_type
-        self.tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name)
-        self.model = LlamaModel(args)
-        if not args.tie_word_embeddings:
-            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+        self.args = config
+        self.model_type = config.model_type
+        self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
+        self.model = LlamaModel(config)
+        if not config.tie_word_embeddings:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def __call__(
         self,
@@ -244,7 +245,7 @@ class Model(nn.Module):
         cache=None,
     ):
         out = self.model(inputs, mask, cache)
-        if self.args.tie_word_embeddings:
+        if self.config.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
         else:
             out = self.lm_head(out)
@@ -255,13 +256,17 @@ class Model(nn.Module):
         weights = {
             k: v for k, v in weights.items() if "self_attn.rotary_emb.inv_freq" not in k
         }
-        if self.args.tie_word_embeddings:
+        if self.config.tie_word_embeddings:
             weights.pop("lm_head.weight", None)
         return weights
 
     @property
     def layers(self):
         return self.model.layers
+
+    @property
+    def sample_rate(self):
+        return self.config.sample_rate
 
     def parse_output(self, input_ids):
         token_to_find = 128257
@@ -455,7 +460,7 @@ class Model(nn.Module):
                 token_count = input_ids.shape[1] if input_ids is not None else 0
 
                 # Calculate audio duration in seconds
-                sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+                sample_rate = self.config.sample_rate
                 audio_duration_seconds = samples / sample_rate
 
                 # Calculate real-time factor (RTF)

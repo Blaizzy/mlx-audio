@@ -115,6 +115,7 @@ class ModelConfig(BaseModelArgs):
     model_type: str = "bark"
     initializer_range: float = 0.02
     codec_path: str = "mlx-community/encodec-24khz-float32"
+    sample_rate: int = 24000
 
 
 class LayerNorm(nn.Module):
@@ -450,6 +451,10 @@ class Model(nn.Module):
 
         return sanitized_weights
 
+    @property
+    def sample_rate(self):
+        return self.config.sample_rate
+
     def generate(self, text: str, voice: str = None, **kwargs):
         pipeline = Pipeline(
             model=self,
@@ -473,7 +478,7 @@ class Model(nn.Module):
             token_count = len(tokens) if tokens is not None else 0
 
             # Calculate audio duration in seconds
-            sample_rate = 24000  # Assuming 24kHz sample rate, adjust if different
+            sample_rate = self.config.sample_rate
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
             # Calculate milliseconds per sample

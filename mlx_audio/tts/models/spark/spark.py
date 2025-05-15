@@ -89,6 +89,10 @@ class Model(nn.Module):
         return self.model.sanitize(weights)
 
     @property
+    def sample_rate(self):
+        return self.config.sample_rate
+
+    @property
     def layers(self):
         return self.model.layers
 
