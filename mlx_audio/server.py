@@ -1,525 +1,337 @@
+"""Main module for MLX Audio API server.
+
+This module provides a FastAPI-based server for hosting MLX Audio models,
+including Text-to-Speech (TTS), Speech-to-Text (STT), and Speech-to-Speech (S2S) models.
+It offers an OpenAI-compatible API for Audio completions and model management.
+"""
+
 import argparse
-import importlib.util
-import logging
+import asyncio
+import importlib
 import os
-import sys
-import tempfile
-import uuid
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Union
+from urllib.parse import unquote
 
-import numpy as np
-import requests
-import soundfile as sf
-import uvicorn
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from fastrtc import ReplyOnPause, Stream, get_stt_model
-from numpy.typing import NDArray
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from mlx_audio.stt.utils import MODEL_REMAPPING as MODEL_STT_REMAPPING
+from mlx_audio.stt.utils import load_model as load_stt_model
+from mlx_audio.tts.utils import MODEL_REMAPPING as MODEL_TTS_REMAPPING
+from mlx_audio.tts.utils import load_config
+from mlx_audio.tts.utils import load_model as load_tts_model
 
 
-# Configure logging
-def setup_logging(verbose: bool = False):
-    level = logging.DEBUG if verbose else logging.INFO
-    format_str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    if verbose:
-        format_str = "%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s"
+def get_available_models(model_type: str):
+    """
+    Get a list of all available model types by scanning the models directory.
 
-    logging.basicConfig(level=level, format=format_str)
-    return logging.getLogger("mlx_audio_server")
+    Returns:
+        List[str]: A list of available model type names
+    """
+    models_dir = Path(__file__).parent / model_type / "models"
+    available_models = []
+
+    if models_dir.exists() and models_dir.is_dir():
+        for item in models_dir.iterdir():
+            if item.is_dir() and not item.name.startswith("__"):
+                available_models.append(item.name)
+
+    return available_models
 
 
-logger = setup_logging()  # Will be updated with verbose setting in main()
+def _try_resolve_model_for_category(
+    category: str,
+    initial_hint: str,
+    model_name_components: List[str],
+    remapping_dict: Dict[str, str],
+) -> Tuple[bool, str]:
+    """
+    Attempts to resolve and verify a model architecture for a given category.
 
-from mlx_audio.tts.generate import main as generate_main
+    Args:
+        category (str): The model category (e.g., "tts", "stt").
+        initial_hint (str): An initial hint for the model architecture.
+        model_name_components (List[str]): List of model name components for further refinement.
+        remapping_dict (Dict[str, str]): The remapping dictionary for the category.
 
-# Import from mlx_audio package
-from mlx_audio.tts.utils import load_model
+    Returns:
+        A tuple (success, arch_name):
+        - success (bool): True if a valid architecture was found and its module imported.
+        - arch_name (str): The specific architecture name that was processed or attempted.
+    """
+    # Stage 1: Initial remapping based on the hint
+    arch_candidate = remapping_dict.get(initial_hint, initial_hint)
 
-from .tts.audio_player import AudioPlayer
+    # Stage 2: Refine with model_name parts
+    if model_name_components:
+        category_specific_architectures = get_available_models(category)
+        for part in model_name_components:
+            # Check if the part matches an available model directory name for the category
+            if part in category_specific_architectures:
+                arch_candidate = part
+
+            # Check if the part is in the category's custom remapping dictionary
+            # This remapping takes precedence and breaks the loop if found
+            if part in remapping_dict:
+                arch_candidate = remapping_dict[part]
+                break
+
+    # Stage 3: Import attempt
+    try:
+        importlib.import_module(f"mlx_audio.{category}.models.{arch_candidate}")
+        return True, arch_candidate  # Success
+    except ImportError:
+        return (
+            False,
+            arch_candidate,
+        )  # Failure, return the candidate for error messaging
+
+
+def get_model_type(model_type: str, model_name: List[str]):
+    """
+    Retrieve the model category ("tts" or "stt") based on an architecture hint and model name parts.
+
+    This function attempts to find the appropriate model category by:
+    1. Trying to resolve a TTS model architecture based on the `model_type` hint and `model_name` parts.
+    2. If TTS resolution fails, trying to resolve an STT model architecture using the same inputs.
+
+    Args:
+        model_type (str): An initial hint for the model architecture (e.g., "vits", "whisper").
+                           This is used as a starting point and can be overridden by `model_name` parts.
+        model_name (List[str]): List of model name components. These are checked against
+                                available model directories and remapping dictionaries to refine
+                                the architecture guess.
+
+    Returns:
+        str: The resolved model category ("tts" or "stt").
+
+    Raises:
+        ValueError: If a supported model architecture and category cannot be determined after checking both TTS and STT.
+    """
+
+    # Try to resolve as a TTS model
+    is_tts, _ = _try_resolve_model_for_category(
+        category="tts",
+        initial_hint=model_type,
+        model_name_components=model_name,
+        remapping_dict=MODEL_TTS_REMAPPING,
+    )
+    if is_tts:
+        return "tts"
+
+    # If not TTS, try to resolve as an STT model
+    is_stt, last_tried_arch = _try_resolve_model_for_category(
+        category="stt",
+        initial_hint=model_type,
+        model_name_components=model_name,
+        remapping_dict=MODEL_STT_REMAPPING,
+    )
+    if is_stt:
+        return "stt"
+
+    # If both TTS and STT resolution fail, return None
+    return None
+
+
+def get_model_name(model_path: Union[str, Path]) -> str:
+    model_name = None
+    if isinstance(model_path, str):
+        model_name = model_path.lower().split("/")[-1].split("-")
+    elif isinstance(model_path, Path):
+        index = model_path.parts.index("hub")
+        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+    else:
+        raise ValueError(f"Invalid model path type: {type(model_path)}")
+    return model_name
+
+
+class ModelProvider:
+    def __init__(self):
+        self.models: Dict[str, Dict[str, Any]] = {}
+        self.lock = asyncio.Lock()
+
+    def load_model(self, model_name: str):
+        if model_name not in self.models:
+            config = load_config(model_name)
+            model_type = config.get("model_type", None)
+
+            model_name = get_model_name(model_name)
+            model_type = get_model_type(model_type, model_name)
+            if model_type == "tts":
+                self.models[model_name] = load_tts_model(model_name)
+            elif model_type == "stt":
+                self.models[model_name] = load_stt_model(model_name)
+            else:
+                raise ValueError(f"Model type {model_type} not supported.")
+
+        return self.models[model_name]
+
+    async def remove_model(self, model_name: str) -> bool:
+        async with self.lock:
+            if model_name in self.models:
+                del self.models[model_name]
+                return True
+            return False
+
+    async def get_available_models(self):
+        async with self.lock:
+            return list(self.models.keys())
+
 
 app = FastAPI()
 
-# Add CORS middleware to allow requests from the same origin
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins, will be restricted by host binding
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# Load the model once on server startup.
-# You can change the model path or pass arguments as needed.
-# For performance, load once globally:
-tts_model = None  # Will be loaded when the server starts
-audio_player = None  # Will be initialized when the server starts
-stt_model = get_stt_model()
-# Make sure the output folder for generated TTS files exists
-# Use an absolute path that's guaranteed to be writable
-OUTPUT_FOLDER = os.path.join(os.path.expanduser("~"), ".mlx_audio", "outputs")
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
+def int_or_float(value):
 
-
-def speech_to_speech_handler(
-    audio: tuple[int, NDArray[np.int16]], voice: str, speed: float, model: str
-):
-    text = stt_model.stt(audio)
-    for segment in tts_model.generate(
-        text=text,
-        voice=voice,
-        speed=speed,
-        lang_code=voice[0],
-        verbose=False,
-    ):
-        yield (24_000, np.array(segment.audio, copy=False))
-        yield (24_000, np.zeros(2_400, dtype=np.float32))
-
-
-stream = Stream(
-    ReplyOnPause(speech_to_speech_handler, output_sample_rate=24_000),
-    mode="send-receive",
-    modality="audio",
-)
-stream.mount(app)
-
-
-class SpeechToSpeechArgs(BaseModel):
-    voice: str
-    speed: float
-    model: str
-    webrtc_id: str
-
-
-@app.post("/speech_to_speech_input")
-def speech_to_speech_endpoint(args: SpeechToSpeechArgs):
-    stream.set_input(args.webrtc_id, args.voice, args.speed, args.model)
-    return {"status": "success"}
-
-
-@app.post("/tts")
-def tts_endpoint(
-    text: str = Form(...),
-    voice: str = Form("af_heart"),
-    speed: float = Form(1.0),
-    model: str = Form("mlx-community/Kokoro-82M-4bit"),
-):
-    """
-    POST an x-www-form-urlencoded form with 'text' (and optional 'voice', 'speed', and 'model').
-    We run TTS on the text, save the audio in a unique file,
-    and return JSON with the filename so the client can retrieve it.
-    """
-    global tts_model
-
-    if not text.strip():
-        return JSONResponse({"error": "Text is empty"}, status_code=400)
-
-    # Validate speed parameter
     try:
-        speed_float = float(speed)
-        if speed_float < 0.5 or speed_float > 2.0:
-            return JSONResponse(
-                {"error": "Speed must be between 0.5 and 2.0"}, status_code=400
-            )
+        return int(value)
     except ValueError:
-        return JSONResponse({"error": "Invalid speed value"}, status_code=400)
+        try:
+            return float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{value} is not an int or float")
 
-    # Validate model parameter
-    valid_models = [
-        "mlx-community/Kokoro-82M-4bit",
-        "mlx-community/Kokoro-82M-6bit",
-        "mlx-community/Kokoro-82M-8bit",
-        "mlx-community/Kokoro-82M-bf16",
-    ]
-    if model not in valid_models:
-        return JSONResponse(
-            {"error": f"Invalid model. Must be one of: {', '.join(valid_models)}"},
-            status_code=400,
-        )
 
-    # Store current model repo_id for comparison
-    current_model_repo_id = (
-        getattr(tts_model, "repo_id", None) if tts_model is not None else None
+def calculate_default_workers(workers: int = 2) -> int:
+    if num_workers_env := os.getenv("FASTMLX_NUM_WORKERS"):
+        try:
+            workers = int(num_workers_env)
+        except ValueError:
+            workers = max(1, int(os.cpu_count() * float(num_workers_env)))
+    return workers
+
+
+# Add CORS middleware
+def setup_cors(app: FastAPI, allowed_origins: List[str]):
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
-    # Load the model if it's not loaded or if a different model is requested
-    if tts_model is None or current_model_repo_id != model:
-        try:
-            logger.debug(f"Loading TTS model from {model}")
-            tts_model = load_model(model)
-            logger.debug("TTS model loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading TTS model: {str(e)}")
-            return JSONResponse(
-                {"error": f"Failed to load model: {str(e)}"}, status_code=500
-            )
 
-    # We'll do something like the code in model.generate() from the TTS library:
-    # Generate the unique filename
-    unique_id = str(uuid.uuid4())
-    filename = f"tts_{unique_id}.wav"
-    output_path = os.path.join(OUTPUT_FOLDER, filename)
+# Initialize the ModelProvider
+model_provider = ModelProvider()
 
-    logger.debug(
-        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}"
-    )
-    logger.debug(f"Output file will be: {output_path}")
 
-    # We'll use the high-level "model.generate" method:
-    results = tts_model.generate(
-        text=text,
-        voice=voice,
-        speed=speed_float,
-        lang_code=voice[0],
-        verbose=False,
-    )
-
-    # We'll just gather all segments (if any) into a single wav
-    # It's typical for multi-segment text to produce multiple wave segments:
-    audio_arrays = []
-    for segment in results:
-        audio_arrays.append(segment.audio)
-
-    # If no segments, return error
-    if not audio_arrays:
-        logger.error("No audio segments generated")
-        return JSONResponse({"error": "No audio generated"}, status_code=500)
-
-    # Concatenate all segments
-    cat_audio = np.concatenate(audio_arrays, axis=0)
-
-    # Write the audio as a WAV
-    try:
-        sf.write(output_path, cat_audio, 24000)
-        logger.debug(f"Successfully wrote audio file to {output_path}")
-
-        # Verify the file exists
-        if not os.path.exists(output_path):
-            logger.error(f"File was not created at {output_path}")
-            return JSONResponse(
-                {"error": "Failed to create audio file"}, status_code=500
-            )
-
-        # Check file size
-        file_size = os.path.getsize(output_path)
-        logger.debug(f"File size: {file_size} bytes")
-
-        if file_size == 0:
-            logger.error("File was created but is empty")
-            return JSONResponse(
-                {"error": "Generated audio file is empty"}, status_code=500
-            )
-
-    except Exception as e:
-        logger.error(f"Error writing audio file: {str(e)}")
-        return JSONResponse(
-            {"error": f"Failed to save audio: {str(e)}"}, status_code=500
+@app.get("/v1/models")
+async def list_models():
+    """
+    Get list of models - provided in OpenAI API compliant format.
+    """
+    models = await model_provider.get_available_models()
+    models_data = []
+    for model in models:
+        models_data.append(
+            {
+                "id": model,
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "system",
+            }
         )
+    return {"object": "list", "data": models_data}
 
-    return {"filename": filename}
 
-
-@app.get("/audio/{filename}")
-def get_audio_file(filename: str):
+@app.post("/v1/models")
+async def add_model(model_name: str):
     """
-    Return an audio file from the outputs folder.
-    The user can GET /audio/<filename> to fetch the WAV file.
+    Add a new model to the API.
+
+    Args:
+        model_name (str): The name of the model to add.
+
+    Returns:
+        dict (dict): A dictionary containing the status of the operation.
     """
-    file_path = os.path.join(OUTPUT_FOLDER, filename)
-    logger.debug(f"Requested audio file: {file_path}")
-
-    if not os.path.exists(file_path):
-        logger.error(f"File not found: {file_path}")
-        # List files in the directory to help debug
-        try:
-            files = os.listdir(OUTPUT_FOLDER)
-            logger.debug(f"Files in output directory: {files}")
-        except Exception as e:
-            logger.error(f"Error listing output directory: {str(e)}")
-
-        return JSONResponse({"error": "File not found"}, status_code=404)
-
-    logger.debug(f"Serving audio file: {file_path}")
-    return FileResponse(file_path, media_type="audio/wav")
+    model_provider.load_model(model_name)
+    return {"status": "success", "message": f"Model {model_name} added successfully"}
 
 
-@app.get("/")
-def root():
+@app.delete("/v1/models")
+async def remove_model(model_name: str):
     """
-    Serve the audio_player.html page or a fallback HTML if not found
+    Remove a model from the API.
+
+    Args:
+        model_name (str): The name of the model to remove.
+
+    Returns:
+        Response (str): A 204 No Content response if successful.
+
+    Raises:
+        HTTPException (str): If the model is not found.
     """
-    try:
-        # Try to find the audio_player.html file in the package
-        static_dir = find_static_dir()
-        audio_player_path = os.path.join(static_dir, "audio_player.html")
-        return FileResponse(audio_player_path)
-    except Exception as e:
-        # If there's an error, return a simple HTML page with error information
-        return HTMLResponse(
-            content=f"""
-            <html>
-                <head><title>MLX-Audio TTS Server</title></head>
-                <body>
-                    <h1>MLX-Audio TTS Server</h1>
-                    <p>The server is running, but the web interface could not be loaded.</p>
-                    <p>Error: {str(e)}</p>
-                    <h2>API Endpoints</h2>
-                    <ul>
-                        <li><code>POST /tts</code> - Generate TTS audio</li>
-                        <li><code>GET /audio/{{filename}}</code> - Retrieve generated audio file</li>
-                    </ul>
-                </body>
-            </html>
-            """,
-            status_code=200,
-        )
+    model_name = unquote(model_name).strip('"')
+    removed = await model_provider.remove_model(model_name)
+    if removed:
+        return Response(status_code=204)  # 204 No Content - successful deletion
+    else:
+        raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-def find_static_dir():
-    """Find the static directory containing HTML files."""
-    # Try different methods to find the static directory
-
-    # Method 1: Use importlib.resources (Python 3.9+)
-    try:
-        import importlib.resources as pkg_resources
-
-        static_dir = pkg_resources.files("mlx_audio").joinpath("tts")
-        static_dir_str = str(static_dir)
-        if os.path.exists(static_dir_str):
-            return static_dir_str
-    except (ImportError, AttributeError):
-        pass
-
-    # Method 2: Use importlib_resources (Python 3.8)
-    try:
-        import importlib_resources
-
-        static_dir = importlib_resources.files("mlx_audio").joinpath("tts")
-        static_dir_str = str(static_dir)
-        if os.path.exists(static_dir_str):
-            return static_dir_str
-    except ImportError:
-        pass
-
-    # Method 3: Use pkg_resources
-    try:
-        static_dir_str = pkg_resources.resource_filename("mlx_audio", "tts")
-        if os.path.exists(static_dir_str):
-            return static_dir_str
-    except (ImportError, pkg_resources.DistributionNotFound):
-        pass
-
-    # Method 4: Try to find the module path directly
-    try:
-        module_spec = importlib.util.find_spec("mlx_audio")
-        if module_spec and module_spec.origin:
-            package_dir = os.path.dirname(module_spec.origin)
-            static_dir_str = os.path.join(package_dir, "tts")
-            if os.path.exists(static_dir_str):
-                return static_dir_str
-    except (ImportError, AttributeError):
-        pass
-
-    # Method 5: Look in sys.modules
-    try:
-        if "mlx_audio" in sys.modules:
-            module = sys.modules["mlx_audio"]
-            if hasattr(module, "__file__"):
-                package_dir = os.path.dirname(module.__file__)
-                static_dir_str = os.path.join(package_dir, "tts")
-                if os.path.exists(static_dir_str):
-                    return static_dir_str
-    except Exception:
-        pass
-
-    # If all methods fail, raise an error
-    raise RuntimeError("Could not find static directory")
-
-
-@app.post("/play")
-def play_audio(filename: str = Form(...)):
-    """
-    Play audio directly from the server using the AudioPlayer.
-    Expects a filename that exists in the OUTPUT_FOLDER.
-    """
-    global audio_player
-
-    if audio_player is None:
-        return JSONResponse({"error": "Audio player not initialized"}, status_code=500)
-
-    file_path = os.path.join(OUTPUT_FOLDER, filename)
-    if not os.path.exists(file_path):
-        return JSONResponse({"error": "File not found"}, status_code=404)
-
-    try:
-        # Load the audio file
-        audio_data, sample_rate = sf.read(file_path)
-
-        # If audio is stereo, convert to mono
-        if len(audio_data.shape) > 1 and audio_data.shape[1] > 1:
-            audio_data = audio_data.mean(axis=1)
-
-        # Queue the audio for playback
-        audio_player.queue_audio(audio_data)
-
-        return {"status": "playing", "filename": filename}
-    except Exception as e:
-        return JSONResponse(
-            {"error": f"Failed to play audio: {str(e)}"}, status_code=500
-        )
-
-
-@app.post("/stop")
-def stop_audio():
-    """
-    Stop any currently playing audio.
-    """
-    global audio_player
-
-    if audio_player is None:
-        return JSONResponse({"error": "Audio player not initialized"}, status_code=500)
-
-    try:
-        audio_player.stop()
-        return {"status": "stopped"}
-    except Exception as e:
-        return JSONResponse(
-            {"error": f"Failed to stop audio: {str(e)}"}, status_code=500
-        )
-
-
-@app.post("/open_output_folder")
-def open_output_folder():
-    """
-    Open the output folder in the system file explorer (Finder on macOS).
-    This only works when running on localhost for security reasons.
-    """
-    global OUTPUT_FOLDER
-
-    # Check if the request is coming from localhost
-    # Note: In a production environment, you would want to check the request IP
-
-    try:
-        # For macOS (Finder)
-        if sys.platform == "darwin":
-            os.system(f"open {OUTPUT_FOLDER}")
-        # For Windows (Explorer)
-        elif sys.platform == "win32":
-            os.system(f"explorer {OUTPUT_FOLDER}")
-        # For Linux (various file managers)
-        elif sys.platform == "linux":
-            os.system(f"xdg-open {OUTPUT_FOLDER}")
-        else:
-            return JSONResponse(
-                {"error": f"Unsupported platform: {sys.platform}"}, status_code=500
-            )
-
-        logger.debug(f"Opened output folder: {OUTPUT_FOLDER}")
-        return {"status": "opened", "path": OUTPUT_FOLDER}
-    except Exception as e:
-        logger.error(f"Error opening output folder: {str(e)}")
-        return JSONResponse(
-            {"error": f"Failed to open output folder: {str(e)}"}, status_code=500
-        )
-
-
-def setup_server():
-    """Setup the server by loading the model and creating the output directory."""
-    global tts_model, audio_player, OUTPUT_FOLDER
-
-    # Make sure the output folder for generated TTS files exists
-    try:
-        os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-        # Test write permissions by creating a test file
-        test_file = os.path.join(OUTPUT_FOLDER, "test_write.txt")
-        with open(test_file, "w") as f:
-            f.write("Test write permissions")
-        os.remove(test_file)
-        logger.debug(f"Output directory {OUTPUT_FOLDER} is writable")
-    except Exception as e:
-        logger.error(f"Error with output directory {OUTPUT_FOLDER}: {str(e)}")
-        # Try to use a fallback directory in /tmp
-        fallback_dir = os.path.join("/tmp", "mlx_audio_outputs")
-        logger.debug(f"Trying fallback directory: {fallback_dir}")
-        try:
-            os.makedirs(fallback_dir, exist_ok=True)
-            OUTPUT_FOLDER = fallback_dir
-            logger.debug(f"Using fallback output directory: {OUTPUT_FOLDER}")
-        except Exception as fallback_error:
-            logger.error(f"Error with fallback directory: {str(fallback_error)}")
-
-    # Load the model if not already loaded
-    if tts_model is None:
-        try:
-            default_model = (
-                "mlx-community/Kokoro-82M-4bit"  # Same default as in tts_endpoint
-            )
-            logger.debug(f"Loading TTS model from {default_model}")
-            tts_model = load_model(default_model)
-            logger.debug("TTS model loaded successfully")
-        except Exception as e:
-            logger.error(f"Error loading TTS model: {str(e)}")
-            raise
-
-    # Initialize the audio player if not already initialized
-    if audio_player is None:
-        try:
-            logger.debug("Initializing audio player")
-            audio_player = AudioPlayer()
-            logger.debug("Audio player initialized successfully")
-        except Exception as e:
-            logger.error(f"Error initializing audio player: {str(e)}")
-
-    # Try to mount the static files directory
-    try:
-        static_dir = find_static_dir()
-        logger.debug(f"Found static directory: {static_dir}")
-        app.mount("/static", StaticFiles(directory=static_dir), name="static")
-        logger.debug("Static files mounted successfully")
-    except Exception as e:
-        logger.error(f"Could not mount static files directory: {e}")
-        logger.warning(
-            "The server will still function, but the web interface may be limited."
-        )
-
-
-def main(host="127.0.0.1", port=8000, verbose=False):
-    """Parse command line arguments for the server and start it."""
-    parser = argparse.ArgumentParser(description="Start the MLX-Audio TTS server")
+def run():
+    parser = argparse.ArgumentParser(description="FastMLX API server")
     parser.add_argument(
-        "--host",
-        type=str,
-        default="127.0.0.1",
-        help="Host address to bind the server to (default: 127.0.0.1)",
+        "--allowed-origins",
+        nargs="+",
+        default=["*"],
+        help="List of allowed origins for CORS",
     )
     parser.add_argument(
-        "--port",
-        type=int,
-        default=8000,
-        help="Port to bind the server to (default: 8000)",
+        "--host", type=str, default="0.0.0.0", help="Host to run the server on"
     )
     parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging with detailed debug information",
+        "--port", type=int, default=8000, help="Port to run the server on"
     )
+    parser.add_argument(
+        "--reload",
+        type=bool,
+        default=False,
+        help="Enable auto-reload of the server. Only works when 'workers' is set to None.",
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int_or_float,
+        default=calculate_default_workers(),
+        help="""Number of workers. Overrides the `FASTMLX_NUM_WORKERS` env variable.
+        Can be either an int or a float.
+        If an int, it will be the number of workers to use.
+        If a float, number of workers will be this fraction of the  number of CPU cores available, with a minimum of 1.
+        Defaults to the `FASTMLX_NUM_WORKERS` env variable if set and to 2 if not.
+        To use all available CPU cores, set it to 1.0.
+
+        Examples:
+        --workers 1 (will use 1 worker)
+        --workers 1.0 (will use all available CPU cores)
+        --workers 0.5 (will use half the number of CPU cores available)
+        --workers 0.0 (will use 1 worker)""",
+    )
+
     args = parser.parse_args()
+    if isinstance(args.workers, float):
+        args.workers = max(1, int(os.cpu_count() * args.workers))
 
-    # Update logger with verbose setting
-    global logger
-    logger = setup_logging(args.verbose)
+    setup_cors(app, args.allowed_origins)
 
-    # Start the server with the parsed arguments
-    setup_server()
+    import uvicorn
+
     uvicorn.run(
-        app,
+        "mlx_audio:server",
         host=args.host,
         port=args.port,
-        log_level="debug" if args.verbose else "info",
+        reload=args.reload,
+        workers=args.workers,
+        loop="asyncio",
     )
 
 
 if __name__ == "__main__":
-    main()
+    run()
