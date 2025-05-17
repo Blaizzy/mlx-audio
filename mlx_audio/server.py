@@ -8,15 +8,20 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 import argparse
 import asyncio
 import importlib
+import io
 import os
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 from urllib.parse import unquote
 
-from fastapi import FastAPI, HTTPException, Response
+import mlx.core as mx
+import numpy as np
+import soundfile as sf
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 from mlx_audio.stt.utils import MODEL_REMAPPING as MODEL_STT_REMAPPING
 from mlx_audio.stt.utils import load_model as load_stt_model
@@ -216,6 +221,14 @@ def setup_cors(app: FastAPI, allowed_origins: List[str]):
     )
 
 
+# Request schemas for OpenAI-compatible endpoints
+class SpeechRequest(BaseModel):
+    model: str
+    input: str
+    voice: str | None = None
+    speed: float | None = 1.0
+
+
 # Initialize the ModelProvider
 model_provider = ModelProvider()
 
@@ -274,6 +287,51 @@ async def remove_model(model_name: str):
         return Response(status_code=204)  # 204 No Content - successful deletion
     else:
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
+
+
+@app.post("/v1/audio/speech")
+async def tts_speech(payload: SpeechRequest):
+    """Generate speech audio following the OpenAI text-to-speech API."""
+    model = model_provider.load_model(payload.model)
+    results = model.generate(
+        payload.input,
+        voice=payload.voice,
+        speed=payload.speed,
+    )
+    audio_segments = []
+    last_result = None
+    for res in results:
+        last_result = res
+        audio_segments.append(res.audio)
+    if not audio_segments:
+        raise HTTPException(status_code=500, detail="No audio generated")
+
+    audio = mx.concatenate(audio_segments, axis=0)
+    sample_rate = last_result.sample_rate
+    buffer = io.BytesIO()
+    sf.write(buffer, audio, sample_rate, format="WAV")
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="audio/wav")
+
+
+@app.post("/v1/audio/transcriptions")
+async def stt_transcriptions(
+    file: UploadFile = File(...),
+    model: str = Form(...),
+):
+    """Transcribe audio using an STT model in OpenAI format."""
+    data = await file.read()
+    tmp = io.BytesIO(data)
+    audio, sr = sf.read(tmp, always_2d=False)
+    tmp.close()
+    tmp_path = f"/tmp/{time.time()}.wav"
+    sf.write(tmp_path, audio, sr)
+
+    stt_model = model_provider.load_model(model)
+    result = stt_model.generate(tmp_path)
+    os.remove(tmp_path)
+    text = result.text if hasattr(result, "text") else str(result)
+    return {"text": text}
 
 
 def run():
