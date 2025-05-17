@@ -221,6 +221,149 @@ def tts_endpoint(
     return {"filename": filename}
 
 
+class Speech(BaseModel):
+    input: str
+    voice: str = "af_heart"
+    speed: float = 1.0
+    model: str = "mlx-community/Kokoro-82M-4bit"
+
+
+@app.post("/v1/audio/speech")
+def speech(speech: Speech):
+    """
+    POST an json-encoded data with 'input' (and optional 'voice', 'speed', and 'model').
+    We run TTS on the text, save the audio in a unique file,
+    and return the file with proper mimetype.
+    """
+    global tts_model
+    text = speech.input
+    voice = speech.voice
+    model = speech.model
+    speed = speech.speed
+
+    if not text.strip():
+        return JSONResponse({"error": "Text is empty"}, status_code=400)
+
+    # Validate speed parameter
+    try:
+        speed_float = float(speed)
+        if speed_float < 0.5 or speed_float > 2.0:
+            return JSONResponse(
+                {"error": "Speed must be between 0.5 and 2.0"}, status_code=400
+            )
+    except ValueError:
+        return JSONResponse({"error": "Invalid speed value"}, status_code=400)
+
+    # Validate model parameter
+    valid_models = [
+        "mlx-community/Kokoro-82M-4bit",
+        "mlx-community/Kokoro-82M-6bit",
+        "mlx-community/Kokoro-82M-8bit",
+        "mlx-community/Kokoro-82M-bf16",
+    ]
+    if model not in valid_models:
+        return JSONResponse(
+            {"error": f"Invalid model. Must be one of: {', '.join(valid_models)}"},
+            status_code=400,
+        )
+
+    # Store current model repo_id for comparison
+    current_model_repo_id = (
+        getattr(tts_model, "repo_id", None) if tts_model is not None else None
+    )
+
+    # Load the model if it's not loaded or if a different model is requested
+    if tts_model is None or current_model_repo_id != model:
+        try:
+            logger.debug(f"Loading TTS model from {model}")
+            tts_model = load_model(model)
+            logger.debug("TTS model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading TTS model: {str(e)}")
+            return JSONResponse(
+                {"error": f"Failed to load model: {str(e)}"}, status_code=500
+            )
+
+    # We'll do something like the code in model.generate() from the TTS library:
+    # Generate the unique filename
+    unique_id = str(uuid.uuid4())
+    filename = f"tts_{unique_id}.wav"
+    output_path = os.path.join(OUTPUT_FOLDER, filename)
+
+    logger.debug(
+        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}"
+    )
+    logger.debug(f"Output file will be: {output_path}")
+
+    # We'll use the high-level "model.generate" method:
+    results = tts_model.generate(
+        text=text,
+        voice=voice,
+        speed=speed_float,
+        lang_code=voice[0],
+        verbose=False,
+    )
+
+    # We'll just gather all segments (if any) into a single wav
+    # It's typical for multi-segment text to produce multiple wave segments:
+    audio_arrays = []
+    for segment in results:
+        audio_arrays.append(segment.audio)
+
+    # If no segments, return error
+    if not audio_arrays:
+        logger.error("No audio segments generated")
+        return JSONResponse({"error": "No audio generated"}, status_code=500)
+
+    # Concatenate all segments
+    cat_audio = np.concatenate(audio_arrays, axis=0)
+
+    # Write the audio as a WAV
+    try:
+        sf.write(output_path, cat_audio, 24000)
+        logger.debug(f"Successfully wrote audio file to {output_path}")
+
+        # Verify the file exists
+        if not os.path.exists(output_path):
+            logger.error(f"File was not created at {output_path}")
+            return JSONResponse(
+                {"error": "Failed to create audio file"}, status_code=500
+            )
+
+        # Check file size
+        file_size = os.path.getsize(output_path)
+        logger.debug(f"File size: {file_size} bytes")
+
+        if file_size == 0:
+            logger.error("File was created but is empty")
+            return JSONResponse(
+                {"error": "Generated audio file is empty"}, status_code=500
+            )
+
+    except Exception as e:
+        logger.error(f"Error writing audio file: {str(e)}")
+        return JSONResponse(
+            {"error": f"Failed to save audio: {str(e)}"}, status_code=500
+        )
+
+    file_path = os.path.join(OUTPUT_FOLDER, filename)
+    logger.debug(f"Requested audio file: {file_path}")
+
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        # List files in the directory to help debug
+        try:
+            files = os.listdir(OUTPUT_FOLDER)
+            logger.debug(f"Files in output directory: {files}")
+        except Exception as e:
+            logger.error(f"Error listing output directory: {str(e)}")
+
+        return JSONResponse({"error": "File not found"}, status_code=404)
+
+    logger.debug(f"Serving audio file: {file_path}")
+    return FileResponse(file_path, media_type="audio/wav")
+
+
 @app.get("/audio/{filename}")
 def get_audio_file(filename: str):
     """
