@@ -1,0 +1,140 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 199 89% 48%; /* Changed to sky blue */
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 199 89% 48%; /* Changed to sky blue */
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 199 89% 48%; /* Changed to sky blue */
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 199 89% 48%; /* Changed to sky blue */
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 199 89% 48%; /* Changed to sky blue */
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 199 89% 48%; /* Changed to sky blue */
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom styles for range inputs */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 2px;
+  outline: none;
+  margin: 10px 0;
+}
+
+.dark input[type="range"] {
+  background: #4b5563; /* dark gray track for dark mode */
+}
+
+/* Chrome, Safari, Opera */
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #000000;
+  cursor: pointer;
+}
+
+.dark input[type="range"]::-webkit-slider-thumb {
+  background: #ffffff;
+}
+
+/* Firefox */
+input[type="range"]::-moz-range-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #000000;
+  cursor: pointer;
+  border: none;
+}
+
+.dark input[type="range"]::-moz-range-thumb {
+  background: #ffffff;
+}
+
+/* Edge */
+input[type="range"]::-ms-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #000000;
+  cursor: pointer;
+}
+
+.dark input[type="range"]::-ms-thumb {
+  background: #ffffff;
+}
+
+/* Active state for thumb */
+input[type="range"]:active::-webkit-slider-thumb {
+  background: #333333;
+}
+
+.dark input[type="range"]:active::-webkit-slider-thumb {
+  background: #d1d5db;
+}
+
+input[type="range"]:active::-moz-range-thumb {
+  background: #333333;
+}
+
+.dark input[type="range"]:active::-moz-range-thumb {
+  background: #d1d5db;
+}
+
+input[type="range"]:active::-ms-thumb {
+  background: #333333;
+}
+
+.dark input[type="range"]:active::-ms-thumb {
+  background: #d1d5db;
+}
