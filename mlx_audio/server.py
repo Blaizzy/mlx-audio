@@ -12,7 +12,7 @@ import io
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote
 
 import mlx.core as mx
@@ -28,6 +28,8 @@ from mlx_audio.stt.utils import load_model as load_stt_model
 from mlx_audio.tts.utils import MODEL_REMAPPING as MODEL_TTS_REMAPPING
 from mlx_audio.tts.utils import load_config
 from mlx_audio.tts.utils import load_model as load_tts_model
+
+MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
 
 def get_available_models(model_type: str):
@@ -142,7 +144,7 @@ def get_model_type(model_type: str, model_name: List[str]):
     return None
 
 
-def get_model_name(model_path: Union[str, Path]) -> str:
+def get_model_name_parts(model_path: Union[str, Path]) -> str:
     model_name = None
     if isinstance(model_path, str):
         model_name = model_path.lower().split("/")[-1].split("-")
@@ -164,8 +166,8 @@ class ModelProvider:
             config = load_config(model_name)
             model_type = config.get("model_type", None)
 
-            model_name = get_model_name(model_name)
-            model_type = get_model_type(model_type, model_name)
+            model_name_parts = get_model_name_parts(model_name)
+            model_type = get_model_type(model_type, model_name_parts)
             if model_type == "tts":
                 self.models[model_name] = load_tts_model(model_name)
             elif model_type == "stt":
@@ -227,6 +229,15 @@ class SpeechRequest(BaseModel):
     input: str
     voice: str | None = None
     speed: float | None = 1.0
+    gender: str | None = "male"
+    pitch: float | None = 1.0
+    lang_code: str | None = "a"
+    ref_audio: str | None = None
+    ref_text: str | None = None
+    temperature: float | None = 0.7
+    top_p: float | None = 0.95
+    top_k: int | None = 40
+    repetition_penalty: float | None = 1.0
 
 
 # Initialize the ModelProvider
@@ -289,35 +300,48 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
+async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
+    for result in model.generate(
+        payload.input,
+        voice=payload.voice,
+        speed=payload.speed,
+        gender=payload.gender,
+        pitch=payload.pitch,
+        lang_code=payload.lang_code,
+        ref_audio=payload.ref_audio,
+        ref_text=payload.ref_text,
+        temperature=payload.temperature,
+        top_p=payload.top_p,
+        top_k=payload.top_k,
+        repetition_penalty=payload.repetition_penalty,
+    ):
+
+        sample_rate = result.sample_rate
+        buffer = io.BytesIO()
+        sf.write(buffer, result.audio, sample_rate, format="WAV")
+        buffer.seek(0)
+        yield buffer.getvalue()
+
+
 @app.post("/v1/audio/speech")
 async def tts_speech(payload: SpeechRequest):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
-    results = model.generate(
-        payload.input,
-        voice=payload.voice,
-        speed=payload.speed,
+    return StreamingResponse(
+        generate_audio(model, payload),
+        media_type="audio/wav",
+        headers={"Content-Disposition": "attachment; filename=speech.wav"},
     )
-    audio_segments = []
-    last_result = None
-    for res in results:
-        last_result = res
-        audio_segments.append(res.audio)
-    if not audio_segments:
-        raise HTTPException(status_code=500, detail="No audio generated")
-
-    audio = mx.concatenate(audio_segments, axis=0)
-    sample_rate = last_result.sample_rate
-    buffer = io.BytesIO()
-    sf.write(buffer, audio, sample_rate, format="WAV")
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="audio/wav")
 
 
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
+    language: Optional[str] = Form(None),
+    response_format: Optional[str] = Form("verbose_json"),
+    temperature: Optional[float] = Form(0.0),
+    prompt: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
     data = await file.read()
@@ -330,12 +354,11 @@ async def stt_transcriptions(
     stt_model = model_provider.load_model(model)
     result = stt_model.generate(tmp_path)
     os.remove(tmp_path)
-    text = result.text if hasattr(result, "text") else str(result)
-    return {"text": text}
+    return result
 
 
 def run():
-    parser = argparse.ArgumentParser(description="FastMLX API server")
+    parser = argparse.ArgumentParser(description="MLX-Audio API server")
     parser.add_argument(
         "--allowed-origins",
         nargs="+",
@@ -359,11 +382,11 @@ def run():
         "--workers",
         type=int_or_float,
         default=calculate_default_workers(),
-        help="""Number of workers. Overrides the `FASTMLX_NUM_WORKERS` env variable.
+        help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
         Can be either an int or a float.
         If an int, it will be the number of workers to use.
         If a float, number of workers will be this fraction of the  number of CPU cores available, with a minimum of 1.
-        Defaults to the `FASTMLX_NUM_WORKERS` env variable if set and to 2 if not.
+        Defaults to the `MLX_AUDIO_NUM_WORKERS` env variable if set and to 2 if not.
         To use all available CPU cores, set it to 1.0.
 
         Examples:
