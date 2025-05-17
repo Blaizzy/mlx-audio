@@ -133,6 +133,52 @@ export default function TranscriptViewerPage() {
     }
   }
 
+
+  useEffect(() => {
+    const stored = localStorage.getItem(`mlx-audio-transcription-${fileId}`)
+    if (stored) {
+      try {
+        const data = JSON.parse(stored) as {
+          fileName?: string
+          language?: string
+          date?: string
+          duration?: number
+          segments?: Array<{
+            start: number
+            end: number
+            text: string
+          }>
+          text?: string
+        }
+
+        setFileName(data.fileName ?? "unknown file")
+        setLanguage(data.language ?? "English")
+        setDate(data.date ?? "yesterday")
+        setDuration(data.duration ?? 8)
+
+        if (data.segments?.length) {
+          const segments = data.segments.map(seg => ({
+            speakerId: 0,
+            startTime: seg.start,
+            endTime: seg.end,
+            text: seg.text
+          }))
+          setTranscript(segments)
+        } else if (data.text) {
+          setTranscript([{
+            speakerId: 0,
+            startTime: 0,
+            endTime: data.duration ?? 8,
+            text: data.text
+          }])
+        }
+      } catch (e) {
+        console.error("Error parsing stored transcription:", e)
+      }
+    }
+  }, [fileId])
+
+
   return (
     <LayoutWrapper activeTab="audio" activePage="speech-to-text">
       <div className="flex flex-col h-full">

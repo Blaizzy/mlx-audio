@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
 import { FileText, Upload, MoreVertical, X, ChevronDown } from "lucide-react"
 import Link from "next/link"
@@ -13,7 +13,6 @@ interface TranscriptionFile {
   status: "uploading" | "processing" | "completed" | "failed"
   result?: string
 }
-
 export default function SpeechToTextPage() {
   const [files, setFiles] = useState<TranscriptionFile[]>([
     {
@@ -28,6 +27,48 @@ export default function SpeechToTextPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
 
+  // New state for stored transcriptions
+  const [storedTranscriptions, setStoredTranscriptions] = useState<{ id: string; data: any }[]>([])
+
+  // Function to load transcriptions from localStorage
+  const loadStoredTranscriptions = () => {
+    const keys = Object.keys(localStorage).filter((key) => key.startsWith("mlx-audio-transcription-"))
+    const transcriptions = keys.map((key) => {
+      const dataStr = localStorage.getItem(key)
+      try {
+        const data = dataStr ? JSON.parse(dataStr) : {}
+        return {
+          id: key.replace("mlx-audio-transcription-", ""),
+          data,
+          name: data.fileName || "Unknown file",
+          status: "completed" as const
+        }
+      } catch (error) {
+        return {
+          id: key.replace("mlx-audio-transcription-", ""),
+          data: {},
+          name: "Unknown file",
+          status: "completed" as const
+        }
+      }
+    })
+
+    // Keep the default file and add stored transcriptions
+    setFiles(prev => [
+      prev[0],
+      ...transcriptions.map(t => ({
+        id: t.id,
+        name: t.name,
+        status: t.status
+      }))
+    ])
+    setStoredTranscriptions(transcriptions)
+  }
+
+  useEffect(() => {
+    loadStoredTranscriptions()
+  }, [])
+
   const uploadAndTranscribe = async (file: File, id: string) => {
     const formData = new FormData()
     formData.append("file", file)
@@ -36,12 +77,17 @@ export default function SpeechToTextPage() {
     formData.append("response_format", "verbose_json")
     formData.append("temperature", "0")
 
+    let fileName = file.name
+
     try {
       const res = await fetch("http://localhost:8000/v1/audio/transcriptions", {
         method: "POST",
         body: formData,
       })
       const data = await res.json()
+      // Save the full transcription JSON to localStorage using the key "transcription-${id}"
+      data.fileName = fileName
+      localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))
       setFiles((prev) =>
         prev.map((f) =>
           f.id === id ? { ...f, status: "completed", result: data.text } : f
@@ -53,6 +99,7 @@ export default function SpeechToTextPage() {
       )
     }
   }
+
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
