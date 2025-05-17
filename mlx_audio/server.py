@@ -21,6 +21,7 @@ import soundfile as sf
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from mlx_audio.stt.utils import MODEL_REMAPPING as MODEL_STT_REMAPPING
@@ -223,6 +224,14 @@ def setup_cors(app: FastAPI, allowed_origins: List[str]):
     )
 
 
+def setup_ui(app: FastAPI, ui_path: Optional[Path] = None):
+    """Mount the built React UI if available."""
+    if ui_path is None:
+        ui_path = Path(__file__).parent / "ui" / "out"
+    if ui_path.exists():
+        app.mount("/", StaticFiles(directory=ui_path, html=True), name="ui")
+
+
 # Request schemas for OpenAI-compatible endpoints
 class SpeechRequest(BaseModel):
     model: str
@@ -400,12 +409,13 @@ def run():
     if isinstance(args.workers, float):
         args.workers = max(1, int(os.cpu_count() * args.workers))
 
+    setup_ui(app)
     setup_cors(app, args.allowed_origins)
 
     import uvicorn
 
     uvicorn.run(
-        "mlx_audio:server",
+        app,
         host=args.host,
         port=args.port,
         reload=args.reload,
