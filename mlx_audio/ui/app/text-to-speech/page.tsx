@@ -242,34 +242,7 @@ export default function SpeechSynthesis() {
                 </div>
               </div>
 
-              {/* Using the common VoiceSelection component */}
-              <VoiceSelection onVoiceChange={handleVoiceChange} initialVoice={selectedVoice} />
-
-              <div className="mb-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-sm">Voice Modifier</span>
-                </div>
-                <button className="flex w-full items-center justify-between rounded-md border border-gray-200 dark:border-gray-700 p-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-800">
-                  <span>Select a modifier</span>
-                  <ChevronDown className="h-4 w-4" />
-                </button>
-              </div>
-
-              <div className="mb-4">
-                <div className="mb-2 flex items-center justify-between">
-                  <span className="text-sm">Emotion</span>
-                </div>
-                <div className="relative">
-                  <select className="w-full appearance-none rounded-md border border-gray-200 dark:border-gray-700 px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800">
-                    <option>Auto</option>
-                    <option>Happy</option>
-                    <option>Sad</option>
-                    <option>Angry</option>
-                    <option>Excited</option>
-                  </select>
-                  <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 pointer-events-none" />
-                </div>
-              </div>
+             
 
               <div className="mb-6">
                 <div className="mb-2 flex items-center justify-between">
