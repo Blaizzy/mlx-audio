@@ -217,6 +217,7 @@ def generate_audio(
     temperature: float = 0.7,
     stream: bool = False,
     streaming_interval: float = 2.0,
+    sample_rate: int = 24000,
     **kwargs,
 ) -> None:
     """
@@ -256,7 +257,7 @@ def generate_audio(
                 normalize = True
 
             ref_audio = load_audio(
-                ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
+                ref_audio, sample_rate=sample_rate, volume_normalize=normalize
             )
             if not ref_text:
                 print("Ref_text not found. Transcribing ref_audio...")
@@ -267,13 +268,14 @@ def generate_audio(
                 print("Ref_text", ref_text)
 
         # Load AudioPlayer
-        player = AudioPlayer(sample_rate=model.sample_rate) if play else None
+        player = AudioPlayer(sample_rate=sample_rate) if play else None
 
         print(
             f"\n\033[94mModel:\033[0m {model_path}\n"
             f"\033[94mText:\033[0m {text}\n"
             f"\033[94mVoice:\033[0m {voice}\n"
             f"\033[94mSpeed:\033[0m {speed}x\n"
+            f"\033[94mSample rate:\033[0m {sample_rate}Hz\n"
             f"\033[94mLanguage:\033[0m {lang_code}"
         )
 
@@ -288,6 +290,7 @@ def generate_audio(
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
+            sample_rate=sample_rate,
             **kwargs,
         )
 
@@ -325,7 +328,7 @@ def generate_audio(
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(f"{file_prefix}.{audio_format}", audio, 24000)
+            sf.write(f"{file_prefix}.{audio_format}", audio, sample_rate)
             if verbose:
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 
@@ -410,6 +413,12 @@ def parse_args():
         type=float,
         default=2.0,
         help="The time interval in seconds for streaming segments",
+    )
+    parser.add_argument(
+        "--sample_rate",
+        type=int,
+        default=24000,
+        help="Sample rate for the audio",
     )
 
     args = parser.parse_args()
