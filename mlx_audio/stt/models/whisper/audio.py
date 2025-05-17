@@ -38,7 +38,6 @@ def pad_or_trim(array, length: int = N_SAMPLES, *, axis: int = -1):
     return array
 
 
-
 def log_mel_spectrogram(
     audio: Union[str, np.ndarray],
     n_mels: int = 80,

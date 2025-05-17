@@ -7,7 +7,6 @@ import numpy as np
 from omegaconf import DictConfig
 from safetensors.torch import load_file
 
-from mlx_audio.utils import hanning, mel_filters, stft
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_decoder import Decoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_encoder import Encoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.wave_generator import (
@@ -17,6 +16,7 @@ from mlx_audio.tts.models.spark.modules.residual import FactorizedVectorQuantize
 from mlx_audio.tts.models.spark.modules.speaker.speaker_encoder import SpeakerEncoder
 from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
+from mlx_audio.utils import hanning, mel_filters, stft
 
 
 def mel_spectrogram(

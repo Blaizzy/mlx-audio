@@ -2,7 +2,15 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 
-from mlx_audio.utils import hanning, hamming, blackman, bartlett, mel_filters, stft, STR_TO_WINDOW_FN
+from mlx_audio.utils import (
+    STR_TO_WINDOW_FN,
+    bartlett,
+    blackman,
+    hamming,
+    hanning,
+    mel_filters,
+    stft,
+)
 
 
 @dataclass
@@ -25,6 +33,7 @@ class PreprocessArgs:
     @property
     def hop_length(self) -> int:
         return int(self.window_stride * self.sample_rate)
+
 
 def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     original_dtype = x.dtype

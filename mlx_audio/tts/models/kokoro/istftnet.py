@@ -5,9 +5,11 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.utils import istft, stft
+
 from ..base import check_array_shape
 from ..interpolate import interpolate
-from mlx_audio.utils import stft, istft
+
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
     return int((kernel_size * dilation - dilation) / 2)
@@ -392,6 +394,7 @@ class AdaINResBlock1(nn.Module):
 
             x = xt + x
         return x
+
 
 def mlx_angle(z, deg=False):
     z = mx.array(z)

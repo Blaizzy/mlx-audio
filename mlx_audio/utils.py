@@ -1,11 +1,11 @@
-from functools import lru_cache
 import math
+from functools import lru_cache
 from typing import Optional
 
 import mlx.core as mx
 
-
 # Common window functions
+
 
 @lru_cache(maxsize=None)
 def hanning(size):
@@ -37,6 +37,7 @@ def blackman(size):
 def bartlett(size):
     return mx.array([1 - 2 * abs(n - (size - 1) / 2) / (size - 1) for n in range(size)])
 
+
 STR_TO_WINDOW_FN = {
     "hann": hanning,
     "hanning": hanning,
@@ -46,6 +47,7 @@ STR_TO_WINDOW_FN = {
 }
 
 # STFT and ISTFT
+
 
 def stft(
     x,
@@ -64,9 +66,7 @@ def stft(
     if isinstance(window, str):
         window_fn = STR_TO_WINDOW_FN.get(window.lower())
         if window_fn is None:
-            raise ValueError(
-                f"Unknown window function: {window}"
-            )
+            raise ValueError(f"Unknown window function: {window}")
         w = window_fn(win_length)
     else:
         w = window
@@ -117,9 +117,7 @@ def istft(
     if isinstance(window, str):
         window_fn = STR_TO_WINDOW_FN.get(window.lower())
         if window_fn is None:
-            raise ValueError(
-                f"Unknown window function: {window}"
-            )
+            raise ValueError(f"Unknown window function: {window}")
         w = window_fn(win_length)
     else:
         w = window
@@ -159,80 +157,81 @@ def istft(
 
     return reconstructed
 
+
 # Mel filterbank
+
 
 @lru_cache(maxsize=None)
 def mel_filters(
-        sample_rate: int,
-        n_fft: int,
-        n_mels: int,
-        f_min: float = 0,
-        f_max: Optional[float] = None,
-        norm: Optional[str] = None,
-        mel_scale: str = "htk",
-    ) -> mx.array:
-        def hz_to_mel(freq, mel_scale="htk"):
-            if mel_scale == "htk":
-                return 2595.0 * math.log10(1.0 + freq / 700.0)
+    sample_rate: int,
+    n_fft: int,
+    n_mels: int,
+    f_min: float = 0,
+    f_max: Optional[float] = None,
+    norm: Optional[str] = None,
+    mel_scale: str = "htk",
+) -> mx.array:
+    def hz_to_mel(freq, mel_scale="htk"):
+        if mel_scale == "htk":
+            return 2595.0 * math.log10(1.0 + freq / 700.0)
 
-            # slaney scale
-            f_min, f_sp = 0.0, 200.0 / 3
-            mels = (freq - f_min) / f_sp
-            min_log_hz = 1000.0
-            min_log_mel = (min_log_hz - f_min) / f_sp
-            logstep = math.log(6.4) / 27.0
-            if freq >= min_log_hz:
-                mels = min_log_mel + math.log(freq / min_log_hz) / logstep
-            return mels
+        # slaney scale
+        f_min, f_sp = 0.0, 200.0 / 3
+        mels = (freq - f_min) / f_sp
+        min_log_hz = 1000.0
+        min_log_mel = (min_log_hz - f_min) / f_sp
+        logstep = math.log(6.4) / 27.0
+        if freq >= min_log_hz:
+            mels = min_log_mel + math.log(freq / min_log_hz) / logstep
+        return mels
 
-        def mel_to_hz(mels, mel_scale="htk"):
-            if mel_scale == "htk":
-                return 700.0 * (10.0 ** (mels / 2595.0) - 1.0)
+    def mel_to_hz(mels, mel_scale="htk"):
+        if mel_scale == "htk":
+            return 700.0 * (10.0 ** (mels / 2595.0) - 1.0)
 
-            # slaney scale
-            f_min, f_sp = 0.0, 200.0 / 3
-            freqs = f_min + f_sp * mels
-            min_log_hz = 1000.0
-            min_log_mel = (min_log_hz - f_min) / f_sp
-            logstep = math.log(6.4) / 27.0
-            freqs = mx.where(
-                mels >= min_log_mel,
-                min_log_hz * mx.exp(logstep * (mels - min_log_mel)),
-                freqs,
-            )
-            return freqs
-
-        f_max = f_max or sample_rate / 2
-
-        # generate frequency points
-
-        n_freqs = n_fft // 2 + 1
-        all_freqs = mx.linspace(0, sample_rate // 2, n_freqs)
-
-        # convert frequencies to mel and back to hz
-
-        m_min = hz_to_mel(f_min, mel_scale)
-        m_max = hz_to_mel(f_max, mel_scale)
-        m_pts = mx.linspace(m_min, m_max, n_mels + 2)
-        f_pts = mel_to_hz(m_pts, mel_scale)
-
-        # compute slopes for filterbank
-
-        f_diff = f_pts[1:] - f_pts[:-1]
-        slopes = mx.expand_dims(f_pts, 0) - mx.expand_dims(all_freqs, 1)
-
-        # calculate overlapping triangular filters
-
-        down_slopes = (-slopes[:, :-2]) / f_diff[:-1]
-        up_slopes = slopes[:, 2:] / f_diff[1:]
-        filterbank = mx.maximum(
-            mx.zeros_like(down_slopes), mx.minimum(down_slopes, up_slopes)
+        # slaney scale
+        f_min, f_sp = 0.0, 200.0 / 3
+        freqs = f_min + f_sp * mels
+        min_log_hz = 1000.0
+        min_log_mel = (min_log_hz - f_min) / f_sp
+        logstep = math.log(6.4) / 27.0
+        freqs = mx.where(
+            mels >= min_log_mel,
+            min_log_hz * mx.exp(logstep * (mels - min_log_mel)),
+            freqs,
         )
+        return freqs
 
-        if norm == "slaney":
-            enorm = 2.0 / (f_pts[2 : n_mels + 2] - f_pts[:n_mels])
-            filterbank *= mx.expand_dims(enorm, 0)
+    f_max = f_max or sample_rate / 2
 
-        filterbank = filterbank.moveaxis(0, 1)
-        return filterbank
-    
+    # generate frequency points
+
+    n_freqs = n_fft // 2 + 1
+    all_freqs = mx.linspace(0, sample_rate // 2, n_freqs)
+
+    # convert frequencies to mel and back to hz
+
+    m_min = hz_to_mel(f_min, mel_scale)
+    m_max = hz_to_mel(f_max, mel_scale)
+    m_pts = mx.linspace(m_min, m_max, n_mels + 2)
+    f_pts = mel_to_hz(m_pts, mel_scale)
+
+    # compute slopes for filterbank
+
+    f_diff = f_pts[1:] - f_pts[:-1]
+    slopes = mx.expand_dims(f_pts, 0) - mx.expand_dims(all_freqs, 1)
+
+    # calculate overlapping triangular filters
+
+    down_slopes = (-slopes[:, :-2]) / f_diff[:-1]
+    up_slopes = slopes[:, 2:] / f_diff[1:]
+    filterbank = mx.maximum(
+        mx.zeros_like(down_slopes), mx.minimum(down_slopes, up_slopes)
+    )
+
+    if norm == "slaney":
+        enorm = 2.0 / (f_pts[2 : n_mels + 2] - f_pts[:n_mels])
+        filterbank *= mx.expand_dims(enorm, 0)
+
+    filterbank = filterbank.moveaxis(0, 1)
+    return filterbank
