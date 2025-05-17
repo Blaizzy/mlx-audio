@@ -7,7 +7,7 @@ import numpy as np
 
 from ..base import check_array_shape
 from ..interpolate import interpolate
-
+from mlx_audio.utils import stft, istft
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
     return int((kernel_size * dilation - dilation) / 2)
@@ -393,124 +393,6 @@ class AdaINResBlock1(nn.Module):
             x = xt + x
         return x
 
-
-def mlx_stft(
-    x,
-    n_fft=800,
-    hop_length=None,
-    win_length=None,
-    window="hann",
-    center=True,
-    pad_mode="reflect",
-):
-    if hop_length is None:
-        hop_length = n_fft // 4
-    if win_length is None:
-        win_length = n_fft
-
-    if isinstance(window, str):
-        if window.lower() == "hann":
-            w = mx.array(np.hanning(win_length + 1)[:-1])
-        else:
-            raise ValueError(
-                f"Only 'hann' (string) is supported for window, not {window!r}"
-            )
-    else:
-        w = window
-
-    if w.shape[0] < n_fft:
-        pad_size = n_fft - w.shape[0]
-        w = mx.concatenate([w, mx.zeros((pad_size,))], axis=0)
-
-    def _pad(x, padding, pad_mode="reflect"):
-        if pad_mode == "constant":
-            return mx.pad(x, [(padding, padding)])
-        elif pad_mode == "reflect":
-            prefix = x[1 : padding + 1][::-1]
-            suffix = x[-(padding + 1) : -1][::-1]
-            return mx.concatenate([prefix, x, suffix])
-        else:
-            raise ValueError(f"Invalid pad_mode {pad_mode}")
-
-    x = mx.array(x)
-
-    if center:
-        x = _pad(x, n_fft // 2, pad_mode)
-
-    num_frames = 1 + (x.shape[0] - n_fft) // hop_length
-    if num_frames <= 0:
-        raise ValueError(
-            f"Input is too short (length={x.shape[0]}) for n_fft={n_fft} with "
-            f"hop_length={hop_length} and center={center}."
-        )
-
-    shape = (num_frames, n_fft)
-    strides = (hop_length, 1)
-    frames = mx.as_strided(x, shape=shape, strides=strides)
-    spec = mx.fft.rfft(frames * w)
-
-    return spec.transpose(1, 0)
-
-
-def mlx_istft(
-    x,
-    hop_length=None,
-    win_length=None,
-    window="hann",
-    center=True,
-    length=None,
-):
-    if hop_length is None:
-        hop_length = win_length // 4
-    if win_length is None:
-        win_length = (x.shape[1] - 1) * 2
-
-    if isinstance(window, str):
-        if window.lower() == "hann":
-            w = mx.array(np.hanning(win_length + 1)[:-1])
-        else:
-            raise ValueError(
-                f"Only 'hann' (string) is supported for window, not {window!r}"
-            )
-    else:
-        w = window
-
-    if w.shape[0] < win_length:
-        w = mx.concatenate([w, mx.zeros((win_length - w.shape[0],))], axis=0)
-
-    num_frames = x.shape[1]
-    t = (num_frames - 1) * hop_length + win_length
-
-    reconstructed = mx.zeros(t)
-    window_sum = mx.zeros(t)
-
-    # inverse FFT of each frame
-    frames_time = mx.fft.irfft(x, axis=0).transpose(1, 0)
-
-    # get the position in the time-domain signal to add the frame
-    frame_offsets = mx.arange(num_frames) * hop_length
-    indices = frame_offsets[:, None] + mx.arange(win_length)
-    indices_flat = indices.flatten()
-
-    updates_reconstructed = (frames_time * w).flatten()
-    updates_window = mx.tile(w, (num_frames,)).flatten()
-
-    # overlap-add the inverse transformed frame, scaled by the window
-    reconstructed = reconstructed.at[indices_flat].add(updates_reconstructed)
-    window_sum = window_sum.at[indices_flat].add(updates_window)
-
-    # normalize by the sum of the window values
-    reconstructed = mx.where(window_sum != 0, reconstructed / window_sum, reconstructed)
-
-    if center and length is None:
-        reconstructed = reconstructed[win_length // 2 : -win_length // 2]
-
-    if length is not None:
-        reconstructed = reconstructed[:length]
-
-    return reconstructed
-
-
 def mlx_angle(z, deg=False):
     z = mx.array(z)
 
@@ -585,7 +467,7 @@ class MLXSTFT:
 
         for batch_idx in range(input_data.shape[0]):
             # Compute STFT
-            stft = mlx_stft(
+            x_stft = stft(
                 input_data[batch_idx],
                 n_fft=self.filter_length,
                 hop_length=self.hop_length,
@@ -593,13 +475,13 @@ class MLXSTFT:
                 window=self.window,
                 center=True,
                 pad_mode="reflect",
-            )
+            ).transpose(1, 0)
 
             # Get magnitude
-            magnitude = mx.abs(stft)
+            magnitude = mx.abs(x_stft)
 
             # Get phase
-            phase = mlx_angle(stft)
+            phase = mlx_angle(x_stft)
 
             magnitudes.append(magnitude)
             phases.append(phase)
@@ -619,11 +501,11 @@ class MLXSTFT:
             # Combine magnitude and phase
             real_part = magnitude[batch_idx] * mx.cos(phase_cont)
             imag_part = magnitude[batch_idx] * mx.sin(phase_cont)
-            stft = real_part + 1j * imag_part
+            x_stft = real_part + 1j * imag_part
 
             # Inverse STFT
-            audio = mlx_istft(
-                stft,
+            audio = istft(
+                x_stft,
                 hop_length=self.hop_length,
                 win_length=self.win_length,
                 window=self.window,

@@ -10,8 +10,9 @@ import yaml
 from huggingface_hub import snapshot_download
 
 from ..encodec import Encodec
-from .mel import hanning, istft, log_mel_spectrogram
+from .mel import log_mel_spectrogram
 
+from mlx_audio.utils import hanning, istft
 
 class FeatureExtractor(nn.Module):
     """Base class for feature extractors."""
