@@ -12,6 +12,31 @@ export default function HomePage() {
   const [selectedVoice, setSelectedVoice] = useState("Trustworthy Man")
   const [activeButton, setActiveButton] = useState<string | null>(null)
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false)
+  const [audioUrl, setAudioUrl] = useState<string | null>(null)
+
+  const handleGenerate = async () => {
+    const payload = {
+      model: selectedModel,
+      input: inputText,
+      voice: selectedVoice,
+    }
+
+    try {
+      const res = await fetch("/v1/audio/speech", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) throw new Error("Request failed")
+      const blob = await res.blob()
+      setAudioUrl(URL.createObjectURL(blob))
+    } catch (err) {
+      console.error("Failed to generate speech", err)
+    }
+  }
 
   const getGradientForVoice = (name: string) => {
     if (name.includes("Man") || name.includes("Male")) {
@@ -106,12 +131,19 @@ export default function HomePage() {
                 </button>
               </div>
 
-              <button className="bg-sky-500 hover:bg-sky-600 text-white px-4 py-1 rounded-md flex items-center space-x-1">
+              <button
+                onClick={handleGenerate}
+                className="bg-sky-500 hover:bg-sky-600 text-white px-4 py-1 rounded-md flex items-center space-x-1"
+              >
                 <span>Generate</span>
               </button>
             </div>
           </div>
         </div>
+
+        {audioUrl && (
+          <audio controls src={audioUrl} className="mt-4 w-full" />
+        )}
 
       </main>
       {/* Voice Selection Modal */}

@@ -11,7 +11,6 @@ interface TranscriptionFile {
   id: string
   name: string
   status: "uploading" | "processing" | "completed" | "failed"
-  progress?: number
   result?: string
 }
 
@@ -29,54 +28,46 @@ export default function SpeechToTextPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
 
+  const uploadAndTranscribe = async (file: File, id: string) => {
+    const formData = new FormData()
+    formData.append("file", file)
+    formData.append("model", "mlx-community/whisper-large-v3-turbo")
+    formData.append("language", primaryLanguage === "Detect" ? "en" : primaryLanguage.toLowerCase())
+    formData.append("response_format", "verbose_json")
+    formData.append("temperature", "0")
+
+    try {
+      const res = await fetch("http://localhost:8000/v1/audio/transcriptions", {
+        method: "POST",
+        body: formData,
+      })
+      const data = await res.json()
+      setFiles((prev) =>
+        prev.map((f) =>
+          f.id === id ? { ...f, status: "completed", result: data.text } : f
+        )
+      )
+    } catch (err) {
+      setFiles((prev) =>
+        prev.map((f) => (f.id === id ? { ...f, status: "failed" } : f))
+      )
+    }
+  }
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      const newFiles: TranscriptionFile[] = Array.from(e.target.files).map((file) => ({
+      const newEntries: TranscriptionFile[] = Array.from(e.target.files).map((file) => ({
         id: Math.random().toString(36).substring(2, 9),
         name: file.name,
         status: "uploading",
-        progress: 0,
       }))
 
-      setFiles([...files, ...newFiles])
+      setFiles([...files, ...newEntries])
       setIsModalOpen(false)
 
-      // Simulate upload progress and processing
-      newFiles.forEach((file) => {
-        const uploadInterval = setInterval(() => {
-          setFiles((prevFiles) => {
-            const fileIndex = prevFiles.findIndex((f) => f.id === file.id)
-            if (fileIndex === -1) return prevFiles
-
-            const updatedFile = { ...prevFiles[fileIndex] }
-            if (updatedFile.status === "uploading") {
-              updatedFile.progress = (updatedFile.progress || 0) + 10
-              if (updatedFile.progress >= 100) {
-                updatedFile.status = "processing"
-                clearInterval(uploadInterval)
-
-                // Simulate processing completion after 2 seconds
-                setTimeout(() => {
-                  setFiles((prevFiles) => {
-                    const fileIndex = prevFiles.findIndex((f) => f.id === file.id)
-                    if (fileIndex === -1) return prevFiles
-
-                    const updatedFiles = [...prevFiles]
-                    updatedFiles[fileIndex] = {
-                      ...updatedFiles[fileIndex],
-                      status: "completed",
-                    }
-                    return updatedFiles
-                  })
-                }, 2000)
-              }
-            }
-
-            const updatedFiles = [...prevFiles]
-            updatedFiles[fileIndex] = updatedFile
-            return updatedFiles
-          })
-        }, 300)
+      newEntries.forEach((entry, idx) => {
+        const file = e.target.files![idx]
+        uploadAndTranscribe(file, entry.id)
       })
     }
   }
@@ -96,52 +87,18 @@ export default function SpeechToTextPage() {
     setIsDragging(false)
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const newFiles: TranscriptionFile[] = Array.from(e.dataTransfer.files).map((file) => ({
+      const newEntries: TranscriptionFile[] = Array.from(e.dataTransfer.files).map((file) => ({
         id: Math.random().toString(36).substring(2, 9),
         name: file.name,
         status: "uploading",
-        progress: 0,
       }))
 
-      setFiles([...files, ...newFiles])
+      setFiles([...files, ...newEntries])
       setIsModalOpen(false)
 
-      // Simulate upload progress and processing (same as above)
-      newFiles.forEach((file) => {
-        const uploadInterval = setInterval(() => {
-          setFiles((prevFiles) => {
-            const fileIndex = prevFiles.findIndex((f) => f.id === file.id)
-            if (fileIndex === -1) return prevFiles
-
-            const updatedFile = { ...prevFiles[fileIndex] }
-            if (updatedFile.status === "uploading") {
-              updatedFile.progress = (updatedFile.progress || 0) + 10
-              if (updatedFile.progress >= 100) {
-                updatedFile.status = "processing"
-                clearInterval(uploadInterval)
-
-                // Simulate processing completion after 2 seconds
-                setTimeout(() => {
-                  setFiles((prevFiles) => {
-                    const fileIndex = prevFiles.findIndex((f) => f.id === file.id)
-                    if (fileIndex === -1) return prevFiles
-
-                    const updatedFiles = [...prevFiles]
-                    updatedFiles[fileIndex] = {
-                      ...updatedFiles[fileIndex],
-                      status: "completed",
-                    }
-                    return updatedFiles
-                  })
-                }, 2000)
-              }
-            }
-
-            const updatedFiles = [...prevFiles]
-            updatedFiles[fileIndex] = updatedFile
-            return updatedFiles
-          })
-        }, 300)
+      newEntries.forEach((entry, idx) => {
+        const file = e.dataTransfer.files[idx]
+        uploadAndTranscribe(file, entry.id)
       })
     }
   }
@@ -188,15 +145,7 @@ export default function SpeechToTextPage() {
                     <div>
                       <h3 className="font-medium">{file.name}</h3>
                       {file.status === "uploading" && (
-                        <div className="mt-1">
-                          <div className="h-1.5 w-48 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                            <div
-                              className="h-full bg-sky-500 rounded-full"
-                              style={{ width: `${file.progress}%` }}
-                            ></div>
-                          </div>
-                          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Uploading... {file.progress}%</p>
-                        </div>
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Uploading...</p>
                       )}
                       {file.status === "processing" && (
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Processing...</p>

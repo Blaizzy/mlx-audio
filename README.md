@@ -109,26 +109,23 @@ http://127.0.0.1:8000
 
 The server provides the following REST API endpoints:
 
-- `POST /tts`: Generate TTS audio
-  - Parameters (form data):
-    - `text`: The text to convert to speech (required)
-    - `voice`: Voice to use (default: "af_heart")
-    - `speed`: Speech speed from 0.5 to 2.0 (default: 1.0)
-  - Returns: JSON with filename of generated audio
+- `POST /v1/audio/speech`: Generate speech from text following the OpenAI TTS specification.
+  - JSON body parameters:
+    - `model`: Name or path of the TTS model to use.
+    - `input`: Text to convert to speech.
+    - `voice`: Optional voice preset.
+    - `speed`: Optional speech speed (default `1.0`).
+  - Returns the generated audio in WAV format.
 
-- `GET /audio/{filename}`: Retrieve generated audio file
+- `POST /v1/audio/transcriptions`: Transcribe audio files using an STT model in a format compatible with OpenAI's API.
+  - Multipart form parameters:
+    - `file`: The audio file to transcribe.
+    - `model`: Name or path of the STT model.
+  - Returns JSON containing the transcribed `text`.
 
-- `POST /play`: Play audio directly from the server
-  - Parameters (form data):
-    - `filename`: The filename of the audio to play (required)
-  - Returns: JSON with status and filename
-
-- `POST /stop`: Stop any currently playing audio
-  - Returns: JSON with status
-
-- `POST /open_output_folder`: Open the output folder in the system's file explorer
-  - Returns: JSON with status and path
-  - Note: This feature only works when running the server locally
+- `GET /v1/models`: List loaded models.
+- `POST /v1/models`: Load a model by name.
+- `DELETE /v1/models`: Unload a model.
 
 > Note: Generated audio files are stored in `~/.mlx_audio/outputs` by default, or in a fallback directory if that location is not writable.
 
