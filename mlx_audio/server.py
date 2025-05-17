@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote
 
-import mlx.core as mx
-import numpy as np
 import soundfile as sf
+import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -215,6 +214,12 @@ def calculate_default_workers(workers: int = 2) -> int:
 
 # Add CORS middleware
 def setup_cors(app: FastAPI, allowed_origins: List[str]):
+    """(Re)configure CORS middleware with the given origins."""
+    # Remove any previously configured CORSMiddleware to avoid duplicates
+    app.user_middleware = [
+        m for m in app.user_middleware if m.cls is not CORSMiddleware
+    ]
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
@@ -230,6 +235,23 @@ def setup_ui(app: FastAPI, ui_path: Optional[Path] = None):
         ui_path = Path(__file__).parent / "ui" / "out"
     if ui_path.exists():
         app.mount("/", StaticFiles(directory=ui_path, html=True), name="ui")
+
+
+# Apply default CORS configuration when imported. The environment variable
+# ``MLX_AUDIO_ALLOWED_ORIGINS`` can override the allowed origins by providing a
+# comma-separated list. This ensures CORS headers are present even when running
+# ``uvicorn mlx_audio.server:app`` directly.
+
+allowed_origins_env = os.getenv("MLX_AUDIO_ALLOWED_ORIGINS")
+default_origins = (
+    [origin.strip() for origin in allowed_origins_env.split(",")]
+    if allowed_origins_env
+    else ["*"]
+)
+
+# Setup UI and CORS
+setup_ui(app)
+setup_cors(app, default_origins)
 
 
 # Request schemas for OpenAI-compatible endpoints
@@ -364,65 +386,3 @@ async def stt_transcriptions(
     result = stt_model.generate(tmp_path)
     os.remove(tmp_path)
     return result
-
-
-def run():
-    parser = argparse.ArgumentParser(description="MLX-Audio API server")
-    parser.add_argument(
-        "--allowed-origins",
-        nargs="+",
-        default=["*"],
-        help="List of allowed origins for CORS",
-    )
-    parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to run the server on"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8000, help="Port to run the server on"
-    )
-    parser.add_argument(
-        "--reload",
-        type=bool,
-        default=False,
-        help="Enable auto-reload of the server. Only works when 'workers' is set to None.",
-    )
-
-    parser.add_argument(
-        "--workers",
-        type=int_or_float,
-        default=calculate_default_workers(),
-        help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
-        Can be either an int or a float.
-        If an int, it will be the number of workers to use.
-        If a float, number of workers will be this fraction of the  number of CPU cores available, with a minimum of 1.
-        Defaults to the `MLX_AUDIO_NUM_WORKERS` env variable if set and to 2 if not.
-        To use all available CPU cores, set it to 1.0.
-
-        Examples:
-        --workers 1 (will use 1 worker)
-        --workers 1.0 (will use all available CPU cores)
-        --workers 0.5 (will use half the number of CPU cores available)
-        --workers 0.0 (will use 1 worker)""",
-    )
-
-    args = parser.parse_args()
-    if isinstance(args.workers, float):
-        args.workers = max(1, int(os.cpu_count() * args.workers))
-
-    setup_ui(app)
-    setup_cors(app, args.allowed_origins)
-
-    import uvicorn
-
-    uvicorn.run(
-        app,
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        workers=args.workers,
-        loop="asyncio",
-    )
-
-
-if __name__ == "__main__":
-    run()
