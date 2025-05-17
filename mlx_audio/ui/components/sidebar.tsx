@@ -11,17 +11,7 @@ export function Sidebar({ activePage = "home" }: SidebarProps) {
   return (
     <aside className="w-48 border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
       <nav className="flex flex-col space-y-1 p-3">
-        <Link
-          href="/home"
-          className={`flex items-center space-x-3 rounded-md px-3 py-2 text-sm ${
-            activePage === "home"
-              ? "bg-gray-100 dark:bg-gray-800 font-medium text-black dark:text-white"
-              : "text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800"
-          }`}
-        >
-          <Home className="h-5 w-5" />
-          <span>Home</span>
-        </Link>
+        
         <Link
           href="/text-to-speech"
           className={`flex items-center space-x-3 rounded-md px-3 py-2 text-sm ${
@@ -45,7 +35,7 @@ export function Sidebar({ activePage = "home" }: SidebarProps) {
           <FileText className="h-5 w-5" />
           <span>Speech to Text</span>
         </Link>
-        
+
 
       </nav>
     </aside>
