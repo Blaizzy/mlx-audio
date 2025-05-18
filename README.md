@@ -64,27 +64,40 @@ print("Audiobook chapter successfully generated!")
 
 ```
 
-### Web Interface & API Server
+### Web Interface & FastAPI Server
 
-MLX-Audio includes a web interface with a 3D visualization that reacts to audio frequencies. The interface allows you to:
+MLX-Audio provides a modern web interface with real-time audio visualization capabilities. The interface offers:
 
-1. Generate TTS with different voices and speed settings
-2. Upload and play your own audio files
-3. Visualize audio with an interactive 3D orb
-4. Automatically saves generated audio files to the outputs directory in the current working folder
-5. Open the output folder directly from the interface (when running locally)
+1. Text-to-Speech generation with customizable voices and parameters
+2. Speech-to-Text transcription with support for multiple languages
+3. Audio file upload and playback functionality
+4. Interactive 3D audio visualization
+5. Automatic audio file management in the outputs directory
+6. Direct access to the output folder from the interface (local deployment only)
 
-#### Features
+#### Key Features
 
-- **Multiple Voice Options**: Choose from different voice styles (AF Heart, AF Nova, AF Bella, BF Emma)
-- **Adjustable Speech Speed**: Control the speed of speech generation with an interactive slider (0.5x to 2.0x)
-- **Real-time 3D Visualization**: A responsive 3D orb that reacts to audio frequencies
-- **Audio Upload**: Play and visualize your own audio files
-- **Auto-play Option**: Automatically play generated audio
-- **Output Folder Access**: Convenient button to open the output folder in your system's file explorer
-
+- **Voice Customization**: Select from multiple voice presets including AF Heart, AF Nova, AF Bella, and BF Emma
+- **Speech Rate Control**: Fine-tune speech generation speed using an intuitive slider (range: 0.5x - 2.0x)
+- **Dynamic 3D Visualization**: Experience audio through an interactive 3D orb that responds to frequency changes
+- **Audio Management**: Upload, play, and visualize custom audio files
+- **Smart Playback**: Optional automatic playback of generated audio
+- **File Management**: Quick access to the output directory through an integrated file explorer button
+- **Speech Recognition**: Convert speech to text with support for multiple languages and models
 To start the web interface and API server:
 
+UI:
+```bash
+# Configure the API base URL and port
+export NEXT_PUBLIC_API_BASE_URL=http://localhost
+export NEXT_PUBLIC_API_PORT=8000
+
+# Start UI server
+cd mlx_audio/ui
+npm run dev
+```
+
+Server:
 ```bash
 # Using the command-line interface
 mlx_audio.server
@@ -214,7 +227,7 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
 - For the web interface and API:
   - FastAPI
   - Uvicorn
-  
+
 ## License
 
 [MIT License](LICENSE)
@@ -224,3 +237,12 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
 - Thanks to the Apple MLX team for providing a great framework for building TTS and STS models.
 - This project uses the Kokoro model architecture for text-to-speech synthesis.
 - The 3D visualization uses Three.js for rendering.
+
+
+@misc{mlx-audio,
+  author = {Canuma, Prince},
+  title = {MLX Audio},
+  year = {2025},
+  howpublished = {\url{https://github.com/Blaizzy/mlx-audio}},
+  note = {A text-to-speech (TTS), speech-to-text (STT) and speech-to-speech (STS) library built on Apple's MLX framework, providing efficient speech analysis on Apple Silicon.}
+}
