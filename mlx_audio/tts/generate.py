@@ -325,7 +325,11 @@ def generate_audio(
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(f"{file_prefix}.{audio_format}", audio, 24000)
+            sf.write(
+                f"{file_prefix}.{audio_format}",
+                audio,
+                model.sample_rate,
+            )
             if verbose:
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 

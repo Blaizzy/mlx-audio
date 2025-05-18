@@ -4,64 +4,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-
-def mlx_stft(
-    x,
-    n_fft=800,
-    hop_length=None,
-    win_length=None,
-    window="hann",
-    center=True,
-    pad_mode="reflect",
-):
-    """MLX implementation of Short-Time Fourier Transform"""
-    if hop_length is None:
-        hop_length = n_fft // 4
-    if win_length is None:
-        win_length = n_fft
-
-    if isinstance(window, str):
-        if window.lower() == "hann":
-            w = mx.array(np.hanning(win_length + 1)[:-1])
-        else:
-            raise ValueError(
-                f"Only 'hann' (string) is supported for window, not {window!r}"
-            )
-    else:
-        w = window
-
-    if w.shape[0] < n_fft:
-        pad_size = n_fft - w.shape[0]
-        w = mx.concatenate([w, mx.zeros((pad_size,))], axis=0)
-
-    def _pad(x, padding, pad_mode="reflect"):
-        if pad_mode == "constant":
-            return mx.pad(x, [(padding, padding)])
-        elif pad_mode == "reflect":
-            prefix = x[1 : padding + 1][::-1]
-            suffix = x[-(padding + 1) : -1][::-1]
-            return mx.concatenate([prefix, x, suffix])
-        else:
-            raise ValueError(f"Invalid pad_mode {pad_mode}")
-
-    x = mx.array(x)
-
-    if center:
-        x = _pad(x, n_fft // 2, pad_mode)
-
-    num_frames = 1 + (x.shape[0] - n_fft) // hop_length
-    if num_frames <= 0:
-        raise ValueError(
-            f"Input is too short (length={x.shape[0]}) for n_fft={n_fft} with "
-            f"hop_length={hop_length} and center={center}."
-        )
-
-    shape = (num_frames, n_fft)
-    strides = (hop_length, 1)
-    frames = mx.as_strided(x, shape=shape, strides=strides)
-    spec = mx.fft.rfft(frames * w)
-
-    return spec.transpose(1, 0)
+from mlx_audio.utils import stft
 
 
 class MelSpectrogram(nn.Module):
@@ -211,18 +154,18 @@ class MelSpectrogram(nn.Module):
 
         # For 1D input, process directly
         if not batch_mode:
-            # Calculate STFT using mlx_stft
-            stft = mlx_stft(
+            # Calculate STFT
+            x_stft = stft(
                 audio_1d,
                 n_fft=self.n_fft,
                 hop_length=self.hop_length,
                 win_length=self.win_length,
                 window="hann",
                 center=True,
-            )
+            ).transpose(0, 1)
 
             # Calculate magnitude
-            magnitudes = mx.abs(stft)
+            magnitudes = mx.abs(x_stft)
 
             # Apply power
             if self.power != 1.0:

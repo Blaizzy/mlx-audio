@@ -9,8 +9,10 @@ import mlx.nn as nn
 import yaml
 from huggingface_hub import snapshot_download
 
+from mlx_audio.utils import hanning, istft
+
 from ..encodec import Encodec
-from .mel import hanning, istft, log_mel_spectrogram
+from .mel import log_mel_spectrogram
 
 
 class FeatureExtractor(nn.Module):
@@ -130,11 +132,10 @@ class ISTFTHead(nn.Module):
         y = mx.sin(p)
         S = mag * (x + 1j * y)
         audio = istft(
-            S.squeeze(0).swapaxes(0, 1),
-            hanning(self.n_fft),
-            self.n_fft,
-            self.hop_length,
-            self.n_fft,
+            S.squeeze(0),
+            window=hanning(self.n_fft),
+            hop_length=self.hop_length,
+            win_length=self.n_fft,
         )
         return audio
 

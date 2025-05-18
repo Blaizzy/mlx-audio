@@ -65,12 +65,12 @@ class TestVocos(unittest.TestCase):
 
         # reconstruct from mel spec
         reconstructed_audio = model(audio)
-        self.assertEqual(reconstructed_audio.shape, (120576,))
+        self.assertEqual(reconstructed_audio.shape, (119552,))
 
         # decode from mel spec
         mel_spec = log_mel_spectrogram(audio)
         decoded = model.decode(mel_spec)
-        self.assertEqual(decoded.shape, (120576,))
+        self.assertEqual(decoded.shape, (119552,))
 
         model = Vocos.from_hparams(config_encodec)
 
@@ -79,14 +79,14 @@ class TestVocos(unittest.TestCase):
         reconstructed_audio = model(
             audio, bandwidth_id=mx.array(bandwidth_id)[None, ...]
         )
-        self.assertEqual(reconstructed_audio.shape, (120960,))
+        self.assertEqual(reconstructed_audio.shape, (119680,))
 
         # decode with encodec codes
         codes = model.get_encodec_codes(audio, bandwidth_id=bandwidth_id)
         decoded = model.decode_from_codes(
             codes, bandwidth_id=mx.array(bandwidth_id)[None, ...]
         )
-        self.assertEqual(decoded.shape, (120960,))
+        self.assertEqual(decoded.shape, (119680,))
 
 
 if __name__ == "__main__":
