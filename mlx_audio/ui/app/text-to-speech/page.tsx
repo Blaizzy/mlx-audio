@@ -51,6 +51,7 @@ function RangeInput({
 export default function SpeechSynthesis() {
   const [text, setText] = useState("But I also have other interests, such as playing tic-tac-toe.")
   const [isPlaying, setIsPlaying] = useState(false)
+  const [isGenerating, setIsGenerating] = useState(false)
   const [speed, setSpeed] = useState(1)
   const [pitch, setPitch] = useState(0)
   const [volume, setVolume] = useState(1)
@@ -86,9 +87,13 @@ export default function SpeechSynthesis() {
 
   const handleGenerate = async () => {
     if (!audioRef.current) return
+    setIsGenerating(true)
+
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
+    const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
     try {
-      const response = await fetch("http://localhost:8000/v1/audio/speech", {
+      const response = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/speech`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -132,6 +137,8 @@ export default function SpeechSynthesis() {
     } catch (error) {
       console.error("Error generating speech:", error)
       // Handle error appropriately in the UI
+    } finally {
+      setIsGenerating(false)
     }
   }
 
@@ -195,11 +202,21 @@ export default function SpeechSynthesis() {
             </div>
             <div className="flex items-center space-x-2">
               <button
-                className="rounded-md bg-sky-500 dark:bg-sky-600 px-3 py-1 text-sm text-white flex items-center hover:bg-sky-600 dark:hover:bg-sky-700"
+                className={`rounded-md bg-sky-500 dark:bg-sky-600 px-3 py-1 text-sm text-white flex items-center hover:bg-sky-600 dark:hover:bg-sky-700 ${isGenerating ? "animate-pulse" : ""}`}
                 onClick={handleGenerate}
+                disabled={isGenerating}
               >
-                <RefreshCw className="h-4 w-4 mr-1" />
-                Generate
+                {isGenerating ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-1 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="h-4 w-4 mr-1" />
+                    Generate
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -242,7 +259,7 @@ export default function SpeechSynthesis() {
                 </div>
               </div>
 
-             
+
 
               <div className="mb-6">
                 <div className="mb-2 flex items-center justify-between">

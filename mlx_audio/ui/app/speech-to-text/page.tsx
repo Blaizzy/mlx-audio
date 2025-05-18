@@ -80,13 +80,17 @@ export default function SpeechToTextPage() {
 
     let fileName = file.name
 
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
+    const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
+
     try {
-      const res = await fetch("http://localhost:8000/v1/audio/transcriptions", {
+      const res = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/transcriptions`, {
         method: "POST",
         body: formData,
       })
       const data = await res.json()
-      // Save the full transcription JSON to localStorage using the key "transcription-${id}"
+
+      // Save the transcription to a JSON file via API
       data.fileName = fileName
       localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))
       setFiles((prev) =>
@@ -100,7 +104,6 @@ export default function SpeechToTextPage() {
       )
     }
   }
-
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
