@@ -16,50 +16,15 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import unquote
 
 import soundfile as sf
-import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from mlx_audio.stt.utils import MODEL_REMAPPING as MODEL_STT_REMAPPING
-from mlx_audio.stt.utils import load_model as load_stt_model
-from mlx_audio.tts.utils import MODEL_REMAPPING as MODEL_TTS_REMAPPING
-from mlx_audio.tts.utils import load_config
-from mlx_audio.tts.utils import load_model as load_tts_model
+from mlx_audio.utils import load_model
 
 MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
-
-
-def get_model_type(model_type: str, model_name: List[str]) -> Optional[str]:
-    """Determine whether a model belongs to the TTS or STT category."""
-
-    candidates = [model_type] + (model_name or [])
-
-    for category, remap in (
-        ("tts", MODEL_TTS_REMAPPING),
-        ("stt", MODEL_STT_REMAPPING),
-    ):
-        for hint in candidates:
-            arch = remap.get(hint, hint)
-            module_path = f"mlx_audio.{category}.models.{arch}"
-            if importlib.util.find_spec(module_path) is not None:
-                return category
-
-    return None
-
-
-def get_model_name_parts(model_path: Union[str, Path]) -> str:
-    model_name = None
-    if isinstance(model_path, str):
-        model_name = model_path.lower().split("/")[-1].split("-")
-    elif isinstance(model_path, Path):
-        index = model_path.parts.index("hub")
-        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
-    else:
-        raise ValueError(f"Invalid model path type: {type(model_path)}")
-    return model_name
 
 
 class ModelProvider:
@@ -69,17 +34,7 @@ class ModelProvider:
 
     def load_model(self, model_name: str):
         if model_name not in self.models:
-            config = load_config(model_name)
-            model_type = config.get("model_type", None)
-
-            model_name_parts = get_model_name_parts(model_name)
-            model_type = get_model_type(model_type, model_name_parts)
-            if model_type == "tts":
-                self.models[model_name] = load_tts_model(model_name)
-            elif model_type == "stt":
-                self.models[model_name] = load_stt_model(model_name)
-            else:
-                raise ValueError(f"Model type {model_type} not supported.")
+            self.models[model_name] = load_model(model_name)
 
         return self.models[model_name]
 
