@@ -98,26 +98,6 @@ class ModelProvider:
 app = FastAPI()
 
 
-def int_or_float(value):
-
-    try:
-        return int(value)
-    except ValueError:
-        try:
-            return float(value)
-        except ValueError:
-            raise argparse.ArgumentTypeError(f"{value} is not an int or float")
-
-
-def calculate_default_workers(workers: int = 2) -> int:
-    if num_workers_env := os.getenv("FASTMLX_NUM_WORKERS"):
-        try:
-            workers = int(num_workers_env)
-        except ValueError:
-            workers = max(1, int(os.cpu_count() * float(num_workers_env)))
-    return workers
-
-
 # Add CORS middleware
 def setup_cors(app: FastAPI, allowed_origins: List[str]):
     """(Re)configure CORS middleware with the given origins."""
@@ -135,14 +115,6 @@ def setup_cors(app: FastAPI, allowed_origins: List[str]):
     )
 
 
-def setup_ui(app: FastAPI, ui_path: Optional[Path] = None):
-    """Mount the built React UI if available."""
-    if ui_path is None:
-        ui_path = Path(__file__).parent / "ui" / "out"
-    if ui_path.exists():
-        app.mount("/", StaticFiles(directory=ui_path, html=True), name="ui")
-
-
 # Apply default CORS configuration when imported. The environment variable
 # ``MLX_AUDIO_ALLOWED_ORIGINS`` can override the allowed origins by providing a
 # comma-separated list. This ensures CORS headers are present even when running
@@ -155,8 +127,7 @@ default_origins = (
     else ["*"]
 )
 
-# Setup UI and CORS
-setup_ui(app)
+# Setup CORS
 setup_cors(app, default_origins)
 
 
@@ -276,9 +247,6 @@ async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
-    response_format: Optional[str] = Form("verbose_json"),
-    temperature: Optional[float] = Form(0.0),
-    prompt: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
     data = await file.read()
