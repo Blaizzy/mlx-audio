@@ -24,6 +24,7 @@ export default function SpeechToTextPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [primaryLanguage, setPrimaryLanguage] = useState("Detect")
   const [tagAudioEvents, setTagAudioEvents] = useState(false)
+  const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
 
@@ -72,7 +73,7 @@ export default function SpeechToTextPage() {
   const uploadAndTranscribe = async (file: File, id: string) => {
     const formData = new FormData()
     formData.append("file", file)
-    formData.append("model", "mlx-community/whisper-large-v3-turbo")
+    formData.append("model", selectedModel)
     formData.append("language", primaryLanguage === "Detect" ? "en" : primaryLanguage.toLowerCase())
     formData.append("response_format", "verbose_json")
     formData.append("temperature", "0")
@@ -152,6 +153,7 @@ export default function SpeechToTextPage() {
 
   const deleteFile = (id: string) => {
     setFiles(files.filter((file) => file.id !== id))
+    localStorage.removeItem(`mlx-audio-transcription-${id}`)
   }
 
   return (
@@ -215,7 +217,7 @@ export default function SpeechToTextPage() {
                       <button className="p-2 rounded-full hover:bg-gray-100 dark:hover:bg-gray-700">
                         <MoreVertical className="h-5 w-5 text-gray-500 dark:text-gray-400" />
                       </button>
-                      <div className="absolute right-0 mt-2 w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 hidden group-hover:block z-10">
+                      <div className="absolute right-0 w-48 bg-white dark:bg-gray-800 rounded-md shadow-lg border border-gray-200 dark:border-gray-700 hidden group-hover:block z-10">
                         <div className="py-1">
                           {file.status === "completed" && (
                             <>
@@ -323,6 +325,19 @@ export default function SpeechToTextPage() {
                 </select>
                 <ChevronDown className="absolute right-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
               </div>
+            </div>
+
+            <div className="mb-6">
+              <div className="flex justify-between items-center mb-2">
+                <label className="block text-sm font-medium">Model</label>
+              </div>
+              <input
+                type="text"
+                value={selectedModel}
+                onChange={(e) => setSelectedModel(e.target.value)}
+                placeholder="Enter model name"
+                className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
             </div>
 
             <div className="mb-6">
