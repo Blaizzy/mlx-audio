@@ -32,115 +32,21 @@ from mlx_audio.tts.utils import load_model as load_tts_model
 MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
 
-def get_available_models(model_type: str):
-    """
-    Get a list of all available model types by scanning the models directory.
+def get_model_type(model_type: str, model_name: List[str]) -> Optional[str]:
+    """Determine whether a model belongs to the TTS or STT category."""
 
-    Returns:
-        List[str]: A list of available model type names
-    """
-    models_dir = Path(__file__).parent / model_type / "models"
-    available_models = []
+    candidates = [model_type] + (model_name or [])
 
-    if models_dir.exists() and models_dir.is_dir():
-        for item in models_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("__"):
-                available_models.append(item.name)
+    for category, remap in (
+        ("tts", MODEL_TTS_REMAPPING),
+        ("stt", MODEL_STT_REMAPPING),
+    ):
+        for hint in candidates:
+            arch = remap.get(hint, hint)
+            module_path = f"mlx_audio.{category}.models.{arch}"
+            if importlib.util.find_spec(module_path) is not None:
+                return category
 
-    return available_models
-
-
-def _try_resolve_model_for_category(
-    category: str,
-    initial_hint: str,
-    model_name_components: List[str],
-    remapping_dict: Dict[str, str],
-) -> Tuple[bool, str]:
-    """
-    Attempts to resolve and verify a model architecture for a given category.
-
-    Args:
-        category (str): The model category (e.g., "tts", "stt").
-        initial_hint (str): An initial hint for the model architecture.
-        model_name_components (List[str]): List of model name components for further refinement.
-        remapping_dict (Dict[str, str]): The remapping dictionary for the category.
-
-    Returns:
-        A tuple (success, arch_name):
-        - success (bool): True if a valid architecture was found and its module imported.
-        - arch_name (str): The specific architecture name that was processed or attempted.
-    """
-    # Stage 1: Initial remapping based on the hint
-    arch_candidate = remapping_dict.get(initial_hint, initial_hint)
-
-    # Stage 2: Refine with model_name parts
-    if model_name_components:
-        category_specific_architectures = get_available_models(category)
-        for part in model_name_components:
-            # Check if the part matches an available model directory name for the category
-            if part in category_specific_architectures:
-                arch_candidate = part
-
-            # Check if the part is in the category's custom remapping dictionary
-            # This remapping takes precedence and breaks the loop if found
-            if part in remapping_dict:
-                arch_candidate = remapping_dict[part]
-                break
-
-    # Stage 3: Import attempt
-    try:
-        importlib.import_module(f"mlx_audio.{category}.models.{arch_candidate}")
-        return True, arch_candidate  # Success
-    except ImportError:
-        return (
-            False,
-            arch_candidate,
-        )  # Failure, return the candidate for error messaging
-
-
-def get_model_type(model_type: str, model_name: List[str]):
-    """
-    Retrieve the model category ("tts" or "stt") based on an architecture hint and model name parts.
-
-    This function attempts to find the appropriate model category by:
-    1. Trying to resolve a TTS model architecture based on the `model_type` hint and `model_name` parts.
-    2. If TTS resolution fails, trying to resolve an STT model architecture using the same inputs.
-
-    Args:
-        model_type (str): An initial hint for the model architecture (e.g., "vits", "whisper").
-                           This is used as a starting point and can be overridden by `model_name` parts.
-        model_name (List[str]): List of model name components. These are checked against
-                                available model directories and remapping dictionaries to refine
-                                the architecture guess.
-
-    Returns:
-        str: The resolved model category ("tts" or "stt").
-
-    Raises:
-        ValueError: If a supported model architecture and category cannot be determined after checking both TTS and STT.
-    """
-
-    # Try to resolve as a TTS model
-    is_tts, _ = _try_resolve_model_for_category(
-        category="tts",
-        initial_hint=model_type,
-        model_name_components=model_name,
-        remapping_dict=MODEL_TTS_REMAPPING,
-    )
-    if is_tts:
-        return "tts"
-
-    # If not TTS, try to resolve as an STT model
-    is_stt, last_tried_arch = _try_resolve_model_for_category(
-        category="stt",
-        initial_hint=model_type,
-        model_name_components=model_name,
-        remapping_dict=MODEL_STT_REMAPPING,
-    )
-    if is_stt:
-        return "stt"
-
-    # If both TTS and STT resolution fail, return None
     return None
 
 
