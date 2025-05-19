@@ -148,11 +148,15 @@ class DacInterface:
         else:
             range_fn = range
 
+        @mx.compile
+        def decode_chunk(codes):
+            z = model.quantizer.from_codes(codes)[0]
+            r = model.decode(z)
+            return r
+
         for i in range_fn(0, codes.shape[-1], chunk_length):
             c = codes[..., i : i + chunk_length]
-            z = model.quantizer.from_codes(c)[0]
-            r = model.decode(z)
-            recons.append(r)
+            recons.append(decode_chunk(c))
 
         recons = mx.concatenate(recons, axis=-1)
         return process_audio_array(recons.swapaxes(1, 2))
