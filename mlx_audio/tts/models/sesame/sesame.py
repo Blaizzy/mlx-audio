@@ -19,7 +19,7 @@ from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
-from mlx_audio.codec import Mimi
+from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
 
 from ..base import GenerationResult
 from .attention import Attention
@@ -302,6 +302,7 @@ class Model(nn.Module):
         self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
         mimi = Mimi.from_pretrained(MIMI_REPO)
         self._audio_tokenizer = mimi
+        self._streaming_decoder = MimiStreamingDecoder(mimi)
 
         try:
             self._watermarker = load_watermarker()
@@ -450,10 +451,17 @@ class Model(nn.Module):
         )
         return [prompt]
 
-    def generate_result(self, samples, start_time: float) -> GenerationResult:
+    def generate_result(
+        self, samples, start_time: float, stream: bool = False
+    ) -> GenerationResult:
         token_count = len(samples)
         transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
-        audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
+        if stream:
+            audio = (
+                self._streaming_decoder.decode_frames(transposed).squeeze(0).squeeze(0)
+            )
+        else:
+            audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
 
         # This applies an imperceptible watermark to identify audio as AI-generated.
         # Watermarking ensures transparency, dissuades misuse, and enables traceability.
@@ -548,6 +556,8 @@ class Model(nn.Module):
             start_time = time.perf_counter()
 
             self.model.reset_caches()
+            if stream:
+                self._streaming_decoder.reset()
 
             tokens, tokens_mask = [], []
             for segment in context:
@@ -612,12 +622,12 @@ class Model(nn.Module):
                     >= streaming_interval_tokens
                 ):
                     yielded_frame_count = generated_frame_count
-                    yield self.generate_result(samples, start_time)
+                    yield self.generate_result(samples, start_time, stream=True)
                     samples = []
                     start_time = time.perf_counter()
 
             if len(samples) > 0:
-                yield self.generate_result(samples, start_time)
+                yield self.generate_result(samples, start_time, stream=stream)
 
             # Clear cache after each segment to avoid memory leaks
             mx.clear_cache()
