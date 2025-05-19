@@ -196,6 +196,10 @@ class Model(nn.Module):
                 all_tokens = chunk_tokens
 
         result = sentences_to_result(tokens_to_sentences(all_tokens))
+
+        # Clear cache after each segment to avoid memory leaks
+        mx.clear_cache()
+
         return result
 
     @classmethod

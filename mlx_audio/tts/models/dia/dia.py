@@ -305,6 +305,9 @@ class Model(nn.Module):
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
 
+            # Clear cache after each segment to avoid memory leaks
+            mx.clear_cache()
+
     def _generate(
         self,
         text: str,

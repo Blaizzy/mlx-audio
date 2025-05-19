@@ -844,6 +844,9 @@ class Model(nn.Module):
                     # update progress bar
                     pbar.update(min(content_frames, seek) - previous_seek)
 
+        # Clear cache after each segment to avoid memory leaks
+        mx.clear_cache()
+
         return STTOutput(
             text=tokenizer.decode(all_tokens[len(initial_prompt_tokens) :]),
             segments=all_segments,

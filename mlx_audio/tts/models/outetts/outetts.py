@@ -153,3 +153,6 @@ class Model(LlamaModel):
                 processing_time_seconds=time_end - time_start,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
+
+            # Clear cache after each segment to avoid memory leaks
+            mx.clear_cache()

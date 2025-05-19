@@ -1,8 +1,11 @@
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 from typing import Optional
+
+import mlx.core as mx
 
 from mlx_audio.stt.utils import load_model
 
@@ -132,7 +135,11 @@ def generate(
     print(f"\033[94mAudio path:\033[0m {audio_path}")
     print(f"\033[94mOutput path:\033[0m {output_path}")
     print(f"\033[94mFormat:\033[0m {format}")
+    mx.reset_peak_memory()
+    start_time = time.time()
     segments = model.generate(audio_path)
+    end_time = time.time()
+
     if verbose:
         print("\n\033[94mTranscription:\033[0m")
         print(segments.text)
@@ -143,6 +150,9 @@ def generate(
             print(segments.tokens)
         else:
             print(segments)
+
+    print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
+    print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)

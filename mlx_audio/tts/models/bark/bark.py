@@ -523,3 +523,6 @@ class Model(nn.Module):
                 processing_time_seconds=segment_time,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
+
+            # Clear cache after each segment to avoid memory leaks
+            mx.clear_cache()

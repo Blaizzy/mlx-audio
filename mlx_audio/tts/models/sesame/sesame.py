@@ -618,3 +618,6 @@ class Model(nn.Module):
 
             if len(samples) > 0:
                 yield self.generate_result(samples, start_time)
+
+            # Clear cache after each segment to avoid memory leaks
+            mx.clear_cache()
