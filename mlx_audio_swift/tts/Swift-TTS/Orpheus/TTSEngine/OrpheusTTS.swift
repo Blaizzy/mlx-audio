@@ -16,87 +16,90 @@ public class OrpheusTTS {
         case weightsNotAvailable
         case modelNotInitialized
     }
-    
+
     private let weights: [String: MLXArray]
     private let snacDecoder: SNACDecoder
     private var chosenVoice: OrpheusVoice?
-    
+
     init() throws {
         // Load model weights
         weights = OrpheusWeightLoader.loadWeightsOrpheus()
         if weights.isEmpty {
             throw OrpheusTTSError.weightsNotAvailable
         }
-        
+
         // Initialize SNAC decoder
         let snacConfig = SNACConfig()
         snacDecoder = SNACDecoder(weights: weights, config: snacConfig)
     }
-    
+
     public func generateAudio(voice: OrpheusVoice, text: String, temperature: Float = 0.6, topP: Float = 0.8) async throws -> MLXArray {
         print("Orpheus voice: \(voice), text: \(text)")
-        
+
         // Prepare input with voice prefix
         let prompt = "\(voice.rawValue): \(text)"
         print("Orpheus prompt: \(prompt)")
-        
+
         // Tokenize input
         let inputIds = tokenize(prompt: prompt)
-        
+
         print("Orpheus inputIDs: \(inputIds)")
-        
+
         // Generate tokens using MLX
         let generatedTokens = generateTokens(inputIds: inputIds, temperature: temperature, topP: topP)
-        
+
         print("Orpheus generatedTokens: \(generatedTokens)")
-        
+
         // Convert tokens to audio using SNAC decoder
         let codeLists = parseOutput(tokens: generatedTokens)
-        
+
         print("Code lists: \(codeLists)")
-        
+
+        // Clear cache after each chunk to avoid memory leaks
+        MLX.clearCache()
+
         return MLXArray([])
 //        let audio = snacDecoder.decode(codes: codeLists)
 //        return audio
     }
-    
+
     private func tokenize(prompt: String) -> MLXArray {
         // TODO: Implement proper tokenization
         // For now, just convert string to array of ASCII values
         let tokens = prompt.utf8.map { Int($0) }
         return MLXArray(tokens)
     }
-    
+
     private func generateTokens(inputIds: MLXArray, temperature: Float, topP: Float) -> [Int] {
         var currentIds = inputIds
         var generatedTokens: [Int] = []
-        
+
         for _ in 0..<Constants.maxTokenCount {
             // Get next token prediction
             let logits = forward(inputIds: currentIds)
             let nextToken = sampleNextToken(logits: logits, temperature: temperature, topP: topP)
-            
+
             // Check for end token
             if nextToken == Constants.endToken {
                 break
             }
-            
+
             generatedTokens.append(nextToken)
             // Reshape arrays to 2D before concatenation
             let currentIds2D = currentIds.reshaped([1, -1])
             let nextToken2D = MLXArray([nextToken]).reshaped([1, 1])
             currentIds = MLX.concatenated([currentIds2D, nextToken2D], axis: 1)
         }
-        
+
         return generatedTokens
     }
-    
+
     private func rmsNorm(x: MLXArray, weight: MLXArray) -> MLXArray {
         let variance = MLX.mean(MLX.square(x), axis: -1, keepDims: true)
         let normalized = x / MLX.sqrt(variance + 1e-5)
         return normalized * weight
     }
-    
+
     private func forward(inputIds: MLXArray) -> MLXArray {
         print("Input shape: \(inputIds.shape)")
 
@@ -268,7 +271,7 @@ public class OrpheusTTS {
         // Return only the logits for the last token for next token prediction
         return logits[-1, ..<vocabSize]
     }
-    
+
     private func linear(x: MLXArray, weight: MLXArray) -> MLXArray {
         // For Llama, we need to handle the weight shapes correctly
         let weightShape = weight.shape
@@ -283,18 +286,18 @@ public class OrpheusTTS {
             return result.reshaped(xShape.dropLast() + [weightShape[0]])
         }
     }
-    
+
     private func silu(_ x: MLXArray) -> MLXArray {
         return x * MLX.sigmoid(x)
     }
-    
+
     private func sampleNextToken(logits: MLXArray, temperature: Float, topP: Float) -> Int {
         // Apply temperature
         let scaledLogits = logits / temperature
-        
+
         // Convert to probabilities
         let probs = MLX.softmax(scaledLogits, axis: -1)
-        
+
         // Sample from distribution
         let r = MLXRandom.uniform(0.0..<1.0)
         var cumulativeProb: Float = 0.0
@@ -304,15 +307,15 @@ public class OrpheusTTS {
                 return i
             }
         }
-        
+
         return probs.shape[0] - 1 // Fallback to last token if no sample found
     }
-    
+
     private func parseOutput(tokens: [Int]) -> [[Int]] {
         // Parse tokens into code lists for SNAC decoder
         var codeLists: [[Int]] = []
         var currentList: [Int] = []
-        
+
         for token in tokens {
             if token == Constants.audioStartToken {
                 currentList = []
@@ -324,10 +327,10 @@ public class OrpheusTTS {
                 currentList.append(token)
             }
         }
-        
+
         return codeLists
     }
-    
+
     struct Constants {
         static let maxTokenCount = 1200
         static let sampleRate = 24000
@@ -338,4 +341,4 @@ public class OrpheusTTS {
         static let audioEndToken = 128262
         static let voicePrefixToken = 128260
     }
-} 
+}
