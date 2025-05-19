@@ -1,11 +1,9 @@
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Union
+from typing import List, Optional
 
 import mlx.core as mx
-import mlx.nn as nn
 from mlx_lm.generate import stream_generate
-from mlx_lm.models.base import BaseModelArgs, create_attention_mask
 from mlx_lm.models.llama import Model as LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
