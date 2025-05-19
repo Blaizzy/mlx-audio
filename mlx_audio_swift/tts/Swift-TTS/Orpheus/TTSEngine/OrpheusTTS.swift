@@ -56,7 +56,7 @@ public class OrpheusTTS {
         print("Code lists: \(codeLists)")
 
         // Clear cache after each chunk to avoid memory leaks
-        MLX.clearCache()
+        MLX.GPU.clearCache()
 
         return MLXArray([])
 //        let audio = snacDecoder.decode(codes: codeLists)

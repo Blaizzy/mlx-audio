@@ -200,9 +200,9 @@ public class KokoroTTS {
           throw error
         }
       }
-      
+
       // Clear cache after each chunk to avoid memory leaks
-      MLX.clearCache()
+      MLX.GPU.clearCache()
     }
 
     // Return first chunk if only one chunk exists
