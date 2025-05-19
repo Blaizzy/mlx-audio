@@ -61,7 +61,7 @@ export default function SpeechSynthesis() {
   const [model, setModel] = useState("prince-canuma/Spark-TTS-0.5B")
   const [language, setLanguage] = useState("English-detected")
   const [liked, setLiked] = useState<boolean | null>(null)
-  const [selectedVoice, setSelectedVoice] = useState("Trustworthy Man")
+  const [selectedVoice, setSelectedVoice] = useState("conversational_a")
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -92,6 +92,8 @@ export default function SpeechSynthesis() {
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
+    const voice = (model.includes("marvis") ? "conversational_a" : "af_heart");
+
     try {
       const response = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/speech`, {
         method: "POST",
@@ -101,7 +103,7 @@ export default function SpeechSynthesis() {
         body: JSON.stringify({
           model: model, // Or the specific model identifier if different
           input: text,
-          voice: selectedVoice,
+          voice: voice,
           speed: speed,
           // pitch and other parameters can be added here if supported by the backend
         }),
@@ -250,9 +252,11 @@ export default function SpeechSynthesis() {
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
                     >
-                      <option value="Kokoro">Kokoro</option>
-                      <option value="Sesame">Sesame</option>
-                      <option value="SparkTTS">SparkTTS</option>
+                      <option value="mlx-community/Kokoro-82M-bf16">Kokoro</option>
+                      <option value="Marvis-AI/marvis-tts-250m-v0.1-MLX-6bit">Marvis-TTS-250m-v0.1</option>
+                      <option value="Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit">Marvis-TTS-250m-v0.2</option>
+                      <option value="Marvis-AI/marvis-tts-100m-v0.2-MLX-6bit">Marvis-TTS-100m-v0.2</option>
+                      <option value="mlx-community/Spark-TTS-0.5B-bf16">SparkTTS</option>
                     </select>
                     <ChevronDown className="absolute right-2 top-2 h-4 w-4 pointer-events-none" />
                   </div>

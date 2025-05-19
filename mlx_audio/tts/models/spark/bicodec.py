@@ -17,6 +17,7 @@ from mlx_audio.tts.models.spark.modules.speaker.speaker_encoder import SpeakerEn
 from mlx_audio.tts.models.spark.utils.file import load_config
 from mlx_audio.tts.utils import get_model_path
 from mlx_audio.utils import hanning, mel_filters, stft
+from mlx_audio.utils import hanning, mel_filters, stft
 
 
 def mel_spectrogram(
