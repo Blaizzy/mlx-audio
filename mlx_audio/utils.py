@@ -118,7 +118,7 @@ def istft(
         window_fn = STR_TO_WINDOW_FN.get(window.lower())
         if window_fn is None:
             raise ValueError(f"Unknown window function: {window}")
-        w = window_fn(win_length)
+        w = window_fn(win_length + 1)[:-1]
     else:
         w = window
 

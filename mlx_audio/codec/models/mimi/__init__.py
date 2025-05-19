@@ -1,1 +1,1 @@
-from .mimi import Mimi
+from .mimi import Mimi, MimiStreamingDecoder

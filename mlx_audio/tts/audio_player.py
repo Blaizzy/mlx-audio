@@ -15,21 +15,22 @@ class AudioPlayer:
         self.drain_event = Event()
 
     def callback(self, outdata, frames, time, status):
+        outdata.fill(0)  # initialize the frame with silence
+        filled = 0
+
         with self.buffer_lock:
-            if len(self.audio_buffer) > 0:
-                available = min(frames, len(self.audio_buffer[0]))
-                chunk = self.audio_buffer[0][:available].copy()
-                self.audio_buffer[0] = self.audio_buffer[0][available:]
+            while filled < frames and self.audio_buffer:
+                buf = self.audio_buffer[0]
+                to_copy = min(frames - filled, len(buf))
+                outdata[filled : filled + to_copy, 0] = buf[:to_copy]
+                filled += to_copy
 
-                if len(self.audio_buffer[0]) == 0:
+                if to_copy == len(buf):
                     self.audio_buffer.popleft()
-                    if len(self.audio_buffer) == 0:
-                        self.drain_event.set()
+                else:
+                    self.audio_buffer[0] = buf[to_copy:]
 
-                outdata[:, 0] = np.zeros(frames)
-                outdata[:available, 0] = chunk
-            else:
-                outdata[:, 0] = np.zeros(frames)
+            if not self.audio_buffer and filled < frames:
                 self.drain_event.set()
 
     def play(self):

@@ -5,26 +5,56 @@ from pathlib import Path
 from typing import Optional
 
 import mlx.core as mx
+import mlx.nn as nn
 from mlx_lm.generate import stream_generate
+from mlx_lm.models.llama import Model as LlamaModel
+from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
+from mlx_lm.models.qwen2 import Model as Qwen2Model
+from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelConfig
+from mlx_lm.models.qwen3 import Model as Qwen3Model
+from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
+from transformers import AutoTokenizer
 
 from ..base import GenerationResult
-from ..llama import Model as LlamaModel
-from ..llama import ModelConfig as LlamaModelConfig
 from .dac_interface import DacInterface
 from .prompt_processor import PromptProcessor
 
 
 @dataclass
-class ModelConfig(LlamaModelConfig):
+class ModelConfig(LlamaModelConfig, Qwen2ModelConfig, Qwen3ModelConfig):
     tokenizer_name: str = "OuteAI/Llama-OuteTTS-1.0-1B"
+    sample_rate: int = 24000
 
 
-class Model(LlamaModel):
+class Model(nn.Module):
+    def __init__(self, config: ModelConfig, **kwargs):
+        super().__init__()
+        self.config = config
+        self.tokenizer = AutoTokenizer.from_pretrained(config.tokenizer_name)
+        self.model = self._initialize_model(config, **kwargs)
+
+    def _initialize_model(self, config: ModelConfig, **kwargs) -> nn.Module:
+
+        model_map = {"llama": LlamaModel, "qwen2": Qwen2Model, "qwen3": Qwen3Model}
+
+        if config.model_type not in model_map:
+            raise ValueError(f"Unsupported model type: {config.model_type}")
+
+        return model_map[config.model_type](config, **kwargs)
 
     def sanitize(self, weights):
-        return weights
+        weights = self.model.sanitize(weights)
+        return {
+            (
+                f"model.{k}"
+                if not k.startswith("model.model.")
+                and not k.startswith("model.lm_head")
+                else k
+            ): v
+            for k, v in weights.items()
+        }
 
     @property
     def layers(self):
@@ -33,6 +63,9 @@ class Model(LlamaModel):
     @property
     def sample_rate(self):
         return self.config.sample_rate
+
+    def __call__(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
 
     def generate(
         self,
@@ -85,7 +118,7 @@ class Model(LlamaModel):
             for i, response in enumerate(
                 tqdm(
                     stream_generate(
-                        self,
+                        self.model,
                         tokenizer=self.tokenizer,
                         prompt=input_ids.squeeze(0),
                         max_tokens=max_tokens,
