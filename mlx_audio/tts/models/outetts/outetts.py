@@ -46,7 +46,15 @@ class Model(nn.Module):
 
     def sanitize(self, weights):
         weights = self.model.sanitize(weights)
-        return {f"model.{k}": v for k, v in weights.items()}
+        return {
+            (
+                f"model.{k}"
+                if not k.startswith("model.model.")
+                and not k.startswith("model.lm_head")
+                else k
+            ): v
+            for k, v in weights.items()
+        }
 
     @property
     def layers(self):
