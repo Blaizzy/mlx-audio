@@ -105,7 +105,7 @@ public class KokoroTTS {
     }
 
     let outputStr = try! eSpeakEngine.phonemize(text: text)
-      
+
     let inputIds = Tokenizer.tokenize(phonemizedText: outputStr)
     guard inputIds.count <= Constants.maxTokenCount else {
       throw KokoroTTSError.tooManyTokens
@@ -181,7 +181,7 @@ public class KokoroTTS {
     // Split text into sentences or smaller chunks
     let textChunks = splitTextIntoChunks(text)
     var audioChunks: [MLXArray] = []
-    
+
     // Process each chunk and collect audio results
     for chunk in textChunks {
       do {
@@ -200,25 +200,28 @@ public class KokoroTTS {
           throw error
         }
       }
+      
+      // Clear cache after each chunk to avoid memory leaks
+      MLX.clearCache()
     }
-    
+
     // Return first chunk if only one chunk exists
     guard audioChunks.count > 1 else {
         return audioChunks[0]
     }
-    
+
     // Combine all audio chunks along axis 1 (time dimension)
     let result =  MLX.concatenated(audioChunks, axis: 1)
       audioChunks.removeAll()
     return result
   }
-  
+
   // Helper method to split text into manageable chunks
   private func splitTextIntoChunks(_ text: String, forceSmallerChunks: Bool = false) -> [String] {
     // Split by sentences
     let sentenceSeparators = CharacterSet(charactersIn: ".!?")
     var sentences = text.components(separatedBy: sentenceSeparators)
-    
+
     // Add back the separators
     sentences = sentences.enumerated().map { index, sentence in
       if index < sentences.count - 1 {
@@ -230,20 +233,20 @@ public class KokoroTTS {
       }
       return sentence
     }
-    
+
     // Remove empty sentences
     sentences = sentences.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    
+
     var chunks: [String] = []
     var currentChunk = ""
-    
+
     // Estimated token limit - use a conservative estimate
     let estimatedTokenLimit = forceSmallerChunks ? Constants.maxTokenCount / 2 : Constants.maxTokenCount * 4 / 5
-    
+
     for sentence in sentences {
       // Rough estimation: assume each character might become 1-2 tokens
       let estimatedTokens = currentChunk.count + sentence.count
-      
+
       if estimatedTokens > estimatedTokenLimit && !currentChunk.isEmpty {
         chunks.append(currentChunk)
         currentChunk = sentence
@@ -254,11 +257,11 @@ public class KokoroTTS {
         currentChunk += sentence
       }
     }
-    
+
     if !currentChunk.isEmpty {
       chunks.append(currentChunk)
     }
-    
+
     // If we need even smaller chunks and still have long chunks
     if forceSmallerChunks {
       return chunks.flatMap { chunk -> [String] in
@@ -270,11 +273,11 @@ public class KokoroTTS {
         return [chunk]
       }
     }
-    
+
     return chunks
   }
 
   struct Constants {
-    static let maxTokenCount = 510        
+    static let maxTokenCount = 510
   }
 }
