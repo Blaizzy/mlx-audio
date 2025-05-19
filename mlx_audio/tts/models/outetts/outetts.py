@@ -56,6 +56,9 @@ class Model(nn.Module):
     def sample_rate(self):
         return self.config.sample_rate
 
+    def __call__(self, *args, **kwargs):
+        return self.model(*args, **kwargs)
+
     def generate(
         self,
         text,
