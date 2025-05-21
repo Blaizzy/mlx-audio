@@ -203,6 +203,7 @@ def hertz_to_mel(pitch: float) -> float:
 def generate_audio(
     text: str,
     model_path: str = "prince-canuma/Kokoro-82M",
+    max_tokens: int = 1200,
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
@@ -266,6 +267,10 @@ def generate_audio(
                 ref_text = stt_model.generate(ref_audio).text
                 print("Ref_text", ref_text)
 
+                # clear memory
+                del stt_model
+                mx.clear_cache()
+
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
 
@@ -285,6 +290,7 @@ def generate_audio(
             ref_audio=ref_audio,
             ref_text=ref_text,
             temperature=temperature,
+            max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
@@ -356,6 +362,12 @@ def parse_args():
         type=str,
         default="mlx-community/Kokoro-82M-bf16",
         help="Path or repo id of the model",
+    )
+    parser.add_argument(
+        "--max_tokens",
+        type=int,
+        default=1200,
+        help="Maximum number of tokens to generate",
     )
     parser.add_argument(
         "--text",

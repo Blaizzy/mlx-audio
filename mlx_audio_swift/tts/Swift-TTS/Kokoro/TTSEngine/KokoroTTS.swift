@@ -7,277 +7,858 @@ import MLXNN
 
 // Available voices
 public enum TTSVoice: String, CaseIterable {
-  case afHeart
+  case afAlloy
+  case afAoede
   case afBella
+  case afHeart
+  case afJessica
+  case afKore
   case afNicole
+  case afNova
+  case afRiver
   case afSarah
   case afSky
   case amAdam
+  case amEcho
+  case amEric
+  case amFenrir
+  case amLiam
   case amMichael
+  case amOnyx
+  case amPuck
+  case amSanta
+  case bfAlice
   case bfEmma
   case bfIsabella
+  case bfLily
+  case bmDaniel
+  case bmFable
   case bmGeorge
   case bmLewis
+  case efDora
+  case emAlex
+  case ffSiwis
+  case hfAlpha
+  case hfBeta
+  case hfOmega
+  case hmPsi
+  case ifSara
+  case imNicola
+  case jfAlpha
+  case jfGongitsune
+  case jfNezumi
+  case jfTebukuro
+  case jmKumo
+  case pfDora
+  case pmSanta
+  case zfZiaobei
+  case zfXiaoni
+  case zfXiaoxiao
+  case zfZiaoyi
+  case zmYunjian
+  case zmYunxi
+  case zmYunxia
+  case zmYunyang
 }
 
 // Main class, encapsulates the whole Kokoro text-to-speech pipeline
 public class KokoroTTS {
   enum KokoroTTSError: Error {
     case tooManyTokens
+    case sentenceSplitError
+    case modelNotInitialized
   }
 
-  private let bert: CustomAlbert!
-  private let bertEncoder: Linear!
-  private let durationEncoder: DurationEncoder!
-  private let predictorLSTM: LSTM!
-  private let durationProj: Linear!
-  private let prosodyPredictor: ProsodyPredictor!
-  private let textEncoder: TextEncoder!
-  private let decoder: Decoder!
-  private let eSpeakEngine: ESpeakNGEngine!
+  enum ScriptType {
+    case chinese
+    case hindi
+    case japanese
+    case latin
+  }
+
+  private var bert: CustomAlbert!
+  private var bertEncoder: Linear!
+  private var durationEncoder: DurationEncoder!
+  private var predictorLSTM: LSTM!
+  private var durationProj: Linear!
+  private var prosodyPredictor: ProsodyPredictor!
+  private var textEncoder: TextEncoder!
+  private var decoder: Decoder!
+  private var eSpeakEngine: ESpeakNGEngine!
   private var chosenVoice: TTSVoice?
   private var voice: MLXArray!
 
-  init() {
-      MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
-    let sanitizedWeights = KokoroWeightLoader.loadWeights()
+  // Flag to indicate if model components are initialized
+  private var isModelInitialized = false
 
-    bert = CustomAlbert(weights: sanitizedWeights, config: AlbertModelArgs())
-    bertEncoder = Linear(weight: sanitizedWeights["bert_encoder.weight"]!, bias: sanitizedWeights["bert_encoder.bias"]!)
-    durationEncoder = DurationEncoder(weights: sanitizedWeights, dModel: 512, styDim: 128, nlayers: 6)
+  // Callback type for streaming audio generation
+  public typealias AudioChunkCallback = (MLXArray) -> Void
 
-    predictorLSTM = LSTM(
-      inputSize: 512 + 128,
-      hiddenSize: 512 / 2,
-      wxForward: sanitizedWeights["predictor.lstm.weight_ih_l0"]!,
-      whForward: sanitizedWeights["predictor.lstm.weight_hh_l0"]!,
-      biasIhForward: sanitizedWeights["predictor.lstm.bias_ih_l0"]!,
-      biasHhForward: sanitizedWeights["predictor.lstm.bias_hh_l0"]!,
-      wxBackward: sanitizedWeights["predictor.lstm.weight_ih_l0_reverse"]!,
-      whBackward: sanitizedWeights["predictor.lstm.weight_hh_l0_reverse"]!,
-      biasIhBackward: sanitizedWeights["predictor.lstm.bias_ih_l0_reverse"]!,
-      biasHhBackward: sanitizedWeights["predictor.lstm.bias_hh_l0_reverse"]!
-    )
+  init() {}
 
-    durationProj = Linear(
-      weight: sanitizedWeights["predictor.duration_proj.linear_layer.weight"]!,
-      bias: sanitizedWeights["predictor.duration_proj.linear_layer.bias"]!
-    )
+  // Reset the model to free up memory
+  public func resetModel() {
+    // First nil out the eSpeakEngine to ensure proper cleanup
+    // Important: This must be done first before clearing other objects
+    if let _ = eSpeakEngine {
+      // Ensure eSpeakEngine is terminated properly
+      eSpeakEngine = nil
+    }
 
-    prosodyPredictor = ProsodyPredictor(
-      weights: sanitizedWeights,
-      styleDim: 128,
-      dHid: 512
-    )
+    bert = nil
+    bertEncoder = nil
+    durationEncoder = nil
+    predictorLSTM = nil
+    durationProj = nil
+    prosodyPredictor = nil
+    textEncoder = nil
+    decoder = nil
+    voice = nil
+    chosenVoice = nil
+    isModelInitialized = false
 
-    textEncoder = TextEncoder(
-      weights: sanitizedWeights,
-      channels: 512,
-      kernelSize: 5,
-      depth: 3,
-      nSymbols: 178
-    )
+    // Use plain autoreleasepool to encourage memory release
+    autoreleasepool { }
+  }
 
-    decoder = Decoder(
-      weights: sanitizedWeights,
-      dimIn: 512,
-      styleDim: 128,
-      dimOut: 80,
-      resblockKernelSizes: [3, 7, 11],
-      upsampleRates: [10, 6],
-      upsampleInitialChannel: 512,
-      resblockDilationSizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
-      upsampleKernelSizes: [20, 12],
-      genIstftNFft: 20,
-      genIstftHopSize: 5
-    )
+  // Initialize model on demand
+  private func ensureModelInitialized() {
+    if isModelInitialized {
+      return
+    }
+
+    autoreleasepool {
+      let sanitizedWeights = KokoroWeightLoader.loadWeights()
+
+      bert = CustomAlbert(weights: sanitizedWeights, config: AlbertModelArgs())
+      bertEncoder = Linear(weight: sanitizedWeights["bert_encoder.weight"]!, bias: sanitizedWeights["bert_encoder.bias"]!)
+      durationEncoder = DurationEncoder(weights: sanitizedWeights, dModel: 512, styDim: 128, nlayers: 6)
+
+      predictorLSTM = LSTM(
+        inputSize: 512 + 128,
+        hiddenSize: 512 / 2,
+        wxForward: sanitizedWeights["predictor.lstm.weight_ih_l0"]!,
+        whForward: sanitizedWeights["predictor.lstm.weight_hh_l0"]!,
+        biasIhForward: sanitizedWeights["predictor.lstm.bias_ih_l0"]!,
+        biasHhForward: sanitizedWeights["predictor.lstm.bias_hh_l0"]!,
+        wxBackward: sanitizedWeights["predictor.lstm.weight_ih_l0_reverse"]!,
+        whBackward: sanitizedWeights["predictor.lstm.weight_hh_l0_reverse"]!,
+        biasIhBackward: sanitizedWeights["predictor.lstm.bias_ih_l0_reverse"]!,
+        biasHhBackward: sanitizedWeights["predictor.lstm.bias_hh_l0_reverse"]!
+      )
+
+      durationProj = Linear(
+        weight: sanitizedWeights["predictor.duration_proj.linear_layer.weight"]!,
+        bias: sanitizedWeights["predictor.duration_proj.linear_layer.bias"]!
+      )
+
+      prosodyPredictor = ProsodyPredictor(
+        weights: sanitizedWeights,
+        styleDim: 128,
+        dHid: 512
+      )
+
+      textEncoder = TextEncoder(
+        weights: sanitizedWeights,
+        channels: 512,
+        kernelSize: 5,
+        depth: 3,
+        nSymbols: 178
+      )
+
+      decoder = Decoder(
+        weights: sanitizedWeights,
+        dimIn: 512,
+        styleDim: 128,
+        dimOut: 80,
+        resblockKernelSizes: [3, 7, 11],
+        upsampleRates: [10, 6],
+        upsampleInitialChannel: 512,
+        resblockDilationSizes: [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        upsampleKernelSizes: [20, 12],
+        genIstftNFft: 20,
+        genIstftHopSize: 5
+      )
+    }
 
     eSpeakEngine = try! ESpeakNGEngine()
+    isModelInitialized = true
   }
 
-  public func generateAudioChunk(voice: TTSVoice, text: String, speed: Float = 1.0) throws -> MLXArray {
-    BenchmarkTimer.shared.create(id: "Phonemization", parent: "TTSGeneration")
+  private func generateAudioForTokens(
+    inputIds: [Int],
+    speed: Float
+  ) throws -> MLXArray {
+    // Create a fresh autorelease pool for the entire process
+    return try autoreleasepool { () -> MLXArray in
+      // Start with the standard processing
+      try autoreleasepool {
+        let paddedInputIdsBase = [0] + inputIds + [0]
+        let paddedInputIds = MLXArray(paddedInputIdsBase).expandedDimensions(axes: [0])
+        paddedInputIds.eval()
 
-    if chosenVoice != voice {
-      self.voice = VoiceLoader.loadVoice(voice)
-      try eSpeakEngine.setLanguage(for: voice)
-      chosenVoice = voice
-    }
+        let inputLengths = MLXArray(paddedInputIds.dim(-1))
+        inputLengths.eval()
 
-    let outputStr = try! eSpeakEngine.phonemize(text: text)
+        let inputLengthMax: Int = MLX.max(inputLengths).item()
+        var textMask = MLXArray(0 ..< inputLengthMax)
+        textMask.eval()
 
-    let inputIds = Tokenizer.tokenize(phonemizedText: outputStr)
-    guard inputIds.count <= Constants.maxTokenCount else {
-      throw KokoroTTSError.tooManyTokens
-    }
+        textMask = textMask + 1 .> inputLengths
+        textMask.eval()
 
-    let paddedInputIdsBase = [0] + inputIds + [0]
-      var paddedInputIds:MLXArray? = MLXArray(paddedInputIdsBase).expandedDimensions(axes: [0])
+        textMask = textMask.expandedDimensions(axes: [0])
+        textMask.eval()
 
-      let inputLengths = MLXArray(paddedInputIds!.dim(-1))
-    let inputLengthMax: Int = inputLengths.max().item()
-      var textMask:MLXArray? = MLXArray(0 ..< inputLengthMax)
-    textMask = textMask! + 1 .> inputLengths
-    textMask = textMask!.expandedDimensions(axes: [0])
-    var  swiftTextMask: [Bool] = textMask!.asArray(Bool.self)
-    let swiftTextMaskInt = swiftTextMask.map { !$0 ? 1 : 0 }
-    let attentionMask = MLXArray(swiftTextMaskInt).reshaped(textMask!.shape)
+        let swiftTextMask: [Bool] = textMask.asArray(Bool.self)
+        let swiftTextMaskInt = swiftTextMask.map { !$0 ? 1 : 0 }
+        let attentionMask = MLXArray(swiftTextMaskInt).reshaped(textMask.shape)
+        attentionMask.eval()
 
-      let (bertDur, _) = bert(paddedInputIds!, attentionMask: attentionMask)
-    let dEn = bertEncoder(bertDur).transposed(0, 2, 1)
-
-    BenchmarkTimer.shared.stop(id: "Phonemization")
-    BenchmarkTimer.shared.create(id: "Duration", parent: "TTSGeneration")
-
-    let refS = self.voice[inputIds.count - 1, 0 ... 1, 0...]
-    let s = refS[0 ... 1, 128...]
-
-    let d = durationEncoder(dEn, style: s, textLengths: inputLengths, m: textMask!)
-    let (x, _) = predictorLSTM(d)
-    let duration = durationProj(x)
-    let durationSigmoid = MLX.sigmoid(duration).sum(axis: -1) / speed
-    let predDur = MLX.clip(durationSigmoid.round(), min: 1).asType(.int32)[0]
-
-    let indices = MLX.concatenated(
-      predDur.enumerated().map { i, n in
-        let nSize: Int = n.item()
-        return MLX.repeated(MLXArray([i]), count: nSize)
-      }
-    )
-
-      var swiftPredAlnTrg = [Float](repeating: 0.0, count: indices.shape[0] * paddedInputIds!.shape[1])
-    for i in 0 ..< indices.shape[0] {
-      let indiceValue: Int = indices[i].item()
-      swiftPredAlnTrg[indiceValue * indices.shape[0] + i] = 1.0
-    }
-      var predAlnTrg:MLXArray? = MLXArray(swiftPredAlnTrg).reshaped([paddedInputIds!.shape[1], indices.shape[0]])
-    let predAlnTrgBatched = predAlnTrg!.expandedDimensions(axis: 0)
-    let en = d.transposed(0, 2, 1).matmul(predAlnTrgBatched)
-
-    BenchmarkTimer.shared.stop(id: "Duration")
-    BenchmarkTimer.shared.create(id: "Prosody", parent: "TTSGeneration")
-
-    let (F0Pred, NPred) = prosodyPredictor.F0NTrain(x: en, s: s)
-      let tEn = textEncoder(paddedInputIds!, inputLengths: inputLengths, m: textMask!)
-    let asr = MLX.matmul(tEn, predAlnTrg!)
-
-    BenchmarkTimer.shared.stop(id: "Prosody")
-    BenchmarkTimer.shared.create(id: "Decoder", parent: "TTSGeneration")
-
-    let audio = decoder(asr: asr, F0Curve: F0Pred, N: NPred, s: refS[0 ... 1, 0 ... 127])[0]
-    audio.eval()
-
-    BenchmarkTimer.shared.stop(id: "Decoder")
-    paddedInputIds = nil
-      predAlnTrg = nil
-      textMask = nil
-      textMask = nil
-      swiftTextMask.removeAll()
-    return audio
-  }
-
-  // Handles long text inputs by splitting them into processable chunks
-  public func generateAudio(voice: TTSVoice, text: String, speed: Float = 1.0) throws -> MLXArray {
-    // Split text into sentences or smaller chunks
-    let textChunks = splitTextIntoChunks(text)
-    var audioChunks: [MLXArray] = []
-
-    // Process each chunk and collect audio results
-    for chunk in textChunks {
-      do {
-        print("Chunk: \(chunk)")
-        let audio = try generateAudioChunk(voice: voice, text: chunk, speed: speed)
-        audioChunks.append(audio)
-      } catch {
-        // If a chunk is still too large, try to split it further
-        if error is KokoroTTSError, case KokoroTTSError.tooManyTokens = error {
-          let subChunks = splitTextIntoChunks(chunk, forceSmallerChunks: true)
-          for subChunk in subChunks {
-            let audio = try generateAudio(voice: voice, text: subChunk, speed: speed)
-            audioChunks.append(audio)
+        return try autoreleasepool { () -> MLXArray in
+          // Ensure model is initialized
+          guard let bert = bert,
+                let bertEncoder = bertEncoder else {
+            throw KokoroTTSError.modelNotInitialized
           }
-        } else {
-          throw error
+
+          let (bertDur, _) = bert(paddedInputIds, attentionMask: attentionMask)
+          bertDur.eval()
+
+          autoreleasepool {
+            _ = attentionMask
+          }
+
+          let dEn = bertEncoder(bertDur).transposed(0, 2, 1)
+          dEn.eval()
+
+          autoreleasepool {
+            _ = bertDur
+          }
+
+          var refS: MLXArray
+          do {
+            guard let voice = voice else {
+              throw KokoroTTSError.modelNotInitialized
+            }
+            refS = voice[min(inputIds.count - 1, voice.shape[0] - 1), 0 ... 1, 0...]
+          } catch {
+            // Use a fallback slice from start of the voice array
+            guard let voice = voice else {
+              throw KokoroTTSError.modelNotInitialized
+            }
+            refS = voice[0, 0 ... 1, 0...]
+          }
+          refS.eval()
+
+          let s = refS[0 ... 1, 128...]
+          s.eval()
+
+          return try autoreleasepool { () -> MLXArray in
+            // Ensure all components are initialized
+            guard let durationEncoder = durationEncoder,
+                  let predictorLSTM = predictorLSTM,
+                  let durationProj = durationProj else {
+              throw KokoroTTSError.modelNotInitialized
+            }
+
+            let d = durationEncoder(dEn, style: s, textLengths: inputLengths, m: textMask)
+            d.eval()
+
+            autoreleasepool {
+              _ = dEn
+              _ = textMask
+            }
+
+            let (x, _) = predictorLSTM(d)
+            x.eval()
+
+            let duration = durationProj(x)
+            duration.eval()
+
+            autoreleasepool {
+              _ = x
+            }
+
+            let durationSigmoid = MLX.sigmoid(duration).sum(axis: -1) / speed
+            durationSigmoid.eval()
+
+            autoreleasepool {
+              _ = duration
+            }
+
+            let predDur = MLX.clip(durationSigmoid.round(), min: 1).asType(.int32)[0]
+            predDur.eval()
+
+            autoreleasepool {
+              _ = durationSigmoid
+            }
+
+            // Index and matrix generation - high memory usage
+            // Build indices in chunks to reduce memory
+            var allIndices: [MLXArray] = []
+            let chunkSize = 50 // Process 50 items at a time
+
+            for startIdx in stride(from: 0, to: predDur.shape[0], by: chunkSize) {
+              autoreleasepool {
+                let endIdx = min(startIdx + chunkSize, predDur.shape[0])
+                let chunkIndices = predDur[startIdx..<endIdx]
+
+                let indices = MLX.concatenated(
+                  chunkIndices.enumerated().map { i, n in
+                    let nSize: Int = n.item()
+                    let arrayIndex = MLXArray([i + startIdx])
+                    arrayIndex.eval()
+                    let repeated = MLX.repeated(arrayIndex, count: nSize)
+                    repeated.eval()
+                    return repeated
+                  }
+                )
+                indices.eval()
+                allIndices.append(indices)
+              }
+            }
+
+            let indices = MLX.concatenated(allIndices)
+            indices.eval()
+
+            allIndices.removeAll()
+
+            let indicesShape = indices.shape[0]
+            let inputIdsShape = paddedInputIds.shape[1]
+
+            // Create sparse matrix more efficiently using COO format
+            // This drastically reduces memory usage compared to dense matrix
+            var rowIndices: [Int] = []
+            var colIndices: [Int] = []
+            var values: [Float] = []
+
+            // Reserve capacity to avoid reallocations
+            let estimatedNonZeros = min(indicesShape, inputIdsShape * 5)
+            rowIndices.reserveCapacity(estimatedNonZeros)
+            colIndices.reserveCapacity(estimatedNonZeros)
+            values.reserveCapacity(estimatedNonZeros)
+
+            // Process in batches to reduce cache misses
+            let batchSize = 256
+            for startIdx in stride(from: 0, to: indicesShape, by: batchSize) {
+              autoreleasepool {
+                let endIdx = min(startIdx + batchSize, indicesShape)
+                for i in startIdx..<endIdx {
+                  let indiceValue: Int = indices[i].item()
+                  if indiceValue < inputIdsShape {
+                    rowIndices.append(indiceValue)
+                    colIndices.append(i)
+                    values.append(1.0)
+                  }
+                }
+              }
+            }
+
+            autoreleasepool {
+              _ = indices
+              _ = predDur
+            }
+
+            // Create MLXArray from COO data
+            let rowIndicesArray = MLXArray(rowIndices)
+            let colIndicesArray = MLXArray(colIndices)
+            let coo_indices = MLX.stacked([rowIndicesArray, colIndicesArray], axis: 0).transposed(1, 0)
+            let coo_values = MLXArray(values)
+            rowIndicesArray.eval()
+            colIndicesArray.eval()
+            coo_indices.eval()
+            coo_values.eval()
+
+            // Go back to the original dense matrix approach but with better memory management
+            // Create sparse matrix efficiently using Swift arrays first
+            var swiftPredAlnTrg = [Float](repeating: 0.0, count: inputIdsShape * indicesShape)
+            // Process in batches to reduce cache misses
+            let matrixBatchSize = 1000
+            for startIdx in stride(from: 0, to: rowIndices.count, by: matrixBatchSize) {
+              autoreleasepool {
+                let endIdx = min(startIdx + matrixBatchSize, rowIndices.count)
+                for i in startIdx..<endIdx {
+                  let row = rowIndices[i]
+                  let col = colIndices[i]
+                  if row < inputIdsShape && col < indicesShape {
+                    swiftPredAlnTrg[row * indicesShape + col] = 1.0
+                  }
+                }
+              }
+            }
+
+            // Create MLXArray from the dense matrix
+            let predAlnTrg = MLXArray(swiftPredAlnTrg).reshaped([inputIdsShape, indicesShape])
+            predAlnTrg.eval()
+
+            // Clear Swift array immediately
+            swiftPredAlnTrg = []
+
+            autoreleasepool {
+              rowIndices = []
+              colIndices = []
+              values = []
+            }
+
+            let predAlnTrgBatched = predAlnTrg.expandedDimensions(axis: 0)
+            predAlnTrgBatched.eval()
+
+            let en = d.transposed(0, 2, 1).matmul(predAlnTrgBatched)
+            en.eval()
+
+            autoreleasepool {
+              _ = d
+              _ = predAlnTrgBatched
+            }
+
+            return try autoreleasepool { () -> MLXArray in
+              // Ensure components are initialized
+              guard let prosodyPredictor = prosodyPredictor,
+                    let textEncoder = textEncoder,
+                    let decoder = decoder else {
+                throw KokoroTTSError.modelNotInitialized
+              }
+
+              let (F0Pred, NPred) = prosodyPredictor.F0NTrain(x: en, s: s)
+              F0Pred.eval()
+              NPred.eval()
+
+              autoreleasepool {
+                _ = en
+              }
+
+              let tEn = textEncoder(paddedInputIds, inputLengths: inputLengths, m: textMask)
+              tEn.eval()
+
+              autoreleasepool {
+                _ = paddedInputIds
+                _ = inputLengths
+              }
+
+              let asr = MLX.matmul(tEn, predAlnTrg)
+              asr.eval()
+
+              autoreleasepool {
+                _ = tEn
+                _ = predAlnTrg
+              }
+
+              let voiceS = refS[0 ... 1, 0 ... 127]
+              voiceS.eval()
+
+              autoreleasepool {
+                _ = refS
+              }
+
+              let audio = decoder(asr: asr, F0Curve: F0Pred, N: NPred, s: voiceS)[0]
+              audio.eval()
+
+              autoreleasepool {
+                _ = asr
+                _ = F0Pred
+                _ = NPred
+                _ = voiceS
+                _ = s
+              }
+
+              let audioShape = audio.shape
+
+              // Check if the audio shape is valid
+              let totalSamples: Int
+              if audioShape.count == 1 {
+                totalSamples = audioShape[0]
+              } else if audioShape.count == 2 {
+                totalSamples = audioShape[1]
+              } else {
+                totalSamples = 0
+              }
+
+              if totalSamples <= 1 {
+                // Return an error tone
+                var errorAudioData = [Float](repeating: 0.0, count: 24000)
+
+                // Create a simple repeating beep pattern to indicate error
+                for i in stride(from: 0, to: 24000, by: 100) {
+                  let endIdx = min(i + 100, 24000)
+                  for j in i..<endIdx {
+                    let t = Float(j) / Float(Constants.sampleRate)
+                    let freq = (Int(t * 2) % 2 == 0) ? 500.0 : 800.0
+                    errorAudioData[j] = sin(Float(2.0 * .pi * freq) * t) * 0.5
+                  }
+                }
+
+                let fallbackAudio = MLXArray(errorAudioData)
+                fallbackAudio.eval()
+                return fallbackAudio
+              }
+
+              return audio
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private func detectLanguageScript(_ text: String) -> ScriptType {
+    if text.count < 3 { return .latin }
+
+    var hanCount = 0     // Chinese/Japanese
+    var kanaCount = 0    // Japanese-specific
+    var devanagariCount = 0 // Hindi
+
+    // Check first 20 characters for script detection
+    let sampleSize = min(20, text.count)
+    let sampleText = text.prefix(sampleSize)
+
+    for char in sampleText {
+      let scalar = char.unicodeScalars.first!
+
+      // Check for CJK characters
+      if (0x4E00...0x9FFF).contains(scalar.value) {
+        hanCount += 1
+      } else if (0x3040...0x30FF).contains(scalar.value) { // Check for Japanese Hiragana/Katakana
+        kanaCount += 1
+      } else if (0x0900...0x097F).contains(scalar.value) { // Check for Devanagari (Hindi)
+        devanagariCount += 1
+      }
+    }
+
+    // Use simple majority rule
+    if hanCount > sampleSize / 3 || kanaCount > sampleSize / 3 {
+      if kanaCount > 0 {
+        return .japanese
+      }
+      return .chinese
+    } else if devanagariCount > sampleSize / 3 {
+      return .hindi
+    }
+
+    return .latin
+  }
+
+  private func splitIntoSentences(text: String) -> [String] {
+    guard !text.isEmpty else { return [] }
+
+    // Include punctuation for Latin, CJK, and Hindi
+    let sentenceTerminators: Set<Character> = [
+      // Latin
+      ".", "!", "?", ";", ":", "\n",
+      // CJK
+      "。", "！", "？", "…", "～", "」", "』", "）",
+      // Hindi/Devanagari
+      "।", "॥", "॰"
+    ]
+
+    // Common abbreviation patterns to supplement generic detection
+    let commonAbbreviations: Set<String> = ["dr", "mr", "mrs", "ms", "prof", "etc", "vs", "e.g",
+                                            "i.e", "a.m", "p.m"]
+
+    let chars = text
+    var sentences = [String]()
+    var sentenceStart = chars.startIndex
+    var i = chars.startIndex
+
+    // Detect dominant script
+    let scriptType = self.detectLanguageScript(text)
+    let isCJK = scriptType == .japanese || scriptType == .chinese
+    let isHindi = scriptType == .hindi
+
+    sentences.reserveCapacity(max(5, text.count / 100))
+
+    while i < chars.endIndex {
+      let char = chars[i]
+
+      // Check for potential sentence end
+      if sentenceTerminators.contains(char) {
+        var shouldSplit = true
+
+        if char == "\n" {
+          // For newlines, check if it's a paragraph break
+          shouldSplit = i > sentenceStart && chars.distance(from: sentenceStart, to: i) > 2
+        } else if char == "." && !isCJK && !isHindi {
+          // Abbreviation handling only applies to Latin scripts
+          let wordStart = chars[..<i].lastIndex(where: { $0.isWhitespace }) ?? sentenceStart
+          let nextIndex = chars.index(after: wordStart)
+          let lastWord = nextIndex <= i ? chars[nextIndex...i] : ""
+
+          if !lastWord.isEmpty {
+            let wordLower = lastWord.lowercased()
+            let wordNoTrailingPeriod = wordLower.hasSuffix(".") ?
+            String(wordLower.dropLast()) : String(wordLower)
+
+            // Check various abbreviation patterns
+            let isPeriodInWord = lastWord.dropLast().contains(".")
+            let isSingleLetterWithPeriod = lastWord.count == 2 && lastWord.first?.isLetter == true
+            let isKnownAbbreviation = commonAbbreviations.contains(wordNoTrailingPeriod)
+            let isShortWord = lastWord.count <= 4
+
+            if isPeriodInWord || isSingleLetterWithPeriod || isKnownAbbreviation ||
+                (isShortWord && lastWord.last == ".") {
+              shouldSplit = false
+            }
+
+            // Check for decimal numbers
+            if i > chars.startIndex && i < chars.index(before: chars.endIndex) {
+              let prevIndex = chars.index(before: i)
+              let nextIndex = chars.index(after: i)
+
+              if prevIndex < chars.endIndex && nextIndex < chars.endIndex &&
+                  chars[prevIndex].isNumber && chars[nextIndex].isNumber {
+                shouldSplit = false
+              }
+            }
+          }
+        }
+
+        if shouldSplit {
+          // For CJK languages, we immediately split when we encounter a sentence terminator
+          // For other languages, we check for whitespace or end of text
+          let nextIndex = chars.index(after: i)
+          let hasNextWhitespace = nextIndex < chars.endIndex &&
+          (chars[nextIndex].isWhitespace || isCJK || isHindi)
+          let isEndOfText = nextIndex >= chars.endIndex
+
+          if hasNextWhitespace || isEndOfText {
+            let endIndex = (hasNextWhitespace && !isCJK && !isHindi) ?
+            chars.index(after: nextIndex) : nextIndex
+            if endIndex <= chars.endIndex {
+              let currentSentence = String(chars[sentenceStart..<endIndex])
+              let trimmed = currentSentence.trimmingCharacters(in: .whitespacesAndNewlines)
+
+              // For CJK languages, we don't require spaces, but we still check for minimum content
+              let hasValidContent = isCJK || isHindi ?
+              trimmed.count > 5 :
+              (trimmed.count > 15 || trimmed.contains(" "))
+
+              if !trimmed.isEmpty && hasValidContent {
+                sentences.append(currentSentence)
+                sentenceStart = endIndex
+
+                if hasNextWhitespace && !isCJK && !isHindi {
+                  i = nextIndex
+                }
+              }
+            }
+          }
         }
       }
 
-      // Clear cache after each chunk to avoid memory leaks
-      MLX.GPU.clearCache()
+      if i < chars.endIndex {
+        i = chars.index(after: i)
+      }
     }
 
-    // Return first chunk if only one chunk exists
-    guard audioChunks.count > 1 else {
-        return audioChunks[0]
+    // Add remaining text as a sentence if there's anything left
+    if sentenceStart < chars.endIndex {
+      let remainingSentence = String(chars[sentenceStart..<chars.endIndex])
+      if !remainingSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        sentences.append(remainingSentence)
+      }
     }
 
-    // Combine all audio chunks along axis 1 (time dimension)
-    let result =  MLX.concatenated(audioChunks, axis: 1)
-      audioChunks.removeAll()
+    // Ensure we have at least one sentence for non-empty input
+    if sentences.isEmpty && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      sentences.append(text)
+    }
+
+    return mergeSentences(sentences)
+  }
+
+  private func mergeSentences(_ sentences: [String]) -> [String] {
+    guard !sentences.isEmpty else { return [] }
+
+    var result = [String]()
+    result.reserveCapacity(sentences.count)
+
+    let scriptType = self.detectLanguageScript(sentences[0])
+    let isCJK = scriptType == .japanese || scriptType == .chinese
+    let isHindi = scriptType == .hindi
+
+    // CJK and Hindi languages typically have shorter sentences, so adjust the merging thresholds
+    let minLengthForMerge = isCJK || isHindi ? 30 : 50
+    let maxMergedLength = isCJK || isHindi ? 200 : 300
+
+    var currentMerged = sentences[0]
+    var currentLength = currentMerged.count
+
+    // Start from the second sentence
+    for i in 1..<sentences.count {
+      let sentence = sentences[i]
+      let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+
+      // CJK sentence terminators
+      let cjkTerminators: Set<Character> = ["。", "！", "？", "…"]
+      let hindiTerminators: Set<Character> = ["।", "॥"]
+
+      // Check for logical breaks based on script type
+      var hasLogicalBreak = false
+      if isCJK {
+        hasLogicalBreak = trimmed.last.map { cjkTerminators.contains($0) } ?? false
+      } else if isHindi {
+        hasLogicalBreak = trimmed.last.map { hindiTerminators.contains($0) } ?? false
+      } else {
+        hasLogicalBreak = trimmed.hasSuffix(".") || trimmed.hasSuffix("!") ||
+        trimmed.hasSuffix("?")
+      }
+
+      // Conditions for merging
+      let isTooShort = trimmed.count < minLengthForMerge
+      let isShortEnough = currentLength + sentence.count < maxMergedLength
+
+      if isTooShort && !hasLogicalBreak && isShortEnough {
+        // Merge with current sentence - add appropriate spacing based on language
+        if isCJK {
+          // For CJK, don't add space when merging
+          currentMerged += sentence
+        } else {
+          // For other languages, add a space
+          currentMerged += " " + sentence
+        }
+        currentLength += sentence.count + (isCJK ? 0 : 1) // Add 1 for space if not CJK
+      } else {
+        // Add the current merged sentence and start a new one
+        result.append(currentMerged)
+        currentMerged = sentence
+        currentLength = sentence.count
+      }
+    }
+
+    // Add the last merged sentence if there is one
+    if !currentMerged.isEmpty {
+      result.append(currentMerged)
+    }
+
     return result
   }
 
-  // Helper method to split text into manageable chunks
-  private func splitTextIntoChunks(_ text: String, forceSmallerChunks: Bool = false) -> [String] {
-    // Split by sentences
-    let sentenceSeparators = CharacterSet(charactersIn: ".!?")
-    var sentences = text.components(separatedBy: sentenceSeparators)
+  public func generateAudio(voice: TTSVoice, text: String, speed: Float = 1.0, chunkCallback: @escaping AudioChunkCallback) throws {
+    ensureModelInitialized()
 
-    // Add back the separators
-    sentences = sentences.enumerated().map { index, sentence in
-      if index < sentences.count - 1 {
-        // Find the next separator after this sentence
-        if let startRange = text.range(of: sentence)?.upperBound,
-           let separatorChar = text[startRange...].first(where: { String($0).rangeOfCharacter(from: sentenceSeparators) != nil }) {
-          return sentence + String(separatorChar)
+    let sentences = splitIntoSentences(text: text)
+    if sentences.isEmpty {
+      throw KokoroTTSError.sentenceSplitError
+    }
+
+    // Process each sentence in sequence with better performance
+    DispatchQueue.global(qos: .userInitiated).async {
+
+      // Clear any previous voice and weight cache to start fresh
+      autoreleasepool {
+        self.voice = nil
+        if sentences.count > 10 {
+          // For very long texts, start with a fresh model to minimize memory growth
         }
       }
-      return sentence
-    }
 
-    // Remove empty sentences
-    sentences = sentences.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      // Use a separate autorelease pool for each sentence to release memory faster
+      for (index, sentence) in sentences.enumerated() {
+        autoreleasepool {
+          do {
+            // Generate audio for this sentence
+            let audio = try self.generateAudioForSentence(voice: voice, text: sentence, speed: speed)
 
-    var chunks: [String] = []
-    var currentChunk = ""
+            // Force evaluation to ensure tensor is computed before sending
+            audio.eval()
 
-    // Estimated token limit - use a conservative estimate
-    let estimatedTokenLimit = forceSmallerChunks ? Constants.maxTokenCount / 2 : Constants.maxTokenCount * 4 / 5
+            // Send this chunk to the callback immediately on the main thread
+            // Dispatch to main thread to avoid threading issues with UI updates
+            DispatchQueue.main.async {
+              chunkCallback(audio)
+            }
 
-    for sentence in sentences {
-      // Rough estimation: assume each character might become 1-2 tokens
-      let estimatedTokens = currentChunk.count + sentence.count
+            // Explicitly release large tensors
+            let _ = autoreleasepool {
+              _ = audio
+            }
 
-      if estimatedTokens > estimatedTokenLimit && !currentChunk.isEmpty {
-        chunks.append(currentChunk)
-        currentChunk = sentence
-      } else {
-        if !currentChunk.isEmpty {
-          currentChunk += " "
+            // For long text processing, periodically reset the model to clear memory
+            if index > 0 && index % 10 == 0 && sentences.count > 15 {
+              // Keep voice but reset weights cache
+            }
+
+          } catch {
+            // Handle error silently
+          }
         }
-        currentChunk += sentence
+        MLX.GPU.clearCache()
+      }
+
+      // Reset model after completing a long text to free memory
+      if sentences.count > 5 {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+          self.resetModel()
+        }
       }
     }
+  }
 
-    if !currentChunk.isEmpty {
-      chunks.append(currentChunk)
+  private func generateAudioForSentence(voice: TTSVoice, text: String, speed: Float) throws -> MLXArray {
+    ensureModelInitialized()
+
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return MLXArray.zeros([1])
     }
 
-    // If we need even smaller chunks and still have long chunks
-    if forceSmallerChunks {
-      return chunks.flatMap { chunk -> [String] in
-        if chunk.count > estimatedTokenLimit / 2 {
-          // Split by commas or other natural pauses
-          return chunk.components(separatedBy: CharacterSet(charactersIn: ",;:"))
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    return autoreleasepool { () -> MLXArray in
+      if chosenVoice != voice {
+        autoreleasepool {
+          self.voice = VoiceLoader.loadVoice(voice)
+          self.voice?.eval() // Force immediate evaluation
         }
-        return [chunk]
+
+        // Safely initialize or re-initialize ESpeakNG engine if needed
+        if eSpeakEngine == nil {
+          // Recreate if we lost our reference
+          eSpeakEngine = try? ESpeakNGEngine()
+        }
+
+        // Only attempt to set language if we have a valid engine
+        if let engine = eSpeakEngine {
+          try? engine.setLanguage(for: voice)
+        }
+
+        chosenVoice = voice
+      }
+
+      do {
+        let outputStr = try eSpeakEngine.phonemize(text: text)
+
+        let inputIds = Tokenizer.tokenize(phonemizedText: outputStr)
+        guard inputIds.count <= Constants.maxTokenCount else {
+          throw KokoroTTSError.tooManyTokens
+        }
+
+        // Continue with normal audio generation
+        return try self.processTokensToAudio(inputIds: inputIds, speed: speed)
+      } catch {
+        // Return a short error tone instead of crashing
+        var errorAudioData = [Float](repeating: 0.0, count: 4800) // 0.2s at 24kHz
+
+        // Simple error beep
+        for i in 0..<4800 {
+          let t = Float(i) / Float(Constants.sampleRate)
+          let freq: Float = 880.0 // High-pitched error tone
+          errorAudioData[i] = sin(Float(2.0 * .pi * freq) * t) * 0.3
+        }
+
+        return MLXArray(errorAudioData)
       }
     }
+  }
 
-    return chunks
+  // Common processing method to convert tokens to audio - used by streaming methods
+  private func processTokensToAudio(inputIds: [Int], speed: Float) throws -> MLXArray {
+    // Use the token processing method
+    return try generateAudioForTokens(
+      inputIds: inputIds,
+      speed: speed
+    )
   }
 
   struct Constants {
     static let maxTokenCount = 510
+    static let sampleRate = 24000
   }
 }
