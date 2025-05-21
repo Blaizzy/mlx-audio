@@ -1,9 +1,10 @@
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -83,6 +84,25 @@ class Model(nn.Module):
         self.audio_processor.save_speaker(speaker, save_path)
         return speaker
 
+    def chunk_text(self, text: str, max_words: int = 30) -> List[str]:
+        sentences = re.split(r"[.!?。！？︕︖]+", text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        chunks = []
+        current_chunk = []
+        current_length = 0
+
+        for sentence in sentences:
+            words = sentence.split()
+            if current_length + len(words) > max_words:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_length = 0
+            current_chunk.extend(words)
+            current_length += len(words)
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        return chunks
+
     def generate(
         self,
         text,
@@ -95,8 +115,8 @@ class Model(nn.Module):
         ref_audio: Optional[str] = None,
         **kwargs,
     ):
-        prompt = text.replace("\\n", "\n").replace("\\t", "\t")
-        prompts = prompt.split(split_pattern)
+
+        prompts = self.chunk_text(text)
 
         self.prompt_processor = PromptProcessor(self.tokenizer)
         self.audio_processor = AudioProcessor()
@@ -121,7 +141,6 @@ class Model(nn.Module):
             completion_prompt = self.prompt_processor.get_completion_prompt(
                 prompt, speaker
             )
-            # print(completion_prompt)
             input_ids = self.tokenizer.encode(
                 completion_prompt, add_special_tokens=False, return_tensors="mlx"
             )
