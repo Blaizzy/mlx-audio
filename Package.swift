@@ -15,22 +15,24 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "ESpeakNG",
-            path: "Swift-TTS/Kokoro/Frameworks/ESpeakNG.xcframework"
+            path: "mlx_audio_swift/tts/Swift-TTS/Kokoro/Frameworks/ESpeakNG.xcframework"
         ),
         .target(
             name: "Swift-TTS",
-            dependencies: [.product(name: "MLX", package: "mlx-swift"),
-            .product(name: "MLXFFT", package: "mlx-swift"),
-            .product(name: "MLXNN", package: "mlx-swift"),
-             "ESpeakNG"
-           ],
-            path: "Swift-TTS",
-            exclude: ["Preview Content","Assets.xcassets","Swift_TTSApp.swift","Swift_TTS.entitlements"]),
-            resources: [.process("Kokoro/Resources")]),
+            dependencies: [
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXFFT", package: "mlx-swift"),
+                .product(name: "MLXNN", package: "mlx-swift"),
+                "ESpeakNG"
+            ],
+            path: "mlx_audio_swift/tts/Swift-TTS",
+            exclude: ["Preview Content", "Assets.xcassets", "Swift_TTSApp.swift", "Swift_TTS.entitlements"],
+            resources: [.process("Kokoro/Resources")]
+        ),
         .testTarget(
             name: "Swift-TTS-Tests",
             dependencies: ["Swift-TTS"],
-            path: "Tests"
+            path: "mlx_audio_swift/tts/Tests"
         ),
     ]
 )
