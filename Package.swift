@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14), .iOS(.v16)],
     products: [
         .library(
-            name: "Swift-TTS",
+            name: "mlx-swift-audio",
             targets: ["Swift-TTS","ESpeakNG"]),
     ],
     dependencies: [
@@ -26,6 +26,7 @@ let package = Package(
            ],
             path: "Swift-TTS",
             exclude: ["Preview Content","Assets.xcassets","Swift_TTSApp.swift","Swift_TTS.entitlements"]),
+            resources: [.process("Kokoro/Resources")]),
         .testTarget(
             name: "Swift-TTS-Tests",
             dependencies: ["Swift-TTS"],
