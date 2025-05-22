@@ -26,6 +26,8 @@ Uses MLX Swift and eSpeak NG.  M1 chip or better is requied.
 
 Files required from [MLX Community/Orpheus](https://huggingface.co/mlx-community/orpheus-3b-0.1-ft-4bit) and [MLX Community/Snac-24khz](https://huggingface.co/mlx-community/snac_24khz)
 
+Currently runs quite slow due to MLX-Swift not letting us compile layers with caching.  On an M1 we see a 0.09x processing speed so be patient!
+
  - Required files in Orpheus/Resources folder: 
     - orpheus-3b-0.1-ft-4bit.safetensors
     - config.json
@@ -37,4 +39,4 @@ Files required from [MLX Community/Orpheus](https://huggingface.co/mlx-community
     
 The full Orpheus functionality is implemented including:
  - Voices: tara, leah, jess, leo, dan, mia, zac, zoe
- - Expressions: <laugh>, <chuckle>: For laughter sounds. <sigh>: For sighing sounds. <cough>, <sniffle>: For subtle interruptions. <groan>, <yawn>, <gasp>: For additional emotional expression
+ - Expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>

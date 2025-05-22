@@ -34,7 +34,7 @@ struct ContentView: View {
             }
             .onChange(of: chosenProvider) { newProvider in
                 if newProvider == "orpheus" {
-                    status = "Orpheus is currently quite slow (0.05x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
+                    status = "Orpheus is currently quite slow (0.09x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
                 } else {
                     status = ""
                 }
