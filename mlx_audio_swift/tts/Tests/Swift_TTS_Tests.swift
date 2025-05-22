@@ -25,4 +25,8 @@ struct Swift_TTS_Tests {
         await kokoroTTSModel.say("test", .bmGeorge)
     }
 
+    func testOrpheus() async {
+        let orpheusTTSModel = OrpheusTTSModel()
+        await orpheusTTSModel.say("test", .tara)
+    }
 }
