@@ -27,7 +27,7 @@ let package = Package(
             ],
             path: "mlx_audio_swift/tts/Swift-TTS",
             exclude: ["Preview Content", "Assets.xcassets", "Swift_TTSApp.swift", "Swift_TTS.entitlements"],
-            resources: [.process("Kokoro/Resources")]
+            resources: [.process("Kokoro/Resources")] // Access the voices from Kokoro
         ),
         .testTarget(
             name: "Swift-TTS-Tests",
