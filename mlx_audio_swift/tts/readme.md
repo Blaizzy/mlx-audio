@@ -5,21 +5,36 @@ This is an example of using MLX Audio to run local TTS models.
 Steps to run:
 
  - Open project in Xcode
- - Copy your .tensorfile to relevant Resources folder (Kokoro and Orpheus)
+ - Copy your required files to relevant Resources folder (Kokoro and Orpheus)
  - Change project signing in "Signing and Capabilities" project settings
  - Run the App
 
  nSpeak framework is embedeed for Kokoro already.
 
 # Kokoro
- - Expected tensorfile: kokoro-v1_0.safetensors
 
+ - Required files in Kokoro/Resources folder: 
+    - kokoro-v1_0.safetensors
+    - Voice json files (already in repo)
+ 
 Implemented and working. Based on [Kokoro TTS for iOS](https://github.com/mlalma/kokoro-ios).  All credit to mlalma for that work!
 
 Uses MLX Swift and eSpeak NG.  M1 chip or better is requied.
 
 
 # Orpheus
- - Expected tensorfile: orpheus-3b-0.1-ft-4bit.safetensors
 
-Test implementation - not working.  Unexpected layer shapes.
+Files required from [MLX Community/Orpheus](https://huggingface.co/mlx-community/orpheus-3b-0.1-ft-4bit) and [MLX Community/Snac-24khz](https://huggingface.co/mlx-community/snac_24khz)
+
+ - Required files in Orpheus/Resources folder: 
+    - orpheus-3b-0.1-ft-4bit.safetensors
+    - config.json
+    - model.safetensors.index.json
+    - snac_model.safetensors
+    - snac_config.json
+    - tokenizer_config.json
+    - tokenizer.json
+    
+The full Orpheus functionality is implemented including:
+ - Voices: tara, leah, jess, leo, dan, mia, zac, zoe
+ - Expressions: <laugh>, <chuckle>: For laughter sounds. <sigh>: For sighing sounds. <cough>, <sniffle>: For subtle interruptions. <groan>, <yawn>, <gasp>: For additional emotional expression

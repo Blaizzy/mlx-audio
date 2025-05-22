@@ -41,8 +41,7 @@ struct ContentView: View {
             }
             .padding()
 
-            TextField("Enter text", text: $sayThis)
-
+            TextField("Enter text", text: $sayThis).padding()
             
             Button(action: {
                 Task {
