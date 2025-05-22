@@ -221,7 +221,9 @@ class Model(nn.Module):
                 if stream and generated_token_count % streaming_token_interval == 0:
                     output_ids = input_ids[:, input_length:].tolist()[0]
                     output = self.prompt_processor.extract_audio_from_tokens(output_ids)
-                    audio = self.audio_processor.audio_codec.decode(mx.array([output]))[-1, -1, :]
+                    audio = self.audio_processor.audio_codec.decode(mx.array([output]))[
+                        -1, -1, :
+                    ]
 
                     yield self.generate_result(
                         audio=audio[yielded_frame_count:],
@@ -236,8 +238,10 @@ class Model(nn.Module):
 
             output_ids = input_ids[:, input_length:].tolist()[0]
             output = self.prompt_processor.extract_audio_from_tokens(output_ids)
-            
-            audio = self.audio_processor.audio_codec.decode(mx.array([output]))[-1, -1, :]
+
+            audio = self.audio_processor.audio_codec.decode(mx.array([output]))[
+                -1, -1, :
+            ]
             if audio.shape[0] > yielded_frame_count:
                 yield self.generate_result(
                     audio=audio[yielded_frame_count:],
