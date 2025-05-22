@@ -152,7 +152,6 @@
 				Kokoro/Resources/jf_nezumi.json,
 				Kokoro/Resources/jf_tebukuro.json,
 				Kokoro/Resources/jm_kumo.json,
-				"Kokoro/Resources/kokoro-v1_0.safetensors",
 				Kokoro/Resources/pf_dora.json,
 				Kokoro/Resources/pm_alex.json,
 				Kokoro/Resources/pm_santa.json,
