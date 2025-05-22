@@ -6,7 +6,6 @@ phonemizer-fork>=3.3.2
 espeakng-loader>=0.2.4
 mlx>=0.25.2
 mlx-vlm>=0.1.25
-mlx-lm>=0.24.1
 numpy>=1.26.4
 transformers>=4.49.0
 sentencepiece>=0.2.0

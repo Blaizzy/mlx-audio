@@ -1,8 +1,10 @@
 import json
+import re
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -18,6 +20,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from ..base import GenerationResult
+from .audio_processor import AudioProcessor
 from .dac_interface import DacInterface
 from .prompt_processor import PromptProcessor
 
@@ -66,6 +69,39 @@ class Model(nn.Module):
 
     def __call__(self, *args, **kwargs):
         return self.model(*args, **kwargs)
+
+    def get_speaker(self, voice: Optional[str], ref_audio: Optional[str]) -> dict:
+        if voice is None and ref_audio is None:
+            voice = f"{Path(__file__).parent}/default_speaker.json"
+            return self.audio_processor.load_speaker(voice)
+
+        if voice is not None:
+            return self.audio_processor.load_speaker(voice)
+
+        speaker = self.audio_processor.create_speaker_from_whisper(ref_audio)
+        file_id = str(uuid.uuid4())
+        save_path = f"~/.cache/mlx_audio/voices/outetts_{file_id}.json"
+        self.audio_processor.save_speaker(speaker, save_path)
+        return speaker
+
+    def chunk_text(self, text: str, max_words: int = 30) -> List[str]:
+        sentences = re.split(r"[.!?。！？︕︖]+", text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+        chunks = []
+        current_chunk = []
+        current_length = 0
+
+        for sentence in sentences:
+            words = sentence.split()
+            if current_length + len(words) > max_words:
+                chunks.append(" ".join(current_chunk))
+                current_chunk = []
+                current_length = 0
+            current_chunk.extend(words)
+            current_length += len(words)
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        return chunks
 
     def generate_result(
         self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs
@@ -122,21 +158,18 @@ class Model(nn.Module):
         split_pattern: str = "\n",
         max_tokens: int = 1200,
         verbose: bool = False,
+        ref_audio: Optional[str] = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
         **kwargs,
     ):
-        prompt = text.replace("\\n", "\n").replace("\\t", "\t")
-        prompts = prompt.split(split_pattern)
+
+        prompts = self.chunk_text(text)
 
         self.prompt_processor = PromptProcessor(self.tokenizer)
-        self.audio_codec = DacInterface()
+        self.audio_processor = AudioProcessor()
 
-        if voice is None:
-            voice = f"{Path(__file__).parent}/default_speaker.json"
-
-        with open(voice, "r") as f:
-            speaker = json.load(f)
+        speaker = self.get_speaker(voice, ref_audio)
 
         sampler = make_sampler(
             temperature,
@@ -188,7 +221,7 @@ class Model(nn.Module):
                 if stream and generated_token_count % streaming_token_interval == 0:
                     output_ids = input_ids[:, input_length:].tolist()[0]
                     output = self.prompt_processor.extract_audio_from_tokens(output_ids)
-                    audio = self.audio_codec.decode(mx.array([output]))[-1, -1, :]
+                    audio = self.audio_processor.audio_codec.decode(mx.array([output]))[-1, -1, :]
 
                     yield self.generate_result(
                         audio=audio[yielded_frame_count:],
@@ -203,7 +236,8 @@ class Model(nn.Module):
 
             output_ids = input_ids[:, input_length:].tolist()[0]
             output = self.prompt_processor.extract_audio_from_tokens(output_ids)
-            audio = self.audio_codec.decode(mx.array([output]))[-1, -1, :]
+            
+            audio = self.audio_processor.audio_codec.decode(mx.array([output]))[-1, -1, :]
             if audio.shape[0] > yielded_frame_count:
                 yield self.generate_result(
                     audio=audio[yielded_frame_count:],

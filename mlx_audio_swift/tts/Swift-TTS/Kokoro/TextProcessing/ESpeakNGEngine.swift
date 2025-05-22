@@ -24,6 +24,13 @@ final class ESpeakNGEngine {
     case none = ""
     case enUS = "en-us"
     case enGB = "en-gb"
+    case jaJP = "ja"
+    case znCN = "yue"
+    case frFR = "fr-fr"
+    case hiIN = "hi"
+    case itIT = "it"
+    case esES = "es"
+    case ptBR = "pt-br"
   }
 
   // After constructing the wrapper, call setLanguage() before phonemizing any text
@@ -106,28 +113,29 @@ final class ESpeakNGEngine {
       return ""
     }
 
-    // Split only on whitespace to preserve punctuation with words
-    let words = text.split(whereSeparator: { $0.isWhitespace })
-    var result: [String] = []
-    
-    for word in words {
-      if word.isEmpty { continue }
-      
-      // Phonemize the word
-      var textPtr = UnsafeRawPointer((String(word) as NSString).utf8String)
-      let phonemes_mode = Int32((Int32(Character("_").asciiValue!) << 8) | 0x02)
-      if let phonemes = ESpeakNG.espeak_TextToPhonemes(&textPtr, espeakCHARS_UTF8, phonemes_mode) {
-        let processed = postProcessPhonemes(String(cString: phonemes))
-        // If the original word ended with punctuation, add it back
-        if let lastChar = word.last, lastChar.isPunctuation {
-          result.append(processed + " " + String(lastChar))
-        } else {
-          result.append(processed)
+    let textCopy = text as NSString
+    var textPtr = UnsafeRawPointer(textCopy.utf8String)
+    let phonemes_mode = Int32((Int32(Character("_").asciiValue!) << 8) | 0x02)
+
+    // Use autoreleasepool to ensure memory is managed properly
+    let result = autoreleasepool { () -> [String] in
+      withUnsafeMutablePointer(to: &textPtr) { ptr in
+        var resultWords: [String] = []
+        while ptr.pointee != nil {
+          if let result = ESpeakNG.espeak_TextToPhonemes(ptr, espeakCHARS_UTF8, phonemes_mode) {
+            // Create a copy of the returned string to ensure we own the memory
+            resultWords.append(String(cString: result, encoding: .utf8)!)
+          }
         }
+        return resultWords
       }
     }
 
-    return result.joined(separator: " ")
+    if !result.isEmpty {
+      return postProcessPhonemes(result.joined(separator: " "))
+    } else {
+      throw ESpeakNGEngineError.couldNotPhonemize
+    }
   }
 
   // Post processes manually phonemes before returning them
@@ -187,17 +195,58 @@ final class ESpeakNGEngine {
       ("\u{0303}", ""),
     ].sorted(by: { $0.0.count > $1.0.count })
     static let voice2Language: [TTSVoice: LanguageDialect] = [
-        .afHeart: .enUS,
-        .afBella: .enUS,
-        .afNicole: .enUS,
-        .afSarah: .enUS,
-        .afSky: .enUS,
-        .amAdam: .enUS,
-        .amMichael: .enUS,
-        .bfEmma: .enGB,
-        .bfIsabella: .enGB,
-        .bmGeorge: .enGB,
-        .bmLewis: .enGB,
+      .afAlloy: .enUS,
+      .afAoede: .enUS,
+      .afBella: .enUS,
+      .afHeart: .enUS,
+      .afJessica: .enUS,
+      .afKore: .enUS,
+      .afNicole: .enUS,
+      .afNova: .enUS,
+      .afRiver: .enUS,
+      .afSarah: .enUS,
+      .afSky: .enUS,
+      .amAdam: .enUS,
+      .amEcho: .enUS,
+      .amEric: .enUS,
+      .amFenrir: .enUS,
+      .amLiam: .enUS,
+      .amMichael: .enUS,
+      .amOnyx: .enUS,
+      .amPuck: .enUS,
+      .amSanta: .enUS,
+      .bfAlice: .enGB,
+      .bfEmma: .enGB,
+      .bfIsabella: .enGB,
+      .bfLily: .enGB,
+      .bmDaniel: .enGB,
+      .bmFable: .enGB,
+      .bmGeorge: .enGB,
+      .bmLewis: .enGB,
+      .efDora: .esES,
+      .emAlex: .esES,
+      .ffSiwis: .frFR,
+      .hfAlpha: .hiIN,
+      .hfBeta: .hiIN,
+      .hfOmega: .hiIN,
+      .hmPsi: .hiIN,
+      .ifSara: .itIT,
+      .imNicola: .itIT,
+      .jfAlpha: .jaJP,
+      .jfGongitsune: .jaJP,
+      .jfNezumi: .jaJP,
+      .jfTebukuro: .jaJP,
+      .jmKumo: .jaJP,
+      .pfDora: .ptBR,
+      .pmSanta: .ptBR,
+      .zfZiaobei: .znCN,
+      .zfXiaoni: .znCN,
+      .zfXiaoxiao: .znCN,
+      .zfZiaoyi: .znCN,
+      .zmYunjian: .znCN,
+      .zmYunxi: .znCN,
+      .zmYunxia: .znCN,
+      .zmYunyang: .znCN
     ]
   }
 }
