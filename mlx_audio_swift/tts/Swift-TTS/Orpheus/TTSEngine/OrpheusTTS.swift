@@ -243,69 +243,78 @@ public class OrpheusTTS {
 
         // 1. Apply repetition penalty if needed
         if repetitionPenalty != 1.0 && history.size > 0 {
-            let historyTokensList = history.asArray(Int32.self)
-            var logitsData = currentLogits[0].asArray(Float.self)
-            let vocabSize = logitsData.count
+            // Vectorised implementation to keep data on GPU/Metal.
+            // 1. Gather current logits for the history indices.
+            let indices = history // Int32 tensor with shape [K]
 
-            for token_id_int32 in historyTokensList {
-                let token_id = Int(token_id_int32)
-                if token_id >= 0 && token_id < vocabSize {
-                    if logitsData[token_id] < 0 {
-                        logitsData[token_id] *= repetitionPenalty
-                    } else {
-                        logitsData[token_id] /= repetitionPenalty
-                    }
-                }
-            }
-            currentLogits = MLXArray(logitsData).reshaped([1, -1])
+            // Ensure logits is 2-D [1, V]. We will work on the 1-D slice.
+            var logits1D = currentLogits[0]                     // Shape [V]
+
+            // 2. Gather the logits corresponding to the history tokens.
+            let gathered = MLX.take(logits1D, indices)
+
+            // 3. Compute updated logits according to the repetition penalty.
+            //    If the logit is < 0 multiply by penalty, else divide by penalty.
+            let negMask   = gathered .< 0
+            let updated   = MLX.where(
+                negMask,
+                gathered * repetitionPenalty,
+                gathered / repetitionPenalty
+            )
+
+            // 4. Scatter the updated values back into the logits tensor.
+            logits1D = MLXArray.scatter(logits1D, indices: indices, updates: updated)
+
+            // 5. Restore the [1, V] shape expected downstream.
+            currentLogits = logits1D.expandDims(at: 0)
         }
-
+        
         // 2. Apply temperature scaling
         let scaledLogits = currentLogits / max(temperature, 1e-6)
+
+        let startRep = Date.timeIntervalSinceReferenceDate
 
         // 3. Apply top-p filtering
         var filteredLogits = scaledLogits
         if topP > 0.0 && topP < 1.0 {
             let vocabSize = scaledLogits.shape[1]
             if vocabSize > 1 {
-                // Get probabilities using softmax
-                let probs = MLX.softmax(scaledLogits[0], axis: -1)
-                
-                // Sort probabilities in descending order
-                let sortedIdx = MLX.argSort(MLX.negative(probs))
-                let sortedProbs = MLX.take(probs, sortedIdx)
-                
-                // Compute cumulative probabilities
-                let cumProbs = sortedProbs.cumsum(axis: -1)
-                
-                // Find cutoff point
-                var cutoff = vocabSize - 1
-                let cumData = cumProbs.asArray(Float.self)
-                for k in 0..<vocabSize where cumData[k] >= topP {
-                    cutoff = k
-                    break
-                }
-                
-                // Create mask for tokens to filter out
-                var mask = Set<Int32>()
-                let sortedIdxData = sortedIdx.asArray(Int32.self)
-                if cutoff < vocabSize - 1 {
-                    for k in (cutoff + 1)..<vocabSize {
-                        mask.insert(sortedIdxData[k])
-                    }
-                }
-                
-                // Apply mask by setting filtered tokens to negative infinity
-                if !mask.isEmpty {
-                    var filt = scaledLogits[0].asArray(Float.self)
-                    for i in 0..<vocabSize where mask.contains(Int32(i)) {
-                        filt[i] = -Float.infinity
-                    }
-                    filteredLogits = MLXArray(filt).reshaped([1, -1])
-                }
+                // Vectorised top-p filtering (no host round-trips).
+
+                // 1. Probabilities.
+                let probs = MLX.softmax(scaledLogits[0], axis: -1)        // [V]
+
+                // 2. Sort (descending).
+                let sortedIdx   = MLX.argSort(MLX.negative(probs))         // [V] Int32
+                let sortedProbs = MLX.take(probs, sortedIdx)               // [V]
+
+                // 3. Cumulative sum.
+                let cumProbs = sortedProbs.cumsum(axis: -1)                // [V]
+
+                // 4. Mask tokens occurring strictly after the cut-off.
+                //    A token is removed if: it appears after the FIRST time
+                //    cumulative prob exceeds `topP`.
+                //    Implementation: mark (cumProbs > topP), then remove all
+                //    occurrences *after* the first such event using a prefix sum.
+                let gtMask        = cumProbs .> topP                      // Bool [V]
+                let gtMaskInt     = gtMask.asType(.int32)                 // Int32 [V]
+                let prefix        = gtMaskInt.cumsum(axis: -1)            // Int32 [V]
+                let removeMaskSorted = prefix .> 1                        // Bool [V]
+
+                // 5. Bring mask back to original vocab order.
+                let invIdx          = MLX.argSort(sortedIdx)              // [V]
+                let removeMask      = MLX.take(removeMaskSorted, invIdx)  // Bool [V]
+
+                // 6. Apply mask: set filtered logits to -inf.
+                let negInfScalar    = MLXArray(-Float.infinity)           // scalar
+                let logits1D        = scaledLogits[0]
+                let filtered1D      = MLX.where(removeMask, negInfScalar, logits1D)
+
+                // 7. Restore [1, V] shape expected downstream.
+                filteredLogits = filtered1D.expandDims(at: 0)
             }
         }
-
+        
         // 4. Sample from filtered distribution
         let nextTokenIdArray = MLXRandom.categorical(filteredLogits, count: 1)
         let nextTokenId: Int = nextTokenIdArray[0].item()
@@ -355,26 +364,6 @@ public class OrpheusTTS {
         }
         
         return [layer1, layer2, layer3]
-    }
-    
-    private func create_attention_mask(_ x: MLXArray) -> MLXArray {
-        // Create a causal mask for the sequence
-        let B = x.shape[0] // Batch size
-        let L = x.shape[1] // Sequence length
-        
-        // Create mask with shape [B, L, L]
-        let mask = MLXArray.zeros([B, L, L], type: Float.self)
-        
-        // Fill upper triangle with -inf for causal masking
-        for b in 0..<B {
-            for i in 0..<L {
-                for j in (i + 1)..<L {
-                    mask[b, i, j] = MLXArray(-Float.infinity)
-                }
-            }
-        }
-        
-        return mask
     }
 }
 

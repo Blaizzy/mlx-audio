@@ -59,8 +59,9 @@ extension MLXArray {
         for i in 0..<indices.shape[0] {
             let index = indices[i].item() as Int
             if index >= 0 && index < result.shape[0] {
+                // Directly index the 1-D tensor; no need for multiple `.ellipsis`.
                 let indexArray = MLXArray(index)
-                result[.ellipsis, .ellipsis, indexArray] = updates[i]
+                result[indexArray] = updates[i]
             } else {
                 print("Warning: Index \(index) out of bounds for scatter update (shape: \(result.shape))")
             }
