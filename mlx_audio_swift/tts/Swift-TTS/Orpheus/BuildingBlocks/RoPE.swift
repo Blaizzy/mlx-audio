@@ -82,8 +82,7 @@ class RoPE {
 
         // Combine using nested MLX.where (equivalent to Python's if/elif/else)
         let step1 = MLX.where(maskHigh, freqDivScale, mid)
-        let newFreqs = MLX.where(maskLow, freqs, step1)
-        //-------------------------------------------------------------------
+        let newFreqs = MLX.where(maskLow, freqs, step1)        
 
         return newFreqs.asType(freqs.dtype)
     }

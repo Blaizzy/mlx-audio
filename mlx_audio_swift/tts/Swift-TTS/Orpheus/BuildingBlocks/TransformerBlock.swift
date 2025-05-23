@@ -71,15 +71,12 @@ class TransformerBlock {
         // Input RMSNorm
         let normedX = MLX.rmsNorm(x, weight: self.inputNormWeight, eps: 1e-5)
 
-        // --- Self attention ---
+        // Self attention
         let q_proj = TransformerBlock.linear(x: normedX, weight: q_proj_w_T)
         let k_proj = TransformerBlock.linear(x: normedX, weight: k_proj_w_T)
         let v_proj = TransformerBlock.linear(x: normedX, weight: v_proj_w_T)
 
         // Reshape and transpose for multi-head attention
-        // queries: [B, numAttentionHeads, L, headDim]
-        // keys:    [B, numKeyValueHeads, L, headDim]
-        // values:  [B, numKeyValueHeads, L, headDim]
         var queries = q_proj.reshaped([B, L, numAttentionHeads, headDim]).transposed(0, 2, 1, 3)
         var keys = k_proj.reshaped([B, L, numKeyValueHeads, headDim]).transposed(0, 2, 1, 3)
         var values = v_proj.reshaped([B, L, numKeyValueHeads, headDim]).transposed(0, 2, 1, 3)

@@ -27,7 +27,7 @@ public class Dequantizer {
         let V = w_q.shape[0]
         let D = w_q.shape[1]
         
-        // --- Vectorised nibble unpack ---------------------------------------
+        // Vectorised nibble unpack
         // Each UInt32 contains 8 packed 4-bit values (nibbles).
         // We broadcast 8 different right-shift amounts and mask with 0xF.
         let shiftAmounts: [UInt32] = [0, 4, 8, 12, 16, 20, 24, 28]
@@ -36,15 +36,7 @@ public class Dequantizer {
         let shifted = MLX.rightShift(expanded, shifts)                          // [V, D, 8]
         let nibblesUInt32 = MLX.bitwiseAnd(shifted, MLXArray(UInt32(0xF)))      // [V, D, 8]
         let w_unpacked = nibblesUInt32.asType(.float32).reshaped([V, D * 8])    // [V, D*8]
-        // --------------------------------------------------------------------
-        
-        // Diagnostics (optional)
-//        let upminn: Float = w_unpacked.min().item()
-//        let upmaxx: Float = w_unpacked.max().item()
-//        print("DBG: Dequantize - w_unpacked shape: \(w_unpacked.shape)")
-//        print("DBG: Dequantize - w_unpacked range: \(upminn) to \(upmaxx)")
-//        if V > 0 { print("DBG: Dequantize - w_unpacked sample: \(w_unpacked[0, ..<5].asArray(Float.self))") }
-        
+
         // Convert scales and biases to float32 for precise maths
         let scales_float32 = scales.asType(.float32)
         let biases_float32 = biases.asType(.float32)

@@ -106,18 +106,9 @@ public class OrpheusTTS {
                 repetitionPenalty: 1.3
             )
             
-            // Intervention: If previous token was audioStartToken and current is not audioCodeDataStartMarker,
-            // force current to be audioCodeDataStartMarker.
-            if let prev = previousToken, prev == Constants.audioStartToken && next_token_int != Constants.audioCodeDataStartMarker {
-                print("DBG: Overriding token \(next_token_int) with \(Constants.audioCodeDataStartMarker) after audioStartToken (\(Constants.audioStartToken))")
-                next_token_int = Constants.audioCodeDataStartMarker
-            }
-            
             let next_token = Int32(next_token_int) // Ensure it's Int32 for MLXArray
                         
-            // Stop generation only at the general end-of-text token (128258)
-            // The audio-end marker (128262) is part of the code stream and
-            // must be kept until the model naturally emits the EOT token.
+            // Stop generation only at the general end-of-text token
             if next_token == Constants.endToken {
                 let endArr = MLXArray([Constants.endToken]).reshaped([1,1])
                 current_ids = MLX.concatenated([current_ids, endArr], axis: 1)
