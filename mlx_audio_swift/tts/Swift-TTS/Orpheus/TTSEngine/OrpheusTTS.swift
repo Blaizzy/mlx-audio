@@ -98,16 +98,17 @@ public class OrpheusTTS {
         while i < maxOutputTokens {
             let historyForRepetition = MLXArray(generatedTokensForPenalty)
             
-            var next_token_int = sampleNextToken(
+            let nextTokenArray = sampleNextToken(
                 logits: logits,
                 history: historyForRepetition,
                 temperature: temperature,
                 topP: topP,
                 repetitionPenalty: 1.3
             )
+
+            // Only extract the Int32 value when we absolutely need it for CPU operations
+            let next_token: Int32 = nextTokenArray[0].item()
             
-            let next_token = Int32(next_token_int) // Ensure it's Int32 for MLXArray
-                        
             // Stop generation only at the general end-of-text token
             if next_token == Constants.endToken {
                 let endArr = MLXArray([Constants.endToken]).reshaped([1,1])
@@ -117,8 +118,9 @@ public class OrpheusTTS {
             }
                         
             // Add next token to the sequence for parsing and for model input
-            let nextTokenArray = MLXArray([next_token]).reshaped([1, 1])
-            current_ids = MLX.concatenated([current_ids, nextTokenArray], axis: 1)
+            // Use the MLXArray directly instead of recreating it
+            let nextTokenForConcat = nextTokenArray.reshaped([1, 1])
+            current_ids = MLX.concatenated([current_ids, nextTokenForConcat], axis: 1)
             
             // Add to history for repetition penalty *after* it's been sampled
             generatedTokensForPenalty.append(next_token)
@@ -174,7 +176,7 @@ public class OrpheusTTS {
             x = embeddingWeights[inputIds]
         }
 
-        print("Generated tokens: \(inputIds.asArray(Int32.self)) (\(inputIds.asArray(Int32.self).count))")
+//        print("Generated tokens: \(inputIds.asArray(Int32.self)) (\(inputIds.asArray(Int32.self).count))")
 
         // Validate shape
         guard x.shape[2] == hiddenSize else {
@@ -228,7 +230,7 @@ public class OrpheusTTS {
         temperature: Float,
         topP: Float,
         repetitionPenalty: Float = 1.3
-    ) -> Int {
+    ) -> MLXArray {
         // Start with raw logits
         var currentLogits = logits
 
@@ -262,8 +264,6 @@ public class OrpheusTTS {
         
         // 2. Apply temperature scaling
         let scaledLogits = currentLogits / max(temperature, 1e-6)
-
-        let startRep = Date.timeIntervalSinceReferenceDate
 
         // 3. Apply top-p filtering
         var filteredLogits = scaledLogits
@@ -308,15 +308,8 @@ public class OrpheusTTS {
         
         // 4. Sample from filtered distribution
         let nextTokenIdArray = MLXRandom.categorical(filteredLogits, count: 1)
-        let nextTokenId: Int = nextTokenIdArray[0].item()
-
-        // Validate token
-        let vocabSizeOutput = filteredLogits.shape[1]
-        if nextTokenId >= vocabSizeOutput {
-            print("WARNING: Generated audio token \(nextTokenId) exceeds vocabulary size \(vocabSizeOutput)")
-        }
-
-        return nextTokenId
+        
+        return nextTokenIdArray
     }
     
     private func parseOutput(tokens: [Int]) -> [[Int]] {

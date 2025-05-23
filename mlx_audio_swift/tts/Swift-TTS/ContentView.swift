@@ -39,7 +39,7 @@ struct ContentView: View {
                     availableVoices = OrpheusVoice.allCases.map { $0.rawValue }
                     chosenVoice = availableVoices.first ?? "dan"
 
-                    status = "Orpheus is currently quite slow (0.09x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
+                    status = "Orpheus is currently quite slow (0.1x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
                 } else {
                     availableVoices = TTSVoice.allCases.map { $0.rawValue }
                     chosenVoice = availableVoices.first ?? TTSVoice.bmGeorge.rawValue
