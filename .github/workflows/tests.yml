@@ -35,6 +35,11 @@ jobs:
         run: |
           python -m pip install pytest
           python -m pip install -e .
+          python -m pip install -r requirements-dev.txt
+
+      - name: Build documentation
+        run: |
+          mkdocs build --strict
 
       - name: Run Python tests (TTS)
         run: |
