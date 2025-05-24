@@ -8,6 +8,22 @@ import Foundation
 import MLX
 import MLXNN
 
+// MARK: - Profiling Helper (if not already defined)
+struct BlockProfiler {
+    static var enabled: Bool = false // Set to true to enable block-level profiling
+    
+    static func time<T>(_ label: String, _ block: () throws -> T) rethrows -> T {
+        guard enabled else { return try block() }
+        
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try block()
+        let end = CFAbsoluteTimeGetCurrent()
+        let duration = (end - start) * 1000 // Convert to milliseconds
+        print("    ⚡ [BLOCK] \(label): \(String(format: "%.2f", duration))ms")
+        return result
+    }
+}
+
 class TransformerBlock {
     private let weights: [String: MLXArray]
     private let layerIndex: Int
@@ -69,72 +85,96 @@ class TransformerBlock {
         let L = x.shape[1] // Current sequence length of input x
 
         // Input RMSNorm
-        let normedX = MLX.rmsNorm(x, weight: self.inputNormWeight, eps: 1e-5)
+        let normedX = BlockProfiler.time("RMSNorm (input)") {
+            MLX.rmsNorm(x, weight: self.inputNormWeight, eps: 1e-5)
+        }
 
-        // Self attention
-        let q_proj = TransformerBlock.linear(x: normedX, weight: q_proj_w_T)
-        let k_proj = TransformerBlock.linear(x: normedX, weight: k_proj_w_T)
-        let v_proj = TransformerBlock.linear(x: normedX, weight: v_proj_w_T)
+        // Self attention projections
+        let (q_proj, k_proj, v_proj) = BlockProfiler.time("Attention projections (Q,K,V)") {
+            let q = TransformerBlock.linear(x: normedX, weight: q_proj_w_T)
+            let k = TransformerBlock.linear(x: normedX, weight: k_proj_w_T)
+            let v = TransformerBlock.linear(x: normedX, weight: v_proj_w_T)
+            return (q, k, v)
+        }
 
         // Reshape and transpose for multi-head attention
-        var queries = q_proj.reshaped([B, L, numAttentionHeads, headDim]).transposed(0, 2, 1, 3)
-        var keys = k_proj.reshaped([B, L, numKeyValueHeads, headDim]).transposed(0, 2, 1, 3)
-        var values = v_proj.reshaped([B, L, numKeyValueHeads, headDim]).transposed(0, 2, 1, 3)
+        var (queries, keys, values) = BlockProfiler.time("Attention reshape/transpose") {
+            let q = q_proj.reshaped([B, L, numAttentionHeads, headDim]).transposed(0, 2, 1, 3)
+            let k = k_proj.reshaped([B, L, numKeyValueHeads, headDim]).transposed(0, 2, 1, 3)
+            let v = v_proj.reshaped([B, L, numKeyValueHeads, headDim]).transposed(0, 2, 1, 3)
+            return (q, k, v)
+        }
         
         var updatedLayerCache: Cache? = cache
 
         if let currentLayerCache = updatedLayerCache {
             // Use existing cache – incremental decoding path.
-            // Cache exists: Apply RoPE to new Q, K using cache's current offset.
-            queries = rope.call(queries, offset: currentLayerCache.offset)
-            keys = rope.call(keys, offset: currentLayerCache.offset)
+            (queries, keys, values) = BlockProfiler.time("Cache update & RoPE") {
+                // Apply RoPE to new Q, K using cache's current offset.
+                let q_rope = rope.call(queries, offset: currentLayerCache.offset)
+                let k_rope = rope.call(keys, offset: currentLayerCache.offset)
 
-            // Update the cache: updateAndFetch appends newKeys, newValues and updates its own offset.
-            // The K,V returned are the full concatenated history.
-            let (fetchedKeys, fetchedValues) = currentLayerCache.updateAndFetch(newKeys: keys, newValues: values)
-            keys = fetchedKeys     // Use combined history for attention
-            values = fetchedValues // Use combined history for attention
-            // updatedLayerCache (which is currentLayerCache) is now internally updated by updateAndFetch.
+                // Update the cache: updateAndFetch appends newKeys, newValues and updates its own offset.
+                let (fetchedKeys, fetchedValues) = currentLayerCache.updateAndFetch(newKeys: k_rope, newValues: values)
+                return (q_rope, fetchedKeys, fetchedValues)
+            }
         } else {
             // No cache (first pass / no caching desired for this layer yet):
-            // Apply RoPE without offset (implicitly offset 0).
-            // `queries`, `keys`, `values` are for the initial prompt (L = L_prompt)
-            queries = rope.call(queries)
-            keys = rope.call(keys)
+            (queries, keys) = BlockProfiler.time("RoPE (no cache)") {
+                let q_rope = rope.call(queries)
+                let k_rope = rope.call(keys)
+                return (q_rope, k_rope)
+            }
             // Create a new cache to store these initial keys and values.
-            // The offset of this new cache is the sequence length of these initial keys.
             updatedLayerCache = Cache(keys: keys, values: values, offset: keys.shape[2])
         }
         
         let scale = 1.0 / sqrt(Float(headDim))
         
         // Scaled Dot-Product Attention
-        // queries are [B, numAttentionHeads, L_new, headDim]
-        // keys/values are [B, numKeyValueHeads, L_total_kv, headDim]
-        // Mask should be [B, numAttentionHeads, L_new, L_total_kv] or broadcastable.
-        let attnOutput = MLX.scaledDotProductAttention(queries: queries, keys: keys, values: values, scale: scale, mask: mask)
+        let attnOutput = BlockProfiler.time("Scaled dot-product attention") {
+            MLX.scaledDotProductAttention(queries: queries, keys: keys, values: values, scale: scale, mask: mask)
+        }
 
         // Reshape back to [B, L, hiddenSize]
-        let attnOutputReshaped = attnOutput.transposed(0, 2, 1, 3).reshaped([B, L, hiddenSize])
+        let attnOutputReshaped = BlockProfiler.time("Attention output reshape") {
+            attnOutput.transposed(0, 2, 1, 3).reshaped([B, L, hiddenSize])
+        }
 
         // Output projection
-        let attnProj = TransformerBlock.linear(x: attnOutputReshaped, weight: o_proj_w_T)
+        let attnProj = BlockProfiler.time("Attention output projection") {
+            TransformerBlock.linear(x: attnOutputReshaped, weight: o_proj_w_T)
+        }
         
         // First residual connection
-        // x is the original input to the block, with shape [B, L, hiddenSize]. L here is L_new.
-        let h = x + attnProj
+        let h = BlockProfiler.time("First residual connection") {
+            x + attnProj
+        }
 
         // Post attention RMSNorm
-        let normedH = MLX.rmsNorm(h, weight: self.postNormWeight, eps: 1e-5)
+        let normedH = BlockProfiler.time("RMSNorm (post-attention)") {
+            MLX.rmsNorm(h, weight: self.postNormWeight, eps: 1e-5)
+        }
         
         // MLP
-        let gate = TransformerBlock.linear(x: normedH, weight: gate_proj_w_T)
-        let up = TransformerBlock.linear(x: normedH, weight: up_proj_w_T)
-        let gateUp = MLXNN.silu(gate) * up
-        let down = TransformerBlock.linear(x: gateUp, weight: down_proj_w_T)
+        let (gate, up) = BlockProfiler.time("MLP projections (gate, up)") {
+            let g = TransformerBlock.linear(x: normedH, weight: gate_proj_w_T)
+            let u = TransformerBlock.linear(x: normedH, weight: up_proj_w_T)
+            return (g, u)
+        }
+        
+        let gateUp = BlockProfiler.time("MLP activation (SiLU)") {
+            MLXNN.silu(gate) * up
+        }
+        
+        let down = BlockProfiler.time("MLP down projection") {
+            TransformerBlock.linear(x: gateUp, weight: down_proj_w_T)
+        }
 
         // Second residual connection
-        let output = h + down // output has shape [B, L_new, hiddenSize]
+        let output = BlockProfiler.time("Second residual connection") {
+            h + down
+        }
         
         return (output, updatedLayerCache)
     }

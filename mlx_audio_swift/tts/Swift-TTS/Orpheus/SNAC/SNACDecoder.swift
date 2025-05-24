@@ -138,10 +138,7 @@ class SNACDecoder {
         )
     }
     
-    func decode(codes: [[Int]]) -> MLXArray {
-        // Print input codes
-        print("SNAC decode - Input codes: \(codes)")
-        
+    func decode(codes: [[Int]]) -> MLXArray {        
         // 1. Convert codes to embeddings
         var x = embedCodes(codes: codes)
         

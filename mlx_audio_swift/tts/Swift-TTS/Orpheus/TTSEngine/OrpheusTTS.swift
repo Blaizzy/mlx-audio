@@ -15,6 +15,33 @@ public enum OrpheusVoice: String, CaseIterable {
     case zoe = "zoe" // Female, calm, soothing
 }
 
+// MARK: - Profiling Helper
+struct Profiler {
+    static var enabled: Bool = false // Set to true to enable profiling
+    
+    static func time<T>(_ label: String, _ block: () throws -> T) rethrows -> T {
+        guard enabled else { return try block() }
+        
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try block()
+        let end = CFAbsoluteTimeGetCurrent()
+        let duration = (end - start) * 1000 // Convert to milliseconds
+        print("⏱️ [PROFILE] \(label): \(String(format: "%.2f", duration))ms")
+        return result
+    }
+    
+    static func timeAsync<T>(_ label: String, _ block: () async throws -> T) async rethrows -> T {
+        guard enabled else { return try await block() }
+        
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try await block()
+        let end = CFAbsoluteTimeGetCurrent()
+        let duration = (end - start) * 1000 // Convert to milliseconds
+        print("⏱️ [PROFILE] \(label): \(String(format: "%.2f", duration))ms")
+        return result
+    }
+}
+
 struct Constants {
     static let maxTokenCount = 1200
     static let sampleRate = 24000
@@ -46,46 +73,61 @@ public class OrpheusTTS {
     
     init() throws {
         // Load model weights
-        self.weights = OrpheusWeightLoader.loadWeightsOrpheus()
+        let loadedWeights = Profiler.time("Weight loading") {
+            OrpheusWeightLoader.loadWeightsOrpheus()
+        }
+        self.weights = loadedWeights
 
-        self.snacDecoder = SNACDecoder(config: SNACDecoder.loadConfig()!)
+        self.snacDecoder = Profiler.time("SNAC decoder init") {
+            SNACDecoder(config: SNACDecoder.loadConfig()!)
+        }
         
-        self.tokenizer = try OrpheusTokenizer()
+        self.tokenizer = try Profiler.time("Tokenizer init") {
+            try OrpheusTokenizer()
+        }
         
-        // Initialize transformer layers
+        // Initialize transformer layers - avoid capturing self in closure
         let numLayers = 28 // Based on config.json
+        let layerInitStart = CFAbsoluteTimeGetCurrent()
         var tempLayers = [TransformerBlock]()
         for i in 0..<numLayers {
-            tempLayers.append(TransformerBlock(weights: weights, layerIndex: i))
+            let layerStart = CFAbsoluteTimeGetCurrent()
+            tempLayers.append(TransformerBlock(weights: loadedWeights, layerIndex: i))
+            let layerEnd = CFAbsoluteTimeGetCurrent()
+            let layerDuration = (layerEnd - layerStart) * 1000
         }
         self.layers = tempLayers
+        let layerInitEnd = CFAbsoluteTimeGetCurrent()
+        let layerInitDuration = (layerInitEnd - layerInitStart) * 1000
     }
     
     public func generateAudio(voice: OrpheusVoice, text: String, temperature: Float = 0.6, topP: Float = 0.8) async throws -> MLXArray {
+        let totalGenerationStart = CFAbsoluteTimeGetCurrent()
+        
         // Prepare input with voice prefix
         let prompt = "\(voice.rawValue): \(text)"
         print("Orpheus prompt: \(prompt)")
         
-        let input_ids_tuple = tokenizer.prepareInputIds(prompts: [prompt])
+        let input_ids_tuple = Profiler.time("Tokenizer preparation") {
+            tokenizer.prepareInputIds(prompts: [prompt])
+        }
                 
         // Convert the tokenizer output to a Swift [Int32]
-        var current_ids = MLXArray(input_ids_tuple.0[0].asArray(Int32.self)) // Keep as MLXArray
+        var current_ids = Profiler.time("Input IDs conversion") {
+            let array = MLXArray(input_ids_tuple.0[0].asArray(Int32.self))
+            return array.ndim == 1 ? array.reshaped([1, -1]) : array
+        }
         
         print("Input IDs: \(current_ids.shape) = \(current_ids.asArray(Int32.self))")
-        
-        // Ensure input_ids is 2D for concatenation
-        if current_ids.ndim == 1 {
-            current_ids = current_ids.reshaped([1, -1])
-        }
         
         // Initialize KV Caches
         let numLayers = self.layers.count
         var kvCaches: [Cache?] = Array(repeating: nil, count: numLayers)
         
         // Process the initial prompt.
-        // `logits` will be for the token immediately following the prompt.
-        // `kvCaches` will be the state *after* processing the entire prompt.
-        var (logits, updatedKvCachesAfterPrompt) = forward(inputIds: current_ids, currentKvCaches: kvCaches)
+        var (logits, updatedKvCachesAfterPrompt) = Profiler.time("Initial forward pass") {
+            forward(inputIds: current_ids, currentKvCaches: kvCaches)
+        }
         kvCaches = updatedKvCachesAfterPrompt
         
         // Generate audio tokens
@@ -95,9 +137,16 @@ public class OrpheusTTS {
 
         let maxOutputTokens = Constants.maxTokenCount // Define how many tokens to generate at most
         
+        let generationLoopStart = CFAbsoluteTimeGetCurrent()
+        
         while i < maxOutputTokens {
-            let historyForRepetition = MLXArray(generatedTokensForPenalty)
+            let iterationStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
             
+            let historyForRepetition = Profiler.time("History preparation") {
+                MLXArray(generatedTokensForPenalty)
+            }
+            
+            let samplingStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
             let nextTokenArray = sampleNextToken(
                 logits: logits,
                 history: historyForRepetition,
@@ -105,58 +154,109 @@ public class OrpheusTTS {
                 topP: topP,
                 repetitionPenalty: 1.3
             )
+            let samplingEnd = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let samplingDuration = Profiler.enabled ? (samplingEnd - samplingStart) * 1000 : 0
+            if Profiler.enabled {
+                print("⏱️ [PROFILE] Token sampling (iter \(i)): \(String(format: "%.2f", samplingDuration))ms")
+            }
 
             // Only extract the Int32 value when we absolutely need it for CPU operations
-            let next_token: Int32 = nextTokenArray[0].item()
+            let next_token: Int32 = Profiler.time("Token extraction") {
+                // This operation forces GPU->CPU transfer and might be a sync point
+                let result: Int32 = nextTokenArray[0].item()
+                return result
+            }
             
             // Stop generation only at the general end-of-text token
             if next_token == Constants.endToken {
                 let endArr = MLXArray([Constants.endToken]).reshaped([1,1])
                 current_ids = MLX.concatenated([current_ids, endArr], axis: 1)
-                print("DBG: End token \(Constants.endToken) encountered. Appending and breaking.")
+                if Profiler.enabled {
+                    print("DBG: End token \(Constants.endToken) encountered. Appending and breaking.")
+                }
                 break
             }
                         
             // Add next token to the sequence for parsing and for model input
-            // Use the MLXArray directly instead of recreating it
-            let nextTokenForConcat = nextTokenArray.reshaped([1, 1])
-            current_ids = MLX.concatenated([current_ids, nextTokenForConcat], axis: 1)
-            
-            // Add to history for repetition penalty *after* it's been sampled
-            generatedTokensForPenalty.append(next_token)
-            if generatedTokensForPenalty.count > Constants.repetitionContextSize { // Keep history to context size
-                generatedTokensForPenalty.removeFirst()
+            let tokenConcatTime = Profiler.time("Token concatenation (iter \(i))") {
+                let nextTokenForConcat = nextTokenArray.reshaped([1, 1])
+                current_ids = MLX.concatenated([current_ids, nextTokenForConcat], axis: 1)
             }
             
-            previousToken = next_token // Update previous token for next iteration
+            // Add to history for repetition penalty *after* it's been sampled
+            let historyUpdateTime = Profiler.time("History update") {
+                generatedTokensForPenalty.append(next_token)
+                if generatedTokensForPenalty.count > Constants.repetitionContextSize { // Keep history to context size
+                    generatedTokensForPenalty.removeFirst()
+                }
+                previousToken = next_token // Update previous token for next iteration
+            }
             
             // Prepare for the next iteration:
+            let forwardPassStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
             let (next_logits, next_kvCaches) = forward(inputIds: current_ids, currentKvCaches: kvCaches)
+            let forwardPassEnd = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let forwardPassDuration = Profiler.enabled ? (forwardPassEnd - forwardPassStart) * 1000 : 0
+            if Profiler.enabled {
+                print("⏱️ [PROFILE] Forward pass (iter \(i)): \(String(format: "%.2f", forwardPassDuration))ms")
+            }
+            
             logits = next_logits
             kvCaches = next_kvCaches
             
             // Clear cache periodically
             if (i + 1) % 50 == 0 {
-                MLX.GPU.clearCache()
+                Profiler.time("GPU cache clear") {
+                    MLX.GPU.clearCache()
+                }
+            }
+            
+            if Profiler.enabled {
+                let iterationEnd = CFAbsoluteTimeGetCurrent()
+                let iterationDuration = (iterationEnd - iterationStart) * 1000
+                
+                // Calculate unaccounted time
+                let accountedTime = forwardPassDuration + 
+                                  (historyForRepetition.size > 0 ? 0.5 : 0.0) + // rough estimate for sampling/concat
+                                  0.4 + 0.03 + 0.1 // sampling + concat + overhead estimates
+                let unaccountedTime = iterationDuration - accountedTime
+                
+                // Print detailed timing every 10 iterations or for first 5
+                if i < 5 || i % 10 == 0 {
+                    print("  🔀 Iteration \(i): \(String(format: "%.2f", iterationDuration))ms total")
+                    print("    📊 Forward: \(String(format: "%.2f", forwardPassDuration))ms")
+                    print("    ❓ Unaccounted: \(String(format: "%.2f", unaccountedTime))ms")
+                    print("    🎯 Token: \(next_token)")
+                }
             }
             
             i += 1
         }
-        
+                
         if i >= maxOutputTokens {
             print("WARNING: Reached max token count (\(maxOutputTokens)) during generation.")
         }
         
         // Parse the output into code lists
-        let code_lists = parseOutput(tokens: current_ids.asArray(Int32.self).map { Int($0) })
+        let code_lists = Profiler.time("Output parsing") {
+            parseOutput(tokens: current_ids.asArray(Int32.self).map { Int($0) })
+        }
         
         // Generate audio using SNAC decoder
-        let waveform = snacDecoder.decode(codes: code_lists)
+        let waveform = Profiler.time("SNAC decoding") {
+            snacDecoder.decode(codes: code_lists)
+        }
+        
+        let totalGenerationEnd = CFAbsoluteTimeGetCurrent()
+        let totalDuration = (totalGenerationEnd - totalGenerationStart) * 1000
+        print("🏁 [PROFILE] Total audio generation: \(String(format: "%.2f", totalDuration))ms")
         
         return waveform
     }
     
     private func forward(inputIds: MLXArray, currentKvCaches: [Cache?]) -> (logits: MLXArray, updatedKvCaches: [Cache?]) {
+        let forwardStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+        
         // Get embedding weights
         guard let embeddingWeights = weights["model.embed_tokens.weight"] else {
             fatalError("Embedding weights not found") // Should consider returning error or empty array
@@ -165,10 +265,8 @@ public class OrpheusTTS {
         // If using cache, only process the last token
         var x: MLXArray
         let isCaching = currentKvCaches.first(where: { $0 != nil }) != nil
-
         if isCaching {
             // Only get embedding for the last token
-            // inputIds is [1, L], so inputIds[0, -1] gives the last token ID as a scalar MLXArray
             let lastTokenId = inputIds[0, -1]
             x = embeddingWeights[lastTokenId].reshaped([1, 1, -1])
         } else {
@@ -176,7 +274,11 @@ public class OrpheusTTS {
             x = embeddingWeights[inputIds]
         }
 
-//        print("Generated tokens: \(inputIds.asArray(Int32.self)) (\(inputIds.asArray(Int32.self).count))")
+        // Only print token details for initial pass or occasionally during generation
+        if Profiler.enabled && (!isCaching || (isCaching && inputIds.shape[1] % 50 == 0)) {
+            let tokenCount = inputIds.shape[1]
+            print("Generated tokens count: \(tokenCount)")
+        }
 
         // Validate shape
         guard x.shape[2] == hiddenSize else {
@@ -187,21 +289,41 @@ public class OrpheusTTS {
         
         var attentionMask: MLXArray? = nil
         if !isCaching {
-            // Create causal attention mask [1, 1, L, L] for initial pass (no cache)
-            // L is the sequence length of the input x (prompt length)
-            attentionMask = MLX.triu(MLXArray.full([L,L], values: MLXArray([Float(-1e9)])), k: 1) // Use large negative float
-                                     
-            attentionMask = attentionMask!.asType(x.dtype) // Ensure same dtype as x for addition
-            attentionMask = attentionMask!.expandDims(at: 0).expandDims(at: 0) // Shape becomes [1, 1, L, L]
+            attentionMask = Profiler.time("Attention mask creation") {
+                let mask = MLX.triu(MLXArray.full([L,L], values: MLXArray([Float(-1e9)])), k: 1)
+                return mask.asType(x.dtype).expandDims(at: 0).expandDims(at: 0)
+            }
         }
         
         var nextKvCaches: [Cache?] = Array(repeating: nil, count: self.layers.count)
         
         // Process through transformer layers
+        let layersStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
         for i in 0..<self.layers.count {
+            let layerStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
             let (layerOutput, updatedLayerCache) = self.layers[i].call(x, mask: attentionMask, cache: currentKvCaches[i])
             x = layerOutput
             nextKvCaches[i] = updatedLayerCache
+            
+            if Profiler.enabled {
+                let layerEnd = CFAbsoluteTimeGetCurrent()
+                let layerDuration = (layerEnd - layerStart) * 1000
+                
+                // Print timing for first few layers or every 5th layer, and only occasionally during generation
+                if (!isCaching || currentKvCaches.first??.offset ?? 0 < 50) && (i < 3 || i % 5 == 0) {
+                    print("  🧠 Layer \(i): \(String(format: "%.2f", layerDuration))ms")
+                }
+            }
+        }
+        
+        if Profiler.enabled {
+            let layersEnd = CFAbsoluteTimeGetCurrent()
+            let layersTotalDuration = (layersEnd - layersStart) * 1000
+            
+            // Only print layer summary for initial pass or occasionally during generation
+            if !isCaching || (currentKvCaches.first??.offset ?? 0) < 50 {
+                print("  🧠 All layers: \(String(format: "%.2f", layersTotalDuration))ms")
+            }
         }
 
         // 3. Final RMSNorm
@@ -210,16 +332,25 @@ public class OrpheusTTS {
             return (MLXArray([]), nextKvCaches) // Return current caches even on error
         }
 
-        x = MLX.rmsNorm(x, weight: finalNormWeight, eps: 1e-5)
+        x = Profiler.time("Final RMSNorm") {
+            MLX.rmsNorm(x, weight: finalNormWeight, eps: 1e-5)
+        }
         
         // 4. Output projection (LM Head)
-        // Use embedding weights for output projection (weight tying)
-        let logits = TransformerBlock.linear(x: x, weight: embeddingWeights)
+        let logits = Profiler.time("Output projection") {
+            TransformerBlock.linear(x: x, weight: embeddingWeights)
+        }
 
         // If caching, logits are already [1, 1, VocabSize] from processing the last token.
-        // We need to squeeze the middle dimension to get [1, VocabSize].
-        // If not caching, logits are [1, L_prompt, VocabSize], and we take the last one.
-        let finalLogits = isCaching ? logits.squeezed(axis: 1) : logits[0, -1].expandDims(at: 0)
+        let finalLogits = Profiler.time("Logits finalization") {
+            isCaching ? logits.squeezed(axis: 1) : logits[0, -1].expandDims(at: 0)
+        }
+        
+        if Profiler.enabled {
+            let forwardEnd = CFAbsoluteTimeGetCurrent()
+            let forwardDuration = (forwardEnd - forwardStart) * 1000
+            print("  ➡️ Forward pass total: \(String(format: "%.2f", forwardDuration))ms")
+        }
 
         return (finalLogits, nextKvCaches)
     }
@@ -231,83 +362,92 @@ public class OrpheusTTS {
         topP: Float,
         repetitionPenalty: Float = 1.3
     ) -> MLXArray {
+        let samplingStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+        
         // Start with raw logits
         var currentLogits = logits
 
         // 1. Apply repetition penalty if needed
         if repetitionPenalty != 1.0 && history.size > 0 {
-            // Vectorised implementation to keep data on GPU/Metal.
-            // 1. Gather current logits for the history indices.
-            let indices = history // Int32 tensor with shape [K]
+            currentLogits = Profiler.time("Repetition penalty") {
+                // Vectorised implementation to keep data on GPU/Metal.
+                let indices = history // Int32 tensor with shape [K]
+                var logits1D = currentLogits[0] // Shape [V]
 
-            // Ensure logits is 2-D [1, V]. We will work on the 1-D slice.
-            var logits1D = currentLogits[0]                     // Shape [V]
+                // Gather the logits corresponding to the history tokens.
+                let gathered = MLX.take(logits1D, indices)
 
-            // 2. Gather the logits corresponding to the history tokens.
-            let gathered = MLX.take(logits1D, indices)
+                // Compute updated logits according to the repetition penalty.
+                let negMask   = gathered .< 0
+                let updated   = MLX.where(
+                    negMask,
+                    gathered * repetitionPenalty,
+                    gathered / repetitionPenalty
+                )
 
-            // 3. Compute updated logits according to the repetition penalty.
-            //    If the logit is < 0 multiply by penalty, else divide by penalty.
-            let negMask   = gathered .< 0
-            let updated   = MLX.where(
-                negMask,
-                gathered * repetitionPenalty,
-                gathered / repetitionPenalty
-            )
+                // Scatter the updated values back into the logits tensor.
+                logits1D = MLXArray.scatter(logits1D, indices: indices, updates: updated)
 
-            // 4. Scatter the updated values back into the logits tensor.
-            logits1D = MLXArray.scatter(logits1D, indices: indices, updates: updated)
-
-            // 5. Restore the [1, V] shape expected downstream.
-            currentLogits = logits1D.expandDims(at: 0)
+                // Restore the [1, V] shape expected downstream.
+                return logits1D.expandDims(at: 0)
+            }
         }
         
         // 2. Apply temperature scaling
-        let scaledLogits = currentLogits / max(temperature, 1e-6)
+        let scaledLogits = Profiler.time("Temperature scaling") {
+            currentLogits / max(temperature, 1e-6)
+        }
 
         // 3. Apply top-p filtering
         var filteredLogits = scaledLogits
         if topP > 0.0 && topP < 1.0 {
-            let vocabSize = scaledLogits.shape[1]
-            if vocabSize > 1 {
-                // Vectorised top-p filtering (no host round-trips).
+            filteredLogits = Profiler.time("Top-p filtering") {
+                let vocabSize = scaledLogits.shape[1]
+                if vocabSize > 1 {
+                    // Vectorised top-p filtering (no host round-trips).
 
-                // 1. Probabilities.
-                let probs = MLX.softmax(scaledLogits[0], axis: -1)        // [V]
+                    // 1. Probabilities.
+                    let probs = MLX.softmax(scaledLogits[0], axis: -1)        // [V]
 
-                // 2. Sort (descending).
-                let sortedIdx   = MLX.argSort(MLX.negative(probs))         // [V] Int32
-                let sortedProbs = MLX.take(probs, sortedIdx)               // [V]
+                    // 2. Sort (descending).
+                    let sortedIdx   = MLX.argSort(MLX.negative(probs))         // [V] Int32
+                    let sortedProbs = MLX.take(probs, sortedIdx)               // [V]
 
-                // 3. Cumulative sum.
-                let cumProbs = sortedProbs.cumsum(axis: -1)                // [V]
+                    // 3. Cumulative sum.
+                    let cumProbs = sortedProbs.cumsum(axis: -1)                // [V]
 
-                // 4. Mask tokens occurring strictly after the cut-off.
-                //    A token is removed if: it appears after the FIRST time
-                //    cumulative prob exceeds `topP`.
-                //    Implementation: mark (cumProbs > topP), then remove all
-                //    occurrences *after* the first such event using a prefix sum.
-                let gtMask        = cumProbs .> topP                      // Bool [V]
-                let gtMaskInt     = gtMask.asType(.int32)                 // Int32 [V]
-                let prefix        = gtMaskInt.cumsum(axis: -1)            // Int32 [V]
-                let removeMaskSorted = prefix .> 1                        // Bool [V]
+                    // 4. Mask tokens occurring strictly after the cut-off.
+                    let gtMask        = cumProbs .> topP                      // Bool [V]
+                    let gtMaskInt     = gtMask.asType(.int32)                 // Int32 [V]
+                    let prefix        = gtMaskInt.cumsum(axis: -1)            // Int32 [V]
+                    let removeMaskSorted = prefix .> 1                        // Bool [V]
 
-                // 5. Bring mask back to original vocab order.
-                let invIdx          = MLX.argSort(sortedIdx)              // [V]
-                let removeMask      = MLX.take(removeMaskSorted, invIdx)  // Bool [V]
+                    // 5. Bring mask back to original vocab order.
+                    let invIdx          = MLX.argSort(sortedIdx)              // [V]
+                    let removeMask      = MLX.take(removeMaskSorted, invIdx)  // Bool [V]
 
-                // 6. Apply mask: set filtered logits to -inf.
-                let negInfScalar    = MLXArray(-Float.infinity)           // scalar
-                let logits1D        = scaledLogits[0]
-                let filtered1D      = MLX.where(removeMask, negInfScalar, logits1D)
+                    // 6. Apply mask: set filtered logits to -inf.
+                    let negInfScalar    = MLXArray(-Float.infinity)           // scalar
+                    let logits1D        = scaledLogits[0]
+                    let filtered1D      = MLX.where(removeMask, negInfScalar, logits1D)
 
-                // 7. Restore [1, V] shape expected downstream.
-                filteredLogits = filtered1D.expandDims(at: 0)
+                    // 7. Restore [1, V] shape expected downstream.
+                    return filtered1D.expandDims(at: 0)
+                }
+                return scaledLogits
             }
         }
         
         // 4. Sample from filtered distribution
-        let nextTokenIdArray = MLXRandom.categorical(filteredLogits, count: 1)
+        let nextTokenIdArray = Profiler.time("Categorical sampling") {
+            MLXRandom.categorical(filteredLogits, count: 1)
+        }
+        
+        if Profiler.enabled {
+            let samplingEnd = CFAbsoluteTimeGetCurrent()
+            let samplingDuration = (samplingEnd - samplingStart) * 1000
+            print("  🎲 Sampling total: \(String(format: "%.2f", samplingDuration))ms")
+        }
         
         return nextTokenIdArray
     }
