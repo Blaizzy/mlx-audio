@@ -21,10 +21,10 @@ public class KokoroTTSModel: ObservableObject {
     private var isPlayingAudio = false
 
     // Published property for UI updates - indicates generation OR playback is in progress
-    @Published var generationInProgress = false
+    @Published public var generationInProgress = false
 
     // A separate property to track if audio is currently playing
-    @Published var isAudioPlaying: Bool = false {
+    @Published public var isAudioPlaying: Bool = false {
         didSet {
             // Avoid redundant operations for repeated identical values
             if oldValue != isAudioPlaying {
@@ -57,7 +57,7 @@ public class KokoroTTSModel: ObservableObject {
         }
     }
 
-    @Published var audioGenerationTime: TimeInterval = 0
+    @Published public var audioGenerationTime: TimeInterval = 0
 
     public init() {
         kokoroTTSEngine = KokoroTTS()
@@ -183,7 +183,7 @@ public class KokoroTTSModel: ObservableObject {
          startSpeechGeneration(text: trimmedText, voice: voice, speed: speed)
     }
 
-    func stopPlayback() {
+    public func stopPlayback() {
         stopPlaybackMonitoring()
         resetBufferCounters()
 

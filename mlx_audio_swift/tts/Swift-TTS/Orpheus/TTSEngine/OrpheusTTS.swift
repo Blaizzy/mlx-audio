@@ -5,8 +5,55 @@ import MLXRandom
 
 // Available voices for Orpheus
 public enum OrpheusVoice: String, CaseIterable {
-    case tara = "tara" // "default"
-    // Add more voices as needed
+    case tara = "tara" // Female, conversational, clear
+    case leah = "leah" // Female, warm, gentle
+    case jess = "jess" // Female, energetic, youthful
+    case leo = "leo" // Male, authoritative, deep
+    case dan = "dan" // Male, friendly, casual
+    case mia = "mia" // Female, professional, articulate
+    case zac = "zac" // Male, enthusiastic, dynamic
+    case zoe = "zoe" // Female, calm, soothing
+}
+
+// MARK: - Profiling Helper
+struct Profiler {
+    static var enabled: Bool = false // Set to true to enable profiling
+    
+    static func time<T>(_ label: String, _ block: () throws -> T) rethrows -> T {
+        guard enabled else { return try block() }
+        
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try block()
+        let end = CFAbsoluteTimeGetCurrent()
+        let duration = (end - start) * 1000 // Convert to milliseconds
+        print("⏱️ [PROFILE] \(label): \(String(format: "%.2f", duration))ms")
+        return result
+    }
+    
+    static func timeAsync<T>(_ label: String, _ block: () async throws -> T) async rethrows -> T {
+        guard enabled else { return try await block() }
+        
+        let start = CFAbsoluteTimeGetCurrent()
+        let result = try await block()
+        let end = CFAbsoluteTimeGetCurrent()
+        let duration = (end - start) * 1000 // Convert to milliseconds
+        print("⏱️ [PROFILE] \(label): \(String(format: "%.2f", duration))ms")
+        return result
+    }
+}
+
+struct Constants {
+    static let maxTokenCount = 1200
+    static let sampleRate = 24000
+    static let startToken = 128259
+    static let endToken = 128258
+    static let padToken = 128263
+    static let audioStartToken = 128261
+    static let audioEndToken = 128262
+    static let voicePrefixToken = 128260
+    static let repetitionContextSize = 20
+    static let codeOffset = 128266
+    static let audioCodeDataStartMarker = 128257
 }
 
 // Main class for Orpheus TTS
@@ -16,329 +63,454 @@ public class OrpheusTTS {
         case weightsNotAvailable
         case modelNotInitialized
     }
-
+    
     private let weights: [String: MLXArray]
     private let snacDecoder: SNACDecoder
     private var chosenVoice: OrpheusVoice?
-
+    private let tokenizer: OrpheusTokenizer
+    private let hiddenSize: Int = 3072
+    private let layers: [TransformerBlock] // Store TransformerBlock instances
+    
     init() throws {
         // Load model weights
-        weights = OrpheusWeightLoader.loadWeightsOrpheus()
-        if weights.isEmpty {
-            throw OrpheusTTSError.weightsNotAvailable
+        let loadedWeights = Profiler.time("Weight loading") {
+            OrpheusWeightLoader.loadWeightsOrpheus()
         }
+        self.weights = loadedWeights
 
-        // Initialize SNAC decoder
-        let snacConfig = SNACConfig()
-        snacDecoder = SNACDecoder(weights: weights, config: snacConfig)
+        self.snacDecoder = Profiler.time("SNAC decoder init") {
+            SNACDecoder(config: SNACDecoder.loadConfig()!)
+        }
+        
+        self.tokenizer = try Profiler.time("Tokenizer init") {
+            try OrpheusTokenizer()
+        }
+        
+        // Initialize transformer layers - avoid capturing self in closure
+        let numLayers = 28 // Based on config.json
+        let layerInitStart = CFAbsoluteTimeGetCurrent()
+        var tempLayers = [TransformerBlock]()
+        for i in 0..<numLayers {
+            let layerStart = CFAbsoluteTimeGetCurrent()
+            tempLayers.append(TransformerBlock(weights: loadedWeights, layerIndex: i))
+            let layerEnd = CFAbsoluteTimeGetCurrent()
+            let layerDuration = (layerEnd - layerStart) * 1000
+        }
+        self.layers = tempLayers
+        let layerInitEnd = CFAbsoluteTimeGetCurrent()
+        let layerInitDuration = (layerInitEnd - layerInitStart) * 1000
     }
-
+    
     public func generateAudio(voice: OrpheusVoice, text: String, temperature: Float = 0.6, topP: Float = 0.8) async throws -> MLXArray {
-        print("Orpheus voice: \(voice), text: \(text)")
-
+        let totalGenerationStart = CFAbsoluteTimeGetCurrent()
+        
         // Prepare input with voice prefix
         let prompt = "\(voice.rawValue): \(text)"
         print("Orpheus prompt: \(prompt)")
+        
+        let input_ids_tuple = Profiler.time("Tokenizer preparation") {
+            tokenizer.prepareInputIds(prompts: [prompt])
+        }
+                
+        // Convert the tokenizer output to a Swift [Int32]
+        var current_ids = Profiler.time("Input IDs conversion") {
+            let array = MLXArray(input_ids_tuple.0[0].asArray(Int32.self))
+            return array.ndim == 1 ? array.reshaped([1, -1]) : array
+        }
+        
+        print("Input IDs: \(current_ids.shape) = \(current_ids.asArray(Int32.self))")
+        
+        // Initialize KV Caches
+        let numLayers = self.layers.count
+        var kvCaches: [Cache?] = Array(repeating: nil, count: numLayers)
+        
+        // Process the initial prompt.
+        var (logits, updatedKvCachesAfterPrompt) = Profiler.time("Initial forward pass") {
+            forward(inputIds: current_ids, currentKvCaches: kvCaches)
+        }
+        kvCaches = updatedKvCachesAfterPrompt
+        
+        // Generate audio tokens
+        var generatedTokensForPenalty: [Int32] = [] // For repetition penalty
+        var i = 0
+        var previousToken: Int32? = nil // For correcting anomalous tokens after audioStartToken
 
-        // Tokenize input
-        let inputIds = tokenize(prompt: prompt)
+        let maxOutputTokens = Constants.maxTokenCount // Define how many tokens to generate at most
+        
+        let generationLoopStart = CFAbsoluteTimeGetCurrent()
+        
+        while i < maxOutputTokens {
+            let iterationStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            
+            let historyForRepetition = Profiler.time("History preparation") {
+                MLXArray(generatedTokensForPenalty)
+            }
+            
+            let samplingStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let nextTokenArray = sampleNextToken(
+                logits: logits,
+                history: historyForRepetition,
+                temperature: temperature,
+                topP: topP,
+                repetitionPenalty: 1.3
+            )
+            let samplingEnd = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let samplingDuration = Profiler.enabled ? (samplingEnd - samplingStart) * 1000 : 0
+            if Profiler.enabled {
+                print("⏱️ [PROFILE] Token sampling (iter \(i)): \(String(format: "%.2f", samplingDuration))ms")
+            }
 
-        print("Orpheus inputIDs: \(inputIds)")
-
-        // Generate tokens using MLX
-        let generatedTokens = generateTokens(inputIds: inputIds, temperature: temperature, topP: topP)
-
-        print("Orpheus generatedTokens: \(generatedTokens)")
-
-        // Convert tokens to audio using SNAC decoder
-        let codeLists = parseOutput(tokens: generatedTokens)
-
-        print("Code lists: \(codeLists)")
-
-        // Clear cache after each chunk to avoid memory leaks
-        MLX.GPU.clearCache()
-
-        return MLXArray([])
-//        let audio = snacDecoder.decode(codes: codeLists)
-//        return audio
-    }
-
-    private func tokenize(prompt: String) -> MLXArray {
-        // TODO: Implement proper tokenization
-        // For now, just convert string to array of ASCII values
-        let tokens = prompt.utf8.map { Int($0) }
-        return MLXArray(tokens)
-    }
-
-    private func generateTokens(inputIds: MLXArray, temperature: Float, topP: Float) -> [Int] {
-        var currentIds = inputIds
-        var generatedTokens: [Int] = []
-
-        for _ in 0..<Constants.maxTokenCount {
-            // Get next token prediction
-            let logits = forward(inputIds: currentIds)
-            let nextToken = sampleNextToken(logits: logits, temperature: temperature, topP: topP)
-
-            // Check for end token
-            if nextToken == Constants.endToken {
+            // Only extract the Int32 value when we absolutely need it for CPU operations
+            let next_token: Int32 = Profiler.time("Token extraction") {
+                // This operation forces GPU->CPU transfer and might be a sync point
+                let result: Int32 = nextTokenArray[0].item()
+                return result
+            }
+            
+            // Stop generation only at the general end-of-text token
+            if next_token == Constants.endToken {
+                let endArr = MLXArray([Constants.endToken]).reshaped([1,1])
+                current_ids = MLX.concatenated([current_ids, endArr], axis: 1)
+                if Profiler.enabled {
+                    print("DBG: End token \(Constants.endToken) encountered. Appending and breaking.")
+                }
                 break
             }
-
-            generatedTokens.append(nextToken)
-            // Reshape arrays to 2D before concatenation
-            let currentIds2D = currentIds.reshaped([1, -1])
-            let nextToken2D = MLXArray([nextToken]).reshaped([1, 1])
-            currentIds = MLX.concatenated([currentIds2D, nextToken2D], axis: 1)
+                        
+            // Add next token to the sequence for parsing and for model input
+            let tokenConcatTime = Profiler.time("Token concatenation (iter \(i))") {
+                let nextTokenForConcat = nextTokenArray.reshaped([1, 1])
+                current_ids = MLX.concatenated([current_ids, nextTokenForConcat], axis: 1)
+            }
+            
+            // Add to history for repetition penalty *after* it's been sampled
+            let historyUpdateTime = Profiler.time("History update") {
+                generatedTokensForPenalty.append(next_token)
+                if generatedTokensForPenalty.count > Constants.repetitionContextSize { // Keep history to context size
+                    generatedTokensForPenalty.removeFirst()
+                }
+                previousToken = next_token // Update previous token for next iteration
+            }
+            
+            // Prepare for the next iteration:
+            let forwardPassStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let (next_logits, next_kvCaches) = forward(inputIds: current_ids, currentKvCaches: kvCaches)
+            let forwardPassEnd = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let forwardPassDuration = Profiler.enabled ? (forwardPassEnd - forwardPassStart) * 1000 : 0
+            if Profiler.enabled {
+                print("⏱️ [PROFILE] Forward pass (iter \(i)): \(String(format: "%.2f", forwardPassDuration))ms")
+            }
+            
+            logits = next_logits
+            kvCaches = next_kvCaches
+            
+            // Clear cache periodically
+            if (i + 1) % 50 == 0 {
+                Profiler.time("GPU cache clear") {
+                    MLX.GPU.clearCache()
+                }
+            }
+            
+            if Profiler.enabled {
+                let iterationEnd = CFAbsoluteTimeGetCurrent()
+                let iterationDuration = (iterationEnd - iterationStart) * 1000
+                
+                // Calculate unaccounted time
+                let accountedTime = forwardPassDuration + 
+                                  (historyForRepetition.size > 0 ? 0.5 : 0.0) + // rough estimate for sampling/concat
+                                  0.4 + 0.03 + 0.1 // sampling + concat + overhead estimates
+                let unaccountedTime = iterationDuration - accountedTime
+                
+                // Print detailed timing every 10 iterations or for first 5
+                if i < 5 || i % 10 == 0 {
+                    print("  🔀 Iteration \(i): \(String(format: "%.2f", iterationDuration))ms total")
+                    print("    📊 Forward: \(String(format: "%.2f", forwardPassDuration))ms")
+                    print("    ❓ Unaccounted: \(String(format: "%.2f", unaccountedTime))ms")
+                    print("    🎯 Token: \(next_token)")
+                }
+            }
+            
+            i += 1
         }
-
-        return generatedTokens
+                
+        if i >= maxOutputTokens {
+            print("WARNING: Reached max token count (\(maxOutputTokens)) during generation.")
+        }
+        
+        // Parse the output into code lists
+        let code_lists = Profiler.time("Output parsing") {
+            parseOutput(tokens: current_ids.asArray(Int32.self).map { Int($0) })
+        }
+        
+        // Generate audio using SNAC decoder
+        let waveform = Profiler.time("SNAC decoding") {
+            snacDecoder.decode(codes: code_lists)
+        }
+        
+        let totalGenerationEnd = CFAbsoluteTimeGetCurrent()
+        let totalDuration = (totalGenerationEnd - totalGenerationStart) * 1000
+        print("🏁 [PROFILE] Total audio generation: \(String(format: "%.2f", totalDuration))ms")
+        
+        return waveform
     }
-
-    private func rmsNorm(x: MLXArray, weight: MLXArray) -> MLXArray {
-        let variance = MLX.mean(MLX.square(x), axis: -1, keepDims: true)
-        let normalized = x / MLX.sqrt(variance + 1e-5)
-        return normalized * weight
-    }
-
-    private func forward(inputIds: MLXArray) -> MLXArray {
-        print("Input shape: \(inputIds.shape)")
-
-        // Model configuration (from config.json)
-        let hiddenSize = 3072
-        let intermediateSize = 8192
-        let numAttentionHeads = 24
-        let vocabSize = 156940
-        let numLayers = 32 // Assuming, verify if different
-
-        // 1. Embed tokens
-        guard let embeddings = weights["model.embed_tokens.weight"] else {
-            print("ERROR: Embedding weights not found.")
-            return MLXArray([])
+    
+    private func forward(inputIds: MLXArray, currentKvCaches: [Cache?]) -> (logits: MLXArray, updatedKvCaches: [Cache?]) {
+        let forwardStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+        
+        // Get embedding weights
+        guard let embeddingWeights = weights["model.embed_tokens.weight"] else {
+            fatalError("Embedding weights not found") // Should consider returning error or empty array
         }
-        print("Embeddings weight shape: \(embeddings.shape)") // Expect [vocabSize, embeddingDim]
-        guard embeddings.shape[0] == vocabSize else {
-            print("ERROR: Embedding vocab size mismatch. Expected \(vocabSize), got \(embeddings.shape[0])")
-            return MLXArray([])
-        }
-        let embeddingDim = embeddings.shape[1]
-        print("Detected Embedding Dim: \(embeddingDim)")
-
-        var x = embeddings[inputIds]
-        print("Embedded shape: \(x.shape)") // Expect [SeqLen, embeddingDim]
-
-        // Check if projection is needed
-        if embeddingDim != hiddenSize {
-             print("ERROR: Embedding dimension (\(embeddingDim)) does not match hidden size (\(hiddenSize)).")
-             print("This model structure requires an input projection layer, but no weight was found.")
-             return MLXArray([])
-             // If you find the projection weight (e.g., 'model.input_proj.weight'), add it here:
-             // guard let projWeight = weights["model.input_proj.weight"] else { print("ERROR: Input projection weight not found"); return MLXArray([]) }
-             // print("Applying input projection. Weight shape: \(projWeight.shape)") // Expect [hiddenSize, embeddingDim]
-             // x = linear(x: x, weight: projWeight)
-             // print("After input projection: \(x.shape)") // Expect [SeqLen, hiddenSize]
+        
+        // If using cache, only process the last token
+        var x: MLXArray
+        let isCaching = currentKvCaches.first(where: { $0 != nil }) != nil
+        if isCaching {
+            // Only get embedding for the last token
+            let lastTokenId = inputIds[0, -1]
+            x = embeddingWeights[lastTokenId].reshaped([1, 1, -1])
+        } else {
+            // Process full sequence
+            x = embeddingWeights[inputIds]
         }
 
-        // 2. Process through transformer layers
-        for i in 0..<numLayers {
-            print("\nLayer \(i):")
+        // Only print token details for initial pass or occasionally during generation
+        if Profiler.enabled && (!isCaching || (isCaching && inputIds.shape[1] % 50 == 0)) {
+            let tokenCount = inputIds.shape[1]
+            print("Generated tokens count: \(tokenCount)")
+        }
 
-            // Input RMSNorm
-            guard let inputNormWeight = weights["model.layers.\(i).input_layernorm.weight"] else {
-                print("ERROR: Layer \(i) input norm weight not found."); return MLXArray([])
+        // Validate shape
+        guard x.shape[2] == hiddenSize else {
+            fatalError("Invalid shape after embedding: expected \(hiddenSize), got \(x.shape[2])")
+        }
+        
+        let L = x.shape[1] // Sequence length
+        
+        var attentionMask: MLXArray? = nil
+        if !isCaching {
+            attentionMask = Profiler.time("Attention mask creation") {
+                let mask = MLX.triu(MLXArray.full([L,L], values: MLXArray([Float(-1e9)])), k: 1)
+                return mask.asType(x.dtype).expandDims(at: 0).expandDims(at: 0)
             }
-            guard inputNormWeight.shape == [hiddenSize] else {
-                print("ERROR: Layer \(i) input norm weight shape mismatch. Expected [\(hiddenSize)], got \(inputNormWeight.shape)")
-                return MLXArray([])
+        }
+        
+        var nextKvCaches: [Cache?] = Array(repeating: nil, count: self.layers.count)
+        
+        // Process through transformer layers
+        let layersStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+        for i in 0..<self.layers.count {
+            let layerStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+            let (layerOutput, updatedLayerCache) = self.layers[i].call(x, mask: attentionMask, cache: currentKvCaches[i])
+            x = layerOutput
+            nextKvCaches[i] = updatedLayerCache
+            
+            if Profiler.enabled {
+                let layerEnd = CFAbsoluteTimeGetCurrent()
+                let layerDuration = (layerEnd - layerStart) * 1000
+                
+                // Print timing for first few layers or every 5th layer, and only occasionally during generation
+                if (!isCaching || currentKvCaches.first??.offset ?? 0 < 50) && (i < 3 || i % 5 == 0) {
+                    print("  🧠 Layer \(i): \(String(format: "%.2f", layerDuration))ms")
+                }
             }
-            let normedX = rmsNorm(x: x, weight: inputNormWeight)
-            print("After input norm: \(normedX.shape)")
-
-            // Self attention
-            guard let qWeight = weights["model.layers.\(i).self_attn.q_proj.weight"],
-                  let kWeight = weights["model.layers.\(i).self_attn.k_proj.weight"],
-                  let vWeight = weights["model.layers.\(i).self_attn.v_proj.weight"],
-                  let oWeight = weights["model.layers.\(i).self_attn.o_proj.weight"] else {
-                print("ERROR: Layer \(i) attention weights missing."); return MLXArray([])
+        }
+        
+        if Profiler.enabled {
+            let layersEnd = CFAbsoluteTimeGetCurrent()
+            let layersTotalDuration = (layersEnd - layersStart) * 1000
+            
+            // Only print layer summary for initial pass or occasionally during generation
+            if !isCaching || (currentKvCaches.first??.offset ?? 0) < 50 {
+                print("  🧠 All layers: \(String(format: "%.2f", layersTotalDuration))ms")
             }
-
-            // Weights loaded from safetensors for MLX linear layers are typically [output_features, input_features]
-            let expectedAttnWeightShape = [hiddenSize, hiddenSize]
-            guard qWeight.shape == expectedAttnWeightShape,
-                  kWeight.shape == expectedAttnWeightShape,
-                  vWeight.shape == expectedAttnWeightShape,
-                  oWeight.shape == expectedAttnWeightShape else {
-                 print("ERROR: Layer \(i) attention weight dimensions mismatch. Expected \(expectedAttnWeightShape)")
-                 print("Q shape: \(qWeight.shape), K shape: \(kWeight.shape), V shape: \(vWeight.shape), O shape: \(oWeight.shape)")
-                 return MLXArray([])
-            }
-
-            let q = linear(x: normedX, weight: qWeight)
-            let k = linear(x: normedX, weight: kWeight)
-            let v = linear(x: normedX, weight: vWeight)
-            print("Q shape: \(q.shape), K shape: \(k.shape), V shape: \(v.shape)") // Expect [SeqLen, hiddenSize]
-
-            let headDim = hiddenSize / numAttentionHeads
-            guard headDim > 0 else { print("ERROR: Invalid head dimension"); return MLXArray([]) }
-            let scale = sqrt(Float(headDim))
-
-            // Note: Need to implement attention with multiple heads properly.
-            // This is a simplified version and likely incorrect.
-            // For multi-head attention, Q/K/V need reshaping before matmul.
-            let scores = MLX.matmul(q, k.transposed(0, 1)) / scale
-            let probs = MLX.softmax(scores, axis: -1)
-            let attnOutput = MLX.matmul(probs, v)
-            let attnProj = linear(x: attnOutput, weight: oWeight)
-            print("Attention output shape: \(attnProj.shape)") // Expect [SeqLen, hiddenSize]
-
-            // First residual connection
-            let h = x + attnProj
-            print("After attention: \(h.shape)")
-
-            // Post attention RMSNorm
-            guard let postNormWeight = weights["model.layers.\(i).post_attention_layernorm.weight"] else {
-                print("ERROR: Layer \(i) post norm weight not found."); return MLXArray([])
-            }
-            guard postNormWeight.shape == [hiddenSize] else {
-                print("ERROR: Layer \(i) post norm weight shape mismatch. Expected [\(hiddenSize)], got \(postNormWeight.shape)")
-                return MLXArray([])
-            }
-            let normedH = rmsNorm(x: h, weight: postNormWeight)
-            print("After post norm: \(normedH.shape)")
-
-            // MLP (Llama style)
-            guard let gateWeight = weights["model.layers.\(i).mlp.gate_proj.weight"],
-                  let upWeight = weights["model.layers.\(i).mlp.up_proj.weight"],
-                  let downWeight = weights["model.layers.\(i).mlp.down_proj.weight"] else {
-                 print("ERROR: Layer \(i) MLP weights missing."); return MLXArray([])
-            }
-
-            let expectedGateUpShape = [intermediateSize, hiddenSize]
-            let expectedDownShape = [hiddenSize, intermediateSize]
-
-            guard gateWeight.shape == expectedGateUpShape,
-                  upWeight.shape == expectedGateUpShape,
-                  downWeight.shape == expectedDownShape else {
-                  print("ERROR: Layer \(i) MLP weight dimensions mismatch.")
-                  print("Gate Expected: \(expectedGateUpShape), Got: \(gateWeight.shape)")
-                  print("Up Expected: \(expectedGateUpShape), Got: \(upWeight.shape)")
-                  print("Down Expected: \(expectedDownShape), Got: \(downWeight.shape)")
-                  return MLXArray([])
-            }
-
-            let gate = linear(x: normedH, weight: gateWeight)
-            let up = linear(x: normedH, weight: upWeight)
-            print("Gate shape: \(gate.shape), Up shape: \(up.shape)") // Expect [SeqLen, intermediateSize]
-
-            // Apply SiLU to gate and multiply with up
-            let gateUp = silu(gate) * up
-            print("GateUp shape: \(gateUp.shape)") // Expect [SeqLen, intermediateSize]
-
-            // Down projection
-            let down = linear(x: gateUp, weight: downWeight)
-            print("Down shape: \(down.shape)") // Expect [SeqLen, hiddenSize]
-
-            // Second residual connection
-            x = h + down
-            print("After MLP: \(x.shape)") // Expect [SeqLen, hiddenSize]
         }
 
         // 3. Final RMSNorm
         guard let finalNormWeight = weights["model.norm.weight"] else {
-            print("ERROR: Final norm weight not found."); return MLXArray([])
+            print("ERROR: Final norm weight not found.")
+            return (MLXArray([]), nextKvCaches) // Return current caches even on error
         }
-        guard finalNormWeight.shape == [hiddenSize] else {
-            print("ERROR: Final norm weight shape mismatch. Expected [\(hiddenSize)], got \(finalNormWeight.shape)")
-            return MLXArray([])
-        }
-        x = rmsNorm(x: x, weight: finalNormWeight)
-        print("Final shape: \(x.shape)")
 
+        x = Profiler.time("Final RMSNorm") {
+            MLX.rmsNorm(x, weight: finalNormWeight, eps: 1e-5)
+        }
+        
         // 4. Output projection (LM Head)
-        guard let lmHeadWeight = weights["lm_head.weight"] else {
-            print("ERROR: LM head weight not found (and tie_word_embeddings is false)."); return MLXArray([])
-        }
-        print("LM Head weight shape: \(lmHeadWeight.shape)") // Expect [vocabSize, hiddenSize]
-
-        let expectedLmHeadShape = [vocabSize, hiddenSize]
-        guard lmHeadWeight.shape == expectedLmHeadShape else {
-            print("ERROR: LM Head weight shape mismatch. Expected \(expectedLmHeadShape), Got \(lmHeadWeight.shape)")
-            return MLXArray([])
+        let logits = Profiler.time("Output projection") {
+            TransformerBlock.linear(x: x, weight: embeddingWeights)
         }
 
-        let logits = linear(x: x, weight: lmHeadWeight)
-        print("Logits shape: \(logits.shape)") // Expect [SeqLen, vocabSize]
-
-        // Return only the logits for the last token for next token prediction
-        return logits[-1, ..<vocabSize]
-    }
-
-    private func linear(x: MLXArray, weight: MLXArray) -> MLXArray {
-        // For Llama, we need to handle the weight shapes correctly
-        let weightShape = weight.shape
-        if weightShape.count == 1 {
-            // For layer norm weights
-            return x * weight
-        } else {
-            // For linear projections, ensure correct dimensions
-            let xShape = x.shape
-            let xReshaped = x.reshaped([-1, xShape.last!])
-            let result = MLX.matmul(xReshaped, weight.transposed(0, 1))
-            return result.reshaped(xShape.dropLast() + [weightShape[0]])
+        // If caching, logits are already [1, 1, VocabSize] from processing the last token.
+        let finalLogits = Profiler.time("Logits finalization") {
+            isCaching ? logits.squeezed(axis: 1) : logits[0, -1].expandDims(at: 0)
         }
+        
+        if Profiler.enabled {
+            let forwardEnd = CFAbsoluteTimeGetCurrent()
+            let forwardDuration = (forwardEnd - forwardStart) * 1000
+            print("  ➡️ Forward pass total: \(String(format: "%.2f", forwardDuration))ms")
+        }
+
+        return (finalLogits, nextKvCaches)
     }
+    
+    private func sampleNextToken(
+        logits: MLXArray,
+        history: MLXArray,
+        temperature: Float,
+        topP: Float,
+        repetitionPenalty: Float = 1.3
+    ) -> MLXArray {
+        let samplingStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
+        
+        // Start with raw logits
+        var currentLogits = logits
 
-    private func silu(_ x: MLXArray) -> MLXArray {
-        return x * MLX.sigmoid(x)
-    }
+        // 1. Apply repetition penalty if needed
+        if repetitionPenalty != 1.0 && history.size > 0 {
+            currentLogits = Profiler.time("Repetition penalty") {
+                // Vectorised implementation to keep data on GPU/Metal.
+                let indices = history // Int32 tensor with shape [K]
+                var logits1D = currentLogits[0] // Shape [V]
 
-    private func sampleNextToken(logits: MLXArray, temperature: Float, topP: Float) -> Int {
-        // Apply temperature
-        let scaledLogits = logits / temperature
+                // Gather the logits corresponding to the history tokens.
+                let gathered = MLX.take(logits1D, indices)
 
-        // Convert to probabilities
-        let probs = MLX.softmax(scaledLogits, axis: -1)
+                // Compute updated logits according to the repetition penalty.
+                let negMask   = gathered .< 0
+                let updated   = MLX.where(
+                    negMask,
+                    gathered * repetitionPenalty,
+                    gathered / repetitionPenalty
+                )
 
-        // Sample from distribution
-        let r = MLXRandom.uniform(0.0..<1.0)
-        var cumulativeProb: Float = 0.0
-        for i in 0..<probs.shape[0] {
-            cumulativeProb += probs[i].item()
-            if r.item() < cumulativeProb {
-                return i
+                // Scatter the updated values back into the logits tensor.
+                logits1D = MLXArray.scatter(logits1D, indices: indices, updates: updated)
+
+                // Restore the [1, V] shape expected downstream.
+                return logits1D.expandDims(at: 0)
             }
         }
+        
+        // 2. Apply temperature scaling
+        let scaledLogits = Profiler.time("Temperature scaling") {
+            currentLogits / max(temperature, 1e-6)
+        }
 
-        return probs.shape[0] - 1 // Fallback to last token if no sample found
-    }
+        // 3. Apply top-p filtering
+        var filteredLogits = scaledLogits
+        if topP > 0.0 && topP < 1.0 {
+            filteredLogits = Profiler.time("Top-p filtering") {
+                let vocabSize = scaledLogits.shape[1]
+                if vocabSize > 1 {
+                    // Vectorised top-p filtering (no host round-trips).
 
-    private func parseOutput(tokens: [Int]) -> [[Int]] {
-        // Parse tokens into code lists for SNAC decoder
-        var codeLists: [[Int]] = []
-        var currentList: [Int] = []
+                    // 1. Probabilities.
+                    let probs = MLX.softmax(scaledLogits[0], axis: -1)        // [V]
 
-        for token in tokens {
-            if token == Constants.audioStartToken {
-                currentList = []
-            } else if token == Constants.audioEndToken {
-                if !currentList.isEmpty {
-                    codeLists.append(currentList)
+                    // 2. Sort (descending).
+                    let sortedIdx   = MLX.argSort(MLX.negative(probs))         // [V] Int32
+                    let sortedProbs = MLX.take(probs, sortedIdx)               // [V]
+
+                    // 3. Cumulative sum.
+                    let cumProbs = sortedProbs.cumsum(axis: -1)                // [V]
+
+                    // 4. Mask tokens occurring strictly after the cut-off.
+                    let gtMask        = cumProbs .> topP                      // Bool [V]
+                    let gtMaskInt     = gtMask.asType(.int32)                 // Int32 [V]
+                    let prefix        = gtMaskInt.cumsum(axis: -1)            // Int32 [V]
+                    let removeMaskSorted = prefix .> 1                        // Bool [V]
+
+                    // 5. Bring mask back to original vocab order.
+                    let invIdx          = MLX.argSort(sortedIdx)              // [V]
+                    let removeMask      = MLX.take(removeMaskSorted, invIdx)  // Bool [V]
+
+                    // 6. Apply mask: set filtered logits to -inf.
+                    let negInfScalar    = MLXArray(-Float.infinity)           // scalar
+                    let logits1D        = scaledLogits[0]
+                    let filtered1D      = MLX.where(removeMask, negInfScalar, logits1D)
+
+                    // 7. Restore [1, V] shape expected downstream.
+                    return filtered1D.expandDims(at: 0)
                 }
-            } else {
-                currentList.append(token)
+                return scaledLogits
             }
         }
-
-        return codeLists
+        
+        // 4. Sample from filtered distribution
+        let nextTokenIdArray = Profiler.time("Categorical sampling") {
+            MLXRandom.categorical(filteredLogits, count: 1)
+        }
+        
+        if Profiler.enabled {
+            let samplingEnd = CFAbsoluteTimeGetCurrent()
+            let samplingDuration = (samplingEnd - samplingStart) * 1000
+            print("  🎲 Sampling total: \(String(format: "%.2f", samplingDuration))ms")
+        }
+        
+        return nextTokenIdArray
     }
-
-    struct Constants {
-        static let maxTokenCount = 1200
-        static let sampleRate = 24000
-        static let startToken = 128259
-        static let endToken = 128258
-        static let padToken = 128263
-        static let audioStartToken = 128261
-        static let audioEndToken = 128262
-        static let voicePrefixToken = 128260
+    
+    private func parseOutput(tokens: [Int]) -> [[Int]] {
+        // Find the last occurrence of the audio start token as defined in Constants
+        let lastStartIndex = tokens.lastIndex(of: Constants.audioCodeDataStartMarker) ?? -1
+        
+        // Get tokens after the last start token
+        let relevantTokens = lastStartIndex >= 0 ? Array(tokens[(lastStartIndex + 1)...]) : tokens
+        
+        // Filter out the general end token (128258) and ensure codes are valid (>= codeOffset)
+        // Python's llama.py uses token_to_remove = 128258 and does not filter a separate audioEndToken.
+        let filteredTokens = relevantTokens.filter { $0 != Constants.endToken && $0 >= Constants.codeOffset }
+        
+        // Ensure length is multiple of 7 by trimming
+        let newLength = (filteredTokens.count / 7) * 7
+        let trimmedTokens = Array(filteredTokens[..<newLength])            
+        
+        // Subtract offset from all tokens
+        let adjustedTokens = trimmedTokens.map { $0 - Constants.codeOffset }
+        
+        // Split into layers based on the stride pattern
+        var layer1: [Int] = []
+        var layer2: [Int] = []
+        var layer3: [Int] = []
+        
+        // Process codes in groups of 7
+        for i in 0..<(adjustedTokens.count / 7) {
+            let base = 7 * i
+            layer1.append(adjustedTokens[base])
+            layer2.append(adjustedTokens[base + 1] - 4096)
+            layer3.append(adjustedTokens[base + 2] - 2 * 4096)
+            layer3.append(adjustedTokens[base + 3] - 3 * 4096)
+            layer2.append(adjustedTokens[base + 4] - 4 * 4096)
+            layer3.append(adjustedTokens[base + 5] - 5 * 4096)
+            layer3.append(adjustedTokens[base + 6] - 6 * 4096)
+        }
+        
+        return [layer1, layer2, layer3]
     }
 }
+
+class Cache {
+    var keys: MLXArray
+    var values: MLXArray
+    var offset: Int // Represents the number of tokens already in the cache (sequence length of cached items)
+    
+    init(keys: MLXArray, values: MLXArray, offset: Int = 0) {
+        self.keys = keys
+        self.values = values
+        self.offset = offset // Should be L_initial if creating from scratch, e.g., keys.shape[2]
+    }
+    
+    // newKeys, newValues are for the current segment being processed (e.g., L=1 for incremental generation)
+    // newKeys: [B, H, L_new, D_head]
+    func updateAndFetch(newKeys: MLXArray, newValues: MLXArray) -> (MLXArray, MLXArray) {
+        // Ensure keys and newKeys are compatible for concatenation along axis 2 (sequence length)
+        // self.keys: [B, H, L_cached, D_head]
+        // newKeys:   [B, H, L_new, D_head]
+        self.keys = MLX.concatenated([self.keys, newKeys], axis: 2)
+        self.values = MLX.concatenated([self.values, newValues], axis: 2)
+        self.offset += newKeys.shape[2] // Update the offset by the length of the new segment
+        return (self.keys, self.values)
+    }
+} 

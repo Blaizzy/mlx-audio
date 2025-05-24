@@ -14,6 +14,11 @@ struct ContentView: View {
 
     @State private var sayThis : String = "Hello Everybody"
     @State private var status : String = ""
+    
+    private var availableProviders = ["kokoro", "orpheus"]
+    @State private var chosenProvider : String = "kokoro"
+    @State private var availableVoices: [String] = TTSVoice.allCases.map { $0.rawValue }
+    @State private var chosenVoice: String = TTSVoice.bmGeorge.rawValue
 
     var body: some View {
         VStack {
@@ -24,30 +29,72 @@ struct ContentView: View {
                 .font(.headline)
                 .padding()
 
-            TextField("Enter text", text: $sayThis)
-
-            Button("Kokoro") {
-                Task {
-                    status = "Generating..."
-                    if kokoroTTSModel == nil {
-                        kokoroTTSModel = KokoroTTSModel()
-                    }
-                    await kokoroTTSModel!.say(sayThis, .bmGeorge)
-                    status = "Done"
+            Picker("Choose a provider", selection: $chosenProvider) {
+                ForEach(availableProviders, id: \.self) { provider in
+                    Text(provider.capitalized)
                 }
             }
+            .onChange(of: chosenProvider) { newProvider in
+                if newProvider == "orpheus" {
+                    availableVoices = OrpheusVoice.allCases.map { $0.rawValue }
+                    chosenVoice = availableVoices.first ?? "dan"
 
-            Button("Orpheus") {
-                Task {
-                    status = "Generating..."
-                    if orpheusTTSModel == nil {
-                        orpheusTTSModel = OrpheusTTSModel()
-                    }
-                    await orpheusTTSModel!.say(sayThis, .tara)
-                    status = "Done"
+                    status = "Orpheus is currently quite slow (0.1x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
+                } else {
+                    availableVoices = TTSVoice.allCases.map { $0.rawValue }
+                    chosenVoice = availableVoices.first ?? TTSVoice.bmGeorge.rawValue
+
+                    status = ""
                 }
             }
-            .disabled(true) // Disable the button as it's still WIP
+            .padding()
+            .padding(.bottom, 0)
+
+            // Voice picker
+            Picker("Choose a voice", selection: $chosenVoice) {
+                ForEach(availableVoices, id: \.self) { voice in
+                    Text(voice.capitalized)
+                }
+            }
+            .padding()
+            .padding(.top, 0)
+
+            TextField("Enter text", text: $sayThis).padding()
+            
+            Button(action: {
+                Task {
+                    status = "Generating..."
+                    if chosenProvider == "kokoro" {
+                        if kokoroTTSModel == nil {
+                            kokoroTTSModel = KokoroTTSModel()
+                        }
+
+                        if let kokoroVoice = TTSVoice.fromIdentifier(chosenVoice) ?? TTSVoice(rawValue: chosenVoice) {
+                            kokoroTTSModel!.say(sayThis, kokoroVoice)
+                        } else {
+                            status = "Invalid Kokoro voice selected"
+                        }
+                        
+                    } else if chosenProvider == "orpheus" {
+                        if orpheusTTSModel == nil {
+                            orpheusTTSModel = OrpheusTTSModel()
+                        }
+
+                        if let orpheusVoice = OrpheusVoice(rawValue: chosenVoice) {
+                            await orpheusTTSModel!.say(sayThis, orpheusVoice)
+                        } else {
+                            status = "Invalid Orpheus voice selected"
+                        }
+                    }
+                    
+                    status = "Done"
+                }
+            }, label: {
+                Text("Generate")
+                    .font(.title2)
+                    .padding()
+            })
+            .buttonStyle(.borderedProminent)
 
             Text(status)
                 .font(.caption)
