@@ -69,13 +69,6 @@ public class KokoroTTS {
     case modelNotInitialized
   }
 
-  enum ScriptType {
-    case chinese
-    case hindi
-    case japanese
-    case latin
-  }
-
   private var bert: CustomAlbert!
   private var bertEncoder: Linear!
   private var durationEncoder: DurationEncoder!
@@ -501,242 +494,10 @@ public class KokoroTTS {
     }
   }
 
-  private func detectLanguageScript(_ text: String) -> ScriptType {
-    if text.count < 3 { return .latin }
-
-    var hanCount = 0     // Chinese/Japanese
-    var kanaCount = 0    // Japanese-specific
-    var devanagariCount = 0 // Hindi
-
-    // Check first 20 characters for script detection
-    let sampleSize = min(20, text.count)
-    let sampleText = text.prefix(sampleSize)
-
-    for char in sampleText {
-      let scalar = char.unicodeScalars.first!
-
-      // Check for CJK characters
-      if (0x4E00...0x9FFF).contains(scalar.value) {
-        hanCount += 1
-      } else if (0x3040...0x30FF).contains(scalar.value) { // Check for Japanese Hiragana/Katakana
-        kanaCount += 1
-      } else if (0x0900...0x097F).contains(scalar.value) { // Check for Devanagari (Hindi)
-        devanagariCount += 1
-      }
-    }
-
-    // Use simple majority rule
-    if hanCount > sampleSize / 3 || kanaCount > sampleSize / 3 {
-      if kanaCount > 0 {
-        return .japanese
-      }
-      return .chinese
-    } else if devanagariCount > sampleSize / 3 {
-      return .hindi
-    }
-
-    return .latin
-  }
-
-  private func splitIntoSentences(text: String) -> [String] {
-    guard !text.isEmpty else { return [] }
-
-    // Include punctuation for Latin, CJK, and Hindi
-    let sentenceTerminators: Set<Character> = [
-      // Latin
-      ".", "!", "?", ";", ":", "\n",
-      // CJK
-      "。", "！", "？", "…", "～", "」", "』", "）",
-      // Hindi/Devanagari
-      "।", "॥", "॰"
-    ]
-
-    // Common abbreviation patterns to supplement generic detection
-    let commonAbbreviations: Set<String> = ["dr", "mr", "mrs", "ms", "prof", "etc", "vs", "e.g",
-                                            "i.e", "a.m", "p.m"]
-
-    let chars = text
-    var sentences = [String]()
-    var sentenceStart = chars.startIndex
-    var i = chars.startIndex
-
-    // Detect dominant script
-    let scriptType = self.detectLanguageScript(text)
-    let isCJK = scriptType == .japanese || scriptType == .chinese
-    let isHindi = scriptType == .hindi
-
-    sentences.reserveCapacity(max(5, text.count / 100))
-
-    while i < chars.endIndex {
-      let char = chars[i]
-
-      // Check for potential sentence end
-      if sentenceTerminators.contains(char) {
-        var shouldSplit = true
-
-        if char == "\n" {
-          // For newlines, check if it's a paragraph break
-          shouldSplit = i > sentenceStart && chars.distance(from: sentenceStart, to: i) > 2
-        } else if char == "." && !isCJK && !isHindi {
-          // Abbreviation handling only applies to Latin scripts
-          let wordStart = chars[..<i].lastIndex(where: { $0.isWhitespace }) ?? sentenceStart
-          let nextIndex = chars.index(after: wordStart)
-          let lastWord = nextIndex <= i ? chars[nextIndex...i] : ""
-
-          if !lastWord.isEmpty {
-            let wordLower = lastWord.lowercased()
-            let wordNoTrailingPeriod = wordLower.hasSuffix(".") ?
-            String(wordLower.dropLast()) : String(wordLower)
-
-            // Check various abbreviation patterns
-            let isPeriodInWord = lastWord.dropLast().contains(".")
-            let isSingleLetterWithPeriod = lastWord.count == 2 && lastWord.first?.isLetter == true
-            let isKnownAbbreviation = commonAbbreviations.contains(wordNoTrailingPeriod)
-            let isShortWord = lastWord.count <= 4
-
-            if isPeriodInWord || isSingleLetterWithPeriod || isKnownAbbreviation ||
-                (isShortWord && lastWord.last == ".") {
-              shouldSplit = false
-            }
-
-            // Check for decimal numbers
-            if i > chars.startIndex && i < chars.index(before: chars.endIndex) {
-              let prevIndex = chars.index(before: i)
-              let nextIndex = chars.index(after: i)
-
-              if prevIndex < chars.endIndex && nextIndex < chars.endIndex &&
-                  chars[prevIndex].isNumber && chars[nextIndex].isNumber {
-                shouldSplit = false
-              }
-            }
-          }
-        }
-
-        if shouldSplit {
-          // For CJK languages, we immediately split when we encounter a sentence terminator
-          // For other languages, we check for whitespace or end of text
-          let nextIndex = chars.index(after: i)
-          let hasNextWhitespace = nextIndex < chars.endIndex &&
-          (chars[nextIndex].isWhitespace || isCJK || isHindi)
-          let isEndOfText = nextIndex >= chars.endIndex
-
-          if hasNextWhitespace || isEndOfText {
-            let endIndex = (hasNextWhitespace && !isCJK && !isHindi) ?
-            chars.index(after: nextIndex) : nextIndex
-            if endIndex <= chars.endIndex {
-              let currentSentence = String(chars[sentenceStart..<endIndex])
-              let trimmed = currentSentence.trimmingCharacters(in: .whitespacesAndNewlines)
-
-              // For CJK languages, we don't require spaces, but we still check for minimum content
-              let hasValidContent = isCJK || isHindi ?
-              trimmed.count > 5 :
-              (trimmed.count > 15 || trimmed.contains(" "))
-
-              if !trimmed.isEmpty && hasValidContent {
-                sentences.append(currentSentence)
-                sentenceStart = endIndex
-
-                if hasNextWhitespace && !isCJK && !isHindi {
-                  i = nextIndex
-                }
-              }
-            }
-          }
-        }
-      }
-
-      if i < chars.endIndex {
-        i = chars.index(after: i)
-      }
-    }
-
-    // Add remaining text as a sentence if there's anything left
-    if sentenceStart < chars.endIndex {
-      let remainingSentence = String(chars[sentenceStart..<chars.endIndex])
-      if !remainingSentence.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        sentences.append(remainingSentence)
-      }
-    }
-
-    // Ensure we have at least one sentence for non-empty input
-    if sentences.isEmpty && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      sentences.append(text)
-    }
-
-    return mergeSentences(sentences)
-  }
-
-  private func mergeSentences(_ sentences: [String]) -> [String] {
-    guard !sentences.isEmpty else { return [] }
-
-    var result = [String]()
-    result.reserveCapacity(sentences.count)
-
-    let scriptType = self.detectLanguageScript(sentences[0])
-    let isCJK = scriptType == .japanese || scriptType == .chinese
-    let isHindi = scriptType == .hindi
-
-    // CJK and Hindi languages typically have shorter sentences, so adjust the merging thresholds
-    let minLengthForMerge = isCJK || isHindi ? 30 : 50
-    let maxMergedLength = isCJK || isHindi ? 200 : 300
-
-    var currentMerged = sentences[0]
-    var currentLength = currentMerged.count
-
-    // Start from the second sentence
-    for i in 1..<sentences.count {
-      let sentence = sentences[i]
-      let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
-
-      // CJK sentence terminators
-      let cjkTerminators: Set<Character> = ["。", "！", "？", "…"]
-      let hindiTerminators: Set<Character> = ["।", "॥"]
-
-      // Check for logical breaks based on script type
-      var hasLogicalBreak = false
-      if isCJK {
-        hasLogicalBreak = trimmed.last.map { cjkTerminators.contains($0) } ?? false
-      } else if isHindi {
-        hasLogicalBreak = trimmed.last.map { hindiTerminators.contains($0) } ?? false
-      } else {
-        hasLogicalBreak = trimmed.hasSuffix(".") || trimmed.hasSuffix("!") ||
-        trimmed.hasSuffix("?")
-      }
-
-      // Conditions for merging
-      let isTooShort = trimmed.count < minLengthForMerge
-      let isShortEnough = currentLength + sentence.count < maxMergedLength
-
-      if isTooShort && !hasLogicalBreak && isShortEnough {
-        // Merge with current sentence - add appropriate spacing based on language
-        if isCJK {
-          // For CJK, don't add space when merging
-          currentMerged += sentence
-        } else {
-          // For other languages, add a space
-          currentMerged += " " + sentence
-        }
-        currentLength += sentence.count + (isCJK ? 0 : 1) // Add 1 for space if not CJK
-      } else {
-        // Add the current merged sentence and start a new one
-        result.append(currentMerged)
-        currentMerged = sentence
-        currentLength = sentence.count
-      }
-    }
-
-    // Add the last merged sentence if there is one
-    if !currentMerged.isEmpty {
-      result.append(currentMerged)
-    }
-
-    return result
-  }
-
   public func generateAudio(voice: TTSVoice, text: String, speed: Float = 1.0, chunkCallback: @escaping AudioChunkCallback) throws {
     ensureModelInitialized()
 
-    let sentences = splitIntoSentences(text: text)
+    let sentences = SentenceTokenizer.splitIntoSentences(text: text)
     if sentences.isEmpty {
       throw KokoroTTSError.sentenceSplitError
     }
@@ -747,9 +508,6 @@ public class KokoroTTS {
       // Clear any previous voice and weight cache to start fresh
       autoreleasepool {
         self.voice = nil
-        if sentences.count > 10 {
-          // For very long texts, start with a fresh model to minimize memory growth
-        }
       }
 
       // Use a separate autorelease pool for each sentence to release memory faster
@@ -769,15 +527,9 @@ public class KokoroTTS {
             }
 
             // Explicitly release large tensors
-            let _ = autoreleasepool {
+            autoreleasepool {
               _ = audio
             }
-
-            // For long text processing, periodically reset the model to clear memory
-            if index > 0 && index % 10 == 0 && sentences.count > 15 {
-              // Keep voice but reset weights cache
-            }
-
           } catch {
             // Handle error silently
           }

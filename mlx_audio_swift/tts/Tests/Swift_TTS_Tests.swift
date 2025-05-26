@@ -22,7 +22,7 @@ struct Swift_TTS_Tests {
     
     func testKokoro() async {
         let kokoroTTSModel = KokoroTTSModel()
-        await kokoroTTSModel.say("test", .bmGeorge)
+        kokoroTTSModel.say("test", .bmGeorge)
     }
 
     func testOrpheus() async {

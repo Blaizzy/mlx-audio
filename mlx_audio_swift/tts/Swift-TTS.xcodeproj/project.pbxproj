@@ -164,6 +164,7 @@
 				Kokoro/Resources/zm_yunxia.json,
 				Kokoro/Resources/zm_yunyang.json,
 				Kokoro/TextProcessing/ESpeakNGEngine.swift,
+				Kokoro/TextProcessing/SentenceTokenizer.swift,
 				Kokoro/TextProcessing/Tokenizer.swift,
 				Kokoro/TTSEngine/DurationEncoder.swift,
 				Kokoro/TTSEngine/KokoroTTS.swift,
@@ -683,6 +684,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = "Swift-TTS/Swift_TTS.entitlements";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
