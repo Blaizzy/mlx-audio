@@ -177,6 +177,7 @@ def load_model(
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path, **kwargs)
+    config["tokenizer_name"] = model_path
 
     # Determine model_type from config or model_name
     model_type = config.get("model_type", None)

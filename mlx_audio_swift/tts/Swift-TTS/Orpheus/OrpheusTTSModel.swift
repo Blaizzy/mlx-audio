@@ -9,12 +9,12 @@ import AVFoundation
 import MLX
 import SwiftUI
 
-public class OrpheusTTSModel: ObservableObject {
+class OrpheusTTSModel: ObservableObject {
     let orpheusTTSEngine: OrpheusTTS?
     let audioEngine: AVAudioEngine!
     let playerNode: AVAudioPlayerNode!
     
-    public init() {
+    init() {
         do {
             try orpheusTTSEngine = OrpheusTTS()
         } catch {
@@ -27,7 +27,7 @@ public class OrpheusTTSModel: ObservableObject {
         audioEngine.attach(playerNode)
     }
        
-    public func say(_ text: String, _ voice: OrpheusVoice) async {
+    func say(_ text: String, _ voice: OrpheusVoice) async {
         if let orpheusTTSEngine = orpheusTTSEngine {
             let mainTimer = BenchmarkTimer.shared.create(id: "TTSGeneration")
             let audioBuffer = try! await orpheusTTSEngine.generateAudio(voice: voice, text: text)

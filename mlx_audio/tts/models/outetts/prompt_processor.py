@@ -124,7 +124,8 @@ class PromptProcessor:
 
         return output, rs.strip()
 
-    def text_normalizations(self, text: str) -> str:
+    @staticmethod
+    def text_normalizations(text: str) -> str:
         # Normalize whitespace characters (newlines, tabs, etc.) to single spaces
         text = re.sub(r"\s+", " ", text)
         text = text.replace("…", "...")  # Replace ellipsis character with three dots
