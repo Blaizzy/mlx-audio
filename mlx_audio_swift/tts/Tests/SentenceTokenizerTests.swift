@@ -2,8 +2,6 @@
 //  SentenceTokenizerTests.swift
 //   Swift-TTS
 //
-//  Created by Sachin Desai on 5/25/25.
-//
 
 import XCTest
 import Foundation
