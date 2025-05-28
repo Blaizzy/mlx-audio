@@ -1,0 +1,10 @@
+site_name: MLX-Audio
+nav:
+  - Home: index.md
+  - Usage: usage.md
+  - API: api.md
+markdown_extensions:
+  - toc
+  - tables
+plugins:
+  - search

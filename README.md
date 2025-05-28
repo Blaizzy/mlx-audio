@@ -217,7 +217,16 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
 - For the web interface and API:
   - FastAPI
   - Uvicorn
-  
+
+## Documentation
+
+To build the documentation locally:
+
+```bash
+pip install -r requirements-dev.txt
+mkdocs build --strict
+```
+
 ## License
 
 [MIT License](LICENSE)
@@ -227,3 +236,4 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
 - Thanks to the Apple MLX team for providing a great framework for building TTS and STS models.
 - This project uses the Kokoro model architecture for text-to-speech synthesis.
 - The 3D visualization uses Three.js for rendering.
+

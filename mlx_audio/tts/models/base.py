@@ -75,7 +75,6 @@ class GenerationResult:
     sample_rate: int
     segment_idx: int
     token_count: int
-    audio_samples: int
     audio_duration: str
     real_time_factor: float
     prompt: dict
