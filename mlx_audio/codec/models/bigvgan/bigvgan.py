@@ -15,7 +15,7 @@ class BigVGANConfig:
     upsample_rates: list[int]
     upsample_kernel_sizes: list[int]
     upsample_initial_channel: int
-    resblock: Literal["1", "2"]  # no idea why it's string in config
+    resblock: Literal["1", "2"]
     resblock_kernel_sizes: list[int]
     resblock_dilation_sizes: list[list[int]]
     activation: Literal["snakebeta", "snake"]
