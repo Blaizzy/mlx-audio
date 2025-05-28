@@ -50,20 +50,22 @@ class BigVGAN(nn.Module):
             )
         ]
         self.resblocks = [
-            AMPBlock1(
-                config.upsample_initial_channel // (2 ** (i + 1)),
-                config.snake_logscale,
-                config.activation,
-                k,
-                d,
-            )
-            if config.resblock == "1"
-            else AMPBlock2(
-                config.upsample_initial_channel // (2 ** (i + 1)),
-                config.snake_logscale,
-                config.activation,
-                k,
-                d,
+            (
+                AMPBlock1(
+                    config.upsample_initial_channel // (2 ** (i + 1)),
+                    config.snake_logscale,
+                    config.activation,
+                    k,
+                    d,
+                )
+                if config.resblock == "1"
+                else AMPBlock2(
+                    config.upsample_initial_channel // (2 ** (i + 1)),
+                    config.snake_logscale,
+                    config.activation,
+                    k,
+                    d,
+                )
             )
             for i in range(len(self.ups))
             for j, (k, d) in enumerate(
