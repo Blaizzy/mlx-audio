@@ -15,7 +15,7 @@ class FeedForward(nn.Module):
         self.w_2 = nn.Linear(d_ff, dim, bias=use_bias)
 
     def __call__(self, x: mx.array) -> mx.array:
-        x, gate = mx.split(self.w_1(x), -1)
+        x, gate = mx.split(self.w_1(x), 2, axis=-1)
         return self.w_2(self.activation(gate) * x)
 
 
@@ -55,7 +55,8 @@ class PerceiverResampler(nn.Module):
         x = self.proj_context(x)
 
         for attn, ff in self.layers:
-            latents += attn(latents, x, mask=mask)
+            kv = mx.concat([x, latents], axis=-2)
+            latents += attn(latents, kv, kv, mask=mask)
             latents += ff(latents)
 
         return self.norm(latents)

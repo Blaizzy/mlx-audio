@@ -3,12 +3,15 @@ from typing import List
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.gpt2 import GPT2Model
+import sentencepiece as spm
+from mlx_lm.models.cache import KVCache
 from mlx_lm.models.gpt2 import ModelArgs as GPT2Args
 
 from mlx_audio.codec.models.bigvgan.bigvgan import BigVGANConfig
 from mlx_audio.tts.models.indextts.attention import LearnedPositionEncoding
 from mlx_audio.tts.models.indextts.conformer import Conformer, ConformerArgs
+from mlx_audio.tts.models.indextts.gpt2 import GPT2Model
+from mlx_audio.tts.models.indextts.mel import log_mel_spectrogram
 from mlx_audio.tts.models.indextts.perceiver import PerceiverResampler
 
 
@@ -57,6 +60,10 @@ class Model(nn.Module):
             )
 
         self.args = args
+
+        self.tokenizer = spm.SentencePieceProcessor(
+            model_file="./bpe.model"  # type: ignore
+        )  # temporary
 
         self.text_embedding = nn.Embedding(
             args.gpt.number_text_tokens + 1, args.gpt.model_dim
@@ -139,7 +146,6 @@ class Model(nn.Module):
                 ].transpose(1, 0)
 
         for i in range(2):  # hard coded in original impl
-            # attn
             if f"perceiver_encoder.layers.{i}.0.to_q.weight" in new_weights:
                 new_weights[f"perceiver_encoder.layers.{i}.0.linear_q.weight"] = (
                     new_weights[f"perceiver_encoder.layers.{i}.0.to_q.weight"]
@@ -161,7 +167,6 @@ class Model(nn.Module):
                 )
                 del new_weights[f"perceiver_encoder.layers.{i}.0.to_out.weight"]
 
-            # ffn
             if f"perceiver_encoder.layers.{i}.1.0.weight" in new_weights:
                 new_weights[f"perceiver_encoder.layers.{i}.1.w_1.weight"] = new_weights[
                     f"perceiver_encoder.layers.{i}.1.0.weight"
@@ -185,24 +190,90 @@ class Model(nn.Module):
 
         return new_weights
 
-    def get_conditioning(self, mel: mx.array) -> mx.array:
+    def get_conditioning(self, mel: mx.array) -> mx.array:  # (b, c, t)
         latent = self.conditioning_encoder(mel)
         return self.perceiver_encoder(latent)
 
-    def prepare_input_ids(
+    def prepare_input_embedding(
         self,
         prompts: List[str],
-        conditioned: mx.array,
-    ):
-        pass
+        ref_audio: mx.array,
+    ) -> mx.array:
+        conditioning = self.get_conditioning(log_mel_spectrogram(ref_audio))
+        # for case with multiple batch, and single ref_audio
+        conditioning = mx.broadcast_to(
+            conditioning, (len(prompts), *conditioning.shape[1:])
+        )
+        tokenized = [self.tokenizer.encode(prompt) for prompt in prompts]  # type: ignore
+
+        longest = max((len(tokens) for tokens in tokenized)) + 2
+
+        embedding = mx.zeros(
+            (len(tokenized), longest + conditioning.shape[1], self.args.gpt.model_dim)
+        )
+
+        for idx, tokens in enumerate(tokenized):
+            # append tokens
+            tokens.insert(0, self.args.gpt.start_text_token)
+            tokens.append(self.args.gpt.start_mel_token)
+            length = len(tokens)
+
+            tokens = mx.array(tokens)[None, :]
+
+            text_embedding = self.text_embedding(tokens) + self.text_pos_embedding(
+                tokens
+            )
+            embedding[idx : idx + 1, longest - length :, :] = mx.concat(
+                [conditioning[idx : idx + 1], text_embedding], axis=1
+            )
+
+        return embedding
 
     def generate(
         self,
         text: str,
-        voice: mx.array,
-        speed: float = 1.0,
+        ref_audio: mx.array,
+        max_tokens: int = 5000,
+        temperature: float = 1.0,
         **kwargs,
     ):
-        mel = voice
-        conditioned = self.get_conditioning(mel[None, :, :])
-        pass
+        embedding = self.prepare_input_embedding([text], ref_audio)
+
+        cache = [KVCache() for _ in range(self.args.gpt.layers)]
+
+        inputs = embedding
+        generated_tokens = []
+        latent_states = []
+
+        mel_position = 0
+
+        for _ in range(max_tokens):
+            hidden_states = self.gpt(inputs, cache=cache)
+
+            hidden_states = self.final_norm(hidden_states)
+
+            latent_states.append(hidden_states[:, -1:, :])
+            mel_logits = self.mel_head(hidden_states[:, -1:, :])
+
+            if temperature > 0:
+                probs = mx.softmax(mel_logits / temperature, axis=-1)
+                next_token = mx.random.categorical(mx.log(probs))
+            else:
+                next_token = mx.argmax(mel_logits, axis=-1)
+
+            if next_token.item() == self.args.gpt.stop_mel_token:
+                break
+
+            generated_tokens.append(next_token.item())
+
+            mel_emb = self.mel_embedding(next_token)
+
+            position = mx.array([[embedding.shape[1] + mel_position]])
+            mel_emb = mel_emb + self.mel_pos_embedding(position)
+
+            inputs = mel_emb
+            mel_position += 1
+
+        latent_states = mx.concat(latent_states, axis=-2)
+
+        return mx.array(generated_tokens)  # TODO: bigvgan decode

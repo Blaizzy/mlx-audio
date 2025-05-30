@@ -163,7 +163,6 @@ class Conv2dSubsampling(nn.Module):
 
     def __init__(self, args: ConformerArgs):
         super().__init__()
-
         conv_layers = self.CONV_LAYERS[args.input_layer]
         # mask_patterns = self.CONV_MASKS[args.input_layer]
 
@@ -190,12 +189,12 @@ class Conv2dSubsampling(nn.Module):
         self.out = [nn.Linear(args.output_size * out_freq, args.output_size)]
 
     def __call__(self, x: mx.array):
-        x = x[:, None, :, :]
+        x = x[:, :, :, None]
 
         for layer in self.conv:
             x = layer(x)
 
-        x = x.swapaxes(1, 2).reshape(*x.shape[2], -1)
+        x = x.swapaxes(2, 3).reshape(*x.shape[:2], -1)
 
         for layer in self.out:
             x = layer(x)
@@ -209,7 +208,7 @@ class Conformer(nn.Module):
 
         if args.pos_enc_layer_type == "rel_pos":
             self.pos_enc = RelPositionalEncoding(
-                d_model=args.linear_units,
+                d_model=args.output_size,
                 max_len=args.pos_emb_max_len,
                 scale_input=args.xscaling,
             )
