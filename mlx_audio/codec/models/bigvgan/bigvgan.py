@@ -9,6 +9,14 @@ from mlx_audio.codec.models.bigvgan.amp import AMPBlock1, AMPBlock2
 from mlx_audio.codec.models.bigvgan.resample import Activation1d
 
 
+def normalize_weight(x, except_dim=0):
+    if x.ndim != 3:
+        raise ValueError("Input tensor must have 3 dimensions")
+
+    axes = tuple(i for i in range(x.ndim) if i != except_dim)
+    return mx.sqrt(mx.sum(mx.power(x, 2), axis=axes, keepdims=True))
+
+
 @dataclass
 class BigVGANConfig:
     num_mels: int
@@ -92,7 +100,9 @@ class BigVGAN(nn.Module):
             bias=config.use_bias_at_final,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:  # (batch, num_mels, seq)
+    def __call__(
+        self, x: mx.array, *args, **kwargs
+    ) -> mx.array:  # (batch, num_mels, seq)
         x = x.transpose(0, 2, 1)
 
         x = self.conv_pre(x)
@@ -116,3 +126,37 @@ class BigVGAN(nn.Module):
             x = mx.clip(x, -1.0, 1.0)
 
         return x.transpose(0, 2, 1)
+
+    def sanitize(self, weights: dict[str, mx.array]):
+        new_weights = {}
+
+        for key, value in weights.items():
+            if "num_batches_tracked" in key:
+                continue
+
+            if "conv" in key or "lowpass.filter" in key or "upsample.filter" in key:
+                if value.ndim == 3:
+                    value = value.transpose(0, 2, 1)
+                elif value.ndim == 4:
+                    value = value.transpose(0, 2, 3, 1)
+
+            if "ups." in key:
+                if value.ndim == 3:
+                    value = value.transpose(1, 2, 0)
+
+            if key.endswith("weight_g"):
+                new_weights[key.replace("_g", "")] = (
+                    new_weights.get(key.replace("_g", ""), 1) * value
+                )
+                continue
+
+            if key.endswith("weight_v"):
+                v_norm = normalize_weight(value, 0)
+                new_weights[key.replace("_v", "")] = (
+                    new_weights.get(key.replace("_v", ""), 1) * value / v_norm
+                )
+                continue
+
+            new_weights[key] = value
+
+        return new_weights

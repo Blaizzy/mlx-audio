@@ -7,8 +7,8 @@ import sentencepiece as spm
 from mlx_lm.models.cache import KVCache
 from mlx_lm.models.gpt2 import ModelArgs as GPT2Args
 
-from mlx_audio.codec.models.bigvgan.bigvgan import BigVGANConfig
 from mlx_audio.tts.models.indextts.attention import LearnedPositionEncoding
+from mlx_audio.tts.models.indextts.bigvgan import BigVGANConditioningConfig
 from mlx_audio.tts.models.indextts.conformer import Conformer, ConformerArgs
 from mlx_audio.tts.models.indextts.gpt2 import GPT2Model
 from mlx_audio.tts.models.indextts.mel import log_mel_spectrogram
@@ -42,7 +42,7 @@ class GPTConfig:
 
 @dataclass
 class ModelArgs:
-    bigvgan: BigVGANConfig
+    bigvgan: BigVGANConditioningConfig
     gpt: GPTConfig
 
 
@@ -276,4 +276,4 @@ class Model(nn.Module):
 
         latent_states = mx.concat(latent_states, axis=-2)
 
-        return mx.array(generated_tokens)  # TODO: bigvgan decode
+        return latent_states  # TODO: bigvgan decode
