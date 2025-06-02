@@ -23,7 +23,7 @@ class ConformerArgs:
     pos_emb_max_len: int = 2048
     causal_downsampling: bool = False
     use_bias: bool = True
-    xscaling: bool = False
+    xscaling: bool = True
     macaron_style: bool = False
     pos_bias_u: mx.array | None = None
     pos_bias_v: mx.array | None = None
@@ -79,7 +79,7 @@ class Convolution(nn.Module):
         x = nn.glu(x, axis=2)
 
         x = self.depthwise_conv(x)
-        x = self.norm(x.transpose(0, 2, 1)).transpose(0, 2, 1)
+        x = self.norm(x)
         x = self.activation(x)
         x = self.pointwise_conv2(x)
 
@@ -234,5 +234,7 @@ class Conformer(nn.Module):
 
         for layer, c in zip(self.encoders, cache):
             x = layer(x, pos_emb=pos_emb, cache=c)
+
+        x = self.after_norm(x)
 
         return x

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import mlx.core as mx
 
-from mlx_audio.utils import hanning, mel_filters, stft
+from mlx_audio.utils import mel_filters, stft
 
 
 def log_mel_spectrogram(
@@ -19,8 +19,14 @@ def log_mel_spectrogram(
     if padding > 0:
         audio = mx.pad(audio, (0, padding))
 
-    freqs = stft(audio, window=hanning(n_fft), n_fft=n_fft, win_length=hop_length)  # type: ignore
-    magnitudes = freqs[:-1, :].abs()
+    freqs = stft(
+        audio,
+        window="hann",
+        n_fft=n_fft,
+        hop_length=hop_length,
+        win_length=n_fft,
+    )
+    magnitudes = freqs.abs()
     filters = mel_filters(
         sample_rate=sample_rate,
         n_fft=n_fft,

@@ -76,7 +76,7 @@ class ECPATDNN(nn.Module):
         for layer in self.blocks:
             if isinstance(layer, SeRes2Net):
                 x = layer(x, mask=mask)
-                xl.append(x)
+                xl.append(mx.array(x))
             else:
                 x = layer(x)
 

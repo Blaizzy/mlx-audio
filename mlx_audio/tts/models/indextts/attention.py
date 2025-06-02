@@ -78,17 +78,6 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
         self.pos_bias_u = self._pos_bias_u_init
         self.pos_bias_v = self._pos_bias_v_init
 
-    def rel_shift(self, x: mx.array) -> mx.array:
-        B, H, Tq, pos_len = x.shape
-        padding = [(0, 0)] * (x.ndim - 1) + [(1, 0)]
-
-        x = mx.pad(x, padding)
-        x = x.reshape(B, H, pos_len + 1, Tq)
-        x = x[:, :, 1:, :]
-        x = x.reshape(B, H, Tq, pos_len)
-
-        return x
-
     def __call__(
         self,
         q: mx.array,
@@ -121,8 +110,7 @@ class RelPositionMultiHeadAttention(MultiHeadAttention):
             k, v = cache.update_and_fetch(k, v)
 
         matrix_bd = mx.matmul(q_v, p.swapaxes(-2, -1))
-        matrix_bd = self.rel_shift(matrix_bd)
-        matrix_bd = matrix_bd[:, :, :, : k.shape[-2]] * self.scale
+        matrix_bd = matrix_bd * self.scale
 
         if mask is not None:
             mask = mx.expand_dims(mask, 0)
@@ -152,14 +140,14 @@ class RelPositionalEncoding(nn.Module):
         self.calculate_pe()
 
     def calculate_pe(self):
-        positions = mx.arange(self.max_len - 1, -self.max_len, -1, dtype=mx.int32)
+        positions = mx.arange(0, self.max_len, 1, dtype=mx.int32)
         positions = mx.expand_dims(positions, axis=1).astype(mx.float32)
 
         div_term = mx.exp(
             mx.arange(0, self.d_model, 2, dtype=mx.float32)
             * -(math.log(10000.0) / self.d_model)
         )
-        pe = mx.zeros((2 * self.max_len - 1, self.d_model), dtype=mx.float32)
+        pe = mx.zeros((self.max_len, self.d_model), dtype=mx.float32)
 
         pe[:, 0::2] = mx.sin(positions * div_term)
         pe[:, 1::2] = mx.cos(positions * div_term)
@@ -177,11 +165,7 @@ class RelPositionalEncoding(nn.Module):
 
         x = x * self.scale
 
-        buffer_len = self._pe.shape[1]
-        start_idx = buffer_len // 2 - (input_len - 1)
-        end_idx = buffer_len // 2 + (input_len - 1) + 1
-
-        pos_emb = self._pe[:, start_idx:end_idx].astype(x.dtype)
+        pos_emb = self._pe[:, offset : offset + x.shape[1]].astype(x.dtype)
 
         return x, pos_emb
 
@@ -192,5 +176,5 @@ class LearnedPositionEncoding(nn.Module):
 
         self.emb = nn.Embedding(seq_len, model_dim)
 
-    def __call__(self, x: mx.array):
-        return self.emb(mx.arange(0, x.shape[1]))
+    def __call__(self, x: mx.array, offset: int = 0):
+        return self.emb(mx.arange(offset, offset + x.shape[1]))

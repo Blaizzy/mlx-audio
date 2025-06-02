@@ -16,13 +16,14 @@ class TDNN(nn.Module):
         super().__init__()
 
         self.kernel_size = kernel_size
+        self.padding = ((kernel_size - 1) * dilation) // 2
 
         self.conv = nn.Conv1d(
             in_channels,
             out_channels,
             kernel_size,
             1,
-            ((kernel_size - 1) * dilation) // 2,
+            0,
             dilation,
             groups,
             bias,
@@ -31,4 +32,11 @@ class TDNN(nn.Module):
         self.norm = nn.BatchNorm(out_channels)
 
     def __call__(self, x: mx.array) -> mx.array:  # NLC
-        return self.norm(self.activation(self.conv(x)))
+        # reflect padding
+        top_pad = x[:, 1 : self.padding + 1, :][:, ::-1, :]
+        bottom_pad = x[:, -(self.padding + 1) : -1, :][:, ::-1, :]
+        x = mx.concat([top_pad, x, bottom_pad], axis=1)
+
+        res = self.norm(self.activation(self.conv(x)))
+
+        return res

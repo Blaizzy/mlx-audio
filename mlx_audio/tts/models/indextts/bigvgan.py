@@ -108,7 +108,11 @@ class BigVGANConditioning(BigVGAN):
                 continue
 
             if key.endswith("weight_v"):
-                v_norm = normalize_weight(value, 0)
+                v_norm = (
+                    normalize_weight(value, 0)
+                    if "ups." not in key
+                    else normalize_weight(value, 2)
+                )
                 new_weights[key.replace("_v", "")] = (
                     new_weights.get(key.replace("_v", ""), 1) * value / v_norm
                 )

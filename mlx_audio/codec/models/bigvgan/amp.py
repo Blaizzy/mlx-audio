@@ -52,7 +52,7 @@ class AMPBlock1(nn.Module):
         for conv1, conv2, activation1, activation2 in zip(
             self.convs1, self.convs2, self.activations[::2], self.activations[1::2]
         ):
-            x += conv2(activation2(conv1(activation1(x))))
+            x = x + conv2(activation2(conv1(activation1(x))))
 
         return x
 
@@ -90,6 +90,6 @@ class AMPBlock2(nn.Module):
 
     def __call__(self, x: mx.array):
         for conv, activation in zip(self.convs, self.activations):
-            x += conv(activation(x))
+            x = x + conv(activation(x))
 
         return x

@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -197,16 +197,21 @@ class Model(nn.Module):
     def prepare_input_embedding(
         self,
         prompts: List[str],
-        ref_audio: mx.array,
+        ref_audio: Optional[mx.array],
+        ref_mel: Optional[mx.array] = None,
     ) -> mx.array:
-        conditioning = self.get_conditioning(log_mel_spectrogram(ref_audio))
+        if ref_audio is not None:
+            ref_mel = log_mel_spectrogram(ref_audio)
+
+        if ref_mel is None:
+            raise ValueError("Must provide one of ref_audio or ref_mel")
+
+        conditioning = self.get_conditioning(ref_mel)
         # for case with multiple batch, and single ref_audio
-        conditioning = mx.broadcast_to(
-            conditioning, (len(prompts), *conditioning.shape[1:])
-        )
+        conditioning = mx.repeat(conditioning, len(prompts), axis=0)
         tokenized = [self.tokenizer.encode(prompt) for prompt in prompts]  # type: ignore
 
-        longest = max((len(tokens) for tokens in tokenized)) + 2
+        longest = max((len(tokens) for tokens in tokenized)) + 3
 
         embedding = mx.zeros(
             (len(tokenized), longest + conditioning.shape[1], self.args.gpt.model_dim)
@@ -215,6 +220,7 @@ class Model(nn.Module):
         for idx, tokens in enumerate(tokenized):
             # append tokens
             tokens.insert(0, self.args.gpt.start_text_token)
+            tokens.append(self.args.gpt.stop_text_token)
             tokens.append(self.args.gpt.start_mel_token)
             length = len(tokens)
 
@@ -224,7 +230,7 @@ class Model(nn.Module):
                 tokens
             )
             embedding[idx : idx + 1, longest - length :, :] = mx.concat(
-                [conditioning[idx : idx + 1], text_embedding], axis=1
+                [conditioning, text_embedding], axis=1
             )
 
         return embedding
@@ -232,12 +238,13 @@ class Model(nn.Module):
     def generate(
         self,
         text: str,
-        ref_audio: mx.array,
+        ref_audio: Optional[mx.array],
+        ref_mel: Optional[mx.array] = None,
         max_tokens: int = 5000,
-        temperature: float = 1.0,
+        temperature: float = 0.5,
         **kwargs,
     ):
-        embedding = self.prepare_input_embedding([text], ref_audio)
+        embedding = self.prepare_input_embedding([text], ref_audio, ref_mel)
 
         cache = [KVCache() for _ in range(self.args.gpt.layers)]
 
@@ -266,10 +273,9 @@ class Model(nn.Module):
 
             generated_tokens.append(next_token.item())
 
-            mel_emb = self.mel_embedding(next_token)
-
-            position = mx.array([[embedding.shape[1] + mel_position]])
-            mel_emb = mel_emb + self.mel_pos_embedding(position)
+            mel_emb = self.mel_embedding(next_token) + self.mel_pos_embedding(
+                next_token, embedding.shape[1] + mel_position
+            )
 
             inputs = mel_emb
             mel_position += 1
