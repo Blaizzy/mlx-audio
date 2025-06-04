@@ -134,6 +134,12 @@ class Model(nn.Module):
         self.gpt.wte = nn.Identity()  # type: ignore
 
     def sanitize(self, weights: dict[str, mx.array]):
+        already_sanitized = all(
+            ("num_batches_tracked" not in key) for key in weights.keys()
+        )
+        if already_sanitized:
+            return weights
+
         bigvgan_prefixes = [
             "ups.",
             "speaker_encoder.",
