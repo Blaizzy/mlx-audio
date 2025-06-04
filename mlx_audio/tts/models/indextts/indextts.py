@@ -1,14 +1,23 @@
+import time
 from dataclasses import dataclass
-from typing import List, Optional
+from pathlib import Path
+from typing import Callable, List, Optional
 
+import dacite
+import huggingface_hub
 import mlx.core as mx
 import mlx.nn as nn
 import sentencepiece as spm
 from mlx_lm.models.cache import KVCache
 from mlx_lm.models.gpt2 import ModelArgs as GPT2Args
+from mlx_lm.sample_utils import make_sampler
 
+from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.tts.models.indextts.attention import LearnedPositionEncoding
-from mlx_audio.tts.models.indextts.bigvgan import BigVGANConditioningConfig
+from mlx_audio.tts.models.indextts.bigvgan import (
+    BigVGANConditioning,
+    BigVGANConditioningConfig,
+)
 from mlx_audio.tts.models.indextts.conformer import Conformer, ConformerArgs
 from mlx_audio.tts.models.indextts.gpt2 import GPT2Model
 from mlx_audio.tts.models.indextts.mel import log_mel_spectrogram
@@ -44,11 +53,16 @@ class GPTConfig:
 class ModelArgs:
     bigvgan: BigVGANConditioningConfig
     gpt: GPTConfig
+    tokenizer_name: str | Path
+    sample_rate: int = 24000
 
 
 class Model(nn.Module):
     def __init__(self, args: ModelArgs):
         super().__init__()
+
+        if isinstance(args, dict):
+            args = dacite.from_dict(ModelArgs, args)
 
         if not args.gpt.use_mel_codes_as_input:
             raise NotImplementedError(
@@ -60,10 +74,22 @@ class Model(nn.Module):
             )
 
         self.args = args
+        self.sample_rate = args.sample_rate
 
-        self.tokenizer = spm.SentencePieceProcessor(
-            model_file="./bpe.model"  # type: ignore
-        )  # temporary
+        try:
+            self.tokenizer = spm.SentencePieceProcessor(
+                model_file=huggingface_hub.hf_hub_download(  # type: ignore
+                    str(args.tokenizer_name), "tokenizer.model"
+                )
+            )
+        except Exception:
+            self.tokenizer = spm.SentencePieceProcessor(
+                model_file=str(  # type: ignore
+                    (Path(args.tokenizer_name) / "tokenizer.model").resolve()
+                )
+            )
+
+        self.bigvgan = BigVGANConditioning(args.bigvgan)
 
         self.text_embedding = nn.Embedding(
             args.gpt.number_text_tokens + 1, args.gpt.model_dim
@@ -108,9 +134,31 @@ class Model(nn.Module):
         self.gpt.wte = nn.Identity()  # type: ignore
 
     def sanitize(self, weights: dict[str, mx.array]):
-        new_weights = {}
+        bigvgan_prefixes = [
+            "ups.",
+            "speaker_encoder.",
+            "resblocks.",
+            "conv_pre.",
+            "conv_post.",
+            "conds.",
+            "cond_layer.",
+            "activation_post.",
+        ]
 
-        for key, value in weights.items():
+        gpt_weights = {
+            k: v
+            for k, v in weights.items()
+            if not any(k.startswith(prefix) for prefix in bigvgan_prefixes)
+        }
+        bigvgan_weights = {
+            k: v
+            for k, v in weights.items()
+            if any(k.startswith(prefix) for prefix in bigvgan_prefixes)
+        }
+
+        new_gpt_weights = {}
+
+        for key, value in gpt_weights.items():
             if "pos_enc" in key:
                 continue  # it should calculate self
 
@@ -123,72 +171,76 @@ class Model(nn.Module):
             if "perceiver_encoder.norm.gamma" in key:
                 key = "perceiver_encoder.norm.weight"
 
-            new_weights[key] = value
+            new_gpt_weights[key] = value
 
         for i in range(self.args.gpt.layers):
-            if f"gpt.h.{i}.attn.bias" in new_weights:
-                del new_weights[f"gpt.h.{i}.attn.bias"]
-            if f"gpt.h.{i}.attn.c_attn.weight" in new_weights:
-                new_weights[f"gpt.h.{i}.attn.c_attn.weight"] = new_weights[
+            if f"gpt.h.{i}.attn.bias" in new_gpt_weights:
+                del new_gpt_weights[f"gpt.h.{i}.attn.bias"]
+            if f"gpt.h.{i}.attn.c_attn.weight" in new_gpt_weights:
+                new_gpt_weights[f"gpt.h.{i}.attn.c_attn.weight"] = new_gpt_weights[
                     f"gpt.h.{i}.attn.c_attn.weight"
                 ].transpose(1, 0)
-            if f"gpt.h.{i}.attn.c_proj.weight" in new_weights:
-                new_weights[f"gpt.h.{i}.attn.c_proj.weight"] = new_weights[
+            if f"gpt.h.{i}.attn.c_proj.weight" in new_gpt_weights:
+                new_gpt_weights[f"gpt.h.{i}.attn.c_proj.weight"] = new_gpt_weights[
                     f"gpt.h.{i}.attn.c_proj.weight"
                 ].transpose(1, 0)
-            if f"gpt.h.{i}.mlp.c_fc.weight" in new_weights:
-                new_weights[f"gpt.h.{i}.mlp.c_fc.weight"] = new_weights[
+            if f"gpt.h.{i}.mlp.c_fc.weight" in new_gpt_weights:
+                new_gpt_weights[f"gpt.h.{i}.mlp.c_fc.weight"] = new_gpt_weights[
                     f"gpt.h.{i}.mlp.c_fc.weight"
                 ].transpose(1, 0)
-            if f"gpt.h.{i}.mlp.c_proj.weight" in new_weights:
-                new_weights[f"gpt.h.{i}.mlp.c_proj.weight"] = new_weights[
+            if f"gpt.h.{i}.mlp.c_proj.weight" in new_gpt_weights:
+                new_gpt_weights[f"gpt.h.{i}.mlp.c_proj.weight"] = new_gpt_weights[
                     f"gpt.h.{i}.mlp.c_proj.weight"
                 ].transpose(1, 0)
 
         for i in range(2):  # hard coded in original impl
-            if f"perceiver_encoder.layers.{i}.0.to_q.weight" in new_weights:
-                new_weights[f"perceiver_encoder.layers.{i}.0.linear_q.weight"] = (
-                    new_weights[f"perceiver_encoder.layers.{i}.0.to_q.weight"]
+            if f"perceiver_encoder.layers.{i}.0.to_q.weight" in new_gpt_weights:
+                new_gpt_weights[f"perceiver_encoder.layers.{i}.0.linear_q.weight"] = (
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.0.to_q.weight"]
                 )
-                del new_weights[f"perceiver_encoder.layers.{i}.0.to_q.weight"]
-            if f"perceiver_encoder.layers.{i}.0.to_kv.weight" in new_weights:
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.0.to_q.weight"]
+            if f"perceiver_encoder.layers.{i}.0.to_kv.weight" in new_gpt_weights:
                 (
-                    new_weights[f"perceiver_encoder.layers.{i}.0.linear_k.weight"],
-                    new_weights[f"perceiver_encoder.layers.{i}.0.linear_v.weight"],
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.0.linear_k.weight"],
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.0.linear_v.weight"],
                 ) = mx.split(
-                    new_weights[f"perceiver_encoder.layers.{i}.0.to_kv.weight"],
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.0.to_kv.weight"],
                     2,
                     axis=0,
                 )
-                del new_weights[f"perceiver_encoder.layers.{i}.0.to_kv.weight"]
-            if f"perceiver_encoder.layers.{i}.0.to_out.weight" in new_weights:
-                new_weights[f"perceiver_encoder.layers.{i}.0.linear_out.weight"] = (
-                    new_weights[f"perceiver_encoder.layers.{i}.0.to_out.weight"]
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.0.to_kv.weight"]
+            if f"perceiver_encoder.layers.{i}.0.to_out.weight" in new_gpt_weights:
+                new_gpt_weights[f"perceiver_encoder.layers.{i}.0.linear_out.weight"] = (
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.0.to_out.weight"]
                 )
-                del new_weights[f"perceiver_encoder.layers.{i}.0.to_out.weight"]
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.0.to_out.weight"]
 
-            if f"perceiver_encoder.layers.{i}.1.0.weight" in new_weights:
-                new_weights[f"perceiver_encoder.layers.{i}.1.w_1.weight"] = new_weights[
-                    f"perceiver_encoder.layers.{i}.1.0.weight"
-                ]
-                del new_weights[f"perceiver_encoder.layers.{i}.1.0.weight"]
-            if f"perceiver_encoder.layers.{i}.1.2.weight" in new_weights:
-                new_weights[f"perceiver_encoder.layers.{i}.1.w_2.weight"] = new_weights[
-                    f"perceiver_encoder.layers.{i}.1.2.weight"
-                ]
-                del new_weights[f"perceiver_encoder.layers.{i}.1.2.weight"]
-            if f"perceiver_encoder.layers.{i}.1.0.bias" in new_weights:
-                new_weights[f"perceiver_encoder.layers.{i}.1.w_1.bias"] = new_weights[
-                    f"perceiver_encoder.layers.{i}.1.0.bias"
-                ]
-                del new_weights[f"perceiver_encoder.layers.{i}.1.0.bias"]
-            if f"perceiver_encoder.layers.{i}.1.2.bias" in new_weights:
-                new_weights[f"perceiver_encoder.layers.{i}.1.w_2.bias"] = new_weights[
-                    f"perceiver_encoder.layers.{i}.1.2.bias"
-                ]
-                del new_weights[f"perceiver_encoder.layers.{i}.1.2.bias"]
+            if f"perceiver_encoder.layers.{i}.1.0.weight" in new_gpt_weights:
+                new_gpt_weights[f"perceiver_encoder.layers.{i}.1.w_1.weight"] = (
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.1.0.weight"]
+                )
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.1.0.weight"]
+            if f"perceiver_encoder.layers.{i}.1.2.weight" in new_gpt_weights:
+                new_gpt_weights[f"perceiver_encoder.layers.{i}.1.w_2.weight"] = (
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.1.2.weight"]
+                )
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.1.2.weight"]
+            if f"perceiver_encoder.layers.{i}.1.0.bias" in new_gpt_weights:
+                new_gpt_weights[f"perceiver_encoder.layers.{i}.1.w_1.bias"] = (
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.1.0.bias"]
+                )
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.1.0.bias"]
+            if f"perceiver_encoder.layers.{i}.1.2.bias" in new_gpt_weights:
+                new_gpt_weights[f"perceiver_encoder.layers.{i}.1.w_2.bias"] = (
+                    new_gpt_weights[f"perceiver_encoder.layers.{i}.1.2.bias"]
+                )
+                del new_gpt_weights[f"perceiver_encoder.layers.{i}.1.2.bias"]
 
-        return new_weights
+        new_bigvgan_weight = {
+            "bigvgan." + k: v for k, v in self.bigvgan.sanitize(bigvgan_weights).items()
+        }
+
+        return {**new_gpt_weights, **new_bigvgan_weight}
 
     def get_conditioning(self, mel: mx.array) -> mx.array:  # (b, c, t)
         latent = self.conditioning_encoder(mel)
@@ -209,7 +261,7 @@ class Model(nn.Module):
         conditioning = self.get_conditioning(ref_mel)
         # for case with multiple batch, and single ref_audio
         conditioning = mx.repeat(conditioning, len(prompts), axis=0)
-        tokenized = [self.tokenizer.encode(prompt) for prompt in prompts]  # type: ignore
+        tokenized = [self.tokenizer.encode(prompt.upper()) for prompt in prompts]  # type: ignore
 
         longest = max((len(tokens) for tokens in tokenized)) + 3
 
@@ -235,18 +287,75 @@ class Model(nn.Module):
 
         return embedding
 
+    def generate_result(
+        self,
+        audio: mx.array,
+        start_time: float,
+        token_count: int,
+        **kwargs,
+    ) -> GenerationResult:
+        audio = audio.squeeze(0).squeeze(0)
+
+        samples = audio.shape[0] if audio is not None else 0
+        assert samples > 0, "No audio generated"
+
+        sample_rate = self.sample_rate
+        audio_duration_seconds = samples / sample_rate
+
+        elapsed_time = time.perf_counter() - start_time
+        rtf = audio_duration_seconds / elapsed_time
+
+        duration_mins = int(audio_duration_seconds // 60)
+        duration_secs = int(audio_duration_seconds % 60)
+        duration_ms = int((audio_duration_seconds % 1) * 1000)
+        duration_hours = int(audio_duration_seconds // 3600)
+        duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+        return GenerationResult(
+            audio=audio,
+            samples=samples,
+            sample_rate=sample_rate,
+            segment_idx=0,
+            token_count=token_count,
+            audio_duration=duration_str,
+            real_time_factor=rtf,
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": (
+                    round(token_count / elapsed_time, 2) if elapsed_time > 0 else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (
+                    round(samples / elapsed_time, 2) if elapsed_time > 0 else 0
+                ),
+            },  # type: ignore
+            processing_time_seconds=elapsed_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
+
     def generate(
         self,
         text: str,
         ref_audio: Optional[mx.array],
         ref_mel: Optional[mx.array] = None,
         max_tokens: int = 5000,
-        temperature: float = 0.5,
+        sampler: Optional[Callable[..., mx.array]] = None,
         **kwargs,
     ):
-        embedding = self.prepare_input_embedding([text], ref_audio, ref_mel)
+        if ref_audio is not None:
+            ref_mel = log_mel_spectrogram(ref_audio)
+
+        if ref_mel is None:
+            raise ValueError("Must provide one of ref_audio or ref_mel")
+
+        time_start = time.perf_counter()
+
+        embedding = self.prepare_input_embedding([text], None, ref_mel)
 
         cache = [KVCache() for _ in range(self.args.gpt.layers)]
+        sampler = sampler or make_sampler(temp=0.9, top_k=50)
 
         inputs = embedding
         generated_tokens = []
@@ -262,11 +371,7 @@ class Model(nn.Module):
             latent_states.append(hidden_states[:, -1:, :])
             mel_logits = self.mel_head(hidden_states[:, -1:, :])
 
-            if temperature > 0:
-                probs = mx.softmax(mel_logits / temperature, axis=-1)
-                next_token = mx.random.categorical(mx.log(probs))
-            else:
-                next_token = mx.argmax(mel_logits, axis=-1)
+            next_token = sampler(mel_logits)
 
             if next_token.item() == self.args.gpt.stop_mel_token:
                 break
@@ -282,4 +387,11 @@ class Model(nn.Module):
 
         latent_states = mx.concat(latent_states, axis=-2)
 
-        return latent_states  # TODO: bigvgan decode
+        audio = self.bigvgan(
+            latent_states.transpose(0, 2, 1),
+            ref_mel.transpose(0, 2, 1),
+        )
+
+        yield self.generate_result(audio, time_start, latent_states.shape[1])
+
+        mx.clear_cache()

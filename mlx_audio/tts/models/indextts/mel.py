@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import mlx.core as mx
 
 from mlx_audio.utils import mel_filters, stft
