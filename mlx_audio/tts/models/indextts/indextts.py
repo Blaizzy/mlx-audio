@@ -8,6 +8,7 @@ import huggingface_hub
 import mlx.core as mx
 import mlx.nn as nn
 import sentencepiece as spm
+import tqdm
 from mlx_lm.models.cache import KVCache
 from mlx_lm.models.gpt2 import ModelArgs as GPT2Args
 from mlx_lm.sample_utils import make_sampler
@@ -346,6 +347,7 @@ class Model(nn.Module):
         text: str,
         ref_audio: Optional[mx.array],
         ref_mel: Optional[mx.array] = None,
+        verbose: bool = False,
         max_tokens: int = 5000,
         sampler: Optional[Callable[..., mx.array]] = None,
         **kwargs,
@@ -361,7 +363,7 @@ class Model(nn.Module):
         embedding = self.prepare_input_embedding([text], None, ref_mel)
 
         cache = [KVCache() for _ in range(self.args.gpt.layers)]
-        sampler = sampler or make_sampler(temp=0.9, top_k=50)
+        sampler = sampler or make_sampler(temp=0.8, top_k=30)
 
         inputs = embedding
         generated_tokens = []
@@ -369,7 +371,7 @@ class Model(nn.Module):
 
         mel_position = 0
 
-        for _ in range(max_tokens):
+        for _ in range(max_tokens) if not verbose else tqdm.trange(max_tokens):
             hidden_states = self.gpt(inputs, cache=cache)
 
             hidden_states = self.final_norm(hidden_states)

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -153,19 +154,19 @@ class Conv2dSubsampling(nn.Module):
         "conv2d6": [(3, 2), (5, 3)],
         "conv2d8": [(3, 2), (3, 2), (3, 2)],
     }
-    # CONV_MASKS = {
-    #     "conv2d2": [(2, 2)],
-    #     "conv2d3": [slice(None, -2, 3)],
-    #     "conv2d4": [(2, 2), (2, 2)],
-    #     "conv2d6": [(2, 2), (4, 3)],
-    #     "conv2d8": [(2, 2), (2, 2), (2, 2)],
-    # }
+    CONV_MASKS = {
+        "conv2d2": [slice(2, None, 2)],
+        "conv2d3": [slice(None, -2, 3)],
+        "conv2d4": [slice(2, None, 2), slice(2, None, 2)],
+        "conv2d6": [slice(2, None, 2), slice(4, None, 3)],
+        "conv2d8": [slice(2, None, 2), slice(2, None, 2), slice(2, None, 2)],
+    }
 
     def __init__(self, args: ConformerArgs):
         super().__init__()
         conv_layers = self.CONV_LAYERS[args.input_layer]
-        # mask_patterns = self.CONV_MASKS[args.input_layer]
 
+        self.mask_patterns = self.CONV_MASKS[args.input_layer]
         self.conv = []
         self.subsampling_rate = 0
 
@@ -188,7 +189,7 @@ class Conv2dSubsampling(nn.Module):
 
         self.out = [nn.Linear(args.output_size * out_freq, args.output_size)]
 
-    def __call__(self, x: mx.array):
+    def __call__(self, x: mx.array, mask: Optional[mx.array] = None):
         x = x[:, :, :, None]
 
         for layer in self.conv:
@@ -199,7 +200,11 @@ class Conv2dSubsampling(nn.Module):
         for layer in self.out:
             x = layer(x)
 
-        return x
+        if mask is not None:
+            for pattern in self.mask_patterns:
+                mask = mask[pattern]
+
+        return x, mask
 
 
 class Conformer(nn.Module):
@@ -219,8 +224,10 @@ class Conformer(nn.Module):
         self.encoders = [ConformerBlock(args) for _ in range(args.num_blocks)]
         self.after_norm = nn.LayerNorm(args.output_size, eps=1e-5)
 
-    def __call__(self, x: mx.array, cache=None) -> mx.array:
-        x = self.embed(x)
+    def __call__(
+        self, x: mx.array, mask: Optional[mx.array] = None, cache=None
+    ) -> mx.array:
+        x, mask = self.embed(x, mask)
 
         if cache is None:
             cache = [None] * len(self.encoders)
@@ -233,7 +240,7 @@ class Conformer(nn.Module):
             )
 
         for layer, c in zip(self.encoders, cache):
-            x = layer(x, pos_emb=pos_emb, cache=c)
+            x = layer(x, pos_emb=pos_emb, cache=c, mask=mask)
 
         x = self.after_norm(x)
 
