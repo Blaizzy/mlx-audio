@@ -5,7 +5,7 @@ spacy>=3.8.4
 phonemizer-fork>=3.3.2
 espeakng-loader>=0.2.4
 mlx>=0.25.2
-mlx-vlm>=0.1.25
+mlx-vlm>=0.1.27
 numpy>=1.26.4
 transformers>=4.49.0
 sentencepiece>=0.2.0
@@ -24,3 +24,4 @@ einx==0.3.0
 fastrtc[vad, stt]
 webrtcvad>=2.0.10
 dacite>=1.9.2
+pytest-asyncio>=1.0.0
