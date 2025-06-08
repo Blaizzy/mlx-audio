@@ -20,7 +20,7 @@ final class ESpeakNGEngine {
   }
 
   // Available languages
-  enum LanguageDialect: String, CaseIterable {
+  public enum LanguageDialect: String, CaseIterable {
     case none = ""
     case enUS = "en-us"
     case enGB = "en-gb"
@@ -101,6 +101,13 @@ final class ESpeakNGEngine {
     }
 
     self.language = language
+  }
+
+  public func languageForVoice(voice: TTSVoice) throws -> LanguageDialect {
+    guard let language = Constants.voice2Language[voice] else {
+      throw ESpeakNGEngineError.languageNotFound
+    }
+    return language
   }
 
   // Phonemizes the text string that can then be passed to the next stage
