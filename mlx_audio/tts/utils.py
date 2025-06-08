@@ -12,7 +12,7 @@ import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 from mlx_lm.convert import mixed_quant_predicate_builder
-from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_weights
+from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
 from transformers import AutoConfig
 
 MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
@@ -413,8 +413,7 @@ def convert(
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(file, dest_dir)
 
-    del model
-    save_weights(mlx_path, weights, donate_weights=True)
+    save_model(mlx_path, model, donate_model=True)
 
     save_config(config, config_path=mlx_path / "config.json")
 
