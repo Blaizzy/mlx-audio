@@ -4,7 +4,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_audio.codec.models.bigvgan.bigvgan import BigVGAN, BigVGANConfig
-from mlx_audio.stt.models.wav2vec.wav2vec import normalize_weight
+from mlx_audio.codec.models.bigvgan.conv import WNConv1d
 from mlx_audio.tts.models.indextts.ecapa_tdnn.ecapa_tdnn import ECPATDNN, ECPATDNNArgs
 
 
@@ -19,7 +19,7 @@ class BigVGANConditioning(BigVGAN):
     def __init__(self, config: BigVGANConditioningConfig):
         super().__init__(config)
 
-        self.conv_pre = nn.Conv1d(
+        self.conv_pre = WNConv1d(
             config.gpt_dim, config.upsample_initial_channel, 7, 1, 3
         )
 
@@ -100,23 +100,6 @@ class BigVGANConditioning(BigVGAN):
             if "ups." in key:
                 if value.ndim == 3:
                     value = value.transpose(1, 2, 0)
-
-            if key.endswith("weight_g"):
-                new_weights[key.replace("_g", "")] = (
-                    new_weights.get(key.replace("_g", ""), 1) * value
-                )
-                continue
-
-            if key.endswith("weight_v"):
-                v_norm = (
-                    normalize_weight(value, 0)
-                    if "ups." not in key
-                    else normalize_weight(value, 2)
-                )
-                new_weights[key.replace("_v", "")] = (
-                    new_weights.get(key.replace("_v", ""), 1) * value / v_norm
-                )
-                continue
 
             key = (
                 key.replace("norm.norm", "norm")

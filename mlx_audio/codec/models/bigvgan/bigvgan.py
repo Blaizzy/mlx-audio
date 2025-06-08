@@ -6,15 +6,8 @@ import mlx.nn as nn
 
 from mlx_audio.codec.models.bigvgan.activation import Snake, SnakeBeta
 from mlx_audio.codec.models.bigvgan.amp import AMPBlock1, AMPBlock2
+from mlx_audio.codec.models.bigvgan.conv import WNConv1d, WNConvTranspose1d
 from mlx_audio.codec.models.bigvgan.resample import Activation1d
-
-
-def normalize_weight(x, except_dim=0):
-    if x.ndim != 3:
-        raise ValueError("Input tensor must have 3 dimensions")
-
-    axes = tuple(i for i in range(x.ndim) if i != except_dim)
-    return mx.sqrt(mx.sum(mx.power(x, 2), axis=axes, keepdims=True))
 
 
 @dataclass
@@ -40,12 +33,12 @@ class BigVGAN(nn.Module):
         self.num_upsamples = len(config.upsample_rates)
         self.use_tanh_at_final = config.use_tanh_at_final
 
-        self.conv_pre = nn.Conv1d(
+        self.conv_pre = WNConv1d(
             config.num_mels, config.upsample_initial_channel, 7, 1, 3
         )
         self.ups = [
             [
-                nn.ConvTranspose1d(
+                WNConvTranspose1d(
                     config.upsample_initial_channel // (2**i),
                     config.upsample_initial_channel // (2 ** (i + 1)),
                     k,
@@ -91,7 +84,7 @@ class BigVGAN(nn.Module):
                 alpha_logscale=config.snake_logscale,
             )
         )
-        self.conv_post = nn.Conv1d(
+        self.conv_post = WNConv1d(
             config.upsample_initial_channel // (2 ** len(self.ups)),
             1,
             7,
@@ -143,23 +136,6 @@ class BigVGAN(nn.Module):
             if "ups." in key:
                 if value.ndim == 3:
                     value = value.transpose(1, 2, 0)
-
-            if key.endswith("weight_g"):
-                new_weights[key.replace("_g", "")] = (
-                    new_weights.get(key.replace("_g", ""), 1) * value
-                )
-                continue
-
-            if key.endswith("weight_v"):
-                v_norm = (
-                    normalize_weight(value, 0)
-                    if "ups." not in key
-                    else normalize_weight(value, 2)
-                )
-                new_weights[key.replace("_v", "")] = (
-                    new_weights.get(key.replace("_v", ""), 1) * value / v_norm
-                )
-                continue
 
             new_weights[key] = value
 

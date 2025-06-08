@@ -3,6 +3,7 @@ import mlx.nn as nn
 from typing_extensions import Literal
 
 from mlx_audio.codec.models.bigvgan.activation import Snake, SnakeBeta
+from mlx_audio.codec.models.bigvgan.conv import WNConv1d
 from mlx_audio.codec.models.bigvgan.resample import Activation1d
 
 
@@ -18,7 +19,7 @@ class AMPBlock1(nn.Module):
         super().__init__()
 
         self.convs1 = [
-            nn.Conv1d(
+            WNConv1d(
                 channels,
                 channels,
                 kernel_size,
@@ -29,7 +30,7 @@ class AMPBlock1(nn.Module):
             for d in dilation
         ]
         self.convs2 = [
-            nn.Conv1d(
+            WNConv1d(
                 channels,
                 channels,
                 kernel_size,
@@ -69,7 +70,7 @@ class AMPBlock2(nn.Module):
         super().__init__()
 
         self.convs = [
-            nn.Conv1d(
+            WNConv1d(
                 channels,
                 channels,
                 kernel_size,
