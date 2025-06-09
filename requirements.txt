@@ -26,5 +26,4 @@ webrtcvad>=2.0.10
 dacite>=1.9.2
 pytest-asyncio>=1.0.0
 
-WeTextProcessing>=1.0.4.1; platform_machine != "Darwin"
-wetext>=0.0.4; platform_system == "Darwin"
+wetext>=0.0.4

@@ -1,4 +1,3 @@
-import os
 import re
 from functools import lru_cache
 from typing import Dict, List, Tuple
@@ -126,38 +125,12 @@ def save_and_replace(
 @lru_cache(maxsize=1)
 def get_normalizers():
     """Lazy load normalizers"""
-    import platform
+    from wetext import Normalizer  # type: ignore
 
-    if platform.system() == "Darwin":
-        from wetext import Normalizer
-
-        return (
-            Normalizer(remove_erhua=False, lang="zh", operator="tn"),
-            Normalizer(lang="en", operator="tn"),
-        )
-    else:
-        from tn.chinese.normalizer import Normalizer as NormalizerZh
-        from tn.english.normalizer import Normalizer as NormalizerEn
-
-        cache_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "tagger_cache"
-        )
-        os.makedirs(cache_dir, exist_ok=True)
-
-        gitignore_path = os.path.join(cache_dir, ".gitignore")
-        if not os.path.exists(gitignore_path):
-            with open(gitignore_path, "w") as f:
-                f.write("*\n")
-
-        return (
-            NormalizerZh(
-                cache_dir=cache_dir,
-                remove_interjections=False,
-                remove_erhua=False,
-                overwrite_cache=False,
-            ),
-            NormalizerEn(overwrite_cache=False),
-        )
+    return (
+        Normalizer(remove_erhua=False, lang="zh", operator="tn"),
+        Normalizer(lang="en", operator="tn"),
+    )
 
 
 def normalize_chinese(text: str) -> str:
