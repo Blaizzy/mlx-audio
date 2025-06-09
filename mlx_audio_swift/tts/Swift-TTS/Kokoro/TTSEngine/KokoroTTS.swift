@@ -561,7 +561,7 @@ public class KokoroTTS {
       return MLXArray.zeros([1])
     }
 
-      return try autoreleasepool { () -> MLXArray in
+    return try autoreleasepool { () -> MLXArray in
       if chosenVoice != voice {
         autoreleasepool {
           self.voice = VoiceLoader.loadVoice(voice)
