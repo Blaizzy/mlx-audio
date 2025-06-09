@@ -14,6 +14,7 @@ from mlx_lm.models.gpt2 import ModelArgs as GPT2Args
 from mlx_lm.sample_utils import make_sampler
 
 from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.tts.models.indextts import normalize
 from mlx_audio.tts.models.indextts.attention import LearnedPositionEncoding
 from mlx_audio.tts.models.indextts.bigvgan import (
     BigVGANConditioning,
@@ -268,7 +269,13 @@ class Model(nn.Module):
         conditioning = self.get_conditioning(ref_mel)
         # for case with multiple batch, and single ref_audio
         conditioning = mx.repeat(conditioning, len(prompts), axis=0)
-        tokenized = [self.tokenizer.encode(prompt.upper()) for prompt in prompts]  # type: ignore
+
+        tokenized = [
+            self.tokenizer.encode(
+                normalize.tokenize_by_CJK_char(normalize.normalize(prompt))
+            )
+            for prompt in prompts
+        ]  # type: ignore
 
         longest = max((len(tokens) for tokens in tokenized)) + 3
 

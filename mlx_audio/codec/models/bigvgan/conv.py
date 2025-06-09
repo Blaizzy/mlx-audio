@@ -93,7 +93,7 @@ class WNConvTranspose1d(nn.Module):
 
     def _extra_repr(self):
         return (
-            f"in_channels={self.weight_v.shape[2] * self.groups}, out_channels={self.weight_v.shape[0]}, "
+            f"in_channels={self.weight_v.shape[2]}, out_channels={self.weight_v.shape[0]}, "
             f"kernel_size={self.kernel_size}, stride={self.stride}, "
             f"padding={self.padding}, dilation={self.dilation}, "
             f"output_padding={self.output_padding}, bias={'bias' in self}"
