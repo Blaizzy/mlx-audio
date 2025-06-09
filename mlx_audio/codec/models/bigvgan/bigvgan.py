@@ -3,6 +3,7 @@ from typing import Literal
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx.utils import tree_flatten
 
 from mlx_audio.codec.models.bigvgan.activation import Snake, SnakeBeta
 from mlx_audio.codec.models.bigvgan.amp import AMPBlock1, AMPBlock2
@@ -122,6 +123,7 @@ class BigVGAN(nn.Module):
 
     def sanitize(self, weights: dict[str, mx.array]):
         new_weights = {}
+        curr_weights = dict(tree_flatten(self.parameters()))
 
         for key, value in weights.items():
             if "num_batches_tracked" in key:
@@ -129,14 +131,19 @@ class BigVGAN(nn.Module):
 
             if "conv" in key or "lowpass.filter" in key or "upsample.filter" in key:
                 if value.ndim == 3:
-                    value = value.transpose(0, 2, 1)
+                    if value.shape != curr_weights[key].shape:
+                        value = value.transpose(0, 2, 1)
                 elif value.ndim == 4:
-                    value = value.transpose(0, 2, 3, 1)
+                    if value.shape != curr_weights[key].shape:
+                        value = value.transpose(0, 2, 3, 1)
 
             if "ups." in key:
                 if value.ndim == 3:
-                    value = value.transpose(1, 2, 0)
+                    if value.shape != curr_weights[key].shape:
+                        value = value.transpose(1, 2, 0)
 
             new_weights[key] = value
+
+        del curr_weights
 
         return new_weights

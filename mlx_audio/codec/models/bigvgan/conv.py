@@ -21,8 +21,8 @@ class WNConv1d(nn.Module):
         stride: int = 1,
         padding: int = 0,
         dilation: int = 1,
-        bias: bool = True,
         groups: int = 1,
+        bias: bool = True,
     ):
         super().__init__()
 
@@ -69,7 +69,7 @@ class WNConvTranspose1d(nn.Module):
         stride: int = 1,
         padding: int = 0,
         dilation: int = 1,
-        groups: int = 1,
+        output_padding: int = 0,
         bias: bool = True,
     ):
         super().__init__()
@@ -80,13 +80,13 @@ class WNConvTranspose1d(nn.Module):
         self.padding = padding
         self.dilation = dilation
         self.stride = stride
-        self.groups = groups
+        self.output_padding = output_padding
 
         scale = math.sqrt(1 / (in_channels * kernel_size))
         weight_init = mx.random.uniform(
             low=-scale,
             high=scale,
-            shape=(out_channels, kernel_size, in_channels // groups),
+            shape=(out_channels, kernel_size, in_channels),
         )
         self.weight_g = normalize_weight(weight_init, except_dim=2)
         self.weight_v = weight_init / (self.weight_g + 1e-12)
@@ -96,7 +96,7 @@ class WNConvTranspose1d(nn.Module):
             f"in_channels={self.weight_v.shape[2] * self.groups}, out_channels={self.weight_v.shape[0]}, "
             f"kernel_size={self.kernel_size}, stride={self.stride}, "
             f"padding={self.padding}, dilation={self.dilation}, "
-            f"groups={self.groups}, bias={'bias' in self}"
+            f"output_padding={self.output_padding}, bias={'bias' in self}"
         )
 
     def __call__(self, x):
@@ -106,8 +106,9 @@ class WNConvTranspose1d(nn.Module):
             / normalize_weight(self.weight_v, except_dim=2)
         )
         y = mx.conv_transpose1d(
-            x, weight, self.stride, self.padding, self.dilation, self.groups
+            x, weight, self.stride, self.padding, self.dilation, self.output_padding
         )
+        nn.ConvTranspose1d
         if self.bias is not None:
             y = y + self.bias
         return y

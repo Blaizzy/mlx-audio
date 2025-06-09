@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx.utils import tree_flatten
 
 from mlx_audio.codec.models.bigvgan.bigvgan import BigVGAN, BigVGANConfig
 from mlx_audio.codec.models.bigvgan.conv import WNConv1d
@@ -81,25 +82,11 @@ class BigVGANConditioning(BigVGAN):
     def sanitize(self, weights: dict[str, mx.array]):
         new_weights = {}
 
+        curr_weights = dict(tree_flatten(self.parameters()))
+
         for key, value in weights.items():
             if "num_batches_tracked" in key:
                 continue
-
-            if (
-                "conv" in key
-                or "cond_layer" in key
-                or "lowpass.filter" in key
-                or "upsample.filter" in key
-                or "conds" in key
-            ):
-                if value.ndim == 3:
-                    value = value.transpose(0, 2, 1)
-                elif value.ndim == 4:
-                    value = value.transpose(0, 2, 3, 1)
-
-            if "ups." in key:
-                if value.ndim == 3:
-                    value = value.transpose(1, 2, 0)
 
             key = (
                 key.replace("norm.norm", "norm")
@@ -110,6 +97,28 @@ class BigVGANConditioning(BigVGAN):
                 .replace("asp_bn.norm", "asp_bn")
             )
 
+            if (
+                "conv" in key
+                or "cond_layer" in key
+                or "lowpass.filter" in key
+                or "upsample.filter" in key
+                or "conds" in key
+                or "fc" in key
+            ):
+                if value.ndim == 3:
+                    if value.shape != curr_weights[key].shape:
+                        value = value.transpose(0, 2, 1)
+                elif value.ndim == 4:
+                    if value.shape != curr_weights[key].shape:
+                        value = value.transpose(0, 2, 3, 1)
+
+            if "ups." in key:
+                if value.ndim == 3:
+                    if value.shape != curr_weights[key].shape:
+                        value = value.transpose(1, 2, 0)
+
             new_weights[key] = value
+
+        del curr_weights
 
         return new_weights
