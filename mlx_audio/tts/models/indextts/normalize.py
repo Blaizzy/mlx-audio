@@ -1,5 +1,4 @@
 import re
-from functools import lru_cache
 from typing import Dict, List, Tuple
 
 CHAR_MAP = {
@@ -19,7 +18,6 @@ CHAR_MAP = {
     "……": "…",
     """: "'", """: "'",
     '"': "'",
-    "'": "'",
     "'": "'",
     "（": "'",
     "）": "'",
@@ -74,6 +72,10 @@ def replace_chars(text: str, char_map: Dict[str, str]) -> str:
     return pattern.sub(lambda x: char_map[x.group()], text)
 
 
+def extract_all_digits(text):
+    return "".join(filter(str.isdigit, text))
+
+
 def expand_contractions(text: str) -> str:
     return re.sub(CONTRACTION_PATTERN, r"\1 is", text, flags=re.IGNORECASE)
 
@@ -122,26 +124,94 @@ def save_and_replace(
     return apply_placeholders(text, placeholders), placeholders
 
 
-@lru_cache(maxsize=1)
-def get_normalizers():
-    """Lazy load normalizers"""
-    from wetext import Normalizer  # type: ignore
+# number normalizers
+def number_to_words(n: int):
+    ones = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    teens = [
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+    ]
+    tens = [
+        "",
+        "",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+    ]
+    thousands = ["", "thousand", "million", "billion", "trillion"]
 
-    return (
-        Normalizer(remove_erhua=False, lang="zh", operator="tn"),
-        Normalizer(lang="en", operator="tn"),
-    )
+    def convert_hundreds(num):
+        if num == 0:
+            return ""
+        elif num < 10:
+            return ones[num]
+        elif num < 20:
+            return teens[num - 10]
+        elif num < 100:
+            return tens[num // 10] + (" " + ones[num % 10] if num % 10 else "")
+        else:
+            return (
+                ones[num // 100]
+                + " hundred"
+                + (" " + convert_hundreds(num % 100) if num % 100 else "")
+            )
+
+    def convert_number(num: int):
+        if num == 0:
+            return "zero"
+
+        groups = []
+        group_idx = 0
+
+        while num > 0:
+            group = num % 1000
+            if group != 0:
+                group_words = convert_hundreds(group)
+                if thousands[group_idx]:
+                    group_words += " " + thousands[group_idx]
+                groups.append(group_words)
+            num //= 1000
+            group_idx += 1
+
+        return " ".join(reversed(groups))
+
+    return convert_number(n)
+
+
+# @lru_cache(maxsize=1)
+# def get_normalizers():
+#     """Lazy load normalizers"""
+#     from wetext import Normalizer  # type: ignore
+
+#     return (
+#         Normalizer(remove_erhua=False, lang="zh", operator="tn"),
+#         Normalizer(lang="en", operator="tn"),
+#     )
 
 
 def normalize_chinese(text: str) -> str:
-    zh_normalizer, _ = get_normalizers()
+    # zh_normalizer, _ = get_normalizers()
 
     text = expand_contractions(text.rstrip())
     text, pinyin_map = save_and_replace(text, PINYIN_PATTERN, "pinyin")
     text, name_map = save_and_replace(text, NAME_PATTERN, "n")
 
     try:
-        result = zh_normalizer.normalize(text)
+        result = text  # TODO: improve Chinese normalizers
+        # result = zh_normalizer.normalize(text)
     except Exception:
         return ""
 
@@ -153,12 +223,41 @@ def normalize_chinese(text: str) -> str:
 
 
 def normalize_english(text: str) -> str:
-    _, en_normalizer = get_normalizers()
+    # _, en_normalizer = get_normalizers()
 
     text = expand_contractions(text)
 
     try:
-        result = en_normalizer.normalize(text)
+        # currently dollar only
+        def process_currency(match):
+            digits = extract_all_digits(match.group(0))
+            if not digits:
+                return match.group(0)
+
+            num = int(digits)
+            word_form = number_to_words(num)
+
+            return f"{word_form} dollar{'s' if num != 1 else ''} "
+
+        text = re.sub(r"\$\s*[0-9,.\s]+", process_currency, text).rstrip()
+
+        def process_digits(match):
+            parts = match.group(0).split()
+            if all(len(part) == 1 and part.isdigit() for part in parts):
+                return " ".join(number_to_words(int(digit)) for digit in parts)
+            return number_to_words(int(extract_all_digits(match.group(0))))
+
+        text = re.sub(r"\b\d(\s+\d)+\b", process_digits, text)
+
+        def process_number(match):
+            digits = extract_all_digits(match.group(0))
+            if digits:
+                return number_to_words(int(digits))
+            return match.group(0)
+
+        text = re.sub(r"\b\d+(?:,\d+)*\b", process_number, text)
+
+        result = re.sub(r"\s+", " ", text).strip()
     except Exception:
         result = text
 
