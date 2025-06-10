@@ -166,12 +166,12 @@ class Activation1d(nn.Module):
         super().__init__()
         self.up_ratio = up_ratio
         self.down_ratio = down_ratio
-        self.activation = activation
+        self.act = activation
         self.upsample = UpSample1d(up_ratio, up_kernel_size)
         self.downsample = DownSample1d(down_ratio, down_kernel_size)
 
     def __call__(self, x):
         x = self.upsample(x)
-        x = self.activation(x)
+        x = self.act(x)
         x = self.downsample(x)
         return x
