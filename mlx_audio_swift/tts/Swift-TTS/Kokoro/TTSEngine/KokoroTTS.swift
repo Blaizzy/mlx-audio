@@ -78,6 +78,7 @@ public class KokoroTTS {
   private var textEncoder: TextEncoder!
   private var decoder: Decoder!
   private var eSpeakEngine: ESpeakNGEngine!
+  private var kokoroTokenizer: KokoroTokenizer!
   private var chosenVoice: TTSVoice?
   private var voice: MLXArray!
 
@@ -90,14 +91,8 @@ public class KokoroTTS {
   init() {}
 
   // Reset the model to free up memory
-  public func resetModel() {
-    // First nil out the eSpeakEngine to ensure proper cleanup
-    // Important: This must be done first before clearing other objects
-    if let _ = eSpeakEngine {
-      // Ensure eSpeakEngine is terminated properly
-      eSpeakEngine = nil
-    }
-
+  public func resetModel(preserveTextProcessing: Bool = true) {
+    // Reset heavy ML model components
     bert = nil
     bertEncoder = nil
     durationEncoder = nil
@@ -110,14 +105,32 @@ public class KokoroTTS {
     chosenVoice = nil
     isModelInitialized = false
 
+    // Optionally preserve text processing components for faster restart
+    if !preserveTextProcessing {
+      if let _ = eSpeakEngine {
+        // Ensure eSpeakEngine is terminated properly
+        eSpeakEngine = nil
+      }
+      kokoroTokenizer = nil
+    }
+
     // Use plain autoreleasepool to encourage memory release
     autoreleasepool { }
   }
 
   // Initialize model on demand
-  private func ensureModelInitialized() {
+  private func ensureModelInitialized() throws {
     if isModelInitialized {
       return
+    }
+
+    // Initialize text processing components first (less expensive)
+    if eSpeakEngine == nil {
+      eSpeakEngine = try ESpeakNGEngine()
+    }
+
+    if kokoroTokenizer == nil {
+      kokoroTokenizer = KokoroTokenizer(engine: eSpeakEngine)
     }
 
     autoreleasepool {
@@ -174,7 +187,6 @@ public class KokoroTTS {
       )
     }
 
-    eSpeakEngine = try! ESpeakNGEngine()
     isModelInitialized = true
   }
 
@@ -495,7 +507,7 @@ public class KokoroTTS {
   }
 
   public func generateAudio(voice: TTSVoice, text: String, speed: Float = 1.0, chunkCallback: @escaping AudioChunkCallback) throws {
-    ensureModelInitialized()
+    try ensureModelInitialized()
 
     let sentences = SentenceTokenizer.splitIntoSentences(text: text)
     if sentences.isEmpty {
@@ -504,14 +516,10 @@ public class KokoroTTS {
 
     // Process each sentence in sequence with better performance
     DispatchQueue.global(qos: .userInitiated).async {
-
-      // Clear any previous voice and weight cache to start fresh
-      autoreleasepool {
-        self.voice = nil
-      }
+      self.voice = nil
 
       // Use a separate autorelease pool for each sentence to release memory faster
-      for (index, sentence) in sentences.enumerated() {
+      for (_, sentence) in sentences.enumerated() {
         autoreleasepool {
           do {
             // Generate audio for this sentence
@@ -547,37 +555,27 @@ public class KokoroTTS {
   }
 
   private func generateAudioForSentence(voice: TTSVoice, text: String, speed: Float) throws -> MLXArray {
-    ensureModelInitialized()
+    try ensureModelInitialized()
 
     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       return MLXArray.zeros([1])
     }
 
-    return autoreleasepool { () -> MLXArray in
+      return try autoreleasepool { () -> MLXArray in
       if chosenVoice != voice {
         autoreleasepool {
           self.voice = VoiceLoader.loadVoice(voice)
           self.voice?.eval() // Force immediate evaluation
         }
 
-        // Safely initialize or re-initialize ESpeakNG engine if needed
-        if eSpeakEngine == nil {
-          // Recreate if we lost our reference
-          eSpeakEngine = try? ESpeakNGEngine()
-        }
-
-        // Only attempt to set language if we have a valid engine
-        if let engine = eSpeakEngine {
-          try? engine.setLanguage(for: voice)
-        }
-
+        try kokoroTokenizer.setLanguage(for: voice)
         chosenVoice = voice
       }
 
       do {
-        let outputStr = try eSpeakEngine.phonemize(text: text)
+        let phonemizedResult = try kokoroTokenizer.phonemize(text)
 
-        let inputIds = Tokenizer.tokenize(phonemizedText: outputStr)
+        let inputIds = Tokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
         guard inputIds.count <= Constants.maxTokenCount else {
           throw KokoroTTSError.tooManyTokens
         }

@@ -416,10 +416,6 @@ public class KokoroTTSModel: ObservableObject {
             resetAudioSystem()
         }
 
-        // Calculate buffer duration
-        let bufferDuration = Double(frameCount) / Double(KokoroTTS.Constants.sampleRate)
-
-        // Increment the scheduled buffer count before scheduling
         incrementScheduledBufferCount()
 
         // Schedule buffer playback with enhanced completion handling and buffer tracking
