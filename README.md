@@ -94,6 +94,9 @@ mlx_audio.server --host 0.0.0.0 --port 9000
 
 # With verbose logging
 mlx_audio.server --verbose
+
+# Custom output directory and audio audio_format
+mlx_audio.server --host 0.0.0.0 --port 9000 --output-dir output_folder --audio-format mp3 --verbose
 ```
 
 Available command line arguments:
@@ -114,6 +117,8 @@ The server provides the following REST API endpoints:
     - `text`: The text to convert to speech (required)
     - `voice`: Voice to use (default: "af_heart")
     - `speed`: Speech speed from 0.5 to 2.0 (default: 1.0)
+    - `filename`: Filename for the generated audio, overrides `file_prefix` if both are provided
+    - `file_prefix`: Prefix for the generated audio filename (default: "tts_")
   - Returns: JSON with filename of generated audio
 
 - `GET /audio/{filename}`: Retrieve generated audio file
@@ -217,7 +222,7 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
 - For the web interface and API:
   - FastAPI
   - Uvicorn
-  
+
 ## License
 
 [MIT License](LICENSE)
