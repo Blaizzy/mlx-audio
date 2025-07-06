@@ -54,7 +54,7 @@ def stft(
     n_fft=800,
     hop_length=None,
     win_length=None,
-    window="hann",
+    window: mx.array | str = "hann",
     center=True,
     pad_mode="reflect",
 ):
