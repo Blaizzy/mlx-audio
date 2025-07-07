@@ -292,3 +292,62 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="MLX Audio API server")
+    parser.add_argument(
+        "--allowed-origins",
+        nargs="+",
+        default=["*"],
+        help="List of allowed origins for CORS",
+    )
+    parser.add_argument(
+        "--host", type=str, default="0.0.0.0", help="Host to run the server on"
+    )
+    parser.add_argument(
+        "--port", type=int, default=8000, help="Port to run the server on"
+    )
+    parser.add_argument(
+        "--reload",
+        type=bool,
+        default=False,
+        help="Enable auto-reload of the server. Only works when 'workers' is set to None.",
+    )
+
+    parser.add_argument(
+        "--workers",
+        type=int_or_float,
+        default=calculate_default_workers(),
+        help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
+        Can be either an int or a float.
+        If an int, it will be the number of workers to use.
+        If a float, number of workers will be this fraction of the  number of CPU cores available, with a minimum of 1.
+        Defaults to the `MLX_AUDIO_NUM_WORKERS` env variable if set and to 2 if not.
+        To use all available CPU cores, set it to 1.0.
+
+        Examples:
+        --workers 1 (will use 1 worker)
+        --workers 1.0 (will use all available CPU cores)
+        --workers 0.5 (will use half the number of CPU cores available)
+        --workers 0.0 (will use 1 worker)""",
+    )
+
+    args = parser.parse_args()
+    if isinstance(args.workers, float):
+        args.workers = max(1, int(os.cpu_count() * args.workers))
+
+    setup_cors(app, args.allowed_origins)
+
+    uvicorn.run(
+        "mlx_audio.server:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        workers=args.workers,
+        loop="asyncio",
+    )
+
+
+if __name__ == "__main__":
+    main()
