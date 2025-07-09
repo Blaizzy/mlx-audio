@@ -85,10 +85,18 @@ public class KokoroTTS {
   // Flag to indicate if model components are initialized
   private var isModelInitialized = false
 
+  // Custom URL of Koroko safetensors file
+  private var customURL: URL?
+
   // Callback type for streaming audio generation
   public typealias AudioChunkCallback = (MLXArray) -> Void
 
-  init() {}
+  /// Initializes with a custom URL for the kokoro safetensors file.
+  ///
+  /// If the custom URL is nil, it will fallback to the bundled kokoro-v1_0.safetensors resource.
+  public init(customURL: URL? = nil) {
+    self.customURL = customURL
+  }
 
   // Reset the model to free up memory
   public func resetModel(preserveTextProcessing: Bool = true) {
@@ -134,7 +142,7 @@ public class KokoroTTS {
     }
 
     autoreleasepool {
-      let sanitizedWeights = KokoroWeightLoader.loadWeights()
+      let sanitizedWeights = KokoroWeightLoader.loadWeights(url: self.customURL)
 
       bert = CustomAlbert(weights: sanitizedWeights, config: AlbertModelArgs())
       bertEncoder = Linear(weight: sanitizedWeights["bert_encoder.weight"]!, bias: sanitizedWeights["bert_encoder.bias"]!)
