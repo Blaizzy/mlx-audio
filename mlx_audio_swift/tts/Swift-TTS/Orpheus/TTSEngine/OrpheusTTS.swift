@@ -64,6 +64,9 @@ public class OrpheusTTS {
         case modelNotInitialized
     }
     
+    // Custom URL of Orpheus safetensors file
+    private var customURL: URL?
+    
     private let weights: [String: MLXArray]
     private let snacDecoder: SNACDecoder
     private var chosenVoice: OrpheusVoice?
@@ -71,10 +74,10 @@ public class OrpheusTTS {
     private let hiddenSize: Int = 3072
     private let layers: [TransformerBlock] // Store TransformerBlock instances
     
-    init() throws {
+    public init(customURL: URL? = nil) throws {
         // Load model weights
         let loadedWeights = Profiler.time("Weight loading") {
-            OrpheusWeightLoader.loadWeightsOrpheus()
+            OrpheusWeightLoader.loadWeights(url: customURL)
         }
         self.weights = loadedWeights
 
