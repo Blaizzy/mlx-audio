@@ -85,7 +85,8 @@ final class KokoroTokenizer {
 
     // MARK: - Instance Properties
 
-    private var cachedLexicon: [String: String]?
+    private var cachedUSLexicon: [String: String]?
+    private var cachedGBLexicon: [String: String]?
     private var eSpeakEngine: ESpeakNGEngine
     private var currentLanguage: ESpeakNGEngine.LanguageDialect = .none
     private var isLexiconEnabled = false
@@ -139,7 +140,7 @@ final class KokoroTokenizer {
 
             // Update lexicon usage based on language
             switch language {
-            case .enUS:
+            case .enUS, .enGB:
                 self.isLexiconEnabled = true
             default:
                 self.isLexiconEnabled = false
@@ -155,21 +156,37 @@ final class KokoroTokenizer {
         return PhonemizerResult(phonemes: result, tokens: tokenizedTokens)
     }
 
-    /// Load and combine lexicon files for word-to-phoneme mappings
+    /// Load and separate lexicon files for word-to-phoneme mappings
     private func loadLexicon() {
-        var combinedLexicon: [String: String] = [:]
+        // Load US lexicons
+        var usLexicon: [String: String] = [:]
 
         // Load us_silver.json first (lower priority)
         if let silverLexicon = loadLexiconFile("us_silver") {
-            combinedLexicon.merge(silverLexicon) { _, new in new }
+            usLexicon.merge(silverLexicon) { _, new in new }
         }
 
         // Load us_gold.json second (higher priority, will override us_silver)
         if let goldLexicon = loadLexiconFile("us_gold") {
-            combinedLexicon.merge(goldLexicon) { _, new in new }
+            usLexicon.merge(goldLexicon) { _, new in new }
         }
 
-        self.cachedLexicon = combinedLexicon.isEmpty ? nil : combinedLexicon
+        self.cachedUSLexicon = usLexicon.isEmpty ? nil : usLexicon
+
+        // Load GB lexicons
+        var gbLexicon: [String: String] = [:]
+
+        // Load gb_silver.json first (lower priority)
+        if let silverLexicon = loadLexiconFile("gb_silver") {
+            gbLexicon.merge(silverLexicon) { _, new in new }
+        }
+
+        // Load gb_gold.json second (higher priority, will override gb_silver)
+        if let goldLexicon = loadLexiconFile("gb_gold") {
+            gbLexicon.merge(goldLexicon) { _, new in new }
+        }
+
+        self.cachedGBLexicon = gbLexicon.isEmpty ? nil : gbLexicon
     }
 
     /// Helper method to load a single lexicon file
@@ -495,8 +512,19 @@ final class KokoroTokenizer {
         let lowerToken = token.lowercased()
 
         // Check lexicon first (only if enabled for current language)
-        if isLexiconEnabled, let lexicon = cachedLexicon {
-            if let phoneme = lexicon[token] ?? lexicon[lowerToken] {
+        if isLexiconEnabled {
+            let lexicon: [String: String]?
+            switch currentLanguage {
+            case .enUS:
+                lexicon = cachedUSLexicon
+            case .enGB:
+                lexicon = cachedGBLexicon
+            default:
+                lexicon = nil
+            }
+
+            if let selectedLexicon = lexicon,
+               let phoneme = selectedLexicon[token] ?? selectedLexicon[lowerToken] {
                 return phoneme
             }
         }
