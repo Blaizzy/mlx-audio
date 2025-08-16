@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -27,9 +28,7 @@ from .attention import Attention
 try:
     from .watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
 except ImportError:
-    print(
-        "Watermarking module not found. Please install silentcipher to use watermarking."
-    )
+    pass
 
 MIMI_REPO = "kyutai/moshiko-pytorch-bf16"
 TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
@@ -58,6 +57,75 @@ def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarra
 
 
 @dataclass
+class DepthDecoderConfig:
+    attention_bias: bool
+    attention_dropout: float
+    backbone_hidden_size: int
+    head_dim: int
+    hidden_act: str
+    hidden_size: int
+    initializer_range: float
+    intermediate_size: int
+    max_position_embeddings: int
+    mlp_bias: bool
+    model_type: str
+    num_attention_heads: int
+    num_codebooks: int
+    num_hidden_layers: int
+    num_key_value_heads: int
+    rms_norm_eps: float
+    rope_scaling: dict
+    rope_theta: int
+    use_cache: bool
+    vocab_size: int
+
+    def __init__(
+        self,
+        attention_bias: bool,
+        attention_dropout: float,
+        backbone_hidden_size: int,
+        head_dim: int,
+        hidden_act: str,
+        hidden_size: int,
+        initializer_range: float,
+        intermediate_size: int,
+        max_position_embeddings: int,
+        mlp_bias: bool,
+        model_type: str,
+        num_attention_heads: int,
+        num_codebooks: int,
+        num_hidden_layers: int,
+        num_key_value_heads: int,
+        rms_norm_eps: float,
+        rope_scaling: dict,
+        rope_theta: int,
+        use_cache: bool,
+        vocab_size: int,
+        **kwargs,
+    ):
+        self.attention_bias = attention_bias
+        self.attention_dropout = attention_dropout
+        self.backbone_hidden_size = backbone_hidden_size
+        self.head_dim = head_dim
+        self.hidden_act = hidden_act
+        self.hidden_size = hidden_size
+        self.initializer_range = initializer_range
+        self.intermediate_size = intermediate_size
+        self.max_position_embeddings = max_position_embeddings
+        self.mlp_bias = mlp_bias
+        self.model_type = model_type
+        self.num_attention_heads = num_attention_heads
+        self.num_codebooks = num_codebooks
+        self.num_hidden_layers = num_hidden_layers
+        self.num_key_value_heads = num_key_value_heads
+        self.rms_norm_eps = rms_norm_eps
+        self.rope_scaling = rope_scaling
+        self.rope_theta = rope_theta
+        self.use_cache = use_cache
+        self.vocab_size = vocab_size
+
+
+@dataclass
 class SesameModelArgs:
     model_type: str
     backbone_flavor: str
@@ -65,23 +133,93 @@ class SesameModelArgs:
     text_vocab_size: int
     audio_vocab_size: int
     audio_num_codebooks: int
+    attention_bias: bool
+    attention_dropout: float
+    audio_eos_token_id: int
+    audio_token_id: int
+    bos_token_id: int
+    codebook_eos_token_id: int
+    codebook_pad_token_id: int
+    depth_decoder_config: DepthDecoderConfig
+    head_dim: int
+    hidden_act: str
+    hidden_size: int
+    initializer_range: float
+    intermediate_size: int
+    max_position_embeddings: int
+    mlp_bias: bool
+    num_attention_heads: int
+    num_codebooks: int
+    num_hidden_layers: int
+    num_key_value_heads: int
+    pad_token_id: int
+    rms_norm_eps: float
+    rope_scaling: dict
+    rope_theta: int
+    tie_codebooks_embeddings: bool
+    tie_word_embeddings: bool
+    use_cache: bool
+    vocab_size: int
 
     def __init__(
         self,
-        model_type,
-        backbone_flavor,
-        decoder_flavor,
-        text_vocab_size,
-        audio_vocab_size,
-        audio_num_codebooks,
         **kwargs,
     ):
-        self.model_type = model_type
-        self.backbone_flavor = backbone_flavor
-        self.decoder_flavor = decoder_flavor
-        self.text_vocab_size = text_vocab_size
-        self.audio_vocab_size = audio_vocab_size
-        self.audio_num_codebooks = audio_num_codebooks
+        depth_cfg = kwargs.pop("depth_decoder_config", None)
+        rope_cfg = kwargs.pop("rope_scaling", None)
+
+        self.depth_decoder_config = (
+            DepthDecoderConfig(
+                **{
+                    **depth_cfg,
+                    "rope_scaling": depth_cfg["rope_scaling"],
+                }
+            )
+            if depth_cfg
+            else None
+        )
+        self.rope_scaling = rope_cfg
+
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
+def create_llama_model_args_for_backbone(cfg) -> LlamaModelArgs:
+    return LlamaModelArgs(
+        model_type="llama",
+        num_hidden_layers=cfg.num_hidden_layers,
+        num_attention_heads=cfg.num_attention_heads,
+        num_key_value_heads=cfg.num_key_value_heads,
+        head_dim=cfg.head_dim,
+        hidden_size=cfg.hidden_size,
+        intermediate_size=cfg.intermediate_size,
+        rms_norm_eps=cfg.rms_norm_eps,
+        vocab_size=int(cfg.text_vocab_size),
+        max_position_embeddings=cfg.max_position_embeddings,
+        attention_bias=cfg.attention_bias,
+        mlp_bias=cfg.mlp_bias,
+        rope_theta=cfg.rope_theta,
+        rope_scaling=cfg.rope_scaling,
+    )
+
+
+def create_llama_model_args_for_decoder(decoder_cfg) -> LlamaModelArgs:
+    return LlamaModelArgs(
+        model_type="llama",
+        num_hidden_layers=decoder_cfg.num_hidden_layers,
+        num_attention_heads=decoder_cfg.num_attention_heads,
+        num_key_value_heads=decoder_cfg.num_key_value_heads,
+        head_dim=decoder_cfg.head_dim,
+        hidden_size=decoder_cfg.hidden_size,
+        intermediate_size=decoder_cfg.intermediate_size,
+        rms_norm_eps=decoder_cfg.rms_norm_eps,
+        vocab_size=decoder_cfg.vocab_size,
+        max_position_embeddings=decoder_cfg.max_position_embeddings,
+        attention_bias=decoder_cfg.attention_bias,
+        mlp_bias=decoder_cfg.mlp_bias,
+        rope_theta=decoder_cfg.rope_theta,
+        rope_scaling=decoder_cfg.rope_scaling,
+    )
 
 
 def create_llama_model_args(flavor: str) -> LlamaModelArgs:
@@ -138,11 +276,18 @@ def create_llama_model_args(flavor: str) -> LlamaModelArgs:
 class SesameModel(nn.Module):
     def __init__(self, config):
         super().__init__()
+
         args = SesameModelArgs(**config)
         self.args = args
 
-        backbone_args = create_llama_model_args(args.backbone_flavor)
-        decoder_args = create_llama_model_args(args.decoder_flavor)
+        try:
+            backbone_args = create_llama_model_args_for_backbone(args)
+            decoder_args = create_llama_model_args_for_decoder(
+                args.depth_decoder_config
+            )
+        except Exception:
+            backbone_args = create_llama_model_args(args.backbone_flavor)
+            decoder_args = create_llama_model_args(args.decoder_flavor)
 
         self.backbone = LlamaModel(backbone_args)
         self.decoder = LlamaModel(decoder_args)
@@ -177,7 +322,10 @@ class SesameModel(nn.Module):
         self.caches_enabled = False
 
     def setup_caches(self, max_batch_size: int):
-        backbone_args = create_llama_model_args(self.args.backbone_flavor)
+        try:
+            backbone_args = create_llama_model_args_for_backbone(self.args)
+        except Exception:
+            backbone_args = create_llama_model_args(self.args.backbone_flavor)
 
         self._backbone_causal_mask = create_causal_mask(
             backbone_args.max_position_embeddings
@@ -299,8 +447,15 @@ class Model(nn.Module):
         self.model = SesameModel(config)
         self.model.setup_caches(1)
 
-        self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
+        self.tokenizer_repo = config.get("text_tokenizer")
+        if self.tokenizer_repo:
+            self._text_tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_repo)
+        else:
+            self._text_tokenizer = load_llama3_tokenizer(TOKENIZER_REPO)
+
         mimi = Mimi.from_pretrained(MIMI_REPO)
+        mimi.eval()
+
         self._audio_tokenizer = mimi
         self._streaming_decoder = MimiStreamingDecoder(mimi)
 
@@ -345,18 +500,19 @@ class Model(nn.Module):
 
         return mx.concat(frame_tokens, axis=0), mx.concat(frame_masks, axis=0)
 
-    def _tokenize_audio(self, audio: mx.array) -> Tuple[mx.array, mx.array]:
+    def _tokenize_audio(
+        self, audio: mx.array, add_eos: bool = True
+    ) -> Tuple[mx.array, mx.array]:
         frame_tokens = []
         frame_masks = []
 
         # (K, T)
-        audio_tokens = self._audio_tokenizer.encode(
-            mx.expand_dims(mx.expand_dims(audio, 0), 0)
-        )[0]
+        audio_tokens = self._audio_tokenizer.encode(audio[None, None, ...])[0]
 
         # add EOS frame
-        eos_frame = mx.zeros((audio_tokens.shape[0], 1))
-        audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
+        if add_eos:
+            eos_frame = mx.zeros((audio_tokens.shape[0], 1))
+            audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
 
         audio_frame = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.int32)
         audio_frame_mask = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.bool_)
@@ -368,7 +524,9 @@ class Model(nn.Module):
 
         return mx.concat(frame_tokens, axis=0), mx.concat(frame_masks, axis=0)
 
-    def _tokenize_segment(self, segment: Segment) -> Tuple[mx.array, mx.array]:
+    def _tokenize_segment(
+        self, segment: Segment, add_eos: bool = True
+    ) -> Tuple[mx.array, mx.array]:
         """
         Returns:
             (seq_len, 33), (seq_len, 33)
@@ -376,7 +534,7 @@ class Model(nn.Module):
         text_tokens, text_masks = self._tokenize_text_segment(
             segment.text, segment.speaker
         )
-        audio_tokens, audio_masks = self._tokenize_audio(segment.audio)
+        audio_tokens, audio_masks = self._tokenize_audio(segment.audio, add_eos=add_eos)
 
         return mx.concat([text_tokens, audio_tokens], axis=0), mx.concat(
             [text_masks, audio_masks], axis=0
@@ -419,7 +577,9 @@ class Model(nn.Module):
             audio = resample_audio(audio, sr, sample_rate)
         return Segment(text=text, speaker=speaker, audio=mx.array(audio))
 
-    def default_speaker_prompt(self, voice: str) -> List[Segment]:
+    def default_speaker_prompt(
+        self, voice: str, repo_id="sesame/csm-1b"
+    ) -> List[Segment]:
         SPEAKER_PROMPTS = {
             "conversational_a": {
                 "text": (
@@ -443,12 +603,17 @@ class Model(nn.Module):
             },
         }
 
-        prompt_path = hf_hub_download(
-            repo_id="sesame/csm-1b", filename=f"prompts/{voice}.wav"
-        )
-        prompt = self.prepare_prompt(
-            SPEAKER_PROMPTS[voice]["text"], 0, prompt_path, 24_000
-        )
+        prompt_path = hf_hub_download(repo_id=repo_id, filename=f"prompts/{voice}.wav")
+
+        try:
+            prompt_text_path = hf_hub_download(
+                repo_id=repo_id, filename=f"prompts/{voice}.txt"
+            )
+            prompt_text = Path(prompt_text_path).read_text()
+        except Exception:
+            prompt_text = SPEAKER_PROMPTS[voice]["text"]
+
+        prompt = self.prepare_prompt(prompt_text, 0, prompt_path, 24_000)
         return [prompt]
 
     def generate_result(
@@ -534,6 +699,7 @@ class Model(nn.Module):
         ref_text: str = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        voice_match: bool = True,
         **kwargs,
     ):
         # if reference audio is provided, use it as the first segment
@@ -543,7 +709,18 @@ class Model(nn.Module):
             # otherwise, use the provided or default voice
             if voice is None:
                 voice = "conversational_a"
-            context = self.default_speaker_prompt(voice)
+            context = self.default_speaker_prompt(
+                voice,
+                repo_id=(
+                    "sesame/csm-1b" if not self.tokenizer_repo else self.tokenizer_repo
+                ),
+            )
+
+        if voice_match:
+            generation_text = (context[0].text + " " + text).strip()
+            context = [
+                Segment(speaker=speaker, text=generation_text, audio=context[0].audio)
+            ]
 
         sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
@@ -561,15 +738,18 @@ class Model(nn.Module):
 
             tokens, tokens_mask = [], []
             for segment in context:
-                segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
+                segment_tokens, segment_tokens_mask = self._tokenize_segment(
+                    segment, add_eos=not voice_match
+                )
                 tokens.append(segment_tokens)
                 tokens_mask.append(segment_tokens_mask)
 
-            gen_segment_tokens, gen_segment_tokens_mask = self._tokenize_text_segment(
-                prompt, speaker
-            )
-            tokens.append(gen_segment_tokens)
-            tokens_mask.append(gen_segment_tokens_mask)
+            if not voice_match:
+                gen_segment_tokens, gen_segment_tokens_mask = (
+                    self._tokenize_text_segment(prompt, speaker)
+                )
+                tokens.append(gen_segment_tokens)
+                tokens_mask.append(gen_segment_tokens_mask)
 
             prompt_tokens = mx.concat(tokens, axis=0).astype(mx.int32)
             prompt_tokens_mask = mx.concat(tokens_mask, axis=0).astype(mx.bool_)
