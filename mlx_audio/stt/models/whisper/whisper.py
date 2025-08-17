@@ -58,6 +58,13 @@ def _get_end(segments: List[dict]) -> Optional[float]:
 
 
 @dataclass
+class STTOutput:
+    text: str
+    segments: List[dict] = None
+    language: str = None
+
+
+@dataclass
 class ModelDimensions:
     n_mels: int
     n_audio_ctx: int
@@ -241,7 +248,7 @@ class TextDecoder(nn.Module):
         return self.token_embedding.as_linear(x), kv_cache, cross_qk
 
 
-class Whisper(nn.Module):
+class Model(nn.Module):
     def __init__(self, dims: ModelDimensions, dtype: mx.Dtype = mx.float16):
         super().__init__()
         self.dims = dims
@@ -331,7 +338,7 @@ class Whisper(nn.Module):
             wf = model_path / "weights.npz"
         weights = mx.load(str(wf))
 
-        model = Whisper(model_args, dtype)
+        model = Model(model_args, dtype)
 
         if quantization is not None:
             class_predicate = (
@@ -837,7 +844,10 @@ class Whisper(nn.Module):
                     # update progress bar
                     pbar.update(min(content_frames, seek) - previous_seek)
 
-        return dict(
+        # Clear cache after each segment to avoid memory leaks
+        mx.clear_cache()
+
+        return STTOutput(
             text=tokenizer.decode(all_tokens[len(initial_prompt_tokens) :]),
             segments=all_segments,
             language=language,

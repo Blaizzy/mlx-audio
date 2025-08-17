@@ -778,5 +778,197 @@ class TestDiaModel(unittest.TestCase):
         self.assertIsInstance(model, Model)
 
 
+class TestSparkTTSModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "model_path": "/fake/model/path",
+            "sample_rate": 16000,
+            "bos_token_id": 151643,
+            "eos_token_id": 151645,
+            "hidden_act": "silu",
+            "hidden_size": 896,
+            "initializer_range": 0.02,
+            "intermediate_size": 4864,
+            "max_position_embeddings": 32768,
+            "max_window_layers": 21,
+            "model_type": "qwen2",
+            "num_attention_heads": 14,
+            "num_hidden_layers": 24,
+            "num_key_value_heads": 2,
+            "rms_norm_eps": 1e-06,
+            "rope_theta": 1000000.0,
+            "sliding_window": 32768,
+            "tie_word_embeddings": True,
+            "torch_dtype": "bfloat16",
+            "transformers_version": "4.43.1",
+            "use_sliding_window": False,
+            "vocab_size": 166000,
+            "rope_traditional": False,
+            "rope_scaling": None,
+        }
+
+    @patch("mlx_audio.tts.models.spark.spark.load_tokenizer")
+    @patch("mlx_audio.tts.models.spark.spark.BiCodecTokenizer")
+    @patch("mlx_audio.tts.models.spark.spark.Qwen2Model")
+    def test_init(
+        self,
+        mock_qwen2_model,
+        mock_bicodec_tokenizer,
+        mock_load_tokenizer,
+    ):
+        """Test SparkTTSModel initialization."""
+        from pathlib import Path
+
+        from mlx_audio.tts.models.spark.spark import Model, ModelConfig
+
+        # Mock return values for patched functions
+        mock_load_tokenizer.return_value = MagicMock()
+        mock_bicodec_tokenizer.return_value = MagicMock()
+        mock_qwen2_model.return_value = MagicMock()
+
+        # Create a config instance
+        config = ModelConfig(**self._default_config)
+        config.model_path = Path("/fake/model/path")
+
+        # Initialize the model
+        model = Model(config)
+
+        # Check that the model was initialized correctly
+        self.assertIsInstance(model, Model)
+
+        # Verify the tokenizer was loaded correctly
+        mock_load_tokenizer.assert_called_once_with(
+            config.model_path, eos_token_ids=config.eos_token_id
+        )
+        mock_bicodec_tokenizer.assert_called_once_with(config.model_path)
+
+        # Verify the model was initialized correctly
+        mock_qwen2_model.assert_called_once_with(config)
+
+
+class TestIndexTTS(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "tokenizer_name": "mlx-community/IndexTTS",
+            "bigvgan": {
+                "adam_b1": 0.8,
+                "adam_b2": 0.99,
+                "lr_decay": 0.999998,
+                "seed": 1234,
+                "resblock": "1",
+                "upsample_rates": [4, 4, 4, 4, 2, 2],
+                "upsample_kernel_sizes": [8, 8, 4, 4, 4, 4],
+                "upsample_initial_channel": 1536,
+                "resblock_kernel_sizes": [3, 7, 11],
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+                "feat_upsample": False,
+                "speaker_embedding_dim": 512,
+                "cond_d_vector_in_each_upsampling_layer": True,
+                "gpt_dim": 1024,
+                "activation": "snakebeta",
+                "snake_logscale": True,
+                "use_cqtd_instead_of_mrd": True,
+                "cqtd_filters": 128,
+                "cqtd_max_filters": 1024,
+                "cqtd_filters_scale": 1,
+                "cqtd_dilations": [1, 2, 4],
+                "cqtd_hop_lengths": [512, 256, 256],
+                "cqtd_n_octaves": [9, 9, 9],
+                "cqtd_bins_per_octaves": [24, 36, 48],
+                "resolutions": [[1024, 120, 600], [2048, 240, 1200], [512, 50, 240]],
+                "mpd_reshapes": [2, 3, 5, 7, 11],
+                "use_spectral_norm": False,
+                "discriminator_channel_mult": 1,
+                "use_multiscale_melloss": True,
+                "lambda_melloss": 15,
+                "clip_grad_norm": 1000,
+                "segment_size": 16384,
+                "num_mels": 100,
+                "num_freq": 1025,
+                "n_fft": 1024,
+                "hop_size": 256,
+                "win_size": 1024,
+                "sampling_rate": 24000,
+                "fmin": 0,
+                "fmax": None,
+                "fmax_for_loss": None,
+                "mel_type": "pytorch",
+                "num_workers": 2,
+                "dist_config": {
+                    "dist_backend": "nccl",
+                    "dist_url": "tcp://localhost:54321",
+                    "world_size": 1,
+                },
+            },
+            "bigvgan_checkpoint": "bigvgan_generator.pth",
+            "dataset": {
+                "bpe_model": "checkpoints/bpe.model",
+                "sample_rate": 24000,
+                "squeeze": False,
+                "mel": {
+                    "sample_rate": 24000,
+                    "n_fft": 1024,
+                    "hop_length": 256,
+                    "win_length": 1024,
+                    "n_mels": 100,
+                    "mel_fmin": 0,
+                    "normalize": False,
+                },
+            },
+            "dvae_checkpoint": "dvae.pth",
+            "gpt": {
+                "model_dim": 1024,
+                "max_mel_tokens": 605,
+                "max_text_tokens": 402,
+                "heads": 16,
+                "use_mel_codes_as_input": True,
+                "mel_length_compression": 1024,
+                "layers": 20,
+                "number_text_tokens": 12000,
+                "number_mel_codes": 8194,
+                "start_mel_token": 8192,
+                "stop_mel_token": 8193,
+                "start_text_token": 0,
+                "stop_text_token": 1,
+                "train_solo_embeddings": False,
+                "condition_type": "conformer_perceiver",
+                "condition_module": {
+                    "output_size": 512,
+                    "linear_units": 2048,
+                    "attention_heads": 8,
+                    "num_blocks": 6,
+                    "input_layer": "conv2d2",
+                    "perceiver_mult": 2,
+                },
+            },
+            "gpt_checkpoint": "gpt.pth",
+            "vqvae": {
+                "channels": 100,
+                "num_tokens": 8192,
+                "hidden_dim": 512,
+                "num_resnet_blocks": 3,
+                "codebook_dim": 512,
+                "num_layers": 2,
+                "positional_dims": 1,
+                "kernel_size": 3,
+                "smooth_l1_loss": True,
+                "use_transposed_convs": False,
+            },
+        }
+
+    def test_init(self):
+        """Test IndexTTS initialization."""
+        from mlx_audio.tts.models.indextts.indextts import Model
+
+        # Initialize model
+        config = self._default_config
+        model = Model(config)  # type: ignore
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
+
+
 if __name__ == "__main__":
     unittest.main()

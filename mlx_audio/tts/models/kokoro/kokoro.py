@@ -60,6 +60,7 @@ class ModelConfig(BaseModelArgs):
     text_encoder_kernel_size: int
     plbert: dict
     vocab: Dict[str, int]
+    sample_rate: int = 24000
 
 
 class Model(nn.Module):
@@ -109,6 +110,7 @@ class Model(nn.Module):
             dim_out=config.n_mels,
             **config.istftnet,
         )
+        self._pipelines: Dict[str, KokoroPipeline] = {}  # Cache for pipelines
 
     @dataclass
     class Output:
@@ -249,6 +251,21 @@ class Model(nn.Module):
                 sanitized_weights[key] = self.decoder.sanitize(key, state_dict)
         return sanitized_weights
 
+    @property
+    def sample_rate(self):
+        return self.config.sample_rate
+
+    def _get_pipeline(self, lang_code: str) -> KokoroPipeline:
+        """Retrieves or creates a cached KokoroPipeline for the given language code."""
+        if lang_code not in self._pipelines:
+            logger.info(f"Creating new KokoroPipeline for language: {lang_code}")
+            self._pipelines[lang_code] = KokoroPipeline(
+                model=self,
+                repo_id=self.REPO_ID if self.repo_id is None else self.repo_id,
+                lang_code=lang_code,
+            )
+        return self._pipelines[lang_code]
+
     def generate(
         self,
         text: str,
@@ -258,11 +275,9 @@ class Model(nn.Module):
         split_pattern: str = r"\n+",
         **kwargs,
     ):
-        pipeline = KokoroPipeline(
-            model=self,
-            repo_id=self.REPO_ID if self.repo_id is None else self.repo_id,
-            lang_code=lang_code,
-        )
+        pipeline = self._get_pipeline(lang_code)
+
+        pipeline.voices = {}  # Reset voices
 
         if voice is None:
             voice = "af_heart"
@@ -283,9 +298,8 @@ class Model(nn.Module):
             token_count = len(phonemes) if phonemes is not None else 0
 
             # Calculate audio duration in seconds
-            sample_rate = kwargs.get(
-                "sample_rate", 24000
-            )  # Assuming 24kHz sample rate, adjust if different
+            sample_rate = self.config.sample_rate
+
             audio_duration_seconds = samples / sample_rate * audio.shape[1]
 
             # Calculate real-time factor (RTF)
@@ -325,3 +339,6 @@ class Model(nn.Module):
                 processing_time_seconds=segment_time,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
+
+            # Clear cache after each segment to avoid memory leaks
+            mx.clear_cache()

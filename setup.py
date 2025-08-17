@@ -37,6 +37,7 @@ setup(
             "tts/*.html",
             "tts/*.js",
             "tts/*.css",
+            "tts/**/*.json",
             "tts/static/**/*",
             "stt/**/*.tiktoken",
         ],

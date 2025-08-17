@@ -143,6 +143,7 @@ class ModelConfig:
     weight_dtype: str = "float32"
     rope_min_timescale: int = 1
     rope_max_timescale: int = 10_000
+    sample_rate: int = 44100
 
 
 @dataclass(frozen=True)
@@ -204,6 +205,7 @@ class DiaConfig:
                 "weight_dtype": self.model.weight_dtype,
                 "rope_min_timescale": self.model.rope_min_timescale,
                 "rope_max_timescale": self.model.rope_max_timescale,
+                "sample_rate": self.model.sample_rate,
             },
             "training": vars(self.training),
             "data": vars(self.data),

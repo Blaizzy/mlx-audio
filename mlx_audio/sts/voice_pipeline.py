@@ -9,7 +9,7 @@ import webrtcvad
 from mlx_lm.generate import generate as generate_text
 from mlx_lm.utils import load as load_llm
 
-from mlx_audio.stt import Whisper
+from mlx_audio.stt.models.whisper import Model as Whisper
 from mlx_audio.tts.audio_player import AudioPlayer
 from mlx_audio.tts.utils import load_model as load_tts
 
@@ -182,7 +182,7 @@ class VoicePipeline:
 
         async with self.mlx_lock:
             result = await asyncio.to_thread(self.stt.generate, mx.array(audio))
-        text = result["text"].strip()
+        text = result.text.strip()
 
         if text:
             logger.info(f"Transcribed: {text}")

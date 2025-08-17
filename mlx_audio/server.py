@@ -10,7 +10,7 @@ import numpy as np
 import requests
 import soundfile as sf
 import uvicorn
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -64,14 +64,18 @@ logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
 
 
 def speech_to_speech_handler(
-    audio: tuple[int, NDArray[np.int16]], voice: str, speed: float, model: str
+    audio: tuple[int, NDArray[np.int16]],
+    voice: str,
+    speed: float,
+    model: str,
+    language: str = "a",
 ):
     text = stt_model.stt(audio)
     for segment in tts_model.generate(
         text=text,
         voice=voice,
         speed=speed,
-        lang_code=voice[0],
+        lang_code=language,
         verbose=False,
     ):
         yield (24_000, np.array(segment.audio, copy=False))
@@ -91,20 +95,25 @@ class SpeechToSpeechArgs(BaseModel):
     speed: float
     model: str
     webrtc_id: str
+    language: str = "a"
 
 
 @app.post("/speech_to_speech_input")
 def speech_to_speech_endpoint(args: SpeechToSpeechArgs):
-    stream.set_input(args.webrtc_id, args.voice, args.speed, args.model)
+    stream.set_input(args.webrtc_id, args.voice, args.speed, args.model, args.language)
     return {"status": "success"}
 
 
 @app.post("/tts")
 def tts_endpoint(
     text: str = Form(...),
-    voice: str = Form("af_heart"),
-    speed: float = Form(1.0),
+    voice: str = Form(None),
+    speed: str = Form("1.0"),
     model: str = Form("mlx-community/Kokoro-82M-4bit"),
+    language: str = Form("a"),
+    pitch: str = Form(None),
+    gender: str = Form(None),
+    reference_audio: UploadFile = File(None),
 ):
     """
     POST an x-www-form-urlencoded form with 'text' (and optional 'voice', 'speed', and 'model').
@@ -116,28 +125,40 @@ def tts_endpoint(
     if not text.strip():
         return JSONResponse({"error": "Text is empty"}, status_code=400)
 
-    # Validate speed parameter
-    try:
-        speed_float = float(speed)
-        if speed_float < 0.5 or speed_float > 2.0:
-            return JSONResponse(
-                {"error": "Speed must be between 0.5 and 2.0"}, status_code=400
-            )
-    except ValueError:
-        return JSONResponse({"error": "Invalid speed value"}, status_code=400)
+    # Handle speed parameter based on model type
+    if "spark" in model.lower():
+        # Spark actually expects float values that map to speed descriptions
+        speed_map = {
+            "very_low": 0.0,
+            "low": 0.5,
+            "moderate": 1.0,
+            "high": 1.5,
+            "very_high": 2.0,
+        }
+        if speed in speed_map:
+            speed_value = speed_map[speed]
+        else:
+            # Try to use as float, default to 1.0 (moderate) if invalid
+            try:
+                speed_value = float(speed)
+                if speed_value not in [0.0, 0.5, 1.0, 1.5, 2.0]:
+                    speed_value = 1.0  # Default to moderate
+            except:
+                speed_value = 1.0  # Default to moderate
+    else:
+        # Other models use float speed values
+        try:
+            speed_float = float(speed)
+            if speed_float < 0.5 or speed_float > 2.0:
+                return JSONResponse(
+                    {"error": "Speed must be between 0.5 and 2.0"}, status_code=400
+                )
+            speed_value = speed_float
+        except ValueError:
+            return JSONResponse({"error": "Invalid speed value"}, status_code=400)
 
-    # Validate model parameter
-    valid_models = [
-        "mlx-community/Kokoro-82M-4bit",
-        "mlx-community/Kokoro-82M-6bit",
-        "mlx-community/Kokoro-82M-8bit",
-        "mlx-community/Kokoro-82M-bf16",
-    ]
-    if model not in valid_models:
-        return JSONResponse(
-            {"error": f"Invalid model. Must be one of: {', '.join(valid_models)}"},
-            status_code=400,
-        )
+    # Remove strict model validation - let the load_model function handle it
+    # This allows for more flexibility in model selection
 
     # Store current model repo_id for comparison
     current_model_repo_id = (
@@ -163,18 +184,94 @@ def tts_endpoint(
     output_path = os.path.join(OUTPUT_FOLDER, filename)
 
     logger.debug(
-        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_float}, model: {model}"
+        f"Generating TTS for text: '{text[:50]}...' with voice: {voice}, speed: {speed_value}, model: {model}, language: {language}"
     )
     logger.debug(f"Output file will be: {output_path}")
 
+    # Map language names to codes if needed
+    language_map = {
+        "american_english": "a",
+        "british_english": "b",
+        "spanish": "e",
+        "french": "f",
+        "hindi": "h",
+        "italian": "i",
+        "portuguese": "p",
+        "japanese": "j",
+        "mandarin_chinese": "z",
+        # Also accept direct language codes
+        "a": "a",
+        "b": "b",
+        "e": "e",
+        "f": "f",
+        "h": "h",
+        "i": "i",
+        "p": "p",
+        "j": "j",
+        "z": "z",
+    }
+
+    # Get the language code, default to voice[0] if not found
+    lang_code = language_map.get(language.lower(), voice[0] if voice else "a")
+
+    # Handle reference audio for models that support it (like CSM/Sesame)
+    ref_audio_path = None
+    if reference_audio:
+        # Save the uploaded audio temporarily
+        temp_audio_path = os.path.join(OUTPUT_FOLDER, f"temp_ref_{unique_id}.wav")
+        with open(temp_audio_path, "wb") as f:
+            f.write(reference_audio.file.read())
+        ref_audio_path = temp_audio_path
+
+    # Prepare generation parameters
+    gen_params = {
+        "text": text,
+        "speed": speed_value,
+        "verbose": False,
+        "max_tokens": 8000,
+    }
+
+    # Add pitch and gender for Spark models
+    if "spark" in model.lower():
+        # Spark expects float values for pitch that map to descriptions
+        pitch_map = {
+            "very_low": 0.0,
+            "low": 0.5,
+            "moderate": 1.0,
+            "high": 1.5,
+            "very_high": 2.0,
+        }
+        if pitch and pitch in pitch_map:
+            gen_params["pitch"] = pitch_map[pitch]
+        else:
+            gen_params["pitch"] = 1.0  # Default to moderate
+
+        # Ensure gender has a valid value
+        valid_genders = ["female", "male"]
+        if gender and gender in valid_genders:
+            gen_params["gender"] = gender
+        else:
+            gen_params["gender"] = "female"
+
+    # Add model-specific parameters
+    if voice and voice.strip():  # Only add voice if it's not empty or whitespace
+        gen_params["voice"] = voice
+
+    # Check if model supports language codes (primarily Kokoro)
+    if "kokoro" in model.lower():
+        gen_params["lang_code"] = lang_code
+
+    # Add reference audio for models that support it
+    if ref_audio_path and ("csm" in model.lower() or "sesame" in model.lower()):
+        gen_params["ref_audio"] = ref_audio_path
+
     # We'll use the high-level "model.generate" method:
-    results = tts_model.generate(
-        text=text,
-        voice=voice,
-        speed=speed_float,
-        lang_code=voice[0],
-        verbose=False,
-    )
+    try:
+        results = tts_model.generate(**gen_params)
+    finally:
+        # Clean up temporary reference audio file
+        if ref_audio_path and os.path.exists(ref_audio_path):
+            os.remove(ref_audio_path)
 
     # We'll just gather all segments (if any) into a single wav
     # It's typical for multi-segment text to produce multiple wave segments:
@@ -388,6 +485,89 @@ def stop_audio():
         return JSONResponse(
             {"error": f"Failed to stop audio: {str(e)}"}, status_code=500
         )
+
+
+@app.get("/languages")
+def get_languages():
+    """
+    Get the list of supported languages for TTS.
+    """
+    languages = [
+        {"code": "a", "name": "American English", "display": "🇺🇸 American English"},
+        {"code": "b", "name": "British English", "display": "🇬🇧 British English"},
+        {"code": "e", "name": "Spanish", "display": "🇪🇸 Spanish"},
+        {"code": "f", "name": "French", "display": "🇫🇷 French"},
+        {"code": "h", "name": "Hindi", "display": "🇮🇳 Hindi"},
+        {"code": "i", "name": "Italian", "display": "🇮🇹 Italian"},
+        {"code": "p", "name": "Portuguese", "display": "🇧🇷 Portuguese (Brazilian)"},
+        {"code": "j", "name": "Japanese", "display": "🇯🇵 Japanese"},
+        {"code": "z", "name": "Mandarin Chinese", "display": "🇨🇳 Mandarin Chinese"},
+    ]
+    return {"languages": languages}
+
+
+@app.get("/models")
+def get_models():
+    """
+    Get the list of available TTS models with their configurations.
+    """
+    models = [
+        {
+            "id": "kokoro",
+            "name": "Kokoro",
+            "description": "Multilingual TTS with 9 languages",
+            "supports_languages": True,
+            "supports_voices": True,
+            "supports_reference_audio": False,
+            "variants": [
+                {
+                    "value": "mlx-community/Kokoro-82M-4bit",
+                    "name": "Kokoro 82M (4-bit)",
+                },
+                {
+                    "value": "mlx-community/Kokoro-82M-6bit",
+                    "name": "Kokoro 82M (6-bit)",
+                },
+                {
+                    "value": "mlx-community/Kokoro-82M-8bit",
+                    "name": "Kokoro 82M (8-bit)",
+                },
+                {"value": "mlx-community/Kokoro-82M-bf16", "name": "Kokoro 82M (bf16)"},
+                {"value": "prince-canuma/Kokoro-82M", "name": "Kokoro 82M (Original)"},
+            ],
+        },
+        {
+            "id": "csm",
+            "name": "CSM/Sesame",
+            "description": "Conversational Speech Model with voice cloning",
+            "supports_languages": False,
+            "supports_voices": False,
+            "supports_reference_audio": True,
+            "variants": [
+                {"value": "mlx-community/csm-1b", "name": "CSM 1B (FP16)"},
+                {"value": "mlx-community/csm-1b-8bit", "name": "CSM 1B (8-bit)"},
+            ],
+        },
+        {
+            "id": "spark",
+            "name": "Spark",
+            "description": "Fast TTS model",
+            "supports_languages": False,
+            "supports_voices": True,
+            "supports_reference_audio": False,
+            "variants": [
+                {
+                    "value": "mlx-community/Spark-TTS-0.5B-bf16",
+                    "name": "Spark TTS (BF16)",
+                },
+                {
+                    "value": "mlx-community/Spark-TTS-0.5B-8bit",
+                    "name": "Spark TTS (8-bit)",
+                },
+            ],
+        },
+    ]
+    return {"models": models}
 
 
 @app.post("/open_output_folder")

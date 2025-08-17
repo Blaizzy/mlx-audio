@@ -1,1 +1,1 @@
-from .whisper import Whisper
+from .whisper import Model

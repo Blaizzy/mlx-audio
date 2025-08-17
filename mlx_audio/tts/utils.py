@@ -9,20 +9,50 @@ from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 from mlx_lm.convert import mixed_quant_predicate_builder
-from mlx_lm.utils import (
-    dequantize_model,
-    get_model_path,
-    quantize_model,
-    save_config,
-    save_weights,
-)
+from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
 from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts", "sam": "sesame"}
+MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "csm": "sesame"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
+
+
+def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+    """
+    Ensures the model is available locally. If the path does not exist locally,
+    it is downloaded from the Hugging Face Hub.
+
+    Args:
+        path_or_hf_repo (str): The local path or Hugging Face repository ID of the model.
+        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
+
+    Returns:
+        Path: The path to the model.
+    """
+    model_path = Path(path_or_hf_repo)
+
+    if not model_path.exists():
+        model_path = Path(
+            snapshot_download(
+                path_or_hf_repo,
+                revision=revision,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.py",
+                    "*.model",
+                    "*.tiktoken",
+                    "*.txt",
+                    "*.jsonl",
+                    "*.yaml",
+                ],
+            )
+        )
+
+    return model_path
 
 
 # Get a list of all available model types from the models directory
@@ -147,6 +177,7 @@ def load_model(
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path, **kwargs)
+    config["tokenizer_name"] = model_path
 
     # Determine model_type from config or model_name
     model_type = config.get("model_type", None)
@@ -156,6 +187,11 @@ def load_model(
     quantization = config.get("quantization", None)
 
     weight_files = glob.glob(str(model_path / "*.safetensors"))
+    if not weight_files:
+        # Check in LLM directory if no safetensors found in the main directory
+        # For Spark model
+        weight_files = glob.glob(str(model_path / "LLM" / "*.safetensors"))
+
     if not weight_files:
         logging.error(f"No safetensors found in {model_path}")
         message = f"""
@@ -192,6 +228,10 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         if hasattr(model_class, "ModelConfig")
         else config
     )
+
+    if model_config is not None and hasattr(model_config, "model_path"):
+        # For Spark model
+        model_config.model_path = model_path
 
     model = model_class.Model(model_config)
     quantization = config.get("quantization", None)
@@ -343,8 +383,6 @@ def convert(
     if quantize:
         print("[INFO] Quantizing")
         model.load_weights(list(weights.items()))
-        if hasattr(model, "skip_quantize"):
-            model.skip_quantize()
         weights, config = quantize_model(
             model, config, q_group_size, q_bits, quant_predicate=quant_predicate
         )
@@ -357,14 +395,25 @@ def convert(
     if isinstance(mlx_path, str):
         mlx_path = Path(mlx_path)
 
-    del model
-    save_weights(mlx_path, weights, donate_weights=True)
+    # Ensure the destination directory for MLX model exists before copying files
+    mlx_path.mkdir(parents=True, exist_ok=True)
 
     # Copy Python and JSON files from the model path to the MLX path
-    for pattern in ["*.py", "*.json", "*.wav", "*.pt"]:
+    for pattern in ["*.py", "*.json", "*.wav", "*.pt", "*.safetensors", "*.yaml"]:
         files = glob.glob(str(model_path / pattern))
         for file in files:
             shutil.copy(file, mlx_path)
+
+        # Check files in subdirectories up to two levels deep
+        subdir_files = glob.glob(str(model_path / "**" / pattern), recursive=True)
+        for file in subdir_files:
+            rel_path = Path(file).relative_to(model_path)
+            # Create subdirectories if they don't exist
+            dest_dir = mlx_path / rel_path.parent
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(file, dest_dir)
+
+    save_model(mlx_path, model, donate_model=True)
 
     save_config(config, config_path=mlx_path / "config.json")
 

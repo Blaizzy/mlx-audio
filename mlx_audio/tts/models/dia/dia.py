@@ -114,6 +114,10 @@ class Model(nn.Module):
     def eval(self):
         self.model.eval()
 
+    @property
+    def sample_rate(self):
+        return self.config.model.sample_rate
+
     def _create_attn_mask(
         self,
         q_padding_mask_1d: mx.array,
@@ -261,7 +265,7 @@ class Model(nn.Module):
             samples = audio.shape[0] if audio is not None else 0
             assert samples > 0, "No audio generated"
 
-            sample_rate = 44100
+            sample_rate = self.config.model.sample_rate
             audio_duration_seconds = samples / sample_rate
 
             elapsed_time = time_end - time_start
@@ -300,6 +304,9 @@ class Model(nn.Module):
                 processing_time_seconds=time_end - time_start,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
+
+            # Clear cache after each segment to avoid memory leaks
+            mx.clear_cache()
 
     def _generate(
         self,

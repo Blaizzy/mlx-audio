@@ -1,7 +1,17 @@
+import io
+import json
+import os
+from dataclasses import asdict
+from typing import Union
+
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.stt.utils import SAMPLE_RATE as WHISPER_SAMPLE_RATE
+from mlx_audio.stt.utils import load_model, resample_audio
+
 from .dac_interface import DacInterface
+from .prompt_processor import PromptProcessor
 
 
 def calculate_pitch(
@@ -204,6 +214,138 @@ class Features:
 
 
 class AudioProcessor:
-    def __init__(self, config):
+    def __init__(
+        self, audio_codec_path: str = "mlx-community/dac-speech-24khz-1.5kbps"
+    ):
         self.features = Features()
-        self.audio_codec = DacInterface(config.audio_codec_path)
+        self.audio_codec = DacInterface(audio_codec_path)
+
+    def create_speaker_from_whisper(
+        self,
+        audio: str,
+        whisper_model: str = "mlx-community/whisper-large-v3-turbo",
+    ):
+        if isinstance(audio, str):
+            audio = self.audio_codec.load_audio(audio)
+        else:
+            # resample audio to 16000 for whisper
+            resampled_audio = resample_audio(
+                audio[..., None], self.audio_codec.sr, WHISPER_SAMPLE_RATE
+            )
+            resampled_audio = mx.array(resampled_audio, dtype=mx.float32).mean(axis=1)
+
+            # convert to 2d array
+            audio = audio[None, None, ...]
+
+        seconds = audio.flatten().shape[0] / self.audio_codec.sr
+        if seconds > 20:
+            print(
+                "Speaker audio is longer than 20 seconds. Use a shorter clip for best results."
+            )
+        if seconds > 15:
+            print(
+                "Speaker audio is longer than 15 seconds. For best results, consider using an audio clip up to 15 seconds."
+            )
+
+        # load whisper model
+        whisper_model = load_model(whisper_model)
+
+        # transcribe audio
+        data = whisper_model.generate(resampled_audio.flatten(), word_timestamps=True)
+        data = asdict(data)
+
+        # clear memory
+        del whisper_model
+        mx.clear_cache()
+
+        text = PromptProcessor.text_normalizations(data["text"])
+        words = []
+        for s in data["segments"]:
+            words.extend(
+                [
+                    {
+                        "word": i["word"].strip(),
+                        "start": float(i["start"]),
+                        "end": float(i["end"]),
+                    }
+                    for i in s["words"]
+                ]
+            )
+
+        return self.create_speaker_from_dict(
+            {"audio": {"bytes": audio}, "text": text, "words": words}
+        )
+
+    def create_speaker_from_dict(self, data: dict):
+        audio = data["audio"]["bytes"]
+        if isinstance(audio, str):
+            audio = io.BytesIO(audio)
+            audio = self.audio_codec.load_audio(audio)
+
+        full_codes = self.audio_codec.encode(audio, verbose=True).tolist()[0]
+
+        c1 = full_codes[0]
+        c2 = full_codes[1]
+
+        sr = self.audio_codec.sr
+        text = data["text"]
+        words = data["words"]
+
+        tps = 75
+
+        audio = audio.squeeze(0)
+        global_features = self.features.extract_audio_features(audio, sr)
+
+        start = None
+        word_codes = []
+        max_extension = 20
+
+        for idx, i in enumerate(words):
+            if start is None:
+                start = max(0, int(i["start"] * tps) - max_extension)
+            word = i["word"].strip()
+            if idx == len(words) - 1:
+                end = min(len(c1), int(i["end"] * tps) + max_extension)
+            else:
+                end = int(i["end"] * tps)
+
+            word_c1 = c1[start:end]
+            word_c2 = c2[start:end]
+
+            word_audio = audio[:, int(i["start"] * sr) : int(i["end"] * sr)]
+            features = self.features.extract_audio_features(word_audio, sr)
+
+            start = end
+
+            word_codes.append(
+                {
+                    "word": word,
+                    "duration": round(len(word_c1) / tps, 2),
+                    "c1": word_c1,
+                    "c2": word_c2,
+                    "features": features,
+                }
+            )
+
+        return {"text": text, "words": word_codes, "global_features": global_features}
+
+    def save_speaker(self, speaker: dict, path: str):
+        # Expand ~ to home directory to save in ~/.cache/mlx_audio/voices
+        path = os.path.expanduser(path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        with open(path, "w") as f:
+            json.dump(speaker, f)
+
+        print(f"Speaker saved to: {path}")
+
+    def load_speaker(self, path: str):
+        # Expand ~ to home directory to load from ~/.cache/mlx_audio/voices
+        path = os.path.expanduser(path)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Speaker file not found: {path}")
+
+        with open(path, "r") as f:
+            return json.load(f)
+
+        print(f"Speaker loaded from: {path}")

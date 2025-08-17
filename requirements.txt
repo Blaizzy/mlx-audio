@@ -4,9 +4,8 @@ num2words>=0.5.14
 spacy>=3.8.4
 phonemizer-fork>=3.3.2
 espeakng-loader>=0.2.4
-mlx>=0.22.0
-mlx-vlm>=0.1.21
-mlx-lm>=0.22.2
+mlx>=0.25.2
+mlx-vlm>=0.1.27
 numpy>=1.26.4
 transformers>=4.49.0
 sentencepiece>=0.2.0
@@ -19,5 +18,10 @@ einops>=0.8.1
 tiktoken>=0.9.0
 tqdm>=4.67.1
 pyloudnorm>=0.1.1
+omegaconf==2.3.0
+einops==0.8.1
+einx==0.3.0
 fastrtc[vad, stt]
 webrtcvad>=2.0.10
+dacite>=1.9.2
+pytest-asyncio>=1.0.0
