@@ -15,7 +15,7 @@ from mlx_lm.convert import mixed_quant_predicate_builder
 from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
 from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "sam": "sesame"}
+MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "csm": "sesame"}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
