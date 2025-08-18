@@ -25,3 +25,4 @@ fastrtc[vad, stt]
 webrtcvad>=2.0.10
 dacite>=1.9.2
 pytest-asyncio>=1.0.0
+mistral-common[audio]

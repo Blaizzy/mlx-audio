@@ -51,7 +51,9 @@ def load_audio(
     return mx.array(audio, dtype=dtype).mean(axis=1)
 
 
-def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+def get_model_path(
+    path_or_hf_repo: str, revision: Optional[str] = None, force_download: bool = False
+) -> Path:
     """
     Ensures the model is available locally. If the path does not exist locally,
     it is downloaded from the Hugging Face Hub.
@@ -80,6 +82,7 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
                     "*.jsonl",
                     "*.yaml",
                 ],
+                force_download=force_download,
             )
         )
 
