@@ -22,8 +22,6 @@ from fastrtc import ReplyOnPause, Stream, get_stt_model
 from numpy.typing import NDArray
 from pydantic import BaseModel
 
-# Import the LLM client abstraction
-from .llm_client import LLMClient, OllamaClient, MlxClient
 
 # Configure logging
 def setup_logging(verbose: bool = False):
@@ -55,40 +53,26 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi4:latest")
 SYSTEM_PROMPT = os.getenv("OLLAMA_SYSTEM_PROMPT") or os.getenv("LLAMA_SYSTEM_PROMPT") or "You are an empathetic concise voice assistant."
 
 
-def get_config(key):
-    return os.getenv(key)
-
-
-llm_client = None
-
-def setup_llm_client():
-    """Initialize the LLM client based on environment configuration."""
-    global llm_client
-    
-    # Ensure environment variables are loaded
-    llm_provider = os.getenv("LLM_PROVIDER", "OLLAMA")  # Default to OLLAMA
-    mlx_model_path = os.getenv("MLX_LLM_MODEL") or os.getenv("MLX_MODEL")
-    
-    if llm_provider.upper() == "MLX":
-        if not mlx_model_path:
-            logger.error("MLX_LLM_MODEL or MLX_MODEL environment variable not configured")
-            logger.info("Falling back to Ollama LLM")
-            llm_client = OllamaClient()
-            return
-        
-        logger.info(f"Using MLX LLM with model: {mlx_model_path}")
-        llm_client = MlxClient(mlx_model_path)
-        if getattr(llm_client, 'system_prompt', None):
-            preview = llm_client.system_prompt.strip().replace('\n', ' ')
-            logger.info(f"MLX system prompt active (preview): {preview[:120]}{'...' if len(preview) > 120 else ''}")
-        
-    else:  # Default to Ollama
-        logger.info(f"Using Ollama LLM with model: {OLLAMA_MODEL}")
-        llm_client = OllamaClient(OLLAMA_BASE, OLLAMA_MODEL, SYSTEM_PROMPT)
-        if SYSTEM_PROMPT:
-            preview = SYSTEM_PROMPT.strip().replace('\n', ' ')
-            logger.info(f"Ollama system prompt active (preview): {preview[:120]}{'...' if len(preview) > 120 else ''}")
-
+def chat_llm(prompt: str) -> str:
+    """Return a conversational reply from the local Ollama server.
+    Falls back to echoing the prompt on error."""
+    try:
+        resp = requests.post(
+            f"{OLLAMA_BASE}/chat/completions",
+            json={
+                "model": OLLAMA_MODEL,
+                "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        logger.error(f"LLM call failed: {e}")
+        return prompt  # graceful fallback
 
 app = FastAPI()
 
@@ -98,9 +82,8 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 # Ensure models load when uvicorn imports this module
 @app.on_event("startup")
 async def _startup_load_models() -> None:
-    """Load TTS/STT models and LLM client once when the FastAPI app starts."""
+    """Load TTS/STT models once when the FastAPI app starts."""
     setup_server()
-    setup_llm_client()
 
 # Add CORS middleware to allow requests from the same origin
 app.add_middleware(
@@ -123,19 +106,17 @@ OUTPUT_FOLDER = os.path.join(os.path.expanduser("~"), ".mlx_audio", "outputs")
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
 
-
 # Let users override the initial TTS model via environment variable.
 # Provide a sensible fallback (4-bit HF repo) so nothing breaks.
 DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "mlx-community/Kokoro-82M-4bit")
 
-
-async def speech_to_speech_handler(
+def speech_to_speech_handler(
     audio: tuple[int, NDArray[np.int16]],
     voice: str,
     speed: float,
     model: str = DEFAULT_MODEL,  # make optional – FastRTC may omit it
 ):
-    global tts_model, llm_client
+    global tts_model
 
     # Log raw parameters for easier debugging
     logger.info(
@@ -169,8 +150,8 @@ async def speech_to_speech_handler(
     user_text = stt_model.stt(audio)
     logger.info(f"STT: '{user_text}'")
 
-    # 2) Chat model reply using the configured LLM client
-    reply_text = llm_client.chat(user_text)
+    # 2) Chat model reply
+    reply_text = chat_llm(user_text)
     logger.info(f"LLM reply: '{reply_text}'")
 
     # 3) Text-to-speech

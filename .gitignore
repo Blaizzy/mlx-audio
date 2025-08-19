@@ -42,3 +42,14 @@ output/
 swift/Swift-TTS/Swift-TTS/Kokoro/Resources/kokoro-v1_0.safetensors
 swift/Swift-TTS/Swift-TTS/Orpheus/Resources/orpheus-3b-0.1-ft-4bit.safetensors
 *.safetensors
+mlx_audio/tts/models/Kokoro-82M-4bit/
+mlx_audio/tts/models/Kokoro-82M-8bit/
+mlx_audio/tts/models/Kokoro-82M-bf16/
+mlx_audio/tts/models/Kokoro-82M-4bit/
+mlx_audio/tts/models/Kokoro-82M-8bit/
+mlx_audio/tts/models/Kokoro-82M-bf16/
+mlx_audio/tts/models/kokoro/
+models/
+*.pt
+*.wav
+.env

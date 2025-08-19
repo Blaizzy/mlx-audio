@@ -201,15 +201,6 @@
         #startStreamBtn.streaming {
             background-color: #f44336;
         }
-
-        /* Mic mute button styles */
-        #micMuteBtn {
-            background-color: #888;
-            margin-left: 8px;
-        }
-        #micMuteBtn.muted {
-            background-color: #f44336;
-        }
     </style>
 </head>
 <body>
@@ -325,13 +316,9 @@
             </div>
 
             <button id="startStreamBtn">Start Stream</button>
-            <button id="micMuteBtn" disabled>Mute Mic</button>
             <div id="streamStatus"></div>
         </div>
         <audio id="audioElement" autoplay style="display: none;"></audio>
-    </div>
-    <!-- Matrix rain canvas overlay -->
-    <canvas id="rainCanvas" style="position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:1;"></canvas>
     </div>
 
     <!-- Load Three.js from CDN -->
@@ -386,91 +373,10 @@
         renderer.setClearColor(0x000000);
         document.body.appendChild(renderer.domElement);
 
-        // === Matrix rain setup ===
-        const rainCanvas = document.getElementById('rainCanvas');
-        const rainCtx = rainCanvas.getContext('2d');
-        let fontSize = 16;
-        // === Tunable rain parameters ===
-        let BASE_SPEED   = 0.1;  // base pixels per frame
-        let AUDIO_SPEED  = 1.0;  // extra speed per unit amplitude (0-1)
-        let TRAIL_ALPHA  = 0.01; // 0→1, smaller = longer trails
-        let SPEED_VARIANCE = 0.4; // 0→1 randomisation of column base speed
-        let HEAD_COLOR   = '#ffffff'; // white lead glyph
-        let LINE_SPACING = 10.0;       // >1 gives gap between glyph rows
-        let HEAD_BRIGHT   = 180;  // extra green channel for leading glyph
-        let MAX_SPEED    = 0.04;  // max pixels per frame
-        let MIN_SPEED    = 0.015; // ensure columns move enough each frame
-        let TRAIL_STEPS  = 5;     // how many trailing glyphs to draw
-        let speeds = [];
-        let columns, drops;
-        function resizeRain() {
-            rainCanvas.width = window.innerWidth;
-            rainCanvas.height = window.innerHeight;
-            columns = Math.floor(rainCanvas.width / fontSize);
-            drops = new Array(columns).fill(0);
-            // assign random base speed factor per column
-            speeds = new Array(columns).fill(0).map(()=> BASE_SPEED * (0.005 + Math.random()*SPEED_VARIANCE));
-        }
-        window.addEventListener('resize', resizeRain);
-        resizeRain();
-
-        // (tunable parameters moved up for early definition)
-          // base pixels per frame
-          // extra speed per unit amplitude (0-1)
-         // 0→1, smaller = longer trails
-         // 0→1 randomisation of column base speed
-          // extra green channel for leading glyph
-
-
-
-        
-        const glyphs = 'アイウエオカキクケコサシスセソタチツテトナニヌネノ0123456789';
-        function drawRain(ampl) {
-            // fade existing frame
-            rainCtx.fillStyle = `rgba(0,0,0,${TRAIL_ALPHA})`;
-            rainCtx.fillRect(0, 0, rainCanvas.width, rainCanvas.height);
-            // brightness varies with amplitude (0-1)
-            const green = Math.min(255, 80 + ampl * 175);
-            rainCtx.fillStyle = `rgb(0,${green},0)`;
-            rainCtx.font = fontSize + 'px monospace';
-            const speedBoostBase = ampl * AUDIO_SPEED;
-            const greenBase = Math.min(255, 80 + ampl * 175);
-            const greenHead = Math.min(255, greenBase + HEAD_BRIGHT);
-            
-            for (let i = 0; i < drops.length; i++) {
-                const text = glyphs.charAt(Math.floor(Math.random() * glyphs.length));
-                const yPos = drops[i] * fontSize * LINE_SPACING;
-                // draw multiple trailing glyphs with fading alpha
-                for (let t = TRAIL_STEPS; t >= 1; t--) {
-                    const trailY = yPos - t * fontSize * LINE_SPACING;
-                    if (trailY < 0) continue;
-                    const alpha = 1 - t / (TRAIL_STEPS + 1);
-                    rainCtx.fillStyle = `rgba(0,${greenBase},0,${alpha})`;
-                    rainCtx.fillText(text, i * fontSize, trailY);
-                }
-                // draw head glyph in white (or HEAD_COLOR)
-                rainCtx.fillStyle = HEAD_COLOR;
-                rainCtx.fillText(text, i * fontSize, yPos);
-                // restore green for subsequent operations
-                rainCtx.fillStyle = `rgb(0,${greenBase},0)`;
-                if (drops[i] * fontSize > rainCanvas.height && Math.random() > 0.975) {
-                    drops[i] = 0;
-                }
-                let delta = speeds[i] + speedBoostBase;
-                delta = Math.min(MAX_SPEED, delta);
-                delta = Math.max(MIN_SPEED, delta);
-                drops[i] += delta;
-            }
-        }
-
         // Post-processing composer with bloom
         const composer = new THREE.EffectComposer(renderer);
         composer.addPass(new THREE.RenderPass(scene, camera));
-            const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight),
-            1.2,
-            0.4,
-            0.85
-            );
+        const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.2, 0.4, 0.85);
         composer.addPass(bloomPass);
 
         // Add orbit controls
@@ -528,9 +434,6 @@
         });
         const glowMesh = new THREE.Mesh(glowGeometry, glowMaterial);
         scene.add(glowMesh);
-        // Hide 3-D orb visuals – using Matrix rain instead
-        sphere.visible = false;
-        glowMesh.visible = false;
 
         // Define rotation speed variables
         let rotationSpeedY = 0.002;
@@ -845,9 +748,6 @@
                 const midAvg = getAverageFrequency(dataArray, 6, 20);
                 const trebleAvg = getAverageFrequency(dataArray, 21, 40);
 
-                // Draw matrix rain with audio amplitude
-                drawRain(bassAvg / 255);
-
                 // Calculate base pulsating factor (same as when no audio is playing)
                 const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
 
@@ -891,7 +791,7 @@
                 sphereGeometry.computeVertexNormals();
 
                 // Update colors based on frequency
-                const hue = 0; // constant red hue
+                const hue = (bassAvg / 255) * 0.3;
                 const saturation = 0.8;
                 const lightness = 0.4 + (midAvg / 255) * 0.2;
 
@@ -913,7 +813,6 @@
                 pointLight.color.setHSL(hue, saturation, lightness);
             } else {
                 // Apply subtle pulsating effect when no audio is playing
-                drawRain(0);
                 const pulseFactor = Math.sin(time * 1.5) * 0.03 + 1; // Subtle pulsation (±3%)
 
                 // Update sphere vertices for pulsating effect
@@ -982,10 +881,6 @@
         let dataChannel = null;
         let analyzer = null;
 
-        // Mic mute globals
-        let localMicStream = null;
-        let micMuted = false;
-
         // Speech to Speech functionality
         document.getElementById('s2sSpeed').addEventListener('input', function() {
             document.getElementById('s2sSpeedValue').textContent = this.value + 'x';
@@ -1003,91 +898,13 @@
             }
         });
 
-        // Mic mute toggle handler
-        document.getElementById('micMuteBtn').addEventListener('click', function() {
-            if (!localMicStream) return;
-            micMuted = !micMuted;
-            localMicStream.getAudioTracks().forEach(track => track.enabled = !micMuted);
-            this.textContent = micMuted ? 'Unmute Mic' : 'Mute Mic';
-            this.classList.toggle('muted', micMuted);
-        });
-
-        // Connection state tracking
-        let isConnecting = false;
-
         async function startWebRTCStream() {
-            // Prevent multiple connection attempts
-            if (isConnecting) {
-                console.log('Connection already in progress');
-                return;
-            }
-
-            // Check if already connected or connecting
-            if (webrtcConnection && 
-                (webrtcConnection.connectionState === 'connected' || 
-                 webrtcConnection.connectionState === 'connecting')) {
-                console.log('Connection already in progress or established');
-                return;
-            }
-
             try {
-                isConnecting = true;
                 const streamStatus = document.getElementById('streamStatus');
-                const startBtn = document.getElementById('startStreamBtn');
-                
-                if (!streamStatus || !startBtn) {
-                    throw new Error('Required UI elements not found');
-                }
-                
                 streamStatus.textContent = "Initializing connection...";
-                startBtn.disabled = true;
-                startBtn.textContent = "Connecting...";
 
-                // Close any existing connection first
-                closeWebRTCStream();
-                
-                // Small delay to ensure previous connection is fully closed
-                await new Promise(resolve => setTimeout(resolve, 500));
-
-                // Ensure we are in a secure context and that getUserMedia is available
-                const isLocalSecure = [
-                    'https:',
-                    'http:'.includes(window.location.protocol) && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-                ];
-                const isSecureContext = (window.isSecureContext === true) || (window.location.protocol === 'https:') || (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-
-                if (!isSecureContext) {
-                    throw new Error('Microphone access requires a secure context. Please run this app on https:// or on http://localhost.');
-                }
-
-                // Feature detection and legacy fallback for getUserMedia
-                const hasModernGUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
-                const legacyGUM = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia || navigator.msGetUserMedia;
-
-                if (!hasModernGUM && !legacyGUM) {
-                    throw new Error('getUserMedia is not supported in this browser. Please update your browser or try Chrome/Edge/Firefox.');
-                }
-
-                const gumConstraints = {
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        sampleRate: 16000
-                    }
-                };
-
-                // Get user media for microphone (modern or legacy)
-                const stream = hasModernGUM
-                    ? await navigator.mediaDevices.getUserMedia(gumConstraints)
-                    : await new Promise((resolve, reject) => legacyGUM.call(navigator, gumConstraints, resolve, reject));
-
-        // Save stream for mute control and enable mic button
-        localMicStream = stream;
-        const micBtn = document.getElementById('micMuteBtn');
-        micBtn.disabled = false;
-        micBtn.textContent = 'Mute Mic';
-        micBtn.classList.remove('muted');
-        micMuted = false;
+                // Get user media for microphone
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
                 // Create RTCPeerConnection
                 webrtcConnection = new RTCPeerConnection({});
@@ -1103,51 +920,12 @@
                 dataChannel.onmessage = handleDataChannelMessage;
                 dataChannel.onclose = () => {
                     console.log("Data channel closed");
-                    const statusEl = document.getElementById('streamStatus');
-                    if (statusEl) statusEl.textContent = "Connection closed";
-                    closeWebRTCStream();
-                };
-                
-                dataChannel.onerror = (error) => {
-                    console.error('Data channel error:', error);
-                    const statusEl = document.getElementById('streamStatus');
-                    if (statusEl) statusEl.textContent = "Connection error";
-                    closeWebRTCStream();
-                };
-
-                // Handle ICE connection state changes
-                webrtcConnection.oniceconnectionstatechange = () => {
-                    console.log('ICE connection state:', webrtcConnection.iceConnectionState);
-                    const statusEl = document.getElementById('streamStatus');
-                    
-                    if (!statusEl) return;
-                    
-                    switch(webrtcConnection.iceConnectionState) {
-                        case 'checking':
-                            statusEl.textContent = 'Connecting to server...';
-                            break;
-                        case 'connected':
-                        case 'completed':
-                            statusEl.textContent = 'Connected';
-                            break;
-                        case 'disconnected':
-                        case 'failed':
-                            statusEl.textContent = 'Connection lost';
-                            closeWebRTCStream();
-                            break;
-                        case 'closed':
-                            statusEl.textContent = 'Connection closed';
-                            closeWebRTCStream();
-                            break;
-                    }
                 };
 
                 // Handle ICE candidate events
                 webrtcConnection.onicecandidate = event => {
                     if (event.candidate) {
-                        console.log('ICE candidate:', event.candidate.candidate);
-                    } else {
-                        console.log('No more ICE candidates');
+                        // We'll handle ICE candidates in the offer
                     }
                 };
 
@@ -1222,29 +1000,18 @@
                 }
 
                 // Set remote description
-                try {
-                    await webrtcConnection.setRemoteDescription(new RTCSessionDescription({
-                        type: 'answer',
-                        sdp: responseData.sdp,
-                    }));
-                    
-                    console.log('Remote description set successfully');
-                    streamStatus.textContent = "Connected";
-                } catch (error) {
-                    console.error('Error setting remote description:', error);
-                    throw new Error('Failed to establish connection');
-                }
+                await webrtcConnection.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: responseData.sdp,
+                }));
+
+                streamStatus.textContent = "Connecting...";
 
             } catch (error) {
                 console.error('Error starting WebRTC stream:', error);
-                const statusEl = document.getElementById('streamStatus');
-                const startBtn = document.getElementById('startStreamBtn');
-                
-                if (statusEl) statusEl.textContent = "Error: " + (error.message || 'Failed to connect');
-                if (startBtn) {
-                    startBtn.disabled = false;
-                    startBtn.textContent = "Start Stream";
-                }
+                document.getElementById('streamStatus').textContent = "Error: " + error.message;
+                document.getElementById('startStreamBtn').disabled = false;
+                document.getElementById('startStreamBtn').textContent = "Start Stream";
                 closeWebRTCStream();
             }
         }
@@ -1314,100 +1081,29 @@
         }
 
         function closeWebRTCStream() {
-            // Close all WebRTC connections and clean up resources
-            try {
-                // Close all transceivers if connection exists
-                if (webrtcConnection) {
-                    // Close all transceivers
-                    webrtcConnection.getTransceivers().forEach(transceiver => {
-                        if (transceiver.sender && transceiver.sender.track) {
-                            transceiver.sender.track.stop();
-                        }
-                        if (transceiver.receiver && transceiver.receiver.track) {
-                            transceiver.receiver.track.stop();
-                        }
-                    });
-                    
-                    // Close the connection
-                    webrtcConnection.close();
-                    webrtcConnection = null;
-                }
-
-                // Close data channel if it exists
-                if (dataChannel) {
-                    dataChannel.onopen = null;
-                    dataChannel.onmessage = null;
-                    dataChannel.onclose = null;
-                    dataChannel.onerror = null;
-                    if (dataChannel.readyState !== 'closed') {
-                        dataChannel.close();
-                    }
-                    dataChannel = null;
-                }
-
-                // Stop all local media tracks
-                if (localMicStream) {
-                    localMicStream.getTracks().forEach(track => {
-                        track.stop();
-                        track.enabled = false;
-                    });
-                    localMicStream = null;
-                }
-
-                // Clean up audio context
-                if (audioSource) {
-                    try {
-                        audioSource.disconnect();
-                    } catch (e) {
-                        console.warn('Error disconnecting audio source:', e);
-                    }
-                    audioSource = null;
-                }
-
-                if (audioContext && audioContext.state !== 'closed') {
-                    try {
-                        audioContext.close();
-                    } catch (e) {
-                        console.warn('Error closing audio context:', e);
-                    }
-                    audioContext = null;
-                }
-
-                analyser = null;
-                analyzer = null;
-                webrtcId = null;
-
-                // Reset UI
-                const micBtn = document.getElementById('micMuteBtn');
-                if (micBtn) {
-                    micBtn.disabled = true;
-                    micBtn.textContent = 'Mute Mic';
-                    micBtn.classList.remove('muted');
-                }
-                micMuted = false;
-
-                const statusEl = document.getElementById('streamStatus');
-                if (statusEl) statusEl.textContent = "";
-
-                const startBtn = document.getElementById('startStreamBtn');
-                if (startBtn) {
-                    startBtn.disabled = false;
-                    startBtn.textContent = "Start Stream";
-                    startBtn.classList.remove('streaming');
-                }
-            } catch (error) {
-                console.error('Error during WebRTC cleanup:', error);
-            } finally {
-                isConnecting = false;
+            if (webrtcConnection) {
+                webrtcConnection.close();
+                webrtcConnection = null;
             }
+
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+            dataChannel = null;
+            analyzer = null;
+
+            document.getElementById('streamStatus').textContent = "";
+            webrtcId = null;
+            audioContext = null;
+            analyser = null;
+            audioSource = null;
         }
 
         function generateWebRTCId() {
             webrtcId = 'webrtc-' + Date.now() + '-' + Math.floor(Math.random() * 1000000);
             return webrtcId;
         }
-
-        // Initialize tabs
 
         // Initialize tabs
         const defaultTab = document.getElementsByClassName("tablinks")[0];

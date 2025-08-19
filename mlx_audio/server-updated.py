@@ -4,11 +4,7 @@ import logging
 import os
 import sys
 import tempfile
-import os
 import uuid
-
-from dotenv import load_dotenv
-load_dotenv()
 
 import numpy as np
 import requests
@@ -22,8 +18,6 @@ from fastrtc import ReplyOnPause, Stream, get_stt_model
 from numpy.typing import NDArray
 from pydantic import BaseModel
 
-# Import the LLM client abstraction
-from .llm_client import LLMClient, OllamaClient, MlxClient
 
 # Configure logging
 def setup_logging(verbose: bool = False):
@@ -36,9 +30,6 @@ def setup_logging(verbose: bool = False):
     return logging.getLogger("mlx_audio_server")
 
 
-# Force Hugging Face to offline mode once at import time
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-
 logger = setup_logging()  # Will be updated with verbose setting in main()
 
 from mlx_audio.tts.generate import main as generate_main
@@ -48,59 +39,7 @@ from mlx_audio.tts.utils import load_model
 
 from .tts.audio_player import AudioPlayer
 
-# === LLM chat backend (Ollama) ===
-OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1").rstrip("/")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi4:latest")
-# System / character prompt for the chat model. Accept either env var name.
-SYSTEM_PROMPT = os.getenv("OLLAMA_SYSTEM_PROMPT") or os.getenv("LLAMA_SYSTEM_PROMPT") or "You are an empathetic concise voice assistant."
-
-
-def get_config(key):
-    return os.getenv(key)
-
-
-llm_client = None
-
-def setup_llm_client():
-    """Initialize the LLM client based on environment configuration."""
-    global llm_client
-    
-    # Ensure environment variables are loaded
-    llm_provider = os.getenv("LLM_PROVIDER", "OLLAMA")  # Default to OLLAMA
-    mlx_model_path = os.getenv("MLX_LLM_MODEL") or os.getenv("MLX_MODEL")
-    
-    if llm_provider.upper() == "MLX":
-        if not mlx_model_path:
-            logger.error("MLX_LLM_MODEL or MLX_MODEL environment variable not configured")
-            logger.info("Falling back to Ollama LLM")
-            llm_client = OllamaClient()
-            return
-        
-        logger.info(f"Using MLX LLM with model: {mlx_model_path}")
-        llm_client = MlxClient(mlx_model_path)
-        if getattr(llm_client, 'system_prompt', None):
-            preview = llm_client.system_prompt.strip().replace('\n', ' ')
-            logger.info(f"MLX system prompt active (preview): {preview[:120]}{'...' if len(preview) > 120 else ''}")
-        
-    else:  # Default to Ollama
-        logger.info(f"Using Ollama LLM with model: {OLLAMA_MODEL}")
-        llm_client = OllamaClient(OLLAMA_BASE, OLLAMA_MODEL, SYSTEM_PROMPT)
-        if SYSTEM_PROMPT:
-            preview = SYSTEM_PROMPT.strip().replace('\n', ' ')
-            logger.info(f"Ollama system prompt active (preview): {preview[:120]}{'...' if len(preview) > 120 else ''}")
-
-
 app = FastAPI()
-
-# Serve local static assets (e.g., Three.js) at /static
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
-
-# Ensure models load when uvicorn imports this module
-@app.on_event("startup")
-async def _startup_load_models() -> None:
-    """Load TTS/STT models and LLM client once when the FastAPI app starts."""
-    setup_server()
-    setup_llm_client()
 
 # Add CORS middleware to allow requests from the same origin
 app.add_middleware(
@@ -124,60 +63,15 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 logger.debug(f"Using output folder: {OUTPUT_FOLDER}")
 
 
-# Let users override the initial TTS model via environment variable.
-# Provide a sensible fallback (4-bit HF repo) so nothing breaks.
-DEFAULT_MODEL = os.getenv("TTS_DEFAULT_MODEL", "mlx-community/Kokoro-82M-4bit")
-
-
-async def speech_to_speech_handler(
-    audio: tuple[int, NDArray[np.int16]],
-    voice: str,
-    speed: float,
-    model: str = DEFAULT_MODEL,  # make optional – FastRTC may omit it
+def speech_to_speech_handler(
+    audio: tuple[int, NDArray[np.int16]], voice: str, speed: float, model: str = "mlx-community/Kokoro-82M-bf16"
 ):
-    global tts_model, llm_client
-
-    # Log raw parameters for easier debugging
-    logger.info(
-        f"Speech-to-speech raw params: voice={voice} | model={model} | speed={speed}"
-    )
-
-    # Heuristic 1 – argument shift: `voice` actually came in as the numeric speed
-    if isinstance(voice, float):
-        speed, model, voice = voice, speed, model or DEFAULT_MODEL
-
-    else:
-        # Heuristic 2 – mistaken swap detection
-        voice_looks_like_model = any(t in voice for t in ("/", "mlx-community", "Kokoro"))
-        model_looks_like_model = any(t in model for t in ("/", "mlx-community", "Kokoro"))
-
-        # Swap only if *voice* looks like a model path AND *model* does not
-        if voice_looks_like_model and not model_looks_like_model:
-            voice, model = model, voice
-
-    # Final safeguard – if voice still appears to be a model path, use a safe default
-    if any(t in voice for t in ("/", "mlx-community", "Kokoro")):
-        logger.warning(
-            f"Invalid voice '{voice}' detected; falling back to 'af_heart'."
-        )
-        voice = "af_heart"
-
-    if tts_model is None:
-        tts_model = load_model(model)
-
-    # 1) Speech-to-text
-    user_text = stt_model.stt(audio)
-    logger.info(f"STT: '{user_text}'")
-
-    # 2) Chat model reply using the configured LLM client
-    reply_text = llm_client.chat(user_text)
-    logger.info(f"LLM reply: '{reply_text}'")
-
-    # 3) Text-to-speech
+    text = stt_model.stt(audio)
     for segment in tts_model.generate(
-        text=reply_text,
+        text=text,
         voice=voice,
         speed=speed,
+        lang_code=voice[0],
         verbose=False,
     ):
         yield (24_000, np.array(segment.audio, copy=False))
@@ -201,12 +95,7 @@ class SpeechToSpeechArgs(BaseModel):
 
 @app.post("/speech_to_speech_input")
 def speech_to_speech_endpoint(args: SpeechToSpeechArgs):
-    # FastRTC appears to rotate the extra arguments: the handler receives (arg1→ignored, arg2→voice, arg3→speed, arg1→model).
-    # Empirically, sending them as (model, voice, speed) makes the handler receive
-    #   voice = voice,
-    #   speed = speed,
-    #   model = model.
-    stream.set_input(args.webrtc_id, args.model, args.voice, args.speed)
+    stream.set_input(args.webrtc_id, args.voice, args.speed, args.model)
     return {"status": "success"}
 
 
@@ -570,21 +459,6 @@ def setup_server():
             logger.debug(f"Loading TTS model from {default_model}")
             tts_model = load_model(default_model)
             logger.debug("TTS model loaded successfully")
-
-            # Point Kokoro pipeline to local repo dir so it fetches voices from disk
-            try:
-                local_repo = os.path.join(
-                    os.path.dirname(__file__),
-                    "tts",
-                    "models",
-                    "kokoro",
-                    "Kokoro-82M",
-                )
-                if hasattr(tts_model, "pipeline"):
-                    tts_model.pipeline.repo_id = local_repo
-                    logger.debug(f"Kokoro pipeline repo_id set to local path: {local_repo}")
-            except Exception as patch_err:
-                logger.warning(f"Could not patch pipeline repo path: {patch_err}")
         except Exception as e:
             logger.error(f"Error loading TTS model: {str(e)}")
             raise

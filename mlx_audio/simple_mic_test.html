@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Microphone Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        #status { margin: 20px 0; padding: 10px; border-radius: 4px; }
+        .granted { background: #d4edda; color: #155724; }
+        .denied { background: #f8d7da; color: #721c24; }
+    </style>
+</head>
+<body>
+    <h1>Microphone Test</h1>
+    <button id="testMic">Test Microphone</button>
+    <div id="status">Click the button to test microphone access</div>
+    
+    <script>
+        document.getElementById('testMic').addEventListener('click', async () => {
+            const status = document.getElementById('status');
+            
+            try {
+                // First check if we already have permission
+                const permissionStatus = await navigator.permissions.query({ name: 'microphone' });
+                status.textContent = `Permission status: ${permissionStatus.state}`;
+                
+                // Try to access the microphone
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 16000
+                    } 
+                });
+                
+                // If we get here, we have access
+                status.textContent = "✅ Microphone access granted!";
+                status.className = "granted";
+                
+                // Stop all tracks when done
+                stream.getTracks().forEach(track => track.stop());
+                
+            } catch (err) {
+                status.textContent = `❌ Error accessing microphone: ${err.message}`;
+                status.className = "denied";
+                console.error('Microphone access error:', err);
+            }
+        });
+    </script>
+</body>
+</html>

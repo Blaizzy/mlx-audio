@@ -1,7 +1,5 @@
 misaki[en]>=0.8.2
 mlx-lm
-transformers
-torch
 loguru>=0.7.3
 num2words>=0.5.14
 spacy>=3.8.4
@@ -28,4 +26,3 @@ fastrtc[vad, stt]
 webrtcvad>=2.0.10
 dacite>=1.9.2
 pytest-asyncio>=1.0.0
-mistral-common[audio]

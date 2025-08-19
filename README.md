@@ -2,6 +2,13 @@
 
 A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX framework, providing efficient speech synthesis on Apple Silicon.
 
+## Documentation
+
+For detailed information about the project, please see our documentation files:
+- [Quick Start Guide](QUICKSTART.md) - Get up and running quickly
+- [Setup Guide](SETUP.md) - Detailed installation and configuration instructions
+- [Full Documentation](DOCUMENTATION.md) - Comprehensive project documentation
+
 ## Features
 
 - Fast inference on Apple Silicon (M series chips)
@@ -12,18 +19,47 @@ A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX f
 - REST API for TTS generation
 - Quantization support for optimized performance
 - Direct access to output files via Finder/Explorer integration
+- **Local LLM Integration**: Support for both MLX and Ollama backends
+- **Full Voice Pipeline**: STT → LLM → TTS processing without cloud dependencies
+
+## Local LLM Integration
+
+MLX-Audio supports two local LLM backends for the full voice pipeline:
+
+### MLX Backend (Default)
+- Runs transformer models directly using Apple's MLX framework
+- No external dependencies beyond local model files
+- Optimized for Apple Silicon performance
+- Supports any Hugging Face model converted to MLX format
+
+### Ollama Backend
+- Uses Ollama service for model inference
+- Supports all Ollama-compatible models
+- Requires Ollama installation and service
+- Good alternative when MLX models aren't available
+
+Switch between backends using the `LLM_PROVIDER` environment variable:
+- `LLM_PROVIDER=MLX` for MLX backend
+- `LLM_PROVIDER=OLLAMA` for Ollama backend
+
+For detailed configuration instructions, see our [Full Documentation](DOCUMENTATION.md).
 
 ## Installation
 
-```bash
-# Install the package
-pip install mlx-audio
+For detailed installation instructions, please refer to our [Setup Guide](SETUP.md).
 
-# For web interface and API dependencies
+```bash
+# Quick installation
+git clone https://github.com/dax8it/mlx-audio.git
+cd mlx-audio
+conda create -n mlx-audio python=3.11
+conda activate mlx-audio
 pip install -r requirements.txt
 ```
 
 ### Quick Start
+
+For a more comprehensive quick start guide, see our [Quick Start Guide](QUICKSTART.md).
 
 To generate audio with an LLM use:
 
@@ -39,6 +75,8 @@ mlx_audio.tts.generate --text "Hello, world" --speed 1.4
 ```
 
 ### How to call from python
+
+For more Python usage examples, see our [Full Documentation](DOCUMENTATION.md).
 
 To generate audio with an LLM use:
 
@@ -61,7 +99,6 @@ generate_audio(
 )
 
 print("Audiobook chapter successfully generated!")
-
 ```
 
 ### Web Interface & API Server
@@ -87,13 +124,13 @@ To start the web interface and API server:
 
 ```bash
 # Using the command-line interface
-mlx_audio.server
+python -m mlx_audio.server
 
 # With custom host and port
-mlx_audio.server --host 0.0.0.0 --port 9000
+python -m mlx_audio.server --host 0.0.0.0 --port 9000
 
 # With verbose logging
-mlx_audio.server --verbose
+python -m mlx_audio.server --verbose
 ```
 
 Available command line arguments:
