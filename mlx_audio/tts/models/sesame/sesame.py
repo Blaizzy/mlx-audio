@@ -698,7 +698,7 @@ class Model(nn.Module):
         ref_audio: mx.array = None,
         ref_text: str = None,
         stream: bool = False,
-        streaming_interval: float = 2.0,
+        streaming_interval: float = 0.5,
         voice_match: bool = True,
         **kwargs,
     ):
@@ -716,12 +716,6 @@ class Model(nn.Module):
                 ),
             )
 
-        if voice_match:
-            generation_text = (context[0].text + " " + text).strip()
-            context = [
-                Segment(speaker=speaker, text=generation_text, audio=context[0].audio)
-            ]
-
         sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
         streaming_interval_tokens = int(streaming_interval * 12.5)
@@ -730,6 +724,14 @@ class Model(nn.Module):
             text = re.split(split_pattern, text.strip()) if split_pattern else [text]
 
         for prompt in text:
+            if voice_match:
+                generation_text = (context[0].text + " " + prompt).strip()
+                current_context = [
+                    Segment(
+                        speaker=speaker, text=generation_text, audio=context[0].audio
+                    )
+                ]
+
             start_time = time.perf_counter()
 
             self.model.reset_caches()
@@ -737,7 +739,7 @@ class Model(nn.Module):
                 self._streaming_decoder.reset()
 
             tokens, tokens_mask = [], []
-            for segment in context:
+            for segment in current_context:
                 segment_tokens, segment_tokens_mask = self._tokenize_segment(
                     segment, add_eos=not voice_match
                 )
@@ -769,45 +771,47 @@ class Model(nn.Module):
                     f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
                 )
 
-            for _ in tqdm(range(max_audio_frames)):
-                sample = self.model.generate_frame(
-                    curr_tokens, curr_tokens_mask, curr_pos, sampler
-                )
-                if mx.all(sample == 0):
-                    break  # eos
+            with tqdm() as pbar:
+                for _ in range(max_audio_frames):
+                    sample = self.model.generate_frame(
+                        curr_tokens, curr_tokens_mask, curr_pos, sampler
+                    )
+                    if mx.all(sample == 0):
+                        break  # eos
 
-                samples.append(sample)
+                    samples.append(sample)
 
-                curr_tokens = mx.expand_dims(
-                    mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1),
-                    axis=1,
-                )
-                curr_tokens_mask = mx.expand_dims(
-                    mx.concat(
-                        [
-                            mx.ones_like(sample).astype(mx.bool_),
-                            mx.zeros((1, 1)).astype(mx.bool_),
-                        ],
+                    curr_tokens = mx.expand_dims(
+                        mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1),
                         axis=1,
-                    ),
-                    axis=1,
-                )
-                curr_pos = curr_pos[:, -1:] + 1
-                generated_frame_count += 1
+                    )
+                    curr_tokens_mask = mx.expand_dims(
+                        mx.concat(
+                            [
+                                mx.ones_like(sample).astype(mx.bool_),
+                                mx.zeros((1, 1)).astype(mx.bool_),
+                            ],
+                            axis=1,
+                        ),
+                        axis=1,
+                    )
+                    curr_pos = curr_pos[:, -1:] + 1
+                    generated_frame_count += 1
+                    pbar.update()
 
-                # send a partial result in streaming mode
-                if (
-                    stream
-                    and (generated_frame_count - yielded_frame_count)
-                    >= streaming_interval_tokens
-                ):
-                    yielded_frame_count = generated_frame_count
-                    yield self.generate_result(samples, start_time, stream=True)
-                    samples = []
-                    start_time = time.perf_counter()
+                    # send a partial result in streaming mode
+                    if (
+                        stream
+                        and (generated_frame_count - yielded_frame_count)
+                        >= streaming_interval_tokens
+                    ):
+                        yielded_frame_count = generated_frame_count
+                        yield self.generate_result(samples, start_time, stream=True)
+                        samples = []
+                        start_time = time.perf_counter()
 
-            if len(samples) > 0:
-                yield self.generate_result(samples, start_time, stream=stream)
+                if len(samples) > 0:
+                    yield self.generate_result(samples, start_time, stream=stream)
 
-            # Clear cache after each segment to avoid memory leaks
-            mx.clear_cache()
+                # Clear cache after each segment to avoid memory leaks
+                mx.clear_cache()

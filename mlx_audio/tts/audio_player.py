@@ -47,7 +47,7 @@ class AudioPlayer:
                 raise sd.CallbackStop()
 
     def start_stream(self):
-        print("Starting audio stream...")
+        print("\nStarting audio stream...")
         self.stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=1,
