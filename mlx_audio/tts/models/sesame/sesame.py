@@ -716,12 +716,6 @@ class Model(nn.Module):
                 ),
             )
 
-        if voice_match:
-            generation_text = (context[0].text + " " + text).strip()
-            context = [
-                Segment(speaker=speaker, text=generation_text, audio=context[0].audio)
-            ]
-
         sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
         streaming_interval_tokens = int(streaming_interval * 12.5)
@@ -730,6 +724,14 @@ class Model(nn.Module):
             text = re.split(split_pattern, text.strip()) if split_pattern else [text]
 
         for prompt in text:
+            if voice_match:
+                generation_text = (context[0].text + " " + prompt).strip()
+                current_context = [
+                    Segment(
+                        speaker=speaker, text=generation_text, audio=context[0].audio
+                    )
+                ]
+
             start_time = time.perf_counter()
 
             self.model.reset_caches()
@@ -737,7 +739,7 @@ class Model(nn.Module):
                 self._streaming_decoder.reset()
 
             tokens, tokens_mask = [], []
-            for segment in context:
+            for segment in current_context:
                 segment_tokens, segment_tokens_mask = self._tokenize_segment(
                     segment, add_eos=not voice_match
                 )
