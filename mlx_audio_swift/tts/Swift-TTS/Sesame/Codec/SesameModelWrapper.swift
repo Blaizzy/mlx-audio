@@ -35,10 +35,16 @@ enum SesameTTSError: Error {
 
 /// Segment representing a piece of audio with text and speaker information
 /// Equivalent to Python's Segment dataclass
-struct Segment {
+public struct Segment {
     let speaker: Int
     let text: String
-    let audio: MLXArray
+    let audio: MLXArray?
+
+    public init(speaker: Int, text: String, audio: MLXArray? = nil) {
+        self.speaker = speaker
+        self.text = text
+        self.audio = audio
+    }
 }
 
 /// Generation result containing audio and metadata
@@ -64,7 +70,8 @@ class SesameModelWrapper: Module {
     @ModuleInfo var audioTokenizer: Mimi?
 
     private let config: LlamaModelArgs
-    private var textTokenizer: Any? // We'll implement tokenizer later
+    private var textTokenizer: SesameTokenizer? // Llama-3 tokenizer
+    private var voiceManager: SesameVoiceManager? // Voice management system
     private var streamingDecoder: MimiStreamingDecoder?
     private var watermarker: Any? // We'll implement watermarking later
     private let sampleRate: Int
@@ -103,10 +110,14 @@ class SesameModelWrapper: Module {
 
             // Initialize text tokenizer (Llama-3)
             do {
-                self.textTokenizer = try SesameTokenizer()
+                let tokenizer = try SesameTokenizer()
+                self.textTokenizer = tokenizer
+                // Initialize voice manager with tokenizer
+                self.voiceManager = SesameVoiceManager(tokenizer: tokenizer)
             } catch {
                 print("Warning: Could not initialize SesameTokenizer: \(error)")
                 // Continue without tokenizer - will use fallback
+                self.voiceManager = SesameVoiceManager(tokenizer: nil)
             }
 
             // TODO: Initialize watermarker
@@ -161,13 +172,44 @@ class SesameModelWrapper: Module {
         return SesameModelWrapper(config)
     }
 
+    /// Get available voices
+    /// - Returns: Array of available voice names
+    public func getAvailableVoices() -> [String] {
+        guard let voiceManager = voiceManager else { return [] }
+        return voiceManager.getAvailableVoices()
+    }
+
+    /// Validate if a voice exists
+    /// - Parameter voiceName: Name of the voice to validate
+    /// - Returns: True if voice exists
+    public func validateVoice(voiceName: String) -> Bool {
+        guard let voiceManager = voiceManager else { return false }
+        return voiceManager.validateVoice(voiceName: voiceName)
+    }
+
+    /// Get voice description
+    /// - Parameter voiceName: Name of the voice
+    /// - Returns: Voice description
+    public func getVoiceDescription(voiceName: String) -> String {
+        guard let voiceManager = voiceManager else { return "Voice manager not initialized" }
+        return voiceManager.getVoiceDescription(voiceName: voiceName)
+    }
+
+    /// Add custom voice configuration
+    /// - Parameters:
+    ///   - config: Voice configuration
+    ///   - prompts: Voice prompts (optional)
+    public func addCustomVoice(config: VoiceConfig, prompts: [VoicePrompt] = []) {
+        voiceManager?.addVoice(config: config, prompts: prompts)
+    }
+
     /// Tokenize text segment with speaker information
     /// - Parameters:
     ///   - text: Text to tokenize
     ///   - speaker: Speaker ID
     /// - Returns: Tuple of (tokens, mask) arrays
     private func tokenizeTextSegment(_ text: String, speaker: Int) -> (MLXArray, MLXArray) {
-        guard let tokenizer = textTokenizer as? SesameTokenizer else {
+        guard let tokenizer = textTokenizer else {
             // Fallback: simple tokenization if tokenizer not available
             let tokens = text.split(separator: " ").map { String($0) }
             let tokenIds = tokens.enumerated().map { Int32($0.offset + 1) }
@@ -216,7 +258,14 @@ class SesameModelWrapper: Module {
     /// - Returns: Tuple of (tokens, mask) arrays
     private func tokenizeSegment(_ segment: Segment, addEOS: Bool = true) -> (MLXArray, MLXArray) {
         let (textTokens, textMask) = tokenizeTextSegment(segment.text, speaker: segment.speaker)
-        let (audioTokens, audioMask) = tokenizeAudio(segment.audio, addEOS: addEOS)
+
+        // Handle optional audio
+        guard let audio = segment.audio else {
+            // Return just text tokens if no audio
+            return (textTokens, textMask)
+        }
+
+        let (audioTokens, audioMask) = tokenizeAudio(audio, addEOS: addEOS)
 
         let combinedTokens = MLX.concatenated([textTokens, audioTokens], axis: 0)
         let combinedMask = MLX.concatenated([textMask, audioMask], axis: 0)
@@ -414,9 +463,21 @@ class SesameModelWrapper: Module {
     /// - Parameter voice: Voice name
     /// - Returns: Array of segments for the voice prompt
     private func defaultSpeakerPrompt(voice: String) -> [Segment] {
-        // TODO: Implement voice prompt loading
-        // For now, return empty segments
-        return []
+        guard let voiceManager = voiceManager else {
+            // Fallback if voice manager not available
+            return [
+                Segment(speaker: 0, text: "Hello, I'm ready to help.", audio: nil),
+                Segment(speaker: 0, text: "What would you like to discuss?", audio: nil)
+            ]
+        }
+
+        // Use voice manager to get voice segments
+        if voiceManager.validateVoice(voiceName: voice) {
+            return voiceManager.getVoiceSegments(voiceName: voice)
+        } else {
+            // Use default voice if requested voice doesn't exist
+            return voiceManager.getDefaultSegments()
+        }
     }
 
     /// Format duration as HH:MM:SS.mmm
