@@ -335,7 +335,7 @@ class Mimi: Module {
 
 /// Streaming version of Mimi decoder (for real-time generation)
 /// Equivalent to Python's MimiStreamingDecoder
-class MimiStreamingDecoder {
+public class MimiStreamingDecoder {
     private let mimi: Mimi
 
     init(_ mimi: Mimi) {
@@ -349,7 +349,7 @@ class MimiStreamingDecoder {
     }
 
     /// Decode a sequence of audio tokens incrementally
-    func decodeFrames(_ tokens: MLXArray) -> MLXArray {
+    public func decodeFrames(_ tokens: MLXArray) -> MLXArray {
         var inputTokens = tokens
 
         // Ensure proper shape [batch, codebooks, time]
