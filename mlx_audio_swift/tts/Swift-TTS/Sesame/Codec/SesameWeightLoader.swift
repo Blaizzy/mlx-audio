@@ -18,7 +18,7 @@ class SesameWeightLoader {
     static func loadWeights(url: URL? = nil) -> [String: MLXArray] {
         let modelURL = url ?? {
             // Default to bundled resource if available
-            if let bundlePath = Bundle.main.path(forResource: "sesame-mimi", ofType: "safetensors") {
+            if let bundlePath = Bundle.main.path(forResource: "sesame-mimi", ofType: "safetensors", inDirectory: "Sesame/Resources") {
                 return URL(fileURLWithPath: bundlePath)
             }
             // Fallback - this should be provided by caller
