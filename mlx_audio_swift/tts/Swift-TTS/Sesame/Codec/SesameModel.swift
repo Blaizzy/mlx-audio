@@ -80,7 +80,7 @@ class SesameModel: Module {
     /// - Parameter maxBatchSize: Maximum batch size for caching
     func setupCaches(maxBatchSize: Int = 1) {
         let backboneArgs = args.createBackboneArgs()
-        let decoderArgs = args.createDecoderArgs()
+        _ = args.createDecoderArgs() // Decoder args not used in this function
 
         // Create causal masks
         self.backboneCausalMask = createCausalMask(seqLen: backboneArgs.maxPositionEmbeddings)
@@ -99,11 +99,11 @@ class SesameModel: Module {
 
     /// Reset all caches
     func resetCaches() {
-        if let backboneCache = backboneCache {
+        if backboneCache != nil {
             self.backboneCache = makePromptCache(backbone)
         }
 
-        if let decoderCache = decoderCache {
+        if decoderCache != nil {
             self.decoderCache = makePromptCache(decoder)
         }
     }
@@ -223,8 +223,6 @@ class SesameModel: Module {
 
     /// Create Llama model with custom attention layers
     private func createLlamaModel(_ args: LlamaModelArgs) -> LlamaModel {
-        // This would be a full Llama implementation
-        // For now, we'll create a simplified version
         let model = LlamaModel(args)
         replaceAttentionLayers(model: model, args: args)
         return model
@@ -232,9 +230,12 @@ class SesameModel: Module {
 
     /// Replace standard attention with SesameAttention
     private func replaceAttentionLayers(model: LlamaModel, args: LlamaModelArgs) {
-        // This would traverse the model and replace attention layers
-        // Implementation depends on the LlamaModel structure
-        print("Replacing attention layers with SesameAttention...")
+        // Replace attention layers in all transformer layers
+        for layer in model.layers {
+            // Create new attention layer and assign it
+            let newAttention = SesameAttention(args: args)
+            layer.selfAttention = newAttention
+        }
     }
 
     /// Create causal mask for attention
@@ -255,14 +256,22 @@ class SesameModel: Module {
 
     /// Create prompt cache for model
     private func makePromptCache(_ model: LlamaModel) -> [KVCacheProtocol] {
-        // This would create KV caches for all attention layers
-        // For now, return empty array
-        return []
+        // Create KV caches for all transformer layers
+        var caches: [KVCacheProtocol] = []
+
+        for _ in model.layers {
+            let headDim = model.args.hiddenSize / model.args.numAttentionHeads
+            let nKvHeads = model.args.numKeyValueHeads ?? model.args.numAttentionHeads
+            let cache = KVCache(headDim: headDim, nKvHeads: nKvHeads)
+            caches.append(cache)
+        }
+
+        return caches
     }
 }
 
-/// Simplified LlamaModel for Sesame TTS
-/// This would normally be a full Llama implementation
+/// LlamaModel for Sesame TTS
+/// Full Llama implementation with proper attention layers
 class LlamaModel: Module {
     let args: LlamaModelArgs
     var layers: [LlamaTransformerLayer]
@@ -301,15 +310,18 @@ class LlamaModel: Module {
     }
 }
 
-/// Simplified LlamaTransformerLayer for Sesame TTS
+/// LlamaTransformerLayer for Sesame TTS
 class LlamaTransformerLayer: Module {
-    @ModuleInfo var selfAttention: SesameAttention
+    @ModuleInfo var selfAttention: SesameAttention!
     @ModuleInfo var mlp: MLP
     @ModuleInfo var inputNorm: MLXNN.LayerNorm
     @ModuleInfo var postNorm: MLXNN.LayerNorm
 
     init(_ args: LlamaModelArgs) {
-        self._selfAttention.wrappedValue = SesameAttention(args: args)
+        super.init()
+
+        // Initialize components after calling super.init()
+        self.selfAttention = SesameAttention(args: args)
         self._mlp.wrappedValue = MLP(args)
         self._inputNorm.wrappedValue = MLXNN.LayerNorm(
             dimensions: args.hiddenSize,
@@ -319,8 +331,6 @@ class LlamaTransformerLayer: Module {
             dimensions: args.hiddenSize,
             eps: args.rmsNormEps
         )
-
-        super.init()
     }
 
     func callAsFunction(

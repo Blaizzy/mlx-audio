@@ -78,8 +78,8 @@ class EuclideanCodebook: Module {
 /// Single vector quantization layer
 class VectorQuantization: Module {
     @ModuleInfo var codebook: EuclideanCodebook
-    @ModuleInfo var projectIn: Linear?
-    @ModuleInfo var projectOut: Linear?
+    @ModuleInfo var projectIn: MLXNN.Linear?
+    @ModuleInfo var projectOut: MLXNN.Linear?
 
     init(dim: Int, codebookSize: Int, codebookDim: Int? = nil) {
         let actualCodebookDim = codebookDim ?? dim
@@ -91,8 +91,8 @@ class VectorQuantization: Module {
 
         // Projection layers if dimensions don't match
         if dim != actualCodebookDim {
-            self._projectIn.wrappedValue = Linear(dim, actualCodebookDim, bias: false)
-            self._projectOut.wrappedValue = Linear(actualCodebookDim, dim, bias: false)
+            self._projectIn.wrappedValue = MLXNN.Linear(dim, actualCodebookDim, bias: false)
+            self._projectOut.wrappedValue = MLXNN.Linear(actualCodebookDim, dim, bias: false)
         }
 
         super.init()
