@@ -48,6 +48,11 @@ DerivedData/
 .DS_Store
 Thumbs.db
 
+# Swift Build
+.build/
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
 test.ipynb
 output/
 swift/Swift-TTS/Swift-TTS/Kokoro/Resources/kokoro-v1_0.safetensors
