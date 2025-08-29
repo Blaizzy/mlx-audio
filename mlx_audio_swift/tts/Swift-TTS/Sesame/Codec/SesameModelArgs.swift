@@ -8,28 +8,28 @@ import Foundation
 
 /// Model arguments for Llama-based models in Sesame TTS
 /// Equivalent to Python's ModelArgs from mlx_lm
-struct LlamaModelArgs {
-    let modelType: String
-    let numHiddenLayers: Int
-    let numAttentionHeads: Int
-    let numKeyValueHeads: Int?
-    let headDim: Int?
-    let hiddenSize: Int
-    let intermediateSize: Int
-    let rmsNormEps: Float
-    let vocabSize: Int
-    let maxPositionEmbeddings: Int
-    let attentionBias: Bool?
-    let mlpBias: Bool?
-    let ropeTheta: Float?
-    let ropeScaling: [String: Any]?
+public struct LlamaModelArgs {
+    public let modelType: String
+    public let numHiddenLayers: Int
+    public let numAttentionHeads: Int
+    public let numKeyValueHeads: Int?
+    public let headDim: Int?
+    public let hiddenSize: Int
+    public let intermediateSize: Int
+    public let rmsNormEps: Float
+    public let vocabSize: Int
+    public let maxPositionEmbeddings: Int
+    public let attentionBias: Bool?
+    public let mlpBias: Bool?
+    public let ropeTheta: Float?
+    public let ropeScaling: [String: Any]?
 
     // Text-specific parameters for Sesame
-    let textVocabSize: Int
-    let audioVocabSize: Int
-    let audioNumCodebooks: Int
-    let audioNumCodebooksTotal: Int
-    let backboneFlavor: String
+    public let textVocabSize: Int
+    public let audioVocabSize: Int
+    public let audioNumCodebooks: Int
+    public let audioNumCodebooksTotal: Int
+    public let backboneFlavor: String
 
     /// Default initializer with common defaults
     init(
