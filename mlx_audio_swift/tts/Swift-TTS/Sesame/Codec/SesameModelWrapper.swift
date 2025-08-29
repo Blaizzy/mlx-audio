@@ -74,7 +74,7 @@ class SesameModelWrapper: Module {
     private var voiceManager: SesameVoiceManager? // Voice management system
     private var streamingDecoder: MimiStreamingDecoder?
     private var watermarker: Any? // We'll implement watermarking later
-    private let sampleRate: Int
+    private var sampleRate: Int
 
     // Swift optimization flags
     private var isInitialized = false
@@ -84,7 +84,8 @@ class SesameModelWrapper: Module {
     /// - Parameter config: Model configuration
     init(_ config: LlamaModelArgs) {
         self.config = config
-        self.sampleRate = 24000 // Default sample rate, should match Mimi
+        // Sample rate will be set when Mimi is initialized
+        self.sampleRate = 24000 // Default, will be updated
 
         super.init()
     }
@@ -104,6 +105,9 @@ class SesameModelWrapper: Module {
             let mimiConfig = MimiConfig.mimi202407(numCodebooks: 8) // Default 8 codebooks
             let mimi = Mimi(mimiConfig)
             self._audioTokenizer.wrappedValue = mimi
+
+            // Update sample rate from Mimi codec
+            self.sampleRate = Int(mimi.sampleRate)
 
             // Initialize streaming decoder
             self.streamingDecoder = MimiStreamingDecoder(mimi)
@@ -282,6 +286,7 @@ class SesameModelWrapper: Module {
     ///   - maxAudioLengthMs: Maximum audio length in milliseconds
     ///   - temperature: Sampling temperature
     ///   - topK: Top-k sampling parameter
+    ///   - stream: Whether to use streaming decoder for real-time generation
     /// - Returns: GenerationResult with audio and metadata
     func generate(
         text: String,
@@ -290,7 +295,8 @@ class SesameModelWrapper: Module {
         context: [Segment] = [],
         maxAudioLengthMs: Float = 90000,
         temperature: Float = 0.9,
-        topK: Int = 50
+        topK: Int = 50,
+        stream: Bool = false
     ) throws -> GenerationResult {
         // Ensure model is initialized (lazy loading)
         ensureInitialized()
@@ -397,7 +403,16 @@ class SesameModelWrapper: Module {
             let audioTokens = MLX.stacked(samples, axis: 0)
             let transposedTokens = audioTokens.swappedAxes(1, 2)
 
-            let audio = streamingDecoder?.decodeFrames(transposedTokens) ?? MLXArray.zeros([1, 1])
+            var audio: MLXArray
+            if stream, let streamingDecoder = streamingDecoder {
+                // Use streaming decoder for real-time generation
+                audio = streamingDecoder.decodeFrames(transposedTokens)
+            } else if let audioTokenizer = audioTokenizer {
+                // Use regular decoder
+                audio = audioTokenizer.decode(transposedTokens)
+            } else {
+                throw SesameTTSError.modelNotInitialized
+            }
 
             // Force evaluation and memory cleanup (Kokoro pattern)
             audio.eval()

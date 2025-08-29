@@ -92,14 +92,20 @@ class Mimi: Module {
     private var decoderCache: [KVCacheProtocol]?
 
     private(set) var config: MimiConfig
-    private let sampleRate: Float
-    private let frameRate: Float
     private let downsampleStride: Int
+
+    /// Sample rate of the codec (read-only property)
+    var sampleRate: Float {
+        return config.sampleRate
+    }
+
+    /// Frame rate of the codec (read-only property)
+    var frameRate: Float {
+        return config.frameRate
+    }
 
     init(_ config: MimiConfig) {
         self.config = config
-        self.sampleRate = config.sampleRate
-        self.frameRate = config.frameRate
 
         // Calculate downsample stride for temporal processing
         let encoderFrameRate = Float(config.sampleRate) / Float(config.seanet.ratios.reduce(1, *))
@@ -366,8 +372,8 @@ public class MimiStreamingDecoder {
             pcm.append(framePcm)
         }
 
-        // Concatenate all frames
-        return MLX.concatenated(pcm, axis: 2)
+        // Concatenate all frames along the time axis (last axis)
+        return MLX.concatenated(pcm, axis: -1)
     }
 
     /// Get the underlying Mimi model
