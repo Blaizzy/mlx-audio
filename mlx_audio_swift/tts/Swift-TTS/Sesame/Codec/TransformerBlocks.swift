@@ -40,10 +40,19 @@ class Attention: Module {
         self.config = config
         self.scale = pow(Float(config.headDim), -0.5)
 
-        // Initialize MultiHeadAttention
+        // Calculate dimensions for GQA
+        let numKvHeads = config.numHeads / config.kvRepeat
+        let queryDim = config.dModel
+        let kvDim = queryDim / config.kvRepeat  // KV heads have smaller dimension in GQA
+
+        // Initialize MultiHeadAttention with GQA support
         self._multiHeadAttention.wrappedValue = MLXNN.MultiHeadAttention(
             dimensions: config.dModel,
             numHeads: config.numHeads,
+            queryInputDimensions: queryDim,
+            keyInputDimensions: kvDim,
+            valueInputDimensions: kvDim,
+            valueDimensions: kvDim,
             bias: config.biasAttn
         )
 
@@ -65,8 +74,6 @@ class Attention: Module {
     }
 
     func callAsFunction(_ xs: MLXArray, cache: KVCacheProtocol, mask: MLXArray? = nil) -> MLXArray {
-        assert(config.kvRepeat == 1, "kv_repeat == 1 is required")
-
         let _ = xs.shape[0]  // B
         let _ = xs.shape[1]  // T
         let _ = xs.shape[2]  // HD

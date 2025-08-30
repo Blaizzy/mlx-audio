@@ -69,6 +69,7 @@ class Llama3ScaledRoPE: Module {
         let idxTheta = MLX.matmul(seqIdx.expandedDimensions(axis: 1), theta.expandedDimensions(axis: 0))
         let cosValues = MLX.cos(idxTheta)
         let sinValues = MLX.sin(idxTheta)
+        // Stack to get shape [maxSeqLen, dim/2, 2] - matches Python implementation
         self._cache.wrappedValue = MLX.stacked([cosValues, sinValues], axis: -1)
     }
 
@@ -103,28 +104,55 @@ class Llama3ScaledRoPE: Module {
     }
 
     func callAsFunction(_ x: MLXArray, offset: Int?) -> MLXArray {
+        print("🔍 DEBUG RoPE callAsFunction:")
+        print("  - x.shape: \(x.shape)")
+        print("  - offset: \(offset ?? -1)")
+        print("  - isCacheBuilt: \(isCacheBuilt)")
+
         guard isCacheBuilt else {
             fatalError("RoPE cache is not built. Please call ropeInit() first.")
         }
 
+        print("  - cache.shape: \(cache?.shape ?? [])")
+
         let seqLen = x.shape[1]
+        print("  - seqLen: \(seqLen)")
+
+        // Follow Python implementation exactly
         let ropeCache: MLXArray
         if let offset = offset {
-            ropeCache = cache![0..., offset..<(offset + seqLen), 0..., 0..., 0...]
+            // Python: self._cache[None, offset : offset + seq_len]
+            ropeCache = cache![offset..<(offset + seqLen), 0..., 0...].expandedDimensions(axis: 0)
         } else {
-            ropeCache = cache![0..<seqLen, 0..., 0..., 0..., 0...]
+            // Python: self._cache[:seq_len]
+            ropeCache = cache![0..<seqLen, 0..., 0...]
         }
 
-        let xShaped = x.reshaped(x.shape[0], x.shape[1], -1, 2)
-        let ropeCacheReshaped = ropeCache.reshaped(-1, xShaped.shape[1], 1, xShaped.shape[3], 2)
+        print("  - ropeCache.shape: \(ropeCache.shape)")
+        print("  - ropeCache.isValid: \(ropeCache.ctx != nil)")
 
+        // Python: xshaped = x.astype(mx.float32).reshape(*x.shape[:-1], -1, 2)
+        let xShaped = x.asType(.float32).reshaped(x.shape[0], x.shape[1], x.shape[2], -1, 2)
+
+        // Python: rope_cache = rope_cache.reshape(-1, xshaped.shape[1], 1, xshaped.shape[3], 2)
+        // Dynamic reshape to match Python exactly
+        let ropeCacheReshaped = ropeCache.reshaped(
+            xShaped.shape[0],  // batch size (dynamic)
+            xShaped.shape[1],  // seq_len
+            1,                 // 1 for head broadcasting
+            xShaped.shape[3],  // head_dim/2
+            2                  // 2 for cos/sin
+        )
+
+        // Python RoPE computation - match exactly with proper broadcasting
         let xOut0 = xShaped[0..., 0..., 0..., 0..., 0] * ropeCacheReshaped[0..., 0..., 0..., 0..., 0] -
-                   xShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
+                    xShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
         let xOut1 = xShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 0] +
-                   xShaped[0..., 0..., 0..., 0..., 0] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
+                    xShaped[0..., 0..., 0..., 0..., 0] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
 
+        // Stack and reshape back to original shape
         let xOut = MLX.stacked([xOut0, xOut1], axis: -1)
-        return xOut.flattened(end: -1)
+        return xOut.reshaped(x.shape)
     }
 }
 
@@ -161,7 +189,7 @@ class SesameAttention: Module {
             self._rope.wrappedValue = Llama3ScaledRoPE(
                 dim: headDim,
                 base: ropeTheta,
-                scaleFactor: ropeScaling["factor"] as? Float ?? 1.0
+                scaleFactor: ropeScaling.factor ?? 1.0
             )
         }
 
@@ -173,32 +201,70 @@ class SesameAttention: Module {
         mask: MLXArray? = nil,
         cache: KVCacheProtocol? = nil
     ) -> MLXArray {
+        print("🔍 DEBUG SesameAttention: Input validation:")
+        print("  - x.isValid: \(x.ctx != nil)")
+        print("  - x.shape: \(x.shape)")
+        print("  - mask.shape: \(mask?.shape ?? [])")
+        print("  - cache: \(cache != nil ? "not nil" : "nil")")
+
         let (b, sX, _) = (x.shape[0], x.shape[1], x.shape[2])
         let y = x
         let sY = y.shape[1]
 
+        print("🔍 DEBUG SesameAttention: Q projection...")
         // Q projection
         var q = qProj(x)
+        print("  - q.isValid: \(q.ctx != nil)")
+        if q.ctx != nil {
+            print("  - q.shape: \(q.shape)")
+        }
         let qPerKv = nHeads / nKvHeads
         q = q.reshaped([b, sX, nKvHeads * qPerKv, headDim])
+        print("  - q reshaped.isValid: \(q.ctx != nil)")
+        if q.ctx != nil {
+            print("  - q reshaped.shape: \(q.shape)")
+        }
 
+        print("🔍 DEBUG SesameAttention: RoPE application...")
         // Apply RoPE to queries
         if let rope = rope {
-            q = rope(q, offset: cache?.offset)
+            q = rope(q, offset: cache?.offset ?? 0)
+            print("  - q after RoPE.isValid: \(q.ctx != nil)")
+            if q.ctx != nil {
+                print("  - q after RoPE.shape: \(q.shape)")
+            }
         }
 
         q = q.swappedAxes(1, 2)
+        print("  - q swapped.isValid: \(q.ctx != nil)")
+        if q.ctx != nil {
+            print("  - q swapped.shape: \(q.shape)")
+        }
 
+        print("🔍 DEBUG SesameAttention: K/V projections...")
         // K and V projections
         var k = kProj(y)
         var v = vProj(y)
+        print("  - k.isValid: \(k.ctx != nil), v.isValid: \(v.ctx != nil)")
+        if k.ctx != nil && v.ctx != nil {
+            print("  - k.shape: \(k.shape), v.shape: \(v.shape)")
+        }
 
         k = k.reshaped([b, sY, -1, headDim])
         v = v.reshaped([b, sY, -1, headDim])
+        print("  - k reshaped.isValid: \(k.ctx != nil), v reshaped.isValid: \(v.ctx != nil)")
+        if k.ctx != nil && v.ctx != nil {
+            print("  - k reshaped.shape: \(k.shape), v reshaped.shape: \(v.shape)")
+        }
 
+        print("🔍 DEBUG SesameAttention: RoPE on keys...")
         // Apply RoPE to keys
         if let rope = rope {
-            k = rope(k, offset: cache?.offset)
+            k = rope(k, offset: cache?.offset ?? 0)
+            print("  - k after RoPE.isValid: \(k.ctx != nil)")
+            if k.ctx != nil {
+                print("  - k after RoPE.shape: \(k.shape)")
+            }
         }
 
         k = k.swappedAxes(1, 2)
@@ -210,23 +276,41 @@ class SesameAttention: Module {
         }
 
         // Handle GQA (Grouped Query Attention)
+        // Calculate actual head counts from tensor shapes, not config
+        let actualQHeads = q.shape[1]  // Number of query heads
+        let actualKvHeads = k.shape[1]  // Number of KV heads
+
         var finalK = k
         var finalV = v
 
-        if nHeads != nKvHeads {
-            let qPerKv = nHeads / nKvHeads
+        if actualQHeads != actualKvHeads {
+            let qPerKv = actualQHeads / actualKvHeads
 
-            finalK = k.expandedDimensions(axis: 2)
-            finalV = v.expandedDimensions(axis: 2)
+            print("🔍 DEBUG SesameAttention: GQA expansion needed")
+            print("  - actualQHeads: \(actualQHeads), actualKvHeads: \(actualKvHeads), qPerKv: \(qPerKv)")
+            print("  - k.shape before expansion: \(k.shape)")
+            print("  - v.shape before expansion: \(v.shape)")
 
-            let kExpandShape = [b, nKvHeads, qPerKv] + Array(k.shape[3...])
-            let vExpandShape = [b, nKvHeads, qPerKv] + Array(v.shape[3...])
+            // Expand each KV head to match number of Q heads
+            // k shape: [b, nKvHeads, seqLen, headDim]
+            // Target: [b, nKvHeads, qPerKv, seqLen, headDim]
+            let kExpandShape = [b, actualKvHeads, qPerKv, k.shape[2], k.shape[3]]
+            let vExpandShape = [b, actualKvHeads, qPerKv, v.shape[2], v.shape[3]]
 
-            finalK = MLX.broadcast(finalK, to: kExpandShape)
-            finalV = MLX.broadcast(finalV, to: vExpandShape)
+            // First expand dimensions to prepare for broadcasting
+            finalK = k.expandedDimensions(axis: 2)  // [b, nKvHeads, 1, seqLen, headDim]
+            finalV = v.expandedDimensions(axis: 2)  // [b, nKvHeads, 1, seqLen, headDim]
 
-            finalK = finalK.reshaped([b, nKvHeads * qPerKv] + Array(finalK.shape[3...]))
-            finalV = finalV.reshaped([b, nKvHeads * qPerKv] + Array(finalV.shape[3...]))
+            // Broadcast to repeat each head qPerKv times
+            finalK = MLX.broadcast(finalK, to: kExpandShape)  // [b, nKvHeads, qPerKv, seqLen, headDim]
+            finalV = MLX.broadcast(finalV, to: vExpandShape)  // [b, nKvHeads, qPerKv, seqLen, headDim]
+
+            // Reshape to final shape: [b, nHeads, seqLen, headDim]
+            finalK = finalK.reshaped([b, actualKvHeads * qPerKv, k.shape[2], k.shape[3]])
+            finalV = finalV.reshaped([b, actualKvHeads * qPerKv, v.shape[2], v.shape[3]])
+
+            print("  - finalK.shape after expansion: \(finalK.shape)")
+            print("  - finalV.shape after expansion: \(finalV.shape)")
         }
 
         // Scaled dot product attention
@@ -249,13 +333,43 @@ class SesameAttention: Module {
         scale: Float,
         mask: MLXArray?
     ) -> MLXArray {
+        print("🔍 DEBUG scaledDotProductAttention:")
+        print("  - queries.shape: \(queries.shape)")
+        print("  - keys.shape: \(keys.shape)")
+        print("  - values.shape: \(values.shape)")
+        print("  - mask.shape: \(mask?.shape ?? [])")
+
         var scores = MLX.matmul(queries, keys.swappedAxes(-2, -1)) * scale
+        print("  - scores.shape after matmul: \(scores.shape)")
+        print("  - scores.isValid: \(scores.ctx != nil)")
 
         if let mask = mask {
-            scores = scores + mask
+            // Handle different mask shapes (e.g., [1, 1, seq_len, seq_len] -> [1, n_heads, seq_len, seq_len])
+            var attentionMask = mask
+
+            // If mask has fewer heads than queries, broadcast it
+            if mask.shape[1] == 1 && scores.shape[1] > 1 {
+                print("  - Broadcasting mask from \(mask.shape) to match scores shape \(scores.shape)")
+                // Broadcast mask from [batch, 1, seq_len, seq_len] to [batch, n_heads, seq_len, seq_len]
+                let broadcastShape = [mask.shape[0], scores.shape[1], mask.shape[2], mask.shape[3]]
+                attentionMask = MLX.broadcast(mask, to: broadcastShape)
+                print("  - attentionMask.shape after broadcast: \(attentionMask.shape)")
+                print("  - attentionMask.isValid: \(attentionMask.ctx != nil)")
+            }
+
+            scores = scores + attentionMask
+            print("  - scores.shape after adding mask: \(scores.shape)")
+            print("  - scores.isValid after adding mask: \(scores.ctx != nil)")
         }
 
         let attentionWeights = MLX.softmax(scores, axis: -1)
-        return MLX.matmul(attentionWeights, values)
+        print("  - attentionWeights.shape: \(attentionWeights.shape)")
+        print("  - attentionWeights.isValid: \(attentionWeights.ctx != nil)")
+
+        let output = MLX.matmul(attentionWeights, values)
+        print("  - output.shape: \(output.shape)")
+        print("  - output.isValid: \(output.ctx != nil)")
+
+        return output
     }
 }

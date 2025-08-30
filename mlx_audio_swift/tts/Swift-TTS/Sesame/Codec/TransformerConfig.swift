@@ -24,7 +24,7 @@ struct TransformerConfig {
     let context: Int
     let maxPeriod: Int
     let maxSeqLen: Int
-    let kvRepeat: Int
+    var kvRepeat: Int
     let dimFeedforward: Int
     let convLayout: Bool
 
@@ -69,6 +69,8 @@ struct TransformerConfig {
 
     /// Decoder-specific configuration
     static func decoderConfig(dModel: Int = 512) -> TransformerConfig {
-        return defaultConfig(dModel: dModel, numHeads: 8, numLayers: 6)
+        var config = defaultConfig(dModel: dModel, numHeads: 16, numLayers: 6)
+        config.kvRepeat = 4  // 16 query heads, 4 key/value heads for GQA
+        return config
     }
 }

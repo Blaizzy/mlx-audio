@@ -105,13 +105,32 @@ public class SesameTTS {
 
     /// Initialize Sesame TTS with default configuration
     public init() {
-        // Use default Llama-1B configuration
-        self.modelConfig = LlamaModelArgs.llama1B()
+        do {
+            // Try to load configuration from sesame_config.json in bundle
+            if let configPath = Bundle.main.path(forResource: "sesame_config", ofType: "json") {
+                self.modelConfig = try LlamaModelArgs.fromSesameConfig(configPath: configPath)
+            } else {
+                // Fallback to hardcoded configuration if JSON not found
+                print("⚠️  WARNING: Could not find sesame_config.json, using fallback configuration")
+                self.modelConfig = LlamaModelArgs.llama1B()
+            }
+        } catch {
+            // Fallback on error
+            print("⚠️  WARNING: Failed to load sesame_config.json: \(error), using fallback configuration")
+            self.modelConfig = LlamaModelArgs.llama1B()
+        }
     }
 
     /// Initialize with custom model configuration
     public init(modelConfig: LlamaModelArgs) {
         self.modelConfig = modelConfig
+    }
+
+    /// Initialize Sesame TTS from configuration file
+    /// - Parameter configPath: Path to sesame_config.json file
+    public convenience init(fromConfig configPath: String) throws {
+        let modelConfig = try LlamaModelArgs.fromSesameConfig(configPath: configPath)
+        self.init(modelConfig: modelConfig)
     }
 
     // MARK: - Model Management
@@ -184,6 +203,7 @@ public class SesameTTS {
     ///   - topK: Top-k sampling parameter (1-100, default 50)
     ///   - maxAudioLengthMs: Maximum audio length in milliseconds (default 90000)
     ///   - stream: Whether to use streaming generation for real-time output
+    ///   - voiceMatch: Whether to use voice matching (append text to voice prompt)
     /// - Returns: Generated audio as MLXArray (sample_rate=24000)
     public func generateAudio(
         text: String,
@@ -191,7 +211,8 @@ public class SesameTTS {
         temperature: Float = 0.9,
         topK: Int = 50,
         maxAudioLengthMs: Float = 90000,
-        stream: Bool = false
+        stream: Bool = false,
+        voiceMatch: Bool = true
     ) throws -> MLXArray {
         // Ensure model is loaded
         guard isLoaded else {
@@ -214,6 +235,9 @@ public class SesameTTS {
         print("🎵 Generating audio with voice: \(generationVoice.rawValue)")
         print("📝 Text: \(trimmedText.prefix(50))..." + (trimmedText.count > 50 ? "" : ""))
 
+        print("🎤 DEBUG SesameTTS: Calling modelWrapper.generate")
+        print("🎤 DEBUG SesameTTS: text='\(trimmedText)', voice='\(generationVoice.rawValue)', voiceMatch=\(voiceMatch)")
+
         do {
             // Generate audio using model wrapper
             let result = try modelWrapper.generate(
@@ -222,7 +246,8 @@ public class SesameTTS {
                 maxAudioLengthMs: maxAudioLengthMs,
                 temperature: temperature,
                 topK: topK,
-                stream: stream
+                stream: stream,
+                voiceMatch: voiceMatch
             )
 
             print("✅ Audio generated successfully")
