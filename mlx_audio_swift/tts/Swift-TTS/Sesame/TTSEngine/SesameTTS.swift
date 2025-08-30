@@ -235,9 +235,6 @@ public class SesameTTS {
         print("🎵 Generating audio with voice: \(generationVoice.rawValue)")
         print("📝 Text: \(trimmedText.prefix(50))..." + (trimmedText.count > 50 ? "" : ""))
 
-        print("🎤 DEBUG SesameTTS: Calling modelWrapper.generate")
-        print("🎤 DEBUG SesameTTS: text='\(trimmedText)', voice='\(generationVoice.rawValue)', voiceMatch=\(voiceMatch)")
-
         do {
             // Generate audio using model wrapper
             let result = try modelWrapper.generate(

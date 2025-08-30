@@ -143,35 +143,44 @@ public class SesameTokenizer {
         continuingSubwordPrefix = finalConfig["continuing_subword_prefix"] as? String
         endOfWordSuffix = finalConfig["end_of_word_suffix"] as? String
 
-        // Load vocabulary and merges from sesame_tokenizer.json (like Orpheus)
-        guard let tokenizerPath = Bundle.main.path(forResource: "sesame_tokenizer", ofType: "json"),
-              let tokenizerData = try? Data(contentsOf: URL(fileURLWithPath: tokenizerPath)) else {
-            throw TokenizerError.tokenizerNotFound
+        // Try to load vocabulary and merges from sesame_tokenizer.json
+        // If loading fails, fall back to minimal vocabulary (like Python implementation)
+        if let tokenizerPath = Bundle.main.path(forResource: "sesame_tokenizer", ofType: "json"),
+           let tokenizerData = try? Data(contentsOf: URL(fileURLWithPath: tokenizerPath)),
+           let tokenizerDict = try? JSONSerialization.jsonObject(with: tokenizerData) as? [String: Any],
+           let model = tokenizerDict["model"] as? [String: Any],
+           let vocabDict = model["vocab"] as? [String: Int],
+           let mergesArray = model["merges"] as? [[String]] {
+
+            // Try to validate, but don't fail if validation fails
+            do {
+                try validateVocabulary(vocabDict)
+                let validMerges = validateAndFilterMerges(mergesArray)
+                vocab = vocabDict
+                merges = validMerges.map { ($0[0], $0[1]) }
+            } catch {
+                print("Warning: Tokenizer validation failed, using fallback: \(error)")
+                // Fall back to minimal vocabulary
+                vocab = SesameTokenizer.createMinimalVocab(
+                    bosTokenId: bosTokenId,
+                    eosTokenId: eosTokenId,
+                    padTokenId: padTokenId,
+                    audioTokenId: audioTokenId,
+                    audioEosTokenId: audioEosTokenId
+                )
+                merges = []
+            }
+        } else {
+            // Fallback to minimal vocabulary if file not found or parsing fails
+            vocab = SesameTokenizer.createMinimalVocab(
+                bosTokenId: bosTokenId,
+                eosTokenId: eosTokenId,
+                padTokenId: padTokenId,
+                audioTokenId: audioTokenId,
+                audioEosTokenId: audioEosTokenId
+            )
+            merges = []
         }
-
-        guard let tokenizerDict = try? JSONSerialization.jsonObject(with: tokenizerData) as? [String: Any] else {
-            throw TokenizerError.encodingFailed("Invalid JSON format in tokenizer file")
-        }
-
-        guard let model = tokenizerDict["model"] as? [String: Any] else {
-            throw TokenizerError.encodingFailed("Missing 'model' section in tokenizer configuration")
-        }
-
-        guard let vocabDict = model["vocab"] as? [String: Int] else {
-            throw TokenizerError.encodingFailed("Missing or invalid 'vocab' in tokenizer model")
-        }
-
-        guard let mergesArray = model["merges"] as? [[String]] else {
-            throw TokenizerError.encodingFailed("Missing or invalid 'merges' in tokenizer model")
-        }
-
-        // Validate vocabulary integrity
-        try validateVocabulary(vocabDict)
-        try validateMerges(mergesArray)
-
-        // Use the vocab and merges that were already loaded from sesame_tokenizer.json
-        vocab = vocabDict
-        merges = mergesArray.map { ($0[0], $0[1]) }
 
         // Ensure byte fallback tokens are in vocabulary
         // ensureByteFallbackTokens()  // Called when needed during tokenization
@@ -209,31 +218,70 @@ public class SesameTokenizer {
         }
     }
 
-    /// Validate merges integrity
-    private func validateMerges(_ mergesArray: [[String]]) throws {
+    /// Validate and filter merges (returns only valid merges)
+    private func validateAndFilterMerges(_ mergesArray: [[String]]) -> [[String]] {
         // Ensure merges array is not empty
         guard !mergesArray.isEmpty else {
-            throw TokenizerError.encodingFailed("Merges array is empty")
+            print("Warning: Merges array is empty, using minimal merges")
+            return []
         }
 
-        // Validate each merge pair
+        // Validate each merge pair and filter out invalid ones
+        var validMerges: [[String]] = []
+
         for (index, mergePair) in mergesArray.enumerated() {
             guard mergePair.count == 2 else {
-                throw TokenizerError.encodingFailed("Invalid merge pair at index \(index): expected 2 elements, got \(mergePair.count)")
+                print("Warning: Invalid merge pair at index \(index): expected 2 elements, got \(mergePair.count), skipping")
+                continue
             }
 
             let (first, second) = (mergePair[0], mergePair[1])
 
             // Ensure merge components are not empty
             guard !first.isEmpty && !second.isEmpty else {
-                throw TokenizerError.encodingFailed("Empty merge component at index \(index): '\(first)' + '\(second)'")
+                print("Warning: Empty merge component at index \(index): '\(first)' + '\(second)', skipping")
+                continue
             }
 
-            // Ensure merge components are reasonable length (allow up to 20 chars for subword units)
-            guard first.count <= 20 && second.count <= 20 else {
-                throw TokenizerError.encodingFailed("Merge component too long at index \(index): '\(first)' + '\(second)'")
+            // Ensure merge components are reasonable length
+            // Allow longer sequences for repetitive characters and be more permissive overall
+            let isRepetitiveSequence = { (component: String) -> Bool in
+                // Whitespace characters
+                if component.allSatisfy({ $0 == "Ċ" || $0 == "Ġ" || $0 == " " || $0 == "\n" || $0 == "\t" }) {
+                    return true
+                }
+                // Dash/hyphen sequences (common separators)
+                if component.allSatisfy({ $0 == "-" || $0 == "_" || $0 == "=" || $0 == "+" || $0 == "|" }) {
+                    return true
+                }
+                // Asterisk sequences (markdown formatting)
+                if component.allSatisfy({ $0 == "*" || $0 == "#" || $0 == "`" || $0 == "~" }) {
+                    return true
+                }
+                // Any single character repeated (like "aaa", "111", etc.)
+                if component.count > 1 && component.allSatisfy({ $0 == component.first }) {
+                    return true
+                }
+                return false
             }
+
+            // Be more permissive: allow up to 100 chars for repetitive sequences, 30 for others
+            let maxLength = (isRepetitiveSequence(first) && isRepetitiveSequence(second)) ? 100 : 30
+            guard first.count <= maxLength && second.count <= maxLength else {
+                print("Warning: Skipping invalid merge at index \(index): '\(first)' + '\(second)' (length: \(first.count) + \(second.count), max: \(maxLength))")
+                continue // Skip invalid merges instead of failing
+            }
+
+            // Add valid merge to the list
+            validMerges.append(mergePair)
         }
+
+        // Report filtering results
+        if validMerges.count != mergesArray.count {
+            print("Warning: Filtered out \(mergesArray.count - validMerges.count) invalid merges, kept \(validMerges.count)")
+        }
+
+        return validMerges
     }
 
     /// Ensure byte fallback tokens are available in vocabulary

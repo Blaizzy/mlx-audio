@@ -247,36 +247,28 @@ class SesameAttention: Module {
         
         if actualQHeads != actualKvHeads {
             let qPerKv = actualQHeads / actualKvHeads
-            
-            print("🔍 DEBUG SesameAttention: GQA expansion needed")
-            print("  - actualQHeads: \(actualQHeads), actualKvHeads: \(actualKvHeads), qPerKv: \(qPerKv)")
-            print("  - k.shape before expansion: \(k.shape)")
-            print("  - v.shape before expansion: \(v.shape)")
-            
+
             // Expand each KV head to match number of Q heads
             // k shape: [b, nKvHeads, seqLen, headDim]
             // Target: [b, nKvHeads, qPerKv, seqLen, headDim]
             let kExpandShape = [b, actualKvHeads, qPerKv, k.shape[2], k.shape[3]]
             let vExpandShape = [b, actualKvHeads, qPerKv, v.shape[2], v.shape[3]]
-            
+
             // First expand dimensions to prepare for broadcasting
             finalK = k.expandedDimensions(axis: 2)  // [b, nKvHeads, 1, seqLen, headDim]
             finalV = v.expandedDimensions(axis: 2)  // [b, nKvHeads, 1, seqLen, headDim]
-            
+
             // Broadcast to repeat each head qPerKv times
             finalK = MLX.broadcast(finalK, to: kExpandShape)  // [b, nKvHeads, qPerKv, seqLen, headDim]
             finalV = MLX.broadcast(finalV, to: vExpandShape)  // [b, nKvHeads, qPerKv, seqLen, headDim]
-            
+
             // Reshape to final shape: [b, nHeads, seqLen, headDim]
             finalK = finalK.reshaped([b, actualKvHeads * qPerKv, k.shape[2], k.shape[3]])
             finalV = finalV.reshaped([b, actualKvHeads * qPerKv, v.shape[2], v.shape[3]])
-            
-            print("  - finalK.shape after expansion: \(finalK.shape)")
-            print("  - finalV.shape after expansion: \(finalV.shape)")
         }
         
         // Scaled dot product attention
-        let output = scaledDotProductAttention(
+        let output = MLXFast.scaledDotProductAttention(
             queries: q,
             keys: finalK,
             values: finalV,
@@ -287,43 +279,5 @@ class SesameAttention: Module {
         let outputReshaped = output.swappedAxes(1, 2).reshaped([b, sX, -1])
         return oProj(outputReshaped)
     }
-    
-    private func scaledDotProductAttention(
-        queries: MLXArray,
-        keys: MLXArray,
-        values: MLXArray,
-        scale: Float,
-        mask: MLXArray?
-    ) -> MLXArray {
-        var scores = MLX.matmul(queries, keys.swappedAxes(-2, -1)) * scale
 
-        if let mask = mask {
-            // Handle different mask shapes for attention masking
-            var attentionMask = mask
-
-            // If mask has fewer heads than queries, broadcast it
-            if mask.shape[1] == 1 && scores.shape[1] > 1 {
-                // Broadcast mask from [batch, 1, query_seq, key_seq] to [batch, n_heads, query_seq, key_seq]
-                let broadcastShape = [mask.shape[0], scores.shape[1], mask.shape[2], mask.shape[3]]
-                attentionMask = MLX.broadcast(mask, to: broadcastShape)
-            }
-
-            // If the mask and scores have different sequence lengths, we need to slice the mask
-            // This handles cases where mask might be [batch, n_heads, full_seq, full_seq]
-            // but scores might be [batch, n_heads, 1, current_seq]
-            if attentionMask.shape[2] > scores.shape[2] || attentionMask.shape[3] > scores.shape[3] {
-                // Slice the mask to match scores dimensions
-                let slicedMask = attentionMask[0..., 0..., 0..<scores.shape[2], 0..<scores.shape[3]]
-                scores = scores + slicedMask
-            } else {
-                scores = scores + attentionMask
-            }
-        }
-
-        let attentionWeights = MLX.softmax(scores, axis: -1)
-
-        let output = MLX.matmul(attentionWeights, values)
-        
-        return output
-    }
 }
