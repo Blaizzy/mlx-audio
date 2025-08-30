@@ -34,7 +34,6 @@ class Attention: Module {
 
     private let config: TransformerConfig
     private let scale: Float
-    private var ropeFunction: ((MLXArray, Int) -> MLXArray)?
 
     init(_ config: TransformerConfig) {
         self.config = config
@@ -56,38 +55,16 @@ class Attention: Module {
             bias: config.biasAttn
         )
 
-        // Initialize RoPE if using rope positional embeddings
-        if config.positionalEmbedding == "rope" {
-            self.ropeFunction = { array, offset in
-                MLXFast.RoPE(
-                    array,
-                    dimensions: config.headDim,
-                    traditional: true,
-                    base: Float(config.maxPeriod),
-                    scale: 1.0,
-                    offset: offset
-                )
-            }
-        }
-
         super.init()
     }
 
     func callAsFunction(_ xs: MLXArray, cache: KVCacheProtocol, mask: MLXArray? = nil) -> MLXArray {
-        let _ = xs.shape[0]  // B
-        let _ = xs.shape[1]  // T
-        let _ = xs.shape[2]  // HD
-
         // Apply multi-head attention with self-attention (queries = keys = values)
         // For self-attention, we use the same tensor for queries, keys, and values
-        var attentionOutput = multiHeadAttention(xs, keys: xs, values: xs, mask: mask)
+        let attentionOutput = multiHeadAttention(xs, keys: xs, values: xs, mask: mask)
 
-        // Apply RoPE if available
-        if let ropeFn = ropeFunction {
-            // Note: This is a simplified RoPE application
-            // In a full implementation, we'd apply it to Q and K separately
-            attentionOutput = ropeFn(attentionOutput, cache.offset)
-        }
+        // Note: RoPE is now handled by SesameAttention in the main model
+        // This class provides standard multi-head attention for transformer blocks
 
         return attentionOutput
     }
@@ -166,11 +143,11 @@ class MlpNoGating: Module {
 
 /// Individual transformer layer
 class TransformerLayer: Module {
-    @ModuleInfo var norm1: MLXNN.RMSNorm
-    @ModuleInfo var norm2: MLXNN.RMSNorm
+    @ModuleInfo(key: "norm1") var norm1: MLXNN.RMSNorm
+    @ModuleInfo(key: "norm2") var norm2: MLXNN.RMSNorm
     @ModuleInfo var layerScale1: Module
     @ModuleInfo var layerScale2: Module
-    @ModuleInfo var selfAttention: Attention
+    @ModuleInfo(key: "self_attn") var selfAttention: Attention
     @ModuleInfo var mlp: Module
 
     private let config: TransformerConfig
@@ -221,8 +198,6 @@ class TransformerLayer: Module {
             attnOutput = layerScale(attnOutput)
         } else if let identity = layerScale1 as? Identity {
             attnOutput = identity(attnOutput)
-        } else {
-            // Fallback - no scaling
         }
 
         residual = residual + attnOutput
@@ -246,29 +221,28 @@ class TransformerLayer: Module {
             mlpOutput = layerScale(mlpOutput)
         } else if let identity = layerScale2 as? Identity {
             mlpOutput = identity(mlpOutput)
-        } else {
-            // Fallback - no scaling
         }
+        
         residual = residual + mlpOutput
-
         return residual
     }
 }
 
 /// Stack of transformer layers
 class Transformer: Module {
-    let layers: [TransformerLayer]
+    @ModuleInfo(key: "layers") var layers: [TransformerLayer]
     private let config: TransformerConfig
 
     init(_ config: TransformerConfig) {
         self.config = config
-        self.layers = (0..<config.numLayers).map { _ in TransformerLayer(config) }
+        self._layers.wrappedValue = (0..<config.numLayers).map { _ in TransformerLayer(config) }
         super.init()
     }
 
     func callAsFunction(_ xs: MLXArray, cache: [KVCacheProtocol]) -> MLXArray {
         var output = xs
-        for (layer, layerCache) in zip(layers, cache) {
+        for (layerIndex, layer) in layers.enumerated() {
+            let layerCache = cache[layerIndex]  // Get the cache for this specific layer
             output = layer(output, cache: layerCache)
         }
         return output

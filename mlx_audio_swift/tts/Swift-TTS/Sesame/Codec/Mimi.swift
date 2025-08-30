@@ -117,13 +117,13 @@ class Mimi: Module {
         // Initialize decoder
         self._decoder.wrappedValue = SeanetDecoder(config.seanet)
 
-        // Initialize quantizer
+        // Initialize quantizer - FIXED: Match Python configuration exactly
         self._quantizer.wrappedValue = SplitResidualVectorQuantizer(
-            dim: config.seanet.dimension,
-            inputDim: config.seanet.dimension,
-            outputDim: config.seanet.dimension,
-            nq: config.quantizerNq,
-            bins: config.quantizerBins
+            dim: config.quantizerDim,           // 256 - matches Python cfg.quantizer_dim
+            inputDim: config.seanet.dimension,  // 512 - matches Python dim (seanet dimension)
+            outputDim: config.seanet.dimension, // 512 - matches Python dim (seanet dimension)
+            nq: config.quantizerNq,             // 32 - matches Python cfg.quantizer_nq
+            bins: config.quantizerBins          // 2048 - matches Python cfg.quantizer_bins
         )
 
         // Initialize temporal processing components
@@ -190,19 +190,38 @@ class Mimi: Module {
 
     /// Decode discrete codes to audio - matching Python architecture
     func decode(_ codes: MLXArray) -> MLXArray {
+        print("🔍 DEBUG Mimi decode: input codes shape = \(codes.shape)")
+        
+        // Validate input shape
+        guard codes.ndim == 3 else {
+            fatalError("Mimi decode expects 3D input [batch, codebooks, time], got \(codes.ndim)D: \(codes.shape)")
+        }
+        
+        guard codes.shape[1] == numCodebooks else {
+            fatalError("Mimi decode expects \(numCodebooks) codebooks, got \(codes.shape[1]) in shape \(codes.shape)")
+        }
+        
         // Step 1: Dequantize from discrete codes to latent representation
+        print("🔍 DEBUG Mimi decode: calling quantizer.decode...")
         var x = quantizer.decode(codes)
+        print("🔍 DEBUG Mimi decode: quantizer.decode returned shape = \(x.shape)")
 
         // Step 2: Temporal upsampling for reconstruction
+        print("🔍 DEBUG Mimi decode: calling upsample with input shape = \(x.shape)")
         x = upsample(x)
+        print("🔍 DEBUG Mimi decode: upsample returned shape = \(x.shape)")
 
         // Step 3: Decoder transformer processing
         if let cache = decoderCache {
+            print("🔍 DEBUG Mimi decode: calling decoder transformer...")
             x = decoderTransformer(x, cache: cache)[0]
+            print("🔍 DEBUG Mimi decode: decoder transformer returned shape = \(x.shape)")
         }
 
         // Step 4: Seanet decoding to audio
+        print("🔍 DEBUG Mimi decode: calling seanet decoder...")
         let decoded = decoder(x)
+        print("🔍 DEBUG Mimi decode: seanet decoder returned shape = \(decoded.shape)")
 
         // Return audio in original format
         return decoded
@@ -225,23 +244,8 @@ class Mimi: Module {
 
     // MARK: - Weight Loading
 
-    /// Load weights from dictionary
-    /// - Parameters:
-    ///   - weights: Dictionary of weight names to MLXArrays
-    ///   - strict: Whether to fail on missing keys
-    /// - Returns: Updated model with loaded weights
-    func loadWeights(_ weights: [String: MLXArray], strict: Bool = true) throws -> Mimi {
-        // Create a new instance with loaded weights
-        // This is a simplified implementation - in practice you'd need to
-        // recursively load weights into all submodules
-        print("Loading weights into Mimi model...")
-
-        // For now, return self - full implementation would require
-        // traversing all submodules and loading their weights
-        // This matches the pattern from MLX's Module class
-
-        return self
-    }
+    // Weight loading is handled by SesameWeightLoader extension
+    // See SesameWeightLoader.swift for loadPytorchWeights implementation
 
     /// Reset all caches (for new sequences)
     func resetCache() {

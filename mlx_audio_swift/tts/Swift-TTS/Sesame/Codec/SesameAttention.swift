@@ -60,6 +60,23 @@ class Llama3ScaledRoPE: Module {
             oldContextLen: oldContextLen
         )
         self.theta = theta
+
+        // Ensure theta has the correct shape for head_dim
+        let expectedThetaCount = dim / 2
+        if theta.count != expectedThetaCount {
+            // If dim is odd, theta will have dim/2 truncated
+            // Pad or truncate to match expected size
+            if theta.count < expectedThetaCount {
+                // Pad with zeros
+                let paddingCount = expectedThetaCount - theta.count
+                let padding = MLXArray.zeros([paddingCount])
+                self.theta = MLX.concatenated([theta, padding], axis: 0)
+            } else {
+                // Truncate
+                self.theta = theta[0..<expectedThetaCount]
+            }
+        }
+
         buildRopeCache(maxSeqLen: maxSeqLen)
         isCacheBuilt = true
     }
@@ -121,7 +138,20 @@ class Llama3ScaledRoPE: Module {
         }
 
         // Python: xshaped = x.astype(mx.float32).reshape(*x.shape[:-1], -1, 2)
-        let xShaped = x.asType(.float32).reshaped(x.shape[0], x.shape[1], x.shape[2], -1, 2)
+        let headDim = x.shape[3]
+        let halfHeadDim = headDim / 2
+        let remainder = headDim % 2
+
+        // Handle odd head dimensions by padding the last dimension
+        var xPadded = x
+        if remainder != 0 {
+            // Pad the last dimension to make it even
+            let paddingShape = [x.shape[0], x.shape[1], x.shape[2], 1]
+            let padding = MLXArray.zeros(paddingShape, dtype: x.dtype)
+            xPadded = MLX.concatenated([x, padding], axis: -1)
+        }
+
+        let xShaped = xPadded.asType(.float32).reshaped(x.shape[0], x.shape[1], x.shape[2], (headDim + remainder) / 2, 2)
 
         // Python: rope_cache = rope_cache.reshape(-1, xshaped.shape[1], 1, xshaped.shape[3], 2)
         // Dynamic reshape to match Python exactly
@@ -129,7 +159,7 @@ class Llama3ScaledRoPE: Module {
             xShaped.shape[0],  // batch size (dynamic)
             xShaped.shape[1],  // seq_len
             1,                 // 1 for head broadcasting
-            xShaped.shape[3],  // head_dim/2
+            xShaped.shape[3],  // head_dim/2 (adjusted for padding)
             2                  // 2 for cos/sin
         )
 
@@ -141,7 +171,17 @@ class Llama3ScaledRoPE: Module {
 
         // Stack and reshape back to original shape
         let xOut = MLX.stacked([xOut0, xOut1], axis: -1)
-        return xOut.reshaped(x.shape)
+
+        // Reshape to padded shape first, then remove padding if it was added
+        let paddedResultShape = [x.shape[0], x.shape[1], x.shape[2], headDim + remainder]
+        var result = xOut.reshaped(paddedResultShape).asType(x.dtype)
+
+        // Remove padding if it was added for odd dimensions
+        if remainder != 0 {
+            result = result[0..., 0..., 0..., 0..<headDim]
+        }
+
+        return result
     }
 }
 
@@ -156,27 +196,36 @@ class SesameAttention: Module {
     
     private let nHeads: Int
     private let nKvHeads: Int
-    private let headDim: Int
+    private var headDim: Int
     private let scale: Float
     
     init(args: LlamaModelArgs) {
         let dim = args.hiddenSize
         self.nHeads = args.numAttentionHeads
         self.nKvHeads = args.numKeyValueHeads ?? nHeads
-        self.headDim = args.headDim ?? dim / nHeads
-        self.scale = pow(Float(headDim), -0.5)
-        
+
+        var tempHeadDim = args.headDim ?? dim / nHeads
+        // Ensure headDim is consistent and even for RoPE
+        if tempHeadDim % 2 != 0 {
+            tempHeadDim -= 1  // Make it even
+        }
+        self.headDim = tempHeadDim
+        self.scale = pow(Float(tempHeadDim), -0.5)
+
         let attentionBias = args.attentionBias ?? false
-        
-        self._qProj.wrappedValue = MLXNN.Linear(dim, nHeads * headDim, bias: attentionBias)
-        self._kProj.wrappedValue = MLXNN.Linear(dim, nKvHeads * headDim, bias: attentionBias)
-        self._vProj.wrappedValue = MLXNN.Linear(dim, nKvHeads * headDim, bias: attentionBias)
-        self._oProj.wrappedValue = MLXNN.Linear(nHeads * headDim, dim, bias: attentionBias)
+
+        // Use the adjusted headDim for projections
+        let finalHeadDim = tempHeadDim
+
+        self._qProj.wrappedValue = MLXNN.Linear(dim, nHeads * finalHeadDim, bias: attentionBias)
+        self._kProj.wrappedValue = MLXNN.Linear(dim, nKvHeads * finalHeadDim, bias: attentionBias)
+        self._vProj.wrappedValue = MLXNN.Linear(dim, nKvHeads * finalHeadDim, bias: attentionBias)
+        self._oProj.wrappedValue = MLXNN.Linear(nHeads * finalHeadDim, dim, bias: attentionBias)
         
         if let ropeTheta = args.ropeTheta,
            let ropeScaling = args.ropeScaling {
             self._rope.wrappedValue = Llama3ScaledRoPE(
-                dim: headDim,
+                dim: finalHeadDim,
                 base: ropeTheta,
                 scaleFactor: ropeScaling.factor ?? 1.0
             )
@@ -193,11 +242,10 @@ class SesameAttention: Module {
         // Python: b, s_x, _ = x.shape
         let b = x.shape[0]
         let sX = x.shape[1]
-        
+
         // Python: y = x
         let y = x
         let sY = y.shape[1]
-        
         // Python: q = self.q_proj(x)
         var q = qProj(x)
         
@@ -206,32 +254,32 @@ class SesameAttention: Module {
         
         // Python: q = q.reshape(b, s_x, self.n_kv_heads * q_per_kv, self.head_dim)
         q = q.reshaped([b, sX, nKvHeads * qPerKv, headDim])
-        
+
         // Python: if self.rope is not None: q = self.rope(q, offset=cache.offset if cache else 0)
         if let rope = rope {
             q = rope(q, offset: cache?.offset ?? 0)
         }
-        
-        // Python: q = q.swapaxes(1, 2)
+
+                // Python: q = q.swapaxes(1, 2)
         q = q.swappedAxes(1, 2)
-        
+
         // Python: k = self.k_proj(y), v = self.v_proj(y)
         var k = kProj(y)
         var v = vProj(y)
-        
+
         // Python: k = k.reshape(b, s_y, -1, self.head_dim), v = v.reshape(b, s_y, -1, self.head_dim)
         k = k.reshaped([b, sY, -1, headDim])
         v = v.reshaped([b, sY, -1, headDim])
-        
+
         // Python: if self.rope is not None: k = self.rope(k, offset=cache.offset if cache else 0)
         if let rope = rope {
             k = rope(k, offset: cache?.offset ?? 0)
         }
-        
+
         // Python: k = k.swapaxes(1, 2), v = v.swapaxes(1, 2)
         k = k.swappedAxes(1, 2)
         v = v.swappedAxes(1, 2)
-        
+
         // Python: if cache: k, v = cache.update_and_fetch(k, v)
         if let cache = cache {
             (k, v) = cache.updateAndFetch(keys: k, values: v)
@@ -241,24 +289,24 @@ class SesameAttention: Module {
         // Calculate actual head counts from tensor shapes, not config
         let actualQHeads = q.shape[1]  // Number of query heads
         let actualKvHeads = k.shape[1]  // Number of KV heads
-        
+
         var finalK = k
         var finalV = v
         
         if actualQHeads != actualKvHeads {
             let qPerKv = actualQHeads / actualKvHeads
 
-            // Expand each KV head to match number of Q heads
-            // k shape: [b, nKvHeads, seqLen, headDim]
-            // Target: [b, nKvHeads, qPerKv, seqLen, headDim]
-            let kExpandShape = [b, actualKvHeads, qPerKv, k.shape[2], k.shape[3]]
-            let vExpandShape = [b, actualKvHeads, qPerKv, v.shape[2], v.shape[3]]
+            // Expand each KV head to match number of Q heads (following Python exactly)
+            // k shape: [b, nKvHeads, seqLen, headDim] -> [b, nKvHeads, qPerKv, seqLen, headDim]
 
             // First expand dimensions to prepare for broadcasting
             finalK = k.expandedDimensions(axis: 2)  // [b, nKvHeads, 1, seqLen, headDim]
             finalV = v.expandedDimensions(axis: 2)  // [b, nKvHeads, 1, seqLen, headDim]
 
             // Broadcast to repeat each head qPerKv times
+            let kExpandShape = [b, actualKvHeads, qPerKv, k.shape[2], k.shape[3]]
+            let vExpandShape = [b, actualKvHeads, qPerKv, v.shape[2], v.shape[3]]
+
             finalK = MLX.broadcast(finalK, to: kExpandShape)  // [b, nKvHeads, qPerKv, seqLen, headDim]
             finalV = MLX.broadcast(finalV, to: vExpandShape)  // [b, nKvHeads, qPerKv, seqLen, headDim]
 
@@ -266,7 +314,7 @@ class SesameAttention: Module {
             finalK = finalK.reshaped([b, actualKvHeads * qPerKv, k.shape[2], k.shape[3]])
             finalV = finalV.reshaped([b, actualKvHeads * qPerKv, v.shape[2], v.shape[3]])
         }
-        
+
         // Scaled dot product attention
         let output = MLXFast.scaledDotProductAttention(
             queries: q,

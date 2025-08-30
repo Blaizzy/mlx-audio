@@ -94,39 +94,131 @@ class SesameModelWrapper: Module {
     /// Following Kokoro's pattern for memory efficiency
     private func ensureInitialized() {
         guard !isInitialized else { return }
+        
+        print("🚀 DEBUG ensureInitialized: Starting model initialization...")
 
         autoreleasepool {
+            print("🚀 DEBUG ensureInitialized: Creating SesameModel...")
             // Initialize heavy ML components
             let sesameModel = SesameModel(config)
+            print("🚀 DEBUG ensureInitialized: SesameModel created, setting up caches...")
+            
             sesameModel.setupCaches(maxBatchSize: 1)
+            print("🚀 DEBUG ensureInitialized: Caches set up, assigning to wrapper...")
+            
             self._model.wrappedValue = sesameModel
+            print("🚀 DEBUG ensureInitialized: SesameModel assigned successfully")
 
-            // Initialize Mimi codec for audio tokenization
-            let mimiConfig = MimiConfig.mimi202407(numCodebooks: 8) // Default 8 codebooks
+            print("🚀 DEBUG ensureInitialized: Creating Mimi codec...")
+            // CRITICAL: We need pre-trained Mimi weights to work
+            
+            // DEBUG: Print what's in the Resources folder
+            if let resourcesPath = Bundle.main.path(forResource: "", ofType: "", inDirectory: "Sesame/Resources") {
+                print("🔍 DEBUG: Sesame/Resources folder found at: \(resourcesPath)")
+                do {
+                    let contents = try FileManager.default.contentsOfDirectory(atPath: resourcesPath)
+                    print("🔍 DEBUG: Contents of Sesame/Resources folder:")
+                    for item in contents {
+                        print("  - \(item)")
+                    }
+                } catch {
+                    print("🔍 DEBUG: Error reading Sesame/Resources: \(error)")
+                }
+            } else {
+                print("🔍 DEBUG: Sesame/Resources folder not found")
+            }
+            
+            // Try different paths to find the Mimi weights
+            let possibleFiles = [
+                "tokenizer-e351c8d8-checkpoint125.safetensors",  // Original filename
+                "sesame-mimi.safetensors",  // Renamed version
+                "sesame-mini.safetensors"   // Alternative naming
+            ]
+            
+            var weightsPath: String?
+            for fileName in possibleFiles {
+                let fileNameWithoutExt = String(fileName.dropLast(12)) // Remove .safetensors
+                if let path = Bundle.main.path(forResource: fileNameWithoutExt, ofType: "safetensors", inDirectory: "Sesame/Resources") {
+                    print("🔍 DEBUG: Found weights file: \(fileName) at \(path)")
+                    weightsPath = path
+                    break
+                } else if let path = Bundle.main.path(forResource: fileNameWithoutExt, ofType: "safetensors") {
+                    print("🔍 DEBUG: Found weights file: \(fileName) at root: \(path)")
+                    weightsPath = path
+                    break
+                }
+            }
+            
+            guard let foundWeightsPath = weightsPath else {
+                fatalError("""
+                🚨 MISSING MIMI WEIGHTS! 🚨
+                
+                Sesame TTS requires pre-trained Mimi weights to function.
+                
+                Could not find any of these files in bundle:
+                - sesame-mimi.safetensors
+                - sesame-mini.safetensors
+                - tokenizer-e351c8d8-checkpoint125.safetensors
+                
+                TO FIX THIS:
+                1. Download the Mimi weights from HuggingFace:
+                   Repository: kyutai/moshiko-pytorch-bf16
+                   File: tokenizer-e351c8d8-checkpoint125.safetensors
+                   
+                2. Rename the file to: sesame-mimi.safetensors
+                
+                3. Add it to your Xcode project in:
+                   Swift-TTS/Sesame/Resources/sesame-mimi.safetensors
+                
+                4. Make sure it's added to the target's bundle resources
+                """)
+            }
+            
+            print("🚀 DEBUG ensureInitialized: Found Mimi weights at: \(foundWeightsPath)")
+            
+            // Initialize Mimi codec with pre-trained weights
+            let mimiConfig = MimiConfig.mimi202407(numCodebooks: config.audioNumCodebooks)
             let mimi = Mimi(mimiConfig)
-            self._audioTokenizer.wrappedValue = mimi
+            
+            // Load the pre-trained weights
+            print("🚀 DEBUG ensureInitialized: Loading Mimi weights...")
+            let weightsURL = URL(fileURLWithPath: foundWeightsPath)
+            let mimiWithWeights = mimi.loadPytorchWeights(url: weightsURL, strict: false)
+            
+            print("🚀 DEBUG ensureInitialized: Mimi weights loaded successfully, created with \(config.audioNumCodebooks) codebooks, assigning...")
+            
+            self._audioTokenizer.wrappedValue = mimiWithWeights
+            print("🚀 DEBUG ensureInitialized: Mimi assigned successfully")
 
             // Update sample rate from Mimi codec
             self.sampleRate = Int(mimi.sampleRate)
+            print("🚀 DEBUG ensureInitialized: Sample rate set to \(self.sampleRate)")
 
+            print("🚀 DEBUG ensureInitialized: Creating streaming decoder...")
             // Initialize streaming decoder
             self.streamingDecoder = MimiStreamingDecoder(mimi)
+            print("🚀 DEBUG ensureInitialized: Streaming decoder created")
 
+            print("🚀 DEBUG ensureInitialized: Initializing text tokenizer...")
             // Initialize text tokenizer (Llama-3)
             do {
                 let tokenizer = try SesameTokenizer()
+                print("🚀 DEBUG ensureInitialized: SesameTokenizer created successfully")
                 self.textTokenizer = tokenizer
                 // Initialize voice manager with tokenizer
                 self.voiceManager = SesameVoiceManager(tokenizer: tokenizer)
+                print("🚀 DEBUG ensureInitialized: Voice manager created")
             } catch {
-                print("Warning: Could not initialize SesameTokenizer: \(error)")
+                print("🚀 WARNING: Could not initialize SesameTokenizer: \(error)")
                 // Continue without tokenizer - will use fallback
                 self.voiceManager = SesameVoiceManager(tokenizer: nil)
+                print("🚀 DEBUG ensureInitialized: Using fallback voice manager")
             }
 
             // TODO: Initialize watermarker
 
             isInitialized = true
+            print("🚀 DEBUG ensureInitialized: Initialization complete!")
         }
     }
 
@@ -286,33 +378,32 @@ class SesameModelWrapper: Module {
         }
 
         print("🔤 DEBUG tokenizeTextSegment: Using SesameTokenizer")
-        // Use tokenizer and create proper frame format like Python
-        let (tokens, _) = tokenizer.prepareInputIds(text: text, speaker: speaker)
+        
+        // FIXED: Match Python format exactly: f"[{speaker}]{text}"
+        let formattedText = "[\(speaker)]\(text)"
+        print("🔤 DEBUG tokenizeTextSegment: formattedText='\(formattedText)'")
+        
+        // FIXED: Use the tokenizer's encode method without parameter label
+        let tokenIds = tokenizer.encode(formattedText)
+        let tokens = MLXArray(tokenIds.map { Int32($0) })
         print("🔤 DEBUG tokenizeTextSegment: tokenizer returned tokens shape=\(tokens.shape)")
 
-        // tokens is [1, seq_len], we need [seq_len, 33]
-        let seqLen = tokens.shape[1]
+        // tokens should be [seq_len], we need [seq_len, 33]
+        let seqLen = tokens.shape[0]
         print("🔤 DEBUG tokenizeTextSegment: seqLen=\(seqLen)")
 
         let textFrame = MLXArray.zeros([seqLen, 33], dtype: .int32)
         let textFrameMask = MLXArray.zeros([seqLen, 33], dtype: .bool)
         print("🔤 DEBUG tokenizeTextSegment: created textFrame shape=\(textFrame.shape)")
-        print("🔤 DEBUG tokenizeTextSegment: textFrame valid column indices: 0 to \(textFrame.shape[1] - 1)")
 
-        // Put text tokens in the last column (column 32, which is index 32 for 33 columns)
-        let squeezedTokens = tokens.squeezed()
-        print("🔤 DEBUG tokenizeTextSegment: squeezedTokens shape=\(squeezedTokens.shape)")
-        print("🔤 DEBUG tokenizeTextSegment: Attempting to set column index 32 (last column)")
-
-        // Verify the indexing is correct
-        let lastColumnIndex = textFrame.shape[1] - 1  // Should be 32 for shape [seqLen, 33]
+        // Put text tokens in the last column (column 32) - match Python exactly
+        let lastColumnIndex = 32  // Fixed: Python uses [:, -1] which is column 32 for 33 columns
         print("🔤 DEBUG tokenizeTextSegment: lastColumnIndex=\(lastColumnIndex)")
 
-        textFrame[MLXArray(0..<seqLen), MLXArray([lastColumnIndex])] = squeezedTokens
+        textFrame[MLXArray(0..<seqLen), MLXArray([lastColumnIndex])] = tokens
         textFrameMask[MLXArray(0..<seqLen), MLXArray([lastColumnIndex])] = MLXArray.ones([seqLen], dtype: .bool)
 
         print("🔤 DEBUG tokenizeTextSegment: Successfully set column \(lastColumnIndex)")
-
         print("🔤 DEBUG tokenizeTextSegment: returning result with shapes: tokens=\(textFrame.shape), mask=\(textFrameMask.shape)")
         return (textFrame, textFrameMask)
     }
@@ -327,8 +418,12 @@ class SesameModelWrapper: Module {
             fatalError("Audio tokenizer not initialized")
         }
 
+        // FIXED: Match Python format exactly: audio[None, None, ...]
+        // Add batch and channel dimensions like Python
+        let audioWithDims = audio.expandedDimensions(axis: 0).expandedDimensions(axis: 0) // [1, 1, samples]
+        
         // Encode audio using Mimi codec - returns (K, T) = (codebooks, time)
-        let audioTokens = audioTokenizer.encode(audio) // [codebooks, time]
+        let audioTokens = audioTokenizer.encode(audioWithDims)[0] // [0] like Python to remove batch dim
 
         // Add EOS frame if requested
         var processedTokens = audioTokens
@@ -343,9 +438,11 @@ class SesameModelWrapper: Module {
         let audioFrame = MLXArray.zeros([seqLen, 33], dtype: .int32)
         let audioFrameMask = MLXArray.zeros([seqLen, 33], dtype: .bool)
 
-        // Put audio tokens in the first 32 columns (swap from (K, T) to (T, K))
+        // FIXED: Match Python exactly: audio_frame[:, :-1] = audio_tokens.swapaxes(0, 1)
+        // Put audio tokens in all columns EXCEPT the last one (columns 0-31, not 0-32)
         let audioTokensTransposed = processedTokens.swappedAxes(0, 1) // [time, codebooks]
 
+        // Python uses [:, :-1] which means all columns except the last
         audioFrame[MLXArray(0..<seqLen), MLXArray(0..<32)] = audioTokensTransposed
         audioFrameMask[MLXArray(0..<seqLen), MLXArray(0..<32)] = MLXArray.ones([seqLen, 32], dtype: .bool)
         return (audioFrame, audioFrameMask)
@@ -362,25 +459,24 @@ class SesameModelWrapper: Module {
         let (textTokens, textMask) = tokenizeTextSegment(segment.text, speaker: segment.speaker)
         print("🔗 DEBUG tokenizeSegment: textTokens shape=\(textTokens.shape), textMask shape=\(textMask.shape)")
 
-        // Handle optional audio
-        guard let audio = segment.audio else {
+        // FIXED: Match Python logic exactly - Python assumes audio is always present
+        // Only handle optional audio if we're in a context where it might be missing
+        if let audio = segment.audio {
+            print("🔗 DEBUG tokenizeSegment: Processing audio")
+            let (audioTokens, audioMask) = tokenizeAudio(audio, addEOS: addEOS)
+            print("🔗 DEBUG tokenizeSegment: audioTokens shape=\(audioTokens.shape), audioMask shape=\(audioMask.shape)")
+
+            // Concatenate along axis 0 (sequence dimension) like Python
+            print("🔗 DEBUG tokenizeSegment: Concatenating along axis 0")
+            let combinedTokens = MLX.concatenated([textTokens, audioTokens], axis: 0)
+            let combinedMask = MLX.concatenated([textMask, audioMask], axis: 0)
+
+            print("🔗 DEBUG tokenizeSegment: returning combined result with shapes: tokens=\(combinedTokens.shape), mask=\(combinedMask.shape)")
+            return (combinedTokens, combinedMask)
+        } else {
             print("🔗 DEBUG tokenizeSegment: No audio, returning text tokens only")
-            // Return just text tokens - already in correct format (seq_len, 33)
             return (textTokens, textMask)
         }
-
-        print("🔗 DEBUG tokenizeSegment: Processing audio")
-        let (audioTokens, audioMask) = tokenizeAudio(audio, addEOS: addEOS)
-        print("🔗 DEBUG tokenizeSegment: audioTokens shape=\(audioTokens.shape), audioMask shape=\(audioMask.shape)")
-
-        // Both textTokens and audioTokens are now (seq_len, 33)
-        // Concatenate along axis 0 (sequence dimension) like Python
-        print("🔗 DEBUG tokenizeSegment: Concatenating along axis 0")
-        let combinedTokens = MLX.concatenated([textTokens, audioTokens], axis: 0)
-        let combinedMask = MLX.concatenated([textMask, audioMask], axis: 0)
-
-        print("🔗 DEBUG tokenizeSegment: returning combined result with shapes: tokens=\(combinedTokens.shape), mask=\(combinedMask.shape)")
-        return (combinedTokens, combinedMask)
     }
 
     /// Generate audio from text with optional voice prompt
@@ -445,45 +541,97 @@ class SesameModelWrapper: Module {
             var allMasks: [MLXArray] = []
 
             // Handle voice matching like Python
-            if voiceMatch && !currentContext.isEmpty {
-                // Voice matching: append text to the first context segment
-                let firstSegment = currentContext[0]
-                let generationText = (firstSegment.text + " " + text).trimmingCharacters(in: .whitespaces)
-                let voiceMatchSegment = Segment(
-                    speaker: speaker,
-                    text: generationText,
-                    audio: firstSegment.audio
-                )
-                let (tokens, mask) = tokenizeSegment(voiceMatchSegment, addEOS: false)
-                allTokens.append(tokens)
-                allMasks.append(mask)
-            } else {
-                // Regular tokenization: tokenize context segments
-                for (_, segment) in currentContext.enumerated() {
-                    let (tokens, mask) = tokenizeSegment(segment, addEOS: false)
-                    allTokens.append(tokens)
-                    allMasks.append(mask)
-                }
+            var tokens: [MLXArray] = []
+            var tokensMask: [MLXArray] = []
 
-                // Tokenize generation text separately
+            print("🎯 DEBUG generate: Starting voice matching logic...")
+            
+            if voiceMatch && !currentContext.isEmpty {
+                print("🎯 DEBUG generate: Voice matching enabled, combining context with text")
+                // FIXED: Match Python logic exactly
+                let generationText = (currentContext[0].text + " " + text).trimmingCharacters(in: .whitespaces)
+                print("🎯 DEBUG generate: Combined text length: \(generationText.count)")
+                
+                let currentContextUpdated = [
+                    Segment(
+                        speaker: speaker,
+                        text: generationText,
+                        audio: currentContext[0].audio
+                    )
+                ]
+                
+                print("🎯 DEBUG generate: Processing combined segment...")
+                // Process the single combined segment
+                for (index, segment) in currentContextUpdated.enumerated() {
+                    print("🎯 DEBUG generate: Processing segment \(index)")
+                    let (segmentTokens, segmentTokensMask) = tokenizeSegment(segment, addEOS: false)
+                    print("🎯 DEBUG generate: Segment \(index) tokenized, shapes: tokens=\(segmentTokens.shape), mask=\(segmentTokensMask.shape)")
+                    
+                    tokens.append(segmentTokens)
+                    tokensMask.append(segmentTokensMask)
+                    print("🎯 DEBUG generate: Segment \(index) added to arrays")
+                }
+            } else {
+                print("🎯 DEBUG generate: Voice matching disabled, processing context and text separately")
+                // FIXED: Process context segments without voice matching
+                for (index, segment) in currentContext.enumerated() {
+                    print("🎯 DEBUG generate: Processing context segment \(index)")
+                    let (segmentTokens, segmentTokensMask) = tokenizeSegment(segment, addEOS: false)
+                    print("🎯 DEBUG generate: Context segment \(index) tokenized")
+                    
+                    tokens.append(segmentTokens)
+                    tokensMask.append(segmentTokensMask)
+                    print("🎯 DEBUG generate: Context segment \(index) added")
+                }
+                
+                print("🎯 DEBUG generate: Processing generation text as separate segment")
                 let (genTokens, genMask) = tokenizeTextSegment(text, speaker: speaker)
-                allTokens.append(genTokens)
-                allMasks.append(genMask)
+                print("🎯 DEBUG generate: Generation text tokenized, shapes: tokens=\(genTokens.shape), mask=\(genMask.shape)")
+                
+                tokens.append(genTokens)
+                tokensMask.append(genMask)
+                print("🎯 DEBUG generate: Generation text added to arrays")
+            }
+
+            print("🎯 DEBUG generate: All segments processed, total segments: \(tokens.count)")
+            print("🎯 DEBUG generate: About to concatenate tokens...")
+
+            // Add safety check before concatenation
+            guard !tokens.isEmpty else {
+                throw SesameTTSError.tokenizationFailed(reason: "No tokens to process")
+            }
+
+            // Log shapes before concatenation
+            for (i, tokenArray) in tokens.enumerated() {
+                print("🎯 DEBUG generate: Token array \(i) shape: \(tokenArray.shape)")
             }
 
             // Concatenate all tokens along sequence axis (axis 0) like Python
-            let promptTokens = MLX.concatenated(allTokens, axis: 0)
-            let promptMask = MLX.concatenated(allMasks, axis: 0)
+            print("🎯 DEBUG generate: Starting token concatenation...")
+            let promptTokens = MLX.concatenated(tokens, axis: 0)
+            print("🎯 DEBUG generate: Tokens concatenated successfully, shape: \(promptTokens.shape)")
+            
+            print("🎯 DEBUG generate: Starting mask concatenation...")
+            let promptMask = MLX.concatenated(tokensMask, axis: 0)
+            print("🎯 DEBUG generate: Masks concatenated successfully, shape: \(promptMask.shape)")
 
+            print("🎯 DEBUG generate: Adding batch dimensions...")
             // Prepare for generation - add batch dimension like Python
             var currTokens = promptTokens.expandedDimensions(axis: 0)  // [1, seq_len, 33]
+            print("🎯 DEBUG generate: currTokens shape after batch dim: \(currTokens.shape)")
+            
             var currMask = promptMask.expandedDimensions(axis: 0)      // [1, seq_len, 33]
-            let currPos = MLXArray.arange(start: 0, stop: promptTokens.shape[0], dtype: .int32)
+            print("🎯 DEBUG generate: currMask shape after batch dim: \(currMask.shape)")
+            
+            print("🎯 DEBUG generate: Creating position array...")
+            var currPos = MLXArray.arange(start: 0, stop: promptTokens.shape[0], dtype: .int32)
                 .expandedDimensions(axis: 0)  // [1, seq_len]
+            print("🎯 DEBUG generate: currPos shape: \(currPos.shape)")
 
             var samples: [MLXArray] = []
             var generatedFrameCount = 0
 
+            print("🎯 DEBUG generate: Checking sequence length limits...")
             // Maximum sequence length check
             let maxSeqLen = 2048 - maxAudioFrames
             if currTokens.shape[1] >= maxSeqLen {
@@ -492,64 +640,156 @@ class SesameModelWrapper: Module {
                     actualLength: Int(currTokens.shape[1])
                 )
             }
+            print("🎯 DEBUG generate: Sequence length check passed")
 
+            print("🎯 DEBUG generate: Resetting caches...")
             // Reset caches
             guard let model = model else {
                 throw SesameTTSError.modelNotInitialized
             }
             model.resetCaches()
             streamingDecoder?.reset()
+            print("🎯 DEBUG generate: Caches reset complete")
 
+            print("🎯 DEBUG generate: About to start frame generation loop...")
             // Generate audio frames
-            for _ in 0..<maxAudioFrames {
+            print("🎵 DEBUG generate: Starting audio frame generation...")
+            var loopCount = 0
+            let maxLoopIterations = 3 // Very small limit for debugging
+            
+            // Force garbage collection before starting
+            MLX.GPU.clearCache()
+            
+            for i in 0..<min(maxAudioFrames, maxLoopIterations) {
+                print("🎵 DEBUG generate: === Frame \(i+1)/\(maxLoopIterations) ===")
+                print("🎵 DEBUG generate: currTokens shape: \(currTokens.shape)")
+                print("🎵 DEBUG generate: currMask shape: \(currMask.shape)")
+                print("🎵 DEBUG generate: currPos shape: \(currPos.shape)")
+                
+                print("🎵 DEBUG generate: Calling generateFrame...")
+                
                 let sample = model.generateFrame(
                     tokens: currTokens,
                     tokensMask: currMask,
                     inputPos: currPos,
                     sampler: sampler
                 )
+                
+                print("🎵 DEBUG generate: generateFrame returned, sample shape: \(sample.shape)")
 
                 // Check for EOS (all zeros) - convert MLXArray to Bool
                 let isAllZeros = MLX.all(sample .== 0).item(Bool.self)
+                print("🎵 DEBUG generate: EOS check: \(isAllZeros)")
+                
                 if isAllZeros {
+                    print("🎵 DEBUG generate: EOS detected, breaking")
                     break
                 }
 
                 samples.append(sample)
+                print("🎵 DEBUG generate: Sample appended, total samples: \(samples.count)")
 
+                print("🎵 DEBUG generate: Preparing next frame...")
                 // Prepare next frame like Python: [sample, zeros] then expand dims
                 let sampleWithPadding = MLX.concatenated([
                     sample,
                     MLXArray.zeros([1, 1], dtype: .int32)
                 ], axis: 1)  // [1, 2]
+                print("🎵 DEBUG generate: sampleWithPadding shape: \(sampleWithPadding.shape)")
 
                 let maskWithPadding = MLX.concatenated([
                     MLXArray.ones(like: sample),
                     MLXArray.zeros([1, 1], dtype: .bool)
                 ], axis: 1)  // [1, 2]
+                print("🎵 DEBUG generate: maskWithPadding shape: \(maskWithPadding.shape)")
 
                 let nextTokens = sampleWithPadding.expandedDimensions(axis: 1)  // [1, 1, 2]
                 let nextMask = maskWithPadding.expandedDimensions(axis: 1)      // [1, 1, 2]
+                print("🎵 DEBUG generate: nextTokens shape: \(nextTokens.shape), nextMask shape: \(nextMask.shape)")
 
                 currTokens = nextTokens
                 currMask = nextMask
+                
+                print("🎵 DEBUG generate: Updating currPos...")
+                // CRITICAL: Update currPos like Python does: curr_pos = curr_pos[:, -1:] + 1
+                let lastIndex = currPos.shape[1] - 1
+                let lastPos = currPos[0..., lastIndex..<currPos.shape[1]]  // Get [:, -1:]
+                currPos = lastPos + 1
+                
+                print("🎵 DEBUG generate: Updated currPos shape: \(currPos.shape)")
+                
                 generatedFrameCount += 1
+                loopCount += 1
+                
+                print("🎵 DEBUG generate: Frame \(i+1) complete")
+                
+                // Force evaluation and cleanup after each frame
+                MLX.eval([currTokens, currMask, currPos])
+                MLX.GPU.clearCache()
+            }
+            
+            print("🎵 DEBUG generate: Frame generation complete after \(loopCount) iterations")
+            
+            // Early exit during debugging - don't try to decode audio yet
+            if samples.isEmpty {
+                print("🎵 DEBUG generate: No samples generated, returning dummy audio")
+                let dummyAudio = MLXArray.zeros([1, 1000])  // 1000 samples of silence
+                
+                let endTime = Date().timeIntervalSince1970
+                let processingTime = endTime - startTime
+                
+                return GenerationResult(
+                    audio: dummyAudio,
+                    samples: 1000,
+                    sampleRate: sampleRate,
+                    segmentIdx: 0,
+                    tokenCount: 0,
+                    audioDuration: "00:00:00.042",
+                    realTimeFactor: Float(processingTime),
+                    prompt: ["tokens": 0],
+                    audioSamples: ["samples": 1000],
+                    processingTimeSeconds: processingTime,
+                    peakMemoryUsage: 0.0
+                )
             }
 
-            // Decode audio tokens to audio
-            let audioTokens = MLX.stacked(samples, axis: 0)
-            let transposedTokens = audioTokens.swappedAxes(1, 2)
+            print("🎵 DEBUG generate: Preparing tokens for decoding...")
+            print("🎵 DEBUG generate: samples count: \(samples.count)")
+            for (i, sample) in samples.enumerated() {
+                print("🎵 DEBUG generate: sample \(i) shape: \(sample.shape)")
+            }
 
+            // Decode audio tokens to audio - MATCH Python exactly
+            print("🎵 DEBUG generate: Stacking samples...")
+            let audioTokens = MLX.stacked(samples, axis: 0)
+            print("🎵 DEBUG generate: audioTokens shape after stacking: \(audioTokens.shape)")
+            
+            print("🎵 DEBUG generate: Transposing tokens...")
+            // CRITICAL: Match Python exactly: mx.transpose(mx.stack(samples), axes=[1, 2, 0])
+            // samples are [1, 32] each (1 batch, 32 codebooks), stacked to [3, 1, 32]
+            // transpose with axes=[1, 2, 0] means: [3, 1, 32] -> [1, 32, 3]
+            // This gives us [batch, num_codebooks, num_frames] which is what Mimi expects
+            let transposedTokens = audioTokens.transposed(1, 2, 0)
+            print("🎵 DEBUG generate: transposedTokens shape for decoder: \(transposedTokens.shape)")
+            
+            // Verify shape is correct for Mimi decoder: [batch, num_codebooks, num_frames]
+            print("🎵 DEBUG generate: Expected shape: [1, 32, 3], actual: \(transposedTokens.shape)")
+
+            print("🎵 DEBUG generate: Calling audio decoder...")
             var audio: MLXArray
             if stream, let streamingDecoder = streamingDecoder {
+                print("🎵 DEBUG generate: Using streaming decoder...")
                 // Use streaming decoder for real-time generation
-                audio = streamingDecoder.decodeFrames(transposedTokens)
+                audio = streamingDecoder.decodeFrames(transposedTokens).squeezed(axis: 0).squeezed(axis: 0)
             } else if let audioTokenizer = audioTokenizer {
-                // Use regular decoder
-                audio = audioTokenizer.decode(transposedTokens)
+                print("🎵 DEBUG generate: Using regular Mimi decoder...")
+                // Use regular decoder - match Python exactly with squeeze operations
+                audio = audioTokenizer.decode(transposedTokens).squeezed(axis: 0).squeezed(axis: 0)
             } else {
                 throw SesameTTSError.modelNotInitialized
             }
+            
+            print("🎵 DEBUG generate: Audio decoded successfully, shape: \(audio.shape)")
 
             // Force evaluation and memory cleanup (Kokoro pattern)
             audio.eval()

@@ -265,8 +265,8 @@ public class SesameTokenizer {
                 return false
             }
 
-            // Be more permissive: allow up to 100 chars for repetitive sequences, 30 for others
-            let maxLength = (isRepetitiveSequence(first) && isRepetitiveSequence(second)) ? 100 : 30
+            // Be more permissive: allow up to 150 chars for repetitive sequences, 50 for others
+            let maxLength = (isRepetitiveSequence(first) || isRepetitiveSequence(second)) ? 150 : 50
             guard first.count <= maxLength && second.count <= maxLength else {
                 print("Warning: Skipping invalid merge at index \(index): '\(first)' + '\(second)' (length: \(first.count) + \(second.count), max: \(maxLength))")
                 continue // Skip invalid merges instead of failing

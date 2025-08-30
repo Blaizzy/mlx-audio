@@ -59,6 +59,9 @@ class SesameWeightLoader {
     private static func transformKey(_ key: String) -> String {
         var transformedKey = key
 
+        // DEBUG: Log all transformations
+        let originalKey = transformedKey
+
         // Remove underscore prefixes (PyTorch naming convention)
         transformedKey = transformedKey.replacingOccurrences(of: "^_", with: "", options: .regularExpression)
 
@@ -85,6 +88,11 @@ class SesameWeightLoader {
             transformedKey = transformedKey.replacingOccurrences(of: ".linear2.weight", with: ".gating.linear2.weight")
         }
 
+        // Handle upsample temporal conv layer key mapping
+        if transformedKey.hasPrefix("upsample.convtr.convtr.convtr.") {
+            transformedKey = transformedKey.replacingOccurrences(of: "upsample.convtr.convtr.convtr.", with: "upsample.convtr.convtr.convtr.")
+        }
+
         // Handle encoder layer mappings (based on Python's hardcoded mapping)
         let encoderMappings = [
             1: 0,   // encoder.1. -> encoder.layers.0.residuals.0.
@@ -107,7 +115,7 @@ class SesameWeightLoader {
             5: 0,   // decoder.5. -> decoder.layers.0.residuals.0.
             8: 1,   // decoder.8. -> decoder.layers.1.upsample.
             11: 1,  // decoder.11. -> decoder.layers.1.residuals.0.
-            14: 2,  // decoder.14. -> decoder.layers.2.upsample.
+            14: 2,   // decoder.14. -> decoder.layers.2.upsample.
             17: 2   // decoder.17. -> decoder.layers.2.residuals.0.
         ]
 
@@ -131,6 +139,11 @@ class SesameWeightLoader {
         transformedKey = transformedKey.replacingOccurrences(of: ".block.1.", with: ".block.0.")
         transformedKey = transformedKey.replacingOccurrences(of: ".block.3.", with: ".block.1.")
 
+        // DEBUG: Log transformations for temporal layers
+        if originalKey.contains("downsample") || originalKey.contains("upsample") || transformedKey != originalKey {
+            print("🔍 DEBUG transformKey: '\(originalKey)' -> '\(transformedKey)'")
+        }
+
         return transformedKey
     }
 
@@ -150,7 +163,19 @@ class SesameWeightLoader {
         // Handle transposed convolution weights (PyTorch: inC, outC, kSize → MLX: outC, kSize, inC)
         if key.contains(".convtr.weight") {
             if value.shape.count == 3 {
-                transformedValue = value.transposed(1, 2, 0)
+                // Special case for upsample layer: Input shape appears to be [512, 1, 4] from logs
+                // but we need to check the actual input shape in logs
+                if key.contains("upsample") {
+                    // From logs: the raw PyTorch weight seems to be shape [512, 1, 4]
+                    // MLX expects [512, 4, 1]
+                    // So we need to swap the last two dimensions: [512, 1, 4] -> [512, 4, 1]
+                    transformedValue = value.swappedAxes(-1, -2)
+                } else {
+                    // PyTorch transposed conv: [inC, outC, kSize] -> MLX: [outC, kSize, inC]
+                    transformedValue = value.transposed(1, 2, 0)
+                }
+                
+                print("🔧 DEBUG transformValue: convtr weight '\(key)' transformed from \(value.shape) to \(transformedValue.shape)")
             }
         }
 
@@ -179,6 +204,16 @@ class SesameWeightLoader {
             return model
         }
 
+        print("Loading \(weights.count) weight tensors...")
+        
+        // DEBUG: Print some raw weight keys before transformation
+        print("🔍 DEBUG: Sample raw weight keys:")
+        for (i, key) in weights.keys.enumerated() {
+            if i < 10 {
+                print("  \(key)")
+            }
+        }
+        
         var sanitizedWeights: [String: MLXArray] = [:]
 
         for (key, value) in weights {
@@ -186,21 +221,61 @@ class SesameWeightLoader {
             var sanitizedValue = value
 
             // Apply comprehensive key transformations
+            let originalKey = sanitizedKey
             sanitizedKey = transformKey(sanitizedKey)
             sanitizedValue = transformValue(sanitizedKey, sanitizedValue)
+
+            // DEBUG: Log key transformations for conv layers
+            if originalKey.contains("conv") || originalKey.contains("upsample") || originalKey.contains("downsample") {
+                print("🔍 DEBUG key transform: '\(originalKey)' -> '\(sanitizedKey)' (shape: \(sanitizedValue.shape))")
+            }
 
             sanitizedWeights[sanitizedKey] = sanitizedValue
         }
 
-        // Apply weights to model using MLX's weight loading mechanism
+        // Print some keys for debugging
+        print("Sample sanitized weight keys:")
+        for (i, key) in sanitizedWeights.keys.enumerated() {
+            if i < 5 {
+                print("  \(key)")
+            }
+        }
+        
+        // DEBUG: Look for upsample/downsample weights specifically
+        print("🔍 DEBUG: Looking for temporal conv weights...")
+        for key in sanitizedWeights.keys {
+            if key.contains("upsample") || key.contains("downsample") {
+                print("  Found temporal weight: \(key) (shape: \(sanitizedWeights[key]!.shape))")
+            }
+        }
+
+        // Convert to nested dictionary format for ModuleParameters
+        var nestedWeights: [String: NestedItem<String, MLXArray>] = [:]
+        for (key, value) in sanitizedWeights {
+            nestedWeights[key] = .value(value)
+        }
+
+        // Apply weights to model using MLX's update method
         do {
-            let updatedModel = try model.loadWeights(sanitizedWeights, strict: strict)
-            return updatedModel
+            try model.update(parameters: ModuleParameters(values: nestedWeights), verify: strict ? .all : .none)
+            print("Successfully loaded and applied Mimi weights")
+            
+            // DEBUG: Check if our temporal layers got weights
+            print("🔍 DEBUG: Checking if temporal layers received weights...")
+            print("  Upsample weight shape: \(model.upsample.weight.shape)")
+            print("  Upsample weight range: \(model.upsample.weight.min().item(Float.self)) to \(model.upsample.weight.max().item(Float.self))")
+            print("  Downsample conv weight shape: \(model.downsample.conv.weight.shape)")
+            print("  Downsample weight range: \(model.downsample.conv.weight.min().item(Float.self)) to \(model.downsample.conv.weight.max().item(Float.self))")
+            
+            return model
         } catch {
+            print("🚨 ERROR: Failed to load weights into model: \(error)")
             if strict {
                 fatalError("Failed to load weights into model: \(error)")
+            } else {
+                print("Warning: Failed to load some weights: \(error)")
+                return model
             }
-            return model
         }
     }
 

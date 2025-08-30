@@ -99,9 +99,12 @@ class VectorQuantization: Module {
     }
 
     func encode(_ x: MLXArray) -> MLXArray {
-        var processed = x
+        // Python: xs = xs.swapaxes(-1, -2)  
+        // Convert [batch, channels, time] -> [batch, time, channels] for processing
+        var processed = x.swappedAxes(-1, -2)
+        
         if let projectIn = projectIn {
-            processed = projectIn(x)
+            processed = projectIn(processed)
         }
         return codebook.encode(processed)
     }
@@ -111,7 +114,10 @@ class VectorQuantization: Module {
         if let projectOut = projectOut {
             decoded = projectOut(decoded)
         }
-        return decoded
+        
+        // Python: return xs.swapaxes(-1, -2)
+        // Convert [batch, time, channels] -> [batch, channels, time] for output
+        return decoded.swappedAxes(-1, -2)
     }
 }
 
@@ -160,10 +166,34 @@ class ResidualVectorQuantization: Module {
 
     /// Decode by summing all layers
     func decode(_ codes: MLXArray) -> MLXArray {
+        // Python: seq_len = xs.shape[0] (this is the codebooks dimension after swapaxes)
+        // Input should be [codebooks, batch, time] after swapaxes from ResidualVectorQuantizer
+        
+        print("🔍 DEBUG RVQ decode: input codes shape = \(codes.shape), numQuantizers = \(numQuantizers)")
+        
+        let seqLen = codes.shape[0]  // Python: seq_len = xs.shape[0]
+        
+        guard seqLen >= 1 else {
+            fatalError("Expected at least 1 codebook, got \(seqLen)")
+        }
+        
+        guard seqLen <= numQuantizers else {
+            fatalError("Too many codebooks: expected \(numQuantizers), got \(seqLen) in shape \(codes.shape)")
+        }
+        
+        // Python: quantized = self.layers[0].decode(xs[0])
+        print("🔍 DEBUG RVQ decode: decoding layer 0 with codes[0] shape \(codes[0].shape)")
         var quantized = layers[0].decode(codes[0])
+        print("🔍 DEBUG RVQ decode: layer 0 quantized shape = \(quantized.shape)")
 
-        for i in 1..<numQuantizers {
-            quantized = quantized + layers[i].decode(codes[i])
+        // Python: for i in range(1, seq_len):
+        //             quantized = quantized + self.layers[i].decode(xs[i])
+        for i in 1..<seqLen {
+            print("🔍 DEBUG RVQ decode: decoding layer \(i) with codes[\(i)] shape \(codes[i].shape)")
+            let layerQuantized = layers[i].decode(codes[i])
+            print("🔍 DEBUG RVQ decode: layer \(i) quantized shape = \(layerQuantized.shape)")
+            quantized = quantized + layerQuantized
+            print("🔍 DEBUG RVQ decode: accumulated quantized shape = \(quantized.shape)")
         }
 
         return quantized

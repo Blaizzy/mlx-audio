@@ -22,27 +22,36 @@ class ResidualVectorQuantizer: Module {
         self.inputDim = inputDim ?? dim
         self.outputDim = outputDim ?? dim
 
+        print("🔍 DEBUG ResidualVectorQuantizer init: dim=\(dim), inputDim=\(self.inputDim), outputDim=\(self.outputDim), nq=\(nq), forceProjection=\(forceProjection)")
+
         // Initialize projections if needed
         if inputDim == dim && !forceProjection {
             self._inputProj.wrappedValue = nil
+            print("🔍 DEBUG ResidualVectorQuantizer init: No input projection needed")
         } else {
+            let projInputDim = inputDim ?? dim
+            // Use Conv1d with kernel size 1 to match Python implementation
             self._inputProj.wrappedValue = MLXNN.Conv1d(
-                inputChannels: inputDim!,
+                inputChannels: projInputDim,
                 outputChannels: dim,
                 kernelSize: 1,
                 bias: false
             )
+            print("🔍 DEBUG ResidualVectorQuantizer init: Created input projection \(projInputDim) -> \(dim)")
         }
 
         if outputDim == dim && !forceProjection {
             self._outputProj.wrappedValue = nil
+            print("🔍 DEBUG ResidualVectorQuantizer init: No output projection needed")
         } else {
+            let projOutputDim = outputDim ?? dim
             self._outputProj.wrappedValue = MLXNN.Conv1d(
                 inputChannels: dim,
-                outputChannels: outputDim!,
+                outputChannels: projOutputDim,
                 kernelSize: 1,
                 bias: false
             )
+            print("🔍 DEBUG ResidualVectorQuantizer init: Created output projection \(dim) -> \(projOutputDim)")
         }
 
         // Initialize the core RVQ
@@ -65,11 +74,39 @@ class ResidualVectorQuantizer: Module {
     }
 
     func decode(_ xs: MLXArray) -> MLXArray {
+        print("🔍 DEBUG RVQ decode: input shape = \(xs.shape)")
+        
+        // Python: xs = xs.swapaxes(0, 1)
+        // Input: [batch, codebooks, time] -> [codebooks, batch, time]
         var x = xs.swappedAxes(0, 1)
+        print("🔍 DEBUG RVQ decode: after swapaxes shape = \(x.shape)")
+        
+        // Python: quantized = self.vq.decode(xs)
         x = vq.decode(x)
+        print("🔍 DEBUG RVQ decode: after vq.decode shape = \(x.shape)")
+        
         if let outputProj = outputProj {
+            print("🔍 DEBUG RVQ decode: applying output projection from \(x.shape)")
+            print("🔍 DEBUG RVQ decode: Conv1d weight shape = \(outputProj.weight.shape)")
+            
+            // MLX Conv1d expects channel-last format: [batch, length, in_channels]
+            // Our tensor is currently [batch, in_channels, time] = [1, 256, 3] 
+            // We need to convert to [batch, time, in_channels] = [1, 3, 256]
+            
+            print("🔧 DEBUG RVQ decode: Converting to MLX channel-last format...")
+            x = x.swappedAxes(1, 2)  // [1, 256, 3] -> [1, 3, 256]
+            print("🔧 DEBUG RVQ decode: After conversion: \(x.shape)")
+            
+            // Apply Conv1d projection: [1, 3, 256] -> [1, 3, 512]
             x = outputProj(x)
+            print("🔍 DEBUG RVQ decode: after output projection shape = \(x.shape)")
+            
+            // Convert back to channel-first format for rest of pipeline: [1, 3, 512] -> [1, 512, 3]
+            print("🔧 DEBUG RVQ decode: Converting back to channel-first format...")
+            x = x.swappedAxes(1, 2)  // [1, 3, 512] -> [1, 512, 3]
+            print("🔧 DEBUG RVQ decode: Final output shape: \(x.shape)")
         }
+        
         return x
     }
 }
@@ -132,14 +169,37 @@ class SplitResidualVectorQuantizer: Module {
     }
 
     func decode(_ xs: MLXArray) -> MLXArray {
+        // xs should have shape [batch, num_codebooks, time]
         // Split along the codebook dimension (axis 1)
-        let firstSlice = xs[0..., 0..<(nq > 0 ? 1 : 0), 0...]
+        
+        print("🔍 DEBUG SplitRVQ decode: input shape = \(xs.shape), nq = \(nq)")
+        
+        // Validate input shape
+        guard xs.ndim == 3 else {
+            fatalError("SplitRVQ decode expects 3D input [batch, codebooks, time], got \(xs.ndim)D: \(xs.shape)")
+        }
+        
+        guard xs.shape[1] == nq else {
+            fatalError("SplitRVQ decode expects \(nq) codebooks, got \(xs.shape[1]) in shape \(xs.shape)")
+        }
+        
+        // Python: quantized = self.rvq_first.decode(xs[:, :1])
+        let firstSlice = xs[0..., 0..<1, 0...]  // [batch, 1, time]
+        print("🔍 DEBUG SplitRVQ decode: firstSlice shape = \(firstSlice.shape)")
+        
         var quantized = rvqFirst.decode(firstSlice)
+        print("🔍 DEBUG SplitRVQ decode: first quantized shape = \(quantized.shape)")
 
         if nq > 1 {
-            let restSlice = xs[0..., 1..<nq, 0...]
+            // Python: quantized = quantized + self.rvq_rest.decode(xs[:, 1:])
+            let restSlice = xs[0..., 1..., 0...]  // [batch, nq-1, time] - Python uses xs[:, 1:]
+            print("🔍 DEBUG SplitRVQ decode: restSlice shape = \(restSlice.shape)")
+            
             let restQuantized = rvqRest.decode(restSlice)
+            print("🔍 DEBUG SplitRVQ decode: rest quantized shape = \(restQuantized.shape)")
+            
             quantized = quantized + restQuantized
+            print("🔍 DEBUG SplitRVQ decode: final quantized shape = \(quantized.shape)")
         }
 
         return quantized

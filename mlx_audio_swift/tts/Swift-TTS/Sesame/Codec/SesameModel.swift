@@ -87,11 +87,13 @@ class SesameModel: Module {
     /// - Parameter maxBatchSize: Maximum batch size for caching
     func setupCaches(maxBatchSize: Int = 1) {
         let backboneArgs = args.createBackboneArgs()
-        _ = args.createDecoderArgs() // Decoder args not used in this function
+        let decoderArgs = args.createDecoderArgs()
 
         // Create causal masks
         self.backboneCausalMask = createCausalMask(seqLen: backboneArgs.maxPositionEmbeddings)
-        self.decoderCausalMask = createCausalMask(seqLen: args.audioNumCodebooks)
+        // Decoder mask should accommodate the maximum possible sequence length in decoder
+        // which is 1 (last_h) + 1 (c0_embed) + remaining codebooks = audioNumCodebooks + 1
+        self.decoderCausalMask = createCausalMask(seqLen: args.audioNumCodebooks + 1)
 
         // Initialize caches
         self.backboneCache = makePromptCache(backbone)
@@ -117,8 +119,8 @@ class SesameModel: Module {
 
     /// Generate audio tokens from text tokens
     /// - Parameters:
-    ///   - tokens: Text token sequence [batch, seq_len]
-    ///   - tokensMask: Attention mask [batch, seq_len]
+    ///   - tokens: Text token sequence [batch, seq_len, num_codebooks+1]
+    ///   - tokensMask: Attention mask [batch, seq_len, num_codebooks+1]
     ///   - inputPos: Position indices for incremental generation
     ///   - sampler: Sampling function for token selection
     /// - Returns: Generated audio tokens [batch, num_codebooks]
@@ -132,7 +134,8 @@ class SesameModel: Module {
             fatalError("Backbone caches are not enabled")
         }
 
-        // Create backbone causal mask
+        // Create backbone causal mask - follow Python exactly
+        // Python: curr_backbone_mask = index_causal_mask(self._backbone_causal_mask, input_pos)
         let currBackboneMask = indexCausalMask(
             mask: backboneCausalMask!,
             inputPos: inputPos
@@ -161,8 +164,8 @@ class SesameModel: Module {
         let c0Logits = codebook0Head(lastH)
 
         // Sample first codebook token - Python: c0_sample = mx.expand_dims(sampler(c0_logits), axis=-1)
-        let c0SampleRaw = sampler(c0Logits)
-        let c0Sample = c0SampleRaw.expandedDimensions(axis: -1)
+        let c0SampleFlat = sampler(c0Logits)  // [batch]
+        let c0Sample = c0SampleFlat.expandedDimensions(axis: -1)  // [batch, 1]
 
         // Embed first codebook token - Python: c0_embed = self._embed_audio(0, c0_sample)
         let c0Embed = embedAudio(codebook: 0, tokens: c0Sample)
@@ -170,7 +173,8 @@ class SesameModel: Module {
         // Python: curr_h = mx.concat([mx.expand_dims(last_h, 1), c0_embed], axis=1)
         var currH = MLX.concatenated([lastH.expandedDimensions(axis: 1), c0Embed], axis: 1)
 
-        var currSample = c0Sample
+        // Initialize current sample with first codebook token (keep it as [batch] not [batch, 1])
+        var currSample = c0SampleFlat  // [batch]
 
         // Python: curr_pos = mx.arange(curr_h.shape[1], dtype=mx.int32)
         //         curr_pos = mx.expand_dims(curr_pos, 0)  
@@ -200,8 +204,8 @@ class SesameModel: Module {
             let ciLogits = MLX.matmul(lastDecoderH, audioHeadSlice)
 
             // Python: ci_sample = mx.expand_dims(sampler(ci_logits), axis=-1)
-            let ciSampleRaw = sampler(ciLogits)
-            let ciSample = ciSampleRaw.expandedDimensions(axis: -1)
+            let ciSampleFlat = sampler(ciLogits)  // [batch]
+            let ciSample = ciSampleFlat.expandedDimensions(axis: -1)  // [batch, 1]
 
             // Python: ci_embed = self._embed_audio(i, ci_sample)
             let ciEmbed = embedAudio(codebook: i, tokens: ciSample)
@@ -209,13 +213,20 @@ class SesameModel: Module {
             // Python: curr_h = ci_embed (NOT concatenated!)
             currH = ciEmbed
             
-            currSample = MLX.concatenated([currSample, ciSample], axis: 1)
+            // Accumulate tokens - Python: curr_sample = mx.concat([curr_sample, ci_sample], axis=1)
+            // Convert currSample to [batch, 1] if it's [batch], then concatenate ciSample [batch, 1]
+            if currSample.ndim == 1 {
+                currSample = currSample.expandedDimensions(axis: -1)  // [batch] -> [batch, 1]
+            }
+            currSample = MLX.concatenated([currSample, ciSample], axis: 1)  // [batch, i+1]
             
             // Python: curr_pos = curr_pos[:, -1:] + 1
-            let lastPos = currPos[0..., -1..<currPos.shape[1]]  // Get last column [:, -1:]
+            let lastIndex = currPos.shape[1] - 1
+            let lastPos = currPos[0..., lastIndex..<currPos.shape[1]]  // Get [:, -1:]
             currPos = lastPos + 1
         }
-        return currSample
+        
+        return currSample  // Should be [batch, num_codebooks]
     }
 
     /// Embed text tokens
@@ -277,37 +288,39 @@ class SesameModel: Module {
 
     /// Create causal mask for attention
     private func createCausalMask(seqLen: Int) -> MLXArray {
-        let mask = MLX.tril(MLX.ones([seqLen, seqLen]))
+        // Python: return mx.tril(mx.ones((seq_len, seq_len), dtype=mx.bool_))
+        let mask = MLX.tril(MLX.ones([seqLen, seqLen], dtype: .bool))
         return mask
     }
 
     /// Index causal mask for specific positions
-    /// Following the Python implementation exactly:
-    /// mask_indexed = mx.take(mask, input_pos, axis=0)
-    /// seq_len = input_pos.shape[1]
-    /// mask_indexed = mask_indexed[:, :, :seq_len]
-    /// return mx.expand_dims(mask_indexed, axis=1)
-    private func indexCausalMask(mask: MLXArray, inputPos: MLXArray) -> MLXArray {
+    /// Following Python implementation exactly:
+    /// def index_causal_mask(mask: mx.array, input_pos: mx.array) -> mx.array:
+    ///     mask_indexed = mx.take(mask, input_pos, axis=0)
+    ///     seq_len = input_pos.shape[1]
+    ///     mask_indexed = mask_indexed[:, :, :seq_len]
+    ///     return mx.expand_dims(mask_indexed, axis=1)
+    private func indexCausalMask(mask: MLXArray, inputPos: MLXArray, attentionSeqLen: Int? = nil) -> MLXArray {
+        // Python exact implementation:
+        // mask_indexed = mx.take(mask, input_pos, axis=0)
+        // seq_len = input_pos.shape[1]
+        // mask_indexed = mask_indexed[:, :, :seq_len]
+        // return mx.expand_dims(mask_indexed, axis=1)
+
+        // Use mx.take equivalent to index the mask based on input positions
+        let maskIndexed = mask.take(inputPos, axis: 0)
+
+        // Get sequence length from input_pos
         let seqLen = inputPos.shape[1]
 
-        // inputPos contains position indices [0, 1, 2, ..., seqLen-1] with shape [batch, seqLen]
-        // We need to implement mx.take(mask, input_pos, axis=0) equivalent
+        // Slice to the correct sequence length: mask_indexed[:, :, :seq_len]
+        // After mx.take, maskIndexed has shape (batch, seq_len, seq_len)
+        let maskSliced = maskIndexed[0..., 0..., 0..<seqLen]
 
-        // For basic cases where inputPos contains consecutive indices [0, 1, 2, ...],
-        // we can simply slice the mask to the correct size
-        if seqLen <= mask.shape[0] {
-            let maskSlice = mask[0..<seqLen, 0..<seqLen]
-
-            // Expand dimensions: [seq_len, seq_len] -> [batch, 1, seq_len, seq_len]
-            let expandedMask = maskSlice.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
-
-            return expandedMask
-        } else {
-            // Fallback: create a new mask if seqLen is larger than the pre-computed mask
-            let newMask = MLX.tril(MLX.ones([seqLen, seqLen]))
-            let expandedMask = newMask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)
-            return expandedMask
-        }
+        // Add head dimension for broadcasting: mx.expand_dims(mask_indexed, axis=1)
+        // This creates shape (batch, 1, seq_len, seq_len) which broadcasts to (batch, n_heads, seq_len, seq_len)
+        let maskWithHeadDim = maskSliced.expandedDimensions(axis: 1)
+        return maskWithHeadDim
     }
 
     /// Create prompt cache for model
