@@ -88,7 +88,9 @@ class Wav2Vec2NoLayerNormConvLayer(nn.Module):
         self.activation = nn.GELU()
 
     def __call__(self, hidden_states):
-        hidden_states = self.conv(hidden_states)
+        # conv expects (batch, length, channels) but input is (batch, channels, length)
+        hidden_states = self.conv(hidden_states.swapaxes(-2, -1))
+        hidden_states = hidden_states.swapaxes(-2, -1)
         hidden_states = self.activation(hidden_states)
         return hidden_states
 
@@ -142,8 +144,11 @@ class Wav2Vec2GroupNormConvLayer(nn.Module):
         )
 
     def __call__(self, hidden_states):
-        hidden_states = self.conv(hidden_states)
+        # conv expects (batch, length, channels) but input is (batch, channels, length)
+        hidden_states = self.conv(hidden_states.swapaxes(-2, -1))
         hidden_states = self.layer_norm(hidden_states)
+        # swap back to (batch, channels, length)
+        hidden_states = hidden_states.swapaxes(-2, -1)
         hidden_states = self.activation(hidden_states)
         return hidden_states
 
@@ -526,11 +531,11 @@ class Wav2Vec2Encoder(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-                layer_outputs = layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                )
-                hidden_states = layer_outputs[0]
+            layer_outputs = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+            )
+            hidden_states = layer_outputs[0]
 
         if output_hidden_states:
             all_hidden_states = all_hidden_states + (hidden_states,)
@@ -594,11 +599,11 @@ class Wav2Vec2EncoderStableLayerNorm(nn.Module):
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (hidden_states,)
 
-                layer_outputs = layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                )
-                hidden_states = layer_outputs[0]
+            layer_outputs = layer(
+                hidden_states,
+                attention_mask=attention_mask,
+            )
+            hidden_states = layer_outputs[0]
 
         hidden_states = self.layer_norm(hidden_states)
 
