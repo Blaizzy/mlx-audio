@@ -50,25 +50,27 @@ class ConvDownsample1d: Module {
 
 /// ConvTrUpsample1d - Transposed upsampling convolution for temporal processing
 /// Increases temporal resolution while maintaining channel dimension
+/// Following Python implementation exactly
 class ConvTrUpsample1d: Module {
     @ModuleInfo var convtr: MLXNN.ConvTransposed1d
 
     private let stride: Int
     private let causal: Bool
+    private let dim: Int
 
     init(stride: Int, dim: Int, causal: Bool) {
         self.stride = stride
         self.causal = causal
+        self.dim = dim
 
-        // Create transposed convolution with depthwise separable groups
-        // This maintains channel dimension while upsampling temporally
+        // Follow Python implementation: use groups=dim for depthwise separable
         self._convtr.wrappedValue = MLXNN.ConvTransposed1d(
             inputChannels: dim,
             outputChannels: dim,
             kernelSize: 2 * stride,
             stride: stride,
             padding: causal ? stride : stride,  // Proper padding for causal processing
-            groups: dim,  // Depthwise separable - one group per channel
+            groups: dim,  // Depthwise separable - one group per channel (following Python)
             bias: false   // No bias for upsampling
         )
 
@@ -80,7 +82,11 @@ class ConvTrUpsample1d: Module {
     }
 
     /// Process a single step for streaming
+    /// Following Python StreamableConvTranspose1d.step() implementation
     func step(_ xs: MLXArray) -> MLXArray {
+        // Simplified streaming implementation - for now just call regular forward
+        // Python version has sophisticated streaming with _prev_ys state management
+        // TODO: Implement full streaming logic like Python version
         return self(xs)
     }
 

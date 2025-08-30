@@ -28,6 +28,7 @@ class SeanetDecoder: Module {
             outputChannels: config.nfilters,
             kernelSize: config.ksize,
             padding: config.ksize,
+            groups: 1,  // Following Python implementation
             bias: true
         )
 
@@ -60,6 +61,7 @@ class SeanetDecoder: Module {
                     kernelSize: ratio * 2,
                     stride: ratio,
                     padding: ratio,
+                    groups: 1,  // Following Python implementation
                     bias: true
                 )
                 upLayers.append(upConv)
@@ -76,6 +78,7 @@ class SeanetDecoder: Module {
             outputChannels: config.channels,
             kernelSize: config.lastKsize,
             padding: config.lastKsize,
+            groups: 1,  // Following Python implementation
             bias: true
         )
 

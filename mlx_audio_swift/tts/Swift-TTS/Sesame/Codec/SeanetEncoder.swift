@@ -52,6 +52,7 @@ class SeanetEncoder: Module {
             outputChannels: config.nfilters,
             kernelSize: config.ksize,
             padding: config.ksize,
+            groups: 1,  // Following Python implementation
             bias: true
         )
 
@@ -82,6 +83,7 @@ class SeanetEncoder: Module {
                     kernelSize: ratio * 2,
                     stride: ratio,
                     padding: ratio,
+                    groups: 1,  // Following Python implementation
                     bias: true
                 )
                 downLayers.append(downConv)
@@ -98,6 +100,7 @@ class SeanetEncoder: Module {
             outputChannels: config.dimension,
             kernelSize: config.lastKsize,
             padding: config.lastKsize,
+            groups: 1,  // Following Python implementation
             bias: true
         )
 
