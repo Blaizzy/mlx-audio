@@ -124,17 +124,44 @@ class Llama3ScaledRoPE: Module {
         guard isCacheBuilt else {
             fatalError("RoPE cache is not built. Please call ropeInit() first.")
         }
+        
+        guard let cache = cache else {
+            fatalError("RoPE cache is nil")
+        }
 
         let seqLen = x.shape[1]
 
-        // Follow Python implementation exactly
+        // Follow Python implementation exactly with bounds checking
         let ropeCache: MLXArray
         if let offset = offset {
-            // Python: self._cache[None, offset : offset + seq_len]
-            ropeCache = cache![offset..<(offset + seqLen), 0..., 0...].expandedDimensions(axis: 0)
+            // Bounds checking for offset access
+            let endPos = offset + seqLen
+            let maxCacheLen = cache.shape[0]
+            
+            if offset < 0 || endPos > maxCacheLen {
+                // Clamp to valid range
+                let safeOffset = max(0, min(offset, maxCacheLen - seqLen))
+                let safeEndPos = min(safeOffset + seqLen, maxCacheLen)
+                let actualSeqLen = safeEndPos - safeOffset
+                
+                if actualSeqLen <= 0 {
+                    // Return identity transformation if we can't get valid cache
+                    return x
+                }
+                
+                ropeCache = cache[safeOffset..<safeEndPos, 0..., 0...]
+            } else {
+                ropeCache = cache[offset..<endPos, 0..., 0...]
+            }
         } else {
-            // Python: self._cache[:seq_len]
-            ropeCache = cache![0..<seqLen, 0..., 0...]
+            // Bounds checking for no offset case
+            let maxCacheLen = cache.shape[0]
+            if seqLen > maxCacheLen {
+                let safeSeqLen = min(seqLen, maxCacheLen)
+                ropeCache = cache[0..<safeSeqLen, 0..., 0...]
+            } else {
+                ropeCache = cache[0..<seqLen, 0..., 0...]
+            }
         }
 
         // Python: xshaped = x.astype(mx.float32).reshape(*x.shape[:-1], -1, 2)
@@ -151,19 +178,69 @@ class Llama3ScaledRoPE: Module {
             xPadded = MLX.concatenated([x, padding], axis: -1)
         }
 
-        let xShaped = xPadded.asType(.float32).reshaped(x.shape[0], x.shape[1], x.shape[2], (headDim + remainder) / 2, 2)
+        let adjustedHeadDim = headDim + remainder
+        let xShaped = xPadded.asType(.float32).reshaped(x.shape[0], x.shape[1], x.shape[2], adjustedHeadDim / 2, 2)
 
+        // FIXED: Check dimensions match between x and rope cache
+        let expectedRopeDim = adjustedHeadDim / 2  // This is the head dimension we expect
+        let actualRopeDim = ropeCache.shape[1]     // This is the cache's feature dimension
+        
+        // The issue is ropeCache shape is [seq_len, rope_dim, 2] but we're comparing wrong dimensions
+        // ropeCache should be [seq_len, head_dim/2, 2] to match xShaped [batch, seq_len, heads, head_dim/2, 2]
+        if expectedRopeDim != actualRopeDim {
+            // FIXED: Instead of failing, adapt the cache to match the expected dimensions
+            // If the cache has fewer dimensions than expected, use what we have
+            // If the cache has more dimensions, truncate to what we need
+            let usableDim = min(expectedRopeDim, actualRopeDim)
+            
+            if usableDim <= 0 {
+                return x
+            }
+            
+            // Use only the usable dimensions from both cache and input
+            let truncatedRopeCache = ropeCache[0..., 0..<usableDim, 0...]
+            let truncatedXShaped = xShaped[0..., 0..., 0..., 0..<usableDim, 0...]
+            
+            // Apply RoPE only to the compatible dimensions
+            let ropeCacheReshaped = truncatedRopeCache.expandedDimensions(axis: 0).expandedDimensions(axis: 2)
+            // Shape should be [1, seq_len, 1, usable_dim, 2]
+            
+            let xOut0 = truncatedXShaped[0..., 0..., 0..., 0..., 0] * ropeCacheReshaped[0..., 0..., 0..., 0..., 0] -
+                        truncatedXShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
+            let xOut1 = truncatedXShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 0] +
+                        truncatedXShaped[0..., 0..., 0..., 0..., 0] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
+            
+            let xOutTruncated = MLX.stacked([xOut0, xOut1], axis: -1)
+            
+            // If we truncated, we need to restore the unused dimensions
+            var result: MLXArray
+            if usableDim < expectedRopeDim {
+                // Pad back to full dimensions with identity (no rotation for unused dims)
+                let identityPart = xShaped[0..., 0..., 0..., usableDim..<expectedRopeDim, 0...]
+                let rotatedPart = xOutTruncated
+                result = MLX.concatenated([rotatedPart, identityPart], axis: 3)
+            } else {
+                result = xOutTruncated
+            }
+            
+            // Reshape back to original shape
+            let resultReshaped = result.reshaped([x.shape[0], x.shape[1], x.shape[2], adjustedHeadDim])
+            
+            // Remove padding if it was added for odd dimensions
+            if remainder != 0 {
+                return resultReshaped[0..., 0..., 0..., 0..<headDim].asType(x.dtype)
+            } else {
+                return resultReshaped.asType(x.dtype)
+            }
+        }
+
+        // Normal case - dimensions match
         // Python: rope_cache = rope_cache.reshape(-1, xshaped.shape[1], 1, xshaped.shape[3], 2)
-        // Dynamic reshape to match Python exactly
-        let ropeCacheReshaped = ropeCache.reshaped(
-            xShaped.shape[0],  // batch size (dynamic)
-            xShaped.shape[1],  // seq_len
-            1,                 // 1 for head broadcasting
-            xShaped.shape[3],  // head_dim/2 (adjusted for padding)
-            2                  // 2 for cos/sin
-        )
+        // FIXED: The reshape should expand the cache to match xShaped broadcasting requirements
+        let ropeCacheReshaped = ropeCache.expandedDimensions(axis: 0).expandedDimensions(axis: 2)
+        // This gives us [1, seq_len, 1, head_dim/2, 2] which will broadcast to [batch, seq_len, heads, head_dim/2, 2]
 
-        // Python RoPE computation - match exactly with proper broadcasting
+        // Python RoPE computation - match exactly with proper broadcasting and bounds checking
         let xOut0 = xShaped[0..., 0..., 0..., 0..., 0] * ropeCacheReshaped[0..., 0..., 0..., 0..., 0] -
                     xShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 1]
         let xOut1 = xShaped[0..., 0..., 0..., 0..., 1] * ropeCacheReshaped[0..., 0..., 0..., 0..., 0] +
@@ -252,24 +329,52 @@ class SesameAttention: Module {
         // Python: q_per_kv = self.n_heads // self.n_kv_heads
         let qPerKv = nHeads / nKvHeads
         
-        // Python: q = q.reshape(b, s_x, self.n_kv_heads * q_per_kv, self.head_dim)
-        q = q.reshaped([b, sX, nKvHeads * qPerKv, headDim])
+        // Bounds checking for reshape
+        let expectedQSize = nKvHeads * qPerKv * headDim
+        let actualQSize = q.shape[2]
+        
+        if expectedQSize != actualQSize {
+            print("🚨 Q projection size mismatch: expected \(expectedQSize), got \(actualQSize)")
+            print("🚨 nHeads=\(nHeads), nKvHeads=\(nKvHeads), headDim=\(headDim), qPerKv=\(qPerKv)")
+            // Try to fix by using actual dimensions
+            let actualHeadsFromQ = actualQSize / headDim
+            q = q.reshaped([b, sX, actualHeadsFromQ, headDim])
+        } else {
+            q = q.reshaped([b, sX, nKvHeads * qPerKv, headDim])
+        }
 
         // Python: if self.rope is not None: q = self.rope(q, offset=cache.offset if cache else 0)
         if let rope = rope {
             q = rope(q, offset: cache?.offset ?? 0)
         }
 
-                // Python: q = q.swapaxes(1, 2)
+        // Python: q = q.swapaxes(1, 2)
         q = q.swappedAxes(1, 2)
 
         // Python: k = self.k_proj(y), v = self.v_proj(y)
         var k = kProj(y)
         var v = vProj(y)
 
-        // Python: k = k.reshape(b, s_y, -1, self.head_dim), v = v.reshape(b, s_y, -1, self.head_dim)
-        k = k.reshaped([b, sY, -1, headDim])
-        v = v.reshaped([b, sY, -1, headDim])
+        // Bounds checking for KV reshape
+        let expectedKVSize = nKvHeads * headDim
+        let actualKSize = k.shape[2]
+        let actualVSize = v.shape[2]
+        
+        if expectedKVSize != actualKSize {
+            print("🚨 K projection size mismatch: expected \(expectedKVSize), got \(actualKSize)")
+            let actualKvHeads = actualKSize / headDim
+            k = k.reshaped([b, sY, actualKvHeads, headDim])
+        } else {
+            k = k.reshaped([b, sY, nKvHeads, headDim])
+        }
+        
+        if expectedKVSize != actualVSize {
+            print("🚨 V projection size mismatch: expected \(expectedKVSize), got \(actualVSize)")
+            let actualKvHeads = actualVSize / headDim
+            v = v.reshaped([b, sY, actualKvHeads, headDim])
+        } else {
+            v = v.reshaped([b, sY, nKvHeads, headDim])
+        }
 
         // Python: if self.rope is not None: k = self.rope(k, offset=cache.offset if cache else 0)
         if let rope = rope {

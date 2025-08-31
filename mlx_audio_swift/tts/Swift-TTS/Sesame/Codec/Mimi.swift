@@ -19,8 +19,6 @@ struct MimiConfig {
     let quantizerBins: Int
     let quantizerDim: Int
 
-
-
     /// Create Mimi 2024.07 configuration (matches Python)
     static func mimi202407(numCodebooks: Int) -> MimiConfig {
         let seanet = SeanetConfig(
@@ -39,6 +37,7 @@ struct MimiConfig {
             compress: 2
         )
 
+        // FIXED: Match the MLX Python implementation exactly
         let transformer = TransformerConfig(
             dModel: seanet.dimension,
             numHeads: 8,
@@ -48,13 +47,13 @@ struct MimiConfig {
             biasFF: false,
             biasAttn: false,
             layerScale: 0.01,
-            positionalEmbedding: "rope",
+            positionalEmbedding: "rope",  // Python DOES use rope for Mimi
             useConvBlock: false,
             crossAttention: false,
             convKernelSize: 3,
             useConvBias: true,
             gating: false,
-            norm: "layer_norm",
+            norm: "layer_norm",  // Python uses layer_norm for Mimi
             context: 250,
             maxPeriod: 10000,
             maxSeqLen: 8192,
@@ -77,7 +76,7 @@ struct MimiConfig {
     }
 }
 
-/// Main Mimi codec class - matching Python implementation
+/// Main Mimi codec class - matching MLX Python implementation
 class Mimi: Module {
     @ModuleInfo var encoder: SeanetEncoder
     @ModuleInfo var decoder: SeanetDecoder
@@ -87,9 +86,9 @@ class Mimi: Module {
     @ModuleInfo var encoderTransformer: ProjectedTransformer
     @ModuleInfo var decoderTransformer: ProjectedTransformer
 
-    // Cache management
-    private var encoderCache: [KVCacheProtocol]?
-    private var decoderCache: [KVCacheProtocol]?
+    // Cache management - use LayerCache to match Python implementation
+    private var encoderCache: [LayerCache]?
+    private var decoderCache: [LayerCache]?
 
     private(set) var config: MimiConfig
     private let downsampleStride: Int
@@ -139,56 +138,29 @@ class Mimi: Module {
             causal: config.seanet.causal
         )
 
-        // Initialize transformers
-        let encoderTransformer = ProjectedTransformer.encoder(
-            dModel: config.seanet.dimension,
+        // Initialize transformers (matching MLX Python)
+        let encoderTransformer = ProjectedTransformer(
+            config: config.transformer,
             inputDim: config.seanet.dimension,
-            outputDim: config.seanet.dimension
+            outputDims: [config.seanet.dimension]
         )
         self._encoderTransformer.wrappedValue = encoderTransformer
 
-        let decoderTransformer = ProjectedTransformer.decoder(
-            dModel: config.seanet.dimension,
+        let decoderTransformer = ProjectedTransformer(
+            config: config.transformer,
             inputDim: config.seanet.dimension,
-            outputDim: config.seanet.dimension
+            outputDims: [config.seanet.dimension]
         )
         self._decoderTransformer.wrappedValue = decoderTransformer
 
-        // Initialize caches
+        // Initialize caches (using LayerCache to match Python)
         self.encoderCache = encoderTransformer.makeCache()
         self.decoderCache = decoderTransformer.makeCache()
 
         super.init()
     }
 
-    /// Encode audio to discrete codes - matching Python architecture
-    func encode(_ audio: MLXArray) -> MLXArray {
-        // Ensure proper shape [batch, channels, time]
-        var x = audio
-        if x.ndim == 2 {
-            x = x.expandedDimensions(axis: 0)  // Add batch dimension
-        }
-        if x.shape[1] != config.channels {
-            // Transpose if needed
-            x = x.swappedAxes(1, 2)
-        }
-
-        // Step 1: Seanet encoding
-        x = encoder(x)
-
-        // Step 2: Encoder transformer processing
-        if let cache = encoderCache {
-            x = encoderTransformer(x, cache: cache)[0]
-        }
-
-        // Step 3: Temporal downsampling for compression
-        x = downsample(x)
-
-        // Step 4: Quantization to discrete codes
-        return quantizer.encode(x)
-    }
-
-    /// Decode discrete codes to audio - matching Python architecture
+    /// Decode discrete codes to audio - matching MLX Python architecture
     func decode(_ codes: MLXArray) -> MLXArray {
         print("🔍 DEBUG Mimi decode: input codes shape = \(codes.shape)")
         
@@ -201,6 +173,10 @@ class Mimi: Module {
             fatalError("Mimi decode expects \(numCodebooks) codebooks, got \(codes.shape[1]) in shape \(codes.shape)")
         }
         
+        // Reset caches (matching Python)
+        decoder.resetState()
+        decoderCache?.forEach { $0.reset() }
+        
         // Step 1: Dequantize from discrete codes to latent representation
         print("🔍 DEBUG Mimi decode: calling quantizer.decode...")
         var x = quantizer.decode(codes)
@@ -211,10 +187,11 @@ class Mimi: Module {
         x = upsample(x)
         print("🔍 DEBUG Mimi decode: upsample returned shape = \(x.shape)")
 
-        // Step 3: Decoder transformer processing
+        // Step 3: Decoder transformer processing (matching Python)
         if let cache = decoderCache {
             print("🔍 DEBUG Mimi decode: calling decoder transformer...")
-            x = decoderTransformer(x, cache: cache)[0]
+            let transformerOutputs = decoderTransformer(x, cache: cache)
+            x = transformerOutputs[0]  // Take the first output
             print("🔍 DEBUG Mimi decode: decoder transformer returned shape = \(x.shape)")
         }
 
@@ -247,21 +224,18 @@ class Mimi: Module {
     // Weight loading is handled by SesameWeightLoader extension
     // See SesameWeightLoader.swift for loadPytorchWeights implementation
 
-    /// Reset all caches (for new sequences)
+    /// Reset all caches (for new sequences) - matching Python
     func resetCache() {
         encoderCache?.forEach { $0.reset() }
         decoderCache?.forEach { $0.reset() }
     }
 
-    /// Get current cache state for inspection
-    func getCacheState() -> (encoder: [(MLXArray?, MLXArray?)]?, decoder: [(MLXArray?, MLXArray?)]?) {
-        let encoderState = encoderCache?.map {
-            ($0.keys, $0.values) as (MLXArray?, MLXArray?)
-        }
-        let decoderState = decoderCache?.map {
-            ($0.keys, $0.values) as (MLXArray?, MLXArray?)
-        }
-        return (encoderState, decoderState)
+    /// Reset all state (matching Python reset_state)
+    func resetState() {
+        encoder.resetState()
+        decoder.resetState()
+        encoderCache?.forEach { $0.reset() }
+        decoderCache?.forEach { $0.reset() }
     }
 
     /// Get transformer configurations
@@ -280,16 +254,6 @@ class Mimi: Module {
 
     // MARK: - Streaming Methods (Matching Python Implementation)
 
-    /// Reset all streaming state
-    func resetState() {
-        encoder.resetState()
-        decoder.resetState()
-
-        // Reset transformer caches
-        encoderCache?.forEach { $0.reset() }
-        decoderCache?.forEach { $0.reset() }
-    }
-
     /// Encode audio step-by-step for streaming
     func encodeStep(_ xs: MLXArray) -> MLXArray {
         var x = xs
@@ -307,7 +271,8 @@ class Mimi: Module {
 
         // Step 2: Encoder transformer processing
         if let cache = encoderCache {
-            x = encoderTransformer(x, cache: cache)[0]
+            let transformerOutputs = encoderTransformer(x, cache: cache)
+            x = transformerOutputs[0]  // Take the first output
         }
 
         // Step 3: Temporal downsampling (streaming)
@@ -327,7 +292,8 @@ class Mimi: Module {
 
         // Step 3: Decoder transformer processing
         if let cache = decoderCache {
-            x = decoderTransformer(x, cache: cache)[0]
+            let transformerOutputs = decoderTransformer(x, cache: cache)
+            x = transformerOutputs[0]  // Take the first output
         }
 
         // Step 4: Seanet decoding (streaming)
@@ -337,9 +303,41 @@ class Mimi: Module {
     /// Warmup the model for initialization
     func warmup() {
         let pcm = MLXArray.zeros([1, 1, 1920 * 4])
-        let codes = encode(pcm)
+        let codes = self.encode(pcm)
         let pcmOut = decode(codes)
         MLX.eval(pcmOut)
+    }
+
+    /// Encode audio to discrete codes - matching Python architecture
+    func encode(_ audio: MLXArray) -> MLXArray {
+        // Ensure proper shape [batch, channels, time]
+        var x = audio
+        if x.ndim == 2 {
+            x = x.expandedDimensions(axis: 0)  // Add batch dimension
+        }
+        if x.shape[1] != config.channels {
+            // Transpose if needed
+            x = x.swappedAxes(1, 2)
+        }
+
+        // Reset caches (matching Python)
+        encoder.resetState()
+        encoderCache?.forEach { $0.reset() }
+
+        // Step 1: Seanet encoding
+        x = encoder(x)
+
+        // Step 2: Encoder transformer processing
+        if let cache = encoderCache {
+            let transformerOutputs = encoderTransformer(x, cache: cache)
+            x = transformerOutputs[0]
+        }
+
+        // Step 3: Temporal downsampling for compression
+        x = downsample(x)
+
+        // Step 4: Quantization to discrete codes
+        return quantizer.encode(x)
     }
 }
 

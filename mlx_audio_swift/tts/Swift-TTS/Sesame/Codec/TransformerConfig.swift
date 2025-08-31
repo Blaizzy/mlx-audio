@@ -4,7 +4,7 @@
 
 import Foundation
 
-/// Configuration for Sesame TTS Transformer components
+/// Configuration for Sesame TTS Transformer components (matches MLX Python TransformerConfig)
 struct TransformerConfig {
     let dModel: Int
     let numHeads: Int
@@ -14,7 +14,7 @@ struct TransformerConfig {
     let biasFF: Bool
     let biasAttn: Bool
     let layerScale: Float?
-    let positionalEmbedding: String
+    let positionalEmbedding: String  // "rope", "none", "sin", "sin_rope"
     let useConvBlock: Bool
     let crossAttention: Bool
     let convKernelSize: Int
@@ -60,17 +60,57 @@ struct TransformerConfig {
         )
     }
 
-    /// Encoder-specific configuration
+    /// Encoder-specific configuration (matches MLX Python mimi_202407)
     static func encoderConfig(dModel: Int = 512) -> TransformerConfig {
-        var config = defaultConfig(dModel: dModel, numHeads: 8, numLayers: 6)
-        config.gating = false
-        return config
+        return TransformerConfig(
+            dModel: dModel,
+            numHeads: 8,
+            numLayers: 8,
+            causal: true,
+            normFirst: true,
+            biasFF: false,
+            biasAttn: false,
+            layerScale: 0.01,
+            positionalEmbedding: "rope",  // Python uses rope for Mimi
+            useConvBlock: false,
+            crossAttention: false,
+            convKernelSize: 3,
+            useConvBias: true,
+            gating: false,
+            norm: "layer_norm",  // Python uses layer_norm for Mimi
+            context: 250,
+            maxPeriod: 10000,
+            maxSeqLen: 8192,
+            kvRepeat: 1,
+            dimFeedforward: 2048,
+            convLayout: true
+        )
     }
 
-    /// Decoder-specific configuration
+    /// Decoder-specific configuration (matches MLX Python mimi_202407)
     static func decoderConfig(dModel: Int = 512) -> TransformerConfig {
-        var config = defaultConfig(dModel: dModel, numHeads: 16, numLayers: 6)
-        config.kvRepeat = 4  // 16 query heads, 4 key/value heads for GQA
-        return config
+        return TransformerConfig(
+            dModel: dModel,
+            numHeads: 8,
+            numLayers: 8,
+            causal: true,
+            normFirst: true,
+            biasFF: false,
+            biasAttn: false,
+            layerScale: 0.01,
+            positionalEmbedding: "rope",  // Python uses rope for Mimi
+            useConvBlock: false,
+            crossAttention: false,
+            convKernelSize: 3,
+            useConvBias: true,
+            gating: false,
+            norm: "layer_norm",  // Python uses layer_norm for Mimi
+            context: 250,
+            maxPeriod: 10000,
+            maxSeqLen: 8192,
+            kvRepeat: 1,
+            dimFeedforward: 2048,
+            convLayout: true
+        )
     }
 }

@@ -1,6 +1,7 @@
 //
 // TransformerBlocks for Sesame TTS ProjectedTransformer
 // Core transformer components: Attention, MLP, and Layer blocks
+// Based on the MLX Python implementation from Kyutai Labs
 
 import Foundation
 import MLX
@@ -28,9 +29,27 @@ class LayerScale: Module {
     }
 }
 
-/// Multi-head attention with RoPE embeddings
+/// Layer cache that wraps KV cache (matches Python LayerCache)
+class LayerCache {
+    var selfAttn: KVCacheProtocol
+    var crossAttn: (MLXArray, MLXArray)?
+
+    init(selfAttn: KVCacheProtocol) {
+        self.selfAttn = selfAttn
+        self.crossAttn = nil
+    }
+
+    func reset() {
+        selfAttn.reset()
+        crossAttn = nil
+    }
+}
+
+/// Attention layer matching MLX Python implementation
 class Attention: Module {
-    @ModuleInfo var multiHeadAttention: MLXNN.MultiHeadAttention
+    @ModuleInfo var inProj: MLXNN.Linear
+    @ModuleInfo var outProj: MLXNN.Linear
+    @ModuleInfo var rope: MLXNN.RoPE?
 
     private let config: TransformerConfig
     private let scale: Float
@@ -39,38 +58,75 @@ class Attention: Module {
         self.config = config
         self.scale = pow(Float(config.headDim), -0.5)
 
-        // Calculate dimensions for GQA
         let numKvHeads = config.numHeads / config.kvRepeat
-        let queryDim = config.dModel
-        let kvDim = queryDim / config.kvRepeat  // KV heads have smaller dimension in GQA
+        let outDim = config.dModel + 2 * numKvHeads * config.dModel / config.numHeads
 
-        // Initialize MultiHeadAttention with GQA support
-        self._multiHeadAttention.wrappedValue = MLXNN.MultiHeadAttention(
-            dimensions: config.dModel,
-            numHeads: config.numHeads,
-            queryInputDimensions: queryDim,
-            keyInputDimensions: kvDim,
-            valueInputDimensions: kvDim,
-            valueDimensions: kvDim,
-            bias: config.biasAttn
-        )
+        self._inProj.wrappedValue = MLXNN.Linear(config.dModel, outDim, bias: config.biasAttn)
+        self._outProj.wrappedValue = MLXNN.Linear(config.dModel, config.dModel, bias: config.biasAttn)
+
+        if config.positionalEmbedding == "rope" {
+            self._rope.wrappedValue = MLXNN.RoPE(
+                dimensions: config.headDim,
+                traditional: true,
+                base: Float(config.maxPeriod)
+            )
+        } else {
+            self._rope.wrappedValue = nil
+        }
 
         super.init()
     }
 
-    func callAsFunction(_ xs: MLXArray, cache: KVCacheProtocol, mask: MLXArray? = nil) -> MLXArray {
-        // Apply multi-head attention with self-attention (queries = keys = values)
-        // For self-attention, we use the same tensor for queries, keys, and values
-        let attentionOutput = multiHeadAttention(xs, keys: xs, values: xs, mask: mask)
+    func callAsFunction(_ xs: MLXArray, cache: LayerCache, mask: MLXArray? = nil) -> MLXArray {
+        assert(config.kvRepeat == 1, "only kv_repeat==1 is supported")
 
-        // Note: RoPE is now handled by SesameAttention in the main model
-        // This class provides standard multi-head attention for transformer blocks
+        let b = xs.shape[0]
+        let t = xs.shape[1] 
+        let hd = xs.shape[2]
 
-        return attentionOutput
+        // Project to Q, K, V - following Python exactly
+        let qkv = inProj(xs).reshaped([b, t, 3, config.numHeads, config.headDim])
+        var q = qkv[0..., 0..., 0, 0..., 0...].swappedAxes(1, 2)  // [b, h, t, d]
+        var k = qkv[0..., 0..., 1, 0..., 0...].swappedAxes(1, 2)  // [b, h, t, d] 
+        let v = qkv[0..., 0..., 2, 0..., 0...].swappedAxes(1, 2)  // [b, h, t, d]
+
+        // Apply RoPE if configured
+        if let rope = rope {
+            q = rope(q, offset: cache.selfAttn.offset)
+            k = rope(k, offset: cache.selfAttn.offset)
+        }
+
+        // Update cache and get complete K, V
+        let (fullK, fullV) = cache.selfAttn.updateAndFetch(keys: k, values: v)
+        
+        // Apply context trimming if needed (following Python logic)
+        var finalK = fullK
+        var finalV = fullV
+        let kLen = fullK.shape[2]
+        let kTargetLen = t + min(config.context, kLen - t)
+        
+        if kTargetLen < kLen {
+            let startIdx = kLen - kTargetLen
+            finalK = fullK[0..., 0..., startIdx..., 0...]
+            finalV = fullV[0..., 0..., startIdx..., 0...]
+        }
+
+        // Scaled dot product attention
+        let output = MLXFast.scaledDotProductAttention(
+            queries: q,
+            keys: finalK,
+            values: finalV,
+            scale: scale,
+            mask: mask
+        )
+
+        // Reshape back and project output
+        let reshapedOutput = output.swappedAxes(1, 2).reshaped([b, t, hd])
+        return outProj(reshapedOutput)
     }
 }
 
-/// Gated MLP (Gating + Feedforward)
+/// Gated MLP (matches MLX Python MlpGating)
 class MlpGating: Module {
     @ModuleInfo var linearIn: MLXNN.Linear
     @ModuleInfo var linearOut: MLXNN.Linear
@@ -114,7 +170,7 @@ class MlpGating: Module {
     }
 }
 
-/// Standard MLP (Feedforward only)
+/// Standard MLP (matches MLX Python MlpNoGating)
 class MlpNoGating: Module {
     @ModuleInfo var linear1: MLXNN.Linear
     @ModuleInfo var linear2: MLXNN.Linear
@@ -141,31 +197,32 @@ class MlpNoGating: Module {
     }
 }
 
-/// Individual transformer layer
+/// Individual transformer layer (matches MLX Python TransformerLayer)
 class TransformerLayer: Module {
-    @ModuleInfo(key: "norm1") var norm1: MLXNN.RMSNorm
-    @ModuleInfo(key: "norm2") var norm2: MLXNN.RMSNorm
+    @ModuleInfo var norm1: Module
+    @ModuleInfo var norm2: Module
     @ModuleInfo var layerScale1: Module
     @ModuleInfo var layerScale2: Module
-    @ModuleInfo(key: "self_attn") var selfAttention: Attention
-    @ModuleInfo var mlp: Module
+    @ModuleInfo var selfAttn: Attention
+    @ModuleInfo var gating: Module
 
     private let config: TransformerConfig
 
     init(_ config: TransformerConfig) {
         self.config = config
 
-        // Initialize normalization layers
-        if config.norm == "rms_norm" {
+        // Initialize normalization layers (matching Python exactly)
+        if config.norm == "layer_norm" {
+            self._norm1.wrappedValue = MLXNN.LayerNorm(dimensions: config.dModel, eps: 1e-5)
+            self._norm2.wrappedValue = MLXNN.LayerNorm(dimensions: config.dModel, eps: 1e-5)
+        } else if config.norm == "rms_norm" {
             self._norm1.wrappedValue = MLXNN.RMSNorm(dimensions: config.dModel, eps: 1e-8)
             self._norm2.wrappedValue = MLXNN.RMSNorm(dimensions: config.dModel, eps: 1e-8)
         } else {
-            // Fallback to RMSNorm even if layer_norm is specified
-            self._norm1.wrappedValue = MLXNN.RMSNorm(dimensions: config.dModel, eps: 1e-5)
-            self._norm2.wrappedValue = MLXNN.RMSNorm(dimensions: config.dModel, eps: 1e-5)
+            fatalError("unsupported norm type \(config.norm)")
         }
 
-        // Initialize layer scaling
+        // Initialize layer scaling (matching Python exactly)
         if config.layerScale != nil {
             self._layerScale1.wrappedValue = LayerScale(dim: config.dModel)
             self._layerScale2.wrappedValue = LayerScale(dim: config.dModel)
@@ -175,62 +232,80 @@ class TransformerLayer: Module {
         }
 
         // Initialize attention
-        self._selfAttention.wrappedValue = Attention(config)
+        self._selfAttn.wrappedValue = Attention(config)
 
-        // Initialize MLP (gated or standard)
+        // Initialize MLP/gating (matching Python exactly)
         if config.gating {
-            self._mlp.wrappedValue = MlpGating(config)
+            self._gating.wrappedValue = MlpGating(config)
         } else {
-            self._mlp.wrappedValue = MlpNoGating(config)
+            self._gating.wrappedValue = MlpNoGating(config)
         }
 
         super.init()
     }
 
-    func callAsFunction(_ xs: MLXArray, cache: KVCacheProtocol) -> MLXArray {
-        // Pre-norm architecture: norm -> attention -> residual
-        var residual = xs
-        var attnInput = config.normFirst ? norm1(xs) : xs
-        var attnOutput = selfAttention(attnInput, cache: cache)
-
-        // Apply layer scaling
-        if let layerScale = layerScale1 as? LayerScale {
-            attnOutput = layerScale(attnOutput)
-        } else if let identity = layerScale1 as? Identity {
-            attnOutput = identity(attnOutput)
-        }
-
-        residual = residual + attnOutput
-
-        // Pre-norm architecture: norm -> MLP -> residual
-        var mlpInput = config.normFirst ? norm2(residual) : residual
-
-        // Call the MLP based on its type
-        var mlpOutput: MLXArray
-        if let gatingMLP = mlp as? MlpGating {
-            mlpOutput = gatingMLP(mlpInput)
-        } else if let noGatingMLP = mlp as? MlpNoGating {
-            mlpOutput = noGatingMLP(mlpInput)
+    func callAsFunction(_ xs: MLXArray, cache: LayerCache, crossAttentionSrc: MLXArray? = nil) -> MLXArray {
+        // Self-attention block (matching Python exactly)
+        let n1: MLXArray
+        if let layerNorm = norm1 as? MLXNN.LayerNorm {
+            n1 = layerNorm(xs)
+        } else if let rmsNorm = norm1 as? MLXNN.RMSNorm {
+            n1 = rmsNorm(xs)
         } else {
-            // Fallback - this shouldn't happen in our implementation
-            mlpOutput = mlpInput
+            n1 = xs
         }
 
-        // Apply layer scaling to MLP output
-        if let layerScale = layerScale2 as? LayerScale {
-            mlpOutput = layerScale(mlpOutput)
-        } else if let identity = layerScale2 as? Identity {
-            mlpOutput = identity(mlpOutput)
+        let attnOut = selfAttn(n1, cache: cache)
+        
+        let layerScale1Out: MLXArray
+        if let layerScale = layerScale1 as? LayerScale {
+            layerScale1Out = layerScale(attnOut)
+        } else if let identity = layerScale1 as? Identity {
+            layerScale1Out = identity(attnOut)
+        } else {
+            layerScale1Out = attnOut
         }
         
-        residual = residual + mlpOutput
+        var residual = xs + layerScale1Out
+
+        // TODO: Cross attention support if needed
+
+        // MLP block (matching Python exactly)  
+        let n2: MLXArray
+        if let layerNorm = norm2 as? MLXNN.LayerNorm {
+            n2 = layerNorm(residual)
+        } else if let rmsNorm = norm2 as? MLXNN.RMSNorm {
+            n2 = rmsNorm(residual)
+        } else {
+            n2 = residual
+        }
+
+        let mlpOut: MLXArray
+        if let mlpGating = gating as? MlpGating {
+            mlpOut = mlpGating(n2)
+        } else if let mlpNoGating = gating as? MlpNoGating {
+            mlpOut = mlpNoGating(n2)
+        } else {
+            mlpOut = n2  // Fallback
+        }
+
+        let layerScale2Out: MLXArray
+        if let layerScale = layerScale2 as? LayerScale {
+            layerScale2Out = layerScale(mlpOut)
+        } else if let identity = layerScale2 as? Identity {
+            layerScale2Out = identity(mlpOut)
+        } else {
+            layerScale2Out = mlpOut
+        }
+
+        residual = residual + layerScale2Out
         return residual
     }
 }
 
-/// Stack of transformer layers
+/// Stack of transformer layers (matches MLX Python Transformer)
 class Transformer: Module {
-    @ModuleInfo(key: "layers") var layers: [TransformerLayer]
+    @ModuleInfo var layers: [TransformerLayer]
     private let config: TransformerConfig
 
     init(_ config: TransformerConfig) {
@@ -239,30 +314,31 @@ class Transformer: Module {
         super.init()
     }
 
-    func callAsFunction(_ xs: MLXArray, cache: [KVCacheProtocol]) -> MLXArray {
+    func callAsFunction(_ xs: MLXArray, cache: [LayerCache], crossAttentionSrc: MLXArray? = nil) -> MLXArray {
         var output = xs
-        for (layerIndex, layer) in layers.enumerated() {
-            let layerCache = cache[layerIndex]  // Get the cache for this specific layer
-            output = layer(output, cache: layerCache)
+        
+        for (layer, layerCache) in zip(layers, cache) {
+            output = layer(output, cache: layerCache, crossAttentionSrc: crossAttentionSrc)
         }
+        
         return output
     }
 
-    func makeCache() -> [KVCache] {
+    func makeCache() -> [LayerCache] {
         let numKvHeads = config.numHeads / config.kvRepeat
         return layers.map { _ in
-            KVCache(headDim: config.headDim, nKvHeads: numKvHeads)
+            LayerCache(selfAttn: KVCache(headDim: config.headDim, nKvHeads: numKvHeads))
         }
     }
 
-    func makeRotCache() -> [RotatingKVCache] {
+    func makeRotCache() -> [LayerCache] {
         let numKvHeads = config.numHeads / config.kvRepeat
         return layers.map { _ in
-            RotatingKVCache(
+            LayerCache(selfAttn: RotatingKVCache(
                 headDim: config.headDim,
                 nKvHeads: numKvHeads,
                 maxSize: config.maxSeqLen
-            )
+            ))
         }
     }
 }

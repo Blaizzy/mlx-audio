@@ -7,7 +7,7 @@ import MLX
 import MLXNN
 
 /// ProjectedTransformer - Main transformer with input/output projections
-/// Equivalent to Python's ProjectedTransformer class
+/// Equivalent to MLX Python's ProjectedTransformer class
 class ProjectedTransformer: Module {
     @ModuleInfo var transformer: Transformer
     @ModuleInfo var inputProj: MLXNN.Linear?
@@ -48,8 +48,8 @@ class ProjectedTransformer: Module {
         super.init()
     }
 
-    /// Forward pass through the projected transformer
-    func callAsFunction(_ xs: MLXArray, cache: [KVCacheProtocol]) -> [MLXArray] {
+    /// Forward pass through the projected transformer (matches Python exactly)
+    func callAsFunction(_ xs: MLXArray, cache: [LayerCache], crossAttentionSrc: MLXArray? = nil) -> [MLXArray] {
         var x = xs
 
         // Handle conv layout (transpose for convolution input)
@@ -63,7 +63,7 @@ class ProjectedTransformer: Module {
         }
 
         // Apply transformer
-        x = transformer(x, cache: cache)
+        x = transformer(x, cache: cache, crossAttentionSrc: crossAttentionSrc)
 
         // Apply output projections
         var outputs: [MLXArray] = []
@@ -84,13 +84,13 @@ class ProjectedTransformer: Module {
         return outputs
     }
 
-    /// Create standard KV cache
-    func makeCache() -> [KVCache] {
+    /// Create standard cache (matches Python make_cache)
+    func makeCache() -> [LayerCache] {
         return transformer.makeCache()
     }
 
-    /// Create rotating KV cache
-    func makeRotCache() -> [RotatingKVCache] {
+    /// Create rotating cache (matches Python make_rot_cache)
+    func makeRotCache() -> [LayerCache] {
         return transformer.makeRotCache()
     }
 
@@ -113,13 +113,13 @@ class ProjectedTransformer: Module {
 /// Convenience initializers for common configurations
 extension ProjectedTransformer {
 
-    /// Encoder transformer (no gating for efficiency)
+    /// Encoder transformer (matches Python/official config)
     static func encoder(dModel: Int = 512, inputDim: Int = 512, outputDim: Int = 512) -> ProjectedTransformer {
         let config = TransformerConfig.encoderConfig(dModel: dModel)
         return ProjectedTransformer(config: config, inputDim: inputDim, outputDims: [outputDim])
     }
 
-    /// Decoder transformer (with gating for quality)
+    /// Decoder transformer (matches Python/official config)
     static func decoder(dModel: Int = 512, inputDim: Int = 512, outputDim: Int = 512) -> ProjectedTransformer {
         let config = TransformerConfig.decoderConfig(dModel: dModel)
         return ProjectedTransformer(config: config, inputDim: inputDim, outputDims: [outputDim])
