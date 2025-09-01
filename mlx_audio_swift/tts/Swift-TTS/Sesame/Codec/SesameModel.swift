@@ -134,95 +134,67 @@ class SesameModel: Module {
             fatalError("Backbone caches are not enabled")
         }
 
-        print("🎵 DEBUG generateFrame: Input shapes - tokens: \(tokens.shape), tokensMask: \(tokensMask.shape), inputPos: \(inputPos.shape)")
-
         // Create backbone causal mask - follow Python exactly
         // Python: curr_backbone_mask = index_causal_mask(self._backbone_causal_mask, input_pos)
         let currBackboneMask = indexCausalMask(
             mask: backboneCausalMask!,
             inputPos: inputPos
         )
-        print("🎵 DEBUG generateFrame: currBackboneMask shape: \(currBackboneMask.shape)")
 
         // Embed tokens
-        print("🎵 DEBUG generateFrame: About to embed tokens...")
         let embeds = embedTokens(tokens)
-        print("🎵 DEBUG generateFrame: embeds shape: \(embeds.shape)")
 
         // Apply mask exactly like Python: embeds * expand_dims(tokens_mask, -1)
         let expandedMask = tokensMask.expandedDimensions(axis: -1)
-        print("🎵 DEBUG generateFrame: expandedMask shape: \(expandedMask.shape)")
         let maskedEmbeds = embeds * expandedMask
-        print("🎵 DEBUG generateFrame: maskedEmbeds shape: \(maskedEmbeds.shape)")
 
         // Process through backbone
         var h = maskedEmbeds.sum(axis: 2)
-        print("🎵 DEBUG generateFrame: h after sum shape: \(h.shape)")
 
-        let backboneResult = backbone(h, mask: currBackboneMask, cache: backboneCache)
-
-        // Handle the backbone result - it returns (hidden, cache) tuple
-        let (backboneHidden, _) = backboneResult
-        h = backboneHidden
-        print("🎵 DEBUG generateFrame: backbone hidden shape: \(h.shape)")
+        // Backbone processing - cache is updated in place
+        h = backbone(h, mask: currBackboneMask, cache: backboneCache)
 
         // Get last hidden state - Python: last_h = h[:, -1, :]
         let lastH = h[0..., -1, 0...]
-        print("🎵 DEBUG generateFrame: lastH shape: \(lastH.shape)")
 
         // Generate first codebook token - Python: c0_logits = self.codebook0_head(last_h)
         let c0Logits = codebook0Head(lastH)
-        print("🎵 DEBUG generateFrame: c0Logits shape: \(c0Logits.shape)")
 
         // Sample first codebook token - Python: c0_sample = mx.expand_dims(sampler(c0_logits), axis=-1)
         let c0SampleFlat = sampler(c0Logits)  // [batch]
         let c0Sample = c0SampleFlat.expandedDimensions(axis: -1)  // [batch, 1]
-        print("🎵 DEBUG generateFrame: c0Sample shape: \(c0Sample.shape)")
 
         // Embed first codebook token - Python: c0_embed = self._embed_audio(0, c0_sample)
         let c0Embed = embedAudio(codebook: 0, tokens: c0Sample)
-        print("🎵 DEBUG generateFrame: c0Embed shape: \(c0Embed.shape)")
 
         // Python: curr_h = mx.concat([mx.expand_dims(last_h, 1), c0_embed], axis=1)
         var currH = MLX.concatenated([lastH.expandedDimensions(axis: 1), c0Embed], axis: 1)
-        print("🎵 DEBUG generateFrame: currH initial shape: \(currH.shape)")
 
         // Initialize current sample with first codebook token (keep it as [batch] not [batch, 1])
         var currSample = c0SampleFlat  // [batch]
 
-        // Python: curr_pos = mx.arange(curr_h.shape[1], dtype=mx.int32)
-        //         curr_pos = mx.expand_dims(curr_pos, 0)  
-        //         curr_pos = mx.broadcast_to(curr_pos, (curr_h.shape[0], curr_h.shape[1]))
-        var currPos = MLXArray.arange(start: 0, stop: currH.shape[1], dtype: .int32)
-            .expandedDimensions(axis: 0)  // [1, seq_len]
-        currPos = MLX.broadcast(currPos, to: [currH.shape[0], currH.shape[1]])
-        print("🎵 DEBUG generateFrame: currPos shape: \(currPos.shape)")
+        // Position tracking - start with position 0
+        var currPos = MLXArray(0)
 
-        // Reset decoder cache for new frame - Python: self.decoder_cache = make_prompt_cache(self.decoder)
+        // Reset decoder cache for new frame - Python: decoder_cache = make_prompt_cache(self.decoder)
         self.decoderCache = makePromptCache(decoder)
 
         // Generate remaining codebook tokens
         for i in 1..<args.audioNumCodebooks {
-            print("🎵 DEBUG generateFrame: Processing codebook \(i)")
-            
-            // Python: curr_decoder_mask = index_causal_mask(self._decoder_causal_mask, curr_pos)
-            let currDecoderMask = indexCausalMask(
-                mask: decoderCausalMask!,
-                inputPos: currPos
-            )
+            // Create decoder causal mask - Python: curr_decoder_mask = index_causal_mask(self._decoder_causal_mask, curr_pos)
+            // For decoder, we need a mask of shape [1, 1, seq_len, seq_len] where seq_len is the current sequence length
+            let seqLen = i + 1  // Current sequence length (1 for c0 + i for current codebook)
+            let decoderMask = createCausalMask(seqLen: seqLen)
+            let currDecoderMask = decoderMask.expandedDimensions(axis: 0).expandedDimensions(axis: 0)  // [1, 1, seq_len, seq_len]
 
             // Python: decoder_h = self.decoder(self.projection(curr_h), mask=curr_decoder_mask, cache=self.decoder_cache)
             let projectedH = projection(currH)
-            print("🎵 DEBUG generateFrame: projectedH shape: \(projectedH.shape)")
-            let decoderH = decoder(projectedH, mask: currDecoderMask, cache: decoderCache).0
-            print("🎵 DEBUG generateFrame: decoderH shape: \(decoderH.shape)")
+            let decoderH = decoder(projectedH, mask: currDecoderMask, cache: decoderCache)
 
             // Python: ci_logits = mx.matmul(decoder_h[:, -1, :], self.audio_head[i - 1])
-            let lastDecoderH = decoderH[0..., -1, 0...]
-            print("🎵 DEBUG generateFrame: lastDecoderH shape: \(lastDecoderH.shape)")
-            let audioHeadSlice = audioHead[i - 1]
-            print("🎵 DEBUG generateFrame: audioHeadSlice shape: \(audioHeadSlice.shape)")
-            let ciLogits = MLX.matmul(lastDecoderH, audioHeadSlice)
+            let lastDecoderH = decoderH[0..., -1, 0...]  // [batch, decoder_dim]
+            let audioHeadSlice = take2DHead(audioHead, index: i - 1)  // [decoder_dim, audio_vocab]
+            let ciLogits = MLX.matmul(lastDecoderH, audioHeadSlice)  // [batch, audio_vocab]
 
             // Python: ci_sample = mx.expand_dims(sampler(ci_logits), axis=-1)
             let ciSampleFlat = sampler(ciLogits)  // [batch]
@@ -233,70 +205,54 @@ class SesameModel: Module {
 
             // Python: curr_h = ci_embed (NOT concatenated!)
             currH = ciEmbed
-            
+
             // Accumulate tokens - Python: curr_sample = mx.concat([curr_sample, ci_sample], axis=1)
             // Convert currSample to [batch, 1] if it's [batch], then concatenate ciSample [batch, 1]
             if currSample.ndim == 1 {
                 currSample = currSample.expandedDimensions(axis: -1)  // [batch] -> [batch, 1]
             }
             currSample = MLX.concatenated([currSample, ciSample], axis: 1)  // [batch, i+1]
-            
-            // Python: curr_pos = curr_pos[:, -1:] + 1
-            let lastIndex = currPos.shape[1] - 1
-            let lastPos = currPos[0..., lastIndex..<currPos.shape[1]]  // Get [:, -1:]
-            currPos = lastPos + 1
+
+            // Update position for next token - Python: curr_pos = curr_pos + 1
+            currPos = currPos + 1
         }
-        
-        print("🎵 DEBUG generateFrame: Final currSample shape: \(currSample.shape)")
+
         return currSample  // Should be [batch, num_codebooks]
     }
 
-    /// Embed text tokens
-    /// - Parameter tokens: Text tokens [batch, seq_len]
-    /// - Returns: Embedded tokens [batch, seq_len, num_codebooks + 1, hidden_size]
+    /// Embed tokens - matches Python _embed_tokens exactly
+    /// - Parameter tokens: Token sequence [batch, seq_len, num_codebooks+1]
+    /// - Returns: Embedded tokens [batch, seq_len, num_codebooks+1, hidden_size]
     private func embedTokens(_ tokens: MLXArray) -> MLXArray {
-        print("🎵 DEBUG embedTokens: Input tokens shape: \(tokens.shape)")
-        
-        // Extract text tokens from the last column (column 32 for 33 total columns)
-        let textTokens = tokens[0..., 0..., -1]
-        print("🎵 DEBUG embedTokens: textTokens shape: \(textTokens.shape)")
-        
-        let textEmbeds = textEmbeddings(textTokens)
-        print("🎵 DEBUG embedTokens: textEmbeds shape: \(textEmbeds.shape)")
-        
-        let textEmbedsExpanded = textEmbeds.expandedDimensions(axis: -2)
-        print("🎵 DEBUG embedTokens: textEmbedsExpanded shape: \(textEmbedsExpanded.shape)")
+        let B = tokens.shape[0]
+        let T = tokens.shape[1]
+        let CbPlus = tokens.shape[2]  // K+1
+        let Cb = CbPlus - 1
 
-        // Create audio token embeddings - following Python implementation exactly
-        let codebookIndices = MLXArray(Array(0..<args.audioNumCodebooks))
-        let codebookOffsets = codebookIndices * args.audioVocabSize
+        // Extract text tokens (last column)
+        let textTokens = tokens[0..., 0..., -1]  // [B, T]
+        let textEmbeds = textEmbeddings(textTokens)  // [B, T, D]
+        let textEmbedsExpanded = textEmbeds.expandedDimensions(axis: -2)  // [B, T, 1, D]
 
-        // Reshape codebook_offsets to (1, 1, -1) like Python: mx.reshape(codebook_offsets, (1, 1, -1))
-        let codebookOffsetsReshaped = codebookOffsets.reshaped([1, 1, -1])
-        print("🎵 DEBUG embedTokens: codebookOffsetsReshaped shape: \(codebookOffsetsReshaped.shape)")
+        // Extract audio tokens (first K columns)
+        let audioTokensSlice = tokens[0..., 0..., 0..<Cb]  // [B, T, Cb]
 
-        let audioTokensSlice = tokens[0..., 0..., 0..<(args.audioNumCodebooks)]
-        print("🎵 DEBUG embedTokens: audioTokensSlice shape: \(audioTokensSlice.shape)")
-        
-        let audioTokens = audioTokensSlice + codebookOffsetsReshaped
-        print("🎵 DEBUG embedTokens: audioTokens shape: \(audioTokens.shape)")
+        // Create codebook offsets
+        let codebookIndices = MLXArray(Array(0..<Cb))  // [Cb]
+        let codebookOffsets = codebookIndices * args.audioVocabSize  // [Cb]
+        let codebookOffsetsReshaped = codebookOffsets.reshaped([1, 1, -1])  // [1, 1, Cb]
 
-        let audioTokensFlat = audioTokens.flattened()
-        let audioEmbedsFlat = audioEmbeddings(audioTokensFlat)
-        print("🎵 DEBUG embedTokens: audioEmbedsFlat shape: \(audioEmbedsFlat.shape)")
+        // Add offsets to audio tokens
+        let shiftedAudioTokens = audioTokensSlice + codebookOffsetsReshaped  // [B, T, Cb]
 
-        let audioEmbeds = audioEmbedsFlat.reshaped([
-            tokens.shape[0],
-            tokens.shape[1],
-            args.audioNumCodebooks,
-            -1
-        ])
-        print("🎵 DEBUG embedTokens: audioEmbeds shape: \(audioEmbeds.shape)")
+        // Flatten and embed
+        let flatTokens = shiftedAudioTokens.flattened()  // [B*T*Cb]
+        let audioEmbedsFlat = audioEmbeddings(flatTokens)  // [B*T*Cb, D]
+        let D = audioEmbedsFlat.shape[1]
+        let audioEmbeds = audioEmbedsFlat.reshaped([B, T, Cb, D])  // [B, T, Cb, D]
 
-        let result = MLX.concatenated([audioEmbeds, textEmbedsExpanded], axis: -2)
-        print("🎵 DEBUG embedTokens: Final result shape: \(result.shape)")
-
-        return result
+        // Concatenate: [audio_embeds, text_embeds]
+        return concatenated([audioEmbeds, textEmbedsExpanded], axis: -2)  // [B, T, Cb+1, D]
     }
 
     /// Embed audio tokens for specific codebook
@@ -321,7 +277,20 @@ class SesameModel: Module {
         return result
     }
 
-
+    /// Take 2D head slice - matches Python take2DHead function
+    /// - Parameters:
+    ///   - W: Weight matrix [nq-1, decoder_dim, audio_vocab]
+    ///   - index: Index to take
+    /// - Returns: Sliced matrix [decoder_dim, audio_vocab]
+    private func take2DHead(_ W: MLXArray, index i: Int) -> MLXArray {
+        if W.ndim == 3 {
+            let left = W.split(indices: [i], axis: 0)
+            let mid = left.count > 1 ? left[1] : W[0..., i...i+1, 0...]
+            let tail = mid.split(indices: [1], axis: 0)
+            return tail[0].reshaped([W.shape[1], W.shape[2]])
+        }
+        return W
+    }
 
     /// Create causal mask for attention
     private func createCausalMask(seqLen: Int) -> MLXArray {
@@ -398,21 +367,16 @@ class LlamaModel: Module {
         _ x: MLXArray,
         mask: MLXArray? = nil,
         cache: [KVCacheProtocol]? = nil
-    ) -> (MLXArray, [KVCacheProtocol]?) {
+    ) -> MLXArray {
         var hidden = x
-        var updatedCache = cache
 
         for (i, layer) in layers.enumerated() {
             let layerCache = cache?[i]
-            let (newHidden, newCache) = layer(hidden, mask: mask, cache: layerCache)
+            let newHidden = layer(hidden, mask: mask, cache: layerCache)
             hidden = newHidden
-            if var cacheArray = updatedCache, let cache = newCache {
-                cacheArray[i] = cache
-                updatedCache = cacheArray
-            }
         }
 
-        return (hidden, updatedCache)
+        return hidden
     }
 }
 
@@ -451,7 +415,7 @@ class LlamaModel: Module {
         _ x: MLXArray,
         mask: MLXArray? = nil,
         cache: KVCacheProtocol? = nil
-    ) -> (MLXArray, KVCacheProtocol?) {
+    ) -> MLXArray {
         // Self-attention with residual connection
         let normedX = inputNorm(x)
 
@@ -468,7 +432,7 @@ class LlamaModel: Module {
         let mlpOut = mlp(normedResidual)
         residual = residual + mlpOut
 
-        return (residual, cache)  // Return the original cache since SesameAttention handles KV caching internally
+        return residual
     }
 }
 

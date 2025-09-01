@@ -179,14 +179,14 @@ class SesameModelWrapper: Module {
             // Initialize Mimi codec with pre-trained weights
             let mimiConfig = MimiConfig.mimi202407(numCodebooks: config.audioNumCodebooks)
             let mimi = Mimi(mimiConfig)
-            
+
             // Load the pre-trained weights
             print("🚀 DEBUG ensureInitialized: Loading Mimi weights...")
             let weightsURL = URL(fileURLWithPath: foundWeightsPath)
             let mimiWithWeights = mimi.loadPytorchWeights(url: weightsURL, strict: false)
-            
+
             print("🚀 DEBUG ensureInitialized: Mimi weights loaded successfully, created with \(config.audioNumCodebooks) codebooks, assigning...")
-            
+
             self._audioTokenizer.wrappedValue = mimiWithWeights
             print("🚀 DEBUG ensureInitialized: Mimi assigned successfully")
 
@@ -422,8 +422,8 @@ class SesameModelWrapper: Module {
         // Add batch and channel dimensions like Python
         let audioWithDims = audio.expandedDimensions(axis: 0).expandedDimensions(axis: 0) // [1, 1, samples]
         
-        // Encode audio using Mimi codec - returns (K, T) = (codebooks, time)
-        let audioTokens = audioTokenizer.encode(audioWithDims)[0] // [0] like Python to remove batch dim
+        // Encode audio using Mimi codec - returns (B, K, T) = (batch, codebooks, time)
+        let audioTokens = audioTokenizer.encode(audioWithDims) // Already [B, K, T]
 
         // Add EOS frame if requested
         var processedTokens = audioTokens
@@ -783,8 +783,8 @@ class SesameModelWrapper: Module {
                 audio = streamingDecoder.decodeFrames(transposedTokens).squeezed(axis: 0).squeezed(axis: 0)
             } else if let audioTokenizer = audioTokenizer {
                 print("🎵 DEBUG generate: Using regular Mimi decoder...")
-                // Use regular decoder - match Python exactly with squeeze operations
-                audio = audioTokenizer.decode(transposedTokens).squeezed(axis: 0).squeezed(axis: 0)
+                // Use regular decoder - already returns correct shape [B, 1, samples]
+                audio = audioTokenizer.decode(transposedTokens).squeezed(axis: 0)
             } else {
                 throw SesameTTSError.modelNotInitialized
             }

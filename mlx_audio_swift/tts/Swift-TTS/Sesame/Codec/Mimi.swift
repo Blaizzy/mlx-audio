@@ -339,6 +339,8 @@ class Mimi: Module {
         // Step 4: Quantization to discrete codes
         return quantizer.encode(x)
     }
+
+
 }
 
 /// Streaming version of Mimi decoder (for real-time generation)
