@@ -223,19 +223,19 @@ public class SesameVoiceManager {
         }
     }
 
-    /// Convert voice prompts to Segment format for Model wrapper
+    /// Convert voice prompts to SesameSegment format for Model wrapper
     /// - Parameter voiceName: Name of the voice
-    /// - Returns: Array of Segment objects
-    public func getVoiceSegments(voiceName: String) -> [Segment] {
+    /// - Returns: Array of SesameSegment objects
+    public func getVoiceSegments(voiceName: String) -> [SesameSegment] {
         let prompts = getVoicePrompts(voiceName: voiceName)
         return prompts.map { prompt in
-            Segment(speaker: prompt.speaker, text: prompt.text, audio: nil)
+            SesameSegment(speaker: prompt.speaker, text: prompt.text, audio: MLXArray.zeros([1000]))
         }
     }
 
     /// Get default voice segments (fallback)
     /// - Returns: Default conversational segments
-    public func getDefaultSegments() -> [Segment] {
+    public func getDefaultSegments() -> [SesameSegment] {
         return getVoiceSegments(voiceName: "conversational_a")
     }
 

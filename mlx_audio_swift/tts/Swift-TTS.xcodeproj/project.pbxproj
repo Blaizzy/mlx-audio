@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0A6D60B62E65B7100054ADB5 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6D60B52E65B7100054ADB5 /* MLXLMCommon */; };
 		18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B22DCDAB75005776E9 /* MLX */; };
 		18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B42DCDAB75005776E9 /* MLXFFT */; };
 		18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B62DCDAB75005776E9 /* MLXFast */; };
@@ -204,6 +205,13 @@
 				Kokoro/Frameworks/ESpeakNG.xcframework,
 			);
 		};
+		26942E052DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Copy Bundle Resources" phase from "Swift-TTS" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			buildPhase = 26942CF42DABD3B400B82507 /* Resources */;
+			membershipExceptions = (
+				Sesame/Resources,
+			);
+		};
 		7BBF58162DDD07250047DCFF /* Exceptions for "Swift-TTS" folder in "Copy Bundle Resources" phase from "Swift-TTS-iOS" target */ = {
 			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
 			buildPhase = 7BBF57E12DDD06460047DCFF /* Resources */;
@@ -232,6 +240,7 @@
 		26942CF82DABD3B400B82507 /* Swift-TTS */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
+				26942E052DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Copy Bundle Resources" phase from "Swift-TTS" target */,
 				26942E042DABD5AE00B82507 /* Exceptions for "Swift-TTS" folder in "Embed Frameworks" phase from "Swift-TTS" target */,
 				7BBF57F82DDD06B20047DCFF /* Exceptions for "Swift-TTS" folder in "Swift-TTS-iOS" target */,
 				7BBF58162DDD07250047DCFF /* Exceptions for "Swift-TTS" folder in "Copy Bundle Resources" phase from "Swift-TTS-iOS" target */,
@@ -266,6 +275,7 @@
 				18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */,
 				18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */,
 				18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */,
+				0A6D60B62E65B7100054ADB5 /* MLXLMCommon in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -362,6 +372,7 @@
 				18D7A7B62DCDAB75005776E9 /* MLXFast */,
 				18D7A7B82DCDAB75005776E9 /* MLXLinalg */,
 				18D7A7BA2DCDAB75005776E9 /* MLXNN */,
+				0A6D60B52E65B7100054ADB5 /* MLXLMCommon */,
 			);
 			productName = "Swift-TTS";
 			productReference = 26942CF62DABD3B400B82507 /* Swift-TTS.app */;
@@ -426,7 +437,7 @@
 			mainGroup = 26942CED2DABD3B400B82507;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */,
+				18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 26942CF72DABD3B400B82507 /* Products */;
@@ -812,60 +823,65 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
+		18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift";
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.25.2;
+				branch = main;
+				kind = branch;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		0A6D60B52E65B7100054ADB5 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
+		};
 		18D7A7B22DCDAB75005776E9 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLX;
 		};
 		18D7A7B42DCDAB75005776E9 /* MLXFFT */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXFFT;
 		};
 		18D7A7B62DCDAB75005776E9 /* MLXFast */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXFast;
 		};
 		18D7A7B82DCDAB75005776E9 /* MLXLinalg */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXLinalg;
 		};
 		18D7A7BA2DCDAB75005776E9 /* MLXNN */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXNN;
 		};
 		7BBF58182DDD07310047DCFF /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLX;
 		};
 		7BBF581A2DDD074E0047DCFF /* MLXNN */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXNN;
 		};
 		7BBF581C2DDD07610047DCFF /* MLXFFT */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXFFT;
 		};
 		7BBF581E2DDD07680047DCFF /* MLXFast */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift" */;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXFast;
 		};
 /* End XCSwiftPackageProductDependency section */

@@ -1,13 +1,58 @@
 {
-  "originHash" : "64e3756857b39b7abbb5fde3e26bb0ccda16ee350b6934cd124464e1ad5d1379",
+  "originHash" : "6b8265ebd61c6fdfca835dd1f90f17439ca9abc5c11a8b7b5db8790be0349e4d",
   "pins" : [
+    {
+      "identity" : "gzipswift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/1024jp/GzipSwift",
+      "state" : {
+        "revision" : "731037f6cc2be2ec01562f6597c1d0aa3fe6fd05",
+        "version" : "6.0.1"
+      }
+    },
+    {
+      "identity" : "jinja",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/johnmai-dev/Jinja",
+      "state" : {
+        "revision" : "bb238dd96fbe4c18014f3107c00edd6edb15428e",
+        "version" : "1.2.4"
+      }
+    },
     {
       "identity" : "mlx-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift",
       "state" : {
-        "revision" : "a8f7411d0c7b63cbf3e64a694ec73850a46f9a1c",
-        "version" : "0.25.2"
+        "revision" : "96c0f69cf15f38abd6248bb71fca908171dab1d8",
+        "version" : "0.25.6"
+      }
+    },
+    {
+      "identity" : "mlx-swift-examples",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ml-explore/mlx-swift-examples",
+      "state" : {
+        "branch" : "main",
+        "revision" : "24219cd54bdef95f4693f8743264e3d53ffdc12a"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "0fbc8848e389af3bb55c182bc19ca9d5dc2f255b",
+        "version" : "1.4.0"
+      }
+    },
+    {
+      "identity" : "swift-collections",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-collections.git",
+      "state" : {
+        "revision" : "8c0c0a8b49e080e54e5e328cc552821ff07cd341",
+        "version" : "1.2.1"
       }
     },
     {
@@ -15,8 +60,17 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-numerics",
       "state" : {
-        "revision" : "e0ec0f5f3af6f3e4d5e7a19d2af26b481acb6ba8",
-        "version" : "1.0.3"
+        "revision" : "bbadd4b853a33fd78c4ae977d17bb2af15eb3f2a",
+        "version" : "1.1.0"
+      }
+    },
+    {
+      "identity" : "swift-transformers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-transformers",
+      "state" : {
+        "revision" : "e5bf0627bd134cf8ddc407cda403ae84207af959",
+        "version" : "0.1.22"
       }
     }
   ],

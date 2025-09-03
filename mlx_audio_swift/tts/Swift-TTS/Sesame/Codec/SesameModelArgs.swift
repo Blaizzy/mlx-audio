@@ -5,6 +5,7 @@
 //
 
 import Foundation
+import MLX
 
 /// Rope scaling configuration
 public struct RopeScalingConfig: Codable {
@@ -71,6 +72,20 @@ public struct DepthDecoderConfig: Codable {
     }
 }
 
+/// Segment struct (shared type to avoid circular imports)
+/// Represents a piece of audio with text and speaker information
+public struct SesameSegment {
+    public let speaker: Int
+    public let text: String
+    public let audio: MLXArray
+    
+    public init(speaker: Int, text: String, audio: MLXArray) {
+        self.speaker = speaker
+        self.text = text
+        self.audio = audio
+    }
+}
+
 /// Model arguments for Llama-based models in Sesame TTS
 /// Equivalent to Python's ModelArgs from mlx_lm
 public struct LlamaModelArgs {
@@ -96,6 +111,13 @@ public struct LlamaModelArgs {
     public let audioNumCodebooksTotal: Int
     public let backboneFlavor: String
     public let depthDecoderConfig: DepthDecoderConfig?
+    
+    // Audio token IDs (following Marvis TTS pattern)
+    public let audioTokenId: Int
+    public let audioEosTokenId: Int
+    public let bosTokenId: Int
+    public let eosTokenId: Int
+    public let padTokenId: Int
 
     /// Default initializer with common defaults
     init(
@@ -118,7 +140,12 @@ public struct LlamaModelArgs {
         audioNumCodebooks: Int,
         audioNumCodebooksTotal: Int,
         backboneFlavor: String,
-        depthDecoderConfig: DepthDecoderConfig? = nil
+        depthDecoderConfig: DepthDecoderConfig? = nil,
+        audioTokenId: Int = 128002,
+        audioEosTokenId: Int = 128003,
+        bosTokenId: Int = 1,
+        eosTokenId: Int = 2,
+        padTokenId: Int = 0
     ) {
         self.modelType = modelType
         self.numHiddenLayers = numHiddenLayers
@@ -140,12 +167,17 @@ public struct LlamaModelArgs {
         self.audioNumCodebooksTotal = audioNumCodebooksTotal
         self.backboneFlavor = backboneFlavor
         self.depthDecoderConfig = depthDecoderConfig
+        self.audioTokenId = audioTokenId
+        self.audioEosTokenId = audioEosTokenId
+        self.bosTokenId = bosTokenId
+        self.eosTokenId = eosTokenId
+        self.padTokenId = padTokenId
     }
 
     /// Create Llama-1B configuration
     static func llama1B(
-        textVocabSize: Int = 128256,
-        audioVocabSize: Int = 2048,
+        textVocabSize: Int = 49152,
+        audioVocabSize: Int = 2051,
         audioNumCodebooks: Int = 32,
         audioNumCodebooksTotal: Int = 32,
         depthDecoderConfig: DepthDecoderConfig? = nil
@@ -174,14 +206,19 @@ public struct LlamaModelArgs {
             audioNumCodebooks: audioNumCodebooks,
             audioNumCodebooksTotal: audioNumCodebooksTotal,
             backboneFlavor: "llama-1B",
-            depthDecoderConfig: depthDecoderConfig
+            depthDecoderConfig: depthDecoderConfig,
+            audioTokenId: textVocabSize - 2,
+            audioEosTokenId: textVocabSize - 1,
+            bosTokenId: 1,
+            eosTokenId: 2,
+            padTokenId: 0
         )
     }
 
     /// Create Llama-100M configuration
     static func llama100M(
-        textVocabSize: Int = 128256,
-        audioVocabSize: Int = 2048,
+        textVocabSize: Int = 49152,
+        audioVocabSize: Int = 2051,
         audioNumCodebooks: Int = 32,
         audioNumCodebooksTotal: Int = 32,
         depthDecoderConfig: DepthDecoderConfig? = nil
@@ -210,7 +247,12 @@ public struct LlamaModelArgs {
             audioNumCodebooks: audioNumCodebooks,
             audioNumCodebooksTotal: audioNumCodebooksTotal,
             backboneFlavor: "llama-100M",
-            depthDecoderConfig: depthDecoderConfig
+            depthDecoderConfig: depthDecoderConfig,
+            audioTokenId: textVocabSize - 2,
+            audioEosTokenId: textVocabSize - 1,
+            bosTokenId: 1,
+            eosTokenId: 2,
+            padTokenId: 0
         )
     }
 
@@ -236,7 +278,12 @@ public struct LlamaModelArgs {
             audioNumCodebooks: audioNumCodebooks,
             audioNumCodebooksTotal: audioNumCodebooksTotal,
             backboneFlavor: backboneFlavor,
-            depthDecoderConfig: depthDecoderConfig
+            depthDecoderConfig: depthDecoderConfig,
+            audioTokenId: audioTokenId,
+            audioEosTokenId: audioEosTokenId,
+            bosTokenId: bosTokenId,
+            eosTokenId: eosTokenId,
+            padTokenId: padTokenId
         )
     }
 
@@ -264,7 +311,12 @@ public struct LlamaModelArgs {
                 audioNumCodebooks: audioNumCodebooks,
                 audioNumCodebooksTotal: audioNumCodebooksTotal,
                 backboneFlavor: backboneFlavor,
-                depthDecoderConfig: depthDecoderConfig
+                depthDecoderConfig: depthDecoderConfig,
+                audioTokenId: audioTokenId,
+                audioEosTokenId: audioEosTokenId,
+                bosTokenId: bosTokenId,
+                eosTokenId: eosTokenId,
+                padTokenId: padTokenId
             )
         }
 
@@ -289,7 +341,12 @@ public struct LlamaModelArgs {
             audioNumCodebooks: audioNumCodebooks,
             audioNumCodebooksTotal: audioNumCodebooksTotal,
             backboneFlavor: backboneFlavor,
-            depthDecoderConfig: depthDecoderConfig
+            depthDecoderConfig: depthDecoderConfig,
+            audioTokenId: audioTokenId,
+            audioEosTokenId: audioEosTokenId,
+            bosTokenId: bosTokenId,
+            eosTokenId: eosTokenId,
+            padTokenId: padTokenId
         )
     }
 
@@ -348,6 +405,13 @@ public struct LlamaModelArgs {
         let intermediateSize = jsonObject["intermediate_size"] as? Int ?? 8192
         let maxPositionEmbeddings = jsonObject["max_position_embeddings"] as? Int ?? 2048
         let backboneFlavor = jsonObject["backbone_flavor"] as? String ?? "llama-250M"
+        
+        // Extract token IDs (following Marvis TTS pattern)
+        let audioTokenId = jsonObject["audio_token_id"] as? Int ?? (textVocabSize - 2)
+        let audioEosTokenId = jsonObject["audio_eos_token_id"] as? Int ?? (textVocabSize - 1)
+        let bosTokenId = jsonObject["bos_token_id"] as? Int ?? 1
+        let eosTokenId = jsonObject["eos_token_id"] as? Int ?? 2
+        let padTokenId = jsonObject["pad_token_id"] as? Int ?? 0
 
         return LlamaModelArgs(
             modelType: "sesame",
@@ -369,7 +433,12 @@ public struct LlamaModelArgs {
             audioNumCodebooks: audioNumCodebooks,
             audioNumCodebooksTotal: audioNumCodebooks,
             backboneFlavor: backboneFlavor,
-            depthDecoderConfig: depthDecoderConfig
+            depthDecoderConfig: depthDecoderConfig,
+            audioTokenId: audioTokenId,
+            audioEosTokenId: audioEosTokenId,
+            bosTokenId: bosTokenId,
+            eosTokenId: eosTokenId,
+            padTokenId: padTokenId
         )
     }
 }

@@ -277,7 +277,7 @@ public class SesameTTS {
         topK: Int = 50,
         maxAudioLengthMs: Float = 90000,
         chunkCallback: @escaping AudioChunkCallback
-    ) throws {
+    ) async throws {
         // For streaming, we'll need to modify the model wrapper to support chunked generation
         // This is a placeholder for future streaming implementation
         let audio = try generateAudio(
