@@ -77,7 +77,7 @@ struct MimiConfig {
 }
 
 /// Main Mimi codec class - matching MLX Python implementation
-class Mimi: Module {
+public class Mimi: Module {
     @ModuleInfo var encoder: SeanetEncoder
     @ModuleInfo var decoder: SeanetDecoder
     @ModuleInfo var quantizer: SplitResidualVectorQuantizer

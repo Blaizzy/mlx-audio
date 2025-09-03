@@ -247,24 +247,18 @@ class SesameModel: Module {
         let textEmbedsExpanded = textEmbeds.expandedDimensions(axis: -2)  // [B, T, 1, D]
 
         // Extract audio tokens (first K columns)
-        let audioTokensSlice = tokens[0..., 0..., 0..<Cb]  // [B, T, Cb]
+        var audioTokensSlice = tokens[0..., 0..., 0..<Cb]  // [B, T, Cb]
 
-        // NOTE: Mimi codec already returns tokens with proper offsets for embedding table
-        // No need to add codebook offsets here
-
-        // Debug: Check token values (should already be in correct range)
-        let maxTokenValue = audioTokensSlice.max().item(Float.self)
-        let embeddingTableSize = args.audioVocabSize * args.audioNumCodebooks
-        print("🔍 DEBUG embedTokens: maxTokenValue=\(maxTokenValue), embeddingTableSize=\(embeddingTableSize)")
-
-        // Clamp token values to valid range (safety check)
-        let clampedTokens = MLX.maximum(MLX.minimum(audioTokensSlice, Float(embeddingTableSize - 1)), 0)
-        if !MLX.allClose(clampedTokens, audioTokensSlice).item(Bool.self) {
-            print("⚠️  DEBUG embedTokens: Clamped out-of-bounds token values!")
+        // Add per-codebook offsets BEFORE embedding, exactly like Python:
+        // offsets = arange(Cb) * audio_vocab_size, shape [1,1,Cb]
+        if Cb > 0 {
+            let cbIdx = MLXArray.arange(start: 0, stop: Cb, dtype: .int32)
+            let cbOffsets = (cbIdx * MLXArray(Int32(args.audioVocabSize))).reshaped([1, 1, Cb])
+            audioTokensSlice = audioTokensSlice + cbOffsets
         }
 
         // Flatten and embed
-        let flatTokens = clampedTokens.flattened()  // [B*T*Cb]
+        let flatTokens = audioTokensSlice.flattened()  // [B*T*Cb]
         let audioEmbedsFlat = audioEmbeddings(flatTokens)  // [B*T*Cb, D]
         let D = audioEmbedsFlat.shape[1]
         let audioEmbeds = audioEmbedsFlat.reshaped([B, T, Cb, D])  // [B, T, Cb, D]
@@ -279,24 +273,13 @@ class SesameModel: Module {
     ///   - tokens: Audio tokens (already offset by Mimi codec)
     /// - Returns: Embedded tokens
     private func embedAudio(codebook: Int, tokens: MLXArray) -> MLXArray {
-        // NOTE: Mimi codec already returns tokens with proper offsets for embedding table
-        // No need to add codebook offset here - tokens are already in the correct range
-
-        // Clamp token indices to valid range (safety check)
-        let embeddingTableSize = args.audioVocabSize * args.audioNumCodebooks
-        let clampedTokenIndices = MLX.maximum(MLX.minimum(tokens, Float(embeddingTableSize - 1)), 0)
-
-        // For embedding lookup, we need to flatten the token indices, then reshape the result
-        let originalShape = clampedTokenIndices.shape
-        let tokenIndicesFlat = clampedTokenIndices.flattened()
-
-        let embeddingsFlat = audioEmbeddings(tokenIndicesFlat)
-
-        // Reshape back to original shape + embedding dimension
-        let resultShape = originalShape + [args.hiddenSize]
-        let result = embeddingsFlat.reshaped(resultShape)
-
-        return result
+        // Add codebook offset before embedding, exactly like Python _embed_audio
+        let offset = MLXArray(Int32(codebook * args.audioVocabSize))
+        let shifted = tokens + offset
+        let flat = shifted.flattened()
+        let embFlat = audioEmbeddings(flat)
+        let resultShape = tokens.shape + [args.hiddenSize]
+        return embFlat.reshaped(resultShape)
     }
 
     /// Take 2D head slice - matches Python take2DHead function
@@ -340,7 +323,11 @@ class SesameModel: Module {
         // For causal masks, we typically don't need to index by input_pos for generation
         // We can just take the relevant slice of the causal mask
         // mask has shape (max_seq_len, max_seq_len), we want (seq_len, seq_len)
-        let maskSliced = mask[0..<seqLen, 0..<seqLen]
+        // Slice first seqLen rows and cols via split to avoid subscript labels
+        let rowParts = split(mask, indices: [seqLen], axis: 0)
+        let rows = rowParts[0]
+        let colParts = split(rows, indices: [seqLen], axis: 1)
+        let maskSliced = colParts[0]
 
         // Add batch and head dimensions for broadcasting: mx.expand_dims(mask_sliced, axis=[0, 1])
         // This creates shape (1, 1, seq_len, seq_len) which broadcasts to (batch, n_heads, seq_len, seq_len)
