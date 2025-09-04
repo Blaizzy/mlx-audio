@@ -19,6 +19,7 @@ struct ContentView: View {
 
     @State private var chosenProvider: TTSProvider = .sesame  // Default to Sesame
     @State private var chosenVoice: String = SesameTTS.Voice.conversationalA.rawValue
+    
 
     var body: some View {
         VStack {
@@ -102,6 +103,8 @@ struct ContentView: View {
                     .padding()
             })
             .buttonStyle(.borderedProminent)
+
+            // Streaming toggle removed for now
 
 
             ScrollView {

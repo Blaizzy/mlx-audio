@@ -26,6 +26,10 @@ public final class SesameTTS: Module {
     private var audioEngine: AVAudioEngine!
     private var playerNode: AVAudioPlayerNode!
     private var audioFormat: AVAudioFormat!
+    private var queuedSamples: Int = 0
+    private var hasStartedPlayback: Bool = false
+    private var prebufferSeconds: Double = 2.0 // fixed prebuffer to avoid underruns on borderline machines
+    private let scheduleSliceSeconds: Double = 0.03 // 30ms slices for steadier queueing
 
     public init(
         config: SesameModelArgs,
@@ -77,24 +81,44 @@ public final class SesameTTS: Module {
     
     private func playAudio(_ samples: [Float]) {
         guard let audioFormat = audioFormat else { return }
-        
-        let frameLength = AVAudioFrameCount(samples.count)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: frameLength) else {
-            return
-        }
-        
-        buffer.frameLength = frameLength
-        if let channelData = buffer.floatChannelData {
-            for i in 0..<samples.count {
-                channelData[0][i] = samples[i]
+        let total = samples.count
+        guard total > 0 else { return }
+
+        let sliceSamples = max(1, Int(scheduleSliceSeconds * sampleRate))
+        var offset = 0
+        while offset < total {
+            let remaining = total - offset
+            let thisLen = min(sliceSamples, remaining)
+
+            let frameLength = AVAudioFrameCount(thisLen)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: frameLength) else { break }
+            buffer.frameLength = frameLength
+            if let channelData = buffer.floatChannelData {
+                let end = offset + thisLen
+                for i in 0..<thisLen { channelData[0][i] = samples[offset + i] }
             }
+
+            // Update queue size
+            queuedSamples += Int(frameLength)
+
+            // Schedule with completion to decrement when played back
+            let decAmount = Int(frameLength)
+            playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                guard let self else { return }
+                self.queuedSamples = max(0, self.queuedSamples - decAmount)
+            }
+
+            // Start playback once enough preroll accumulated
+            if !hasStartedPlayback {
+                let prebufferSamples = Int(prebufferSeconds * sampleRate)
+                if queuedSamples >= prebufferSamples {
+                    playerNode.play()
+                    hasStartedPlayback = true
+                }
+            }
+
+            offset += thisLen
         }
-        
-        if !playerNode.isPlaying {
-            playerNode.play()
-        }
-        
-        playerNode.scheduleBuffer(buffer, completionHandler: nil)
     }
 
     private func tokenizeTextSegment(text: String, speaker: Int) -> (MLXArray, MLXArray) {
@@ -375,6 +399,15 @@ public extension SesameTTS {
 
             let generationText = (context.text + " " + prompt).trimmingCharacters(in: .whitespaces)
             let currentContext = [Segment(speaker: 0, text: generationText, audio: context.audio)]
+
+            // Reset playback state for this segment and flush any previously scheduled audio
+            if playerNode.isPlaying { playerNode.stop() }
+            playerNode.reset()
+            queuedSamples = 0
+            hasStartedPlayback = false
+
+            // Apply higher prebuffer only in streaming mode (non-stream should play immediately)
+            prebufferSeconds = stream ? 2.0 : 0.0
 
             model.resetCaches()
             if stream { _streamingDecoder.reset() }
