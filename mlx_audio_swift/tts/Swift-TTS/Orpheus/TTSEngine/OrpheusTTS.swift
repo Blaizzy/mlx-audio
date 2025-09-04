@@ -72,7 +72,7 @@ public class OrpheusTTS {
     private var chosenVoice: OrpheusVoice?
     private let tokenizer: OrpheusTokenizer
     private let hiddenSize: Int = 3072
-    private let layers: [TransformerBlock] // Store TransformerBlock instances
+    private let layers: [OrpheusTransformerBlock] // Store OrpheusTransformerBlock instances
     
     public init(customURL: URL? = nil) throws {
         // Load model weights
@@ -92,10 +92,10 @@ public class OrpheusTTS {
         // Initialize transformer layers - avoid capturing self in closure
         let numLayers = 28 // Based on config.json
         let layerInitStart = CFAbsoluteTimeGetCurrent()
-        var tempLayers = [TransformerBlock]()
+        var tempLayers = [OrpheusTransformerBlock]()
         for i in 0..<numLayers {
             let layerStart = CFAbsoluteTimeGetCurrent()
-            tempLayers.append(TransformerBlock(weights: loadedWeights, layerIndex: i))
+            tempLayers.append(OrpheusTransformerBlock(weights: loadedWeights, layerIndex: i))
             let layerEnd = CFAbsoluteTimeGetCurrent()
             let layerDuration = (layerEnd - layerStart) * 1000
         }
@@ -341,7 +341,7 @@ public class OrpheusTTS {
         
         // 4. Output projection (LM Head)
         let logits = Profiler.time("Output projection") {
-            TransformerBlock.linear(x: x, weight: embeddingWeights)
+            OrpheusTransformerBlock.linear(x: x, weight: embeddingWeights)
         }
 
         // If caching, logits are already [1, 1, VocabSize] from processing the last token.

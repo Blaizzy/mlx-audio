@@ -4,7 +4,7 @@
 import Foundation
 
 // Utility class for tokenizing the phonemized text
-final class Tokenizer {
+final class PhonemeTokenizer {
   private init() {}
 
   // Use ESpeakNGEngine to phonemize the text first before calling this method

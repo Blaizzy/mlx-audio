@@ -583,7 +583,7 @@ public class KokoroTTS {
       do {
         let phonemizedResult = try kokoroTokenizer.phonemize(text)
 
-        let inputIds = Tokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
+        let inputIds = PhonemeTokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
         guard inputIds.count <= Constants.maxTokenCount else {
           throw KokoroTTSError.tooManyTokens
         }
