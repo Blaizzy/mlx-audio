@@ -227,7 +227,7 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
 - For the web interface and API:
   - FastAPI
   - Uvicorn
-
+  
 ## License
 
 [MIT License](LICENSE)
