@@ -13,11 +13,11 @@ import MLX
 enum TTSProvider: String, CaseIterable {
     case kokoro = "kokoro"
     case sesame = "sesame"
-
+    
     var displayName: String {
         rawValue.capitalized
     }
-
+    
     var statusMessage: String {
         switch self {
         case .kokoro:
@@ -32,18 +32,21 @@ struct ContentView: View {
     @State private var speed = 1.0
     @State public var text = ""
     @State private var showAlert = false
-
+    
     @FocusState private var isTextEditorFocused: Bool
     @State private var chosenProvider: TTSProvider = .kokoro
-
+    
     // TTS Models
     @ObservedObject var kokoroViewModel: KokoroTTSModel
-
+    
     // Alias for backward compatibility
     var viewModel: KokoroTTSModel { kokoroViewModel }
     @State private var sesameTTSModel: SesameTTS? = nil
     @State private var isSesameLoading = false
-
+    @State private var isSesamePlaying = false
+    @State private var status = ""
+    @State private var chosenVoice = "conversational_a"
+    
     @StateObject private var speakerModel = SpeakerViewModel()
     
     var body: some View {
@@ -58,7 +61,7 @@ struct ContentView: View {
                             Text("TTS Provider")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
-
+                            
                             Picker("Choose a provider", selection: $chosenProvider) {
                                 ForEach(TTSProvider.allCases, id: \.self) { provider in
                                     Text(provider.displayName)
@@ -66,21 +69,27 @@ struct ContentView: View {
                             }
                             .pickerStyle(.segmented)
                             .disabled(isSesameLoading || kokoroViewModel.generationInProgress)
+                            .onChange(of: chosenProvider) { _, newProvider in
+                                // Reset speaker selection when switching providers
+                                speakerModel.selectedSpeakerId = 0
+                                status = newProvider.statusMessage
+                            }
                         }
-
+                        
                         VStack(alignment: .leading, spacing: 8) {
                             HStack(spacing: 12) {
                                 compactSpeakerView(
                                     selectedSpeakerId: $speakerModel.selectedSpeakerId,
-                                    title: "Speaker"
+                                    title: chosenProvider == .kokoro ? "Speaker" : "Voice",
+                                    speakers: chosenProvider == .kokoro ? speakerModel.kokoroSpeakers : speakerModel.sesameSpeakers
                                 )
                                 .frame(maxWidth: .infinity)
                             }
                         }
-
+                        
                         speedControlView
                         textInputView
-
+                        
                         actionButtonsView
                     }
                     .padding([.horizontal, .bottom])
@@ -99,12 +108,12 @@ struct ContentView: View {
                             }
                             if chosenProvider == .kokoro {
                                 Text("Time to first audio sample: \(kokoroViewModel.audioGenerationTime > 0 ? String(format: "%.2f", kokoroViewModel.audioGenerationTime) : "--")s")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             } else {
                                 Text(chosenProvider.statusMessage)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -142,14 +151,14 @@ struct ContentView: View {
             .ignoresSafeArea()
     }
     
-    private func compactSpeakerView(selectedSpeakerId: Binding<Int>, title: String) -> some View {
+    private func compactSpeakerView(selectedSpeakerId: Binding<Int>, title: String, speakers: [Speaker]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
             
             Menu {
-                ForEach(speakerModel.speakers) { speaker in
+                ForEach(speakers) { speaker in
                     Button(action: {
                         selectedSpeakerId.wrappedValue = speaker.id
                     }) {
@@ -163,7 +172,7 @@ struct ContentView: View {
                 }
             } label: {
                 HStack {
-                    if let speaker = speakerModel.getSpeaker(id: selectedSpeakerId.wrappedValue) {
+                    if let speaker = speakers.first(where: { $0.id == selectedSpeakerId.wrappedValue }) {
                         Text(speaker.flag)
                         Text(speaker.displayName)
                             .lineLimit(1)
@@ -180,7 +189,8 @@ struct ContentView: View {
                         .fill(Color(.tertiarySystemBackground))
                 )
             }
-            .disabled(viewModel.generationInProgress)
+            .disabled((chosenProvider == .kokoro && kokoroViewModel.generationInProgress) ||
+                      (chosenProvider == .sesame && isSesameLoading))
         }
     }
     
@@ -248,14 +258,14 @@ struct ContentView: View {
                     dismissKeyboard()
                     isTextEditorFocused = false
                 }
-
+                
                 let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
+                
                 Task {
                     if chosenProvider == .kokoro {
                         // Prepare text and speaker for Kokoro
                         let speaker = speakerModel.getPrimarySpeaker().first!
-
+                        
                         // Set memory constraints for MLX and start generation
                         MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
                         kokoroViewModel.say(t, TTSVoice.fromIdentifier(speaker.name) ?? .afHeart, speed: Float(speed))
@@ -274,23 +284,37 @@ struct ContentView: View {
                                 return
                             }
                         }
-
+                        
                         // Generate with Sesame TTS
+                        let selectedSesameVoice: SesameTTS.Voice
+                        if chosenVoice == "conversational_a" {
+                            selectedSesameVoice = .conversationalA
+                        } else if chosenVoice == "conversational_b" {
+                            selectedSesameVoice = .conversationalB
+                        } else {
+                            selectedSesameVoice = .conversationalA // Default fallback
+                        }
+                        
                         do {
-                            let results = try sesameTTSModel!.generate(text: t, voice: .conversationalA)
+                            status = "Generating with Sesame TTS..."
+                            let results = try sesameTTSModel!.generate(text: t, voice: selectedSesameVoice)
                             if let result = results.first {
-                                // TODO: Play the generated audio
+                                // TODO: Implement audio playback for Sesame TTS
                                 print("Sesame TTS generated \(result.audio.count) samples")
+                                isSesamePlaying = true
+                                status = "Sesame TTS generation complete!"
+                            } else {
+                                status = "No audio generated"
                             }
                         } catch {
-                            print("Sesame TTS generation failed: \(error)")
+                            status = "Sesame TTS generation failed: \(error.localizedDescription)"
                         }
                     }
                 }
             } label: {
                 HStack {
                     if (chosenProvider == .kokoro && kokoroViewModel.generationInProgress) ||
-                       (chosenProvider == .sesame && isSesameLoading) {
+                        (chosenProvider == .sesame && isSesameLoading) {
                         ProgressView()
                             .controlSize(.small)
                         Text(chosenProvider == .sesame && isSesameLoading ? "Loading..." : "Generating...")
@@ -305,15 +329,17 @@ struct ContentView: View {
             .controlSize(.regular)
             .frame(maxWidth: .infinity, minHeight: 44)
             .disabled((chosenProvider == .kokoro && kokoroViewModel.generationInProgress) ||
-                     (chosenProvider == .sesame && isSesameLoading) ||
-                     text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                      (chosenProvider == .sesame && isSesameLoading) ||
+                      text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             
             // Stop button
             Button {
                 if chosenProvider == .kokoro {
                     kokoroViewModel.stopPlayback()
                 } else if chosenProvider == .sesame {
-                    // TODO: Implement stop for Sesame TTS if needed
+                    // Stop Sesame TTS playback
+                    isSesamePlaying = false
+                    status = "Sesame TTS playback stopped"
                     print("Stop Sesame TTS playback")
                 }
             } label: {
@@ -329,7 +355,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .tint(.red)
             .disabled((chosenProvider == .kokoro && !kokoroViewModel.isAudioPlaying) ||
-                     (chosenProvider == .sesame && false)) // TODO: Add Sesame playback state
+                      (chosenProvider == .sesame && !isSesamePlaying))
         }
     }
 }
@@ -337,15 +363,15 @@ struct ContentView: View {
 struct Speaker: Identifiable {
     let id: Int
     let name: String
-
+    
     var flag: String {
         if name.lowercased() == "none" {
             return "⚪️" // Empty/None speaker icon
         }
-
+        
         guard name.count >= 2 else { return "🏳️" }
         let country = name.prefix(1)
-
+        
         // Determine country flag
         let countryFlag: String
         switch country {
@@ -360,15 +386,22 @@ struct Speaker: Identifiable {
         case "z": countryFlag = "🇨🇳" // Chinese
         default: countryFlag = "🏳️"
         }
-
+        
         return countryFlag
     }
-
+    
     var displayName: String {
         if name.lowercased() == "none" {
             return "None" // Special case for None option
         }
-
+        
+        // Handle Sesame conversational voices
+        if name.hasPrefix("conversational_") {
+            let voiceType = name.dropFirst("conversational_".count)
+            return "Conversational \(voiceType.uppercased())"
+        }
+        
+        // Handle Kokoro speakers (original logic)
         guard name.count >= 2 else { return name }
         let cleanName = name.dropFirst(3).capitalized
         return "\(cleanName)"
@@ -379,8 +412,9 @@ class SpeakerViewModel: ObservableObject {
     @Published var selectedSpeakerId: Int = 0
     @Published var selectedSpeakerId2: Int = -1
     @Published var isGenerating: Bool = false
-
-    let speakers: [Speaker] = [
+    
+    // All Kokoro speakers
+    private let _kokoroSpeakers: [Speaker] = [
         Speaker(id: -1, name: "none"),
         Speaker(id: 0, name: "af_alloy"),
         Speaker(id: 1, name: "af_aoede"),
@@ -437,14 +471,35 @@ class SpeakerViewModel: ObservableObject {
         Speaker(id: 52, name: "zm_yunyang"),
     ]
     
-   func getPrimarySpeaker() -> [Speaker] {
+    // Sesame voices (simplified for iOS version)
+    private let _sesameSpeakers: [Speaker] = [
+        Speaker(id: 0, name: "conversational_a"),
+        Speaker(id: 1, name: "conversational_b"),
+    ]
+    
+    // Public accessors
+    var kokoroSpeakers: [Speaker] { _kokoroSpeakers }
+    var sesameSpeakers: [Speaker] { _sesameSpeakers }
+    
+    // Dynamic speakers based on selected provider
+    var speakers: [Speaker] {
+        // This will be set from outside based on chosenProvider
+        _kokoroSpeakers // Default to Kokoro
+    }
+    
+    func updateSpeakers(for provider: TTSProvider) {
+        // Update the speakers list based on provider
+        // We'll handle this in the ContentView by using the appropriate speaker list
+    }
+    
+    func getPrimarySpeaker() -> [Speaker] {
         speakers.filter { $0.id == selectedSpeakerId }
     }
     
     func getSecondarySpeaker() -> [Speaker] {
         speakers.filter { $0.id == selectedSpeakerId2 }
     }
-
+    
     func getSpeaker(id: Int) -> Speaker? {
         speakers.first { $0.id == id }
     }
@@ -460,5 +515,5 @@ extension View {
 }
 
 #Preview {
-  ContentView(kokoroViewModel: KokoroTTSModel())
+    ContentView(kokoroViewModel: KokoroTTSModel())
 }
