@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		0A6D60B62E65B7100054ADB5 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6D60B52E65B7100054ADB5 /* MLXLMCommon */; };
 		0AB446202E698F1000517016 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 0AB4461F2E698F1000517016 /* MLXLLM */; };
+		0AB446482E69A5E200517016 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 0AB446472E69A5E200517016 /* MLXLLM */; };
+		0AB4464A2E69A5E200517016 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 0AB446492E69A5E200517016 /* MLXLMCommon */; };
 		18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B22DCDAB75005776E9 /* MLX */; };
 		18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B42DCDAB75005776E9 /* MLXFFT */; };
 		18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B62DCDAB75005776E9 /* MLXFast */; };
@@ -179,6 +181,16 @@
 				Kokoro/TTSEngine/VoiceLoader.swift,
 				Kokoro/Utils/AudioUtils.swift,
 				Kokoro/Utils/BenchmarkTimer.swift,
+				"Sesame/Audio/Audio+MLXArray.swift",
+				Sesame/Mimi/Conv.swift,
+				Sesame/Mimi/KVCache.swift,
+				Sesame/Mimi/Mimi.swift,
+				Sesame/Mimi/Quantization.swift,
+				Sesame/Mimi/Seanet.swift,
+				Sesame/Mimi/Transformer.swift,
+				Sesame/Models/LlamaModel.swift,
+				Sesame/Models/SesameModel.swift,
+				Sesame/SesameTTS.swift,
 				Utils/AudioSessionManager.swift,
 			);
 			target = 7BBF57E22DDD06460047DCFF /* Swift-TTS-iOS */;
@@ -277,10 +289,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				0AB446482E69A5E200517016 /* MLXLLM in Frameworks */,
 				7BBF581B2DDD074E0047DCFF /* MLXNN in Frameworks */,
 				7BBF58192DDD07310047DCFF /* MLX in Frameworks */,
 				7BBF581F2DDD07680047DCFF /* MLXFast in Frameworks */,
 				7BBF581D2DDD07610047DCFF /* MLXFFT in Frameworks */,
+				0AB4464A2E69A5E200517016 /* MLXLMCommon in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -395,6 +409,8 @@
 				7BBF581A2DDD074E0047DCFF /* MLXNN */,
 				7BBF581C2DDD07610047DCFF /* MLXFFT */,
 				7BBF581E2DDD07680047DCFF /* MLXFast */,
+				0AB446472E69A5E200517016 /* MLXLLM */,
+				0AB446492E69A5E200517016 /* MLXLMCommon */,
 			);
 			productName = "Swift-TTS-iOS";
 			productReference = 7BBF57E32DDD06460047DCFF /* Swift-TTS-iOS.app */;
@@ -758,7 +774,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = YQZQG7N4WG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -788,7 +804,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
+				DEVELOPMENT_TEAM = YQZQG7N4WG;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -874,6 +890,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXLLM;
+		};
+		0AB446472E69A5E200517016 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
+		};
+		0AB446492E69A5E200517016 /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLMCommon;
 		};
 		18D7A7B22DCDAB75005776E9 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;

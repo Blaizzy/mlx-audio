@@ -11,7 +11,7 @@ import SwiftUI
 struct Swift_TTS_iOSApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView(viewModel: KokoroTTSModel())
+            ContentView(kokoroViewModel: KokoroTTSModel())
         }
     }
 }
