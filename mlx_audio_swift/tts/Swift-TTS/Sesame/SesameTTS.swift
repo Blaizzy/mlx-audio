@@ -18,9 +18,10 @@ public final class SesameTTS: Module {
 
     private let model: SesameModel
     private let _promptURLs: [URL]?
-    private let _textTokenizer: any Tokenizer
-    private let _audio_tokenizer: MimiTokenizer
-    private let _streamingDecoder: MimiStreamingDecoder
+    // Renamed underscored members to Swiftier names
+    private let textTokenizer: any Tokenizer
+    private let audioTokenizer: MimiTokenizer
+    private let streamingDecoder: MimiStreamingDecoder
     
     // Audio playback components
     private var audioEngine: AVAudioEngine!
@@ -41,12 +42,12 @@ public final class SesameTTS: Module {
 
         self._promptURLs = promptURLs
 
-        self._textTokenizer = try await loadTokenizer(configuration: ModelConfiguration(id: repoId), hub: HubApi.shared)
+        self.textTokenizer = try await loadTokenizer(configuration: ModelConfiguration(id: repoId), hub: HubApi.shared)
 
-        self._audio_tokenizer = try await MimiTokenizer(Mimi.fromPretrained(progressHandler: progressHandler))
+        self.audioTokenizer = try await MimiTokenizer(Mimi.fromPretrained(progressHandler: progressHandler))
 
-        self._streamingDecoder = MimiStreamingDecoder(_audio_tokenizer.codec)
-        self.sampleRate = _audio_tokenizer.codec.cfg.sampleRate
+        self.streamingDecoder = MimiStreamingDecoder(audioTokenizer.codec)
+        self.sampleRate = audioTokenizer.codec.cfg.sampleRate
         super.init()
         model.resetCaches()
 
@@ -126,7 +127,7 @@ public final class SesameTTS: Module {
         let frameW = K + 1
 
         let prompt = "[\(speaker)]" + text
-        let ids = MLXArray(_textTokenizer.encode(text: prompt))
+        let ids = MLXArray(textTokenizer.encode(text: prompt))
 
         let T = ids.shape[0]
         var frame = MLXArray.zeros([T, frameW], type: Int32.self)
@@ -158,7 +159,7 @@ public final class SesameTTS: Module {
         let frameW = K + 1
 
         let x = audio.reshaped([1, 1, audio.shape[0]])
-        var codes = _audio_tokenizer.codec.encode(x) // [1, K, Tq]
+        var codes = audioTokenizer.codec.encode(x) // [1, K, Tq]
         codes = split(codes, indices: [1], axis: 0)[0].reshaped([K, codes.shape[2]])
 
         if addEOS {
@@ -193,7 +194,7 @@ public final class SesameTTS: Module {
 }
 
 public extension SesameTTS {
-    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameTTS {
+    public static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameTTS {
 
         let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
 
@@ -296,10 +297,21 @@ private struct Segment {
 
 // MARK: -
 
-enum SesameTTSError: Error {
+public enum SesameTTSError: Error, LocalizedError {
     case invalidArgument(String)
     case voiceNotFound
     case invalidRefAudio(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidArgument(let msg):
+            return msg
+        case .voiceNotFound:
+            return "Requested voice not found or missing reference assets."
+        case .invalidRefAudio(let msg):
+            return msg
+        }
+    }
 }
 
 public extension SesameTTS {
@@ -314,7 +326,7 @@ public extension SesameTTS {
     }
 
     @discardableResult
-    func generate(
+    public func generate(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -322,7 +334,6 @@ public extension SesameTTS {
         splitPattern: String? = #"(\n+)"#,
         stream: Bool = false,
         streamingInterval: Double = 0.5,
-        voiceMatch: Bool = true,
         onStreamingResult: ((GenerationResult) -> Void)? = nil
     ) throws -> [GenerationResult] {
         let pieces: [String]
@@ -346,7 +357,7 @@ public extension SesameTTS {
     }
 
     @discardableResult
-    func generate(
+    public func generate(
         text: [String],
         voice: Voice? = .conversationalA,
         refAudio: MLXArray?,
@@ -410,7 +421,7 @@ public extension SesameTTS {
             prebufferSeconds = stream ? 2.0 : 0.0
 
             model.resetCaches()
-            if stream { _streamingDecoder.reset() }
+            if stream { streamingDecoder.reset() }
 
             var toks: [MLXArray] = []
             var masks: [MLXArray] = []
@@ -511,7 +522,7 @@ public extension SesameTTS {
 
         // Clear streaming decoder if used
         if stream {
-            _streamingDecoder.reset()
+            streamingDecoder.reset()
         }
 
         // Force garbage collection hint (though Swift/MLX manages this automatically)
@@ -525,9 +536,9 @@ public extension SesameTTS {
     }
 
     /// Manually triggers memory cleanup for this TTS instance
-    func cleanupMemory() {
+    public func cleanupMemory() {
         model.resetCaches()
-        _streamingDecoder.reset()
+        streamingDecoder.reset()
         
         // Stop audio engine
         if playerNode.isPlaying {
@@ -552,8 +563,8 @@ public extension SesameTTS {
         stacked = swappedAxes(stacked, 1, 2) // [1, K, F]
 
         let audio1x1x = streaming
-            ? _streamingDecoder.decodeFrames(stacked) // [1, 1, S]
-            : _audio_tokenizer.codec.decode(stacked) // [1, 1, S]
+            ? streamingDecoder.decodeFrames(stacked) // [1, 1, S]
+            : audioTokenizer.codec.decode(stacked) // [1, 1, S]
 
         let sampleCount = audio1x1x.shape[2]
         let audio = audio1x1x.reshaped([sampleCount]) // [S]
@@ -587,6 +598,69 @@ public extension SesameTTS {
         }
 
         return result
+    }
+
+    // MARK: - Async/Await convenience
+
+    /// Non-blocking async variant of `generate` for a single text string.
+    public func generateAsync(
+        text: String,
+        voice: Voice? = .conversationalA,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
+        splitPattern: String? = #"(\n+)"#
+    ) async throws -> [GenerationResult] {
+        try await Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return [] }
+            return try self.generate(
+                text: text,
+                voice: voice,
+                refAudio: refAudio,
+                refText: refText,
+                splitPattern: splitPattern,
+                stream: false
+            )
+        }.value
+    }
+
+    // MARK: - Streaming API (AsyncThrowingStream)
+
+    /// Streams generated audio chunks for the given text as an AsyncThrowingStream.
+    /// Each yielded `GenerationResult` represents a chunk of decoded audio.
+    public func stream(
+        text: String,
+        voice: Voice? = .conversationalA,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
+        splitPattern: String? = #"(\n+)"#,
+        streamingInterval: Double = 0.5
+    ) -> AsyncThrowingStream<GenerationResult, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .userInitiated) { [weak self] in
+                guard let self else { return }
+                do {
+                    _ = try self.generate(
+                        text: text,
+                        voice: voice,
+                        refAudio: refAudio,
+                        refText: refText,
+                        splitPattern: splitPattern,
+                        stream: true,
+                        streamingInterval: streamingInterval,
+                        onStreamingResult: { gr in
+                            continuation.yield(gr)
+                        }
+                    )
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 }
 
