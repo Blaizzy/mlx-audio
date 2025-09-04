@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXNN
 
@@ -180,7 +181,7 @@ private class LlamaAttention: Module {
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCacheSimple?) -> MLXArray {
+        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?) -> MLXArray {
         let (B, L) = (x.dim(0), x.dim(1))
 
         var queries = q_proj(x)
@@ -199,17 +200,28 @@ private class LlamaAttention: Module {
             keys = rope(keys)
         }
 
-        let output: MLXArray = attentionWithCacheUpdate(
-            queries: queries,
-            keys: keys,
-            values: values,
-            cache: cache,
-            scale: scale,
-            mask: mask)
-            .transposed(0, 2, 1, 3)
-            .reshaped(B, L, -1)
-
-        return o_proj(output)
+        if let cache = cache {
+            let (updatedKeys, updatedValues) = cache.updateAndFetch(keys, values)
+            let attnResult = MLXFast.scaledDotProductAttention(
+                queries: queries, 
+                keys: updatedKeys, 
+                values: updatedValues,
+                scale: scale, 
+                mask: mask)
+            let transposed = attnResult.transposed(0, 2, 1, 3)
+            let output = transposed.reshaped([B, L, args.attentionHeads * args.resolvedHeadDimensions])
+            return o_proj(output)
+        } else {
+            let attnResult = MLXFast.scaledDotProductAttention(
+                queries: queries, 
+                keys: keys, 
+                values: values,
+                scale: scale, 
+                mask: mask)
+            let transposed = attnResult.transposed(0, 2, 1, 3)
+            let output = transposed.reshaped([B, L, args.attentionHeads * args.resolvedHeadDimensions])
+            return o_proj(output)
+        }
     }
 }
 
@@ -247,7 +259,7 @@ private class TransformerBlock: Module {
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCacheSimple?) -> MLXArray {
+        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?) -> MLXArray {
         var r = attention(inputLayerNorm(x), mask: mask, cache: cache)
         let h = x + r
         r = mlp(postAttentionLayerNorm(h))
@@ -256,7 +268,7 @@ private class TransformerBlock: Module {
     }
 }
 
-public class LlamaModel: Module, KVCacheDimensionProvider {
+public class LlamaModel: Module, LLMModel, KVCacheDimensionProvider {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -271,10 +283,10 @@ public class LlamaModel: Module, KVCacheDimensionProvider {
         norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
     }
 
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCacheSimple]?) -> MLXArray {
+    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         var h = inputs
 
-        let mask = createAttentionMask(h: h, cache: cache)
+        let mask: MLXFast.ScaledDotProductAttentionMaskMode = .causal
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])

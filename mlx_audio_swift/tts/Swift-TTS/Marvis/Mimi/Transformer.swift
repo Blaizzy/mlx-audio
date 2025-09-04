@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXNN
+import MLXLMCommon
 
 // MARK: - Config
 
@@ -105,8 +106,7 @@ public final class LayerScale: Module {
 
 // MARK: - Attention
 
-public protocol AttentionCache {
-    var offset: Int { get }
+public protocol AttentionCache: KVCache {
     func updateAndFetch(_ k: MLXArray, _ v: MLXArray) -> (MLXArray, MLXArray)
 }
 
@@ -114,7 +114,7 @@ public final class Attention: Module {
     private let cfg: TransformerConfig
     @ModuleInfo public var in_proj: Linear
     @ModuleInfo public var out_proj: Linear
-    @ModuleInfo var rope: RoPE?
+    @ModuleInfo public var rope: RoPE?
 
     private let scale: Float
 
@@ -130,7 +130,7 @@ public final class Attention: Module {
         self.scale = 1.0 / Float(Double(cfg.headDim).squareRoot())
 
         if cfg.positionalEmbedding == "rope" {
-            self._rope = ModuleInfo(wrappedValue: RoPE(dims: cfg.headDim, traditional: true, base: Float(cfg.maxPeriod)))
+            self._rope = ModuleInfo(wrappedValue: RoPE(dimensions: cfg.headDim, traditional: true, base: Float(cfg.maxPeriod)))
         } else {
             self._rope = ModuleInfo(wrappedValue: nil)
         }
@@ -152,8 +152,8 @@ public final class Attention: Module {
         var v = swappedAxes(qkv[0..<qkv.shape[0], 0..<qkv.shape[1], 2, 0..<qkv.shape[3], 0..<qkv.shape[4]], 1, 2)
 
         if let rope {
-            q = rope.call(q, offset: cache.offset)
-            k = rope.call(k, offset: cache.offset)
+            q = rope(q, offset: cache.offset)
+            k = rope(k, offset: cache.offset)
         }
 
         (k, v) = cache.updateAndFetch(k, v)
@@ -289,7 +289,7 @@ public final class Transformer: Module {
 
     public func callAsFunction(
         _ xs: MLXArray,
-        cache: [any AttentionCache]
+        cache: [AttentionCache]
     ) -> MLXArray {
         var x = xs
         for (layer, c) in zip(layers, cache) {
@@ -336,7 +336,7 @@ public final class ProjectedTransformer: Module {
 
     public func callAsFunction(
         _ xsIn: MLXArray,
-        cache: [KVCache]
+        cache: [AttentionCache]
     ) -> [MLXArray] {
         var xs = xsIn
         if convLayout { xs = swappedAxes(xs, 1, 2) } // [B,C,T] -> [B,T,C]

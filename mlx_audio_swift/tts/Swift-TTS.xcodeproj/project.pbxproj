@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0A6D60B62E65B7100054ADB5 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 0A6D60B52E65B7100054ADB5 /* MLXLMCommon */; };
+		0AB446202E698F1000517016 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = 0AB4461F2E698F1000517016 /* MLXLLM */; };
 		18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B22DCDAB75005776E9 /* MLX */; };
 		18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B42DCDAB75005776E9 /* MLXFFT */; };
 		18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */ = {isa = PBXBuildFile; productRef = 18D7A7B62DCDAB75005776E9 /* MLXFast */; };
@@ -266,6 +267,7 @@
 				18D7A7B92DCDAB75005776E9 /* MLXLinalg in Frameworks */,
 				18D7A7B32DCDAB75005776E9 /* MLX in Frameworks */,
 				18D7A7B72DCDAB75005776E9 /* MLXFast in Frameworks */,
+				0AB446202E698F1000517016 /* MLXLLM in Frameworks */,
 				18D7A7B52DCDAB75005776E9 /* MLXFFT in Frameworks */,
 				0A6D60B62E65B7100054ADB5 /* MLXLMCommon in Frameworks */,
 			);
@@ -365,6 +367,7 @@
 				18D7A7B82DCDAB75005776E9 /* MLXLinalg */,
 				18D7A7BA2DCDAB75005776E9 /* MLXNN */,
 				0A6D60B52E65B7100054ADB5 /* MLXLMCommon */,
+				0AB4461F2E698F1000517016 /* MLXLLM */,
 			);
 			productName = "Swift-TTS";
 			productReference = 26942CF62DABD3B400B82507 /* Swift-TTS.app */;
@@ -681,7 +684,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
@@ -722,7 +725,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
@@ -866,6 +869,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
 			productName = MLXLMCommon;
+		};
+		0AB4461F2E698F1000517016 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 18D7A7B12DCDAB75005776E9 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */;
+			productName = MLXLLM;
 		};
 		18D7A7B22DCDAB75005776E9 /* MLX */ = {
 			isa = XCSwiftPackageProductDependency;

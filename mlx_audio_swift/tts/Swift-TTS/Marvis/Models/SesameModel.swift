@@ -418,8 +418,8 @@ public final class SesameModel: Module {
     private var backboneCausalMask: MLXArray? = nil
     private var decoderCausalMask: MLXArray? = nil
 
-    public var backboneCache: [KVCacheSimple]? = nil
-    public var decoderCache: [KVCacheSimple]? = nil
+    public var backboneCache: [KVCache]? = nil
+    public var decoderCache: [KVCache]? = nil
     public var cachesEnabled: Bool = false
 
     public init(config: SesameModelArgs) {
@@ -459,9 +459,19 @@ public final class SesameModel: Module {
     public func cachesAreEnabled() -> Bool { cachesEnabled }
 
     public func resetCaches() {
-        // Initialize caches as nil - they will be created on first use
-        backboneCache = nil
-        decoderCache = nil
+        let backCfg: LlamaConfiguration
+        let decCfg: LlamaConfiguration
+        
+        if let depth = args.depthDecoderConfig {
+            backCfg = createLlamaConfigurationForBackbone(args)
+            decCfg = createLlamaConfigurationForDecoder(depth)
+        } else {
+            backCfg = try! createLlamaConfiguration(flavor: args.backboneFlavor)
+            decCfg = try! createLlamaConfiguration(flavor: args.decoderFlavor)
+        }
+        
+        backboneCache = (0..<backCfg.hiddenLayers).map { _ in KVCache(headDim: backCfg.resolvedHeadDimensions, nKVHeads: backCfg.kvHeads) }
+        decoderCache = (0..<decCfg.hiddenLayers).map { _ in KVCache(headDim: decCfg.resolvedHeadDimensions, nKVHeads: decCfg.kvHeads) }
         cachesEnabled = true
     }
 
@@ -498,7 +508,13 @@ public final class SesameModel: Module {
         let basePos = MLXArray.arange(2).reshaped([1, 2])
         var currPos = repeated(basePos, count: B, axis: 0) // [B, 2]
 
-        decoderCache = nil
+        let decCfg: LlamaConfiguration
+        if let depth = args.depthDecoderConfig {
+            decCfg = createLlamaConfigurationForDecoder(depth)
+        } else {
+            decCfg = try! createLlamaConfiguration(flavor: args.decoderFlavor)
+        }
+        decoderCache = (0..<decCfg.hiddenLayers).map { _ in KVCache(headDim: decCfg.resolvedHeadDimensions, nKVHeads: decCfg.kvHeads) }
 
         let Cb = args.audioNumCodebooks
         if Cb > 1 {

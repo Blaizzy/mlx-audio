@@ -232,18 +232,41 @@ public final class MimiStreamingDecoder {
 
 public extension Mimi {
     static func fromPretrained(repoId: String = "kyutai/moshiko-pytorch-bf16", filename: String = "tokenizer-e351c8d8-checkpoint125.safetensors", progressHandler: @escaping (Progress) -> Void) async throws -> Mimi {
+        print("[Mimi] Starting Mimi model loading from \(repoId)")
+
+        print("[Mimi] Creating configuration...")
         let cfg = mimi_202407(numCodebooks: 32)
+
+        print("[Mimi] Initializing Mimi model with config...")
+        let modelInitStart = CFAbsoluteTimeGetCurrent()
         let model = Mimi(cfg: cfg)
+        let modelInitTime = CFAbsoluteTimeGetCurrent() - modelInitStart
+        print(String(format: "[Mimi] Model initialization completed in %.2f seconds", modelInitTime))
 
+        print("[Mimi] Downloading/snapshotting weights file...")
+        let snapshotStart = CFAbsoluteTimeGetCurrent()
         let weightFileURL = try await Hub.snapshot(from: repoId, matching: filename, progressHandler: progressHandler).appending(path: filename)
+        let snapshotTime = CFAbsoluteTimeGetCurrent() - snapshotStart
+        print(String(format: "[Mimi] Weights file snapshot completed in %.2f seconds", snapshotTime))
 
+        print("[Mimi] Loading weight arrays from safetensors file...")
+        let loadStart = CFAbsoluteTimeGetCurrent()
         var weights = [String: MLXArray]()
         let w = try loadArrays(url: weightFileURL)
         for (key, value) in w {
             weights[key] = value
         }
-        weights = model.sanitize(weights: weights)
+        let loadTime = CFAbsoluteTimeGetCurrent() - loadStart
+        print(String(format: "[Mimi] Weight arrays loaded in %.2f seconds. Total weights: %d", loadTime, weights.count))
 
+        print("[Mimi] Sanitizing weights...")
+        let sanitizeStart = CFAbsoluteTimeGetCurrent()
+        weights = model.sanitize(weights: weights)
+        let sanitizeTime = CFAbsoluteTimeGetCurrent() - sanitizeStart
+        print(String(format: "[Mimi] Weights sanitized in %.2f seconds. Final weight count: %d", sanitizeTime, weights.count))
+
+        print("[Mimi] Processing codebook updates...")
+        let filterStart = CFAbsoluteTimeGetCurrent()
         func filterFn(_ module: Module, _ name: String, _ item: ModuleItem) -> Bool {
             if let codebook = module as? EuclideanCodebook, name == "initialized" {
                 codebook.updateInPlace()
@@ -251,11 +274,23 @@ public extension Mimi {
             return true
         }
         _ = model.filterMap(filter: filterFn)
+        let filterTime = CFAbsoluteTimeGetCurrent() - filterStart
+        print(String(format: "[Mimi] Codebook processing completed in %.2f seconds", filterTime))
 
+        print("[Mimi] Updating model parameters...")
+        let updateStart = CFAbsoluteTimeGetCurrent()
         let parameters = ModuleParameters.unflattened(weights)
         try model.update(parameters: parameters, verify: [.all])
+        let updateTime = CFAbsoluteTimeGetCurrent() - updateStart
+        print(String(format: "[Mimi] Model parameters updated in %.2f seconds", updateTime))
 
+        print("[Mimi] Evaluating model...")
+        let evalStart = CFAbsoluteTimeGetCurrent()
         eval(model)
+        let evalTime = CFAbsoluteTimeGetCurrent() - evalStart
+        print(String(format: "[Mimi] Model evaluation completed in %.2f seconds", evalTime))
+
+        print("[Mimi] Mimi model loading completed successfully")
         return model
     }
 

@@ -8,7 +8,7 @@ import Foundation
 import MLX
 
 // Implementation based on mlx_lm.models.rope_utils
-class RoPE {
+class OrpheusRoPE {
     let dims: Int
     let traditional: Bool
     let base: Float

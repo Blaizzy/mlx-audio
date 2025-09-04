@@ -17,8 +17,8 @@ struct ContentView: View {
     @State private var sayThis : String = "Hello Everybody"
     @State private var status : String = ""
 
-    private var availableProviders = ["kokoro", "orpheus", "sesame"]
-    @State private var chosenProvider : String = "sesame"  // Default to Sesame
+    private var availableProviders = ["kokoro", "orpheus", "Marvis"]
+    @State private var chosenProvider : String = "Marvis"  // Default to Marvis
     @State private var availableVoices: [String] = MarvisTTS.Voice.allCases.map { $0.rawValue }
     @State private var chosenVoice: String = MarvisTTS.Voice.conversationalA.rawValue
 
@@ -42,11 +42,11 @@ struct ContentView: View {
                     chosenVoice = availableVoices.first ?? "dan"
 
                     status = "Orpheus is currently quite slow (0.1x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
-                } else if newProvider == "sesame" {
+                } else if newProvider == "Marvis" {
                     availableVoices = MarvisTTS.Voice.allCases.map { $0.rawValue }
                     chosenVoice = availableVoices.first ?? MarvisTTS.Voice.conversationalA.rawValue
 
-                    status = "Sesame CSM-1B: Advanced conversational TTS with streaming support.\n\nNote: Requires model weights to be downloaded from HuggingFace (sesame/csm-1b)"
+                    status = "Marvis TTS: Advanced conversational TTS with streaming support.\n\nNote: Requires model weights to be downloaded from HuggingFace (sesame/csm-1b)"
                 } else {
                     // kokoro
                     availableVoices = TTSVoice.allCases.map { $0.rawValue }
@@ -69,8 +69,8 @@ struct ContentView: View {
 
             TextField("Enter text", text: $sayThis).padding()
 
-            // Show model status for Sesame
-            if chosenProvider == "sesame" {
+            // Show model status for Marvis
+            if chosenProvider == "Marvis" {
                 HStack {
                     Circle()
                         .fill(marvisTTS != nil ? Color.green : Color.red)
@@ -126,7 +126,7 @@ struct ContentView: View {
                             status = "Invalid Orpheus voice selected"
                         }
 
-                    } else if chosenProvider == "sesame" {
+                    } else if chosenProvider == "Marvis" {
                         // Initialize Marvis TTS if needed
                         if marvisTTS == nil {
                             do {
@@ -159,7 +159,7 @@ struct ContentView: View {
                         }
                     }
 
-                    if chosenProvider != "sesame" {
+                    if chosenProvider != "Marvis" {
                         status = "Done"
                     }
                 }
@@ -170,27 +170,6 @@ struct ContentView: View {
             })
             .buttonStyle(.borderedProminent)
 
-            // Debug button for Marvis
-            if chosenProvider == "sesame" {
-                Button(action: {
-                    if let marvis = marvisTTS {
-                        print("Marvis TTS initialized")
-                        print("Sample Rate: \(marvis.sampleRate)")
-                        print("\n--- Available Voices ---")
-                        print("conversational_a, conversational_b")
-                        status = "Debug info printed to console"
-                    } else {
-                        status = "Marvis TTS not initialized"
-                    }
-                }, label: {
-                    Text("Debug Info")
-                        .font(.caption)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                })
-                .buttonStyle(.bordered)
-                .padding(.top, 4)
-            }
 
             ScrollView {
                 Text(status)

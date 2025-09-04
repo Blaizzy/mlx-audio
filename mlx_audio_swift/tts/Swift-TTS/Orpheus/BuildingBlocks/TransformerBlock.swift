@@ -33,7 +33,7 @@ class OrpheusTransformerBlock {
     private let numKeyValueHeads: Int
     private let numRepeats: Int
     private let headDim: Int
-    private let rope: RoPE
+    private let rope: OrpheusRoPE
 
     // Pre-transposed Weights
     private let q_proj_w_T: MLXArray
@@ -62,7 +62,7 @@ class OrpheusTransformerBlock {
         self.numRepeats = self.numAttentionHeads / self.numKeyValueHeads // 3
         
         // Initialize RoPE (dims = headDim)
-        self.rope = RoPE(dims: self.headDim)
+        self.rope = OrpheusRoPE(dims: self.headDim)
         
         // Initialize and pre-transpose weights for a small speed bump
         self.inputNormWeight = weights["model.layers.\(layerIndex).input_layernorm.weight"]!
