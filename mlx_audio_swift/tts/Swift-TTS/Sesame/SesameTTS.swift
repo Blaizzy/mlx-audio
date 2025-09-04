@@ -8,7 +8,7 @@ import AVFoundation
 
 
 
-public final class MarvisTTS: Module {
+public final class SesameTTS: Module {
     public enum Voice: String, CaseIterable {
         case conversationalA = "conversational_a"
         case conversationalB = "conversational_b"
@@ -168,8 +168,8 @@ public final class MarvisTTS: Module {
     }
 }
 
-public extension MarvisTTS {
-    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> MarvisTTS {
+public extension SesameTTS {
+    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameTTS {
 
         let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
 
@@ -186,7 +186,7 @@ public extension MarvisTTS {
         let configFileURL = modelDirectoryURL.appending(path: "config.json")
         let args = try JSONDecoder().decode(SesameModelArgs.self, from: Data(contentsOf: configFileURL))
 
-        let model = try await MarvisTTS(config: args, repoId: repoId, promptURLs: audioPromptURLs, progressHandler: progressHandler)
+        let model = try await SesameTTS(config: args, repoId: repoId, promptURLs: audioPromptURLs, progressHandler: progressHandler)
 
         var weights = [String: MLXArray]()
         let w = try loadArrays(url: weightFileURL)
@@ -272,13 +272,13 @@ private struct Segment {
 
 // MARK: -
 
-enum MarvisTTSError: Error {
+enum SesameTTSError: Error {
     case invalidArgument(String)
     case voiceNotFound
     case invalidRefAudio(String)
 }
 
-public extension MarvisTTS {
+public extension SesameTTS {
     struct GenerationResult {
         public let audio: [Float]
         public let sampleRate: Int
@@ -333,7 +333,7 @@ public extension MarvisTTS {
     ) throws -> [GenerationResult] {
 
         guard voice != nil || refAudio != nil else {
-            throw MarvisTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
+            throw SesameTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
         }
 
         let context: Segment
@@ -347,22 +347,22 @@ public extension MarvisTTS {
                 }
             }
             guard let refAudioURL else {
-                throw MarvisTTSError.voiceNotFound
+                throw SesameTTSError.voiceNotFound
             }
 
             let (sampleRate, refAudio) = try loadAudioArray(from: refAudioURL)
             guard abs(sampleRate - 24000) < .leastNonzeroMagnitude else {
-                throw MarvisTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
+                throw SesameTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
             }
 
             let refTextURL = refAudioURL.deletingPathExtension().appendingPathExtension("txt")
             let refText = try String(data: Data(contentsOf: refTextURL), encoding: .utf8)
             guard let refText else {
-                throw MarvisTTSError.voiceNotFound
+                throw SesameTTSError.voiceNotFound
             }
             context = Segment(speaker: 0, text: refText, audio: refAudio)
         } else {
-            throw MarvisTTSError.voiceNotFound
+            throw SesameTTSError.voiceNotFound
         }
 
         let sampleFn = TopPSampler(temperature: 0.9, topP: 0.8).sample

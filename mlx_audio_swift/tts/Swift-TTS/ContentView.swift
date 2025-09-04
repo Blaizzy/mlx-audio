@@ -12,15 +12,13 @@ struct ContentView: View {
 
     @State private var kokoroTTSModel: KokoroTTSModel? = nil
     @State private var orpheusTTSModel: OrpheusTTSModel? = nil
-    @State private var marvisTTS: MarvisTTS? = nil
+    @State private var sesameTTSModel: SesameTTS? = nil
 
     @State private var sayThis : String = "Hello Everybody"
     @State private var status : String = ""
 
-    private var availableProviders = ["kokoro", "orpheus", "Marvis"]
-    @State private var chosenProvider : String = "Marvis"  // Default to Marvis
-    @State private var availableVoices: [String] = MarvisTTS.Voice.allCases.map { $0.rawValue }
-    @State private var chosenVoice: String = MarvisTTS.Voice.conversationalA.rawValue
+    @State private var chosenProvider: TTSProvider = .sesame  // Default to Sesame
+    @State private var chosenVoice: String = SesameTTS.Voice.conversationalA.rawValue
 
     var body: some View {
         VStack {
@@ -32,35 +30,20 @@ struct ContentView: View {
                 .padding()
 
             Picker("Choose a provider", selection: $chosenProvider) {
-                ForEach(availableProviders, id: \.self) { provider in
-                    Text(provider.capitalized)
+                ForEach(TTSProvider.allCases, id: \.self) { provider in
+                    Text(provider.displayName)
                 }
             }
             .onChange(of: chosenProvider) { _, newProvider in
-                if newProvider == "orpheus" {
-                    availableVoices = OrpheusVoice.allCases.map { $0.rawValue }
-                    chosenVoice = availableVoices.first ?? "dan"
-
-                    status = "Orpheus is currently quite slow (0.1x on M1).  Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
-                } else if newProvider == "Marvis" {
-                    availableVoices = MarvisTTS.Voice.allCases.map { $0.rawValue }
-                    chosenVoice = availableVoices.first ?? MarvisTTS.Voice.conversationalA.rawValue
-
-                    status = "Marvis TTS: Advanced conversational TTS with streaming support.\n\nNote: Requires model weights to be downloaded from HuggingFace (sesame/csm-1b)"
-                } else {
-                    // kokoro
-                    availableVoices = TTSVoice.allCases.map { $0.rawValue }
-                    chosenVoice = availableVoices.first ?? TTSVoice.bmGeorge.rawValue
-
-                    status = ""
-                }
+                chosenVoice = newProvider.defaultVoice
+                status = newProvider.statusMessage
             }
             .padding()
             .padding(.bottom, 0)
 
             // Voice picker
             Picker("Choose a voice", selection: $chosenVoice) {
-                ForEach(availableVoices, id: \.self) { voice in
+                ForEach(chosenProvider.availableVoices, id: \.self) { voice in
                     Text(voice.capitalized)
                 }
             }
@@ -69,28 +52,28 @@ struct ContentView: View {
 
             TextField("Enter text", text: $sayThis).padding()
 
-            // Show model status for Marvis
-            if chosenProvider == "Marvis" {
+            // Show model status for Sesame
+            if chosenProvider == .sesame {
                 HStack {
                     Circle()
-                        .fill(marvisTTS != nil ? Color.green : Color.red)
+                        .fill(sesameTTSModel != nil ? Color.green : Color.red)
                         .frame(width: 8, height: 8)
-                    Text(marvisTTS != nil ? "Marvis TTS Ready" : "Marvis TTS Not Initialized")
+                    Text(sesameTTSModel != nil ? "Sesame TTS Ready" : "Sesame TTS Not Initialized")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 4)
 
                 // Show model info if loaded
-                if marvisTTS != nil {
+                if sesameTTSModel != nil {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Model: Marvis TTS")
+                        Text("Model: Sesame TTS")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                         Text("Architecture: Sesame + Mimi")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        Text("Sample Rate: \(Int(marvisTTS!.sampleRate)) Hz")
+                        Text("Sample Rate: \(Int(sesameTTSModel!.sampleRate)) Hz")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -104,63 +87,13 @@ struct ContentView: View {
             Button(action: {
                 Task {
                     status = "Generating..."
-                    if chosenProvider == "kokoro" {
-                        if kokoroTTSModel == nil {
-                            kokoroTTSModel = KokoroTTSModel()
-                        }
-
-                        if let kokoroVoice = TTSVoice.fromIdentifier(chosenVoice) ?? TTSVoice(rawValue: chosenVoice) {
-                            kokoroTTSModel!.say(sayThis, kokoroVoice)
-                        } else {
-                            status = "Invalid Kokoro voice selected"
-                        }
-
-                    } else if chosenProvider == "orpheus" {
-                        if orpheusTTSModel == nil {
-                            orpheusTTSModel = OrpheusTTSModel()
-                        }
-
-                        if let orpheusVoice = OrpheusVoice(rawValue: chosenVoice) {
-                            await orpheusTTSModel!.say(sayThis, orpheusVoice)
-                        } else {
-                            status = "Invalid Orpheus voice selected"
-                        }
-
-                    } else if chosenProvider == "Marvis" {
-                        // Initialize Marvis TTS if needed
-                        if marvisTTS == nil {
-                            do {
-                                status = "Loading Marvis TTS model..."
-                                marvisTTS = try await MarvisTTS.fromPretrained(progressHandler: { progress in
-                                    status = "Loading Marvis TTS: \(Int(progress.fractionCompleted * 100))%"
-                                })
-                                status = "Marvis TTS model loaded successfully!"
-                            } catch {
-                                status = "Failed to load Marvis TTS model: \(error.localizedDescription)"
-                                return
-                            }
-                        }
-
-                        // Generate audio with Marvis TTS
-                        if let marvisVoice = MarvisTTS.Voice(rawValue: chosenVoice) {
-                            do {
-                                status = "Generating with Marvis TTS..."
-                                let results = try marvisTTS!.generate(text: sayThis, voice: marvisVoice)
-                                if let result = results.first {
-                                    status = "Marvis TTS generation complete! Audio shape: \(result.audio.count) samples, Sample rate: \(result.sampleRate)Hz"
-                                } else {
-                                    status = "No audio generated"
-                                }
-                            } catch {
-                                status = "Marvis TTS generation failed: \(error.localizedDescription)"
-                            }
-                        } else {
-                            status = "Invalid Marvis voice selected: \(chosenVoice)"
-                        }
-                    }
-
-                    if chosenProvider != "Marvis" {
-                        status = "Done"
+                    switch chosenProvider {
+                    case .kokoro:
+                        generateWithKokoro()
+                    case .orpheus:
+                        await generateWithOrpheus()
+                    case .sesame:
+                        await generateWithSesame()
                     }
                 }
             }, label: {
@@ -180,6 +113,70 @@ struct ContentView: View {
             .frame(height: 100)
         }
         .padding()
+    }
+
+    // MARK: - TTS Generation Methods
+
+    private func generateWithKokoro() {
+        if kokoroTTSModel == nil {
+            kokoroTTSModel = KokoroTTSModel()
+        }
+
+        if chosenProvider.validateVoice(chosenVoice),
+           let kokoroVoice = TTSVoice.fromIdentifier(chosenVoice) ?? TTSVoice(rawValue: chosenVoice) {
+            kokoroTTSModel!.say(sayThis, kokoroVoice)
+            status = "Done"
+        } else {
+            status = chosenProvider.errorMessage
+        }
+    }
+
+    private func generateWithOrpheus() async {
+        if orpheusTTSModel == nil {
+            orpheusTTSModel = OrpheusTTSModel()
+        }
+
+        if chosenProvider.validateVoice(chosenVoice),
+           let orpheusVoice = OrpheusVoice(rawValue: chosenVoice) {
+            await orpheusTTSModel!.say(sayThis, orpheusVoice)
+            status = "Done"
+        } else {
+            status = chosenProvider.errorMessage
+        }
+    }
+
+    private func generateWithSesame() async {
+        // Initialize Sesame TTS if needed
+        if sesameTTSModel == nil {
+            do {
+                status = "Loading Sesame TTS model..."
+                sesameTTSModel = try await SesameTTS.fromPretrained(progressHandler: { progress in
+                    status = "Loading Sesame TTS: \(Int(progress.fractionCompleted * 100))%"
+                })
+                status = "Sesame TTS model loaded successfully!"
+            } catch {
+                status = "Failed to load Sesame TTS model: \(error.localizedDescription)"
+                return
+            }
+        }
+
+        // Generate audio with Sesame TTS
+        if chosenProvider.validateVoice(chosenVoice),
+           let sesameVoice = SesameTTS.Voice(rawValue: chosenVoice) {
+            do {
+                status = "Generating with Sesame TTS..."
+                let results = try sesameTTSModel!.generate(text: sayThis, voice: sesameVoice)
+                if let result = results.first {
+                    status = "Sesame TTS generation complete! Audio shape: \(result.audio.count) samples, Sample rate: \(result.sampleRate)Hz"
+                } else {
+                    status = "No audio generated"
+                }
+            } catch {
+                status = "Sesame TTS generation failed: \(error.localizedDescription)"
+            }
+        } else {
+            status = chosenProvider.errorMessage + chosenVoice
+        }
     }
 }
 
