@@ -41,7 +41,7 @@ struct ContentView: View {
     
     // Alias for backward compatibility
     var viewModel: KokoroTTSModel { kokoroViewModel }
-    @State private var sesameTTSModel: SesameTTS? = nil
+    @State private var sesameTTSModel: SesameSession? = nil
     @State private var isSesameLoading = false
     @State private var isSesamePlaying = false
     @State private var status = ""
@@ -274,7 +274,7 @@ struct ContentView: View {
                         if sesameTTSModel == nil {
                             isSesameLoading = true
                             do {
-                                sesameTTSModel = try await SesameTTS.fromPretrained(progressHandler: { progress in
+                                sesameTTSModel = try await SesameSession.fromPretrained(progressHandler: { progress in
                                     // Update loading status if needed
                                 })
                                 isSesameLoading = false
@@ -286,7 +286,7 @@ struct ContentView: View {
                         }
                         
                         // Generate with Sesame TTS
-                        let selectedSesameVoice: SesameTTS.Voice
+                        let selectedSesameVoice: SesameSession.Voice
                         if chosenVoice == "conversational_a" {
                             selectedSesameVoice = .conversationalA
                         } else if chosenVoice == "conversational_b" {

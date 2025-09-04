@@ -190,7 +190,6 @@
 				Sesame/Mimi/Transformer.swift,
 				Sesame/Models/LlamaModel.swift,
 				Sesame/Models/SesameModel.swift,
-				Sesame/SesameTTS.swift,
 				Utils/AudioSessionManager.swift,
 			);
 			target = 7BBF57E22DDD06460047DCFF /* Swift-TTS-iOS */;

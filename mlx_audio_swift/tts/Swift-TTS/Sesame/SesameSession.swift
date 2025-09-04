@@ -6,9 +6,7 @@ import MLXNN
 import Tokenizers
 import AVFoundation
 
-
-
-public final class SesameTTS: Module {
+public final class SesameSession: Module {
     public enum Voice: String, CaseIterable {
         case conversationalA = "conversational_a"
         case conversationalB = "conversational_b"
@@ -23,14 +21,12 @@ public final class SesameTTS: Module {
     private let audioTokenizer: MimiTokenizer
     private let streamingDecoder: MimiStreamingDecoder
     
-    // Audio playback components
-    private var audioEngine: AVAudioEngine!
-    private var playerNode: AVAudioPlayerNode!
-    private var audioFormat: AVAudioFormat!
-    private var queuedSamples: Int = 0
-    private var hasStartedPlayback: Bool = false
-    private var prebufferSeconds: Double = 2.0 // fixed prebuffer to avoid underruns on borderline machines
-    private let scheduleSliceSeconds: Double = 0.03 // 30ms slices for steadier queueing
+    // Audio playback
+    private var playback: AudioPlayback!
+    // Bound configuration for session-like ergonomics
+    private var boundVoice: Voice? = .conversationalA
+    private var boundRefAudio: MLXArray? = nil
+    private var boundRefText: String? = nil
 
     public init(
         config: SesameModelArgs,
@@ -51,76 +47,11 @@ public final class SesameTTS: Module {
         super.init()
         model.resetCaches()
 
-        setupAudioEngine()
+        playback = AudioPlayback(sampleRate: sampleRate)
 
     }
     
-    deinit {
-        if let engine = audioEngine, engine.isRunning {
-            engine.stop()
-        }
-        if let player = playerNode, player.isPlaying {
-            player.stop()
-        }
-    }
-
-    private func setupAudioEngine() {
-        audioEngine = AVAudioEngine()
-        playerNode = AVAudioPlayerNode()
-        
-        audioFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
-        
-        audioEngine.attach(playerNode)
-        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: audioFormat)
-        
-        do {
-            try audioEngine.start()
-        } catch {
-            print("Failed to start audio engine: \(error))")
-        }
-    }
-    
-    private func playAudio(_ samples: [Float]) {
-        guard let audioFormat = audioFormat else { return }
-        let total = samples.count
-        guard total > 0 else { return }
-
-        let sliceSamples = max(1, Int(scheduleSliceSeconds * sampleRate))
-        var offset = 0
-        while offset < total {
-            let remaining = total - offset
-            let thisLen = min(sliceSamples, remaining)
-
-            let frameLength = AVAudioFrameCount(thisLen)
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: frameLength) else { break }
-            buffer.frameLength = frameLength
-            if let channelData = buffer.floatChannelData {
-                let end = offset + thisLen
-                for i in 0..<thisLen { channelData[0][i] = samples[offset + i] }
-            }
-
-            // Update queue size
-            queuedSamples += Int(frameLength)
-
-            // Schedule with completion to decrement when played back
-            let decAmount = Int(frameLength)
-            playerNode.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-                guard let self else { return }
-                self.queuedSamples = max(0, self.queuedSamples - decAmount)
-            }
-
-            // Start playback once enough preroll accumulated
-            if !hasStartedPlayback {
-                let prebufferSamples = Int(prebufferSeconds * sampleRate)
-                if queuedSamples >= prebufferSamples {
-                    playerNode.play()
-                    hasStartedPlayback = true
-                }
-            }
-
-            offset += thisLen
-        }
-    }
+    deinit { playback?.stop() }
 
     private func tokenizeTextSegment(text: String, speaker: Int) -> (MLXArray, MLXArray) {
         let K = model.args.audioNumCodebooks
@@ -193,8 +124,224 @@ public final class SesameTTS: Module {
     }
 }
 
-public extension SesameTTS {
-    public static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameTTS {
+public extension SesameSession {
+    // MARK: - Shared model loading helpers
+    // MARK: - Shared model loading helpers
+
+    private static func snapshotAndConfig(
+        repoId: String,
+        progressHandler: @escaping (Progress) -> Void
+    ) async throws -> (args: SesameModelArgs, promptURLs: [URL], weightFileURL: URL) {
+        let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
+        let weightFileURL = modelDirectoryURL.appending(path: "model.safetensors")
+        let promptDir = modelDirectoryURL.appending(path: "prompts", directoryHint: .isDirectory)
+        var audioPromptURLs: [URL] = []
+        for url in try FileManager.default.contentsOfDirectory(at: promptDir, includingPropertiesForKeys: nil) where url.pathExtension == "wav" {
+            audioPromptURLs.append(url)
+        }
+        let configFileURL = modelDirectoryURL.appending(path: "config.json")
+        let args = try JSONDecoder().decode(SesameModelArgs.self, from: Data(contentsOf: configFileURL))
+        return (args, audioPromptURLs, weightFileURL)
+    }
+
+    private func installWeights(args: SesameModelArgs, weightFileURL: URL) throws {
+        var weights: [String: MLXArray] = [:]
+        let w = try loadArrays(url: weightFileURL)
+        for (k, v) in w { weights[k] = v }
+
+        if let quantization = args.quantization, let groupSize = quantization["group_size"], let bits = quantization["bits"] {
+            quantize(model: self, groupSize: groupSize, bits: bits) { path, _ in
+                weights["\(path).scales"] != nil
+            }
+        } else {
+            weights = Self.sanitize(weights: weights)
+        }
+
+        let parameters = ModuleParameters.unflattened(weights)
+        try update(parameters: parameters, verify: [.all])
+        eval(self)
+    }
+
+    // MARK: - Generation helpers
+
+    /// Builds the generation context from either a bound voice or reference.
+    private func makeContext(voice: Voice?, refAudio: MLXArray?, refText: String?) throws -> Segment {
+        if let refAudio, let refText {
+            return Segment(speaker: 0, text: refText, audio: refAudio)
+        } else if let voice {
+            var refAudioURL: URL?
+            for promptURL in _promptURLs ?? [] {
+                if promptURL.lastPathComponent == "\(voice.rawValue).wav" {
+                    refAudioURL = promptURL
+                    break
+                }
+            }
+            guard let refAudioURL else { throw SesameTTSError.voiceNotFound }
+
+            let (sampleRate, audio) = try loadAudioArray(from: refAudioURL)
+            guard abs(sampleRate - 24000) < .leastNonzeroMagnitude else {
+                throw SesameTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
+            }
+            let refTextURL = refAudioURL.deletingPathExtension().appendingPathExtension("txt")
+            let text = try String(data: Data(contentsOf: refTextURL), encoding: .utf8)
+            guard let text else { throw SesameTTSError.voiceNotFound }
+            return Segment(speaker: 0, text: text, audio: audio)
+        }
+        throw SesameTTSError.voiceNotFound
+    }
+
+    /// Tokenizes a single segment and returns initial token state.
+    private func tokenizeStart(for segment: Segment) -> (tokens: MLXArray, mask: MLXArray, pos: MLXArray) {
+        let (st, sm) = tokenizeSegment(segment, addEOS: false)
+        let promptTokens = concatenated([st], axis: 0).asType(Int32.self) // [T, K+1]
+        let promptMask = concatenated([sm], axis: 0).asType(Bool.self)   // [T, K+1]
+        let currTokens = expandedDimensions(promptTokens, axis: 0) // [1, T, K+1]
+        let currMask = expandedDimensions(promptMask, axis: 0)     // [1, T, K+1]
+        let currPos = expandedDimensions(MLXArray.arange(promptTokens.shape[0]), axis: 0) // [1, T]
+        return (currTokens, currMask, currPos)
+    }
+
+    /// Decodes audio frames for one prompt, optionally streaming.
+    private func decodePrompt(
+        currTokens startTokens: MLXArray,
+        currMask startMask: MLXArray,
+        currPos startPos: MLXArray,
+        stream: Bool,
+        streamingIntervalTokens: Int,
+        sampler sampleFn: (MLXArray) -> MLXArray,
+        onStreamingResult: ((GenerationResult) -> Void)?
+    ) -> [GenerationResult] {
+        var results: [GenerationResult] = []
+
+        var samplesFrames: [MLXArray] = [] // each is [B=1, K]
+        var currTokens = startTokens
+        var currMask = startMask
+        var currPos = startPos
+
+        var generatedCount = 0
+        var yieldedCount = 0
+        let maxAudioFrames = Int(60000 / 80.0) // 12.5 fps, 80 ms per frame
+        let maxSeqLen = 2048 - maxAudioFrames
+        precondition(currTokens.shape[1] < maxSeqLen, "Inputs too long, must be below max_seq_len - max_audio_frames: \(maxSeqLen)")
+
+        var startTime = CFAbsoluteTimeGetCurrent()
+        var frameCount = 0
+
+        for frameIdx in 0 ..< maxAudioFrames {
+            let frame = model.generateFrame(
+                tokens: currTokens,
+                tokensMask: currMask,
+                inputPos: currPos,
+                sampler: sampleFn
+            ) // [1, K]
+
+            // EOS if every codebook is 0
+            if frame.sum().item(Int32.self) == 0 { break }
+
+            samplesFrames.append(frame)
+            frameCount += 1
+
+            autoreleasepool {
+                let zerosText = MLXArray.zeros([1, 1], type: Int32.self)
+                let nextFrame = concatenated([frame, zerosText], axis: 1) // [1, K+1]
+                currTokens = expandedDimensions(nextFrame, axis: 1)       // [1, 1, K+1]
+
+                let onesK = ones([1, frame.shape[1]], type: Bool.self)
+                let zero1 = zeros([1, 1], type: Bool.self)
+                let nextMask = concatenated([onesK, zero1], axis: 1) // [1, K+1]
+                currMask = expandedDimensions(nextMask, axis: 1)     // [1, 1, K+1]
+
+                currPos = split(currPos, indices: [currPos.shape[1] - 1], axis: 1)[1] + MLXArray(1)
+            }
+
+            generatedCount += 1
+
+            // Periodic cleanup
+            if frameIdx % 50 == 0 && frameIdx > 0 {
+                autoreleasepool { }
+            }
+
+            if stream, (generatedCount - yieldedCount) >= streamingIntervalTokens {
+                yieldedCount = generatedCount
+                let gr = generateResultChunk(samplesFrames, start: startTime, streaming: true)
+                results.append(gr)
+                onStreamingResult?(gr)
+                samplesFrames.removeAll(keepingCapacity: true)
+                startTime = CFAbsoluteTimeGetCurrent()
+            }
+        }
+
+        if !samplesFrames.isEmpty {
+            let gr = generateResultChunk(samplesFrames, start: startTime, streaming: stream)
+            if stream { onStreamingResult?(gr) } else { results.append(gr) }
+        }
+
+        return results
+    }
+    // MARK: - Async convenience initializers (initializer-based instead of factories)
+
+    /// Initializes and loads the Sesame model, binding a default voice.
+    /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
+    convenience init(
+        voice: Voice = .conversationalA,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws {
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        try self.installWeights(args: args, weightFileURL: weightFileURL)
+
+        // Bind configuration
+        self.boundVoice = voice
+        self.boundRefAudio = nil
+        self.boundRefText = nil
+    }
+
+    /// Initializes and loads the Sesame model, binding a custom reference (24 kHz mono).
+    convenience init(
+        refAudio: MLXArray,
+        refText: String,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws {
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        try self.installWeights(args: args, weightFileURL: weightFileURL)
+
+        // Bind configuration
+        self.boundVoice = nil
+        self.boundRefAudio = refAudio
+        self.boundRefText = refText
+    }
+    // MARK: - Factories (Apple-style ergonomics)
+
+    /// Creates a Sesame session and binds a default voice.
+    static func make(
+        voice: Voice = .conversationalA,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> SesameSession {
+        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
+        engine.boundVoice = voice
+        engine.boundRefAudio = nil
+        engine.boundRefText = nil
+        return engine
+    }
+
+    /// Creates a Sesame session and binds a custom reference voice.
+    static func make(
+        refAudio: MLXArray,
+        refText: String,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> SesameSession {
+        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
+        engine.boundVoice = nil
+        engine.boundRefAudio = refAudio
+        engine.boundRefText = refText
+        return engine
+    }
+static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameSession {
 
         let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
 
@@ -211,7 +358,7 @@ public extension SesameTTS {
         let configFileURL = modelDirectoryURL.appending(path: "config.json")
         let args = try JSONDecoder().decode(SesameModelArgs.self, from: Data(contentsOf: configFileURL))
 
-        let model = try await SesameTTS(config: args, repoId: repoId, promptURLs: audioPromptURLs, progressHandler: progressHandler)
+        let model = try await SesameSession(config: args, repoId: repoId, promptURLs: audioPromptURLs, progressHandler: progressHandler)
 
         var weights = [String: MLXArray]()
         let w = try loadArrays(url: weightFileURL)
@@ -314,7 +461,7 @@ public enum SesameTTSError: Error, LocalizedError {
     }
 }
 
-public extension SesameTTS {
+public extension SesameSession {
     struct GenerationResult {
         public let audio: [Float]
         public let sampleRate: Int
@@ -326,7 +473,7 @@ public extension SesameTTS {
     }
 
     @discardableResult
-    public func generate(
+    func generate(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -357,7 +504,7 @@ public extension SesameTTS {
     }
 
     @discardableResult
-    public func generate(
+    func generate(
         text: [String],
         voice: Voice? = .conversationalA,
         refAudio: MLXArray?,
@@ -366,187 +513,48 @@ public extension SesameTTS {
         streamingInterval: Double = 0.5,
         onStreamingResult: ((GenerationResult) -> Void)? = nil
     ) throws -> [GenerationResult] {
-
         guard voice != nil || refAudio != nil else {
             throw SesameTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
         }
 
-        let context: Segment
-        if let refAudio, let refText {
-            context = Segment(speaker: 0, text: refText, audio: refAudio)
-        } else if let voice {
-            var refAudioURL: URL?
-            for promptURL in _promptURLs ?? [] {
-                if promptURL.lastPathComponent == "\(voice.rawValue).wav" {
-                    refAudioURL = promptURL
-                }
-            }
-            guard let refAudioURL else {
-                throw SesameTTSError.voiceNotFound
-            }
-
-            let (sampleRate, refAudio) = try loadAudioArray(from: refAudioURL)
-            guard abs(sampleRate - 24000) < .leastNonzeroMagnitude else {
-                throw SesameTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
-            }
-
-            let refTextURL = refAudioURL.deletingPathExtension().appendingPathExtension("txt")
-            let refText = try String(data: Data(contentsOf: refTextURL), encoding: .utf8)
-            guard let refText else {
-                throw SesameTTSError.voiceNotFound
-            }
-            context = Segment(speaker: 0, text: refText, audio: refAudio)
-        } else {
-            throw SesameTTSError.voiceNotFound
-        }
-
+        let base = try makeContext(voice: voice, refAudio: refAudio, refText: refText)
         let sampleFn = TopPSampler(temperature: 0.9, topP: 0.8).sample
-        let maxAudioFrames = Int(60000 / 80.0) // 12.5 fps, 80 ms per frame
-        let streamingIntervalTokens = Int(streamingInterval * 12.5)
-
+        let intervalTokens = Int(streamingInterval * 12.5)
         var results: [GenerationResult] = []
 
-        for (_, prompt) in text.enumerated() {
-
-            let generationText = (context.text + " " + prompt).trimmingCharacters(in: .whitespaces)
-            let currentContext = [Segment(speaker: 0, text: generationText, audio: context.audio)]
-
-            // Reset playback state for this segment and flush any previously scheduled audio
-            if playerNode.isPlaying { playerNode.stop() }
-            playerNode.reset()
-            queuedSamples = 0
-            hasStartedPlayback = false
-
-            // Apply higher prebuffer only in streaming mode (non-stream should play immediately)
-            prebufferSeconds = stream ? 2.0 : 0.0
+        for prompt in text {
+            let generationText = (base.text + " " + prompt).trimmingCharacters(in: .whitespaces)
+            let seg = Segment(speaker: 0, text: generationText, audio: base.audio)
 
             model.resetCaches()
             if stream { streamingDecoder.reset() }
 
-            var toks: [MLXArray] = []
-            var masks: [MLXArray] = []
-            for seg in currentContext {
-                let (st, sm) = tokenizeSegment(seg, addEOS: false)
-                toks.append(st); masks.append(sm)
-            }
-
-            let promptTokens = concatenated(toks, axis: 0).asType(Int32.self) // [T, K+1]
-            let promptMask = concatenated(masks, axis: 0).asType(Bool.self) // [T, K+1]
-
-            var samplesFrames: [MLXArray] = [] // each is [B=1, K]
-            var currTokens = expandedDimensions(promptTokens, axis: 0) // [1, T, K+1]
-            var currMask = expandedDimensions(promptMask, axis: 0) // [1, T, K+1]
-            var currPos = expandedDimensions(MLXArray.arange(promptTokens.shape[0]), axis: 0) // [1, T]
-            var generatedCount = 0
-            var yieldedCount = 0
-
-            let maxSeqLen = 2048 - maxAudioFrames
-            precondition(currTokens.shape[1] < maxSeqLen, "Inputs too long, must be below max_seq_len - max_audio_frames: \(maxSeqLen)")
-
-            var startTime = CFAbsoluteTimeGetCurrent()
-            var frameCount = 0
-
-            for frameIdx in 0 ..< maxAudioFrames {
-                if frameIdx % 100 == 0 || frameIdx == 0 {
-                }
-
-                let frame = model.generateFrame(
-                    tokens: currTokens,
-                    tokensMask: currMask,
-                    inputPos: currPos,
-                    sampler: sampleFn
-                ) // [1, K]
-
-                if frameIdx % 100 == 0 || frameIdx == 0 {
-                }
-
-                // EOS if every codebook is 0
-                if frame.sum().item(Int32.self) == 0 {
-                    break
-                }
-
-                samplesFrames.append(frame)
-                frameCount += 1
-
-                // Memory cleanup: explicitly manage array lifecycle within autoreleasepool
-                autoreleasepool {
-                    let zerosText = MLXArray.zeros([1, 1], type: Int32.self)
-                    let nextFrame = concatenated([frame, zerosText], axis: 1) // [1, K+1]
-                    currTokens = expandedDimensions(nextFrame, axis: 1) // [1, 1, K+1]
-
-                    let onesK = ones([1, frame.shape[1]], type: Bool.self)
-                    let zero1 = zeros([1, 1], type: Bool.self)
-                    let nextMask = concatenated([onesK, zero1], axis: 1) // [1, K+1]
-                    currMask = expandedDimensions(nextMask, axis: 1) // [1, 1, K+1]
-
-                    currPos = split(currPos, indices: [currPos.shape[1] - 1], axis: 1)[1] + MLXArray(1)
-                }
-
-                generatedCount += 1
-
-                // Periodic memory cleanup every 50 frames
-                if frameIdx % 50 == 0 && frameIdx > 0 {
-                    autoreleasepool {
-                        // Allow temporary arrays to be released
-                    }
-                }
-
-                if stream, (generatedCount - yieldedCount) >= streamingIntervalTokens {
-                    yieldedCount = generatedCount
-                    let gr = generateResultChunk(samplesFrames, start: startTime, streaming: true)
-                    results.append(gr)
-                    onStreamingResult?(gr)
-                    samplesFrames.removeAll(keepingCapacity: true)
-                    startTime = CFAbsoluteTimeGetCurrent()
-                }
-            }
-
-
-            if !samplesFrames.isEmpty {
-                let gr = generateResultChunk(samplesFrames, start: startTime, streaming: stream)
-
-                if stream {
-                    onStreamingResult?(gr)
-                } else {
-                    results.append(gr)
-                }
-            }
-
+            let (tok, msk, pos) = tokenizeStart(for: seg)
+            let r = decodePrompt(
+                currTokens: tok,
+                currMask: msk,
+                currPos: pos,
+                stream: stream,
+                streamingIntervalTokens: intervalTokens,
+                sampler: sampleFn,
+                onStreamingResult: onStreamingResult
+            )
+            results.append(contentsOf: r)
         }
 
-
-        // Force cleanup of large arrays and caches to prevent memory leaks
-
-        // Clear model caches
         model.resetCaches()
-
-        // Clear streaming decoder if used
-        if stream {
-            streamingDecoder.reset()
-        }
-
-        // Force garbage collection hint (though Swift/MLX manages this automatically)
-        // Clear any accumulated temporary arrays
-        autoreleasepool {
-            // This block ensures any autoreleased objects are cleaned up
-        }
-
-
+        if stream { streamingDecoder.reset() }
+        autoreleasepool { }
         return results
     }
 
     /// Manually triggers memory cleanup for this TTS instance
-    public func cleanupMemory() {
+    func cleanupMemory() {
         model.resetCaches()
         streamingDecoder.reset()
         
         // Stop audio engine
-        if playerNode.isPlaying {
-            playerNode.stop()
-        }
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
+        playback.stop()
 
         autoreleasepool {
             // Allow cleanup of any cached arrays
@@ -587,7 +595,7 @@ public extension SesameTTS {
         )
 
         // Play the generated audio
-        playAudio(result.audio)
+        playback.enqueue(result.audio, prebufferSeconds: streaming ? 2.0 : 0.0)
 
         // Force cleanup of large intermediate arrays
         autoreleasepool {
@@ -603,7 +611,7 @@ public extension SesameTTS {
     // MARK: - Async/Await convenience
 
     /// Non-blocking async variant of `generate` for a single text string.
-    public func generateAsync(
+    func generateAsync(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -627,7 +635,7 @@ public extension SesameTTS {
 
     /// Streams generated audio chunks for the given text as an AsyncThrowingStream.
     /// Each yielded `GenerationResult` represents a chunk of decoded audio.
-    public func stream(
+    func stream(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -661,6 +669,68 @@ public extension SesameTTS {
                 task.cancel()
             }
         }
+    }
+
+    // MARK: - Apple-style shorthand using bound configuration
+
+    /// Synthesizes speech using the bound voice or reference; returns a single merged result.
+    /// Shorthand 'generate(for:)' mirrors Python 'generate_audio' semantics while staying Swifty.
+    func generate(for text: String) async throws -> GenerationResult {
+        let results = try await generateAsync(
+            text: text,
+            voice: boundVoice,
+            refAudio: boundRefAudio,
+            refText: boundRefText
+        )
+        return Self.mergeResults(results)
+    }
+
+    /// Streams speech using the bound voice or reference.
+    func stream(_ text: String, interval: Double = 0.5) -> AsyncThrowingStream<GenerationResult, Error> {
+        stream(
+            text: text,
+            voice: boundVoice,
+            refAudio: boundRefAudio,
+            refText: boundRefText,
+            streamingInterval: interval
+        )
+    }
+
+    /// Merges multiple chunk results into a single aggregated result.
+    private static func mergeResults(_ parts: [GenerationResult]) -> GenerationResult {
+        guard let first = parts.first else {
+            return GenerationResult(
+                audio: [], sampleRate: 24_000, sampleCount: 0,
+                frameCount: 0, audioDuration: 0, realTimeFactor: 0, processingTime: 0
+            )
+        }
+        if parts.count == 1 { return first }
+
+        var samples: [Float] = []
+        samples.reserveCapacity(parts.reduce(0) { $0 + $1.sampleCount })
+        var sampleCount = 0
+        var frameCount = 0
+        var audioDuration: Double = 0
+        var processingTime: Double = 0
+
+        for r in parts {
+            samples += r.audio
+            sampleCount += r.sampleCount
+            frameCount += r.frameCount
+            audioDuration += r.audioDuration
+            processingTime += r.processingTime
+        }
+
+        let rtf = audioDuration > 0 ? processingTime / audioDuration : 0
+        return GenerationResult(
+            audio: samples,
+            sampleRate: first.sampleRate,
+            sampleCount: sampleCount,
+            frameCount: frameCount,
+            audioDuration: audioDuration,
+            realTimeFactor: (rtf * 100).rounded() / 100,
+            processingTime: processingTime
+        )
     }
 }
 

@@ -25,7 +25,7 @@ enum TTSProvider: String, CaseIterable {
         case .orpheus:
             return "dan"
         case .sesame:
-            return SesameTTS.Voice.conversationalA.rawValue
+            return SesameSession.Voice.conversationalA.rawValue
         }
     }
 
@@ -36,7 +36,7 @@ enum TTSProvider: String, CaseIterable {
         case .orpheus:
             return OrpheusVoice.allCases.map { $0.rawValue }
         case .sesame:
-            return SesameTTS.Voice.allCases.map { $0.rawValue }
+            return SesameSession.Voice.allCases.map { $0.rawValue }
         }
     }
 
@@ -45,7 +45,7 @@ enum TTSProvider: String, CaseIterable {
         case .orpheus:
             return "Orpheus is currently quite slow (0.1x on M1). Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
         case .sesame:
-            return "Sesame TTS: Advanced conversational TTS with streaming support.\n\nNote: Requires model weights to be downloaded from HuggingFace (sesame/csm-1b)"
+            return "Sesame: Advanced conversational TTS with streaming support.\n\nNote: Downloads model weights on first use."
         case .kokoro:
             return ""
         }
@@ -58,7 +58,7 @@ enum TTSProvider: String, CaseIterable {
         case .orpheus:
             return OrpheusVoice(rawValue: voice) != nil
         case .sesame:
-            return SesameTTS.Voice(rawValue: voice) != nil
+            return SesameSession.Voice(rawValue: voice) != nil
         }
     }
 
