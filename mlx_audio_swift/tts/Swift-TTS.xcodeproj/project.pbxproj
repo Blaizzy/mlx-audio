@@ -173,6 +173,7 @@
 				Kokoro/Utils/AudioUtils.swift,
 				Kokoro/Utils/BenchmarkTimer.swift,
 				"Sesame/Audio/Audio+MLXArray.swift",
+				Sesame/AudioPlayback.swift,
 				Sesame/Mimi/Conv.swift,
 				Sesame/Mimi/KVCache.swift,
 				Sesame/Mimi/Mimi.swift,
@@ -181,6 +182,7 @@
 				Sesame/Mimi/Transformer.swift,
 				Sesame/Models/LlamaModel.swift,
 				Sesame/Models/SesameModel.swift,
+				Sesame/SesameSession.swift,
 				Utils/AudioSessionManager.swift,
 			);
 			target = 7BBF57E22DDD06460047DCFF /* Swift-TTS-iOS */;
