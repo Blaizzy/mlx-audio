@@ -492,7 +492,7 @@ public extension SesameSession {
         streamingDecoder.reset()
         
         // Stop audio engine
-        playback.stop()
+        playback?.stop()
 
         autoreleasepool {
             // Allow cleanup of any cached arrays
@@ -650,8 +650,8 @@ public extension SesameSession {
     /// Generates speech without enqueuing playback; returns one merged result.
     public func generateRaw(for text: String) async throws -> GenerationResult {
         let pieces = [text]
-        let results = try await Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return [] }
+        let results: [GenerationResult] = try await Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return [] as [GenerationResult] }
             return try self.generateCore(
                 text: pieces,
                 voice: self.boundVoice,

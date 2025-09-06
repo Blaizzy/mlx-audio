@@ -3,7 +3,6 @@
 //
 import Foundation
 import MLX
-import MLXFFT
 import MLXNN
 
 // Hanning window implementation to replace np.hanning
