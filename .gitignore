@@ -59,5 +59,13 @@ swift/Swift-TTS/Swift-TTS/Kokoro/Resources/kokoro-v1_0.safetensors
 swift/Swift-TTS/Swift-TTS/Orpheus/Resources/orpheus-3b-0.1-ft-4bit.safetensors
 *.safetensors
 
+# Xcode
+xcuserdata/
+*.xcuserstate
+*.xcbkptlist
+
+# Swift Package Manager
+.swiftpm/
+
 # uv
 .build
