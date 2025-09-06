@@ -22,7 +22,8 @@ public final class SesameSession: Module {
     private let streamingDecoder: MimiStreamingDecoder
     
     // Audio playback
-    private var playback: AudioPlayback!
+    private var playback: AudioPlayback?
+    private let playbackEnabled: Bool
     // Bound configuration for session-like ergonomics
     private var boundVoice: Voice? = .conversationalA
     private var boundRefAudio: MLXArray? = nil
@@ -32,11 +33,13 @@ public final class SesameSession: Module {
         config: SesameModelArgs,
         repoId: String,
         promptURLs: [URL]? = nil,
-        progressHandler: @escaping (Progress) -> Void
+        progressHandler: @escaping (Progress) -> Void,
+        playbackEnabled: Bool = true
     ) async throws {
         self.model = SesameModel(config: config)
 
         self._promptURLs = promptURLs
+        self.playbackEnabled = playbackEnabled
 
         self.textTokenizer = try await loadTokenizer(configuration: ModelConfiguration(id: repoId), hub: HubApi.shared)
 
@@ -47,7 +50,11 @@ public final class SesameSession: Module {
         super.init()
         model.resetCaches()
 
-        playback = AudioPlayback(sampleRate: sampleRate)
+        if playbackEnabled {
+            playback = AudioPlayback(sampleRate: sampleRate)
+        } else {
+            playback = nil
+        }
 
     }
     
@@ -209,7 +216,8 @@ public extension SesameSession {
         stream: Bool,
         streamingIntervalTokens: Int,
         sampler sampleFn: (MLXArray) -> MLXArray,
-        onStreamingResult: ((GenerationResult) -> Void)?
+        onStreamingResult: ((GenerationResult) -> Void)?,
+        enqueuePlayback: Bool
     ) -> [GenerationResult] {
         var results: [GenerationResult] = []
 
@@ -231,7 +239,6 @@ public extension SesameSession {
             let frame = model.generateFrame(
                 tokens: currTokens,
                 tokensMask: currMask,
-                inputPos: currPos,
                 sampler: sampleFn
             ) // [1, K]
 
@@ -263,7 +270,7 @@ public extension SesameSession {
 
             if stream, (generatedCount - yieldedCount) >= streamingIntervalTokens {
                 yieldedCount = generatedCount
-                let gr = generateResultChunk(samplesFrames, start: startTime, streaming: true)
+                let gr = generateResultChunk(samplesFrames, start: startTime, streaming: true, enqueuePlayback: enqueuePlayback)
                 results.append(gr)
                 onStreamingResult?(gr)
                 samplesFrames.removeAll(keepingCapacity: true)
@@ -272,7 +279,7 @@ public extension SesameSession {
         }
 
         if !samplesFrames.isEmpty {
-            let gr = generateResultChunk(samplesFrames, start: startTime, streaming: stream)
+            let gr = generateResultChunk(samplesFrames, start: startTime, streaming: stream, enqueuePlayback: enqueuePlayback)
             if stream { onStreamingResult?(gr) } else { results.append(gr) }
         }
 
@@ -282,13 +289,14 @@ public extension SesameSession {
 
     /// Initializes and loads the Sesame model, binding a default voice.
     /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
-    convenience init(
+    public convenience init(
         voice: Voice = .conversationalA,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @escaping (Progress) -> Void = { _ in },
+        playbackEnabled: Bool = true
     ) async throws {
         let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
         try self.installWeights(args: args, weightFileURL: weightFileURL)
 
         // Bind configuration
@@ -298,14 +306,15 @@ public extension SesameSession {
     }
 
     /// Initializes and loads the Sesame model, binding a custom reference (24 kHz mono).
-    convenience init(
+    public convenience init(
         refAudio: MLXArray,
         refText: String,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
-        progressHandler: @escaping (Progress) -> Void = { _ in }
+        progressHandler: @escaping (Progress) -> Void = { _ in },
+        playbackEnabled: Bool = true
     ) async throws {
         let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
         try self.installWeights(args: args, weightFileURL: weightFileURL)
 
         // Bind configuration
@@ -316,7 +325,7 @@ public extension SesameSession {
     // MARK: - Factories (Apple-style ergonomics)
 
     /// Creates a Sesame session and binds a default voice.
-    static func make(
+    public static func make(
         voice: Voice = .conversationalA,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
         progressHandler: @escaping (Progress) -> Void = { _ in }
@@ -329,7 +338,7 @@ public extension SesameSession {
     }
 
     /// Creates a Sesame session and binds a custom reference voice.
-    static func make(
+    public static func make(
         refAudio: MLXArray,
         refText: String,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
@@ -341,52 +350,10 @@ public extension SesameSession {
         engine.boundRefText = refText
         return engine
     }
-static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameSession {
-
-        let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
-
-        let weightFileURL = modelDirectoryURL.appending(path: "model.safetensors")
-        let promptFileURLs = modelDirectoryURL.appending(path: "prompts", directoryHint: .isDirectory)
-
-        var audioPromptURLs = [URL]()
-        for promptURL in try FileManager.default.contentsOfDirectory(at: promptFileURLs, includingPropertiesForKeys: nil) {
-            if promptURL.pathExtension == "wav" {
-                audioPromptURLs.append(promptURL)
-            }
-        }
-
-        let configFileURL = modelDirectoryURL.appending(path: "config.json")
-        let args = try JSONDecoder().decode(SesameModelArgs.self, from: Data(contentsOf: configFileURL))
-
-        let model = try await SesameSession(config: args, repoId: repoId, promptURLs: audioPromptURLs, progressHandler: progressHandler)
-
-        var weights = [String: MLXArray]()
-        let w = try loadArrays(url: weightFileURL)
-        for (key, value) in w {
-            weights[key] = value
-        }
-
-        // Calculate approximate memory usage of weights
-        var totalWeightSize: Int = 0
-        for (_, array) in weights {
-            let elementCount = array.shape.reduce(1, *)
-            totalWeightSize += elementCount * 4 // Assuming Float32 (4 bytes per element)
-        }
-
-        if let quantization = args.quantization, let groupSize = quantization["group_size"], let bits = quantization["bits"] {
-            quantize(model: model, groupSize: groupSize, bits: bits) { path, _ in
-                weights["\(path).scales"] != nil
-            }
-        } else {
-            weights = sanitize(weights: weights)
-        }
-
-        let parameters = ModuleParameters.unflattened(weights)
-
-        try model.update(parameters: parameters, verify: [.all])
-
-        eval(model)
-
+public static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameSession {
+        let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
+        let model = try await SesameSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        try model.installWeights(args: args, weightFileURL: weightFileURL)
         return model
     }
 
@@ -462,7 +429,7 @@ public enum SesameTTSError: Error, LocalizedError {
 }
 
 public extension SesameSession {
-    struct GenerationResult {
+    public struct GenerationResult {
         public let audio: [Float]
         public let sampleRate: Int
         public let sampleCount: Int
@@ -472,46 +439,16 @@ public extension SesameSession {
         public let processingTime: Double
     }
 
-    @discardableResult
-    func generate(
-        text: String,
-        voice: Voice? = .conversationalA,
-        refAudio: MLXArray? = nil,
-        refText: String? = nil,
-        splitPattern: String? = #"(\n+)"#,
-        stream: Bool = false,
-        streamingInterval: Double = 0.5,
-        onStreamingResult: ((GenerationResult) -> Void)? = nil
-    ) throws -> [GenerationResult] {
-        let pieces: [String]
-        if let pat = splitPattern, let re = try? NSRegularExpression(pattern: pat) {
-            let full = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            let range = NSRange(full.startIndex ..< full.endIndex, in: full)
-            let splits = re.split(full, range: range)
-            pieces = splits.isEmpty ? [full] : splits
-        } else {
-            pieces = [text]
-        }
-        return try generate(
-            text: pieces,
-            voice: voice,
-            refAudio: refAudio,
-            refText: refText,
-            stream: stream,
-            streamingInterval: streamingInterval,
-            onStreamingResult: onStreamingResult
-        )
-    }
-
-    @discardableResult
-    func generate(
+    // Internal core generation routine (sync), used by async and streaming APIs.
+    private func generateCore(
         text: [String],
-        voice: Voice? = .conversationalA,
+        voice: Voice?,
         refAudio: MLXArray?,
         refText: String?,
-        stream: Bool = false,
-        streamingInterval: Double = 0.5,
-        onStreamingResult: ((GenerationResult) -> Void)? = nil
+        stream: Bool,
+        streamingInterval: Double,
+        onStreamingResult: ((GenerationResult) -> Void)?,
+        enqueuePlayback: Bool
     ) throws -> [GenerationResult] {
         guard voice != nil || refAudio != nil else {
             throw SesameTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
@@ -537,7 +474,8 @@ public extension SesameSession {
                 stream: stream,
                 streamingIntervalTokens: intervalTokens,
                 sampler: sampleFn,
-                onStreamingResult: onStreamingResult
+                onStreamingResult: onStreamingResult,
+                enqueuePlayback: enqueuePlayback
             )
             results.append(contentsOf: r)
         }
@@ -549,7 +487,7 @@ public extension SesameSession {
     }
 
     /// Manually triggers memory cleanup for this TTS instance
-    func cleanupMemory() {
+    public func cleanupMemory() {
         model.resetCaches()
         streamingDecoder.reset()
         
@@ -562,7 +500,7 @@ public extension SesameSession {
 
     }
 
-    private func generateResultChunk(_ frames: [MLXArray], start: CFTimeInterval, streaming: Bool) -> GenerationResult {
+    private func generateResultChunk(_ frames: [MLXArray], start: CFTimeInterval, streaming: Bool, enqueuePlayback: Bool) -> GenerationResult {
 
         let frameCount = frames.count
 
@@ -594,8 +532,10 @@ public extension SesameSession {
             processingTime: elapsed,
         )
 
-        // Play the generated audio
-        playback.enqueue(result.audio, prebufferSeconds: streaming ? 2.0 : 0.0)
+        // Play the generated audio (if enabled)
+        if enqueuePlayback {
+            playback?.enqueue(result.audio, prebufferSeconds: streaming ? 2.0 : 0.0)
+        }
 
         // Force cleanup of large intermediate arrays
         autoreleasepool {
@@ -610,23 +550,35 @@ public extension SesameSession {
 
     // MARK: - Async/Await convenience
 
-    /// Non-blocking async variant of `generate` for a single text string.
-    func generateAsync(
+    /// Non-blocking async variant for a single text string.
+    public func generateAsync(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
         refText: String? = nil,
         splitPattern: String? = #"(\n+)"#
     ) async throws -> [GenerationResult] {
-        try await Task.detached(priority: .userInitiated) { [weak self] in
+        let pieces: [String]
+        if let pat = splitPattern, let re = try? NSRegularExpression(pattern: pat) {
+            let full = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let range = NSRange(full.startIndex ..< full.endIndex, in: full)
+            let splits = re.split(full, range: range)
+            pieces = splits.isEmpty ? [full] : splits
+        } else {
+            pieces = [text]
+        }
+
+        return try await Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return [] }
-            return try self.generate(
-                text: text,
+            return try self.generateCore(
+                text: pieces,
                 voice: voice,
                 refAudio: refAudio,
                 refText: refText,
-                splitPattern: splitPattern,
-                stream: false
+                stream: false,
+                streamingInterval: 0.5,
+                onStreamingResult: nil,
+                enqueuePlayback: self.playbackEnabled
             )
         }.value
     }
@@ -635,7 +587,7 @@ public extension SesameSession {
 
     /// Streams generated audio chunks for the given text as an AsyncThrowingStream.
     /// Each yielded `GenerationResult` represents a chunk of decoded audio.
-    func stream(
+    public func stream(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -647,17 +599,27 @@ public extension SesameSession {
             let task = Task.detached(priority: .userInitiated) { [weak self] in
                 guard let self else { return }
                 do {
-                    _ = try self.generate(
-                        text: text,
+                    let pieces: [String]
+                    if let pat = splitPattern, let re = try? NSRegularExpression(pattern: pat) {
+                        let full = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let range = NSRange(full.startIndex ..< full.endIndex, in: full)
+                        let splits = re.split(full, range: range)
+                        pieces = splits.isEmpty ? [full] : splits
+                    } else {
+                        pieces = [text]
+                    }
+
+                    _ = try self.generateCore(
+                        text: pieces,
                         voice: voice,
                         refAudio: refAudio,
                         refText: refText,
-                        splitPattern: splitPattern,
                         stream: true,
                         streamingInterval: streamingInterval,
                         onStreamingResult: { gr in
                             continuation.yield(gr)
-                        }
+                        },
+                        enqueuePlayback: self.playbackEnabled
                     )
                     continuation.finish()
                 } catch {
@@ -675,13 +637,32 @@ public extension SesameSession {
 
     /// Synthesizes speech using the bound voice or reference; returns a single merged result.
     /// Shorthand 'generate(for:)' mirrors Python 'generate_audio' semantics while staying Swifty.
-    func generate(for text: String) async throws -> GenerationResult {
+    public func generate(for text: String) async throws -> GenerationResult {
         let results = try await generateAsync(
             text: text,
             voice: boundVoice,
             refAudio: boundRefAudio,
             refText: boundRefText
         )
+        return Self.mergeResults(results)
+    }
+
+    /// Generates speech without enqueuing playback; returns one merged result.
+    public func generateRaw(for text: String) async throws -> GenerationResult {
+        let pieces = [text]
+        let results = try await Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return [] }
+            return try self.generateCore(
+                text: pieces,
+                voice: self.boundVoice,
+                refAudio: self.boundRefAudio,
+                refText: self.boundRefText,
+                stream: false,
+                streamingInterval: 0.5,
+                onStreamingResult: nil,
+                enqueuePlayback: false
+            )
+        }.value
         return Self.mergeResults(results)
     }
 

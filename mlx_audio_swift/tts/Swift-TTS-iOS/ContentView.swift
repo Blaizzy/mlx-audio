@@ -296,17 +296,17 @@ struct ContentView: View {
                         }
                         
                         do {
-                            status = "Generating with Sesame TTS..."
-                            let results = try sesameTTSModel!.generate(text: t, voice: selectedSesameVoice)
-                            if let result = results.first {
-                                // TODO: Implement audio playback for Sesame TTS
-                                print("Sesame TTS generated \(result.audio.count) samples")
-                                isSesamePlaying = true
-                                status = "Sesame TTS generation complete!"
-                            } else {
-                                status = "No audio generated"
+                            status = "Generating with Sesame TTS (streaming)..."
+                            isSesamePlaying = true
+                            let stream = sesameTTSModel!.stream(text: t, voice: selectedSesameVoice)
+                            var totalSamples = 0
+                            for try await chunk in stream {
+                                totalSamples += chunk.sampleCount
+                                status = "Streaming... \(totalSamples) samples (RTF ~\(chunk.realTimeFactor))"
                             }
+                            status = "Sesame TTS generation complete!"
                         } catch {
+                            isSesamePlaying = false
                             status = "Sesame TTS generation failed: \(error.localizedDescription)"
                         }
                     }
@@ -337,10 +337,10 @@ struct ContentView: View {
                 if chosenProvider == .kokoro {
                     kokoroViewModel.stopPlayback()
                 } else if chosenProvider == .sesame {
-                    // Stop Sesame TTS playback
+                    // Stop Sesame TTS playback and reset session
+                    sesameTTSModel?.cleanupMemory()
                     isSesamePlaying = false
                     status = "Sesame TTS playback stopped"
-                    print("Stop Sesame TTS playback")
                 }
             } label: {
                 HStack {

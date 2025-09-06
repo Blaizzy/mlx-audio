@@ -478,7 +478,6 @@ public final class SesameModel: Module {
     public func generateFrame(
         tokens: MLXArray,
         tokensMask: MLXArray,
-        inputPos: MLXArray,
         sampler: (MLXArray) -> MLXArray
     ) -> MLXArray {
         precondition(cachesEnabled, "backbone caches are not enabled")

@@ -6,12 +6,16 @@
 //
 
 import SwiftUI
+import Swift_TTS
 
 @main
 struct Swift_TTS_iOSApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView(kokoroViewModel: KokoroTTSModel())
+                .onAppear {
+                    AudioSessionManager.shared.setupAudioSession()
+                }
         }
     }
 }
