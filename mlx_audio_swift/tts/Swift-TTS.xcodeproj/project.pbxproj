@@ -414,9 +414,7 @@
 			mainGroup = 26942CED2DABD3B400B82507;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				26942CFF2DABD3B400B82507 /* XCRemoteSwiftPackageReference "mlx-swift" */,
 				26942D012DABD3B400B82507 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */,
-				26942D032DABD3B400B82507 /* XCRemoteSwiftPackageReference "swift-transformers" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 26942CF72DABD3B400B82507 /* Products */;
@@ -868,28 +866,12 @@
 /* End XCSwiftPackageProductDependency section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		26942CFF2DABD3B400B82507 /* XCRemoteSwiftPackageReference "mlx-swift" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/ml-explore/mlx-swift";
-			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 0.25.2;
-			};
-		};
 		26942D012DABD3B400B82507 /* XCRemoteSwiftPackageReference "mlx-swift-examples" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/ml-explore/mlx-swift-examples.git";
 			requirement = {
 				kind = revision;
 				revision = HEAD;
-			};
-		};
-		26942D032DABD3B400B82507 /* XCRemoteSwiftPackageReference "swift-transformers" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/huggingface/swift-transformers";
-			requirement = {
-				kind = upToNextMinorVersion;
-				minimumVersion = 0.1.22;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */
