@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import Swift_TTS
 
 @main
 struct Swift_TTS_iOSApp: App {
