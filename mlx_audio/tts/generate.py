@@ -260,16 +260,19 @@ def generate_audio(
                 ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
             )
             if not ref_text:
-                print("Ref_text not found. Transcribing ref_audio...")
-                from mlx_audio.stt.models.whisper import Model as Whisper
+                import inspect
 
-                stt_model = Whisper.from_pretrained(path_or_hf_repo=stt_model)
-                ref_text = stt_model.generate(ref_audio).text
-                print("Ref_text", ref_text)
+                if "ref_text" in inspect.signature(model.generate).parameters:
+                    print("Ref_text not found. Transcribing ref_audio...")
+                    from mlx_audio.stt.models.whisper import Model as Whisper
 
-                # clear memory
-                del stt_model
-                mx.clear_cache()
+                    stt_model = Whisper.from_pretrained(path_or_hf_repo=stt_model)
+                    ref_text = stt_model.generate(ref_audio).text
+                    print("Ref_text", ref_text)
+
+                    # clear memory
+                    del stt_model
+                    mx.clear_cache()
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
