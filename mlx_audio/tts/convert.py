@@ -52,6 +52,11 @@ def configure_parser() -> argparse.ArgumentParser:
         default=None,
     )
     parser.add_argument(
+        "--private",
+        help="Whether to upload the model as private.",
+        action="store_true",
+    )
+    parser.add_argument(
         "-d",
         "--dequantize",
         help="Dequantize a quantized model.",

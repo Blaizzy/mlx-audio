@@ -276,7 +276,7 @@ def fetch_from_hub(
     return model, config
 
 
-def upload_to_hub(path: str, upload_repo: str, hf_path: str):
+def upload_to_hub(path: str, upload_repo: str, hf_path: str, private: bool = False):
     """
     Uploads the model to Hugging Face hub.
 
@@ -314,12 +314,8 @@ def upload_to_hub(path: str, upload_repo: str, hf_path: str):
     logging.set_verbosity_info()
 
     api = HfApi()
-    api.create_repo(repo_id=upload_repo, exist_ok=True)
-    api.upload_folder(
-        folder_path=path,
-        repo_id=upload_repo,
-        repo_type="model",
-    )
+    api.create_repo(repo_id=upload_repo, exist_ok=True, private=private)
+    api.upload_folder(folder_path=path, repo_id=upload_repo, repo_type="model")
     print(f"Upload successful, go to https://huggingface.co/{upload_repo} for details.")
 
 
@@ -335,6 +331,7 @@ def convert(
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
+    private: bool = False,
 ):
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
@@ -347,11 +344,11 @@ def convert(
 
     # Get model-specific quantization predicate if available
     model_quant_predicate = getattr(
-        model, "model_quant_predicate", lambda p, m, config: True
+        model, "model_quant_predicate", lambda p, m, config=None: True
     )
 
     # Define base quantization requirements
-    def base_quant_requirements(p, m, config):
+    def base_quant_requirements(p, m):
         return (
             hasattr(m, "weight")
             and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
@@ -364,8 +361,8 @@ def convert(
         quant_predicate = base_quant_requirements
     else:
         original_predicate = quant_predicate
-        quant_predicate = lambda p, m, config: (
-            base_quant_requirements(p, m, config) and original_predicate(p, m, config)
+        quant_predicate = lambda p, m: (
+            base_quant_requirements(p, m) and original_predicate(p, m)
         )
 
     weights = dict(tree_flatten(model.parameters()))
@@ -384,7 +381,11 @@ def convert(
         print("[INFO] Quantizing")
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
-            model, config, q_group_size, q_bits, quant_predicate=quant_predicate
+            model,
+            config=config,
+            q_group_size=q_group_size,
+            q_bits=q_bits,
+            quant_predicate=quant_predicate,
         )
 
     if dequantize:
@@ -418,4 +419,4 @@ def convert(
     save_config(config, config_path=mlx_path / "config.json")
 
     if upload_repo is not None:
-        upload_to_hub(mlx_path, upload_repo, hf_path)
+        upload_to_hub(mlx_path, upload_repo, hf_path, private=private)
