@@ -19,95 +19,88 @@ class Llama3ScaledRoPE(nn.Module):
         old_context_len: int = 8192,
     ) -> None:
         super().__init__()
+        assert dim % 2 == 0, "RoPE dim must be even"
         self.dim = dim
-        self.base = base
-        self.max_seq_len = max_seq_len
+        self.d2 = dim // 2
+        self.base = float(base)
+        self.max_seq_len = int(max_seq_len)
 
-        self.scale_factor = scale_factor
-        self.low_freq_factor = low_freq_factor
-        self.high_freq_factor = high_freq_factor
-        self.old_context_len = old_context_len
-        self.is_cache_built = False
+        self.scale_factor = float(scale_factor)
+        self.low_freq_factor = int(low_freq_factor)
+        self.high_freq_factor = int(high_freq_factor)
+        self.old_context_len = int(old_context_len)
+
+        self._cos_f32 = None
+        self._sin_f32 = None
+        self._cos_by_dtype = {}
+        self._sin_by_dtype = {}
+
         self.rope_init()
 
     def rope_init(self):
         freqs = 1.0 / (
-            self.base
-            ** (
-                mx.arange(0, self.dim, 2)[: (self.dim // 2)].astype(mx.float32)
-                / self.dim
-            )
+            self.base ** (mx.arange(0, self.dim, 2, dtype=mx.float32) / self.dim)
         )
+        theta = self._apply_scaling(freqs)
+        seq = mx.arange(self.max_seq_len, dtype=mx.float32).reshape(-1, 1)
+        idx_theta = seq * theta.reshape(1, -1)
 
-        theta = self.apply_scaling(
-            freqs,
-            self.scale_factor,
-            self.low_freq_factor,
-            self.high_freq_factor,
-            self.old_context_len,
+        self._cos_f32 = mx.cos(idx_theta)
+        self._sin_f32 = mx.sin(idx_theta)
+
+        self._cos_by_dtype.clear()
+        self._sin_by_dtype.clear()
+
+    def _apply_scaling(self, freqs: mx.array) -> mx.array:
+        wavelen = 2.0 * math.pi / freqs  # (D/2,)
+
+        low = self.old_context_len / self.low_freq_factor
+        high = self.old_context_len / self.high_freq_factor
+
+        smooth = (self.old_context_len / wavelen - self.low_freq_factor) / (
+            self.high_freq_factor - self.low_freq_factor
         )
-        self._theta = theta
-        self.build_rope_cache(self.max_seq_len)
-        self.is_cache_built = True
+        smooth = mx.clip(smooth, 0.0, 1.0)
 
-    def build_rope_cache(self, max_seq_len: int = 4096) -> None:
-        seq_idx = mx.arange(max_seq_len, dtype=self._theta.dtype)
-        idx_theta = mx.einsum("i, j -> ij", seq_idx, self._theta).astype(mx.float32)
-        cache = mx.stack([mx.cos(idx_theta), mx.sin(idx_theta)], axis=-1)
-        self._cache = cache
+        scaled = freqs / self.scale_factor
+        blended = (1.0 - smooth) * scaled + smooth * freqs
 
-    def apply_scaling(
-        self,
-        freqs: mx.array,
-        scale_factor: float,
-        low_freq_factor: int,
-        high_freq_factor: int,
-        old_context_len: int,
-    ):
-        low_freq_wavelen = old_context_len / low_freq_factor
-        high_freq_wavelen = old_context_len / high_freq_factor
-        new_freqs = []
-        for freq in freqs:
-            wavelen = 2 * math.pi / freq
-            if wavelen < high_freq_wavelen:
-                new_freqs.append(freq)
-            elif wavelen > low_freq_wavelen:
-                new_freqs.append(freq / scale_factor)
-            else:
-                assert low_freq_wavelen != high_freq_wavelen
-                smooth = (old_context_len / wavelen - low_freq_factor) / (
-                    high_freq_factor - low_freq_factor
-                )
-                new_freqs.append((1 - smooth) * freq / scale_factor + smooth * freq)
-        return mx.array(new_freqs, dtype=freqs.dtype)
+        cond_A = wavelen < high
+        cond_B = wavelen > low
 
-    def __call__(self, x: mx.array, *, offset: int) -> mx.array:
-        if not self.is_cache_built:
-            raise RuntimeError(
-                "RoPE cache is not built. Please call rope_init() first."
-            )
+        out = mx.where(cond_A, freqs, mx.where(cond_B, scaled, blended))
+        return out.astype(freqs.dtype)
 
-        seq_len = x.shape[1]
-        rope_cache = (
-            self._cache[:seq_len]
-            if offset is None
-            else self._cache[None, offset : offset + seq_len]
-        )
-        xshaped = x.astype(mx.float32).reshape(*x.shape[:-1], -1, 2)
-        rope_cache = rope_cache.reshape(-1, xshaped.shape[1], 1, xshaped.shape[3], 2)
+    def _get_cache(self, dtype, seq_len: int, offset: Optional[int]):
+        start = 0 if (offset is None) else int(offset)
+        end = start + int(seq_len)
+        assert end <= self.max_seq_len, "RoPE cache length exceeded"
 
-        x_out = mx.stack(
-            [
-                xshaped[..., 0] * rope_cache[..., 0]
-                - xshaped[..., 1] * rope_cache[..., 1],
-                xshaped[..., 1] * rope_cache[..., 0]
-                + xshaped[..., 0] * rope_cache[..., 1],
-            ],
-            -1,
-        )
+        if dtype == self._cos_f32.dtype:
+            cos = self._cos_f32[start:end]
+            sin = self._sin_f32[start:end]
+        else:
+            if dtype not in self._cos_by_dtype:
+                self._cos_by_dtype[dtype] = self._cos_f32.astype(dtype)
+                self._sin_by_dtype[dtype] = self._sin_f32.astype(dtype)
+            cos = self._cos_by_dtype[dtype][start:end]
+            sin = self._sin_by_dtype[dtype][start:end]
 
-        x_out = x_out.flatten(3)
-        return x_out.astype(x.dtype)
+        return cos.reshape(1, -1, 1, self.d2), sin.reshape(1, -1, 1, self.d2)
+
+    def __call__(self, x: mx.array, *, offset: Optional[int]) -> mx.array:
+        B, S, H, D = x.shape
+        assert D == self.dim
+
+        x_dtype = x.dtype
+        x_even = x[..., 0::2]  # (B, S, H, D/2)
+        x_odd = x[..., 1::2]  # (B, S, H, D/2)
+
+        cos, sin = self._get_cache(x_dtype, S, offset)
+        out_even = x_even * cos - x_odd * sin
+        out_odd = x_odd * cos + x_even * sin
+        out = mx.stack([out_even, out_odd], axis=-1).reshape(B, S, H, D)
+        return out  # already in x's dtype
 
 
 class Attention(nn.Module):
