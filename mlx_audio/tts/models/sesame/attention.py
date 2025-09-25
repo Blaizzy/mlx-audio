@@ -172,21 +172,6 @@ class Attention(nn.Module):
         if cache:
             k, v = cache.update_and_fetch(k, v)
 
-        if self.n_heads != self.n_kv_heads:
-            q_per_kv = self.n_heads // self.n_kv_heads
-
-            k = mx.expand_dims(k, axis=2)
-            v = mx.expand_dims(v, axis=2)
-
-            k_expand_shape = (b, self.n_kv_heads, q_per_kv) + k.shape[3:]
-            v_expand_shape = (b, self.n_kv_heads, q_per_kv) + v.shape[3:]
-
-            k = mx.broadcast_to(k, k_expand_shape)
-            v = mx.broadcast_to(v, v_expand_shape)
-
-            k = k.reshape(b, self.n_kv_heads * q_per_kv, *k.shape[3:])
-            v = v.reshape(b, self.n_kv_heads * q_per_kv, *v.shape[3:])
-
         output = scaled_dot_product_attention(
             q, k, v, cache=cache, scale=self.scale, mask=mask
         )

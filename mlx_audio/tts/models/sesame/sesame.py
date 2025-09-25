@@ -621,12 +621,19 @@ class Model(nn.Module):
     ) -> GenerationResult:
         token_count = len(samples)
         transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
-        if stream:
+
+        # decode in 10 second max chunks to avoid excessive memory usage
+        tokens_per_batch = min(token_count, int(12.5 * 5))
+        all_audio = []
+        for i in range(0, transposed.shape[2], tokens_per_batch):
+            batch_tokens = transposed[:, :, i : i + tokens_per_batch]
             audio = (
-                self._streaming_decoder.decode_frames(transposed).squeeze(0).squeeze(0)
+                self._streaming_decoder.decode_frames(batch_tokens)
+                .squeeze(0)
+                .squeeze(0)
             )
-        else:
-            audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
+            all_audio.append(audio)
+        audio = mx.concat(all_audio, axis=0)
 
         # This applies an imperceptible watermark to identify audio as AI-generated.
         # Watermarking ensures transparency, dissuades misuse, and enables traceability.
