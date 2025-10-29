@@ -209,7 +209,7 @@ def generate_audio(
     lang_code: str = "a",
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
-    stt_model: str = "mlx-community/whisper-large-v3-turbo",
+    stt_model_path: str = "mlx-community/whisper-large-v3-turbo",
     file_prefix: str = "audio",
     audio_format: str = "wav",
     join_audio: bool = False,
@@ -218,6 +218,8 @@ def generate_audio(
     temperature: float = 0.7,
     stream: bool = False,
     streaming_interval: float = 2.0,
+    model: Optional[object] = None,  # you can pass an already loaded model
+    stt_model: Optional[object] = None,  # you can pass an already loaded stt model
     **kwargs,
 ) -> None:
     """
@@ -232,20 +234,23 @@ def generate_audio(
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
     - ref_text (str): Caption for reference audio.
-    - stt_model (str): A mlx whisper model to use to transcribe.
+    - stt_model_path (str): A mlx whisper model to use to transcribe.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
+    - model (object): A already loaded model.
+    - stt_model (object): A already loaded stt model.
     Returns:
     - None: The function writes the generated audio to a file.
     """
     try:
         play = play or stream
 
-        # Load model
-        model = load_model(model_path=model_path)
+        if model is None:
+            # Load model
+            model = load_model(model_path=model_path)
 
         # Load reference audio for voice matching if specified
         if ref_audio:
@@ -266,13 +271,18 @@ def generate_audio(
                     print("Ref_text not found. Transcribing ref_audio...")
                     from mlx_audio.stt.models.whisper import Model as Whisper
 
-                    stt_model = Whisper.from_pretrained(path_or_hf_repo=stt_model)
+                    to_cleanup_stt_model = stt_model is None
+                    if stt_model is None:
+                        stt_model = Whisper.from_pretrained(
+                            path_or_hf_repo=stt_model_path
+                        )
                     ref_text = stt_model.generate(ref_audio).text
                     print("Ref_text", ref_text)
 
-                    # clear memory
-                    del stt_model
-                    mx.clear_cache()
+                    # clear memory if the stt model was loaded here instead of being passed
+                    if to_cleanup_stt_model:
+                        del stt_model
+                        mx.clear_cache()
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
