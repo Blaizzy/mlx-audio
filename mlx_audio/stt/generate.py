@@ -182,9 +182,11 @@ def generate(
     output_path: str,
     format: str = "txt",
     verbose: bool = True,
+    model: Optional[nn.Module] = None,  # you can pass an already loaded model
     **kwargs,
 ):
-    model = load_model(model_path)
+    if model is None:
+        model = load_model(model_path)
     print("=" * 10)
     print(f"\033[94mAudio path:\033[0m {audio_path}")
     print(f"\033[94mOutput path:\033[0m {output_path}")
