@@ -289,7 +289,7 @@ public extension SesameSession {
 
     /// Initializes and loads the Sesame model, binding a default voice.
     /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
-    public convenience init(
+    convenience init(
         voice: Voice = .conversationalA,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
         progressHandler: @escaping (Progress) -> Void = { _ in },
@@ -306,7 +306,7 @@ public extension SesameSession {
     }
 
     /// Initializes and loads the Sesame model, binding a custom reference (24 kHz mono).
-    public convenience init(
+    convenience init(
         refAudio: MLXArray,
         refText: String,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
@@ -325,7 +325,7 @@ public extension SesameSession {
     // MARK: - Factories (Apple-style ergonomics)
 
     /// Creates a Sesame session and binds a default voice.
-    public static func make(
+    static func make(
         voice: Voice = .conversationalA,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
         progressHandler: @escaping (Progress) -> Void = { _ in }
@@ -338,7 +338,7 @@ public extension SesameSession {
     }
 
     /// Creates a Sesame session and binds a custom reference voice.
-    public static func make(
+    static func make(
         refAudio: MLXArray,
         refText: String,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
@@ -350,7 +350,8 @@ public extension SesameSession {
         engine.boundRefText = refText
         return engine
     }
-public static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameSession {
+
+    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameSession {
         let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
         let model = try await SesameSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
         try model.installWeights(args: args, weightFileURL: weightFileURL)
@@ -429,7 +430,7 @@ public enum SesameTTSError: Error, LocalizedError {
 }
 
 public extension SesameSession {
-    public struct GenerationResult {
+    struct GenerationResult {
         public let audio: [Float]
         public let sampleRate: Int
         public let sampleCount: Int
@@ -487,7 +488,7 @@ public extension SesameSession {
     }
 
     /// Manually triggers memory cleanup for this TTS instance
-    public func cleanupMemory() {
+    func cleanupMemory() {
         model.resetCaches()
         streamingDecoder.reset()
         
@@ -551,7 +552,7 @@ public extension SesameSession {
     // MARK: - Async/Await convenience
 
     /// Non-blocking async variant for a single text string.
-    public func generateAsync(
+    func generateAsync(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -587,7 +588,7 @@ public extension SesameSession {
 
     /// Streams generated audio chunks for the given text as an AsyncThrowingStream.
     /// Each yielded `GenerationResult` represents a chunk of decoded audio.
-    public func stream(
+    func stream(
         text: String,
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
@@ -637,7 +638,7 @@ public extension SesameSession {
 
     /// Synthesizes speech using the bound voice or reference; returns a single merged result.
     /// Shorthand 'generate(for:)' mirrors Python 'generate_audio' semantics while staying Swifty.
-    public func generate(for text: String) async throws -> GenerationResult {
+    func generate(for text: String) async throws -> GenerationResult {
         let results = try await generateAsync(
             text: text,
             voice: boundVoice,
@@ -648,7 +649,7 @@ public extension SesameSession {
     }
 
     /// Generates speech without enqueuing playback; returns one merged result.
-    public func generateRaw(for text: String) async throws -> GenerationResult {
+    func generateRaw(for text: String) async throws -> GenerationResult {
         let pieces = [text]
         let results: [GenerationResult] = try await Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return [] as [GenerationResult] }

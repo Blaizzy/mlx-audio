@@ -11,9 +11,9 @@ import MLX
 // MARK: - TTS Provider Enum
 
 enum TTSProvider: String, CaseIterable {
-    case kokoro = "kokoro"
     case sesame = "sesame"
-    
+    case kokoro = "kokoro"
+
     var displayName: String {
         rawValue.capitalized
     }
@@ -30,11 +30,11 @@ enum TTSProvider: String, CaseIterable {
 
 struct ContentView: View {
     @State private var speed = 1.0
-    @State public var text = ""
+    @State public var text = "How are you doing today?"
     @State private var showAlert = false
     
     @FocusState private var isTextEditorFocused: Bool
-    @State private var chosenProvider: TTSProvider = .kokoro
+    @State private var chosenProvider: TTSProvider = .sesame
     
     // TTS Models
     @ObservedObject var kokoroViewModel: KokoroTTSModel
@@ -46,6 +46,7 @@ struct ContentView: View {
     @State private var isSesamePlaying = false
     @State private var status = ""
     @State private var chosenVoice = "conversational_a"
+    @State private var sesameAudioGenerationTime: TimeInterval = 0
     
     @StateObject private var speakerModel = SpeakerViewModel()
     
@@ -56,6 +57,30 @@ struct ContentView: View {
                 
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
+                        // Provider Status Header
+                        VStack(spacing: 4) {
+                            HStack {
+                                Text(chosenProvider.displayName)
+                                    .font(.title)
+                                if isSesameLoading {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .padding(.leading, 8)
+                                }
+                            }
+                            if chosenProvider == .kokoro {
+                                Text("Time to first audio sample: \(kokoroViewModel.audioGenerationTime > 0 ? String(format: "%.2f", kokoroViewModel.audioGenerationTime) : "--")s")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else if chosenProvider == .sesame {
+                                Text("Time to first audio sample: \(sesameAudioGenerationTime > 0 ? String(format: "%.2f", sesameAudioGenerationTime) : "--")s")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+
                         // Provider Selection
                         VStack(alignment: .leading, spacing: 8) {
                             Text("TTS Provider")
@@ -94,30 +119,8 @@ struct ContentView: View {
                     }
                     .padding([.horizontal, .bottom])
                 }
-                .toolbar {
-                    ToolbarItem(placement: .principal) {
-                        VStack(spacing: 0) {
-                            HStack {
-                                Text(chosenProvider.displayName)
-                                    .font(.title)
-                                if isSesameLoading {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                        .padding(.leading, 8)
-                                }
-                            }
-                            if chosenProvider == .kokoro {
-                                Text("Time to first audio sample: \(kokoroViewModel.audioGenerationTime > 0 ? String(format: "%.2f", kokoroViewModel.audioGenerationTime) : "--")s")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(chosenProvider.statusMessage)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
+                .navigationTitle("MLX Audio Eval")
+                .navigationBarTitleDisplayMode(.large)
                 .scrollContentBackground(.hidden)
                 .alert("Empty Text", isPresented: $showAlert) {
                     Button("OK", role: .cancel) { }
@@ -240,7 +243,7 @@ struct ContentView: View {
                     }
                 
                 if text.isEmpty {
-                    Text("Enter your text here...")
+                    Text("Enter the text here...")
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 20)
                         .padding(.top, 25)
@@ -298,9 +301,15 @@ struct ContentView: View {
                         do {
                             status = "Generating with Sesame TTS (streaming)..."
                             isSesamePlaying = true
+                            sesameAudioGenerationTime = 0
                             let stream = sesameTTSModel!.stream(text: t, voice: selectedSesameVoice)
                             var totalSamples = 0
+                            var isFirstChunk = true
                             for try await chunk in stream {
+                                if isFirstChunk {
+                                    sesameAudioGenerationTime = chunk.processingTime
+                                    isFirstChunk = false
+                                }
                                 totalSamples += chunk.sampleCount
                                 status = "Streaming... \(totalSamples) samples (RTF ~\(chunk.realTimeFactor))"
                             }
