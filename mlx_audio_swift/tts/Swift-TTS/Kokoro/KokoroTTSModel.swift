@@ -207,14 +207,11 @@ public class KokoroTTSModel: ObservableObject {
 
         // Force UI update on main thread with proper sequencing
         DispatchQueue.main.async {
-            // First notify observers of impending change
-            self.objectWillChange.send()
-
-            // Then update state properties in the correct order
+            // Update state properties
             self.isAudioPlaying = false
             self.generationInProgress = false
 
-            // Send another notification after state is updated
+            // Notify observers after state is updated
             self.objectWillChange.send()
 
             // Add a final verification check with slight delay
@@ -378,14 +375,11 @@ public class KokoroTTSModel: ObservableObject {
 
             // Reset UI state with proper notification
             DispatchQueue.main.async {
-                // First notify observers of impending change
-                self.objectWillChange.send()
-
                 // Reset all UI state flags
                 self.isAudioPlaying = false
                 self.generationInProgress = false
 
-                // Final notification
+                // Notify observers of change
                 self.objectWillChange.send()
             }
 

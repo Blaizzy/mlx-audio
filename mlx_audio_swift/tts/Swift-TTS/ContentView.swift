@@ -13,8 +13,8 @@ struct ContentView: View {
     @State private var kokoroTTSModel: KokoroTTSModel? = nil
     @State private var orpheusTTSModel: OrpheusTTSModel? = nil
     @State private var sesameSession: SesameSession? = nil
-    
-    @State private var sayThis: String = "Hello Everybody"
+
+    @State private var text: String = "Hello Everybody"
     @State private var status: String = ""
     
     @State private var chosenProvider: TTSProvider = .sesame  // Default to Sesame
@@ -51,7 +51,19 @@ struct ContentView: View {
             .padding()
             .padding(.top, 0)
             
-            TextField("Enter text", text: $sayThis).padding()
+            HStack {
+                TextField("Enter text", text: $text)
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding()
             
             // Show model status for Sesame
             if chosenProvider == .sesame {
@@ -86,6 +98,13 @@ struct ContentView: View {
             }
             
             Button(action: {
+                // Validate text is not empty
+                let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmedText.isEmpty else {
+                    status = "Please enter some text before generating audio."
+                    return
+                }
+
                 Task {
                     status = "Generating..."
                     switch chosenProvider {
@@ -113,7 +132,7 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
                     .padding()
             }
-            .frame(height: 100)
+            .frame(height: 150)
         }
         .padding()
     }
@@ -127,7 +146,7 @@ struct ContentView: View {
         
         if chosenProvider.validateVoice(chosenVoice),
            let kokoroVoice = TTSVoice.fromIdentifier(chosenVoice) ?? TTSVoice(rawValue: chosenVoice) {
-            kokoroTTSModel!.say(sayThis, kokoroVoice)
+            kokoroTTSModel!.say(text, kokoroVoice)
             status = "Done"
         } else {
             status = chosenProvider.errorMessage
@@ -141,7 +160,7 @@ struct ContentView: View {
         
         if chosenProvider.validateVoice(chosenVoice),
            let orpheusVoice = OrpheusVoice(rawValue: chosenVoice) {
-            await orpheusTTSModel!.say(sayThis, orpheusVoice)
+            await orpheusTTSModel!.say(text, orpheusVoice)
             status = "Done"
         } else {
             status = chosenProvider.errorMessage
@@ -154,7 +173,7 @@ struct ContentView: View {
             do {
                 status = "Loading Sesame..."
                 guard let voice = SesameSession.Voice(rawValue: chosenVoice) else {
-                    status = chosenProvider.errorMessage + chosenVoice
+                    status = "\(chosenProvider.errorMessage)\(chosenVoice)"
                     return
                 }
                 sesameSession = try await SesameSession(voice: voice, progressHandler: { progress in
@@ -170,7 +189,7 @@ struct ContentView: View {
         // Generate audio using bound configuration
         do {
             status = "Generating with Sesame..."
-            let result = try await sesameSession!.generate(for: sayThis)
+            let result = try await sesameSession!.generate(for: text)
             status = "Sesame generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
         } catch {
             status = "Sesame generation failed: \(error.localizedDescription)"

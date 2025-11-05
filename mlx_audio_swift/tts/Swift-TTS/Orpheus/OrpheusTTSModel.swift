@@ -30,7 +30,16 @@ class OrpheusTTSModel: ObservableObject {
     func say(_ text: String, _ voice: OrpheusVoice) async {
         if let orpheusTTSEngine = orpheusTTSEngine {
             let mainTimer = BenchmarkTimer.shared.create(id: "TTSGeneration")
-            let audioBuffer = try! await orpheusTTSEngine.generateAudio(voice: voice, text: text)
+
+            let audioBuffer: MLXArray
+            do {
+                audioBuffer = try await orpheusTTSEngine.generateAudio(voice: voice, text: text)
+            } catch {
+                print("Error generating audio: \(error)")
+                BenchmarkTimer.shared.stop(id: "TTSGeneration")
+                return
+            }
+
             BenchmarkTimer.shared.stop(id: "TTSGeneration")
             BenchmarkTimer.shared.printLog(id: "TTSGeneration")
 

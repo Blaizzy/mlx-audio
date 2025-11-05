@@ -8,40 +8,21 @@
 import SwiftUI
 import MLX
 
-// MARK: - TTS Provider Enum
-
-enum TTSProvider: String, CaseIterable {
-    case sesame = "sesame"
-    case kokoro = "kokoro"
-
-    var displayName: String {
-        rawValue.capitalized
-    }
-    
-    var statusMessage: String {
-        switch self {
-        case .kokoro:
-            return ""
-        case .sesame:
-            return "Sesame TTS: Advanced conversational TTS with streaming support."
-        }
-    }
-}
-
 struct ContentView: View {
-    // Constants
+    // MARK: - Constants
     private let mlxGPUCacheLimit = 20 * 1024 * 1024  // 20MB cache limit
 
+    // MARK: - State Properties
     @State private var speed = 1.0
     @State public var text = "How are you doing today?"
     @State private var showAlert = false
-    
+
     @FocusState private var isTextEditorFocused: Bool
     @State private var chosenProvider: TTSProvider = .sesame
-    
-    // TTS Models
+
+    // MARK: - TTS Models
     @ObservedObject var kokoroViewModel: KokoroTTSModel
-    
+
     // Alias for backward compatibility
     var viewModel: KokoroTTSModel { kokoroViewModel }
     @State private var sesameTTSModel: SesameSession? = nil
@@ -50,7 +31,7 @@ struct ContentView: View {
     @State private var status = ""
     @State private var chosenVoice = "conversational_a"
     @State private var sesameAudioGenerationTime: TimeInterval = 0
-    
+
     @StateObject private var speakerModel = SpeakerViewModel()
     
     var body: some View {
@@ -117,7 +98,17 @@ struct ContentView: View {
                         
                         speedControlView
                         textInputView
-                        
+
+                        // Status display
+                        if !status.isEmpty {
+                            Text(status)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal)
+                                .frame(maxWidth: .infinity)
+                        }
+
                         actionButtonsView
                     }
                     .padding([.horizontal, .bottom])
@@ -151,12 +142,14 @@ struct ContentView: View {
             }
         }
     }
-    
+
+    // MARK: - View Components
+
     private var backgroundView: some View {
         Color(.systemBackground)
             .ignoresSafeArea()
     }
-    
+
     private func compactSpeakerView(selectedSpeakerId: Binding<Int>, title: String, speakers: [Speaker]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
@@ -202,19 +195,21 @@ struct ContentView: View {
     
     private var speedControlView: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Speed")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text(String(format: "%.1fx", speed))
-                    .font(.subheadline)
-                    .bold()
+            if chosenProvider == .kokoro {
+                HStack {
+                    Text("Speed")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text(String(format: "%.1fx", speed))
+                        .font(.subheadline)
+                        .bold()
+                }
+
+                Slider(value: $speed, in: 0.5...2.0, step: 0.1)
+                    .tint(.accentColor)
+                    .disabled(viewModel.generationInProgress)
             }
-            
-            Slider(value: $speed, in: 0.5...2.0, step: 0.1)
-                .tint(.accentColor)
-                .disabled(viewModel.generationInProgress)
         }
     }
     
@@ -224,6 +219,16 @@ struct ContentView: View {
                 Text("Text Input")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                Spacer()
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                            .font(.subheadline)
+                    }
+                }
             }
             
             ZStack(alignment: .topLeading) {
@@ -372,6 +377,8 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Speaker Model
+
 struct Speaker: Identifiable {
     let id: Int
     let name: String
@@ -419,6 +426,8 @@ struct Speaker: Identifiable {
         return "\(cleanName)"
     }
 }
+
+// MARK: - Speaker ViewModel
 
 class SpeakerViewModel: ObservableObject {
     @Published var selectedSpeakerId: Int = 0
@@ -498,12 +507,7 @@ class SpeakerViewModel: ObservableObject {
         // This will be set from outside based on chosenProvider
         _kokoroSpeakers // Default to Kokoro
     }
-    
-    func updateSpeakers(for provider: TTSProvider) {
-        // Update the speakers list based on provider
-        // We'll handle this in the ContentView by using the appropriate speaker list
-    }
-    
+
     func getPrimarySpeaker() -> [Speaker] {
         speakers.filter { $0.id == selectedSpeakerId }
     }
@@ -517,6 +521,8 @@ class SpeakerViewModel: ObservableObject {
     }
 }
 
+// MARK: - View Extension
+
 extension View {
     func dismissKeyboard() {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
@@ -525,6 +531,8 @@ extension View {
                                         for: nil)
     }
 }
+
+// MARK: - Preview
 
 #Preview {
     ContentView(kokoroViewModel: KokoroTTSModel())
