@@ -427,7 +427,7 @@ public struct LlamaConfiguration: Codable, Sendable {
 // MARK: - LoRA
 
 extension LlamaModel: LoRAModel {
-    public func loraLinearLayers() -> LoRALinearLayers {
-        layers.map { ($0.attention, ["q_proj", "v_proj"]) }
+    public var loraLayers: [Module] {
+        layers
     }
 }

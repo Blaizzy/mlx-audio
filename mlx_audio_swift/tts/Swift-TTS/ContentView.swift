@@ -42,7 +42,7 @@ struct ContentView: View {
                     Text(provider.displayName)
                 }
             }
-            .onChange(of: chosenProvider) { _, newProvider in
+            .onChange(of: chosenProvider) { newProvider in
                 chosenVoice = newProvider.defaultVoice
                 status = newProvider.statusMessage
             }
