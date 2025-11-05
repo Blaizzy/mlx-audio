@@ -29,6 +29,9 @@ enum TTSProvider: String, CaseIterable {
 }
 
 struct ContentView: View {
+    // Constants
+    private let mlxGPUCacheLimit = 20 * 1024 * 1024  // 20MB cache limit
+
     @State private var speed = 1.0
     @State public var text = "How are you doing today?"
     @State private var showAlert = false
@@ -255,7 +258,7 @@ struct ContentView: View {
     
     private var actionButtonsView: some View {
         HStack(spacing: 12) {
-            // generatge button
+            // Generate button
             Button {
                 if isTextEditorFocused {
                     dismissKeyboard()
@@ -270,7 +273,7 @@ struct ContentView: View {
                         let speaker = speakerModel.getPrimarySpeaker().first!
                         
                         // Set memory constraints for MLX and start generation
-                        MLX.GPU.set(cacheLimit: 20 * 1024 * 1024)
+                        MLX.GPU.set(cacheLimit: mlxGPUCacheLimit)
                         kokoroViewModel.say(t, TTSVoice.fromIdentifier(speaker.name) ?? .afHeart, speed: Float(speed))
                     } else if chosenProvider == .sesame {
                         // Initialize Sesame TTS if needed

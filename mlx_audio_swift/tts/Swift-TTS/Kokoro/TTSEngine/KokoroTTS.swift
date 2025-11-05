@@ -51,10 +51,10 @@ public enum TTSVoice: String, CaseIterable {
   case jmKumo
   case pfDora
   case pmSanta
-  case zfZiaobei
+  case zfXiaobei
   case zfXiaoni
   case zfXiaoxiao
-  case zfZiaoyi
+  case zfXiaoyi
   case zmYunjian
   case zmYunxi
   case zmYunxia

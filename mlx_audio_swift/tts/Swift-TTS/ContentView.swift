@@ -14,8 +14,8 @@ struct ContentView: View {
     @State private var orpheusTTSModel: OrpheusTTSModel? = nil
     @State private var sesameSession: SesameSession? = nil
     
-    @State private var sayThis : String = "Hello Everybody"
-    @State private var status : String = ""
+    @State private var sayThis: String = "Hello Everybody"
+    @State private var status: String = ""
     
     @State private var chosenProvider: TTSProvider = .sesame  // Default to Sesame
     @State private var chosenVoice: String = SesameSession.Voice.conversationalA.rawValue
