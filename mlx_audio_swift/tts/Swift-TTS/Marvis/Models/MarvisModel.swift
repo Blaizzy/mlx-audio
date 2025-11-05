@@ -131,7 +131,7 @@ public struct DepthDecoderConfig: Codable, Sendable {
     }
 }
 
-public struct SesameModelArgs: Codable, Sendable {
+public struct MarvisModelArgs: Codable, Sendable {
     public let modelType: String
     public let backboneFlavor: String
     public let decoderFlavor: String
@@ -277,14 +277,14 @@ public struct SesameModelArgs: Codable, Sendable {
     }
 }
 
-public extension SesameModelArgs {
-    static func load(from data: Data) throws -> SesameModelArgs {
+public extension MarvisModelArgs {
+    static func load(from data: Data) throws -> MarvisModelArgs {
         let dec = JSONDecoder()
         dec.keyDecodingStrategy = .useDefaultKeys
-        return try dec.decode(SesameModelArgs.self, from: data)
+        return try dec.decode(MarvisModelArgs.self, from: data)
     }
 
-    static func load(from url: URL) throws -> SesameModelArgs {
+    static func load(from url: URL) throws -> MarvisModelArgs {
         try load(from: Data(contentsOf: url))
     }
 }
@@ -303,7 +303,7 @@ private func toStringOrNumber(_ dict: [String: JSONValue]?) -> [String: StringOr
     return out.isEmpty ? nil : out
 }
 
-public func createLlamaConfigurationForBackbone(_ cfg: SesameModelArgs) -> LlamaConfiguration {
+public func createLlamaConfigurationForBackbone(_ cfg: MarvisModelArgs) -> LlamaConfiguration {
     LlamaConfiguration(
         hiddenSize: cfg.hiddenSize,
         hiddenLayers: cfg.numHiddenLayers,
@@ -403,8 +403,8 @@ public func createLlamaConfiguration(flavor: String) throws -> LlamaConfiguratio
 
 // MARK: - Model
 
-public final class SesameModel: Module {
-    public let args: SesameModelArgs
+public final class MarvisModel: Module {
+    public let args: MarvisModelArgs
 
     @ModuleInfo public var backbone: LlamaModel
     @ModuleInfo public var decoder: LlamaModel
@@ -422,7 +422,7 @@ public final class SesameModel: Module {
     public var decoderCache: [KVCache]? = nil
     public var cachesEnabled: Bool = false
 
-    public init(config: SesameModelArgs) {
+    public init(config: MarvisModelArgs) {
         self.args = config
 
         let backCfg: LlamaConfiguration

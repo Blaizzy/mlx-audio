@@ -8,30 +8,50 @@
 import SwiftUI
 import MLX
 
+// MARK: - TTS Provider Enum
+
+enum TTSProvider: String, CaseIterable {
+    case marvis = "marvis"
+    case kokoro = "kokoro"
+    
+    var displayName: String {
+        rawValue.capitalized
+    }
+    
+    var statusMessage: String {
+        switch self {
+        case .kokoro:
+            return ""
+        case .marvis:
+            return "Marvis TTS: Advanced conversational TTS with streaming support."
+        }
+    }
+}
+
 struct ContentView: View {
     // MARK: - Constants
     private let mlxGPUCacheLimit = 20 * 1024 * 1024  // 20MB cache limit
-
+    
     // MARK: - State Properties
     @State private var speed = 1.0
     @State public var text = "How are you doing today?"
     @State private var showAlert = false
-
+    
     @FocusState private var isTextEditorFocused: Bool
-    @State private var chosenProvider: TTSProvider = .sesame
-
+    @State private var chosenProvider: TTSProvider = .marvis
+    
     // MARK: - TTS Models
     @ObservedObject var kokoroViewModel: KokoroTTSModel
 
     // Alias for backward compatibility
     var viewModel: KokoroTTSModel { kokoroViewModel }
-    @State private var sesameTTSModel: SesameSession? = nil
-    @State private var isSesameLoading = false
-    @State private var isSesamePlaying = false
+    @State private var marvisSession: MarvisSession? = nil
+    @State private var isMarvisLoading = false
+    @State private var isMarvisPlaying = false
     @State private var status = ""
     @State private var chosenVoice = "conversational_a"
-    @State private var sesameAudioGenerationTime: TimeInterval = 0
-
+    @State private var marvisAudioGenerationTime: TimeInterval = 0
+    
     @StateObject private var speakerModel = SpeakerViewModel()
     
     var body: some View {
@@ -46,7 +66,7 @@ struct ContentView: View {
                             HStack {
                                 Text(chosenProvider.displayName)
                                     .font(.title)
-                                if isSesameLoading {
+                                if isMarvisLoading {
                                     ProgressView()
                                         .controlSize(.small)
                                         .padding(.leading, 8)
@@ -56,15 +76,15 @@ struct ContentView: View {
                                 Text("Time to first audio sample: \(kokoroViewModel.audioGenerationTime > 0 ? String(format: "%.2f", kokoroViewModel.audioGenerationTime) : "--")s")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                            } else if chosenProvider == .sesame {
-                                Text("Time to first audio sample: \(sesameAudioGenerationTime > 0 ? String(format: "%.2f", sesameAudioGenerationTime) : "--")s")
+                            } else if chosenProvider == .marvis {
+                                Text("Time to first audio sample: \(marvisAudioGenerationTime > 0 ? String(format: "%.2f", marvisAudioGenerationTime) : "--")s")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.top, 8)
-
+                        
                         // Provider Selection
                         VStack(alignment: .leading, spacing: 8) {
                             Text("TTS Provider")
@@ -77,7 +97,7 @@ struct ContentView: View {
                                 }
                             }
                             .pickerStyle(.segmented)
-                            .disabled(isSesameLoading || kokoroViewModel.generationInProgress)
+                            .disabled(isMarvisLoading || kokoroViewModel.generationInProgress)
                             .onChange(of: chosenProvider) { _, newProvider in
                                 // Reset speaker selection when switching providers
                                 speakerModel.selectedSpeakerId = 0
@@ -90,7 +110,7 @@ struct ContentView: View {
                                 compactSpeakerView(
                                     selectedSpeakerId: $speakerModel.selectedSpeakerId,
                                     title: chosenProvider == .kokoro ? "Speaker" : "Voice",
-                                    speakers: chosenProvider == .kokoro ? speakerModel.kokoroSpeakers : speakerModel.sesameSpeakers
+                                    speakers: chosenProvider == .kokoro ? speakerModel.kokoroSpeakers : speakerModel.marvisSpeakers
                                 )
                                 .frame(maxWidth: .infinity)
                             }
@@ -98,7 +118,7 @@ struct ContentView: View {
                         
                         speedControlView
                         textInputView
-
+                        
                         // Status display
                         if !status.isEmpty {
                             Text(status)
@@ -108,7 +128,7 @@ struct ContentView: View {
                                 .padding(.horizontal)
                                 .frame(maxWidth: .infinity)
                         }
-
+                        
                         actionButtonsView
                     }
                     .padding([.horizontal, .bottom])
@@ -136,20 +156,20 @@ struct ContentView: View {
                 speakerModel.isGenerating = newValue
             }
         }
-        .onChange(of: isSesameLoading) { _, newValue in
-            if chosenProvider == .sesame {
+        .onChange(of: isMarvisLoading) { _, newValue in
+            if chosenProvider == .marvis {
                 speakerModel.isGenerating = newValue
             }
         }
     }
-
+    
     // MARK: - View Components
-
+    
     private var backgroundView: some View {
         Color(.systemBackground)
             .ignoresSafeArea()
     }
-
+    
     private func compactSpeakerView(selectedSpeakerId: Binding<Int>, title: String, speakers: [Speaker]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
@@ -189,7 +209,7 @@ struct ContentView: View {
                 )
             }
             .disabled((chosenProvider == .kokoro && kokoroViewModel.generationInProgress) ||
-                      (chosenProvider == .sesame && isSesameLoading))
+                      (chosenProvider == .marvis && isMarvisLoading))
         }
     }
     
@@ -205,7 +225,7 @@ struct ContentView: View {
                         .font(.subheadline)
                         .bold()
                 }
-
+                
                 Slider(value: $speed, in: 0.5...2.0, step: 0.1)
                     .tint(.accentColor)
                     .disabled(viewModel.generationInProgress)
@@ -280,61 +300,61 @@ struct ContentView: View {
                         // Set memory constraints for MLX and start generation
                         MLX.GPU.set(cacheLimit: mlxGPUCacheLimit)
                         kokoroViewModel.say(t, TTSVoice.fromIdentifier(speaker.name) ?? .afHeart, speed: Float(speed))
-                    } else if chosenProvider == .sesame {
-                        // Initialize Sesame TTS if needed
-                        if sesameTTSModel == nil {
-                            isSesameLoading = true
+                    } else if chosenProvider == .marvis {
+                        // Initialize Marvis TTS if needed
+                        if marvisSession == nil {
+                            isMarvisLoading = true
                             do {
-                                sesameTTSModel = try await SesameSession.fromPretrained(progressHandler: { progress in
+                                marvisSession = try await MarvisSession.fromPretrained(progressHandler: { progress in
                                     // Update loading status if needed
                                 })
-                                isSesameLoading = false
+                                isMarvisLoading = false
                             } catch {
-                                isSesameLoading = false
-                                print("Failed to load Sesame TTS: \(error)")
+                                isMarvisLoading = false
+                                print("Failed to load Marvis TTS: \(error)")
                                 return
                             }
                         }
-                        
-                        // Generate with Sesame TTS
-                        let selectedSesameVoice: SesameSession.Voice
+
+                        // Generate with Marvis TTS
+                        let selectedMarvisVoice: MarvisSession.Voice
                         if chosenVoice == "conversational_a" {
-                            selectedSesameVoice = .conversationalA
+                            selectedMarvisVoice = .conversationalA
                         } else if chosenVoice == "conversational_b" {
-                            selectedSesameVoice = .conversationalB
+                            selectedMarvisVoice = .conversationalB
                         } else {
-                            selectedSesameVoice = .conversationalA // Default fallback
+                            selectedMarvisVoice = .conversationalA // Default fallback
                         }
-                        
+
                         do {
-                            status = "Generating with Sesame TTS (streaming)..."
-                            isSesamePlaying = true
-                            sesameAudioGenerationTime = 0
-                            let stream = sesameTTSModel!.stream(text: t, voice: selectedSesameVoice)
+                            status = "Generating with Marvis TTS (streaming)..."
+                            isMarvisPlaying = true
+                            marvisAudioGenerationTime = 0
+                            let stream = marvisSession!.stream(text: t, voice: selectedMarvisVoice)
                             var totalSamples = 0
                             var isFirstChunk = true
                             for try await chunk in stream {
                                 if isFirstChunk {
-                                    sesameAudioGenerationTime = chunk.processingTime
+                                    marvisAudioGenerationTime = chunk.processingTime
                                     isFirstChunk = false
                                 }
                                 totalSamples += chunk.sampleCount
                                 status = "Streaming... \(totalSamples) samples (RTF ~\(chunk.realTimeFactor))"
                             }
-                            status = "Sesame TTS generation complete!"
+                            status = "Marvis TTS generation complete!"
                         } catch {
-                            isSesamePlaying = false
-                            status = "Sesame TTS generation failed: \(error.localizedDescription)"
+                            isMarvisPlaying = false
+                            status = "Marvis TTS generation failed: \(error.localizedDescription)"
                         }
                     }
                 }
             } label: {
                 HStack {
                     if (chosenProvider == .kokoro && kokoroViewModel.generationInProgress) ||
-                        (chosenProvider == .sesame && isSesameLoading) {
+                        (chosenProvider == .marvis && isMarvisLoading) {
                         ProgressView()
                             .controlSize(.small)
-                        Text(chosenProvider == .sesame && isSesameLoading ? "Loading..." : "Generating...")
+                        Text(chosenProvider == .marvis && isMarvisLoading ? "Loading..." : "Generating...")
                     } else {
                         Text("Generate")
                     }
@@ -346,18 +366,18 @@ struct ContentView: View {
             .controlSize(.regular)
             .frame(maxWidth: .infinity, minHeight: 44)
             .disabled((chosenProvider == .kokoro && kokoroViewModel.generationInProgress) ||
-                      (chosenProvider == .sesame && isSesameLoading) ||
+                      (chosenProvider == .marvis && isMarvisLoading) ||
                       text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             
             // Stop button
             Button {
                 if chosenProvider == .kokoro {
                     kokoroViewModel.stopPlayback()
-                } else if chosenProvider == .sesame {
-                    // Stop Sesame TTS playback and reset session
-                    sesameTTSModel?.cleanupMemory()
-                    isSesamePlaying = false
-                    status = "Sesame TTS playback stopped"
+                } else if chosenProvider == .marvis {
+                    // Stop Marvis TTS playback and reset session
+                    marvisSession?.cleanupMemory()
+                    isMarvisPlaying = false
+                    status = "Marvis TTS playback stopped"
                 }
             } label: {
                 HStack {
@@ -372,7 +392,7 @@ struct ContentView: View {
             .frame(maxWidth: .infinity, minHeight: 44)
             .tint(.red)
             .disabled((chosenProvider == .kokoro && !kokoroViewModel.isAudioPlaying) ||
-                      (chosenProvider == .sesame && !isSesamePlaying))
+                      (chosenProvider == .marvis && !isMarvisPlaying))
         }
     }
 }
@@ -414,7 +434,7 @@ struct Speaker: Identifiable {
             return "None" // Special case for None option
         }
         
-        // Handle Sesame conversational voices
+        // Handle Marvis conversational voices
         if name.hasPrefix("conversational_") {
             let voiceType = name.dropFirst("conversational_".count)
             return "Conversational \(voiceType.uppercased())"
@@ -492,22 +512,22 @@ class SpeakerViewModel: ObservableObject {
         Speaker(id: 52, name: "zm_yunyang"),
     ]
     
-    // Sesame voices (simplified for iOS version)
-    private let _sesameSpeakers: [Speaker] = [
+    // Marvis voices (simplified for iOS version)
+    private let _marvisSpeakers: [Speaker] = [
         Speaker(id: 0, name: "conversational_a"),
         Speaker(id: 1, name: "conversational_b"),
     ]
-    
+
     // Public accessors
     var kokoroSpeakers: [Speaker] { _kokoroSpeakers }
-    var sesameSpeakers: [Speaker] { _sesameSpeakers }
+    var marvisSpeakers: [Speaker] { _marvisSpeakers }
     
     // Dynamic speakers based on selected provider
     var speakers: [Speaker] {
         // This will be set from outside based on chosenProvider
         _kokoroSpeakers // Default to Kokoro
     }
-
+    
     func getPrimarySpeaker() -> [Speaker] {
         speakers.filter { $0.id == selectedSpeakerId }
     }

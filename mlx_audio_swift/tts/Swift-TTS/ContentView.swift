@@ -12,13 +12,13 @@ struct ContentView: View {
     
     @State private var kokoroTTSModel: KokoroTTSModel? = nil
     @State private var orpheusTTSModel: OrpheusTTSModel? = nil
-    @State private var sesameSession: SesameSession? = nil
+    @State private var marvisSession: MarvisSession? = nil
 
     @State private var text: String = "Hello Everybody"
     @State private var status: String = ""
-    
-    @State private var chosenProvider: TTSProvider = .sesame  // Default to Sesame
-    @State private var chosenVoice: String = SesameSession.Voice.conversationalA.rawValue
+
+    @State private var chosenProvider: TTSProvider = .marvis  // Default to Marvis
+    @State private var chosenVoice: String = MarvisSession.Voice.conversationalA.rawValue
     
     
     var body: some View {
@@ -65,28 +65,28 @@ struct ContentView: View {
             }
             .padding()
             
-            // Show model status for Sesame
-            if chosenProvider == .sesame {
+            // Show model status for Marvis
+            if chosenProvider == .marvis {
                 HStack {
                     Circle()
-                        .fill(sesameSession != nil ? Color.green : Color.red)
+                        .fill(marvisSession != nil ? Color.green : Color.red)
                         .frame(width: 8, height: 8)
-                    Text(sesameSession != nil ? "Sesame Ready" : "Sesame Not Initialized")
+                    Text(marvisSession != nil ? "Marvis Ready" : "Marvis Not Initialized")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 .padding(.vertical, 4)
-                
+
                 // Show model info if loaded
-                if sesameSession != nil {
+                if marvisSession != nil {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Model: Sesame")
+                        Text("Model: Marvis")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        Text("Architecture: Sesame + Mimi")
+                        Text("Architecture: Marvis + Mimi")
                             .font(.caption2)
                             .foregroundColor(.secondary)
-                        Text("Sample Rate: \(Int(sesameSession!.sampleRate)) Hz")
+                        Text("Sample Rate: \(Int(marvisSession!.sampleRate)) Hz")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -112,8 +112,8 @@ struct ContentView: View {
                         generateWithKokoro()
                     case .orpheus:
                         await generateWithOrpheus()
-                    case .sesame:
-                        await generateWithSesame()
+                    case .marvis:
+                        await generateWithMarvis()
                     }
                 }
             }, label: {
@@ -167,32 +167,32 @@ struct ContentView: View {
         }
     }
     
-    private func generateWithSesame() async {
-        // Initialize Sesame if needed with bound voice
-        if sesameSession == nil {
+    private func generateWithMarvis() async {
+        // Initialize Marvis if needed with bound voice
+        if marvisSession == nil {
             do {
-                status = "Loading Sesame..."
-                guard let voice = SesameSession.Voice(rawValue: chosenVoice) else {
+                status = "Loading Marvis..."
+                guard let voice = MarvisSession.Voice(rawValue: chosenVoice) else {
                     status = "\(chosenProvider.errorMessage)\(chosenVoice)"
                     return
                 }
-                sesameSession = try await SesameSession(voice: voice, progressHandler: { progress in
-                    status = "Loading Sesame: \(Int(progress.fractionCompleted * 100))%"
+                marvisSession = try await MarvisSession(voice: voice, progressHandler: { progress in
+                    status = "Loading Marvis: \(Int(progress.fractionCompleted * 100))%"
                 })
-                status = "Sesame loaded successfully!"
+                status = "Marvis loaded successfully!"
             } catch {
-                status = "Failed to load Sesame: \(error.localizedDescription)"
+                status = "Failed to load Marvis: \(error.localizedDescription)"
                 return
             }
         }
-        
+
         // Generate audio using bound configuration
         do {
-            status = "Generating with Sesame..."
-            let result = try await sesameSession!.generate(for: text)
-            status = "Sesame generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
+            status = "Generating with Marvis..."
+            let result = try await marvisSession!.generate(for: text)
+            status = "Marvis generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
         } catch {
-            status = "Sesame generation failed: \(error.localizedDescription)"
+            status = "Marvis generation failed: \(error.localizedDescription)"
         }
     }
 }

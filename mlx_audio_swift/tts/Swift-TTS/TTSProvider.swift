@@ -12,7 +12,7 @@ import Foundation
 enum TTSProvider: String, CaseIterable {
     case kokoro = "kokoro"
     case orpheus = "orpheus"
-    case sesame = "sesame"
+    case marvis = "marvis"
 
     var displayName: String {
         rawValue.capitalized
@@ -24,8 +24,8 @@ enum TTSProvider: String, CaseIterable {
             return TTSVoice.bmGeorge.rawValue
         case .orpheus:
             return "dan"
-        case .sesame:
-            return SesameSession.Voice.conversationalA.rawValue
+        case .marvis:
+            return MarvisSession.Voice.conversationalA.rawValue
         }
     }
 
@@ -35,8 +35,8 @@ enum TTSProvider: String, CaseIterable {
             return TTSVoice.allCases.map { $0.rawValue }
         case .orpheus:
             return OrpheusVoice.allCases.map { $0.rawValue }
-        case .sesame:
-            return SesameSession.Voice.allCases.map { $0.rawValue }
+        case .marvis:
+            return MarvisSession.Voice.allCases.map { $0.rawValue }
         }
     }
 
@@ -44,8 +44,8 @@ enum TTSProvider: String, CaseIterable {
         switch self {
         case .orpheus:
             return "Orpheus is currently quite slow (0.1x on M1). Working on it!\n\nBut it does support expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>"
-        case .sesame:
-            return "Sesame: Advanced conversational TTS with streaming support.\n\nNote: Downloads model weights on first use."
+        case .marvis:
+            return "Marvis: Advanced conversational TTS with streaming support.\n\nNote: Downloads model weights on first use."
         case .kokoro:
             return ""
         }
@@ -57,8 +57,8 @@ enum TTSProvider: String, CaseIterable {
             return TTSVoice.fromIdentifier(voice) != nil || TTSVoice(rawValue: voice) != nil
         case .orpheus:
             return OrpheusVoice(rawValue: voice) != nil
-        case .sesame:
-            return SesameSession.Voice(rawValue: voice) != nil
+        case .marvis:
+            return MarvisSession.Voice(rawValue: voice) != nil
         }
     }
 
@@ -68,8 +68,8 @@ enum TTSProvider: String, CaseIterable {
             return "Invalid Kokoro voice selected"
         case .orpheus:
             return "Invalid Orpheus voice selected"
-        case .sesame:
-            return "Invalid Sesame voice selected: "
+        case .marvis:
+            return "Invalid Marvis voice selected: "
         }
     }
 }

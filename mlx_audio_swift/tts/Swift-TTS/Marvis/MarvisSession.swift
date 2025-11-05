@@ -6,7 +6,7 @@ import MLXNN
 import Tokenizers
 import AVFoundation
 
-public final class SesameSession: Module {
+public final class MarvisSession: Module {
     public enum Voice: String, CaseIterable {
         case conversationalA = "conversational_a"
         case conversationalB = "conversational_b"
@@ -14,7 +14,7 @@ public final class SesameSession: Module {
 
     public let sampleRate: Double
 
-    private let model: SesameModel
+    private let model: MarvisModel
     private let _promptURLs: [URL]?
     // Renamed underscored members to Swiftier names
     private let textTokenizer: any Tokenizer
@@ -30,13 +30,13 @@ public final class SesameSession: Module {
     private var boundRefText: String? = nil
 
     public init(
-        config: SesameModelArgs,
+        config: MarvisModelArgs,
         repoId: String,
         promptURLs: [URL]? = nil,
         progressHandler: @escaping (Progress) -> Void,
         playbackEnabled: Bool = true
     ) async throws {
-        self.model = SesameModel(config: config)
+        self.model = MarvisModel(config: config)
 
         self._promptURLs = promptURLs
         self.playbackEnabled = playbackEnabled
@@ -131,14 +131,14 @@ public final class SesameSession: Module {
     }
 }
 
-public extension SesameSession {
+public extension MarvisSession {
     // MARK: - Shared model loading helpers
     // MARK: - Shared model loading helpers
 
     private static func snapshotAndConfig(
         repoId: String,
         progressHandler: @escaping (Progress) -> Void
-    ) async throws -> (args: SesameModelArgs, promptURLs: [URL], weightFileURL: URL) {
+    ) async throws -> (args: MarvisModelArgs, promptURLs: [URL], weightFileURL: URL) {
         let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
         let weightFileURL = modelDirectoryURL.appending(path: "model.safetensors")
         let promptDir = modelDirectoryURL.appending(path: "prompts", directoryHint: .isDirectory)
@@ -147,11 +147,11 @@ public extension SesameSession {
             audioPromptURLs.append(url)
         }
         let configFileURL = modelDirectoryURL.appending(path: "config.json")
-        let args = try JSONDecoder().decode(SesameModelArgs.self, from: Data(contentsOf: configFileURL))
+        let args = try JSONDecoder().decode(MarvisModelArgs.self, from: Data(contentsOf: configFileURL))
         return (args, audioPromptURLs, weightFileURL)
     }
 
-    private func installWeights(args: SesameModelArgs, weightFileURL: URL) throws {
+    private func installWeights(args: MarvisModelArgs, weightFileURL: URL) throws {
         var weights: [String: MLXArray] = [:]
         let w = try loadArrays(url: weightFileURL)
         for (k, v) in w { weights[k] = v }
@@ -183,18 +183,18 @@ public extension SesameSession {
                     break
                 }
             }
-            guard let refAudioURL else { throw SesameTTSError.voiceNotFound }
+            guard let refAudioURL else { throw MarvisTTSError.voiceNotFound }
 
             let (sampleRate, audio) = try loadAudioArray(from: refAudioURL)
             guard abs(sampleRate - 24000) < .leastNonzeroMagnitude else {
-                throw SesameTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
+                throw MarvisTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
             }
             let refTextURL = refAudioURL.deletingPathExtension().appendingPathExtension("txt")
             let text = try String(data: Data(contentsOf: refTextURL), encoding: .utf8)
-            guard let text else { throw SesameTTSError.voiceNotFound }
+            guard let text else { throw MarvisTTSError.voiceNotFound }
             return Segment(speaker: 0, text: text, audio: audio)
         }
-        throw SesameTTSError.voiceNotFound
+        throw MarvisTTSError.voiceNotFound
     }
 
     /// Tokenizes a single segment and returns initial token state.
@@ -287,7 +287,7 @@ public extension SesameSession {
     }
     // MARK: - Async convenience initializers (initializer-based instead of factories)
 
-    /// Initializes and loads the Sesame model, binding a default voice.
+    /// Initializes and loads the Marvis model, binding a default voice.
     /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
     convenience init(
         voice: Voice = .conversationalA,
@@ -305,7 +305,7 @@ public extension SesameSession {
         self.boundRefText = nil
     }
 
-    /// Initializes and loads the Sesame model, binding a custom reference (24 kHz mono).
+    /// Initializes and loads the Marvis model, binding a custom reference (24 kHz mono).
     convenience init(
         refAudio: MLXArray,
         refText: String,
@@ -324,12 +324,12 @@ public extension SesameSession {
     }
     // MARK: - Factories (Apple-style ergonomics)
 
-    /// Creates a Sesame session and binds a default voice.
+    /// Creates a Marvis session and binds a default voice.
     static func make(
         voice: Voice = .conversationalA,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
         progressHandler: @escaping (Progress) -> Void = { _ in }
-    ) async throws -> SesameSession {
+    ) async throws -> MarvisSession {
         let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
         engine.boundVoice = voice
         engine.boundRefAudio = nil
@@ -337,13 +337,13 @@ public extension SesameSession {
         return engine
     }
 
-    /// Creates a Sesame session and binds a custom reference voice.
+    /// Creates a Marvis session and binds a custom reference voice.
     static func make(
         refAudio: MLXArray,
         refText: String,
         repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
         progressHandler: @escaping (Progress) -> Void = { _ in }
-    ) async throws -> SesameSession {
+    ) async throws -> MarvisSession {
         let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
         engine.boundVoice = nil
         engine.boundRefAudio = refAudio
@@ -351,9 +351,9 @@ public extension SesameSession {
         return engine
     }
 
-    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> SesameSession {
+    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> MarvisSession {
         let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        let model = try await SesameSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        let model = try await MarvisSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
         try model.installWeights(args: args, weightFileURL: weightFileURL)
         return model
     }
@@ -412,7 +412,7 @@ private struct Segment {
 
 // MARK: -
 
-public enum SesameTTSError: Error, LocalizedError {
+public enum MarvisTTSError: Error, LocalizedError {
     case invalidArgument(String)
     case voiceNotFound
     case invalidRefAudio(String)
@@ -429,7 +429,7 @@ public enum SesameTTSError: Error, LocalizedError {
     }
 }
 
-public extension SesameSession {
+public extension MarvisSession {
     struct GenerationResult {
         public let audio: [Float]
         public let sampleRate: Int
@@ -452,7 +452,7 @@ public extension SesameSession {
         enqueuePlayback: Bool
     ) throws -> [GenerationResult] {
         guard voice != nil || refAudio != nil else {
-            throw SesameTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
+            throw MarvisTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
         }
 
         let base = try makeContext(voice: voice, refAudio: refAudio, refText: refText)
