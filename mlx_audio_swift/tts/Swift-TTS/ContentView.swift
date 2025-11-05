@@ -9,8 +9,8 @@ import SwiftUI
 import MLX
 
 struct ContentView: View {
-    
-    @State private var kokoroTTSModel: KokoroTTSModel? = nil
+
+    @StateObject private var kokoroTTSModel = KokoroTTSModel()
     @State private var orpheusTTSModel: OrpheusTTSModel? = nil
     @State private var marvisSession: MarvisSession? = nil
 
@@ -19,17 +19,24 @@ struct ContentView: View {
 
     @State private var chosenProvider: TTSProvider = .marvis  // Default to Marvis
     @State private var chosenVoice: String = MarvisSession.Voice.conversationalA.rawValue
-    
-    
+
+    // Loading and playing states
+    @State private var isMarvisLoading = false
+    @State private var isOrpheusGenerating = false
+
+    // Computed property to check if any generation is in progress
+    private var isCurrentlyGenerating: Bool {
+        kokoroTTSModel.generationInProgress || isOrpheusGenerating || isMarvisLoading
+    }
+
+
     var body: some View {
         VStack {
-            Image(systemName: "mouth")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("TTS Examples")
-                .font(.headline)
+            Text("MLX Audio Eval")
+                .font(.largeTitle)
+                .fontWeight(.bold)
                 .padding()
-            
+
             Picker("Choose a provider", selection: $chosenProvider) {
                 ForEach(TTSProvider.allCases, id: \.self) { provider in
                     Text(provider.displayName)
@@ -97,31 +104,73 @@ struct ContentView: View {
                 }
             }
             
-            Button(action: {
-                // Validate text is not empty
-                let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmedText.isEmpty else {
-                    status = "Please enter some text before generating audio."
-                    return
-                }
+            // Generate and Stop buttons
+            HStack(spacing: 12) {
+                // Generate button
+                Button(action: {
+                    // Validate text is not empty
+                    let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmedText.isEmpty else {
+                        status = "Please enter some text before generating audio."
+                        return
+                    }
 
-                Task {
-                    status = "Generating..."
+                    Task {
+                        status = "Generating..."
+                        switch chosenProvider {
+                        case .kokoro:
+                            generateWithKokoro()
+                        case .orpheus:
+                            isOrpheusGenerating = true
+                            await generateWithOrpheus()
+                            isOrpheusGenerating = false
+                        case .marvis:
+                            await generateWithMarvis()
+                        }
+                    }
+                }, label: {
+                    HStack {
+                        if isCurrentlyGenerating {
+                            ProgressView()
+                                .controlSize(.small)
+                                .scaleEffect(0.8)
+                            Text(isMarvisLoading ? "Loading..." : "Generating...")
+                        } else {
+                            Text("Generate")
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 32)
+                })
+                .buttonStyle(.borderedProminent)
+                .disabled(isCurrentlyGenerating || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                // Stop button
+                Button(action: {
+                    // Stop generation based on provider
                     switch chosenProvider {
                     case .kokoro:
-                        generateWithKokoro()
+                        kokoroTTSModel.stopPlayback()
                     case .orpheus:
-                        await generateWithOrpheus()
+                        // Orpheus doesn't have stop functionality yet
+                        status = "Orpheus generation cannot be stopped"
                     case .marvis:
-                        await generateWithMarvis()
+                        marvisSession?.cleanupMemory()
+                        isMarvisLoading = false
                     }
-                }
-            }, label: {
-                Text("Generate")
-                    .font(.title2)
-                    .padding()
-            })
-            .buttonStyle(.borderedProminent)
+                    status = "Generation stopped"
+                }, label: {
+                    HStack {
+                        Image(systemName: "stop.fill")
+                        Text("Stop")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 32)
+                })
+                .buttonStyle(.bordered)
+                .disabled(!isCurrentlyGenerating)
+            }
+            .padding(.horizontal)
             
             // Streaming toggle removed for now
             
@@ -140,13 +189,9 @@ struct ContentView: View {
     // MARK: - TTS Generation Methods
     
     private func generateWithKokoro() {
-        if kokoroTTSModel == nil {
-            kokoroTTSModel = KokoroTTSModel()
-        }
-        
         if chosenProvider.validateVoice(chosenVoice),
            let kokoroVoice = TTSVoice.fromIdentifier(chosenVoice) ?? TTSVoice(rawValue: chosenVoice) {
-            kokoroTTSModel!.say(text, kokoroVoice)
+            kokoroTTSModel.say(text, kokoroVoice)
             status = "Done"
         } else {
             status = chosenProvider.errorMessage
@@ -171,17 +216,21 @@ struct ContentView: View {
         // Initialize Marvis if needed with bound voice
         if marvisSession == nil {
             do {
+                isMarvisLoading = true
                 status = "Loading Marvis..."
                 guard let voice = MarvisSession.Voice(rawValue: chosenVoice) else {
                     status = "\(chosenProvider.errorMessage)\(chosenVoice)"
+                    isMarvisLoading = false
                     return
                 }
                 marvisSession = try await MarvisSession(voice: voice, progressHandler: { progress in
                     status = "Loading Marvis: \(Int(progress.fractionCompleted * 100))%"
                 })
                 status = "Marvis loaded successfully!"
+                isMarvisLoading = false
             } catch {
                 status = "Failed to load Marvis: \(error.localizedDescription)"
+                isMarvisLoading = false
                 return
             }
         }
