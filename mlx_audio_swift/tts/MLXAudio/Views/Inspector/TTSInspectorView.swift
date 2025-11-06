@@ -10,8 +10,11 @@ import SwiftUI
 struct TTSInspectorView: View {
     @Binding var selectedProvider: TTSProvider
     @Binding var selectedVoice: String
+    @Binding var selectedQuality: MarvisSession.QualityLevel
     @Binding var status: String
     @Binding var autoPlay: Bool
+    @Binding var useStreaming: Bool
+    @Binding var streamingInterval: Double
 
     let isGenerating: Bool
     let canGenerate: Bool
@@ -40,10 +43,28 @@ struct TTSInspectorView: View {
 
                     Divider()
 
+                    // Quality Section (Marvis only)
+                    if selectedProvider == .marvis {
+                        QualityPickerSection(selectedQuality: $selectedQuality)
+                        Divider()
+                    }
+
                     // Auto-play toggle
                     AutoPlaySection(autoPlay: $autoPlay)
 
                     Divider()
+
+                    // Streaming toggle (Marvis only)
+                    if selectedProvider == .marvis {
+                        StreamingSection(useStreaming: $useStreaming)
+                        Divider()
+
+                        // Streaming interval (Marvis only, when streaming enabled)
+                        if useStreaming {
+                            StreamingIntervalSection(streamingInterval: $streamingInterval)
+                            Divider()
+                        }
+                    }
 
                     // Controls
                     ControlsSection(
