@@ -12,50 +12,36 @@ struct VoicePickerSection: View {
     @Binding var selectedVoice: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 8) {
             Text("Voice")
                 .font(.headline)
                 .foregroundColor(.secondary)
 
-            // Voice Card
+            // Icon and Voice Picker
             HStack(spacing: 12) {
                 Circle()
                     .fill(Color.blue)
-                    .frame(width: 44, height: 44)
+                    .frame(width: 36, height: 36)
                     .overlay(
                         Image(systemName: "person.wave.2")
+                            .font(.system(size: 16))
                             .foregroundColor(.white)
                     )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(selectedVoice.capitalized)
-                        .font(.body)
-                        .fontWeight(.medium)
+                VStack(alignment: .leading, spacing: 0) {
+                    Picker("", selection: $selectedVoice) {
+                        ForEach(provider.availableVoices, id: \.self) { voice in
+                            Text(voice.capitalized).tag(voice)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
+
                     Text(voiceLanguage)
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-
-                Spacer()
-
-                Button(action: {}) {
-                    Image(systemName: "gearshape")
-                        .foregroundColor(.secondary)
-                }
-                .buttonStyle(.plain)
             }
-            .padding(12)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .cornerRadius(8)
-
-            // Voice Dropdown
-            Picker("", selection: $selectedVoice) {
-                ForEach(provider.availableVoices, id: \.self) { voice in
-                    Text(voice.capitalized).tag(voice)
-                }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
         }
     }
 
