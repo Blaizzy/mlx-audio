@@ -6,6 +6,9 @@
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct TTSMainView: View {
     @Binding var text: String
@@ -79,6 +82,14 @@ struct InfoBox: View {
 struct MarvisStatusIndicator: View {
     let session: MarvisSession?
 
+    private var controlBackgroundColor: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(UIColor.secondarySystemBackground)
+        #endif
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             Circle()
@@ -90,7 +101,7 @@ struct MarvisStatusIndicator: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(controlBackgroundColor)
         .cornerRadius(12)
     }
 }
