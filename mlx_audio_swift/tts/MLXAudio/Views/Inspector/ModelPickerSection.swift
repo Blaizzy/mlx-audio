@@ -2,7 +2,7 @@
 //  ModelPickerSection.swift
 //  MLXAudio
 //
-//  Created by Claude Code
+//  Created by Rudrank Riyam on 6/11/25.
 //
 
 import SwiftUI
@@ -25,7 +25,7 @@ struct ModelPickerSection: View {
             .pickerStyle(.menu)
             .labelsHidden()
         }
-        .onChange(of: selectedProvider) { _, newProvider in
+        .onChange(of: selectedProvider) { newProvider in
             selectedVoice = newProvider.defaultVoice
         }
     }

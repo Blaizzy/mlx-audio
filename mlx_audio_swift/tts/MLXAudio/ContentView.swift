@@ -98,20 +98,20 @@ struct ContentView: View {
                 }
             }
         }
-        .onChange(of: chosenProvider) { _, newProvider in
+        .onChange(of: chosenProvider) { newProvider in
             status = newProvider.statusMessage
         }
-        .onChange(of: kokoroTTSModel.lastGeneratedAudioURL) { _, newURL in
+        .onChange(of: kokoroTTSModel.lastGeneratedAudioURL) { newURL in
             if let url = newURL {
                 audioPlayerManager.loadAudio(from: url)
             }
         }
-        .onChange(of: orpheusTTSModel?.lastGeneratedAudioURL) { _, newURL in
+        .onChange(of: orpheusTTSModel?.lastGeneratedAudioURL) { newURL in
             if let url = newURL {
                 audioPlayerManager.loadAudio(from: url)
             }
         }
-        .onChange(of: marvisLastAudioURL) { _, newURL in
+        .onChange(of: marvisLastAudioURL) { newURL in
             if let url = newURL {
                 audioPlayerManager.loadAudio(from: url)
             }
