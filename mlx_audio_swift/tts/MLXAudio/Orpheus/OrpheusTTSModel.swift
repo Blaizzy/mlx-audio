@@ -98,7 +98,7 @@ class OrpheusTTSModel: ObservableObject {
                   return
                 }
 
-                playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+                await playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts)
                 playerNode.play()
             }
         }
