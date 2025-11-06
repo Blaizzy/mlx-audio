@@ -52,12 +52,6 @@ struct TTSInspectorView: View {
 
                     Divider()
 
-                    // Marvis Status (conditional)
-                    if selectedProvider == .marvis {
-                        MarvisStatusSection(session: marvisSession)
-                        Divider()
-                    }
-
                     // Auto-play toggle
                     AutoPlaySection(autoPlay: $autoPlay)
 
@@ -92,20 +86,5 @@ struct TTSInspectorView: View {
         }
         .frame(width: 300) // Fixed inspector width
         .background(Color(nsColor: .windowBackgroundColor))
-    }
-}
-
-struct MarvisStatusSection: View {
-    let session: MarvisSession?
-
-    var body: some View {
-        HStack {
-            Circle()
-                .fill(session != nil ? Color.green : Color.red)
-                .frame(width: 8, height: 8)
-            Text(session != nil ? "Marvis Ready" : "Not Initialized")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
     }
 }

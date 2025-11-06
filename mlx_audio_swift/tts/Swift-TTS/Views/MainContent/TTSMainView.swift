@@ -11,16 +11,22 @@ struct TTSMainView: View {
     @Binding var text: String
     @Binding var status: String
     let selectedProvider: TTSProvider
+    let marvisSession: MarvisSession?
     @ObservedObject var audioPlayerManager: AudioPlayerManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            // Title
+            // Title with Marvis Status
             HStack {
                 Text("Text to Speech")
                     .font(.largeTitle)
                     .fontWeight(.bold)
                 Spacer()
+
+                // Marvis Status (conditional)
+                if selectedProvider == .marvis {
+                    MarvisStatusIndicator(session: marvisSession)
+                }
             }
 
             // Text Input Section
@@ -67,6 +73,25 @@ struct InfoBox: View {
         .padding(12)
         .background(Color.blue.opacity(0.1))
         .cornerRadius(8)
+    }
+}
+
+struct MarvisStatusIndicator: View {
+    let session: MarvisSession?
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(session != nil ? Color.green : Color.red)
+                .frame(width: 8, height: 8)
+            Text(session != nil ? "Connected" : "Not Connected")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .cornerRadius(12)
     }
 }
 

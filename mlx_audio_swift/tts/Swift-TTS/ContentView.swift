@@ -60,6 +60,7 @@ struct ContentView: View {
                     text: $text,
                     status: $status,
                     selectedProvider: chosenProvider,
+                    marvisSession: marvisSession,
                     audioPlayerManager: audioPlayerManager
                 )
                 .frame(minWidth: 400)
