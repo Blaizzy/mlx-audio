@@ -73,7 +73,11 @@ struct TextInputSection: View {
                 Button("Clear") {
                     text = ""
                 }
+                #if os(macOS)
                 .buttonStyle(.link)
+                #else
+                .buttonStyle(.plain)
+                #endif
             }
         }
     }
