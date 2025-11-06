@@ -1,6 +1,6 @@
 //
 //  SentenceTokenizer.swift
-//   Swift-TTS
+//   MLXAudio
 //
 
 import Foundation

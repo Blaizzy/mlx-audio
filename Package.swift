@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "Swift-TTS",
+    name: "mlx-audio",
     platforms: [.macOS(.v14), .iOS(.v16)],
     products: [
         .library(
-            name: "mlx-swift-audio",
-            targets: ["Swift-TTS", "ESpeakNG"]
+            name: "MLXAudio",
+            targets: ["MLXAudio", "ESpeakNG"]
         ),
     ],
     dependencies: [
@@ -18,10 +18,10 @@ let package = Package(
     targets: [
         .binaryTarget(
             name: "ESpeakNG",
-            path: "mlx_audio_swift/tts/Swift-TTS/Kokoro/Frameworks/ESpeakNG.xcframework"
+            path: "mlx_audio_swift/tts/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework"
         ),
         .target(
-            name: "Swift-TTS",
+            name: "MLXAudio",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
@@ -31,15 +31,15 @@ let package = Package(
                 .product(name: "Transformers", package: "swift-transformers"),
                 "ESpeakNG"
             ],
-            path: "mlx_audio_swift/tts/Swift-TTS",
-            exclude: ["Preview Content", "Assets.xcassets", "Swift_TTSApp.swift", "Swift_TTS.entitlements"],
+            path: "mlx_audio_swift/tts/MLXAudio",
+            exclude: ["Preview Content", "Assets.xcassets", "MLXAudioApp.swift", "MLXAudio.entitlements"],
             resources: [
                 .process("Kokoro/Resources") // Kokoro voices
             ]
         ),
         .testTarget(
-            name: "Swift-TTS-Tests",
-            dependencies: ["Swift-TTS"],
+            name: "MLXAudioTests",
+            dependencies: ["MLXAudio"],
             path: "mlx_audio_swift/tts/Tests"
         ),
     ]

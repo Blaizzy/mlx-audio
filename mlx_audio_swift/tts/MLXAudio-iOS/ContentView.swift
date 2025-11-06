@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//   Swift-TTS-iOS
+//   MLXAudio-iOS
 //
 //  Created by Sachin Desai on 5/17/25.
 //

@@ -1,6 +1,6 @@
 //
 //  TransformerBlock.swift
-//  Swift-TTS
+//  MLXAudio
 //
 //  Created by Ben Harraway on 21/05/2025.
 //

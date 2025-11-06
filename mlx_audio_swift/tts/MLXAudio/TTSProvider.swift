@@ -1,6 +1,6 @@
 //
 //  TTSProvider.swift
-//  Swift-TTS
+//  MLXAudio
 //
 //  Created by Ben Harraway on 13/04/2025.
 //

@@ -1,16 +1,16 @@
 //
-//  Swift_TTS_Tests.swift
-//  Swift-TTS-Tests
+//  MLXAudioTests.swift
+//  MLXAudioTests
 //
 //  Created by Ben Harraway on 14/04/2025.
 //
 
 import Testing
 
-@testable import Swift_TTS
+@testable import MLXAudio
 @testable import ESpeakNG
 
-struct Swift_TTS_Tests {
+struct MLXAudioTests {
 
     func example() async throws {
         // Write your test here and use APIs like `#expect(...)` to check expected conditions.

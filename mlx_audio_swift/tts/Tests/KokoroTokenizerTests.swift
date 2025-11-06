@@ -1,12 +1,12 @@
 //
 //  KokoroTokenizerTests.swift
-//   Swift-TTS
+//   MLXAudio
 //
 
 import XCTest
 import Foundation
 
-@testable import Swift_TTS
+@testable import MLXAudio
 
 final class KokoroTokenizerTests: XCTestCase {
     

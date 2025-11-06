@@ -1,6 +1,6 @@
 //
 //  ControlsSection.swift
-//  Swift-TTS
+//  MLXAudio
 //
 //  Created by Claude Code
 //

@@ -259,7 +259,7 @@ targets: [
 After adding the dependency, import and use the module:
 
 ```swift
-import Swift_TTS
+import MLXAudio
 
 // Create a session with a built-in voice (auto-downloads model on first use)
 let session = try await MarvisSession(voice: .conversationalA) // playback enabled by default
@@ -273,7 +273,7 @@ print("Generated \(result.sampleCount) samples @ \(result.sampleRate) Hz")
 Get responsive audio chunks as they are decoded. Chunks are auto-played if playback is enabled.
 
 ```swift
-import Swift_TTS
+import MLXAudio
 
 let session = try await MarvisSession(voice: .conversationalA)
 
@@ -287,7 +287,7 @@ for try await chunk in session.stream(text: "Hello there from streaming mode", s
 If you want just the samples without auto-play, disable playback at init or call `generateRaw`.
 
 ```swift
-import Swift_TTS
+import MLXAudio
 
 // Option A: Disable playback globally for the session
 let s1 = try await MarvisSession(voice: .conversationalA, playbackEnabled: false)

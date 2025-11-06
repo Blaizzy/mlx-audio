@@ -1,6 +1,6 @@
 //
 //  NoiseBlock.swift
-//  Swift-TTS
+//  MLXAudio
 //
 //  Created by Ben Harraway on 14/05/2025.
 //
