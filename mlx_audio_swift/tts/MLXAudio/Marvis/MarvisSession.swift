@@ -173,7 +173,22 @@ public extension MarvisSession {
         let w = try loadArrays(url: weightFileURL)
         for (k, v) in w { weights[k] = v }
 
-        if let quantization = args.quantization, let groupSize = quantization["group_size"], let bits = quantization["bits"] {
+        // Helper to extract Int from JSONValue, handling both number and string cases
+        func extractInt(from value: JSONValue?) -> Int? {
+            guard let value = value else { return nil }
+            switch value {
+            case .number(let d):
+                return Int(d)
+            case .string(let s):
+                return Int(s)
+            default:
+                return nil
+            }
+        }
+
+        if let quantization = args.quantization,
+           let groupSize = extractInt(from: quantization["group_size"]),
+           let bits = extractInt(from: quantization["bits"]) {
             quantize(model: self, groupSize: groupSize, bits: bits) { path, _ in
                 weights["\(path).scales"] != nil
             }
