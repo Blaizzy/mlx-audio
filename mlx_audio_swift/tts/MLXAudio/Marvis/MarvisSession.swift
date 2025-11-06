@@ -53,7 +53,7 @@ public final class MarvisSession: Module {
         progressHandler: @escaping (Progress) -> Void,
         playbackEnabled: Bool = true
     ) async throws {
-        self.model = MarvisModel(config: config)
+        self.model = try MarvisModel(config: config)
 
         self._promptURLs = promptURLs
         self.playbackEnabled = playbackEnabled
@@ -65,7 +65,7 @@ public final class MarvisSession: Module {
         self.streamingDecoder = MimiStreamingDecoder(audioTokenizer.codec)
         self.sampleRate = audioTokenizer.codec.cfg.sampleRate
         super.init()
-        model.resetCaches()
+        try model.resetCaches()
 
         if playbackEnabled {
             playback = AudioPlayback(sampleRate: sampleRate)
@@ -236,7 +236,7 @@ public extension MarvisSession {
         sampler sampleFn: (MLXArray) -> MLXArray,
         onStreamingResult: ((GenerationResult) -> Void)?,
         enqueuePlayback: Bool
-    ) -> [GenerationResult] {
+    ) throws -> [GenerationResult] {
         var results: [GenerationResult] = []
 
         var samplesFrames: [MLXArray] = [] // each is [B=1, K]
@@ -254,7 +254,7 @@ public extension MarvisSession {
         var frameCount = 0
 
         for frameIdx in 0 ..< maxAudioFrames {
-            let frame = model.generateFrame(
+            let frame = try model.generateFrame(
                 maxCodebooks: qualityLevel.codebookCount,
                 tokens: currTokens,
                 tokensMask: currMask,
@@ -484,11 +484,11 @@ public extension MarvisSession {
             let generationText = (base.text + " " + prompt).trimmingCharacters(in: .whitespaces)
             let seg = Segment(speaker: 0, text: generationText, audio: base.audio)
 
-            model.resetCaches()
+            try model.resetCaches()
             if stream { streamingDecoder.reset() }
 
             let (tok, msk, pos) = tokenizeStart(for: seg)
-            let r = decodePrompt(
+            let r = try decodePrompt(
                 currTokens: tok,
                 currMask: msk,
                 currPos: pos,
@@ -502,15 +502,15 @@ public extension MarvisSession {
             results.append(contentsOf: r)
         }
 
-        model.resetCaches()
+        try model.resetCaches()
         if stream { streamingDecoder.reset() }
         autoreleasepool { }
         return results
     }
 
     /// Manually triggers memory cleanup for this TTS instance
-    func cleanupMemory() {
-        model.resetCaches()
+    func cleanupMemory() throws {
+        try model.resetCaches()
         streamingDecoder.reset()
         
         // Stop audio engine

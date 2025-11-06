@@ -422,7 +422,7 @@ public final class MarvisModel: Module {
     public var decoderCache: [KVCache]? = nil
     public var cachesEnabled: Bool = false
 
-    public init(config: MarvisModelArgs) {
+    public init(config: MarvisModelArgs) throws {
         self.args = config
 
         let backCfg: LlamaConfiguration
@@ -431,8 +431,8 @@ public final class MarvisModel: Module {
             backCfg = createLlamaConfigurationForBackbone(config)
             decCfg = createLlamaConfigurationForDecoder(depth)
         } else {
-            backCfg = try! createLlamaConfiguration(flavor: config.backboneFlavor)
-            decCfg = try! createLlamaConfiguration(flavor: config.decoderFlavor)
+            backCfg = try createLlamaConfiguration(flavor: config.backboneFlavor)
+            decCfg = try createLlamaConfiguration(flavor: config.decoderFlavor)
         }
 
         self._backbone = ModuleInfo(wrappedValue: LlamaModel(backCfg))
@@ -458,7 +458,7 @@ public final class MarvisModel: Module {
 
     public func cachesAreEnabled() -> Bool { cachesEnabled }
 
-    public func resetCaches() {
+    public func resetCaches() throws {
         let backCfg: LlamaConfiguration
         let decCfg: LlamaConfiguration
         
@@ -466,8 +466,8 @@ public final class MarvisModel: Module {
             backCfg = createLlamaConfigurationForBackbone(args)
             decCfg = createLlamaConfigurationForDecoder(depth)
         } else {
-            backCfg = try! createLlamaConfiguration(flavor: args.backboneFlavor)
-            decCfg = try! createLlamaConfiguration(flavor: args.decoderFlavor)
+            backCfg = try createLlamaConfiguration(flavor: args.backboneFlavor)
+            decCfg = try createLlamaConfiguration(flavor: args.decoderFlavor)
         }
         
         backboneCache = (0..<backCfg.hiddenLayers).map { _ in KVCache(headDim: backCfg.resolvedHeadDimensions, nKVHeads: backCfg.kvHeads) }
@@ -480,7 +480,7 @@ public final class MarvisModel: Module {
         tokens: MLXArray,
         tokensMask: MLXArray,
         sampler: (MLXArray) -> MLXArray
-    ) -> MLXArray {
+    ) throws -> MLXArray {
         precondition(cachesEnabled, "backbone caches are not enabled")
 
         let embeds = _embedTokens(tokens) // [B, T, Cb+1, D]
@@ -512,7 +512,7 @@ public final class MarvisModel: Module {
         if let depth = args.depthDecoderConfig {
             decCfg = createLlamaConfigurationForDecoder(depth)
         } else {
-            decCfg = try! createLlamaConfiguration(flavor: args.decoderFlavor)
+            decCfg = try createLlamaConfiguration(flavor: args.decoderFlavor)
         }
         decoderCache = (0..<decCfg.hiddenLayers).map { _ in KVCache(headDim: decCfg.resolvedHeadDimensions, nKVHeads: decCfg.kvHeads) }
 

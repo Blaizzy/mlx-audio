@@ -456,7 +456,11 @@ struct ContentView: View {
                     kokoroViewModel.stopPlayback()
                 } else if chosenProvider == .marvis {
                     // Stop Marvis TTS playback and reset session
-                    marvisSession?.cleanupMemory()
+                    do {
+                        try marvisSession?.cleanupMemory()
+                    } catch {
+                        print("Failed to cleanup Marvis memory: \(error)")
+                    }
                     isMarvisPlaying = false
                     status = "Marvis TTS playback stopped"
                 }
