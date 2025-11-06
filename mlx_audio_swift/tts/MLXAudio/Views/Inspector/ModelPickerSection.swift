@@ -25,7 +25,7 @@ struct ModelPickerSection: View {
             .pickerStyle(.menu)
             .labelsHidden()
         }
-        .onChange(of: selectedProvider) { newProvider in
+        .onChange(of: selectedProvider) { _, newProvider in
             selectedVoice = newProvider.defaultVoice
         }
     }
