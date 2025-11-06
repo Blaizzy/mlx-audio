@@ -53,6 +53,7 @@ struct ContentView: View {
     @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
     @State private var marvisAudioGenerationTime: TimeInterval = 0
     @State private var useStreaming: Bool = false
+    @State private var streamingInterval: Double = 0.5
 
     @StateObject private var speakerModel = SpeakerViewModel()
     
@@ -146,6 +147,31 @@ struct ContentView: View {
                                 Text(useStreaming ? "Real-time audio streaming with progress feedback" : "Generate complete audio before playback")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                            }
+
+                            // Streaming interval (when streaming enabled)
+                            if useStreaming {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("Streaming Interval")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+
+                                        Spacer()
+
+                                        Text(String(format: "%.1fs", streamingInterval))
+                                            .font(.subheadline)
+                                            .bold()
+                                    }
+
+                                    Slider(value: $streamingInterval, in: 0.1...1.0, step: 0.1)
+                                        .tint(.accentColor)
+                                        .disabled(isMarvisLoading)
+
+                                    Text("Time between audio chunks (lower = faster response)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
 
@@ -369,7 +395,8 @@ struct ContentView: View {
                                 let stream = marvisSession!.stream(
                                     text: t,
                                     voice: selectedMarvisVoice,
-                                    qualityLevel: chosenQuality
+                                    qualityLevel: chosenQuality,
+                                    streamingInterval: streamingInterval
                                 )
                                 var totalSamples = 0
                                 var isFirstChunk = true

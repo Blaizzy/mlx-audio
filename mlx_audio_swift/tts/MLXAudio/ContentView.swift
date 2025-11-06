@@ -37,6 +37,7 @@ struct ContentView: View {
 
     // Streaming setting
     @State private var useStreaming: Bool = false
+    @State private var streamingInterval: Double = 0.5
 
     // Inspector visibility
     @State private var isInspectorPresent: Bool = true
@@ -78,6 +79,7 @@ struct ContentView: View {
                     status: $status,
                     autoPlay: $autoPlay,
                     useStreaming: $useStreaming,
+                    streamingInterval: $streamingInterval,
                     isGenerating: isCurrentlyGenerating,
                     canGenerate: canGenerate,
                     marvisSession: marvisSession,
@@ -215,7 +217,7 @@ struct ContentView: View {
                     return
                 }
 
-                let stream = marvisSession!.stream(text: text, voice: voice, qualityLevel: chosenQuality)
+                let stream = marvisSession!.stream(text: text, voice: voice, qualityLevel: chosenQuality, streamingInterval: streamingInterval)
                 var totalSamples = 0
                 var firstChunk = true
 

@@ -14,6 +14,7 @@ struct TTSInspectorView: View {
     @Binding var status: String
     @Binding var autoPlay: Bool
     @Binding var useStreaming: Bool
+    @Binding var streamingInterval: Double
 
     let isGenerating: Bool
     let canGenerate: Bool
@@ -57,6 +58,12 @@ struct TTSInspectorView: View {
                     if selectedProvider == .marvis {
                         StreamingSection(useStreaming: $useStreaming)
                         Divider()
+
+                        // Streaming interval (Marvis only, when streaming enabled)
+                        if useStreaming {
+                            StreamingIntervalSection(streamingInterval: $streamingInterval)
+                            Divider()
+                        }
                     }
 
                     // Controls
