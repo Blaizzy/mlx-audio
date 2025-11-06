@@ -68,7 +68,10 @@ class OrpheusTTSModel: ObservableObject {
             }
 
             buffer.frameLength = buffer.frameCapacity
-            let channels = buffer.floatChannelData!
+            guard let channels = buffer.floatChannelData else {
+                print("Failed to get channel data")
+                return
+            }
             for i in 0 ..< audio.count {
               channels[0][i] = audio[i]
             }
@@ -95,7 +98,7 @@ class OrpheusTTSModel: ObservableObject {
                   return
                 }
 
-                playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+                await playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts)
                 playerNode.play()
             }
         }

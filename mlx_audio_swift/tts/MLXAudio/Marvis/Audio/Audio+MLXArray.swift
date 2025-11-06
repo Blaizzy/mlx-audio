@@ -25,8 +25,13 @@ public func loadAudioArray(from url: URL) throws -> (Double, MLXArray) {
     let floatFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                     sampleRate: inFormat.sampleRate,
                                     channels: inFormat.channelCount,
-                                    interleaved: false)!
-    let converter = AVAudioConverter(from: inFormat, to: floatFormat)!
+                                    interleaved: false)
+    guard let floatFormat = floatFormat else {
+        throw NSError(domain: "WAVLoader", code: -3, userInfo: [NSLocalizedDescriptionKey: "Failed to create float format"])
+    }
+    guard let converter = AVAudioConverter(from: inFormat, to: floatFormat) else {
+        throw NSError(domain: "WAVLoader", code: -4, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio converter"])
+    }
     guard let outBuffer = AVAudioPCMBuffer(pcmFormat: floatFormat, frameCapacity: totalFrames) else {
         throw NSError(domain: "WAVLoader", code: -2, userInfo: [NSLocalizedDescriptionKey: "Out buffer alloc failed"])
     }
@@ -47,8 +52,11 @@ public func loadAudioArray(from url: URL) throws -> (Double, MLXArray) {
     if let e = convError { throw e }
 
     let frames = Int(outBuffer.frameLength)
+    guard let floatChannelData = outBuffer.floatChannelData else {
+        throw NSError(domain: "WAVLoader", code: -5, userInfo: [NSLocalizedDescriptionKey: "Failed to get float channel data"])
+    }
     let channels: [[Float]] = (0..<Int(floatFormat.channelCount)).map { c in
-        let ptr = outBuffer.floatChannelData![c]
+        let ptr = floatChannelData[c]
         return Array(UnsafeBufferPointer(start: ptr, count: frames))
     }
     return (floatFormat.sampleRate, MLXArray(channels[0]))
@@ -63,18 +71,22 @@ public func saveAudioArray(_ audio: MLXArray, sampleRate: Double, to url: URL) t
     let frames = audio.shape[0]
     guard frames > 0 else { throw WAVWriterError.noFrames }
 
-    let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: AVAudioChannelCount(1), interleaved: false)!
+    guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: AVAudioChannelCount(1), interleaved: false) else {
+        throw NSError(domain: "WAVWriter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio format"])
+    }
     guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else {
         throw WAVWriterError.bufferAllocFailed
     }
     buffer.frameLength = AVAudioFrameCount(frames)
 
     let channels = [audio.asArray(Float32.self)]
-    if let dst = buffer.floatChannelData {
-        for (c, channel) in channels.enumerated() {
-            channel.withUnsafeBufferPointer { src in
-                dst[c].update(from: src.baseAddress!, count: frames)
-            }
+    guard let dst = buffer.floatChannelData else {
+        throw WAVWriterError.bufferAllocFailed
+    }
+    for (c, channel) in channels.enumerated() {
+        channel.withUnsafeBufferPointer { src in
+            guard let baseAddress = src.baseAddress else { return }
+            dst[c].update(from: baseAddress, count: frames)
         }
     }
 

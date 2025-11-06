@@ -91,17 +91,15 @@ public class OrpheusTTS {
         
         // Initialize transformer layers - avoid capturing self in closure
         let numLayers = 28 // Based on config.json
-        let layerInitStart = CFAbsoluteTimeGetCurrent()
+        let _ = CFAbsoluteTimeGetCurrent() // layerInitStart - unused timing
         var tempLayers = [OrpheusTransformerBlock]()
         for i in 0..<numLayers {
-            let layerStart = CFAbsoluteTimeGetCurrent()
+            let _ = CFAbsoluteTimeGetCurrent() // layerStart - unused timing
             tempLayers.append(OrpheusTransformerBlock(weights: loadedWeights, layerIndex: i))
-            let layerEnd = CFAbsoluteTimeGetCurrent()
-            let layerDuration = (layerEnd - layerStart) * 1000
+            let _ = CFAbsoluteTimeGetCurrent() // layerEnd - unused timing
         }
         self.layers = tempLayers
-        let layerInitEnd = CFAbsoluteTimeGetCurrent()
-        let layerInitDuration = (layerInitEnd - layerInitStart) * 1000
+        let _ = CFAbsoluteTimeGetCurrent() // layerInitEnd - unused timing
     }
     
     public func generateAudio(voice: OrpheusVoice, text: String, temperature: Float = 0.6, topP: Float = 0.8) async throws -> MLXArray {
@@ -136,11 +134,10 @@ public class OrpheusTTS {
         // Generate audio tokens
         var generatedTokensForPenalty: [Int32] = [] // For repetition penalty
         var i = 0
-        var previousToken: Int32? = nil // For correcting anomalous tokens after audioStartToken
 
         let maxOutputTokens = Constants.maxTokenCount // Define how many tokens to generate at most
         
-        let generationLoopStart = CFAbsoluteTimeGetCurrent()
+        let _ = CFAbsoluteTimeGetCurrent() // generationLoopStart - unused timing
         
         while i < maxOutputTokens {
             let iterationStart = Profiler.enabled ? CFAbsoluteTimeGetCurrent() : 0
@@ -181,18 +178,17 @@ public class OrpheusTTS {
             }
                         
             // Add next token to the sequence for parsing and for model input
-            let tokenConcatTime = Profiler.time("Token concatenation (iter \(i))") {
+            Profiler.time("Token concatenation (iter \(i))") {
                 let nextTokenForConcat = nextTokenArray.reshaped([1, 1])
                 current_ids = MLX.concatenated([current_ids, nextTokenForConcat], axis: 1)
             }
             
             // Add to history for repetition penalty *after* it's been sampled
-            let historyUpdateTime = Profiler.time("History update") {
+            Profiler.time("History update") {
                 generatedTokensForPenalty.append(next_token)
                 if generatedTokensForPenalty.count > Constants.repetitionContextSize { // Keep history to context size
                     generatedTokensForPenalty.removeFirst()
                 }
-                previousToken = next_token // Update previous token for next iteration
             }
             
             // Prepare for the next iteration:

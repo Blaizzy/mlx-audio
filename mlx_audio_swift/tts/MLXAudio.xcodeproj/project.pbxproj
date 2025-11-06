@@ -20,7 +20,7 @@
 			containerPortal = 26942CEE2DABD3B400B82507 /* Project object */;
 			proxyType = 1;
 			remoteGlobalIDString = 26942CF52DABD3B400B82507;
-			remoteInfo = "MLXAudio";
+			remoteInfo = MLXAudio;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -59,8 +59,8 @@
 
 /* Begin PBXFileReference section */
 		261E20852DAC2726000711D0 /* readme.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = readme.md; sourceTree = "<group>"; };
-		264836192DAD10AA004DA2A4 /* MLXAudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "MLXAudioTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		26942CF62DABD3B400B82507 /* MLXAudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MLXAudio.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		264836192DAD10AA004DA2A4 /* MLXAudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MLXAudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		26942CF62DABD3B400B82507 /* MLXAudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MLXAudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7BBF57E32DDD06460047DCFF /* MLXAudio-iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MLXAudio-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -72,7 +72,7 @@
 		};
 		26942CF82DABD3B400B82507 /* MLXAudio */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "MLXAudio";
+			path = MLXAudio;
 			sourceTree = "<group>";
 		};
 		7BBF57E42DDD06460047DCFF /* MLXAudio-iOS */ = {
@@ -122,9 +122,9 @@
 			isa = PBXGroup;
 			children = (
 				261E20852DAC2726000711D0 /* readme.md */,
-				26942CF82DABD3B400B82507 /* Swift-TTS */,
+				26942CF82DABD3B400B82507 /* MLXAudio */,
 				2648361A2DAD10AA004DA2A4 /* Tests */,
-				7BBF57E42DDD06460047DCFF /* Swift-TTS-iOS */,
+				7BBF57E42DDD06460047DCFF /* MLXAudio-iOS */,
 				264836262DAD1252004DA2A4 /* Frameworks */,
 				26942CF72DABD3B400B82507 /* Products */,
 			);
@@ -160,10 +160,10 @@
 			fileSystemSynchronizedGroups = (
 				2648361A2DAD10AA004DA2A4 /* Tests */,
 			);
-			name = "MLXAudioTests";
+			name = MLXAudioTests;
 			packageProductDependencies = (
 			);
-			productName = "MLXAudioTests";
+			productName = MLXAudioTests;
 			productReference = 264836192DAD10AA004DA2A4 /* MLXAudioTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
@@ -181,14 +181,14 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				26942CF82DABD3B400B82507 /* Swift-TTS */,
+				26942CF82DABD3B400B82507 /* MLXAudio */,
 			);
-			name = "MLXAudio";
+			name = MLXAudio;
 			packageProductDependencies = (
 				0A6ECD572E6C2CE300837C54 /* MLXLLM */,
 				0A6ECD592E6C2CE300837C54 /* MLXLMCommon */,
 			);
-			productName = "MLXAudio";
+			productName = MLXAudio;
 			productReference = 26942CF62DABD3B400B82507 /* MLXAudio.app */;
 			productType = "com.apple.product-type.application";
 		};
@@ -206,7 +206,7 @@
 			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
-				7BBF57E42DDD06460047DCFF /* Swift-TTS-iOS */,
+				7BBF57E42DDD06460047DCFF /* MLXAudio-iOS */,
 			);
 			name = "MLXAudio-iOS";
 			packageProductDependencies = (
@@ -492,7 +492,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "MLXAudio/MLXAudio.entitlements";
+				CODE_SIGN_ENTITLEMENTS = MLXAudio/MLXAudio.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -532,7 +532,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = "MLXAudio/MLXAudio.entitlements";
+				CODE_SIGN_ENTITLEMENTS = MLXAudio/MLXAudio.entitlements;
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
