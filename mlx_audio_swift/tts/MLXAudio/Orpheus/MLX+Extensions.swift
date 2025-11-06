@@ -42,7 +42,7 @@ extension MLXArray {
         }
 
         // Create a copy of the source array
-        var result = source + 0 // Adding 0 creates a copy
+        let result = source + 0 // Adding 0 creates a copy
         
         // For 1D case (most common in your use case), we can use advanced indexing
         if axis == 0 && source.ndim == 1 {
@@ -172,7 +172,7 @@ extension MLXArray {
             }
         }
         
-        let count = (stop - start + step - 1) / step  // Integer division for count
+        let _ = (stop - start + step - 1) / step  // count - unused calculation
         let sequence = Swift.stride(from: start, to: stop, by: step)
         
         // Create the array based on the dtype
@@ -200,7 +200,7 @@ extension MLXArray {
             }
         }
         
-        let count = Int((stop - start) / step)  // Integer division for count
+        let _ = Int((stop - start) / step)  // count - unused calculation
         let sequence = Swift.stride(from: start, to: stop, by: step)
         
         // Create the array based on the dtype
