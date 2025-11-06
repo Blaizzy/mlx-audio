@@ -23,6 +23,7 @@ struct ContentView: View {
 
     @State private var chosenProvider: TTSProvider = .marvis
     @State private var chosenVoice: String = MarvisSession.Voice.conversationalA.rawValue
+    @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
 
     // Sidebar selection
     @State private var selectedSidebarItem: SidebarItem = .textToSpeech
@@ -33,6 +34,10 @@ struct ContentView: View {
 
     // Auto-play setting
     @State private var autoPlay: Bool = true
+
+    // Streaming setting
+    @State private var useStreaming: Bool = false
+    @State private var streamingInterval: Double = 0.5
 
     // Inspector visibility
     @State private var isInspectorPresent: Bool = true
@@ -70,8 +75,11 @@ struct ContentView: View {
                 TTSInspectorView(
                     selectedProvider: $chosenProvider,
                     selectedVoice: $chosenVoice,
+                    selectedQuality: $chosenQuality,
                     status: $status,
                     autoPlay: $autoPlay,
+                    useStreaming: $useStreaming,
+                    streamingInterval: $streamingInterval,
                     isGenerating: isCurrentlyGenerating,
                     canGenerate: canGenerate,
                     marvisSession: marvisSession,
@@ -141,7 +149,11 @@ struct ContentView: View {
         case .orpheus:
             status = "Orpheus generation cannot be stopped"
         case .marvis:
-            marvisSession?.cleanupMemory()
+            do {
+                try marvisSession?.cleanupMemory()
+            } catch {
+                print("Failed to cleanup Marvis memory: \(error)")
+            }
             isMarvisLoading = false
         }
         status = "Generation stopped"
@@ -164,9 +176,14 @@ struct ContentView: View {
             orpheusTTSModel = OrpheusTTSModel()
         }
 
+        guard let orpheusTTSModel = orpheusTTSModel else {
+            status = "Failed to initialize Orpheus model"
+            return
+        }
+
         if chosenProvider.validateVoice(chosenVoice),
            let orpheusVoice = OrpheusVoice(rawValue: chosenVoice) {
-            await orpheusTTSModel!.say(text, orpheusVoice, autoPlay: autoPlay)
+            await orpheusTTSModel.say(text, orpheusVoice, autoPlay: autoPlay)
             status = "Done"
         } else {
             status = chosenProvider.errorMessage
@@ -174,46 +191,93 @@ struct ContentView: View {
     }
 
     private func generateWithMarvis() async {
-        // Initialize Marvis if needed with bound voice
-        if marvisSession == nil {
-            do {
-                isMarvisLoading = true
-                status = "Loading Marvis..."
-                guard let voice = MarvisSession.Voice(rawValue: chosenVoice) else {
-                    status = "\(chosenProvider.errorMessage)\(chosenVoice)"
-                    isMarvisLoading = false
-                    return
-                }
-                marvisSession = try await MarvisSession(voice: voice, progressHandler: { progress in
-                    status = "Loading Marvis: \(Int(progress.fractionCompleted * 100))%"
-                }, playbackEnabled: autoPlay)
-                status = "Marvis loaded successfully!"
-                isMarvisLoading = false
-            } catch {
-                status = "Failed to load Marvis: \(error.localizedDescription)"
-                isMarvisLoading = false
-                return
-            }
+        guard await initializeMarvisSessionIfNeeded() else {
+            return
         }
 
-        // Generate audio using bound configuration
         do {
             isMarvisLoading = true
-            status = "Generating with Marvis..."
-            // If autoPlay changed since initialization, we need to use generateRaw or generate accordingly
-            let result = autoPlay
-                ? try await marvisSession!.generate(for: text)
-                : try await marvisSession!.generateRaw(for: text)
+            defer { isMarvisLoading = false }
 
-            // Save Marvis audio to file
-            saveMarvisAudio(result: result)
-
-            status = "Marvis generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
-            isMarvisLoading = false
+            if useStreaming {
+                try await generateWithMarvisStreaming()
+            } else {
+                try await generateWithMarvisNonStreaming()
+            }
         } catch {
             status = "Marvis generation failed: \(error.localizedDescription)"
             isMarvisLoading = false
         }
+    }
+
+    private func initializeMarvisSessionIfNeeded() async -> Bool {
+        guard marvisSession == nil else { return true }
+
+        do {
+            isMarvisLoading = true
+            status = "Loading Marvis..."
+            defer { isMarvisLoading = false }
+
+            guard let voice = MarvisSession.Voice(rawValue: chosenVoice) else {
+                status = "\(chosenProvider.errorMessage)\(chosenVoice)"
+                return false
+            }
+
+            marvisSession = try await MarvisSession(voice: voice, progressHandler: { progress in
+                status = "Loading Marvis: \(Int(progress.fractionCompleted * 100))%"
+            }, playbackEnabled: autoPlay)
+            status = "Marvis loaded successfully!"
+            return true
+        } catch {
+            status = "Failed to load Marvis: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func generateWithMarvisStreaming() async throws {
+        status = "Streaming with Marvis..."
+
+        guard let voice = MarvisSession.Voice(rawValue: chosenVoice) else {
+            status = "Invalid voice selection"
+            return
+        }
+
+        guard let marvisSession = marvisSession else {
+            status = "Marvis session not initialized"
+            return
+        }
+
+        let stream = marvisSession.stream(text: text, voice: voice, qualityLevel: chosenQuality, streamingInterval: streamingInterval)
+        var totalSamples = 0
+        var firstChunk = true
+
+        for try await chunk in stream {
+            if firstChunk {
+                status = "Streaming: First chunk received (\(chunk.sampleCount) samples)"
+                firstChunk = false
+            }
+            totalSamples += chunk.sampleCount
+            status = "Streaming: \(totalSamples) samples, RTF: \(String(format: "%.2f", chunk.realTimeFactor))"
+        }
+
+        status = "Marvis streaming complete! Total: \(totalSamples) samples"
+    }
+
+    private func generateWithMarvisNonStreaming() async throws {
+        guard let marvisSession = marvisSession else {
+            status = "Marvis session not initialized"
+            return
+        }
+
+        status = "Generating with Marvis..."
+        let result = autoPlay
+            ? try await marvisSession.generate(for: text, quality: chosenQuality)
+            : try await marvisSession.generateRaw(for: text, quality: chosenQuality)
+
+        // Save Marvis audio to file
+        saveMarvisAudio(result: result)
+
+        status = "Marvis generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
     }
 
     private func saveMarvisAudio(result: MarvisSession.GenerationResult) {
@@ -229,7 +293,10 @@ struct ContentView: View {
         }
 
         buffer.frameLength = buffer.frameCapacity
-        let channels = buffer.floatChannelData!
+        guard let channels = buffer.floatChannelData else {
+            print("Failed to get channel data for Marvis audio")
+            return
+        }
         for i in 0..<result.audio.count {
             channels[0][i] = result.audio[i]
         }

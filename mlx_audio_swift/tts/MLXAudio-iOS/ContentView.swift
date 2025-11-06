@@ -50,8 +50,11 @@ struct ContentView: View {
     @State private var isMarvisPlaying = false
     @State private var status = ""
     @State private var chosenVoice = "conversational_a"
+    @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
     @State private var marvisAudioGenerationTime: TimeInterval = 0
-    
+    @State private var useStreaming: Bool = false
+    @State private var streamingInterval: Double = 0.5
+
     @StateObject private var speakerModel = SpeakerViewModel()
     
     var body: some View {
@@ -115,7 +118,63 @@ struct ContentView: View {
                                 .frame(maxWidth: .infinity)
                             }
                         }
-                        
+
+                        // Quality picker for Marvis
+                        if chosenProvider == .marvis {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Quality")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                Picker("Quality", selection: $chosenQuality) {
+                                    ForEach(MarvisSession.QualityLevel.allCases, id: \.self) { quality in
+                                        Text(quality.rawValue.capitalized).tag(quality)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .disabled(isMarvisLoading)
+
+                                Text(qualityDescription)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            // Streaming toggle
+                            VStack(alignment: .leading, spacing: 8) {
+                                Toggle("Use Streaming", isOn: $useStreaming)
+                                    .disabled(isMarvisLoading)
+
+                                Text(useStreaming ? "Real-time audio streaming with progress feedback" : "Generate complete audio before playback")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            // Streaming interval (when streaming enabled)
+                            if useStreaming {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack {
+                                        Text("Streaming Interval")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.secondary)
+
+                                        Spacer()
+
+                                        Text(String(format: "%.1fs", streamingInterval))
+                                            .font(.subheadline)
+                                            .bold()
+                                    }
+
+                                    Slider(value: $streamingInterval, in: 0.1...1.0, step: 0.1)
+                                        .tint(.accentColor)
+                                        .disabled(isMarvisLoading)
+
+                                    Text("Time between audio chunks (lower = faster response)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
                         speedControlView
                         textInputView
                         
@@ -327,21 +386,41 @@ struct ContentView: View {
                         }
 
                         do {
-                            status = "Generating with Marvis TTS (streaming)..."
                             isMarvisPlaying = true
                             marvisAudioGenerationTime = 0
-                            let stream = marvisSession!.stream(text: t, voice: selectedMarvisVoice)
-                            var totalSamples = 0
-                            var isFirstChunk = true
-                            for try await chunk in stream {
-                                if isFirstChunk {
-                                    marvisAudioGenerationTime = chunk.processingTime
-                                    isFirstChunk = false
+
+                            if useStreaming {
+                                // Use streaming API
+                                status = "Streaming with Marvis TTS..."
+                                let stream = marvisSession!.stream(
+                                    text: t,
+                                    voice: selectedMarvisVoice,
+                                    qualityLevel: chosenQuality,
+                                    streamingInterval: streamingInterval
+                                )
+                                var totalSamples = 0
+                                var isFirstChunk = true
+                                for try await chunk in stream {
+                                    if isFirstChunk {
+                                        marvisAudioGenerationTime = chunk.processingTime
+                                        isFirstChunk = false
+                                    }
+                                    totalSamples += chunk.sampleCount
+                                    status = "Streaming... \(totalSamples) samples (RTF ~\(String(format: "%.2f", chunk.realTimeFactor)))"
                                 }
-                                totalSamples += chunk.sampleCount
-                                status = "Streaming... \(totalSamples) samples (RTF ~\(chunk.realTimeFactor))"
+                                status = "Marvis TTS streaming complete!"
+                            } else {
+                                // Use non-streaming API
+                                status = "Generating with Marvis TTS..."
+                                let result = try await marvisSession!.generateRaw(
+                                    text: t,
+                                    voice: selectedMarvisVoice,
+                                    quality: chosenQuality
+                                )
+                                marvisAudioGenerationTime = result.processingTime
+                                status = "Marvis TTS generation complete! \(result.sampleCount) samples"
                             }
-                            status = "Marvis TTS generation complete!"
+
                             isMarvisPlaying = false
                         } catch {
                             isMarvisPlaying = false
@@ -377,7 +456,11 @@ struct ContentView: View {
                     kokoroViewModel.stopPlayback()
                 } else if chosenProvider == .marvis {
                     // Stop Marvis TTS playback and reset session
-                    marvisSession?.cleanupMemory()
+                    do {
+                        try marvisSession?.cleanupMemory()
+                    } catch {
+                        print("Failed to cleanup Marvis memory: \(error)")
+                    }
                     isMarvisPlaying = false
                     status = "Marvis TTS playback stopped"
                 }
@@ -395,6 +478,21 @@ struct ContentView: View {
             .tint(.red)
             .disabled((chosenProvider == .kokoro && !kokoroViewModel.isAudioPlaying) ||
                       (chosenProvider == .marvis && !isMarvisPlaying))
+        }
+    }
+
+    // MARK: - Helper Functions
+
+    private var qualityDescription: String {
+        switch chosenQuality {
+        case .low:
+            return "8 codebooks - Fastest, lower quality"
+        case .medium:
+            return "16 codebooks - Balanced"
+        case .high:
+            return "24 codebooks - Slower, better quality"
+        case .maximum:
+            return "32 codebooks - Slowest, best quality"
         }
     }
 }

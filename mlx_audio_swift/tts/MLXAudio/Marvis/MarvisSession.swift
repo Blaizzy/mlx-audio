@@ -12,6 +12,22 @@ public final class MarvisSession: Module {
         case conversationalB = "conversational_b"
     }
 
+    public enum QualityLevel: String, CaseIterable {
+        case low
+        case medium
+        case high
+        case maximum
+
+        public var codebookCount: Int {
+            switch self {
+            case .low: return 8
+            case .medium: return 16
+            case .high: return 24
+            case .maximum: return 32
+            }
+        }
+    }
+
     public let sampleRate: Double
 
     private let model: MarvisModel
@@ -28,6 +44,7 @@ public final class MarvisSession: Module {
     private var boundVoice: Voice? = .conversationalA
     private var boundRefAudio: MLXArray? = nil
     private var boundRefText: String? = nil
+    private var boundQuality: QualityLevel = .maximum
 
     public init(
         config: MarvisModelArgs,
@@ -36,7 +53,7 @@ public final class MarvisSession: Module {
         progressHandler: @escaping (Progress) -> Void,
         playbackEnabled: Bool = true
     ) async throws {
-        self.model = MarvisModel(config: config)
+        self.model = try MarvisModel(config: config)
 
         self._promptURLs = promptURLs
         self.playbackEnabled = playbackEnabled
@@ -48,7 +65,7 @@ public final class MarvisSession: Module {
         self.streamingDecoder = MimiStreamingDecoder(audioTokenizer.codec)
         self.sampleRate = audioTokenizer.codec.cfg.sampleRate
         super.init()
-        model.resetCaches()
+        try model.resetCaches()
 
         if playbackEnabled {
             playback = AudioPlayback(sampleRate: sampleRate)
@@ -213,12 +230,13 @@ public extension MarvisSession {
         currTokens startTokens: MLXArray,
         currMask startMask: MLXArray,
         currPos startPos: MLXArray,
+        qualityLevel: QualityLevel,
         stream: Bool,
         streamingIntervalTokens: Int,
         sampler sampleFn: (MLXArray) -> MLXArray,
         onStreamingResult: ((GenerationResult) -> Void)?,
         enqueuePlayback: Bool
-    ) -> [GenerationResult] {
+    ) throws -> [GenerationResult] {
         var results: [GenerationResult] = []
 
         var samplesFrames: [MLXArray] = [] // each is [B=1, K]
@@ -236,7 +254,8 @@ public extension MarvisSession {
         var frameCount = 0
 
         for frameIdx in 0 ..< maxAudioFrames {
-            let frame = model.generateFrame(
+            let frame = try model.generateFrame(
+                maxCodebooks: qualityLevel.codebookCount,
                 tokens: currTokens,
                 tokensMask: currMask,
                 sampler: sampleFn
@@ -446,6 +465,7 @@ public extension MarvisSession {
         voice: Voice?,
         refAudio: MLXArray?,
         refText: String?,
+        qualityLevel: QualityLevel,
         stream: Bool,
         streamingInterval: Double,
         onStreamingResult: ((GenerationResult) -> Void)?,
@@ -464,14 +484,15 @@ public extension MarvisSession {
             let generationText = (base.text + " " + prompt).trimmingCharacters(in: .whitespaces)
             let seg = Segment(speaker: 0, text: generationText, audio: base.audio)
 
-            model.resetCaches()
+            try model.resetCaches()
             if stream { streamingDecoder.reset() }
 
             let (tok, msk, pos) = tokenizeStart(for: seg)
-            let r = decodePrompt(
+            let r = try decodePrompt(
                 currTokens: tok,
                 currMask: msk,
                 currPos: pos,
+                qualityLevel: qualityLevel,
                 stream: stream,
                 streamingIntervalTokens: intervalTokens,
                 sampler: sampleFn,
@@ -481,15 +502,15 @@ public extension MarvisSession {
             results.append(contentsOf: r)
         }
 
-        model.resetCaches()
+        try model.resetCaches()
         if stream { streamingDecoder.reset() }
         autoreleasepool { }
         return results
     }
 
     /// Manually triggers memory cleanup for this TTS instance
-    func cleanupMemory() {
-        model.resetCaches()
+    func cleanupMemory() throws {
+        try model.resetCaches()
         streamingDecoder.reset()
         
         // Stop audio engine
@@ -557,6 +578,7 @@ public extension MarvisSession {
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
         refText: String? = nil,
+        qualityLevel: QualityLevel = .maximum,
         splitPattern: String? = #"(\n+)"#
     ) async throws -> [GenerationResult] {
         let pieces: [String]
@@ -576,6 +598,7 @@ public extension MarvisSession {
                 voice: voice,
                 refAudio: refAudio,
                 refText: refText,
+                qualityLevel: qualityLevel,
                 stream: false,
                 streamingInterval: 0.5,
                 onStreamingResult: nil,
@@ -593,6 +616,7 @@ public extension MarvisSession {
         voice: Voice? = .conversationalA,
         refAudio: MLXArray? = nil,
         refText: String? = nil,
+        qualityLevel: QualityLevel = .maximum,
         splitPattern: String? = #"(\n+)"#,
         streamingInterval: Double = 0.5
     ) -> AsyncThrowingStream<GenerationResult, Error> {
@@ -615,6 +639,7 @@ public extension MarvisSession {
                         voice: voice,
                         refAudio: refAudio,
                         refText: refText,
+                        qualityLevel: qualityLevel,
                         stream: true,
                         streamingInterval: streamingInterval,
                         onStreamingResult: { gr in
@@ -638,19 +663,21 @@ public extension MarvisSession {
 
     /// Synthesizes speech using the bound voice or reference; returns a single merged result.
     /// Shorthand 'generate(for:)' mirrors Python 'generate_audio' semantics while staying Swifty.
-    func generate(for text: String) async throws -> GenerationResult {
+    func generate(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
         let results = try await generateAsync(
             text: text,
             voice: boundVoice,
             refAudio: boundRefAudio,
-            refText: boundRefText
+            refText: boundRefText,
+            qualityLevel: quality ?? boundQuality
         )
         return Self.mergeResults(results)
     }
 
     /// Generates speech without enqueuing playback; returns one merged result.
-    func generateRaw(for text: String) async throws -> GenerationResult {
+    func generateRaw(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
         let pieces = [text]
+        let qualityToUse = quality ?? boundQuality
         let results: [GenerationResult] = try await Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return [] as [GenerationResult] }
             return try self.generateCore(
@@ -658,6 +685,7 @@ public extension MarvisSession {
                 voice: self.boundVoice,
                 refAudio: self.boundRefAudio,
                 refText: self.boundRefText,
+                qualityLevel: qualityToUse,
                 stream: false,
                 streamingInterval: 0.5,
                 onStreamingResult: nil,
@@ -668,12 +696,13 @@ public extension MarvisSession {
     }
 
     /// Streams speech using the bound voice or reference.
-    func stream(_ text: String, interval: Double = 0.5) -> AsyncThrowingStream<GenerationResult, Error> {
+    func stream(_ text: String, quality: QualityLevel? = nil, interval: Double = 0.5) -> AsyncThrowingStream<GenerationResult, Error> {
         stream(
             text: text,
             voice: boundVoice,
             refAudio: boundRefAudio,
             refText: boundRefText,
+            qualityLevel: quality ?? boundQuality,
             streamingInterval: interval
         )
     }
