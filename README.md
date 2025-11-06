@@ -269,10 +269,10 @@ targets: [
 After adding the dependency, import and use the module:
 
 ```swift
-import Swift_TTS
+import MLXAudio
 
 // Create a session with a built-in voice (auto-downloads model on first use)
-let session = try await SesameSession(voice: .conversationalA) // playback enabled by default
+let session = try await MarvisSession(voice: .conversationalA) // playback enabled by default
 
 // One-shot generation (auto-plays if playback is enabled)
 let result = try await session.generate(for: "Your text here")
@@ -283,9 +283,9 @@ print("Generated \(result.sampleCount) samples @ \(result.sampleRate) Hz")
 Get responsive audio chunks as they are decoded. Chunks are auto-played if playback is enabled.
 
 ```swift
-import Swift_TTS
+import MLXAudio
 
-let session = try await SesameSession(voice: .conversationalA)
+let session = try await MarvisSession(voice: .conversationalA)
 
 for try await chunk in session.stream(text: "Hello there from streaming mode", streamingInterval: 0.5) {
     // Each chunk includes PCM samples and timing metrics
@@ -297,14 +297,14 @@ for try await chunk in session.stream(text: "Hello there from streaming mode", s
 If you want just the samples without auto-play, disable playback at init or call `generateRaw`.
 
 ```swift
-import Swift_TTS
+import MLXAudio
 
 // Option A: Disable playback globally for the session
-let s1 = try await SesameSession(voice: .conversationalA, playbackEnabled: false)
+let s1 = try await MarvisSession(voice: .conversationalA, playbackEnabled: false)
 let raw1 = try await s1.generateRaw(for: "Save this to a file")
 
 // Option B: Keep playback enabled but request a raw result for this call
-let s2 = try await SesameSession(voice: .conversationalA)
+let s2 = try await MarvisSession(voice: .conversationalA)
 let raw2 = try await s2.generateRaw(for: "No auto-play for this one")
 
 // rawX.audio is [Float] PCM at rawX.sampleRate (mono)

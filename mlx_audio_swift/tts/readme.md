@@ -5,7 +5,7 @@ This is an example of using MLX Audio to run local TTS models.
 Steps to run:
 
  - Open project in Xcode
- - Copy your required files to relevant Resources folder (Kokoro and Orpheus)
+ - Copy your required files to relevant Resources folder (Kokoro, Orpheus, and Marvis)
  - Change project signing in "Signing and Capabilities" project settings
  - Run the App
 
@@ -40,3 +40,15 @@ Currently runs quite slow due to MLX-Swift not letting us compile layers with ca
 The full Orpheus functionality is implemented including:
  - Voices: tara, leah, jess, leo, dan, mia, zac, zoe
  - Expressions: <laugh>, <chuckle>, <sigh>, <cough>, <sniffle>, <groan>, <yawn>, <gasp>
+
+# Marvis
+
+Marvis is an advanced conversational TTS model with streaming support. It uses the Marvis architecture combined with Mimi vocoder for high-quality speech synthesis.
+
+Features:
+ - Streaming audio generation for real-time TTS
+ - Two conversational voices: conversational_a and conversational_b
+ - Downloads model weights automatically on first use from Hugging Face
+ - Optimized for Apple Silicon with MLX framework
+
+The model runs at 24kHz sample rate and provides natural-sounding conversational speech.
