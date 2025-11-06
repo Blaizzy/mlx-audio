@@ -165,7 +165,7 @@ public struct MarvisModelArgs: Codable, Sendable {
     public let tieWordEmbeddings: Bool
     public let useCache: Bool
     public let vocabSize: Int
-    public let quantization: [String: Int]?
+    public let quantization: [String: JSONValue]?
 
     public init(
         modelType: String,
@@ -201,7 +201,7 @@ public struct MarvisModelArgs: Codable, Sendable {
         tieWordEmbeddings: Bool,
         useCache: Bool,
         vocabSize: Int,
-        quantization: [String: Int]?,
+        quantization: [String: JSONValue]?,
     ) {
         self.modelType = modelType
         self.backboneFlavor = backboneFlavor
