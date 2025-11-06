@@ -133,8 +133,8 @@ public struct DepthDecoderConfig: Codable, Sendable {
 
 public struct MarvisModelArgs: Codable, Sendable {
     public let modelType: String
-    public let backboneFlavor: String
-    public let decoderFlavor: String
+    public let backboneFlavor: String?
+    public let decoderFlavor: String?
     public let textVocabSize: Int
     public let audioVocabSize: Int
     public let audioNumCodebooks: Int
@@ -169,8 +169,8 @@ public struct MarvisModelArgs: Codable, Sendable {
 
     public init(
         modelType: String,
-        backboneFlavor: String,
-        decoderFlavor: String,
+        backboneFlavor: String?,
+        decoderFlavor: String?,
         textVocabSize: Int,
         audioVocabSize: Int,
         audioNumCodebooks: Int,
@@ -431,8 +431,15 @@ public final class MarvisModel: Module {
             backCfg = createLlamaConfigurationForBackbone(config)
             decCfg = createLlamaConfigurationForDecoder(depth)
         } else {
-            backCfg = try! createLlamaConfiguration(flavor: config.backboneFlavor)
-            decCfg = try! createLlamaConfiguration(flavor: config.decoderFlavor)
+            guard let backboneFlavor = config.backboneFlavor, let decoderFlavor = config.decoderFlavor else {
+                fatalError("Either depthDecoderConfig or both backboneFlavor and decoderFlavor must be provided")
+            }
+            do {
+                backCfg = try createLlamaConfiguration(flavor: backboneFlavor)
+                decCfg = try createLlamaConfiguration(flavor: decoderFlavor)
+            } catch {
+                fatalError("Failed to create LlamaConfiguration: \(error). Backbone flavor: \(backboneFlavor), Decoder flavor: \(decoderFlavor)")
+            }
         }
 
         self._backbone = ModuleInfo(wrappedValue: LlamaModel(backCfg))
@@ -466,8 +473,15 @@ public final class MarvisModel: Module {
             backCfg = createLlamaConfigurationForBackbone(args)
             decCfg = createLlamaConfigurationForDecoder(depth)
         } else {
-            backCfg = try! createLlamaConfiguration(flavor: args.backboneFlavor)
-            decCfg = try! createLlamaConfiguration(flavor: args.decoderFlavor)
+            guard let backboneFlavor = args.backboneFlavor, let decoderFlavor = args.decoderFlavor else {
+                fatalError("Either depthDecoderConfig or both backboneFlavor and decoderFlavor must be provided")
+            }
+            do {
+                backCfg = try createLlamaConfiguration(flavor: backboneFlavor)
+                decCfg = try createLlamaConfiguration(flavor: decoderFlavor)
+            } catch {
+                fatalError("Failed to create LlamaConfiguration: \(error). Backbone flavor: \(backboneFlavor), Decoder flavor: \(decoderFlavor)")
+            }
         }
         
         backboneCache = (0..<backCfg.hiddenLayers).map { _ in KVCache(headDim: backCfg.resolvedHeadDimensions, nKVHeads: backCfg.kvHeads) }
@@ -511,7 +525,14 @@ public final class MarvisModel: Module {
         if let depth = args.depthDecoderConfig {
             decCfg = createLlamaConfigurationForDecoder(depth)
         } else {
-            decCfg = try! createLlamaConfiguration(flavor: args.decoderFlavor)
+            guard let decoderFlavor = args.decoderFlavor else {
+                fatalError("Either depthDecoderConfig or decoderFlavor must be provided")
+            }
+            do {
+                decCfg = try createLlamaConfiguration(flavor: decoderFlavor)
+            } catch {
+                fatalError("Failed to create LlamaConfiguration for decoder: \(error). Decoder flavor: \(decoderFlavor)")
+            }
         }
         decoderCache = (0..<decCfg.hiddenLayers).map { _ in KVCache(headDim: decCfg.resolvedHeadDimensions, nKVHeads: decCfg.kvHeads) }
 
