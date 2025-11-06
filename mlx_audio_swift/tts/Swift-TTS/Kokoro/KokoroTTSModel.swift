@@ -23,6 +23,10 @@ public class KokoroTTSModel: ObservableObject {
     // Published property for UI updates - indicates generation OR playback is in progress
     @Published public var generationInProgress = false
 
+    // Audio file management
+    @Published public var lastGeneratedAudioURL: URL?
+    private var audioBuffers: [AVAudioPCMBuffer] = []
+
     // A separate property to track if audio is currently playing
     @Published public var isAudioPlaying: Bool = false {
         didSet {
@@ -148,7 +152,7 @@ public class KokoroTTSModel: ObservableObject {
         }
     }
 
-    public func say(_ text: String, _ voice: TTSVoice, speed: Float = 1.0) {
+    public func say(_ text: String, _ voice: TTSVoice, speed: Float = 1.0, autoPlay: Bool = true) {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
          guard !trimmedText.isEmpty else {
              return
@@ -174,13 +178,13 @@ public class KokoroTTSModel: ObservableObject {
                  try? await Task.sleep(nanoseconds: 300_000_000) // 300ms
 
                  // Now start the new generation
-                 self.startSpeechGeneration(text: trimmedText, voice: voice, speed: speed)
+                 self.startSpeechGeneration(text: trimmedText, voice: voice, speed: speed, autoPlay: autoPlay)
              }
              return
          }
 
          // No existing playback, start immediately
-         startSpeechGeneration(text: trimmedText, voice: voice, speed: speed)
+         startSpeechGeneration(text: trimmedText, voice: voice, speed: speed, autoPlay: autoPlay)
     }
 
     public func stopPlayback() {
@@ -294,12 +298,15 @@ public class KokoroTTSModel: ObservableObject {
 
     // MARK: - Audio Generation and Playback
 
-    private func startSpeechGeneration(text: String, voice: TTSVoice, speed: Float) {
+    private func startSpeechGeneration(text: String, voice: TTSVoice, speed: Float, autoPlay: Bool) {
         // Update internal state
         isGenerating = true
 
         // Reset buffer counters for the new generation
         resetBufferCounters()
+
+        // Clear previous audio buffers
+        audioBuffers.removeAll()
 
         // Make sure the UI state is also set
         DispatchQueue.main.async {
@@ -333,9 +340,11 @@ public class KokoroTTSModel: ObservableObject {
                     self.audioGenerationTime = Date().timeIntervalSince(generationStartTime)
                 }
 
-                // Play audio on main thread
-                DispatchQueue.main.async {
-                    self.playAudioChunk(audioBuffer)
+                // Play audio on main thread only if autoPlay is enabled
+                if autoPlay {
+                    DispatchQueue.main.async {
+                        self.playAudioChunk(audioBuffer)
+                    }
                 }
             }
 
@@ -346,6 +355,18 @@ public class KokoroTTSModel: ObservableObject {
                 // Mark generation (but not playback) as complete
                 // We do this regardless of whether chunks were received yet
                 self.isGenerating = false
+
+                // Save audio buffers to file
+                self.saveAudioToFile()
+
+                // If autoPlay is disabled, reset state immediately since we won't be playing
+                if !autoPlay {
+                    self.isPlayingAudio = false
+                    self.isAudioPlaying = false
+                    self.generationInProgress = false
+                    self.objectWillChange.send()
+                    return
+                }
 
                 // Keep generationInProgress true until playback completes
 
@@ -404,6 +425,9 @@ public class KokoroTTSModel: ObservableObject {
             print("Failed to create audio buffer")
             return
         }
+
+        // Store buffer for later file export
+        audioBuffers.append(buffer)
 
         // Ensure audio engine is running
         if !audioEngine.isRunning {
@@ -607,6 +631,48 @@ public class KokoroTTSModel: ObservableObject {
             }
         }
         return buffer
+    }
+
+    private func saveAudioToFile() {
+        guard !audioBuffers.isEmpty else { return }
+
+        // Create a combined buffer
+        let totalFrames = audioBuffers.reduce(0) { $0 + Int($1.frameLength) }
+        guard let combinedBuffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(totalFrames)) else {
+            print("Failed to create combined buffer")
+            return
+        }
+
+        combinedBuffer.frameLength = AVAudioFrameCount(totalFrames)
+
+        // Copy all buffers into the combined buffer
+        var offset = 0
+        for buffer in audioBuffers {
+            let frameCount = Int(buffer.frameLength)
+            guard let srcData = buffer.floatChannelData?[0],
+                  let dstData = combinedBuffer.floatChannelData?[0] else {
+                continue
+            }
+
+            for i in 0..<frameCount {
+                dstData[offset + i] = srcData[i]
+            }
+            offset += frameCount
+        }
+
+        // Save to file
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let audioFileURL = documentsPath.appendingPathComponent("kokoro_output.wav")
+
+        do {
+            try combinedBuffer.saveToWavFile(at: audioFileURL)
+            print("Kokoro audio saved to: \(audioFileURL.path)")
+            DispatchQueue.main.async {
+                self.lastGeneratedAudioURL = audioFileURL
+            }
+        } catch {
+            print("Failed to save Kokoro audio: \(error)")
+        }
     }
 }
 

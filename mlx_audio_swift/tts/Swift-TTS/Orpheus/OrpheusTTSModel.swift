@@ -13,6 +13,9 @@ class OrpheusTTSModel: ObservableObject {
     let orpheusTTSEngine: OrpheusTTS?
     let audioEngine: AVAudioEngine!
     let playerNode: AVAudioPlayerNode!
+
+    // Published audio file URL
+    @Published var lastGeneratedAudioURL: URL?
     
     init() {
         do {
@@ -27,7 +30,7 @@ class OrpheusTTSModel: ObservableObject {
         audioEngine.attach(playerNode)
     }
        
-    func say(_ text: String, _ voice: OrpheusVoice) async {
+    func say(_ text: String, _ voice: OrpheusVoice, autoPlay: Bool = true) async {
         if let orpheusTTSEngine = orpheusTTSEngine {
             let mainTimer = BenchmarkTimer.shared.create(id: "TTSGeneration")
 
@@ -69,24 +72,28 @@ class OrpheusTTSModel: ObservableObject {
             // Save audio file
             let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             let audioFileURL = documentsPath.appendingPathComponent("output.wav")
-            
+
             do {
                 try buffer.saveToWavFile(at: audioFileURL)
                 print("Audio saved to: \(audioFileURL.path)")
+                lastGeneratedAudioURL = audioFileURL
             } catch {
                 print("Failed to save audio: \(error)")
             }
 
-            audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
-            do {
-              try audioEngine.start()
-            } catch {
-              print("Audio engine failed to start: \(error.localizedDescription)")
-              return
-            }
+            // Only play if autoPlay is enabled
+            if autoPlay {
+                audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+                do {
+                  try audioEngine.start()
+                } catch {
+                  print("Audio engine failed to start: \(error.localizedDescription)")
+                  return
+                }
 
-            playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-            playerNode.play()
+                playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+                playerNode.play()
+            }
         }
     }
 

@@ -11,6 +11,7 @@ struct TTSMainView: View {
     @Binding var text: String
     @Binding var status: String
     let selectedProvider: TTSProvider
+    @ObservedObject var audioPlayerManager: AudioPlayerManager
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -32,8 +33,19 @@ struct TTSMainView: View {
 
             Spacer()
 
-            // Audio Player Placeholder (for future)
-            AudioPlayerPlaceholder()
+            // Audio Player
+            if audioPlayerManager.currentAudioURL != nil {
+                AudioPlayerView(
+                    audioURL: audioPlayerManager.currentAudioURL,
+                    isPlaying: audioPlayerManager.isPlaying,
+                    currentTime: audioPlayerManager.currentTime,
+                    duration: audioPlayerManager.duration,
+                    onPlayPause: { audioPlayerManager.togglePlayPause() },
+                    onSeek: { time in audioPlayerManager.seek(to: time) }
+                )
+            } else {
+                AudioPlayerPlaceholder()
+            }
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -58,26 +70,3 @@ struct InfoBox: View {
     }
 }
 
-struct AudioPlayerPlaceholder: View {
-    var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                Image(systemName: "play.circle.fill")
-                    .font(.title)
-                    .foregroundColor(.secondary)
-                Text("Audio Player")
-                    .foregroundColor(.secondary)
-                Spacer()
-                Text("00:00")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-
-            ProgressView(value: 0.0)
-                .progressViewStyle(.linear)
-        }
-        .padding()
-        .background(Color(nsColor: .controlBackgroundColor))
-        .cornerRadius(8)
-    }
-}

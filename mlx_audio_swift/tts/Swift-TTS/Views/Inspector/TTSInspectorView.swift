@@ -11,6 +11,7 @@ struct TTSInspectorView: View {
     @Binding var selectedProvider: TTSProvider
     @Binding var selectedVoice: String
     @Binding var status: String
+    @Binding var autoPlay: Bool
 
     let isGenerating: Bool
     let canGenerate: Bool
@@ -56,6 +57,11 @@ struct TTSInspectorView: View {
                         MarvisStatusSection(session: marvisSession)
                         Divider()
                     }
+
+                    // Auto-play toggle
+                    AutoPlaySection(autoPlay: $autoPlay)
+
+                    Divider()
 
                     // Controls
                     ControlsSection(
