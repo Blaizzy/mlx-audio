@@ -342,8 +342,10 @@ struct ContentView: View {
                                 status = "Streaming... \(totalSamples) samples (RTF ~\(chunk.realTimeFactor))"
                             }
                             status = "Marvis TTS generation complete!"
+                            isMarvisPlaying = false
                         } catch {
                             isMarvisPlaying = false
+                            isMarvisLoading = false
                             status = "Marvis TTS generation failed: \(error.localizedDescription)"
                         }
                     }

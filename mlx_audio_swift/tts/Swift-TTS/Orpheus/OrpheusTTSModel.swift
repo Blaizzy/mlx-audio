@@ -57,7 +57,11 @@ class OrpheusTTSModel: ObservableObject {
             print("\(mainTimer!.deltaTime)")
             print("Speed: " + String(format: "%.2f", audioLength / mainTimer!.deltaTime))
 
-            let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
+            guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else {
+              print("Failed to create audio format")
+              return
+            }
+
             guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(audio.count)) else {
               print("Couldn't create buffer")
               return

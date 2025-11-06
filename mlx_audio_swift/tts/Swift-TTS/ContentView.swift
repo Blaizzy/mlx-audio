@@ -198,6 +198,7 @@ struct ContentView: View {
 
         // Generate audio using bound configuration
         do {
+            isMarvisLoading = true
             status = "Generating with Marvis..."
             // If autoPlay changed since initialization, we need to use generateRaw or generate accordingly
             let result = autoPlay
@@ -208,14 +209,20 @@ struct ContentView: View {
             saveMarvisAudio(result: result)
 
             status = "Marvis generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
+            isMarvisLoading = false
         } catch {
             status = "Marvis generation failed: \(error.localizedDescription)"
+            isMarvisLoading = false
         }
     }
 
     private func saveMarvisAudio(result: MarvisSession.GenerationResult) {
         // Create audio buffer from result
-        let format = AVAudioFormat(standardFormatWithSampleRate: Double(result.sampleRate), channels: 1)!
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: Double(result.sampleRate), channels: 1) else {
+            print("Failed to create audio format for Marvis audio")
+            return
+        }
+
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(result.sampleCount)) else {
             print("Failed to create buffer for Marvis audio")
             return
