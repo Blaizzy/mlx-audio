@@ -19,7 +19,7 @@ struct QualityPickerSection: View {
             // Segmented Picker for Quality
             Picker("Quality", selection: $selectedQuality) {
                 ForEach(MarvisSession.QualityLevel.allCases, id: \.self) { quality in
-                    Text(qualityLabel(for: quality)).tag(quality)
+                    Text(quality.rawValue.capitalized).tag(quality)
                 }
             }
             .pickerStyle(.segmented)
@@ -29,15 +29,6 @@ struct QualityPickerSection: View {
             Text(qualityDescription)
                 .font(.caption)
                 .foregroundColor(.secondary)
-        }
-    }
-
-    private func qualityLabel(for quality: MarvisSession.QualityLevel) -> String {
-        switch quality {
-        case .low: return "Low"
-        case .medium: return "Medium"
-        case .high: return "High"
-        case .maximum: return "Max"
         }
     }
 

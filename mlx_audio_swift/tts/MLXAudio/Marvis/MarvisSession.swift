@@ -12,11 +12,20 @@ public final class MarvisSession: Module {
         case conversationalB = "conversational_b"
     }
 
-    public enum QualityLevel: Int, CaseIterable {
-        case low = 8
-        case medium = 16
-        case high = 24
-        case maximum = 32
+    public enum QualityLevel: String, CaseIterable {
+        case low
+        case medium
+        case high
+        case maximum
+
+        public var codebookCount: Int {
+            switch self {
+            case .low: return 8
+            case .medium: return 16
+            case .high: return 24
+            case .maximum: return 32
+            }
+        }
     }
 
     public let sampleRate: Double
@@ -246,7 +255,7 @@ public extension MarvisSession {
 
         for frameIdx in 0 ..< maxAudioFrames {
             let frame = model.generateFrame(
-                maxCodebooks: qualityLevel.rawValue,
+                maxCodebooks: qualityLevel.codebookCount,
                 tokens: currTokens,
                 tokensMask: currMask,
                 sampler: sampleFn

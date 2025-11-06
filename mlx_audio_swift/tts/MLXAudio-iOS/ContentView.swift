@@ -126,7 +126,7 @@ struct ContentView: View {
 
                                 Picker("Quality", selection: $chosenQuality) {
                                     ForEach(MarvisSession.QualityLevel.allCases, id: \.self) { quality in
-                                        Text(qualityLabel(for: quality)).tag(quality)
+                                        Text(quality.rawValue.capitalized).tag(quality)
                                     }
                                 }
                                 .pickerStyle(.segmented)
@@ -425,15 +425,6 @@ struct ContentView: View {
     }
 
     // MARK: - Helper Functions
-
-    private func qualityLabel(for quality: MarvisSession.QualityLevel) -> String {
-        switch quality {
-        case .low: return "Low"
-        case .medium: return "Med"
-        case .high: return "High"
-        case .maximum: return "Max"
-        }
-    }
 
     private var qualityDescription: String {
         switch chosenQuality {
