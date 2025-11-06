@@ -52,7 +52,8 @@ struct ContentView: View {
     @State private var chosenVoice = "conversational_a"
     @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
     @State private var marvisAudioGenerationTime: TimeInterval = 0
-    
+    @State private var useStreaming: Bool = false
+
     @StateObject private var speakerModel = SpeakerViewModel()
     
     var body: some View {
@@ -133,6 +134,16 @@ struct ContentView: View {
                                 .disabled(isMarvisLoading)
 
                                 Text(qualityDescription)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            // Streaming toggle
+                            VStack(alignment: .leading, spacing: 8) {
+                                Toggle("Use Streaming", isOn: $useStreaming)
+                                    .disabled(isMarvisLoading)
+
+                                Text(useStreaming ? "Real-time audio streaming with progress feedback" : "Generate complete audio before playback")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -349,25 +360,40 @@ struct ContentView: View {
                         }
 
                         do {
-                            status = "Generating with Marvis TTS (streaming)..."
                             isMarvisPlaying = true
                             marvisAudioGenerationTime = 0
-                            let stream = marvisSession!.stream(
-                                text: t,
-                                voice: selectedMarvisVoice,
-                                qualityLevel: chosenQuality
-                            )
-                            var totalSamples = 0
-                            var isFirstChunk = true
-                            for try await chunk in stream {
-                                if isFirstChunk {
-                                    marvisAudioGenerationTime = chunk.processingTime
-                                    isFirstChunk = false
+
+                            if useStreaming {
+                                // Use streaming API
+                                status = "Streaming with Marvis TTS..."
+                                let stream = marvisSession!.stream(
+                                    text: t,
+                                    voice: selectedMarvisVoice,
+                                    qualityLevel: chosenQuality
+                                )
+                                var totalSamples = 0
+                                var isFirstChunk = true
+                                for try await chunk in stream {
+                                    if isFirstChunk {
+                                        marvisAudioGenerationTime = chunk.processingTime
+                                        isFirstChunk = false
+                                    }
+                                    totalSamples += chunk.sampleCount
+                                    status = "Streaming... \(totalSamples) samples (RTF ~\(String(format: "%.2f", chunk.realTimeFactor)))"
                                 }
-                                totalSamples += chunk.sampleCount
-                                status = "Streaming... \(totalSamples) samples (RTF ~\(chunk.realTimeFactor))"
+                                status = "Marvis TTS streaming complete!"
+                            } else {
+                                // Use non-streaming API
+                                status = "Generating with Marvis TTS..."
+                                let result = try await marvisSession!.generateRaw(
+                                    text: t,
+                                    voice: selectedMarvisVoice,
+                                    quality: chosenQuality
+                                )
+                                marvisAudioGenerationTime = result.processingTime
+                                status = "Marvis TTS generation complete! \(result.sampleCount) samples"
                             }
-                            status = "Marvis TTS generation complete!"
+
                             isMarvisPlaying = false
                         } catch {
                             isMarvisPlaying = false

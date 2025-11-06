@@ -35,6 +35,9 @@ struct ContentView: View {
     // Auto-play setting
     @State private var autoPlay: Bool = true
 
+    // Streaming setting
+    @State private var useStreaming: Bool = false
+
     // Inspector visibility
     @State private var isInspectorPresent: Bool = true
 
@@ -74,6 +77,7 @@ struct ContentView: View {
                     selectedQuality: $chosenQuality,
                     status: $status,
                     autoPlay: $autoPlay,
+                    useStreaming: $useStreaming,
                     isGenerating: isCurrentlyGenerating,
                     canGenerate: canGenerate,
                     marvisSession: marvisSession,
@@ -201,17 +205,44 @@ struct ContentView: View {
         // Generate audio using bound configuration
         do {
             isMarvisLoading = true
-            status = "Generating with Marvis..."
-            // If autoPlay changed since initialization, we need to use generateRaw or generate accordingly
-            let result = autoPlay
-                ? try await marvisSession!.generate(for: text, quality: chosenQuality)
-                : try await marvisSession!.generateRaw(for: text, quality: chosenQuality)
 
-            // Save Marvis audio to file
-            saveMarvisAudio(result: result)
+            if useStreaming {
+                // Use streaming API
+                status = "Streaming with Marvis..."
+                guard let voice = MarvisSession.Voice(rawValue: chosenVoice) else {
+                    status = "Invalid voice selection"
+                    isMarvisLoading = false
+                    return
+                }
 
-            status = "Marvis generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
-            isMarvisLoading = false
+                let stream = marvisSession!.stream(text: text, voice: voice, qualityLevel: chosenQuality)
+                var totalSamples = 0
+                var firstChunk = true
+
+                for try await chunk in stream {
+                    if firstChunk {
+                        status = "Streaming: First chunk received (\(chunk.sampleCount) samples)"
+                        firstChunk = false
+                    }
+                    totalSamples += chunk.sampleCount
+                    status = "Streaming: \(totalSamples) samples, RTF: \(String(format: "%.2f", chunk.realTimeFactor))"
+                }
+
+                status = "Marvis streaming complete! Total: \(totalSamples) samples"
+                isMarvisLoading = false
+            } else {
+                // Use non-streaming API
+                status = "Generating with Marvis..."
+                let result = autoPlay
+                    ? try await marvisSession!.generate(for: text, quality: chosenQuality)
+                    : try await marvisSession!.generateRaw(for: text, quality: chosenQuality)
+
+                // Save Marvis audio to file
+                saveMarvisAudio(result: result)
+
+                status = "Marvis generation complete! Audio: \(result.audio.count) samples @ \(result.sampleRate)Hz"
+                isMarvisLoading = false
+            }
         } catch {
             status = "Marvis generation failed: \(error.localizedDescription)"
             isMarvisLoading = false

@@ -13,6 +13,7 @@ struct TTSInspectorView: View {
     @Binding var selectedQuality: MarvisSession.QualityLevel
     @Binding var status: String
     @Binding var autoPlay: Bool
+    @Binding var useStreaming: Bool
 
     let isGenerating: Bool
     let canGenerate: Bool
@@ -51,6 +52,12 @@ struct TTSInspectorView: View {
                     AutoPlaySection(autoPlay: $autoPlay)
 
                     Divider()
+
+                    // Streaming toggle (Marvis only)
+                    if selectedProvider == .marvis {
+                        StreamingSection(useStreaming: $useStreaming)
+                        Divider()
+                    }
 
                     // Controls
                     ControlsSection(
