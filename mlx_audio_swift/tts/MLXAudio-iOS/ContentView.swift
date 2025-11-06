@@ -50,6 +50,7 @@ struct ContentView: View {
     @State private var isMarvisPlaying = false
     @State private var status = ""
     @State private var chosenVoice = "conversational_a"
+    @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
     @State private var marvisAudioGenerationTime: TimeInterval = 0
     
     @StateObject private var speakerModel = SpeakerViewModel()
@@ -115,7 +116,28 @@ struct ContentView: View {
                                 .frame(maxWidth: .infinity)
                             }
                         }
-                        
+
+                        // Quality picker for Marvis
+                        if chosenProvider == .marvis {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Quality")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                Picker("Quality", selection: $chosenQuality) {
+                                    ForEach(MarvisSession.QualityLevel.allCases, id: \.self) { quality in
+                                        Text(qualityLabel(for: quality)).tag(quality)
+                                    }
+                                }
+                                .pickerStyle(.segmented)
+                                .disabled(isMarvisLoading)
+
+                                Text(qualityDescription)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+
                         speedControlView
                         textInputView
                         
@@ -330,7 +352,11 @@ struct ContentView: View {
                             status = "Generating with Marvis TTS (streaming)..."
                             isMarvisPlaying = true
                             marvisAudioGenerationTime = 0
-                            let stream = marvisSession!.stream(text: t, voice: selectedMarvisVoice)
+                            let stream = marvisSession!.stream(
+                                text: t,
+                                voice: selectedMarvisVoice,
+                                qualityLevel: chosenQuality
+                            )
                             var totalSamples = 0
                             var isFirstChunk = true
                             for try await chunk in stream {
@@ -395,6 +421,30 @@ struct ContentView: View {
             .tint(.red)
             .disabled((chosenProvider == .kokoro && !kokoroViewModel.isAudioPlaying) ||
                       (chosenProvider == .marvis && !isMarvisPlaying))
+        }
+    }
+
+    // MARK: - Helper Functions
+
+    private func qualityLabel(for quality: MarvisSession.QualityLevel) -> String {
+        switch quality {
+        case .low: return "Low"
+        case .medium: return "Med"
+        case .high: return "High"
+        case .maximum: return "Max"
+        }
+    }
+
+    private var qualityDescription: String {
+        switch chosenQuality {
+        case .low:
+            return "8 codebooks - Fastest, lower quality"
+        case .medium:
+            return "16 codebooks - Balanced"
+        case .high:
+            return "24 codebooks - Slower, better quality"
+        case .maximum:
+            return "32 codebooks - Slowest, best quality"
         }
     }
 }

@@ -10,6 +10,7 @@ import SwiftUI
 struct TTSInspectorView: View {
     @Binding var selectedProvider: TTSProvider
     @Binding var selectedVoice: String
+    @Binding var selectedQuality: MarvisSession.QualityLevel
     @Binding var status: String
     @Binding var autoPlay: Bool
 
@@ -39,6 +40,12 @@ struct TTSInspectorView: View {
                     )
 
                     Divider()
+
+                    // Quality Section (Marvis only)
+                    if selectedProvider == .marvis {
+                        QualityPickerSection(selectedQuality: $selectedQuality)
+                        Divider()
+                    }
 
                     // Auto-play toggle
                     AutoPlaySection(autoPlay: $autoPlay)

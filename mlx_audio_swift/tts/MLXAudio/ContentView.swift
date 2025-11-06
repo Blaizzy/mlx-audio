@@ -23,6 +23,7 @@ struct ContentView: View {
 
     @State private var chosenProvider: TTSProvider = .marvis
     @State private var chosenVoice: String = MarvisSession.Voice.conversationalA.rawValue
+    @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
 
     // Sidebar selection
     @State private var selectedSidebarItem: SidebarItem = .textToSpeech
@@ -70,6 +71,7 @@ struct ContentView: View {
                 TTSInspectorView(
                     selectedProvider: $chosenProvider,
                     selectedVoice: $chosenVoice,
+                    selectedQuality: $chosenQuality,
                     status: $status,
                     autoPlay: $autoPlay,
                     isGenerating: isCurrentlyGenerating,
@@ -202,8 +204,8 @@ struct ContentView: View {
             status = "Generating with Marvis..."
             // If autoPlay changed since initialization, we need to use generateRaw or generate accordingly
             let result = autoPlay
-                ? try await marvisSession!.generate(for: text)
-                : try await marvisSession!.generateRaw(for: text)
+                ? try await marvisSession!.generate(for: text, quality: chosenQuality)
+                : try await marvisSession!.generateRaw(for: text, quality: chosenQuality)
 
             // Save Marvis audio to file
             saveMarvisAudio(result: result)

@@ -476,6 +476,7 @@ public final class MarvisModel: Module {
     }
 
     public func generateFrame(
+        maxCodebooks: Int?,
         tokens: MLXArray,
         tokensMask: MLXArray,
         sampler: (MLXArray) -> MLXArray
@@ -515,9 +516,9 @@ public final class MarvisModel: Module {
         }
         decoderCache = (0..<decCfg.hiddenLayers).map { _ in KVCache(headDim: decCfg.resolvedHeadDimensions, nKVHeads: decCfg.kvHeads) }
 
-        let Cb = args.audioNumCodebooks
-        if Cb > 1 {
-            for i in 1 ..< Cb {
+        let codeBooks = maxCodebooks != nil ? min(args.audioNumCodebooks, maxCodebooks!) : args.audioNumCodebooks
+        if codeBooks > 1 {
+            for i in 1 ..< codeBooks {
                 let decH = decoder(projection(currH), cache: decoderCache) // [B, Tcur, D_dec]
 
                 let D_dec = decH.shape[2]
@@ -537,7 +538,7 @@ public final class MarvisModel: Module {
             }
         }
 
-        return currSample // [B, Cb]
+        return currSample // [B, codeBooks]
     }
 
     private func _embedAudio(codebook: Int, tokens: MLXArray) -> MLXArray {
