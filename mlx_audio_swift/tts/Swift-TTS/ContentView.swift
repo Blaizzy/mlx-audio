@@ -34,6 +34,9 @@ struct ContentView: View {
     // Auto-play setting
     @State private var autoPlay: Bool = true
 
+    // Inspector visibility
+    @State private var isInspectorPresent: Bool = true
+
     // MARK: - Computed Properties
 
     // Computed property to check if any generation is in progress
@@ -53,18 +56,16 @@ struct ContentView: View {
             SidebarView(selection: $selectedSidebarItem)
                 .frame(width: 250)
         } detail: {
-            // Center + Right: Main Content + Inspector
-            HSplitView {
-                // Center: Main Content Area
-                TTSMainView(
-                    text: $text,
-                    status: $status,
-                    selectedProvider: chosenProvider,
-                    marvisSession: marvisSession,
-                    audioPlayerManager: audioPlayerManager
-                )
-                .frame(minWidth: 400)
-
+            // Main Content Area
+            TTSMainView(
+                text: $text,
+                status: $status,
+                selectedProvider: chosenProvider,
+                marvisSession: marvisSession,
+                audioPlayerManager: audioPlayerManager
+            )
+            .frame(minWidth: 400)
+            .inspector(isPresented: $isInspectorPresent) {
                 // Right: Inspector Panel
                 TTSInspectorView(
                     selectedProvider: $chosenProvider,
@@ -77,10 +78,18 @@ struct ContentView: View {
                     onGenerate: handleGenerate,
                     onStop: handleStop
                 )
+                .inspectorColumnWidth(min: 250, ideal: 300, max: 400)
             }
         }
         .frame(minWidth: 1200, minHeight: 700)
         .navigationTitle("MLX Audio")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button(action: { isInspectorPresent.toggle() }) {
+                    Label("Toggle Inspector", systemImage: "sidebar.right")
+                }
+            }
+        }
         .onChange(of: chosenProvider) { _, newProvider in
             status = newProvider.statusMessage
         }

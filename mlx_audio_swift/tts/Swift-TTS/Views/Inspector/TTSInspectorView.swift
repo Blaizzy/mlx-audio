@@ -21,18 +21,6 @@ struct TTSInspectorView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header
-            HStack {
-                Text("Settings")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Spacer()
-            }
-            .padding()
-            .background(Color(nsColor: .windowBackgroundColor))
-
-            Divider()
-
             // Content
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
@@ -84,7 +72,5 @@ struct TTSInspectorView: View {
                 .padding()
             }
         }
-        .frame(width: 300) // Fixed inspector width
-        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
