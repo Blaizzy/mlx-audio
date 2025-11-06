@@ -13,5 +13,7 @@ struct Swift_TTSApp: App {
         WindowGroup {
             ContentView()
         }
+        .windowStyle(.automatic)
+        .defaultSize(width: 1400, height: 800)
     }
 }
