@@ -183,6 +183,19 @@
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		8FA197C82EBD6B4500389E17 /* Exceptions for "MLXAudio" folder in "Embed Frameworks" phase from "MLXAudio-iOS" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			attributesByRelativePath = {
+				Kokoro/Frameworks/ESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
+			};
+			buildPhase = 7BBF58302DDF0A010047DCFF /* Embed Frameworks */;
+			membershipExceptions = (
+				Kokoro/Frameworks/ESpeakNG.xcframework,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		2648361A2DAD10AA004DA2A4 /* Tests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -193,6 +206,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				8F3CE2A72EBD635600CE6E86 /* Exceptions for "MLXAudio" folder in "MLXAudio-iOS" target */,
+				8FA197C82EBD6B4500389E17 /* Exceptions for "MLXAudio" folder in "Embed Frameworks" phase from "MLXAudio-iOS" target */,
 			);
 			path = MLXAudio;
 			sourceTree = "<group>";
