@@ -2,10 +2,13 @@
 //  TTSInspectorView.swift
 //  MLXAudio
 //
-//  Created by Claude Code
+//  Created by Rudrank Riyam on 6/11/25.
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct TTSInspectorView: View {
     @Binding var selectedProvider: TTSProvider
@@ -21,6 +24,14 @@ struct TTSInspectorView: View {
     let marvisSession: MarvisSession?
     let onGenerate: () -> Void
     let onStop: () -> Void
+
+    private var controlBackgroundColor: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(UIColor.secondarySystemBackground)
+        #endif
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -85,7 +96,7 @@ struct TTSInspectorView: View {
                                 .foregroundColor(.secondary)
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color(nsColor: .controlBackgroundColor))
+                                .background(controlBackgroundColor)
                                 .cornerRadius(6)
                         }
                     }

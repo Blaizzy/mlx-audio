@@ -35,6 +35,7 @@ final class ESpeakNGEngine {
 
   // After constructing the wrapper, call setLanguage() before phonemizing any text
   init() throws {
+    #if !targetEnvironment(simulator)
     if let bundleURLStr = findDataBundlePath() {
       let initOK = espeak_Initialize(AUDIO_OUTPUT_PLAYBACK, 0, bundleURLStr, 0)
 
@@ -75,17 +76,23 @@ final class ESpeakNGEngine {
       print("Couldn't find the espeak-ng data bundle, cannot initialize")
       throw ESpeakNGEngineError.dataBundleNotFound
     }
+    #else
+    throw ESpeakNGEngineError.couldNotInitialize
+    #endif
   }
 
   // Destructor
   deinit {
+    #if !targetEnvironment(simulator)
     let terminateOK = espeak_Terminate()
     print("ESpeakNGEngine termination OK: \(terminateOK == EE_OK)")
+    #endif
   }
 
   // Sets the language that will be used for phonemizing
   // If the function returns without throwing an exception then consider new language set!
   func setLanguage(for voice: TTSVoice) throws {
+    #if !targetEnvironment(simulator)
     guard let language = Constants.voice2Language[voice],
           let name = languageMapping[language.rawValue]
     else {
@@ -101,6 +108,9 @@ final class ESpeakNGEngine {
     }
 
     self.language = language
+    #else
+    throw ESpeakNGEngineError.languageNotFound
+    #endif
   }
 
   public func languageForVoice(voice: TTSVoice) throws -> LanguageDialect {
@@ -112,6 +122,7 @@ final class ESpeakNGEngine {
 
   // Phonemizes the text string that can then be passed to the next stage
   func phonemize(text: String) throws -> String {
+    #if !targetEnvironment(simulator)
     guard language != .none else {
       throw ESpeakNGEngineError.languageNotSet
     }
@@ -143,6 +154,9 @@ final class ESpeakNGEngine {
     } else {
       throw ESpeakNGEngineError.couldNotPhonemize
     }
+    #else
+    throw ESpeakNGEngineError.couldNotPhonemize
+    #endif
   }
 
   // Post processes manually phonemes before returning them

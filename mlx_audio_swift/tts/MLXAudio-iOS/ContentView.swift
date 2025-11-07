@@ -101,7 +101,7 @@ struct ContentView: View {
                             }
                             .pickerStyle(.segmented)
                             .disabled(isMarvisLoading || kokoroViewModel.generationInProgress)
-                            .onChange(of: chosenProvider) { _, newProvider in
+                            .onChange(of: chosenProvider) { newProvider in
                                 // Reset speaker selection when switching providers
                                 speakerModel.selectedSpeakerId = 0
                                 status = newProvider.statusMessage
@@ -210,12 +210,12 @@ struct ContentView: View {
             }
         }
         // Sync generation progress to speakerModel.isGenerating
-        .onChange(of: kokoroViewModel.generationInProgress) { _, newValue in
+        .onChange(of: kokoroViewModel.generationInProgress) { newValue in
             if chosenProvider == .kokoro {
                 speakerModel.isGenerating = newValue
             }
         }
-        .onChange(of: isMarvisLoading) { _, newValue in
+        .onChange(of: isMarvisLoading) { newValue in
             if chosenProvider == .marvis {
                 speakerModel.isGenerating = newValue
             }
@@ -349,7 +349,7 @@ struct ContentView: View {
                     isTextEditorFocused = false
                 }
                 
-                let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 
                 Task {
                     if chosenProvider == .kokoro {
@@ -358,7 +358,7 @@ struct ContentView: View {
                         
                         // Set memory constraints for MLX and start generation
                         MLX.GPU.set(cacheLimit: mlxGPUCacheLimit)
-                        kokoroViewModel.say(t, TTSVoice.fromIdentifier(speaker.name) ?? .afHeart, speed: Float(speed))
+                        kokoroViewModel.say(text, TTSVoice.fromIdentifier(speaker.name) ?? .afHeart, speed: Float(speed))
                     } else if chosenProvider == .marvis {
                         // Initialize Marvis TTS if needed
                         if marvisSession == nil {
@@ -393,7 +393,7 @@ struct ContentView: View {
                                 // Use streaming API
                                 status = "Streaming with Marvis TTS..."
                                 let stream = marvisSession!.stream(
-                                    text: t,
+                                    text: text,
                                     voice: selectedMarvisVoice,
                                     qualityLevel: chosenQuality,
                                     streamingInterval: streamingInterval
@@ -413,8 +413,7 @@ struct ContentView: View {
                                 // Use non-streaming API
                                 status = "Generating with Marvis TTS..."
                                 let result = try await marvisSession!.generateRaw(
-                                    text: t,
-                                    voice: selectedMarvisVoice,
+                                    for: text,
                                     quality: chosenQuality
                                 )
                                 marvisAudioGenerationTime = result.processingTime

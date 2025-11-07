@@ -64,6 +64,138 @@
 		7BBF57E32DDD06460047DCFF /* MLXAudio-iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "MLXAudio-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		8F3CE2A72EBD635600CE6E86 /* Exceptions for "MLXAudio" folder in "MLXAudio-iOS" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Kokoro/Albert/AlbertEmbeddings.swift,
+				Kokoro/Albert/AlbertEncoder.swift,
+				Kokoro/Albert/AlbertIntermediate.swift,
+				Kokoro/Albert/AlbertLayer.swift,
+				Kokoro/Albert/AlbertLayerGroup.swift,
+				Kokoro/Albert/AlbertModelArgs.swift,
+				Kokoro/Albert/AlbertOutput.swift,
+				Kokoro/Albert/AlbertSelfAttention.swift,
+				Kokoro/Albert/AlbertSelfOutput.swift,
+				Kokoro/Albert/CustomAlbert.swift,
+				Kokoro/BuildingBlocks/AdaIN1d.swift,
+				Kokoro/BuildingBlocks/AdainResBlk1d.swift,
+				Kokoro/BuildingBlocks/AdaINResBlock1.swift,
+				Kokoro/BuildingBlocks/AdaLayerNorm.swift,
+				Kokoro/BuildingBlocks/Conv1dInference.swift,
+				Kokoro/BuildingBlocks/ConvWeighted.swift,
+				Kokoro/BuildingBlocks/InstanceNorm1d.swift,
+				Kokoro/BuildingBlocks/Interpolate.swift,
+				Kokoro/BuildingBlocks/LayerNormInference.swift,
+				Kokoro/BuildingBlocks/LSTM.swift,
+				Kokoro/BuildingBlocks/ReflectionPad1d.swift,
+				Kokoro/BuildingBlocks/UpSample1d.swift,
+				Kokoro/Decoder/Decoder.swift,
+				Kokoro/Decoder/Generator.swift,
+				Kokoro/Decoder/MLXSTFT.swift,
+				Kokoro/Decoder/SineGen.swift,
+				Kokoro/Decoder/SourceModuleHnNSF.swift,
+				Kokoro/KokoroTTSModel.swift,
+				Kokoro/Resources/af_alloy.json,
+				Kokoro/Resources/af_aoede.json,
+				Kokoro/Resources/af_bella.json,
+				Kokoro/Resources/af_heart.json,
+				Kokoro/Resources/af_jessica.json,
+				Kokoro/Resources/af_kore.json,
+				Kokoro/Resources/af_nicole.json,
+				Kokoro/Resources/af_nova.json,
+				Kokoro/Resources/af_river.json,
+				Kokoro/Resources/af_sarah.json,
+				Kokoro/Resources/af_sky.json,
+				Kokoro/Resources/am_adam.json,
+				Kokoro/Resources/am_echo.json,
+				Kokoro/Resources/am_eric.json,
+				Kokoro/Resources/am_fenrir.json,
+				Kokoro/Resources/am_liam.json,
+				Kokoro/Resources/am_michael.json,
+				Kokoro/Resources/am_onyx.json,
+				Kokoro/Resources/am_puck.json,
+				Kokoro/Resources/am_santa.json,
+				Kokoro/Resources/bf_alice.json,
+				Kokoro/Resources/bf_emma.json,
+				Kokoro/Resources/bf_isabella.json,
+				Kokoro/Resources/bf_lily.json,
+				Kokoro/Resources/bm_daniel.json,
+				Kokoro/Resources/bm_fable.json,
+				Kokoro/Resources/bm_george.json,
+				Kokoro/Resources/bm_lewis.json,
+				Kokoro/Resources/ef_dora.json,
+				Kokoro/Resources/em_alex.json,
+				Kokoro/Resources/em_santa.json,
+				Kokoro/Resources/ff_siwis.json,
+				Kokoro/Resources/gb_gold.json,
+				Kokoro/Resources/gb_silver.json,
+				Kokoro/Resources/hf_alpha.json,
+				Kokoro/Resources/hf_beta.json,
+				Kokoro/Resources/hm_omega.json,
+				Kokoro/Resources/hm_psi.json,
+				Kokoro/Resources/if_sara.json,
+				Kokoro/Resources/im_nicola.json,
+				Kokoro/Resources/jf_alpha.json,
+				Kokoro/Resources/jf_gongitsune.json,
+				Kokoro/Resources/jf_nezumi.json,
+				Kokoro/Resources/jf_tebukuro.json,
+				Kokoro/Resources/jm_kumo.json,
+				Kokoro/Resources/pf_dora.json,
+				Kokoro/Resources/pm_alex.json,
+				Kokoro/Resources/pm_santa.json,
+				Kokoro/Resources/us_gold.json,
+				Kokoro/Resources/us_silver.json,
+				Kokoro/Resources/zf_xiaobei.json,
+				Kokoro/Resources/zf_xiaoni.json,
+				Kokoro/Resources/zf_xiaoxiao.json,
+				Kokoro/Resources/zf_xiaoyi.json,
+				Kokoro/Resources/zm_yunjian.json,
+				Kokoro/Resources/zm_yunxi.json,
+				Kokoro/Resources/zm_yunxia.json,
+				Kokoro/Resources/zm_yunyang.json,
+				Kokoro/TextProcessing/ESpeakNGEngine.swift,
+				Kokoro/TextProcessing/KokoroTokenizer.swift,
+				Kokoro/TextProcessing/SentenceTokenizer.swift,
+				Kokoro/TextProcessing/Tokenizer.swift,
+				Kokoro/TTSEngine/DurationEncoder.swift,
+				Kokoro/TTSEngine/KokoroTTS.swift,
+				Kokoro/TTSEngine/KokoroWeightLoader.swift,
+				Kokoro/TTSEngine/ProsodyPredictor.swift,
+				Kokoro/TTSEngine/TextEncoder.swift,
+				Kokoro/TTSEngine/VoiceLoader.swift,
+				Kokoro/Utils/AudioUtils.swift,
+				Kokoro/Utils/BenchmarkTimer.swift,
+				"Marvis/Audio/Audio+MLXArray.swift",
+				Marvis/AudioPlayback.swift,
+				Marvis/MarvisSession.swift,
+				Marvis/Mimi/Conv.swift,
+				Marvis/Mimi/KVCache.swift,
+				Marvis/Mimi/Mimi.swift,
+				Marvis/Mimi/Quantization.swift,
+				Marvis/Mimi/Seanet.swift,
+				Marvis/Mimi/Transformer.swift,
+				Marvis/Models/LlamaModel.swift,
+				Marvis/Models/MarvisModel.swift,
+				Utils/AudioSessionManager.swift,
+			);
+			target = 7BBF57E22DDD06460047DCFF /* MLXAudio-iOS */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+		8FA197C82EBD6B4500389E17 /* Exceptions for "MLXAudio" folder in "Embed Frameworks" phase from "MLXAudio-iOS" target */ = {
+			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
+			attributesByRelativePath = {
+				Kokoro/Frameworks/ESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
+			};
+			buildPhase = 7BBF58302DDF0A010047DCFF /* Embed Frameworks */;
+			membershipExceptions = (
+				Kokoro/Frameworks/ESpeakNG.xcframework,
+			);
+		};
+/* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		2648361A2DAD10AA004DA2A4 /* Tests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -72,6 +204,10 @@
 		};
 		26942CF82DABD3B400B82507 /* MLXAudio */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				8F3CE2A72EBD635600CE6E86 /* Exceptions for "MLXAudio" folder in "MLXAudio-iOS" target */,
+				8FA197C82EBD6B4500389E17 /* Exceptions for "MLXAudio" folder in "Embed Frameworks" phase from "MLXAudio-iOS" target */,
+			);
 			path = MLXAudio;
 			sourceTree = "<group>";
 		};
@@ -523,6 +659,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -564,6 +701,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -577,6 +715,12 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = YQZQG7N4WG;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -589,10 +733,16 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					ESpeakNG,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio-iOS";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -607,6 +757,12 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = YQZQG7N4WG;
 				ENABLE_PREVIEWS = YES;
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -619,10 +775,16 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					ESpeakNG,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio-iOS";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALIDATE_PRODUCT = YES;

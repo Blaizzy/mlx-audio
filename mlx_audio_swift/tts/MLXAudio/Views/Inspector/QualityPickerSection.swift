@@ -2,7 +2,7 @@
 //  QualityPickerSection.swift
 //  MLXAudio
 //
-//  Created by Claude Code
+//  Created by Rudrank Riyam on 6/11/25.
 //
 
 import SwiftUI

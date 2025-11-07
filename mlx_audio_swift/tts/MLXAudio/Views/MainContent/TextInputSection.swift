@@ -2,16 +2,35 @@
 //  TextInputSection.swift
 //  MLXAudio
 //
-//  Created by Claude Code
+//  Created by Rudrank Riyam on 6/11/25.
 //
 
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct TextInputSection: View {
     @Binding var text: String
     @FocusState private var isFocused: Bool
 
     private let characterLimit = 5000
+
+    private var textBackgroundColor: Color {
+        #if os(macOS)
+        Color(nsColor: .textBackgroundColor)
+        #else
+        Color(UIColor.systemBackground)
+        #endif
+    }
+
+    private var separatorColor: Color {
+        #if os(macOS)
+        Color(nsColor: .separatorColor)
+        #else
+        Color(UIColor.separator)
+        #endif
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -40,13 +59,13 @@ struct TextInputSection: View {
                     .focused($isFocused)
                     .frame(minHeight: 150, maxHeight: 300)
                     .scrollContentBackground(.hidden)
-                    .background(Color(nsColor: .textBackgroundColor))
+                    .background(textBackgroundColor)
             }
-            .background(Color(nsColor: .textBackgroundColor))
+            .background(textBackgroundColor)
             .cornerRadius(8)
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
+                    .stroke(separatorColor, lineWidth: 1)
             )
 
             // Clear button
@@ -54,7 +73,11 @@ struct TextInputSection: View {
                 Button("Clear") {
                     text = ""
                 }
+                #if os(macOS)
                 .buttonStyle(.link)
+                #else
+                .buttonStyle(.plain)
+                #endif
             }
         }
     }

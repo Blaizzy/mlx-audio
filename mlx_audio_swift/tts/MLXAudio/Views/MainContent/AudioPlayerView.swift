@@ -2,11 +2,14 @@
 //  AudioPlayerView.swift
 //  MLXAudio
 //
-//  Created by Claude Code
+//  Created by Rudrank Riyam on 6/11/25.
 //
 
 import SwiftUI
 import AVFoundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct AudioPlayerView: View {
     let audioURL: URL?
@@ -19,6 +22,22 @@ struct AudioPlayerView: View {
     private var progress: Double {
         guard duration > 0 else { return 0 }
         return currentTime / duration
+    }
+
+    private var separatorColor: Color {
+        #if os(macOS)
+        Color(nsColor: .separatorColor)
+        #else
+        Color(UIColor.separator)
+        #endif
+    }
+
+    private var controlBackgroundColor: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(UIColor.secondarySystemBackground)
+        #endif
     }
 
     var body: some View {
@@ -40,7 +59,7 @@ struct AudioPlayerView: View {
                     ZStack(alignment: .leading) {
                         // Background
                         Rectangle()
-                            .fill(Color(nsColor: .separatorColor))
+                            .fill(separatorColor)
                             .frame(height: 4)
                             .cornerRadius(2)
 
@@ -83,7 +102,7 @@ struct AudioPlayerView: View {
             .padding(.trailing, 16)
         }
         .padding(.vertical, 12)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(controlBackgroundColor)
         .cornerRadius(8)
     }
 
@@ -96,6 +115,14 @@ struct AudioPlayerView: View {
 
 // Empty state placeholder for when no audio is available
 struct AudioPlayerPlaceholder: View {
+    private var controlBackgroundColor: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(UIColor.secondarySystemBackground)
+        #endif
+    }
+
     var body: some View {
         HStack(spacing: 16) {
             Image(systemName: "play.circle.fill")
@@ -126,7 +153,7 @@ struct AudioPlayerPlaceholder: View {
             .padding(.trailing, 16)
         }
         .padding(.vertical, 12)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .background(controlBackgroundColor)
         .cornerRadius(8)
     }
 }
