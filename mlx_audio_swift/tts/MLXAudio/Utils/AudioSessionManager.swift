@@ -24,8 +24,19 @@ public class AudioSessionManager {
     public func setupAudioSession() {
         #if os(iOS)
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
+            // Use .playback category to ensure audio plays even when device is in silent mode
+            // .mixWithOthers allows audio to play alongside other apps
+            // .duckOthers reduces volume of other audio when this app plays
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .default,
+                options: [.duckOthers, .mixWithOthers]
+            )
             try AVAudioSession.sharedInstance().setActive(true)
+
+            // Log the current audio route for debugging
+            let currentRoute = AVAudioSession.sharedInstance().currentRoute
+            print("Audio output route: \(currentRoute.outputs.first?.portName ?? "unknown")")
         } catch {
             print("Audio session setup failed: \(error)")
         }
@@ -39,7 +50,11 @@ public class AudioSessionManager {
         do {
             try AVAudioSession.sharedInstance().setActive(false)
             try AVAudioSession.sharedInstance().setActive(true)
-            try AVAudioSession.sharedInstance().setCategory(.playback, options: [.duckOthers])
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .default,
+                options: [.duckOthers, .mixWithOthers]
+            )
         } catch {
             print("Failed to reset audio session: \(error)")
         }
