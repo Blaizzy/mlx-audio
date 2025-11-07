@@ -13,6 +13,16 @@ A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX f
 - Quantization support for optimized performance
 - Direct access to output files via Finder/Explorer integration
 
+## Quick Start
+
+```bash
+# Generate audio from text
+uvx mlx_audio generate --text "Hello, world"
+
+# Start a local server
+uvx mlx_audio server
+```
+
 ## Installation
 
 ```bash
