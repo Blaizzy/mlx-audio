@@ -6,6 +6,8 @@ __pycache__/
 .Python
 build/
 swiftpm/
+.build/
+.swiftpm/
 develop-eggs/
 dist/
 downloads/
@@ -33,6 +35,14 @@ env/
 .vscode/
 *.swp
 *.swo
+
+# Xcode
+xcuserdata/
+*.xcuserstate
+DerivedData/
+*.moved-aside
+*.xccheckout
+*.xcscmblueprint
 
 # OS
 .DS_Store
