@@ -348,9 +348,9 @@ struct ContentView: View {
                     dismissKeyboard()
                     isTextEditorFocused = false
                 }
-                
+
                 let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                
+
                 Task {
                     if chosenProvider == .kokoro {
                         // Prepare text and speaker for Kokoro
@@ -364,13 +364,10 @@ struct ContentView: View {
                         if marvisSession == nil {
                             isMarvisLoading = true
                             do {
-                                marvisSession = try await MarvisSession.fromPretrained(progressHandler: { progress in
-                                    // Update loading status if needed
-                                })
+                                marvisSession = try await MarvisSession.fromPretrained(progressHandler: { _ in })
                                 isMarvisLoading = false
                             } catch {
                                 isMarvisLoading = false
-                                print("Failed to load Marvis TTS: \(error)")
                                 return
                             }
                         }
@@ -410,9 +407,9 @@ struct ContentView: View {
                                 }
                                 status = "Marvis TTS streaming complete!"
                             } else {
-                                // Use non-streaming API
+                                // Use non-streaming API with playback enabled
                                 status = "Generating with Marvis TTS..."
-                                let result = try await marvisSession!.generateRaw(
+                                let result = try await marvisSession!.generate(
                                     for: text,
                                     quality: chosenQuality
                                 )
@@ -458,7 +455,7 @@ struct ContentView: View {
                     do {
                         try marvisSession?.cleanupMemory()
                     } catch {
-                        print("Failed to cleanup Marvis memory: \(error)")
+                        // Failed to cleanup Marvis memory
                     }
                     isMarvisPlaying = false
                     status = "Marvis TTS playback stopped"

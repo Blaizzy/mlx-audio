@@ -689,7 +689,7 @@ public extension MarvisSession {
         return Self.mergeResults(results)
     }
 
-    /// Generates speech without enqueuing playback; returns one merged result.
+    /// Generates speech and optionally enqueues playback based on playbackEnabled; returns one merged result.
     func generateRaw(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
         let pieces = [text]
         let qualityToUse = quality ?? boundQuality
@@ -704,7 +704,7 @@ public extension MarvisSession {
                 stream: false,
                 streamingInterval: 0.5,
                 onStreamingResult: nil,
-                enqueuePlayback: false
+                enqueuePlayback: self.playbackEnabled
             )
         }.value
         return Self.mergeResults(results)
