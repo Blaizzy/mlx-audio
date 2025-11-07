@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+swiftpm/
 develop-eggs/
 dist/
 downloads/
