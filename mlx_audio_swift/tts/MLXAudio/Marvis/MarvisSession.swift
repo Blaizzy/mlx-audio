@@ -6,7 +6,11 @@ import MLXNN
 import Tokenizers
 import AVFoundation
 
+// MARK: - Main Class
+
 public final class MarvisSession: Module {
+    // MARK: - Public Types
+
     public enum Voice: String, CaseIterable {
         case conversationalA = "conversational_a"
         case conversationalB = "conversational_b"
@@ -28,23 +32,35 @@ public final class MarvisSession: Module {
         }
     }
 
+    public struct GenerationResult {
+        public let audio: [Float]
+        public let sampleRate: Int
+        public let sampleCount: Int
+        public let frameCount: Int
+        public let audioDuration: TimeInterval
+        public let realTimeFactor: Double
+        public let processingTime: Double
+    }
+
+    // MARK: - Public Properties
+
     public let sampleRate: Double
+
+    // MARK: - Private Properties
 
     private let model: MarvisModel
     private let _promptURLs: [URL]?
-    // Renamed underscored members to Swiftier names
     private let textTokenizer: any Tokenizer
     private let audioTokenizer: MimiTokenizer
     private let streamingDecoder: MimiStreamingDecoder
-    
-    // Audio playback
     private var playback: AudioPlayback?
     private let playbackEnabled: Bool
-    // Bound configuration for session-like ergonomics
     private var boundVoice: Voice? = .conversationalA
     private var boundRefAudio: MLXArray? = nil
     private var boundRefText: String? = nil
     private var boundQuality: QualityLevel = .maximum
+
+    // MARK: - Public Initializers
 
     public init(
         config: MarvisModelArgs,
@@ -54,17 +70,15 @@ public final class MarvisSession: Module {
         playbackEnabled: Bool = true
     ) async throws {
         self.model = try MarvisModel(config: config)
-
         self._promptURLs = promptURLs
         self.playbackEnabled = playbackEnabled
-
         self.textTokenizer = try await loadTokenizer(configuration: ModelConfiguration(id: repoId), hub: HubApi.shared)
-
         self.audioTokenizer = try await MimiTokenizer(Mimi.fromPretrained(progressHandler: progressHandler))
-
         self.streamingDecoder = MimiStreamingDecoder(audioTokenizer.codec)
         self.sampleRate = audioTokenizer.codec.cfg.sampleRate
+
         super.init()
+
         try model.resetCaches()
 
         if playbackEnabled {
@@ -72,12 +86,306 @@ public final class MarvisSession: Module {
         } else {
             playback = nil
         }
-
     }
-    
-    deinit { playback?.stop() }
 
-    private func tokenizeTextSegment(text: String, speaker: Int) -> (MLXArray, MLXArray) {
+    public convenience init(
+        voice: Voice = .conversationalA,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in },
+        playbackEnabled: Bool = true
+    ) async throws {
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
+        try self.installWeights(args: args, weightFileURL: weightFileURL)
+
+        self.boundVoice = voice
+        self.boundRefAudio = nil
+        self.boundRefText = nil
+    }
+
+    public convenience init(
+        refAudio: MLXArray,
+        refText: String,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in },
+        playbackEnabled: Bool = true
+    ) async throws {
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
+        try self.installWeights(args: args, weightFileURL: weightFileURL)
+
+        self.boundVoice = nil
+        self.boundRefAudio = refAudio
+        self.boundRefText = refText
+    }
+
+    deinit {
+        playback?.stop()
+    }
+}
+
+// MARK: - Public API
+
+public extension MarvisSession {
+    /// Stops audio playback immediately
+    func stopPlayback() {
+        playback?.stop()
+    }
+
+    /// Manually triggers memory cleanup for this TTS instance
+    func cleanupMemory() throws {
+        try model.resetCaches()
+        streamingDecoder.reset()
+        playback?.stop()
+        autoreleasepool { }
+    }
+
+    /// Synthesizes speech using the bound voice or reference; returns a single merged result.
+    func generate(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
+        let results = try await generateAsync(
+            text: text,
+            voice: boundVoice,
+            refAudio: boundRefAudio,
+            refText: boundRefText,
+            qualityLevel: quality ?? boundQuality
+        )
+        return Self.mergeResults(results)
+    }
+
+    /// Generates speech and optionally enqueues playback based on playbackEnabled; returns one merged result.
+    func generateRaw(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
+        let pieces = [text]
+        let qualityToUse = quality ?? boundQuality
+        let results: [GenerationResult] = try await Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return [] as [GenerationResult] }
+            return try self.generateCore(
+                text: pieces,
+                voice: self.boundVoice,
+                refAudio: self.boundRefAudio,
+                refText: self.boundRefText,
+                qualityLevel: qualityToUse,
+                stream: false,
+                streamingInterval: 0.5,
+                onStreamingResult: nil,
+                enqueuePlayback: self.playbackEnabled
+            )
+        }.value
+        return Self.mergeResults(results)
+    }
+
+    /// Streams speech using the bound voice or reference.
+    func stream(_ text: String, quality: QualityLevel? = nil, interval: Double = 0.5) -> AsyncThrowingStream<GenerationResult, Error> {
+        stream(
+            text: text,
+            voice: boundVoice,
+            refAudio: boundRefAudio,
+            refText: boundRefText,
+            qualityLevel: quality ?? boundQuality,
+            streamingInterval: interval
+        )
+    }
+
+    /// Non-blocking async variant for a single text string.
+    func generateAsync(
+        text: String,
+        voice: Voice? = .conversationalA,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
+        qualityLevel: QualityLevel = .maximum,
+        splitPattern: String? = #"(\n+)"#
+    ) async throws -> [GenerationResult] {
+        let pieces = splitText(text, pattern: splitPattern)
+
+        return try await Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return [] }
+            return try self.generateCore(
+                text: pieces,
+                voice: voice,
+                refAudio: refAudio,
+                refText: refText,
+                qualityLevel: qualityLevel,
+                stream: false,
+                streamingInterval: 0.5,
+                onStreamingResult: nil,
+                enqueuePlayback: self.playbackEnabled
+            )
+        }.value
+    }
+
+    /// Streams generated audio chunks for the given text as an AsyncThrowingStream.
+    func stream(
+        text: String,
+        voice: Voice? = .conversationalA,
+        refAudio: MLXArray? = nil,
+        refText: String? = nil,
+        qualityLevel: QualityLevel = .maximum,
+        splitPattern: String? = #"(\n+)"#,
+        streamingInterval: Double = 0.5
+    ) -> AsyncThrowingStream<GenerationResult, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task.detached(priority: .userInitiated) { [weak self] in
+                guard let self else { return }
+                do {
+                    let pieces = self.splitText(text, pattern: splitPattern)
+
+                    _ = try self.generateCore(
+                        text: pieces,
+                        voice: voice,
+                        refAudio: refAudio,
+                        refText: refText,
+                        qualityLevel: qualityLevel,
+                        stream: true,
+                        streamingInterval: streamingInterval,
+                        onStreamingResult: { gr in
+                            continuation.yield(gr)
+                        },
+                        enqueuePlayback: self.playbackEnabled
+                    )
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+    }
+
+    /// Creates a Marvis session and binds a default voice.
+    static func make(
+        voice: Voice = .conversationalA,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> MarvisSession {
+        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
+        engine.boundVoice = voice
+        engine.boundRefAudio = nil
+        engine.boundRefText = nil
+        return engine
+    }
+
+    /// Creates a Marvis session and binds a custom reference voice.
+    static func make(
+        refAudio: MLXArray,
+        refText: String,
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void = { _ in }
+    ) async throws -> MarvisSession {
+        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
+        engine.boundVoice = nil
+        engine.boundRefAudio = refAudio
+        engine.boundRefText = refText
+        return engine
+    }
+
+    static func fromPretrained(
+        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        progressHandler: @escaping (Progress) -> Void
+    ) async throws -> MarvisSession {
+        let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
+        let model = try await MarvisSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
+        try model.installWeights(args: args, weightFileURL: weightFileURL)
+        return model
+    }
+}
+
+// MARK: - Private Helpers
+
+private extension MarvisSession {
+    // MARK: - Model Loading
+
+    static func snapshotAndConfig(
+        repoId: String,
+        progressHandler: @escaping (Progress) -> Void
+    ) async throws -> (args: MarvisModelArgs, promptURLs: [URL], weightFileURL: URL) {
+        let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
+        let weightFileURL = modelDirectoryURL.appending(path: "model.safetensors")
+        let promptDir = modelDirectoryURL.appending(path: "prompts", directoryHint: .isDirectory)
+        var audioPromptURLs: [URL] = []
+        for url in try FileManager.default.contentsOfDirectory(at: promptDir, includingPropertiesForKeys: nil) where url.pathExtension == "wav" {
+            audioPromptURLs.append(url)
+        }
+        let configFileURL = modelDirectoryURL.appending(path: "config.json")
+        let args = try JSONDecoder().decode(MarvisModelArgs.self, from: Data(contentsOf: configFileURL))
+        return (args, audioPromptURLs, weightFileURL)
+    }
+
+    func installWeights(args: MarvisModelArgs, weightFileURL: URL) throws {
+        var weights: [String: MLXArray] = [:]
+        let w = try loadArrays(url: weightFileURL)
+        for (k, v) in w { weights[k] = v }
+
+        func extractInt(from value: JSONValue?) -> Int? {
+            guard let value = value else { return nil }
+            switch value {
+            case .number(let d):
+                return Int(d)
+            case .string(let s):
+                return Int(s)
+            default:
+                return nil
+            }
+        }
+
+        if let quantization = args.quantization,
+           let groupSize = extractInt(from: quantization["group_size"]),
+           let bits = extractInt(from: quantization["bits"]) {
+            quantize(model: self, groupSize: groupSize, bits: bits) { path, _ in
+                weights["\(path).scales"] != nil
+            }
+        } else {
+            weights = Self.sanitize(weights: weights)
+        }
+
+        let parameters = ModuleParameters.unflattened(weights)
+        try update(parameters: parameters, verify: [.all])
+        eval(self)
+    }
+
+    static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var out: [String: MLXArray] = [:]
+        out.reserveCapacity(weights.count)
+
+        for (rawKey, v) in weights {
+            var k = rawKey
+
+            if !k.hasPrefix("model.") {
+                k = "model." + k
+            }
+
+            if k.contains("attn") && !k.contains("self_attn") {
+                k = k.replacingOccurrences(of: "attn", with: "self_attn")
+                k = k.replacingOccurrences(of: "output_proj", with: "o_proj")
+            }
+
+            if k.contains("mlp") {
+                k = k.replacingOccurrences(of: "w1", with: "gate_proj")
+                k = k.replacingOccurrences(of: "w2", with: "down_proj")
+                k = k.replacingOccurrences(of: "w3", with: "up_proj")
+            }
+
+            if k.contains("sa_norm") || k.contains("mlp_norm") {
+                k = k.replacingOccurrences(of: "sa_norm", with: "input_layernorm")
+                k = k.replacingOccurrences(of: "scale", with: "weight")
+                k = k.replacingOccurrences(of: "mlp_norm", with: "post_attention_layernorm")
+                k = k.replacingOccurrences(of: "scale", with: "weight")
+            }
+
+            if k.contains("decoder.norm") || k.contains("backbone.norm") {
+                k = k.replacingOccurrences(of: "scale", with: "weight")
+            }
+
+            out[k] = v
+        }
+
+        return out
+    }
+
+    // MARK: - Tokenization
+
+    func tokenizeTextSegment(text: String, speaker: Int) -> (MLXArray, MLXArray) {
         let K = model.args.audioNumCodebooks
         let frameW = K + 1
 
@@ -109,7 +417,7 @@ public final class MarvisSession: Module {
         return (frame, mask)
     }
 
-    private func tokenizeAudio(_ audio: MLXArray, addEOS: Bool = true) -> (MLXArray, MLXArray) {
+    func tokenizeAudio(_ audio: MLXArray, addEOS: Bool = true) -> (MLXArray, MLXArray) {
         let K = model.args.audioNumCodebooks
         let frameW = K + 1
 
@@ -141,70 +449,25 @@ public final class MarvisSession: Module {
         return (frame, mask)
     }
 
-    private func tokenizeSegment(_ segment: Segment, addEOS: Bool = true) -> (MLXArray, MLXArray) {
+    func tokenizeSegment(_ segment: Segment, addEOS: Bool = true) -> (MLXArray, MLXArray) {
         let (txt, txtMask) = tokenizeTextSegment(text: segment.text, speaker: segment.speaker)
         let (aud, audMask) = tokenizeAudio(segment.audio, addEOS: addEOS)
         return (concatenated([txt, aud], axis: 0), concatenated([txtMask, audMask], axis: 0))
     }
-}
 
-public extension MarvisSession {
-    // MARK: - Shared model loading helpers
-    // MARK: - Shared model loading helpers
-
-    private static func snapshotAndConfig(
-        repoId: String,
-        progressHandler: @escaping (Progress) -> Void
-    ) async throws -> (args: MarvisModelArgs, promptURLs: [URL], weightFileURL: URL) {
-        let modelDirectoryURL = try await Hub.snapshot(from: repoId, progressHandler: progressHandler)
-        let weightFileURL = modelDirectoryURL.appending(path: "model.safetensors")
-        let promptDir = modelDirectoryURL.appending(path: "prompts", directoryHint: .isDirectory)
-        var audioPromptURLs: [URL] = []
-        for url in try FileManager.default.contentsOfDirectory(at: promptDir, includingPropertiesForKeys: nil) where url.pathExtension == "wav" {
-            audioPromptURLs.append(url)
-        }
-        let configFileURL = modelDirectoryURL.appending(path: "config.json")
-        let args = try JSONDecoder().decode(MarvisModelArgs.self, from: Data(contentsOf: configFileURL))
-        return (args, audioPromptURLs, weightFileURL)
+    func tokenizeStart(for segment: Segment) -> (tokens: MLXArray, mask: MLXArray, pos: MLXArray) {
+        let (st, sm) = tokenizeSegment(segment, addEOS: false)
+        let promptTokens = concatenated([st], axis: 0).asType(Int32.self) // [T, K+1]
+        let promptMask = concatenated([sm], axis: 0).asType(Bool.self)   // [T, K+1]
+        let currTokens = expandedDimensions(promptTokens, axis: 0) // [1, T, K+1]
+        let currMask = expandedDimensions(promptMask, axis: 0)     // [1, T, K+1]
+        let currPos = expandedDimensions(MLXArray.arange(promptTokens.shape[0]), axis: 0) // [1, T]
+        return (currTokens, currMask, currPos)
     }
 
-    private func installWeights(args: MarvisModelArgs, weightFileURL: URL) throws {
-        var weights: [String: MLXArray] = [:]
-        let w = try loadArrays(url: weightFileURL)
-        for (k, v) in w { weights[k] = v }
+    // MARK: - Generation Context
 
-        // Helper to extract Int from JSONValue, handling both number and string cases
-        func extractInt(from value: JSONValue?) -> Int? {
-            guard let value = value else { return nil }
-            switch value {
-            case .number(let d):
-                return Int(d)
-            case .string(let s):
-                return Int(s)
-            default:
-                return nil
-            }
-        }
-
-        if let quantization = args.quantization,
-           let groupSize = extractInt(from: quantization["group_size"]),
-           let bits = extractInt(from: quantization["bits"]) {
-            quantize(model: self, groupSize: groupSize, bits: bits) { path, _ in
-                weights["\(path).scales"] != nil
-            }
-        } else {
-            weights = Self.sanitize(weights: weights)
-        }
-
-        let parameters = ModuleParameters.unflattened(weights)
-        try update(parameters: parameters, verify: [.all])
-        eval(self)
-    }
-
-    // MARK: - Generation helpers
-
-    /// Builds the generation context from either a bound voice or reference.
-    private func makeContext(voice: Voice?, refAudio: MLXArray?, refText: String?) throws -> Segment {
+    func makeContext(voice: Voice?, refAudio: MLXArray?, refText: String?) throws -> Segment {
         if let refAudio, let refText {
             return Segment(speaker: 0, text: refText, audio: refAudio)
         } else if let voice {
@@ -229,19 +492,57 @@ public extension MarvisSession {
         throw MarvisTTSError.voiceNotFound
     }
 
-    /// Tokenizes a single segment and returns initial token state.
-    private func tokenizeStart(for segment: Segment) -> (tokens: MLXArray, mask: MLXArray, pos: MLXArray) {
-        let (st, sm) = tokenizeSegment(segment, addEOS: false)
-        let promptTokens = concatenated([st], axis: 0).asType(Int32.self) // [T, K+1]
-        let promptMask = concatenated([sm], axis: 0).asType(Bool.self)   // [T, K+1]
-        let currTokens = expandedDimensions(promptTokens, axis: 0) // [1, T, K+1]
-        let currMask = expandedDimensions(promptMask, axis: 0)     // [1, T, K+1]
-        let currPos = expandedDimensions(MLXArray.arange(promptTokens.shape[0]), axis: 0) // [1, T]
-        return (currTokens, currMask, currPos)
+    // MARK: - Core Generation
+
+    func generateCore(
+        text: [String],
+        voice: Voice?,
+        refAudio: MLXArray?,
+        refText: String?,
+        qualityLevel: QualityLevel,
+        stream: Bool,
+        streamingInterval: Double,
+        onStreamingResult: ((GenerationResult) -> Void)?,
+        enqueuePlayback: Bool
+    ) throws -> [GenerationResult] {
+        guard voice != nil || refAudio != nil else {
+            throw MarvisTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
+        }
+
+        let base = try makeContext(voice: voice, refAudio: refAudio, refText: refText)
+        let sampleFn = TopPSampler(temperature: 0.9, topP: 0.8).sample
+        let intervalTokens = Int(streamingInterval * 12.5)
+        var results: [GenerationResult] = []
+
+        for prompt in text {
+            let generationText = (base.text + " " + prompt).trimmingCharacters(in: .whitespaces)
+            let seg = Segment(speaker: 0, text: generationText, audio: base.audio)
+
+            try model.resetCaches()
+            if stream { streamingDecoder.reset() }
+
+            let (tok, msk, pos) = tokenizeStart(for: seg)
+            let r = try decodePrompt(
+                currTokens: tok,
+                currMask: msk,
+                currPos: pos,
+                qualityLevel: qualityLevel,
+                stream: stream,
+                streamingIntervalTokens: intervalTokens,
+                sampler: sampleFn,
+                onStreamingResult: onStreamingResult,
+                enqueuePlayback: enqueuePlayback
+            )
+            results.append(contentsOf: r)
+        }
+
+        try model.resetCaches()
+        if stream { streamingDecoder.reset() }
+        autoreleasepool { }
+        return results
     }
 
-    /// Decodes audio frames for one prompt, optionally streaming.
-    private func decodePrompt(
+    func decodePrompt(
         currTokens startTokens: MLXArray,
         currMask startMask: MLXArray,
         currPos startPos: MLXArray,
@@ -319,226 +620,8 @@ public extension MarvisSession {
 
         return results
     }
-    // MARK: - Async convenience initializers (initializer-based instead of factories)
 
-    /// Initializes and loads the Marvis model, binding a default voice.
-    /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
-    convenience init(
-        voice: Voice = .conversationalA,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
-        progressHandler: @escaping (Progress) -> Void = { _ in },
-        playbackEnabled: Bool = true
-    ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
-        try self.installWeights(args: args, weightFileURL: weightFileURL)
-
-        // Bind configuration
-        self.boundVoice = voice
-        self.boundRefAudio = nil
-        self.boundRefText = nil
-    }
-
-    /// Initializes and loads the Marvis model, binding a custom reference (24 kHz mono).
-    convenience init(
-        refAudio: MLXArray,
-        refText: String,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
-        progressHandler: @escaping (Progress) -> Void = { _ in },
-        playbackEnabled: Bool = true
-    ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
-        try self.installWeights(args: args, weightFileURL: weightFileURL)
-
-        // Bind configuration
-        self.boundVoice = nil
-        self.boundRefAudio = refAudio
-        self.boundRefText = refText
-    }
-    // MARK: - Factories (Apple-style ergonomics)
-
-    /// Creates a Marvis session and binds a default voice.
-    static func make(
-        voice: Voice = .conversationalA,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
-        progressHandler: @escaping (Progress) -> Void = { _ in }
-    ) async throws -> MarvisSession {
-        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
-        engine.boundVoice = voice
-        engine.boundRefAudio = nil
-        engine.boundRefText = nil
-        return engine
-    }
-
-    /// Creates a Marvis session and binds a custom reference voice.
-    static func make(
-        refAudio: MLXArray,
-        refText: String,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
-        progressHandler: @escaping (Progress) -> Void = { _ in }
-    ) async throws -> MarvisSession {
-        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
-        engine.boundVoice = nil
-        engine.boundRefAudio = refAudio
-        engine.boundRefText = refText
-        return engine
-    }
-
-    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> MarvisSession {
-        let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        let model = try await MarvisSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
-        try model.installWeights(args: args, weightFileURL: weightFileURL)
-        return model
-    }
-
-    private static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var out: [String: MLXArray] = [:]
-        out.reserveCapacity(weights.count)
-
-        for (rawKey, v) in weights {
-            var k = rawKey
-
-            if !k.hasPrefix("model.") {
-                k = "model." + k
-            }
-
-            if k.contains("attn") && !k.contains("self_attn") {
-                k = k.replacingOccurrences(of: "attn", with: "self_attn")
-                k = k.replacingOccurrences(of: "output_proj", with: "o_proj")
-            }
-
-            if k.contains("mlp") {
-                k = k.replacingOccurrences(of: "w1", with: "gate_proj")
-                k = k.replacingOccurrences(of: "w2", with: "down_proj")
-                k = k.replacingOccurrences(of: "w3", with: "up_proj")
-            }
-
-            if k.contains("sa_norm") || k.contains("mlp_norm") {
-                k = k.replacingOccurrences(of: "sa_norm", with: "input_layernorm")
-                k = k.replacingOccurrences(of: "scale", with: "weight")
-                k = k.replacingOccurrences(of: "mlp_norm", with: "post_attention_layernorm")
-                k = k.replacingOccurrences(of: "scale", with: "weight")
-            }
-
-            if k.contains("decoder.norm") || k.contains("backbone.norm") {
-                k = k.replacingOccurrences(of: "scale", with: "weight")
-            }
-
-            out[k] = v
-        }
-
-        return out
-    }
-}
-
-private struct Segment {
-    public let speaker: Int
-    public let text: String
-    public let audio: MLXArray
-
-    public init(speaker: Int, text: String, audio: MLXArray) {
-        self.speaker = speaker
-        self.text = text
-        self.audio = audio
-    }
-}
-
-// MARK: -
-
-public enum MarvisTTSError: Error, LocalizedError {
-    case invalidArgument(String)
-    case voiceNotFound
-    case invalidRefAudio(String)
-
-    public var errorDescription: String? {
-        switch self {
-        case .invalidArgument(let msg):
-            return msg
-        case .voiceNotFound:
-            return "Requested voice not found or missing reference assets."
-        case .invalidRefAudio(let msg):
-            return msg
-        }
-    }
-}
-
-public extension MarvisSession {
-    struct GenerationResult {
-        public let audio: [Float]
-        public let sampleRate: Int
-        public let sampleCount: Int
-        public let frameCount: Int
-        public let audioDuration: TimeInterval
-        public let realTimeFactor: Double
-        public let processingTime: Double
-    }
-
-    // Internal core generation routine (sync), used by async and streaming APIs.
-    private func generateCore(
-        text: [String],
-        voice: Voice?,
-        refAudio: MLXArray?,
-        refText: String?,
-        qualityLevel: QualityLevel,
-        stream: Bool,
-        streamingInterval: Double,
-        onStreamingResult: ((GenerationResult) -> Void)?,
-        enqueuePlayback: Bool
-    ) throws -> [GenerationResult] {
-        guard voice != nil || refAudio != nil else {
-            throw MarvisTTSError.invalidArgument("`voice` or `refAudio`/`refText` must be specified.")
-        }
-
-        let base = try makeContext(voice: voice, refAudio: refAudio, refText: refText)
-        let sampleFn = TopPSampler(temperature: 0.9, topP: 0.8).sample
-        let intervalTokens = Int(streamingInterval * 12.5)
-        var results: [GenerationResult] = []
-
-        for prompt in text {
-            let generationText = (base.text + " " + prompt).trimmingCharacters(in: .whitespaces)
-            let seg = Segment(speaker: 0, text: generationText, audio: base.audio)
-
-            try model.resetCaches()
-            if stream { streamingDecoder.reset() }
-
-            let (tok, msk, pos) = tokenizeStart(for: seg)
-            let r = try decodePrompt(
-                currTokens: tok,
-                currMask: msk,
-                currPos: pos,
-                qualityLevel: qualityLevel,
-                stream: stream,
-                streamingIntervalTokens: intervalTokens,
-                sampler: sampleFn,
-                onStreamingResult: onStreamingResult,
-                enqueuePlayback: enqueuePlayback
-            )
-            results.append(contentsOf: r)
-        }
-
-        try model.resetCaches()
-        if stream { streamingDecoder.reset() }
-        autoreleasepool { }
-        return results
-    }
-
-    /// Manually triggers memory cleanup for this TTS instance
-    func cleanupMemory() throws {
-        try model.resetCaches()
-        streamingDecoder.reset()
-        
-        // Stop audio engine
-        playback?.stop()
-
-        autoreleasepool {
-            // Allow cleanup of any cached arrays
-        }
-
-    }
-
-    private func generateResultChunk(_ frames: [MLXArray], start: CFTimeInterval, streaming: Bool, enqueuePlayback: Bool) -> GenerationResult {
-
+    func generateResultChunk(_ frames: [MLXArray], start: CFTimeInterval, streaming: Bool, enqueuePlayback: Bool) -> GenerationResult {
         let frameCount = frames.count
 
         var stacked = stacked(frames, axis: 0) // [F, 1, K]
@@ -557,8 +640,6 @@ public extension MarvisSession {
         let audioSeconds = Double(sampleCount) / Double(sr)
         let rtf = (audioSeconds > 0) ? elapsed / audioSeconds : 0.0
 
-
-        // Create result with proper memory management
         let result = GenerationResult(
             audio: audio.asArray(Float32.self),
             sampleRate: sr,
@@ -566,164 +647,37 @@ public extension MarvisSession {
             frameCount: frameCount,
             audioDuration: audioSeconds,
             realTimeFactor: (rtf * 100).rounded() / 100,
-            processingTime: elapsed,
+            processingTime: elapsed
         )
 
-        // Play the generated audio (if enabled)
         if enqueuePlayback {
             playback?.enqueue(result.audio, prebufferSeconds: streaming ? 2.0 : 0.0)
         }
 
-        // Force cleanup of large intermediate arrays
         autoreleasepool {
-            // The stacked array and audio1x1x are large and should be released
-            _ = stacked  // Keep reference until autoreleasepool exits
-            _ = audio1x1x  // Keep reference until autoreleasepool exits
-            _ = audio  // Keep reference until autoreleasepool exits
+            _ = stacked
+            _ = audio1x1x
+            _ = audio
         }
 
         return result
     }
 
-    // MARK: - Async/Await convenience
+    // MARK: - Text Processing
 
-    /// Non-blocking async variant for a single text string.
-    func generateAsync(
-        text: String,
-        voice: Voice? = .conversationalA,
-        refAudio: MLXArray? = nil,
-        refText: String? = nil,
-        qualityLevel: QualityLevel = .maximum,
-        splitPattern: String? = #"(\n+)"#
-    ) async throws -> [GenerationResult] {
-        let pieces: [String]
-        if let pat = splitPattern, let re = try? NSRegularExpression(pattern: pat) {
+    func splitText(_ text: String, pattern: String?) -> [String] {
+        if let pat = pattern, let re = try? NSRegularExpression(pattern: pat) {
             let full = text.trimmingCharacters(in: .whitespacesAndNewlines)
             let range = NSRange(full.startIndex ..< full.endIndex, in: full)
             let splits = re.split(full, range: range)
-            pieces = splits.isEmpty ? [full] : splits
-        } else {
-            pieces = [text]
+            return splits.isEmpty ? [full] : splits
         }
-
-        return try await Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return [] }
-            return try self.generateCore(
-                text: pieces,
-                voice: voice,
-                refAudio: refAudio,
-                refText: refText,
-                qualityLevel: qualityLevel,
-                stream: false,
-                streamingInterval: 0.5,
-                onStreamingResult: nil,
-                enqueuePlayback: self.playbackEnabled
-            )
-        }.value
+        return [text]
     }
 
-    // MARK: - Streaming API (AsyncThrowingStream)
+    // MARK: - Result Merging
 
-    /// Streams generated audio chunks for the given text as an AsyncThrowingStream.
-    /// Each yielded `GenerationResult` represents a chunk of decoded audio.
-    func stream(
-        text: String,
-        voice: Voice? = .conversationalA,
-        refAudio: MLXArray? = nil,
-        refText: String? = nil,
-        qualityLevel: QualityLevel = .maximum,
-        splitPattern: String? = #"(\n+)"#,
-        streamingInterval: Double = 0.5
-    ) -> AsyncThrowingStream<GenerationResult, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task.detached(priority: .userInitiated) { [weak self] in
-                guard let self else { return }
-                do {
-                    let pieces: [String]
-                    if let pat = splitPattern, let re = try? NSRegularExpression(pattern: pat) {
-                        let full = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let range = NSRange(full.startIndex ..< full.endIndex, in: full)
-                        let splits = re.split(full, range: range)
-                        pieces = splits.isEmpty ? [full] : splits
-                    } else {
-                        pieces = [text]
-                    }
-
-                    _ = try self.generateCore(
-                        text: pieces,
-                        voice: voice,
-                        refAudio: refAudio,
-                        refText: refText,
-                        qualityLevel: qualityLevel,
-                        stream: true,
-                        streamingInterval: streamingInterval,
-                        onStreamingResult: { gr in
-                            continuation.yield(gr)
-                        },
-                        enqueuePlayback: self.playbackEnabled
-                    )
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
-        }
-    }
-
-    // MARK: - Apple-style shorthand using bound configuration
-
-    /// Synthesizes speech using the bound voice or reference; returns a single merged result.
-    /// Shorthand 'generate(for:)' mirrors Python 'generate_audio' semantics while staying Swifty.
-    func generate(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
-        let results = try await generateAsync(
-            text: text,
-            voice: boundVoice,
-            refAudio: boundRefAudio,
-            refText: boundRefText,
-            qualityLevel: quality ?? boundQuality
-        )
-        return Self.mergeResults(results)
-    }
-
-    /// Generates speech and optionally enqueues playback based on playbackEnabled; returns one merged result.
-    func generateRaw(for text: String, quality: QualityLevel? = nil) async throws -> GenerationResult {
-        let pieces = [text]
-        let qualityToUse = quality ?? boundQuality
-        let results: [GenerationResult] = try await Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return [] as [GenerationResult] }
-            return try self.generateCore(
-                text: pieces,
-                voice: self.boundVoice,
-                refAudio: self.boundRefAudio,
-                refText: self.boundRefText,
-                qualityLevel: qualityToUse,
-                stream: false,
-                streamingInterval: 0.5,
-                onStreamingResult: nil,
-                enqueuePlayback: self.playbackEnabled
-            )
-        }.value
-        return Self.mergeResults(results)
-    }
-
-    /// Streams speech using the bound voice or reference.
-    func stream(_ text: String, quality: QualityLevel? = nil, interval: Double = 0.5) -> AsyncThrowingStream<GenerationResult, Error> {
-        stream(
-            text: text,
-            voice: boundVoice,
-            refAudio: boundRefAudio,
-            refText: boundRefText,
-            qualityLevel: quality ?? boundQuality,
-            streamingInterval: interval
-        )
-    }
-
-    /// Merges multiple chunk results into a single aggregated result.
-    private static func mergeResults(_ parts: [GenerationResult]) -> GenerationResult {
+    static func mergeResults(_ parts: [GenerationResult]) -> GenerationResult {
         guard let first = parts.first else {
             return GenerationResult(
                 audio: [], sampleRate: 24_000, sampleCount: 0,
@@ -760,7 +714,38 @@ public extension MarvisSession {
     }
 }
 
-// MARK: -
+// MARK: - Supporting Types
+
+private struct Segment {
+    public let speaker: Int
+    public let text: String
+    public let audio: MLXArray
+
+    public init(speaker: Int, text: String, audio: MLXArray) {
+        self.speaker = speaker
+        self.text = text
+        self.audio = audio
+    }
+}
+
+public enum MarvisTTSError: Error, LocalizedError {
+    case invalidArgument(String)
+    case voiceNotFound
+    case invalidRefAudio(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidArgument(let msg):
+            return msg
+        case .voiceNotFound:
+            return "Requested voice not found or missing reference assets."
+        case .invalidRefAudio(let msg):
+            return msg
+        }
+    }
+}
+
+// MARK: - Private Extensions
 
 private extension NSRegularExpression {
     func split(_ s: String, range: NSRange) -> [String] {
