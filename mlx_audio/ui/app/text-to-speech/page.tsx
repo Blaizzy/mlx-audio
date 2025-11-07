@@ -58,7 +58,7 @@ export default function SpeechSynthesis() {
   const [currentTime, setCurrentTime] = useState("00:00")
   const [duration, setDuration] = useState("00:04")
   const [activeTab, setActiveTab] = useState<"settings" | "history">("settings")
-  const [model, setModel] = useState("prince-canuma/Spark-TTS-0.5B")
+  const [model, setModel] = useState("Marvis-AI/marvis-tts-100m-v0.2-MLX-6bit")
   const [language, setLanguage] = useState("English-detected")
   const [liked, setLiked] = useState<boolean | null>(null)
   const [selectedVoice, setSelectedVoice] = useState("conversational_a")
@@ -252,10 +252,10 @@ export default function SpeechSynthesis() {
                       value={model}
                       onChange={(e) => setModel(e.target.value)}
                     >
-                      <option value="mlx-community/Kokoro-82M-bf16">Kokoro</option>
-                      <option value="Marvis-AI/marvis-tts-250m-v0.1-MLX-6bit">Marvis-TTS-250m-v0.1</option>
-                      <option value="Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit">Marvis-TTS-250m-v0.2</option>
                       <option value="Marvis-AI/marvis-tts-100m-v0.2-MLX-6bit">Marvis-TTS-100m-v0.2</option>
+                      <option value="Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit">Marvis-TTS-250m-v0.2</option>
+                      <option value="Marvis-AI/marvis-tts-250m-v0.1-MLX-6bit">Marvis-TTS-250m-v0.1</option>
+                      <option value="mlx-community/Kokoro-82M-bf16">Kokoro</option>
                       <option value="mlx-community/Spark-TTS-0.5B-bf16">SparkTTS</option>
                     </select>
                     <ChevronDown className="absolute right-2 top-2 h-4 w-4 pointer-events-none" />
