@@ -13,6 +13,7 @@ import UIKit
 struct TTSInspectorView: View {
     @Binding var selectedProvider: TTSProvider
     @Binding var selectedVoice: String
+    @Binding var selectedMarvisModel: String
     @Binding var selectedQuality: MarvisSession.QualityLevel
     @Binding var status: String
     @Binding var autoPlay: Bool
@@ -45,6 +46,12 @@ struct TTSInspectorView: View {
                     )
 
                     Divider()
+
+                    // Marvis Model Variant Section (Marvis only)
+                    if selectedProvider == .marvis {
+                        MarvisModelPickerSection(selectedModel: $selectedMarvisModel)
+                        Divider()
+                    }
 
                     // Voice Section
                     VoicePickerSection(

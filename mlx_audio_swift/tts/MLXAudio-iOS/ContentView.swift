@@ -50,6 +50,7 @@ struct ContentView: View {
     @State private var isMarvisPlaying = false
     @State private var status = ""
     @State private var chosenVoice = "conversational_a"
+    @State private var chosenMarvisModel: String = MarvisSession.ModelVariant.default.repoId
     @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
     @State private var marvisAudioGenerationTime: TimeInterval = 0
     @State private var useStreaming: Bool = false
@@ -119,8 +120,48 @@ struct ContentView: View {
                             }
                         }
 
-                        // Quality picker for Marvis
+                        // Model picker for Marvis
                         if chosenProvider == .marvis {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Marvis Model")
+                                    .font(.subheadline)
+                                    .foregroundStyle(.secondary)
+
+                                Menu {
+                                    ForEach(MarvisSession.ModelVariant.allCases, id: \.self) { model in
+                                        Button(action: {
+                                            chosenMarvisModel = model.repoId
+                                        }) {
+                                            HStack {
+                                                Text(model.displayName)
+                                                if chosenMarvisModel == model.repoId {
+                                                    Image(systemName: "checkmark")
+                                                }
+                                            }
+                                        }
+                                    }
+                                } label: {
+                                    HStack {
+                                        if let selectedModel = MarvisSession.ModelVariant.allCases.first(where: { $0.repoId == chosenMarvisModel }) {
+                                            Text(selectedModel.displayName)
+                                                .lineLimit(1)
+                                                .foregroundStyle(.primary)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "chevron.down")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .padding(8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(Color(.tertiarySystemBackground))
+                                    )
+                                }
+                                .disabled(isMarvisLoading)
+                            }
+
+                            // Quality picker for Marvis
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Quality")
                                     .font(.subheadline)
@@ -364,7 +405,7 @@ struct ContentView: View {
                         if marvisSession == nil {
                             isMarvisLoading = true
                             do {
-                                marvisSession = try await MarvisSession.fromPretrained(progressHandler: { _ in })
+                                marvisSession = try await MarvisSession.fromPretrained(model: chosenMarvisModel, progressHandler: { _ in })
                                 isMarvisLoading = false
                             } catch {
                                 isMarvisLoading = false

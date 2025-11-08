@@ -7,6 +7,26 @@ import Tokenizers
 import AVFoundation
 
 public final class MarvisSession: Module {
+    public enum ModelVariant: String, CaseIterable {
+        case model100m_v0_2_6bit = "Marvis-AI/marvis-tts-100m-v0.2-MLX-6bit"
+        case model250m_v0_2_6bit = "Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit"
+
+        public static let `default`: ModelVariant = .model100m_v0_2_6bit
+
+        public var displayName: String {
+            switch self {
+            case .model100m_v0_2_6bit:
+                return "100M v0.2 (6-bit)"
+            case .model250m_v0_2_6bit:
+                return "250M v0.2 (6-bit)"
+            }
+        }
+
+        public var repoId: String {
+            return self.rawValue
+        }
+    }
+
     public enum Voice: String, CaseIterable {
         case conversationalA = "conversational_a"
         case conversationalB = "conversational_b"
@@ -325,12 +345,12 @@ public extension MarvisSession {
     /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
     convenience init(
         voice: Voice = .conversationalA,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        model: String = ModelVariant.default.repoId,
         progressHandler: @escaping (Progress) -> Void = { _ in },
         playbackEnabled: Bool = true
     ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: model, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
         try self.installWeights(args: args, weightFileURL: weightFileURL)
 
         // Bind configuration
@@ -343,12 +363,12 @@ public extension MarvisSession {
     convenience init(
         refAudio: MLXArray,
         refText: String,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        model: String = ModelVariant.default.repoId,
         progressHandler: @escaping (Progress) -> Void = { _ in },
         playbackEnabled: Bool = true
     ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: model, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
         try self.installWeights(args: args, weightFileURL: weightFileURL)
 
         // Bind configuration
@@ -361,10 +381,10 @@ public extension MarvisSession {
     /// Creates a Marvis session and binds a default voice.
     static func make(
         voice: Voice = .conversationalA,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        model: String = ModelVariant.default.repoId,
         progressHandler: @escaping (Progress) -> Void = { _ in }
     ) async throws -> MarvisSession {
-        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
+        let engine = try await fromPretrained(model: model, progressHandler: progressHandler)
         engine.boundVoice = voice
         engine.boundRefAudio = nil
         engine.boundRefText = nil
@@ -375,21 +395,21 @@ public extension MarvisSession {
     static func make(
         refAudio: MLXArray,
         refText: String,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        model: String = ModelVariant.default.repoId,
         progressHandler: @escaping (Progress) -> Void = { _ in }
     ) async throws -> MarvisSession {
-        let engine = try await fromPretrained(repoId: repoId, progressHandler: progressHandler)
+        let engine = try await fromPretrained(model: model, progressHandler: progressHandler)
         engine.boundVoice = nil
         engine.boundRefAudio = refAudio
         engine.boundRefText = refText
         return engine
     }
 
-    static func fromPretrained(repoId: String = "Marvis-AI/marvis-tts-250m-v0.1", progressHandler: @escaping (Progress) -> Void) async throws -> MarvisSession {
-        let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        let model = try await MarvisSession(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler)
-        try model.installWeights(args: args, weightFileURL: weightFileURL)
-        return model
+    static func fromPretrained(model: String = ModelVariant.default.repoId, progressHandler: @escaping (Progress) -> Void) async throws -> MarvisSession {
+        let (args, prompts, weightFileURL) = try await snapshotAndConfig(repoId: model, progressHandler: progressHandler)
+        let modelInstance = try await MarvisSession(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler)
+        try modelInstance.installWeights(args: args, weightFileURL: weightFileURL)
+        return modelInstance
     }
 
     private static func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

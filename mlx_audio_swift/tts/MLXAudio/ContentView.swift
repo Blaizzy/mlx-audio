@@ -23,6 +23,7 @@ struct ContentView: View {
 
     @State private var chosenProvider: TTSProvider = .marvis
     @State private var chosenVoice: String = MarvisSession.Voice.conversationalA.rawValue
+    @State private var chosenMarvisModel: String = MarvisSession.ModelVariant.default.repoId
     @State private var chosenQuality: MarvisSession.QualityLevel = .maximum
 
     // Sidebar selection
@@ -75,6 +76,7 @@ struct ContentView: View {
                 TTSInspectorView(
                     selectedProvider: $chosenProvider,
                     selectedVoice: $chosenVoice,
+                    selectedMarvisModel: $chosenMarvisModel,
                     selectedQuality: $chosenQuality,
                     status: $status,
                     autoPlay: $autoPlay,
@@ -223,7 +225,7 @@ struct ContentView: View {
                 return false
             }
 
-            marvisSession = try await MarvisSession(voice: voice, progressHandler: { progress in
+            marvisSession = try await MarvisSession(voice: voice, model: chosenMarvisModel, progressHandler: { progress in
                 status = "Loading Marvis: \(Int(progress.fractionCompleted * 100))%"
             }, playbackEnabled: autoPlay)
             status = "Marvis loaded successfully!"
