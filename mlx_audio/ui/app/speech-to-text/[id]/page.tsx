@@ -52,6 +52,7 @@ export default function TranscriptViewerPage() {
   const [language, setLanguage] = useState("English")
   const [date, setDate] = useState("yesterday")
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
+  const [audioSource, setAudioSource] = useState<string | null>(null)
 
   useEffect(() => {
     // Set up audio player
@@ -91,16 +92,53 @@ export default function TranscriptViewerPage() {
     }
   }, [isExportDropdownOpen])
 
-  const togglePlayPause = () => {
+  useEffect(() => {
+    const audio = audioRef.current
+    if (audio && audioSource) {
+      audio.src = audioSource
+      const handleLoadedMetadata = () => {
+        const metaDuration = audio.duration
+        if (!Number.isNaN(metaDuration) && metaDuration > 0) {
+          setDuration(metaDuration)
+        }
+      }
+      audio.addEventListener("loadedmetadata", handleLoadedMetadata)
+      return () => {
+        audio.removeEventListener("loadedmetadata", handleLoadedMetadata)
+      }
+    } else if (audio && !audioSource) {
+      audio.src = ""
+    }
+    return undefined
+  }, [audioSource])
+
+  const playAudio = async () => {
     const audio = audioRef.current
     if (!audio) return
+    try {
+      await audio.play()
+      setIsPlaying(true)
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        return
+      }
+      console.error("Error playing audio:", error)
+    }
+  }
+
+  const togglePlayPause = () => {
+    const audio = audioRef.current
+    if (!audio || !audioSource) {
+      console.warn("No audio available for playback.")
+      return
+    }
 
     if (isPlaying) {
       audio.pause()
+      setIsPlaying(false)
     } else {
-      audio.play().catch((e) => console.error("Error playing audio:", e))
+      void playAudio()
     }
-    setIsPlaying(!isPlaying)
   }
 
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -155,6 +193,11 @@ export default function TranscriptViewerPage() {
         setLanguage(data.language ?? "English")
         setDate(data.date ?? "yesterday")
         setDuration(data.duration ?? 8)
+        if (data.audioDataUrl) {
+          setAudioSource(data.audioDataUrl)
+        } else {
+          setAudioSource(null)
+        }
 
         if (data.segments?.length) {
           const segments = data.segments.map(seg => ({
@@ -414,7 +457,12 @@ export default function TranscriptViewerPage() {
 
               <button
                 onClick={togglePlayPause}
-                className="p-2 bg-sky-500 hover:bg-sky-600 dark:bg-sky-500 dark:hover:bg-sky-600 rounded-full text-white"
+                disabled={!audioSource}
+                className={`p-2 rounded-full text-white ${
+                  audioSource
+                    ? "bg-sky-500 hover:bg-sky-600 dark:bg-sky-500 dark:hover:bg-sky-600"
+                    : "bg-gray-400 cursor-not-allowed"
+                }`}
               >
                 {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
               </button>

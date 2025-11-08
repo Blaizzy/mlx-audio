@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useState, useRef, useEffect } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
-import { FileText, Upload, MoreVertical, X, ChevronDown } from "lucide-react"
+import { FileText, Upload, MoreVertical, X } from "lucide-react"
 import Link from "next/link"
 
 interface TranscriptionFile {
@@ -22,7 +22,6 @@ export default function SpeechToTextPage() {
     },
   ])
   const [isModalOpen, setIsModalOpen] = useState(false)
-  const [primaryLanguage, setPrimaryLanguage] = useState("Detect")
   const [tagAudioEvents, setTagAudioEvents] = useState(false)
   const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo")
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -70,11 +69,19 @@ export default function SpeechToTextPage() {
     loadStoredTranscriptions()
   }, [])
 
+  const fileToDataUrl = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = () => reject(new Error("Failed to read file"))
+      reader.readAsDataURL(file)
+    })
+
   const uploadAndTranscribe = async (file: File, id: string) => {
     const formData = new FormData()
     formData.append("file", file)
     formData.append("model", selectedModel)
-    formData.append("language", primaryLanguage === "Detect" ? "en" : primaryLanguage.toLowerCase())
+    formData.append("language", "")
     formData.append("response_format", "verbose_json")
     formData.append("temperature", "0")
 
@@ -84,6 +91,7 @@ export default function SpeechToTextPage() {
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
     try {
+      const dataUrlPromise = fileToDataUrl(file)
       const res = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/transcriptions`, {
         method: "POST",
         body: formData,
@@ -92,6 +100,7 @@ export default function SpeechToTextPage() {
 
       // Save the transcription to a JSON file via API
       data.fileName = fileName
+      data.audioDataUrl = await dataUrlPromise
       localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))
       setFiles((prev) =>
         prev.map((f) =>
@@ -307,27 +316,11 @@ export default function SpeechToTextPage() {
 
             <div className="mb-6">
               <div className="flex justify-between items-center mb-2">
-                <label className="block text-sm font-medium">Primary language</label>
+                <label className="block text-sm font-medium">Language detection</label>
               </div>
-              <div className="relative">
-                <select
-                  value={primaryLanguage}
-                  onChange={(e) => setPrimaryLanguage(e.target.value)}
-                  className="w-full appearance-none rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 pr-10 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                >
-                  <option value="Detect">Detect</option>
-                  <option value="English">English</option>
-                  <option value="Spanish">Spanish</option>
-                  <option value="French">French</option>
-                  <option value="German">German</option>
-                  <option value="Italian">Italian</option>
-                  <option value="Portuguese">Portuguese</option>
-                  <option value="Chinese">Chinese</option>
-                  <option value="Japanese">Japanese</option>
-                  <option value="Korean">Korean</option>
-                </select>
-                <ChevronDown className="absolute right-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
-              </div>
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Automatically detects the spoken language and transcribes accordingly (supports Japanese, Chinese, and multilingual audio).
+              </p>
             </div>
 
             <div className="mb-6">
