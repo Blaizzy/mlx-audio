@@ -7,20 +7,72 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 
 import argparse
 import asyncio
+import importlib
 import io
+import math
 import os
+import sys
+import shutil
 import time
+from numbers import Real
+from textwrap import dedent
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mlx_audio.utils import load_model
+
+
+def configure_fugashi_dictionary():
+    """
+    Ensure fugashi (used by misaki Cutlet) always has a dictionary.
+
+    Prefer unidic_lite, fall back to unidic if present.
+    """
+
+    dicdir = None
+    chosen_module = None
+    for module_name in ("unidic_lite", "unidic"):
+        try:
+            module = __import__(module_name)
+            dicdir = getattr(module, "DICDIR", None)
+            if dicdir and os.path.isdir(dicdir):
+                mecabrc_path = os.path.join(dicdir, "mecabrc")
+                if os.path.exists(mecabrc_path):
+                    chosen_module = module
+                    break
+                dicdir = None
+        except ImportError:
+            continue
+
+    if not dicdir:
+        return
+
+    # Ensure any code importing `unidic` sees a module whose DICDIR actually exists.
+    if chosen_module.__name__ == "unidic_lite":
+        try:
+            import unidic  # type: ignore
+
+            unidic.DICDIR = dicdir  # type: ignore[attr-defined]
+        except ImportError:
+            sys.modules["unidic"] = chosen_module
+
+    mecabrc_path = os.path.join(dicdir, "mecabrc")
+
+    os.environ["FUGASHI_DICDIR"] = dicdir
+    os.environ["FUGASHI_ARGS"] = f"-d {dicdir} -r {mecabrc_path}"
+    if os.path.exists(mecabrc_path):
+        os.environ["MECABRC"] = mecabrc_path
+
+
+configure_fugashi_dictionary()
 
 MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
@@ -49,6 +101,80 @@ class ModelProvider:
 
 
 app = FastAPI()
+
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """
+    Simple landing page so the root URL no longer returns a 404. The full GUI
+    lives in the Next.js project under ``mlx_audio/ui``.
+    """
+
+    html = dedent(
+        """
+        <!DOCTYPE html>
+        <html lang="en">
+            <head>
+                <meta charset="utf-8" />
+                <title>MLX Audio Server</title>
+                <style>
+                    body {
+                        font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif;
+                        margin: 0;
+                        padding: 2rem;
+                        background: #0b1120;
+                        color: #e2e8f0;
+                    }
+                    a {
+                        color: #38bdf8;
+                        text-decoration: none;
+                    }
+                    .card {
+                        max-width: 720px;
+                        margin: auto;
+                        padding: 2rem;
+                        border-radius: 1rem;
+                        background: rgba(15, 23, 42, 0.85);
+                        box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+                    }
+                    h1 {
+                        margin-top: 0;
+                    }
+                    code {
+                        background: rgba(15, 118, 110, 0.25);
+                        padding: 0.2rem 0.4rem;
+                        border-radius: 0.35rem;
+                    }
+                </style>
+            </head>
+            <body>
+                <main class="card">
+                    <h1>MLX Audio API server is running</h1>
+                    <p>
+                        This endpoint exposes the FastAPI backend (OpenAI-compatible TTS / STT APIs).
+                        Open <a href="/docs">/docs</a> for interactive API documentation
+                        or <a href="/redoc">/redoc</a> for the ReDoc view.
+                    </p>
+                    <p>
+                        Looking for the graphical interface? Start the Next.js app inside
+                        <code>mlx_audio/ui</code>:
+                    </p>
+                    <pre><code>cd mlx_audio/ui
+npm install
+export NEXT_PUBLIC_API_BASE_URL=http://localhost
+export NEXT_PUBLIC_API_PORT=8000
+npm run dev</code></pre>
+                    <p>
+                        Then open <a href="http://localhost:3000" target="_blank" rel="noreferrer">
+                        http://localhost:3000</a>.
+                    </p>
+                </main>
+            </body>
+        </html>
+        """
+    )
+
+    return HTMLResponse(content=html)
 
 
 def int_or_float(value):
@@ -102,6 +228,51 @@ default_origins = (
 
 # Setup CORS
 setup_cors(app, default_origins)
+
+
+LANGUAGE_DEPENDENCIES = {
+    "j": ("misaki.ja", "pip install misaki[ja]"),
+    "z": ("misaki.zh", "pip install misaki[zh]"),
+}
+
+
+def ensure_tts_language_support(lang_code: Optional[str]):
+    """Ensure extra dependencies for specific languages are installed."""
+    code = (lang_code or "").lower()
+    requirement = LANGUAGE_DEPENDENCIES.get(code)
+    if requirement is None:
+        return
+
+    module_name, install_hint = requirement
+    try:
+        importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        missing = module_name.split(".")[0]
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Language '{code}' requires `{install_hint}` "
+                f"(missing dependency: {missing})."
+            ),
+        ) from exc
+
+
+def sanitize_jsonable(value: Any):
+    """
+    Recursively sanitize any jsonable structure by replacing NaN/inf values
+    with ``None`` so the response can be serialized by the JSON encoder.
+    """
+
+    if isinstance(value, dict):
+        return {k: sanitize_jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [sanitize_jsonable(v) for v in value]
+    if isinstance(value, Real) and not isinstance(value, bool):
+        number = float(value)
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+    return value
 
 
 # Request schemas for OpenAI-compatible endpoints
@@ -207,6 +378,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
 @app.post("/v1/audio/speech")
 async def tts_speech(payload: SpeechRequest):
     """Generate speech audio following the OpenAI text-to-speech API."""
+    ensure_tts_language_support(payload.lang_code)
     model = model_provider.load_model(payload.model)
     return StreamingResponse(
         generate_audio(model, payload),
@@ -230,9 +402,13 @@ async def stt_transcriptions(
     sf.write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(model)
-    result = stt_model.generate(tmp_path)
+    generate_kwargs = {}
+    if language:
+        generate_kwargs["language"] = language
+    result = stt_model.generate(tmp_path, **generate_kwargs)
     os.remove(tmp_path)
-    return result
+    response = sanitize_jsonable(jsonable_encoder(result))
+    return response
 
 
 def main():

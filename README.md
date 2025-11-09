@@ -77,13 +77,15 @@ MLX-Audio provides a modern web interface with real-time audio visualization cap
 
 #### Key Features
 
-- **Voice Customization**: Select from multiple voice presets including AF Heart, AF Nova, AF Bella, and BF Emma
+- **Voice Customization**: Auto-matched Kokoro voices per language (e.g., `jf_alpha` for Japanese) with presets like AF Heart, AF Nova, AF Bella, and BF Emma
+- **Language Selector**: Choose Kokoro language codes (English, Japanese, Chinese, etc.) directly in the UI; options automatically adjust per-model and “Auto detect” only appears when the selected model supports multiple languages
 - **Speech Rate Control**: Fine-tune speech generation speed using an intuitive slider (range: 0.5x - 2.0x)
 - **Dynamic 3D Visualization**: Experience audio through an interactive 3D orb that responds to frequency changes
 - **Audio Management**: Upload, play, and visualize custom audio files
 - **Smart Playback**: Optional automatic playback of generated audio
 - **File Management**: Quick access to the output directory through an integrated file explorer button
 - **Speech Recognition**: Convert speech to text with support for multiple languages and models
+- **Auto Language Detection (STT)**: File uploads automatically detect spoken language (including Japanese/Chinese) before transcription—no manual dropdown needed
 To start the web interface and API server:
 
 UI:
@@ -113,10 +115,10 @@ Available command line arguments:
 - `--host`: Host address to bind the server to (default: 127.0.0.1)
 - `--port`: Port to bind the server to (default: 8000)
 
-Then open your browser and navigate to:
-```
-http://127.0.0.1:8000
-```
+Once both processes are running:
+
+- Visit `http://localhost:3000` to use the graphical interface.
+- The FastAPI backend stays on `http://localhost:8000`; interactive docs are available at `/docs` and the root URL now shows a short status page with setup instructions.
 
 #### API Endpoints
 
@@ -141,6 +143,8 @@ The server provides the following REST API endpoints:
 - `DELETE /v1/models`: Unload a model.
 
 > Note: Generated audio files are stored in `~/.mlx_audio/outputs` by default, or in a fallback directory if that location is not writable.
+
+> **Kokoro language extras:** Japanese synthesis uses `misaki[ja]` (installs `pyopenjtalk` and depends on `fugashi[unidic-lite]`) and Mandarin Chinese uses `misaki[zh]`. These packages are listed in `requirements.txt`, so `pip install -r requirements.txt` pulls them in, but if you installed earlier re-run the install (or add the extras manually) before selecting those languages in the UI or API. The server automatically points fugashi to the bundled UniDic-lite dictionary, so no additional MeCab setup is needed.
 
 ## Models
 
