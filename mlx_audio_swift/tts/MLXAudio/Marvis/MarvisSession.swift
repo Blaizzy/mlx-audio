@@ -110,12 +110,12 @@ public final class MarvisSession: Module {
 
     public convenience init(
         voice: Voice = .conversationalA,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        model: String = ModelVariant.default.repoId,
         progressHandler: @escaping (Progress) -> Void = { _ in },
         playbackEnabled: Bool = true
     ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: model, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
         try self.installWeights(args: args, weightFileURL: weightFileURL)
 
         self.boundVoice = voice
@@ -126,12 +126,12 @@ public final class MarvisSession: Module {
     public convenience init(
         refAudio: MLXArray,
         refText: String,
-        repoId: String = "Marvis-AI/marvis-tts-250m-v0.1",
+        model: String = ModelVariant.default.repoId,
         progressHandler: @escaping (Progress) -> Void = { _ in },
         playbackEnabled: Bool = true
     ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: repoId, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: repoId, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
+        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: model, progressHandler: progressHandler)
+        try await self.init(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
         try self.installWeights(args: args, weightFileURL: weightFileURL)
 
         self.boundVoice = nil
@@ -364,161 +364,6 @@ private extension MarvisSession {
         eval(self)
     }
 
-    // MARK: - Generation helpers
-
-    /// Builds the generation context from either a bound voice or reference.
-    private func makeContext(voice: Voice?, refAudio: MLXArray?, refText: String?) throws -> Segment {
-        if let refAudio, let refText {
-            return Segment(speaker: 0, text: refText, audio: refAudio)
-        } else if let voice {
-            var refAudioURL: URL?
-            for promptURL in _promptURLs ?? [] {
-                if promptURL.lastPathComponent == "\(voice.rawValue).wav" {
-                    refAudioURL = promptURL
-                    break
-                }
-            }
-            guard let refAudioURL else { throw MarvisTTSError.voiceNotFound }
-
-            let (sampleRate, audio) = try loadAudioArray(from: refAudioURL)
-            guard abs(sampleRate - 24000) < .leastNonzeroMagnitude else {
-                throw MarvisTTSError.invalidRefAudio("Reference audio must be single-channel (mono) 24kHz, in WAV format.")
-            }
-            let refTextURL = refAudioURL.deletingPathExtension().appendingPathExtension("txt")
-            let text = try String(data: Data(contentsOf: refTextURL), encoding: .utf8)
-            guard let text else { throw MarvisTTSError.voiceNotFound }
-            return Segment(speaker: 0, text: text, audio: audio)
-        }
-        throw MarvisTTSError.voiceNotFound
-    }
-
-    /// Tokenizes a single segment and returns initial token state.
-    private func tokenizeStart(for segment: Segment) -> (tokens: MLXArray, mask: MLXArray, pos: MLXArray) {
-        let (st, sm) = tokenizeSegment(segment, addEOS: false)
-        let promptTokens = concatenated([st], axis: 0).asType(Int32.self) // [T, K+1]
-        let promptMask = concatenated([sm], axis: 0).asType(Bool.self)   // [T, K+1]
-        let currTokens = expandedDimensions(promptTokens, axis: 0) // [1, T, K+1]
-        let currMask = expandedDimensions(promptMask, axis: 0)     // [1, T, K+1]
-        let currPos = expandedDimensions(MLXArray.arange(promptTokens.shape[0]), axis: 0) // [1, T]
-        return (currTokens, currMask, currPos)
-    }
-
-    /// Decodes audio frames for one prompt, optionally streaming.
-    private func decodePrompt(
-        currTokens startTokens: MLXArray,
-        currMask startMask: MLXArray,
-        currPos startPos: MLXArray,
-        qualityLevel: QualityLevel,
-        stream: Bool,
-        streamingIntervalTokens: Int,
-        sampler sampleFn: (MLXArray) -> MLXArray,
-        onStreamingResult: ((GenerationResult) -> Void)?,
-        enqueuePlayback: Bool
-    ) throws -> [GenerationResult] {
-        var results: [GenerationResult] = []
-
-        var samplesFrames: [MLXArray] = [] // each is [B=1, K]
-        var currTokens = startTokens
-        var currMask = startMask
-        var currPos = startPos
-
-        var generatedCount = 0
-        var yieldedCount = 0
-        let maxAudioFrames = Int(60000 / 80.0) // 12.5 fps, 80 ms per frame
-        let maxSeqLen = 2048 - maxAudioFrames
-        precondition(currTokens.shape[1] < maxSeqLen, "Inputs too long, must be below max_seq_len - max_audio_frames: \(maxSeqLen)")
-
-        var startTime = CFAbsoluteTimeGetCurrent()
-        var frameCount = 0
-
-        for frameIdx in 0 ..< maxAudioFrames {
-            let frame = try model.generateFrame(
-                maxCodebooks: qualityLevel.codebookCount,
-                tokens: currTokens,
-                tokensMask: currMask,
-                sampler: sampleFn
-            ) // [1, K]
-
-            // EOS if every codebook is 0
-            if frame.sum().item(Int32.self) == 0 { break }
-
-            samplesFrames.append(frame)
-            frameCount += 1
-
-            autoreleasepool {
-                let zerosText = MLXArray.zeros([1, 1], type: Int32.self)
-                let nextFrame = concatenated([frame, zerosText], axis: 1) // [1, K+1]
-                currTokens = expandedDimensions(nextFrame, axis: 1)       // [1, 1, K+1]
-
-                let onesK = ones([1, frame.shape[1]], type: Bool.self)
-                let zero1 = zeros([1, 1], type: Bool.self)
-                let nextMask = concatenated([onesK, zero1], axis: 1) // [1, K+1]
-                currMask = expandedDimensions(nextMask, axis: 1)     // [1, 1, K+1]
-
-                currPos = split(currPos, indices: [currPos.shape[1] - 1], axis: 1)[1] + MLXArray(1)
-            }
-
-            generatedCount += 1
-
-            // Periodic cleanup
-            if frameIdx % 50 == 0 && frameIdx > 0 {
-                autoreleasepool { }
-            }
-
-            if stream, (generatedCount - yieldedCount) >= streamingIntervalTokens {
-                yieldedCount = generatedCount
-                let gr = generateResultChunk(samplesFrames, start: startTime, streaming: true, enqueuePlayback: enqueuePlayback)
-                results.append(gr)
-                onStreamingResult?(gr)
-                samplesFrames.removeAll(keepingCapacity: true)
-                startTime = CFAbsoluteTimeGetCurrent()
-            }
-        }
-
-        if !samplesFrames.isEmpty {
-            let gr = generateResultChunk(samplesFrames, start: startTime, streaming: stream, enqueuePlayback: enqueuePlayback)
-            if stream { onStreamingResult?(gr) } else { results.append(gr) }
-        }
-
-        return results
-    }
-    // MARK: - Async convenience initializers (initializer-based instead of factories)
-
-    /// Initializes and loads the Marvis model, binding a default voice.
-    /// Mirrors factory-style `make(voice:)` but as an initializer for ergonomics.
-    convenience init(
-        voice: Voice = .conversationalA,
-        model: String = ModelVariant.default.repoId,
-        progressHandler: @escaping (Progress) -> Void = { _ in },
-        playbackEnabled: Bool = true
-    ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: model, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
-        try self.installWeights(args: args, weightFileURL: weightFileURL)
-
-        // Bind configuration
-        self.boundVoice = voice
-        self.boundRefAudio = nil
-        self.boundRefText = nil
-    }
-
-    /// Initializes and loads the Marvis model, binding a custom reference (24 kHz mono).
-    convenience init(
-        refAudio: MLXArray,
-        refText: String,
-        model: String = ModelVariant.default.repoId,
-        progressHandler: @escaping (Progress) -> Void = { _ in },
-        playbackEnabled: Bool = true
-    ) async throws {
-        let (args, prompts, weightFileURL) = try await Self.snapshotAndConfig(repoId: model, progressHandler: progressHandler)
-        try await self.init(config: args, repoId: model, promptURLs: prompts, progressHandler: progressHandler, playbackEnabled: playbackEnabled)
-        try self.installWeights(args: args, weightFileURL: weightFileURL)
-
-        // Bind configuration
-        self.boundVoice = nil
-        self.boundRefAudio = refAudio
-        self.boundRefText = refText
-    }
     // MARK: - Factories (Apple-style ergonomics)
 
     /// Creates a Marvis session and binds a default voice.
