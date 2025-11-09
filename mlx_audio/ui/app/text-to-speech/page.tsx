@@ -327,6 +327,12 @@ export default function SpeechSynthesis() {
                 </div>
               )}
 
+              <div className="mb-6">
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  <span className="font-medium">Selected Model:</span> <span className="font-mono">{model}</span>
+                </div>
+              </div>
+
 
 
               <div className="mb-6">
