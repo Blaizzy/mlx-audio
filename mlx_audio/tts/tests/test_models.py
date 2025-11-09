@@ -538,6 +538,7 @@ class TestLlamaModel(unittest.TestCase):
             "rope_theta": 500000.0,
             "tie_word_embeddings": True,
             "vocab_size": 156940,
+            "layer_types": ["full_attention"] * 28,
         }
 
     @patch("transformers.LlamaTokenizer")

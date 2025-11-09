@@ -48,6 +48,8 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
                     "*.txt",
                     "*.jsonl",
                     "*.yaml",
+                    "*.wav",
+                    "*.txt",
                 ],
             )
         )
@@ -400,7 +402,15 @@ def convert(
     mlx_path.mkdir(parents=True, exist_ok=True)
 
     # Copy Python and JSON files from the model path to the MLX path
-    for pattern in ["*.py", "*.json", "*.wav", "*.pt", "*.safetensors", "*.yaml"]:
+    for pattern in [
+        "*.py",
+        "*.json",
+        "*.wav",
+        "*.pt",
+        "*.safetensors",
+        "*.yaml",
+        "*.txt",
+    ]:
         files = glob.glob(str(model_path / pattern))
         for file in files:
             shutil.copy(file, mlx_path)
