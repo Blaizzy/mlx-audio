@@ -53,6 +53,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
+            "mlx_audio.stt.generate = mlx_audio.stt.generate:main",
             "mlx_audio.tts.generate = mlx_audio.tts.generate:main",
             "mlx_audio.server = mlx_audio.server:main",
         ]
