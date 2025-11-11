@@ -58,15 +58,57 @@ export default function SpeechSynthesis() {
   const [currentTime, setCurrentTime] = useState("00:00")
   const [duration, setDuration] = useState("00:04")
   const [activeTab, setActiveTab] = useState<"settings" | "history">("settings")
-  const [model, setModel] = useState("Marvis-AI/marvis-tts-100m-v0.2-MLX-6bit")
+  const [baseModel, setBaseModel] = useState("Marvis-AI/marvis-tts-100m-v0.2")
+  const [quantization, setQuantization] = useState("6bit")
   const [language, setLanguage] = useState("English-detected")
   const [liked, setLiked] = useState<boolean | null>(null)
   const [selectedVoice, setSelectedVoice] = useState("conversational_a")
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
+  // Helper function to check if the model is a Marvis model
+  const isMarvisModel = (modelName: string) => {
+    return modelName.toLowerCase().includes("marvis")
+  }
+
+  // Helper function to get available quantizations for a model
+  const getAvailableQuantizations = (modelName: string) => {
+    if (modelName === "Marvis-AI/marvis-tts-100m-v0.2") {
+      return ["none", "6bit", "8bit"]
+    } else if (modelName === "Marvis-AI/marvis-tts-250m-v0.2") {
+      return ["none", "4bit", "6bit", "8bit"]
+    } else if (modelName === "Marvis-AI/marvis-tts-250m-v0.1") {
+      return ["none", "4bit", "8bit"]
+    }
+    return []
+  }
+
+  // Helper function to construct the full model name
+  const getFullModelName = () => {
+    if (isMarvisModel(baseModel) && quantization !== "none") {
+      return `${baseModel}-MLX-${quantization}`
+    }
+    return baseModel
+  }
+
+  // Get the current full model name
+  const model = getFullModelName()
+
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setText(e.target.value)
+  }
+
+  const handleModelChange = (newModel: string) => {
+    setBaseModel(newModel)
+    // Set default quantization based on available options
+    if (isMarvisModel(newModel)) {
+      const availableQuants = getAvailableQuantizations(newModel)
+      if (availableQuants.includes("6bit")) {
+        setQuantization("6bit")
+      } else if (availableQuants.length > 0) {
+        setQuantization(availableQuants[0])
+      }
+    }
   }
 
   const handlePlayPause = () => {
@@ -249,17 +291,45 @@ export default function SpeechSynthesis() {
                   <div className="relative">
                     <select
                       className="flex w-40 appearance-none items-center justify-between rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-sm pr-8 bg-white dark:bg-gray-800"
-                      value={model}
-                      onChange={(e) => setModel(e.target.value)}
+                      value={baseModel}
+                      onChange={(e) => handleModelChange(e.target.value)}
                     >
-                      <option value="Marvis-AI/marvis-tts-100m-v0.2-MLX-6bit">Marvis-TTS-100m-v0.2</option>
-                      <option value="Marvis-AI/marvis-tts-250m-v0.2-MLX-6bit">Marvis-TTS-250m-v0.2</option>
-                      <option value="Marvis-AI/marvis-tts-250m-v0.1-MLX-6bit">Marvis-TTS-250m-v0.1</option>
+                      <option value="Marvis-AI/marvis-tts-100m-v0.2">Marvis-TTS-100m-v0.2</option>
+                      <option value="Marvis-AI/marvis-tts-250m-v0.2">Marvis-TTS-250m-v0.2</option>
+                      <option value="Marvis-AI/marvis-tts-250m-v0.1">Marvis-TTS-250m-v0.1</option>
                       <option value="mlx-community/Kokoro-82M-bf16">Kokoro</option>
                       <option value="mlx-community/Spark-TTS-0.5B-bf16">SparkTTS</option>
                     </select>
                     <ChevronDown className="absolute right-2 top-2 h-4 w-4 pointer-events-none" />
                   </div>
+                </div>
+              </div>
+
+              {isMarvisModel(baseModel) && (
+                <div className="mb-6">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="text-sm">Quantization</span>
+                    <div className="relative">
+                      <select
+                        className="flex w-40 appearance-none items-center justify-between rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-sm pr-8 bg-white dark:bg-gray-800"
+                        value={quantization}
+                        onChange={(e) => setQuantization(e.target.value)}
+                      >
+                        {getAvailableQuantizations(baseModel).map((quant) => (
+                          <option key={quant} value={quant}>
+                            {quant === "none" ? "None (bf16)" : quant.replace("bit", "-bit")}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown className="absolute right-2 top-2 h-4 w-4 pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="mb-6">
+                <div className="text-xs text-gray-500 dark:text-gray-400">
+                  <span className="font-medium">Selected Model:</span> <span className="font-mono">{model}</span>
                 </div>
               </div>
 
