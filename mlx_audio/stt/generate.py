@@ -3,8 +3,7 @@ import contextlib
 import json
 import os
 import time
-from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import mlx.core as mx
 import torch.nn as nn
@@ -17,7 +16,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="Generate transcriptions from audio files"
     )
-    parser.add_argument("--model", type=str, required=True, help="Path to the model")
+    parser.add_argument(
+        "--model",
+        default="mlx-community/whisper-large-v3-turbo",
+        type=str,
+        help="Path to the model",
+    )
     parser.add_argument(
         "--audio", type=str, required=True, help="Path to the audio file"
     )
@@ -177,16 +181,33 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 
 def generate(
-    model_path: str,
-    audio_path: str,
-    output_path: str,
+    model: Optional[Union[str, nn.Module]] = None,
+    audio_path: str = "",
+    output_path: str = "",
     format: str = "txt",
     verbose: bool = True,
-    model: Optional[nn.Module] = None,  # you can pass an already loaded model
     **kwargs,
 ):
+    """Generate transcriptions from audio files.
+
+    Args:
+        model: Path to the model or the model instance.
+        audio_path: Path to the audio file.
+        output_path: Path to save the output.
+        format: Output format (txt, srt, vtt, or json).
+        verbose: Verbose output.
+        **kwargs: Additional arguments for the model's generate method.
+
+    Returns:
+        segments: The generated transcription segments.
+    """
     if model is None:
-        model = load_model(model_path)
+        raise ValueError("Model path or model instance must be provided.")
+
+    if isinstance(model, str):
+        # Load model
+        model = load_model(model)
+
     print("=" * 10)
     print(f"\033[94mAudio path:\033[0m {audio_path}")
     print(f"\033[94mOutput path:\033[0m {output_path}")
@@ -219,7 +240,7 @@ def generate(
     return segments
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     generate(
         args.model,
@@ -229,3 +250,7 @@ if __name__ == "__main__":
         args.verbose,
         max_tokens=args.max_tokens,
     )
+
+
+if __name__ == "__main__":
+    main()
