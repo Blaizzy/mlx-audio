@@ -289,7 +289,9 @@ class Model(nn.Module):
             pipeline(text, voice=voice, speed=speed, split_pattern=split_pattern)
         ):
             # Track per-segment generation time
-            segment_time = time.time() - start_time
+            now = time.time()
+            segment_time = now - start_time
+            start_time = now
 
             samples = audio.shape[0] if audio is not None else 0
             assert samples > 0, "No audio generated"

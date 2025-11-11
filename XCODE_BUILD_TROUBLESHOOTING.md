@@ -3,7 +3,7 @@
 ## Metal Toolchain Error with Xcode Beta
 
 ### Problem
-When building the Swift-TTS framework with Xcode Beta versions, you may encounter this error:
+When building the MLXAudio framework with Xcode Beta versions, you may encounter this error:
 
 ```
 error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain
@@ -36,7 +36,7 @@ Done downloading: Metal Toolchain 17A5295f.
 **Step 3: Retry Build**
 ```bash
 # Command line build
-env DEVELOPER_DIR=/Applications/Xcode-beta.app xcrun xcodebuild -IDEClonedSourcePackagesDirPathOverride=$PWD/.dependencies -skipMacroValidation -skipPackagePluginValidation -derivedDataPath $PWD/.derivedData build -scheme Swift-TTS -destination platform=macOS,arch=arm64
+env DEVELOPER_DIR=/Applications/Xcode-beta.app xcrun xcodebuild -IDEClonedSourcePackagesDirPathOverride=$PWD/.dependencies -skipMacroValidation -skipPackagePluginValidation -derivedDataPath $PWD/.derivedData build -scheme MLXAudio -destination platform=macOS,arch=arm64
 
 # Or simply rebuild in Xcode GUI
 ```
@@ -51,7 +51,7 @@ If you have a stable Xcode installation, you can switch to it:
 ls /Applications/ | grep -i xcode
 
 # Use stable Xcode instead
-env DEVELOPER_DIR=/Applications/Xcode.app xcrun xcodebuild -scheme Swift-TTS -destination platform=macOS,arch=arm64 build
+env DEVELOPER_DIR=/Applications/Xcode.app xcrun xcodebuild -scheme MLXAudio -destination platform=macOS,arch=arm64 build
 ```
 
 ### Fix xcode-select Path
@@ -77,13 +77,13 @@ sudo xcode-select --switch /Applications/Xcode-beta.app
 swift build
 
 # Xcode project build
-xcodebuild -scheme Swift-TTS -destination platform=macOS,arch=arm64 build
+xcodebuild -scheme MLXAudio -destination platform=macOS,arch=arm64 build
 
 # With custom derived data path
-xcodebuild -derivedDataPath $PWD/.derivedData build -scheme Swift-TTS -destination platform=macOS,arch=arm64
+xcodebuild -derivedDataPath $PWD/.derivedData build -scheme MLXAudio -destination platform=macOS,arch=arm64
 
 # Full command with all flags (as used in CI/testing)
-env DEVELOPER_DIR=/Applications/Xcode-beta.app xcrun xcodebuild -IDEClonedSourcePackagesDirPathOverride=$PWD/.dependencies -skipMacroValidation -skipPackagePluginValidation -derivedDataPath $PWD/.derivedData build -scheme Swift-TTS -destination platform=macOS,arch=arm64
+env DEVELOPER_DIR=/Applications/Xcode-beta.app xcrun xcodebuild -IDEClonedSourcePackagesDirPathOverride=$PWD/.dependencies -skipMacroValidation -skipPackagePluginValidation -derivedDataPath $PWD/.derivedData build -scheme MLXAudio -destination platform=macOS,arch=arm64
 ```
 
 ### Debug Information Commands

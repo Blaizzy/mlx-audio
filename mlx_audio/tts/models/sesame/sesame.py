@@ -34,20 +34,6 @@ MIMI_REPO = "kyutai/moshiko-pytorch-bf16"
 TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
 
 
-def create_causal_mask(seq_len: int) -> mx.array:
-    return mx.tril(mx.ones((seq_len, seq_len), dtype=mx.bool_))
-
-
-def index_causal_mask(mask: mx.array, input_pos: mx.array) -> mx.array:
-    mask_indexed = mx.take(mask, input_pos, axis=0)
-
-    seq_len = input_pos.shape[1]
-    mask_indexed = mask_indexed[:, :, :seq_len]
-
-    # reshape to (batch_size, 1, seq_len, seq_len) for broadcasting across heads
-    return mx.expand_dims(mask_indexed, axis=1)
-
-
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     gcd = np.gcd(orig_sr, target_sr)
     up = target_sr // gcd
@@ -314,9 +300,6 @@ class SesameModel(nn.Module):
             (args.audio_num_codebooks - 1, decoder_dim, args.audio_vocab_size)
         )
 
-        self._backbone_causal_mask = None
-        self._decoder_causal_mask = None
-
         self.backbone_cache = None
         self.decoder_cache = None
         self.caches_enabled = False
@@ -326,11 +309,6 @@ class SesameModel(nn.Module):
             backbone_args = create_llama_model_args_for_backbone(self.args)
         except Exception:
             backbone_args = create_llama_model_args(self.args.backbone_flavor)
-
-        self._backbone_causal_mask = create_causal_mask(
-            backbone_args.max_position_embeddings
-        )
-        self._decoder_causal_mask = create_causal_mask(self.args.audio_num_codebooks)
 
         self.backbone_cache = make_prompt_cache(self.backbone)
         self.decoder_cache = make_prompt_cache(self.decoder)
@@ -355,11 +333,10 @@ class SesameModel(nn.Module):
     ) -> mx.array:
         assert self.caches_are_enabled(), "backbone caches are not enabled"
 
-        curr_backbone_mask = index_causal_mask(self._backbone_causal_mask, input_pos)
         embeds = self._embed_tokens(tokens)
         masked_embeds = embeds * mx.expand_dims(tokens_mask, -1)
         h = mx.sum(masked_embeds, axis=2)
-        h = self.backbone(h, mask=curr_backbone_mask, cache=self.backbone_cache)
+        h = self.backbone(h, cache=self.backbone_cache)
 
         last_h = h[:, -1, :]
         c0_logits = self.codebook0_head(last_h)
@@ -377,10 +354,8 @@ class SesameModel(nn.Module):
         self.decoder_cache = make_prompt_cache(self.decoder)
 
         for i in range(1, self.args.audio_num_codebooks):
-            curr_decoder_mask = index_causal_mask(self._decoder_causal_mask, curr_pos)
             decoder_h = self.decoder(
                 self.projection(curr_h),
-                mask=curr_decoder_mask,
                 cache=self.decoder_cache,
             )
 
@@ -621,12 +596,19 @@ class Model(nn.Module):
     ) -> GenerationResult:
         token_count = len(samples)
         transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
-        if stream:
+
+        # decode in 10 second max chunks to avoid excessive memory usage
+        tokens_per_batch = min(token_count, int(12.5 * 5))
+        all_audio = []
+        for i in range(0, transposed.shape[2], tokens_per_batch):
+            batch_tokens = transposed[:, :, i : i + tokens_per_batch]
             audio = (
-                self._streaming_decoder.decode_frames(transposed).squeeze(0).squeeze(0)
+                self._streaming_decoder.decode_frames(batch_tokens)
+                .squeeze(0)
+                .squeeze(0)
             )
-        else:
-            audio = self._audio_tokenizer.decode(transposed).squeeze(0).squeeze(0)
+            all_audio.append(audio)
+        audio = mx.concat(all_audio, axis=0)
 
         # This applies an imperceptible watermark to identify audio as AI-generated.
         # Watermarking ensures transparency, dissuades misuse, and enables traceability.
@@ -698,7 +680,7 @@ class Model(nn.Module):
         ref_audio: mx.array = None,
         ref_text: str = None,
         stream: bool = False,
-        streaming_interval: float = 2.0,
+        streaming_interval: float = 0.5,
         voice_match: bool = True,
         **kwargs,
     ):
@@ -716,12 +698,6 @@ class Model(nn.Module):
                 ),
             )
 
-        if voice_match:
-            generation_text = (context[0].text + " " + text).strip()
-            context = [
-                Segment(speaker=speaker, text=generation_text, audio=context[0].audio)
-            ]
-
         sampler = sampler or make_sampler(temp=0.9, top_k=50)
         max_audio_frames = int(max_audio_length_ms / 80)
         streaming_interval_tokens = int(streaming_interval * 12.5)
@@ -730,6 +706,14 @@ class Model(nn.Module):
             text = re.split(split_pattern, text.strip()) if split_pattern else [text]
 
         for prompt in text:
+            if voice_match:
+                generation_text = (context[0].text + " " + prompt).strip()
+                current_context = [
+                    Segment(
+                        speaker=speaker, text=generation_text, audio=context[0].audio
+                    )
+                ]
+
             start_time = time.perf_counter()
 
             self.model.reset_caches()
@@ -737,7 +721,7 @@ class Model(nn.Module):
                 self._streaming_decoder.reset()
 
             tokens, tokens_mask = [], []
-            for segment in context:
+            for segment in current_context:
                 segment_tokens, segment_tokens_mask = self._tokenize_segment(
                     segment, add_eos=not voice_match
                 )
@@ -769,45 +753,47 @@ class Model(nn.Module):
                     f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}"
                 )
 
-            for _ in tqdm(range(max_audio_frames)):
-                sample = self.model.generate_frame(
-                    curr_tokens, curr_tokens_mask, curr_pos, sampler
-                )
-                if mx.all(sample == 0):
-                    break  # eos
+            with tqdm() as pbar:
+                for _ in range(max_audio_frames):
+                    sample = self.model.generate_frame(
+                        curr_tokens, curr_tokens_mask, curr_pos, sampler
+                    )
+                    if mx.all(sample == 0):
+                        break  # eos
 
-                samples.append(sample)
+                    samples.append(sample)
 
-                curr_tokens = mx.expand_dims(
-                    mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1),
-                    axis=1,
-                )
-                curr_tokens_mask = mx.expand_dims(
-                    mx.concat(
-                        [
-                            mx.ones_like(sample).astype(mx.bool_),
-                            mx.zeros((1, 1)).astype(mx.bool_),
-                        ],
+                    curr_tokens = mx.expand_dims(
+                        mx.concat([sample, mx.zeros((1, 1)).astype(mx.int32)], axis=1),
                         axis=1,
-                    ),
-                    axis=1,
-                )
-                curr_pos = curr_pos[:, -1:] + 1
-                generated_frame_count += 1
+                    )
+                    curr_tokens_mask = mx.expand_dims(
+                        mx.concat(
+                            [
+                                mx.ones_like(sample).astype(mx.bool_),
+                                mx.zeros((1, 1)).astype(mx.bool_),
+                            ],
+                            axis=1,
+                        ),
+                        axis=1,
+                    )
+                    curr_pos = curr_pos[:, -1:] + 1
+                    generated_frame_count += 1
+                    pbar.update()
 
-                # send a partial result in streaming mode
-                if (
-                    stream
-                    and (generated_frame_count - yielded_frame_count)
-                    >= streaming_interval_tokens
-                ):
-                    yielded_frame_count = generated_frame_count
-                    yield self.generate_result(samples, start_time, stream=True)
-                    samples = []
-                    start_time = time.perf_counter()
+                    # send a partial result in streaming mode
+                    if (
+                        stream
+                        and (generated_frame_count - yielded_frame_count)
+                        >= streaming_interval_tokens
+                    ):
+                        yielded_frame_count = generated_frame_count
+                        yield self.generate_result(samples, start_time, stream=True)
+                        samples = []
+                        start_time = time.perf_counter()
 
-            if len(samples) > 0:
-                yield self.generate_result(samples, start_time, stream=stream)
+                if len(samples) > 0:
+                    yield self.generate_result(samples, start_time, stream=stream)
 
-            # Clear cache after each segment to avoid memory leaks
-            mx.clear_cache()
+                # Clear cache after each segment to avoid memory leaks
+                mx.clear_cache()

@@ -1,13 +1,13 @@
 //
 //  SentenceTokenizerTests.swift
-//   Swift-TTS
+//   MLXAudio
 //
 
 import XCTest
 import Foundation
 import NaturalLanguage
 
-@testable import Swift_TTS
+@testable import MLXAudio
 
 final class SentenceTokenizerTests: XCTestCase {
 

@@ -118,6 +118,15 @@ class Model(nn.Module):
         """
         raise NotImplementedError
 
+    def decode_chunk(
+        self, audio_data: mx.array, verbose: bool = False
+    ) -> AlignedResult:
+        mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
+        result = self.decode(mel)[0]
+        if verbose:
+            print(result.text)
+        return result
+
     def generate(
         self,
         path: Path | str,
@@ -126,6 +135,7 @@ class Model(nn.Module):
         chunk_duration: Optional[float] = None,
         overlap_duration: float = 15.0,
         chunk_callback: Optional[Callable] = None,
+        **kwargs,
     ) -> AlignedResult:
         """
         Transcribe an audio file, with optional chunking for long files.
@@ -140,22 +150,23 @@ class Model(nn.Module):
         Returns:
             Transcription result with aligned tokens and sentences
         """
+
+        kwargs.pop("max_tokens", None)
+        kwargs.pop("generation_stream", None)
+        verbose = kwargs.pop("verbose", False)
+
         audio_path = Path(path)
         audio_data = load_audio(
             audio_path, self.preprocessor_config.sample_rate, dtype=dtype
         )
 
         if chunk_duration is None:
-            mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
-
-            return self.decode(mel)[0]
+            return self.decode_chunk(audio_data, verbose)
 
         audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
 
         if audio_length_seconds <= chunk_duration:
-            mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
-
-            return self.decode(mel)[0]
+            return self.decode_chunk(audio_data, verbose)
 
         chunk_samples = int(chunk_duration * self.preprocessor_config.sample_rate)
         overlap_samples = int(overlap_duration * self.preprocessor_config.sample_rate)
@@ -199,6 +210,16 @@ class Model(nn.Module):
 
         # Clear cache after each segment to avoid memory leaks
         mx.clear_cache()
+
+        if verbose:
+            print(result.text)
+            print("\n\033[94mSegments:\033[0m")
+            if hasattr(result, "segments"):
+                print(result.segments)
+            elif hasattr(result, "tokens"):
+                print(result.tokens)
+            else:
+                print(result)
 
         return result
 

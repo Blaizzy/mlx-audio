@@ -357,6 +357,7 @@ class Model(nn.Module):
         audio: Union[str, np.ndarray, mx.array],
         *,
         verbose: Optional[bool] = None,
+        generation_stream: bool = False,
         temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
         compression_ratio_threshold: Optional[float] = 2.4,
         logprob_threshold: Optional[float] = -1.0,
@@ -432,6 +433,9 @@ class Model(nn.Module):
         A dictionary containing the resulting text ("text") and segment-level details ("segments"), and
         the spoken language ("language"), which is detected when `decode_options["language"]` is None.
         """
+
+        decode_options.pop("max_tokens", None)
+        decode_options.pop("generation_stream", None)
 
         # Pad 30-seconds of silence to the input audio, for slicing
         mel = log_mel_spectrogram(audio, n_mels=self.dims.n_mels, padding=N_SAMPLES)
@@ -846,6 +850,15 @@ class Model(nn.Module):
 
         # Clear cache after each segment to avoid memory leaks
         mx.clear_cache()
+
+        if verbose:
+            print("\n\033[94mSegments:\033[0m")
+            if hasattr(all_segments, "segments"):
+                print(all_segments)
+            elif hasattr(all_segments, "tokens"):
+                print(all_segments.tokens)
+            else:
+                print(all_segments)
 
         return STTOutput(
             text=tokenizer.decode(all_tokens[len(initial_prompt_tokens) :]),

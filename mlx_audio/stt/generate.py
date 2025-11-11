@@ -1,11 +1,14 @@
 import argparse
+import contextlib
 import json
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import mlx.core as mx
+import torch.nn as nn
+from mlx.utils import tree_reduce
 
 from mlx_audio.stt.utils import load_model
 
@@ -29,6 +32,12 @@ def parse_args():
         help="Output format (txt, srt, vtt, or json)",
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
+    parser.add_argument(
+        "--max_tokens",
+        type=int,
+        default=128,
+        help="Maximum number of new tokens to generate",
+    )
     return parser.parse_args()
 
 
@@ -123,34 +132,73 @@ def save_as_json(segments, output_path: str):
         json.dump(result, f, ensure_ascii=False, indent=2)
 
 
+# A stream on the default device just for generation
+generation_stream = mx.new_stream(mx.default_device())
+
+
+@contextlib.contextmanager
+def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
+    """
+    A context manager to temporarily change the wired limit.
+
+    Note, the wired limit should not be changed during an async eval.  If an
+    async eval could be running pass in the streams to synchronize with prior
+    to exiting the context manager.
+    """
+    if not mx.metal.is_available():
+        try:
+            yield
+        finally:
+            pass
+    else:
+        model_bytes = tree_reduce(
+            lambda acc, x: acc + x.nbytes if isinstance(x, mx.array) else acc, model, 0
+        )
+        max_rec_size = mx.metal.device_info()["max_recommended_working_set_size"]
+        if model_bytes > 0.9 * max_rec_size:
+            model_mb = model_bytes // 2**20
+            max_rec_mb = max_rec_size // 2**20
+            print(
+                f"[WARNING] Generating with a model that requires {model_mb} MB "
+                f"which is close to the maximum recommended size of {max_rec_mb} "
+                "MB. This can be slow. See the documentation for possible work-arounds: "
+                "https://github.com/ml-explore/mlx-lm/tree/main#large-models"
+            )
+        old_limit = mx.set_wired_limit(max_rec_size)
+        try:
+            yield
+        finally:
+            if streams is not None:
+                for s in streams:
+                    mx.synchronize(s)
+            else:
+                mx.synchronize()
+            mx.set_wired_limit(old_limit)
+
+
 def generate(
     model_path: str,
     audio_path: str,
     output_path: str,
     format: str = "txt",
     verbose: bool = True,
+    **kwargs,
 ):
     model = load_model(model_path)
-    print(f"\n\033[94mModel:\033[0m {model_path}")
+    print("=" * 10)
     print(f"\033[94mAudio path:\033[0m {audio_path}")
     print(f"\033[94mOutput path:\033[0m {output_path}")
     print(f"\033[94mFormat:\033[0m {format}")
     mx.reset_peak_memory()
     start_time = time.time()
-    segments = model.generate(audio_path)
+    if verbose:
+        print("\033[94mTranscription:\033[0m")
+    segments = model.generate(
+        audio_path, verbose=verbose, generation_stream=generation_stream, **kwargs
+    )
     end_time = time.time()
 
-    if verbose:
-        print("\n\033[94mTranscription:\033[0m")
-        print(segments.text)
-        print("\n\033[94mSegments:\033[0m")
-        if hasattr(segments, "segments"):
-            print(segments.segments)
-        elif hasattr(segments, "tokens"):
-            print(segments.tokens)
-        else:
-            print(segments)
-
+    print("\n" + "=" * 10)
     print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
     print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
@@ -171,4 +219,11 @@ def generate(
 
 if __name__ == "__main__":
     args = parse_args()
-    generate(args.model, args.audio, args.output, args.format, args.verbose)
+    generate(
+        args.model,
+        args.audio,
+        args.output,
+        args.format,
+        args.verbose,
+        max_tokens=args.max_tokens,
+    )
