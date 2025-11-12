@@ -292,13 +292,15 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
         # Buffer for accumulating audio chunks with speech
         audio_buffer = []
-        buffer_duration = 1.5  # Process every 2 seconds of speech for faster response
-        chunk_size = int(sample_rate * buffer_duration)
-        min_chunk_size = int(sample_rate * 1.0)  # Minimum 1 second before processing
+        min_chunk_size = int(sample_rate * 0.5)  # Minimum 0.5 seconds before processing
+        max_chunk_size = int(
+            sample_rate * 10.0
+        )  # Maximum 10 seconds to avoid memory issues
         silence_skip_count = 0
         speech_chunk_count = 0
+        last_speech_time = time.time()  # Track when we last detected speech
+        silence_threshold_seconds = 0.5  # Process when silence > 0.5 seconds
         last_process_time = time.time()
-        process_interval = 1.5  # Process at least every 1.5 seconds if we have speech
 
         await websocket.send_json({"status": "ready", "message": "Ready to transcribe"})
         print("Ready to transcribe")
@@ -344,17 +346,19 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                 # These will be processed in the next chunk
 
                 # Only accumulate audio if it contains speech
+                current_time = time.time()
                 if has_speech:
                     # Convert to float32 for buffer
                     audio_chunk_float = audio_chunk_int16.astype(np.float32) / 32768.0
                     audio_buffer.extend(audio_chunk_float)
                     speech_chunk_count += 1
                     silence_skip_count = 0
+                    last_speech_time = current_time
 
-                    if len(audio_buffer) % (chunk_size // 4) < len(audio_chunk_float):
-                        # Log every ~25% of buffer fill
+                    if len(audio_buffer) % (sample_rate * 2) < len(audio_chunk_float):
+                        # Log every ~2 seconds of buffer
                         print(
-                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)}/{chunk_size} samples ({len(audio_buffer)/sample_rate:.2f}s)"
+                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)} samples ({len(audio_buffer)/sample_rate:.2f}s)"
                         )
                 else:
                     silence_skip_count += 1
@@ -362,19 +366,33 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     if silence_skip_count % 20 == 0:
                         print(f"Silence detected: skipped {silence_skip_count} chunks")
 
-                # Process when buffer is large enough OR if we have minimum audio and enough time has passed
-                current_time = time.time()
-                time_since_last_process = current_time - last_process_time
-                should_process = len(audio_buffer) >= chunk_size or (  # Full buffer
-                    len(audio_buffer) >= min_chunk_size  # At least 1 second of speech
-                    and time_since_last_process
-                    >= process_interval  # And enough time has passed
-                )
+                # Determine if we should process:
+                # 1. If we have silence > 0.5 seconds and buffer has speech (end of utterance)
+                # 2. If buffer reaches maximum size (to avoid memory issues)
+                time_since_last_speech = current_time - last_speech_time
+                should_process = False
+
+                if len(audio_buffer) > 0:
+                    # Process if we have enough silence after speech (end of utterance)
+                    if (
+                        time_since_last_speech >= silence_threshold_seconds
+                        and len(audio_buffer) >= min_chunk_size
+                    ):
+                        should_process = True
+                        print(
+                            f"Processing due to silence gap: {time_since_last_speech:.2f}s silence, buffer: {len(audio_buffer)/sample_rate:.2f}s"
+                        )
+                    # Or if buffer is getting too large (continuous speech)
+                    elif len(audio_buffer) >= max_chunk_size:
+                        should_process = True
+                        print(
+                            f"Processing due to max buffer size: {len(audio_buffer)/sample_rate:.2f}s"
+                        )
 
                 if should_process and len(audio_buffer) > 0:
-                    # Use available buffer (up to chunk_size) for processing
-                    process_size = min(len(audio_buffer), chunk_size)
-                    audio_array = np.array(audio_buffer[:process_size])
+                    # Process the entire buffer (continuous speech chunk)
+                    process_size = len(audio_buffer)
+                    audio_array = np.array(audio_buffer)
 
                     # Save to temporary file for processing
                     tmp_path = f"/tmp/realtime_{time.time()}.wav"
