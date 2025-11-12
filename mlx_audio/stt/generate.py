@@ -228,7 +228,9 @@ def generate(
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    if format == "txt":
+    if format == "txt" or segments.segments is None:
+        if segments.segments is None:
+            print("[WARNING] No segments found, saving as plain text.")
         save_as_txt(segments, output_path)
     elif format == "srt":
         save_as_srt(segments, output_path)

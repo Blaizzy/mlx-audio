@@ -11,7 +11,7 @@ import numpy as np
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
 
-from .config import AudioConfig, ModelConfig, TextConfig
+from .config import AudioConfig, ModelConfig
 
 
 @dataclass
@@ -185,13 +185,10 @@ class LanguageModel(nn.Module):
     def __call__(
         self,
         inputs: Optional[mx.array] = None,
-        mask: Optional[mx.array] = None,
         cache: Optional[mx.array] = None,
         input_embeddings: Optional[mx.array] = None,
     ):
-        out = self.model(
-            inputs, mask=mask, cache=cache, input_embeddings=input_embeddings
-        )
+        out = self.model(inputs, cache=cache, input_embeddings=input_embeddings)
         if self.config.tie_word_embeddings:
             out = self.model.embed_tokens.as_linear(out)
         else:
@@ -257,7 +254,6 @@ class Model(nn.Module):
         self,
         input_ids: mx.array,
         input_features: mx.array = None,
-        mask: Optional[mx.array] = None,
         cache: Optional[mx.array] = None,
     ) -> mx.array:
 
@@ -267,9 +263,7 @@ class Model(nn.Module):
             cache=cache,
         )
 
-        logits = self.language_model(
-            inputs_embeds=inputs_embeds, mask=mask, cache=cache
-        )
+        logits = self.language_model(input_embeddings=inputs_embeds, cache=cache)
 
         return logits
 
