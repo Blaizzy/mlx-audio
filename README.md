@@ -84,39 +84,52 @@ MLX-Audio provides a modern web interface with real-time audio visualization cap
 - **Smart Playback**: Optional automatic playback of generated audio
 - **File Management**: Quick access to the output directory through an integrated file explorer button
 - **Speech Recognition**: Convert speech to text with support for multiple languages and models
-To start the web interface and API server:
 
-UI:
-```bash
-# Configure the API base URL and port
-export NEXT_PUBLIC_API_BASE_URL=http://localhost
-export NEXT_PUBLIC_API_PORT=8000
+#### Starting the Web Interface
 
-# Start UI server
-cd mlx_audio/ui
-npm run dev
-```
+**Important**: The MLX-Audio system consists of two separate components that must both be running:
+1. **FastAPI Server** (Backend API on port 8000)
+2. **Next.js UI** (Web Interface on port 3000)
 
-Server:
+You need to start both in separate terminal tabs/windows:
+
+**Tab 1 - Start the FastAPI Server:**
 ```bash
 # Using the command-line interface
 mlx_audio.server
 
 # With custom host and port
 mlx_audio.server --host 0.0.0.0 --port 9000
-
-# With verbose logging
-mlx_audio.server --verbose
 ```
 
-Available command line arguments:
-- `--host`: Host address to bind the server to (default: 127.0.0.1)
+Available server command line arguments:
+- `--host`: Host address to bind the server to (default: 0.0.0.0)
 - `--port`: Port to bind the server to (default: 8000)
+- `--workers`: Number of workers (default: 2)
+- `--allowed-origins`: List of allowed origins for CORS (default: *)
 
-Then open your browser and navigate to:
+**Tab 2 - Start the UI:**
+```bash
+# Navigate to the UI directory
+cd mlx_audio/ui
+
+# Install dependencies (first time only)
+npm install
+
+# Configure the API base URL and port (optional, defaults shown)
+export NEXT_PUBLIC_API_BASE_URL=http://localhost
+export NEXT_PUBLIC_API_PORT=8000
+
+# Start the UI development server
+npm run dev
 ```
-http://127.0.0.1:8000
+
+**Then open your browser and navigate to:**
 ```
+http://localhost:3000
+```
+
+**Note**: The FastAPI server (port 8000) provides REST API endpoints only and does not serve the web interface. Accessing `http://localhost:8000` directly will show a 404 error unless you're using the API endpoints directly. The web interface is served by the Next.js development server on port 3000.
 
 #### API Endpoints
 
