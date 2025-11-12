@@ -9,7 +9,10 @@ import argparse
 import asyncio
 import io
 import os
+import subprocess
 import time
+import webbrowser
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
@@ -125,6 +128,13 @@ class SpeechRequest(BaseModel):
 model_provider = ModelProvider()
 
 
+@app.get("/")
+async def root():
+    return {
+        "message": "Welcome to the MLX Audio API server! Visit https://localhost:3000 for the UI."
+    }
+
+
 @app.get("/v1/models")
 async def list_models():
     """
@@ -235,6 +245,64 @@ async def stt_transcriptions(
     return result
 
 
+class MLXAudioStudioServer:
+    def __init__(self, start_ui=False, log_dir="logs"):
+        self.start_ui = start_ui
+        self.ui_process = None
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(exist_ok=True)
+
+    def start_ui_background(self):
+        """Start UI with logs redirected to file"""
+        ui_path = Path(__file__).parent / "ui"
+
+        # Install deps silently
+        subprocess.run(
+            ["npm", "install"],
+            cwd=str(ui_path),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        # Start UI with logs to file
+        ui_log = open(self.log_dir / "ui.log", "w")
+        self.ui_process = subprocess.Popen(
+            ["npm", "run", "dev"],
+            cwd=str(ui_path),
+            stdout=ui_log,
+            stderr=subprocess.STDOUT,
+        )
+        print(f"✓ UI started (logs: {self.log_dir}/ui.log)")
+
+    def start_server(self, host="localhost", port=8000, reload=False, workers=2):
+        if self.start_ui:
+            self.start_ui_background()
+            time.sleep(2)
+            webbrowser.open("http://localhost:3000")
+            print(f"✓ API server starting on http://{host}:{port}")
+            print(f"✓ Studio UI available at http://localhost:3000")
+            print("\nPress Ctrl+C to stop both servers")
+
+        try:
+            uvicorn.run(
+                "mlx_audio.server:app",
+                host=host,
+                port=port,
+                reload=reload,
+                workers=workers,
+                loop="asyncio",
+            )
+        finally:
+            if self.ui_process:
+                self.ui_process.terminate()
+                print("✓ UI server stopped")
+
+            ui_log_path = self.log_dir / "ui.log"
+            if ui_log_path.exists():
+                ui_log_path.unlink()
+                print(f"✓ UI logs deleted from {ui_log_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="MLX Audio API server")
     parser.add_argument(
@@ -244,7 +312,7 @@ def main():
         help="List of allowed origins for CORS",
     )
     parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to run the server on"
+        "--host", type=str, default="localhost", help="Host to run the server on"
     )
     parser.add_argument(
         "--port", type=int, default=8000, help="Port to run the server on"
@@ -273,64 +341,16 @@ def main():
         --workers 0.5 (will use half the number of CPU cores available)
         --workers 0.0 (will use 1 worker)""",
     )
-
-    args = parser.parse_args()
-    if isinstance(args.workers, float):
-        args.workers = max(1, int(os.cpu_count() * args.workers))
-
-    setup_cors(app, args.allowed_origins)
-
-    uvicorn.run(
-        "mlx_audio.server:app",
-        host=args.host,
-        port=args.port,
-        reload=args.reload,
-        workers=args.workers,
-        loop="asyncio",
-    )
-
-
-if __name__ == "__main__":
-    main()
-
-
-def main():
-    parser = argparse.ArgumentParser(description="MLX Audio API server")
     parser.add_argument(
-        "--allowed-origins",
-        nargs="+",
-        default=["*"],
-        help="List of allowed origins for CORS",
+        "--start-ui",
+        action="store_true",
+        help="Start the Studio UI alongside the API server",
     )
     parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to run the server on"
-    )
-    parser.add_argument(
-        "--port", type=int, default=8000, help="Port to run the server on"
-    )
-    parser.add_argument(
-        "--reload",
-        type=bool,
-        default=False,
-        help="Enable auto-reload of the server. Only works when 'workers' is set to None.",
-    )
-
-    parser.add_argument(
-        "--workers",
-        type=int_or_float,
-        default=calculate_default_workers(),
-        help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
-        Can be either an int or a float.
-        If an int, it will be the number of workers to use.
-        If a float, number of workers will be this fraction of the  number of CPU cores available, with a minimum of 1.
-        Defaults to the `MLX_AUDIO_NUM_WORKERS` env variable if set and to 2 if not.
-        To use all available CPU cores, set it to 1.0.
-
-        Examples:
-        --workers 1 (will use 1 worker)
-        --workers 1.0 (will use all available CPU cores)
-        --workers 0.5 (will use half the number of CPU cores available)
-        --workers 0.0 (will use 1 worker)""",
+        "--log-dir",
+        type=str,
+        default="logs",
+        help="Directory to save server logs",
     )
 
     args = parser.parse_args()
@@ -339,13 +359,12 @@ def main():
 
     setup_cors(app, args.allowed_origins)
 
-    uvicorn.run(
-        "mlx_audio.server:app",
+    client = MLXAudioStudioServer(start_ui=args.start_ui, log_dir=args.log_dir)
+    client.start_server(
         host=args.host,
         port=args.port,
-        reload=args.reload,
+        reload=args.reload if args.workers is None else False,
         workers=args.workers,
-        loop="asyncio",
     )
 
 
