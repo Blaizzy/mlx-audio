@@ -14,6 +14,7 @@ export default function RealtimeTranscriptionPage() {
   const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo")
   const [status, setStatus] = useState<"idle" | "connecting" | "ready" | "recording" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
+  const [isSpeechDetected, setIsSpeechDetected] = useState(false)
   
   const websocketRef = useRef<WebSocket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -99,9 +100,33 @@ export default function RealtimeTranscriptionPage() {
       setError(null)
       setStatus("connecting")
 
-      // Get microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Get microphone access with noise suppression and echo cancellation
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 16000, // Request 16kHz if supported
+        },
+      })
       streamRef.current = stream
+      
+      // Apply additional constraints for better noise suppression
+      const audioTrack = stream.getAudioTracks()[0]
+      if (audioTrack && typeof audioTrack.getCapabilities === 'function') {
+        try {
+          await audioTrack.applyConstraints({
+            advanced: [
+              { noiseSuppression: true },
+              { echoCancellation: true },
+              { autoGainControl: true },
+            ],
+          })
+          console.log("Noise suppression and echo cancellation enabled")
+        } catch (err) {
+          console.warn("Could not apply audio constraints:", err)
+        }
+      }
 
       // Create audio context (browser may not support custom sample rates)
       // We'll handle resampling in the processor
@@ -143,11 +168,18 @@ export default function RealtimeTranscriptionPage() {
           } else if (data.text) {
             // Append new transcription
             setTranscript((prev) => {
+              if (!prev || prev.trim().length === 0) {
+                return data.text
+              }
               if (prev && !prev.endsWith(" ") && data.text) {
                 return prev + " " + data.text
               }
               return prev + (data.text || "")
             })
+            
+            setIsSpeechDetected(true)
+            // Reset speech indicator after a delay
+            setTimeout(() => setIsSpeechDetected(false), 100)
           } else if (data.error) {
             setError(data.error)
             setStatus("error")
@@ -307,8 +339,14 @@ export default function RealtimeTranscriptionPage() {
               <h2 className="text-lg font-semibold">Live Transcript</h2>
               {isRecording && (
                 <div className="flex items-center space-x-2">
-                  <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-                  <span className="text-sm text-red-500">Recording</span>
+                  <div className={`w-2 h-2 rounded-full animate-pulse ${
+                    isSpeechDetected ? "bg-green-500" : "bg-red-500"
+                  }`}></div>
+                  <span className={`text-sm ${
+                    isSpeechDetected ? "text-green-500" : "text-red-500"
+                  }`}>
+                    {isSpeechDetected ? "Speech Detected" : "Listening..."}
+                  </span>
                 </div>
               )}
             </div>

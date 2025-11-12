@@ -21,6 +21,7 @@ import mlx.core as mx
 import numpy as np
 import soundfile as sf
 import uvicorn
+import webrtcvad
 from fastapi import (
     FastAPI,
     File,
@@ -278,10 +279,26 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         stt_model = model_provider.load_model(model_name)
         print("STT model loaded successfully")
 
-        # Buffer for accumulating audio chunks
+        # Initialize WebRTC VAD for speech detection
+        vad = webrtcvad.Vad(
+            2
+        )  # Mode 3 is most aggressive (0-3, higher = more aggressive)
+        # VAD requires specific frame sizes: 10ms, 20ms, or 30ms at 8kHz, 16kHz, 32kHz, or 48kHz
+        vad_frame_duration_ms = 30  # 30ms frames
+        vad_frame_size = int(sample_rate * vad_frame_duration_ms / 1000)
+        print(
+            f"VAD initialized: frame_size={vad_frame_size} samples ({vad_frame_duration_ms}ms at {sample_rate}Hz)"
+        )
+
+        # Buffer for accumulating audio chunks with speech
         audio_buffer = []
-        buffer_duration = 3.0  # Process every 3 seconds
+        buffer_duration = 1.5  # Process every 2 seconds of speech for faster response
         chunk_size = int(sample_rate * buffer_duration)
+        min_chunk_size = int(sample_rate * 1.0)  # Minimum 1 second before processing
+        silence_skip_count = 0
+        speech_chunk_count = 0
+        last_process_time = time.time()
+        process_interval = 1.5  # Process at least every 1.5 seconds if we have speech
 
         await websocket.send_json({"status": "ready", "message": "Ready to transcribe"})
         print("Ready to transcribe")
@@ -294,17 +311,70 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                 break
 
             if "bytes" in message:
-                # Audio data received
-                audio_chunk = (
-                    np.frombuffer(message["bytes"], dtype=np.int16).astype(np.float32)
-                    / 32768.0
-                )
-                audio_buffer.extend(audio_chunk)
+                # Audio data received as int16
+                audio_chunk_int16 = np.frombuffer(message["bytes"], dtype=np.int16)
 
-                # Process when buffer is large enough
-                if len(audio_buffer) >= chunk_size:
-                    # Convert to numpy array
-                    audio_array = np.array(audio_buffer[:chunk_size])
+                # Process audio in VAD frame sizes to detect speech
+                # WebRTC VAD requires frames of exactly 10ms, 20ms, or 30ms
+                # at sample rates of 8000, 16000, 32000, or 48000 Hz
+                num_frames = len(audio_chunk_int16) // vad_frame_size
+                has_speech = False
+                speech_frames = 0
+
+                # Check each VAD frame for speech activity
+                for i in range(num_frames):
+                    frame_start = i * vad_frame_size
+                    frame_end = frame_start + vad_frame_size
+                    frame = audio_chunk_int16[frame_start:frame_end]
+
+                    # VAD requires exact frame size
+                    if len(frame) == vad_frame_size:
+                        try:
+                            if vad.is_speech(frame.tobytes(), sample_rate):
+                                has_speech = True
+                                speech_frames += 1
+                        except (ValueError, OSError) as e:
+                            # If VAD fails (wrong sample rate or frame size), assume speech (conservative)
+                            # This can happen if sample rate doesn't match VAD requirements
+                            print(f"VAD error (assuming speech): {e}")
+                            has_speech = True
+                            speech_frames += 1
+
+                # Handle remaining samples that don't form a complete frame
+                # These will be processed in the next chunk
+
+                # Only accumulate audio if it contains speech
+                if has_speech:
+                    # Convert to float32 for buffer
+                    audio_chunk_float = audio_chunk_int16.astype(np.float32) / 32768.0
+                    audio_buffer.extend(audio_chunk_float)
+                    speech_chunk_count += 1
+                    silence_skip_count = 0
+
+                    if len(audio_buffer) % (chunk_size // 4) < len(audio_chunk_float):
+                        # Log every ~25% of buffer fill
+                        print(
+                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)}/{chunk_size} samples ({len(audio_buffer)/sample_rate:.2f}s)"
+                        )
+                else:
+                    silence_skip_count += 1
+                    # Only log silence periodically to reduce noise
+                    if silence_skip_count % 20 == 0:
+                        print(f"Silence detected: skipped {silence_skip_count} chunks")
+
+                # Process when buffer is large enough OR if we have minimum audio and enough time has passed
+                current_time = time.time()
+                time_since_last_process = current_time - last_process_time
+                should_process = len(audio_buffer) >= chunk_size or (  # Full buffer
+                    len(audio_buffer) >= min_chunk_size  # At least 1 second of speech
+                    and time_since_last_process
+                    >= process_interval  # And enough time has passed
+                )
+
+                if should_process and len(audio_buffer) > 0:
+                    # Use available buffer (up to chunk_size) for processing
+                    process_size = min(len(audio_buffer), chunk_size)
+                    audio_array = np.array(audio_buffer[:process_size])
 
                     # Save to temporary file for processing
                     tmp_path = f"/tmp/realtime_{time.time()}.wav"
@@ -341,7 +411,11 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         )
 
                         # Clear processed audio from buffer
-                        audio_buffer = audio_buffer[chunk_size:]
+                        audio_buffer = audio_buffer[process_size:]
+                        last_process_time = current_time
+                        print(
+                            f"Processed {process_size} samples ({process_size/sample_rate:.2f}s), remaining buffer: {len(audio_buffer)} samples"
+                        )
 
                     except Exception as e:
                         import traceback
