@@ -8,6 +8,7 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 import argparse
 import asyncio
 import io
+import json
 import os
 import subprocess
 import time
@@ -16,9 +17,20 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
+import mlx.core as mx
+import numpy as np
 import soundfile as sf
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -243,6 +255,129 @@ async def stt_transcriptions(
     result = stt_model.generate(tmp_path)
     os.remove(tmp_path)
     return result
+
+
+@app.websocket("/v1/audio/transcriptions/realtime")
+async def stt_realtime_transcriptions(websocket: WebSocket):
+    """Realtime transcription via WebSocket."""
+    await websocket.accept()
+
+    try:
+        # Receive initial configuration
+        config = await websocket.receive_json()
+        model_name = config.get("model", "mlx-community/whisper-large-v3-turbo")
+        language = config.get("language", None)
+        sample_rate = config.get("sample_rate", 16000)
+
+        print(
+            f"Configuration received: model={model_name}, language={language}, sample_rate={sample_rate}"
+        )
+
+        # Load the STT model
+        print("Loading STT model...")
+        stt_model = model_provider.load_model(model_name)
+        print("STT model loaded successfully")
+
+        # Buffer for accumulating audio chunks
+        audio_buffer = []
+        buffer_duration = 3.0  # Process every 3 seconds
+        chunk_size = int(sample_rate * buffer_duration)
+
+        await websocket.send_json({"status": "ready", "message": "Ready to transcribe"})
+        print("Ready to transcribe")
+
+        while True:
+            # Receive message
+            try:
+                message = await websocket.receive()
+            except:
+                break
+
+            if "bytes" in message:
+                # Audio data received
+                audio_chunk = (
+                    np.frombuffer(message["bytes"], dtype=np.int16).astype(np.float32)
+                    / 32768.0
+                )
+                audio_buffer.extend(audio_chunk)
+
+                # Process when buffer is large enough
+                if len(audio_buffer) >= chunk_size:
+                    # Convert to numpy array
+                    audio_array = np.array(audio_buffer[:chunk_size])
+
+                    # Save to temporary file for processing
+                    tmp_path = f"/tmp/realtime_{time.time()}.wav"
+                    sf.write(tmp_path, audio_array, sample_rate)
+
+                    try:
+                        # Generate transcription
+
+                        result = stt_model.generate(
+                            tmp_path,
+                            language=(
+                                language if language and language != "Detect" else None
+                            ),
+                            verbose=False,
+                        )
+
+                        print(f"Transcription result: {result.text[:100]}...")
+
+                        # Send transcription result
+                        await websocket.send_json(
+                            {
+                                "text": result.text,
+                                "segments": (
+                                    result.segments
+                                    if hasattr(result, "segments")
+                                    else None
+                                ),
+                                "language": (
+                                    result.language
+                                    if hasattr(result, "language")
+                                    else language
+                                ),
+                            }
+                        )
+
+                        # Clear processed audio from buffer
+                        audio_buffer = audio_buffer[chunk_size:]
+
+                    except Exception as e:
+                        import traceback
+
+                        error_msg = str(e)
+                        traceback.print_exc()
+                        print(f"Error during transcription: {error_msg}")
+                        await websocket.send_json(
+                            {"error": error_msg, "status": "error"}
+                        )
+                    finally:
+                        # Clean up temp file
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+
+            elif "text" in message:
+                # JSON message received (e.g., stop command)
+                try:
+                    data = json.loads(message["text"])
+                    if data.get("action") == "stop":
+                        break
+                except:
+                    pass
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"error": str(e), "status": "error"})
+        except:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except:
+            pass
 
 
 class MLXAudioStudioServer:
