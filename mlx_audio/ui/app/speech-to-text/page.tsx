@@ -4,7 +4,7 @@ import type React from "react"
 
 import { useState, useRef, useEffect } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
-import { FileText, Upload, MoreVertical, X, ChevronDown } from "lucide-react"
+import { FileText, Upload, MoreVertical, X, ChevronDown, Mic } from "lucide-react"
 import Link from "next/link"
 
 interface TranscriptionFile {
@@ -173,13 +173,21 @@ export default function SpeechToTextPage() {
               .
             </p>
           </div>
-          <button
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center space-x-2 bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors"
-          >
-            <FileText className="h-5 w-5" />
-            <span>Transcribe files</span>
-          </button>
+          <div className="flex items-center space-x-3">
+            <Link href="/speech-to-text/realtime">
+              <button className="flex items-center space-x-2 bg-sky-500 hover:bg-sky-600 text-white px-4 py-2 rounded-lg transition-colors">
+                <Mic className="h-5 w-5" />
+                <span>Realtime Transcription</span>
+              </button>
+            </Link>
+            <button
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center space-x-2 bg-black dark:bg-white text-white dark:text-black px-4 py-2 rounded-lg hover:bg-gray-800 dark:hover:bg-gray-200 transition-colors"
+            >
+              <FileText className="h-5 w-5" />
+              <span>Transcribe files</span>
+            </button>
+          </div>
         </div>
 
         <div className="border-t border-gray-200 dark:border-gray-700 pt-6">
