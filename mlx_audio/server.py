@@ -293,14 +293,19 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         # Buffer for accumulating audio chunks with speech
         audio_buffer = []
         min_chunk_size = int(sample_rate * 0.5)  # Minimum 0.5 seconds before processing
+        initial_chunk_size = int(
+            sample_rate * 1.5
+        )  # Process first 1.5 seconds for real-time feedback
         max_chunk_size = int(
-            sample_rate * 10.0
+            sample_rate * 5.0
         )  # Maximum 10 seconds to avoid memory issues
         silence_skip_count = 0
         speech_chunk_count = 0
         last_speech_time = time.time()  # Track when we last detected speech
         silence_threshold_seconds = 0.5  # Process when silence > 0.5 seconds
         last_process_time = time.time()
+        initial_chunk_processed = False  # Track if we've processed the initial chunk
+        processed_samples = 0  # Track how many samples we've already processed
 
         await websocket.send_json({"status": "ready", "message": "Ready to transcribe"})
         print("Ready to transcribe")
@@ -367,29 +372,97 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         print(f"Silence detected: skipped {silence_skip_count} chunks")
 
                 # Determine if we should process:
-                # 1. If we have silence > 0.5 seconds and buffer has speech (end of utterance)
-                # 2. If buffer reaches maximum size (to avoid memory issues)
+                # 1. Process initial chunk (first 1.5s) for real-time feedback while accumulating
+                # 2. If we have silence > 0.5 seconds and buffer has speech (end of utterance)
+                # 3. If buffer reaches maximum size (to avoid memory issues)
                 time_since_last_speech = current_time - last_speech_time
-                should_process = False
+                should_process_initial = False
+                should_process_final = False
 
                 if len(audio_buffer) > 0:
-                    # Process if we have enough silence after speech (end of utterance)
+                    # Process initial chunk for real-time feedback (only once per speech segment)
                     if (
+                        not initial_chunk_processed
+                        and len(audio_buffer) >= initial_chunk_size
+                        and has_speech  # Only if we're still detecting speech
+                    ):
+                        should_process_initial = True
+                        print(
+                            f"Processing initial chunk for real-time feedback: {initial_chunk_size/sample_rate:.2f}s, total buffer: {len(audio_buffer)/sample_rate:.2f}s"
+                        )
+                    # Process if we have enough silence after speech (end of utterance)
+                    elif (
                         time_since_last_speech >= silence_threshold_seconds
                         and len(audio_buffer) >= min_chunk_size
                     ):
-                        should_process = True
+                        should_process_final = True
                         print(
                             f"Processing due to silence gap: {time_since_last_speech:.2f}s silence, buffer: {len(audio_buffer)/sample_rate:.2f}s"
                         )
                     # Or if buffer is getting too large (continuous speech)
                     elif len(audio_buffer) >= max_chunk_size:
-                        should_process = True
+                        should_process_final = True
                         print(
                             f"Processing due to max buffer size: {len(audio_buffer)/sample_rate:.2f}s"
                         )
 
-                if should_process and len(audio_buffer) > 0:
+                # Process initial chunk for real-time feedback
+                if should_process_initial and len(audio_buffer) >= initial_chunk_size:
+                    process_size = initial_chunk_size
+                    audio_array = np.array(audio_buffer[:process_size])
+                    processed_samples = process_size
+                    initial_chunk_processed = True
+
+                    # Save to temporary file for processing
+                    tmp_path = f"/tmp/realtime_initial_{time.time()}.wav"
+                    sf.write(tmp_path, audio_array, sample_rate)
+
+                    try:
+                        # Generate transcription for initial chunk
+                        result = stt_model.generate(
+                            tmp_path,
+                            language=(
+                                language if language and language != "Detect" else None
+                            ),
+                            verbose=False,
+                        )
+
+                        print(f"Initial transcription: {result.text[:100]}...")
+
+                        # Send initial transcription result (marked as partial)
+                        await websocket.send_json(
+                            {
+                                "text": result.text,
+                                "segments": (
+                                    result.segments
+                                    if hasattr(result, "segments")
+                                    else None
+                                ),
+                                "language": (
+                                    result.language
+                                    if hasattr(result, "language")
+                                    else language
+                                ),
+                                "is_partial": True,  # Mark as partial for UI
+                            }
+                        )
+
+                    except Exception as e:
+                        import traceback
+
+                        error_msg = str(e)
+                        traceback.print_exc()
+                        print(f"Error during initial transcription: {error_msg}")
+                        await websocket.send_json(
+                            {"error": error_msg, "status": "error"}
+                        )
+                    finally:
+                        # Clean up temp file
+                        if os.path.exists(tmp_path):
+                            os.remove(tmp_path)
+
+                # Process final chunk (entire accumulated buffer)
+                if should_process_final and len(audio_buffer) > 0:
                     # Process the entire buffer (continuous speech chunk)
                     process_size = len(audio_buffer)
                     audio_array = np.array(audio_buffer)
@@ -411,7 +484,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
                         print(f"Transcription result: {result.text[:100]}...")
 
-                        # Send transcription result
+                        # Send final transcription result (complete utterance)
                         await websocket.send_json(
                             {
                                 "text": result.text,
@@ -425,14 +498,17 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                                     if hasattr(result, "language")
                                     else language
                                 ),
+                                "is_partial": False,  # Mark as final/complete
                             }
                         )
 
-                        # Clear processed audio from buffer
-                        audio_buffer = audio_buffer[process_size:]
+                        # Clear processed audio from buffer and reset state
+                        audio_buffer = []
+                        processed_samples = 0
+                        initial_chunk_processed = False
                         last_process_time = current_time
                         print(
-                            f"Processed {process_size} samples ({process_size/sample_rate:.2f}s), remaining buffer: {len(audio_buffer)} samples"
+                            f"Processed final chunk: {process_size} samples ({process_size/sample_rate:.2f}s), buffer cleared"
                         )
 
                     except Exception as e:

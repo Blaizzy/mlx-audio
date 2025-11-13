@@ -166,16 +166,51 @@ export default function RealtimeTranscriptionPage() {
             // Start processing audio stream
             startAudioProcessing(stream, audioContext, ws)
           } else if (data.text) {
-            // Append new transcription
-            setTranscript((prev) => {
-              if (!prev || prev.trim().length === 0) {
-                return data.text
-              }
-              if (prev && !prev.endsWith(" ") && data.text) {
-                return prev + " " + data.text
-              }
-              return prev + (data.text || "")
-            })
+            // Handle transcription (partial or final)
+            const isPartial = data.is_partial || false
+            
+            if (isPartial) {
+              // Partial transcription - append with a marker that it might be updated
+              setTranscript((prev) => {
+                const partialText = data.text.trim()
+                if (!prev || prev.trim().length === 0) {
+                  return partialText
+                }
+                // Append partial text (it will be replaced by final transcription)
+                if (prev && !prev.endsWith(" ") && partialText) {
+                  return prev + " " + partialText
+                }
+                return prev + (partialText || "")
+              })
+            } else {
+              // Final transcription - replace the last partial if exists, or append
+              setTranscript((prev) => {
+                const finalText = data.text.trim()
+                if (!prev || prev.trim().length === 0) {
+                  return finalText
+                }
+                
+                // If we have a previous partial transcription, try to replace it
+                // Estimate: partial is usually ~1.5 seconds, roughly 3-4 words
+                const words = prev.trim().split(/\s+/).filter(w => w.length > 0)
+                const estimatedPartialWords = 4
+                
+                if (words.length >= estimatedPartialWords) {
+                  // Replace last few words (likely the partial) with final transcription
+                  const wordsToKeep = words.slice(0, Math.max(0, words.length - estimatedPartialWords))
+                  const newText = wordsToKeep.length > 0 
+                    ? wordsToKeep.join(" ") + " " + finalText
+                    : finalText
+                  return newText
+                } else {
+                  // Just append if transcript is short
+                  if (prev && !prev.endsWith(" ") && finalText) {
+                    return prev + " " + finalText
+                  }
+                  return prev + (finalText || "")
+                }
+              })
+            }
             
             setIsSpeechDetected(true)
             // Reset speech indicator after a delay
