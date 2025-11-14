@@ -13,6 +13,7 @@ import os
 import subprocess
 import time
 import webbrowser
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
@@ -37,6 +38,33 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from mlx_audio.utils import load_model
+
+
+def sanitize_for_json(obj: Any) -> Any:
+    """Recursively sanitize NaN, Infinity, and -Infinity values for JSON serialization."""
+    # Handle dataclasses
+    if is_dataclass(obj) and not isinstance(obj, type):
+        obj = asdict(obj)
+
+    if isinstance(obj, dict):
+        return {k: sanitize_for_json(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize_for_json(item) for item in obj]
+    elif isinstance(obj, float):
+        if np.isnan(obj):
+            return None
+        elif np.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, np.floating):
+        if np.isnan(obj):
+            return None
+        elif np.isinf(obj):
+            return None
+        return float(obj)
+    else:
+        return obj
+
 
 MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
@@ -255,7 +283,8 @@ async def stt_transcriptions(
     stt_model = model_provider.load_model(model)
     result = stt_model.generate(tmp_path)
     os.remove(tmp_path)
-    return result
+    # Sanitize NaN values for JSON serialization
+    return sanitize_for_json(result)
 
 
 @app.websocket("/v1/audio/transcriptions/realtime")
@@ -281,7 +310,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
         # Initialize WebRTC VAD for speech detection
         vad = webrtcvad.Vad(
-            2
+            3
         )  # Mode 3 is most aggressive (0-3, higher = more aggressive)
         # VAD requires specific frame sizes: 10ms, 20ms, or 30ms at 8kHz, 16kHz, 32kHz, or 48kHz
         vad_frame_duration_ms = 30  # 30ms frames
@@ -430,14 +459,15 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         print(f"Initial transcription: {result.text[:100]}...")
 
                         # Send initial transcription result (marked as partial)
+                        segments = (
+                            sanitize_for_json(result.segments)
+                            if hasattr(result, "segments") and result.segments
+                            else None
+                        )
                         await websocket.send_json(
                             {
                                 "text": result.text,
-                                "segments": (
-                                    result.segments
-                                    if hasattr(result, "segments")
-                                    else None
-                                ),
+                                "segments": segments,
                                 "language": (
                                     result.language
                                     if hasattr(result, "language")
@@ -485,14 +515,15 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         print(f"Transcription result: {result.text[:100]}...")
 
                         # Send final transcription result (complete utterance)
+                        segments = (
+                            sanitize_for_json(result.segments)
+                            if hasattr(result, "segments") and result.segments
+                            else None
+                        )
                         await websocket.send_json(
                             {
                                 "text": result.text,
-                                "segments": (
-                                    result.segments
-                                    if hasattr(result, "segments")
-                                    else None
-                                ),
+                                "segments": segments,
                                 "language": (
                                     result.language
                                     if hasattr(result, "language")

@@ -13,6 +13,14 @@ from mlx_audio.tts.utils import load_config
 from mlx_audio.tts.utils import load_model as load_tts_model
 
 
+def is_valid_module_name(name: str) -> bool:
+    """Check if a string is a valid Python module name."""
+    if not name or not isinstance(name, str):
+        return False
+
+    return name[0].isalpha() or name[0] == "_"
+
+
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
     """Determine whether a model belongs to the TTS or STT category."""
 
@@ -24,6 +32,9 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
     ):
         for hint in candidates:
             arch = remap.get(hint, hint)
+            # Double-check that the architecture name is valid before trying to import
+            if not is_valid_module_name(arch):
+                continue
             module_path = f"mlx_audio.{category}.models.{arch}"
             if importlib.util.find_spec(module_path) is not None:
                 return category
