@@ -49,7 +49,7 @@ from mlx_audio.tts.generate import generate_audio
 generate_audio(
     text=("In the beginning, the universe was created...\n"
         "...or the simulation was booted up."),
-    model_path="prince-canuma/Kokoro-82M",
+    model_path="mlx-community/Kokoro-82M-bf16",
     voice="af_heart",
     speed=1.2,
     lang_code="a", # Kokoro: (a)f_heart, or comment out for auto
@@ -157,7 +157,7 @@ from IPython.display import Audio
 import soundfile as sf
 
 # Initialize the model
-model_id = 'prince-canuma/Kokoro-82M'
+model_id = 'mlx-community/Kokoro-82M-bf16'
 model = load_model(model_id)
 
 # Create a pipeline with American English
@@ -204,7 +204,7 @@ from mlx_audio.tts.utils import quantize_model, load_model
 import json
 import mlx.core as mx
 
-model = load_model(repo_id='prince-canuma/Kokoro-82M')
+model = load_model(repo_id='mlx-community/Kokoro-82M-bf16')
 config = model.config
 
 # Quantize to 8-bit

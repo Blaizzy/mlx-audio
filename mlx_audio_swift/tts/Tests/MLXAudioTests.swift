@@ -7,26 +7,37 @@
 
 import Testing
 
-@testable import MLXAudio
-@testable import ESpeakNG
-
 struct MLXAudioTests {
 
-    func example() async throws {
+    @Test func example() async throws {
         // Write your test here and use APIs like `#expect(...)` to check expected conditions.
     }
-    
-    func testViewBodyDoesNotCrash() {
-        _ = ContentView().body
-    }
-    
-    func testKokoro() async {
-        let kokoroTTSModel = KokoroTTSModel()
-        kokoroTTSModel.say("test", .bmGeorge)
+
+    @Test @MainActor func testKokoroEngineInitializes() async {
+        let engine = KokoroEngine()
+        #expect(engine.isLoaded == false)
+        #expect(engine.isGenerating == false)
+        #expect(engine.availableVoices.count > 0)
     }
 
-    func testOrpheus() async {
-        let orpheusTTSModel = OrpheusTTSModel()
-        await orpheusTTSModel.say("test", .tara)
+    @Test @MainActor func testOrpheusEngineInitializes() async {
+        let engine = OrpheusEngine()
+        #expect(engine.isLoaded == false)
+        #expect(engine.isGenerating == false)
+        #expect(engine.availableVoices.count > 0)
+    }
+
+    @Test @MainActor func testMarvisEngineInitializes() async {
+        let engine = MarvisEngine()
+        #expect(engine.isLoaded == false)
+        #expect(engine.isGenerating == false)
+        #expect(engine.availableVoices.count > 0)
+    }
+
+    @Test func testTTSProviderHasVoices() async {
+        for provider in TTSProvider.allCases {
+            #expect(provider.availableVoices.count > 0)
+            #expect(provider.defaultVoiceID.isEmpty == false)
+        }
     }
 }

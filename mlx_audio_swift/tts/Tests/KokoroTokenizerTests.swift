@@ -6,8 +6,6 @@
 import XCTest
 import Foundation
 
-@testable import MLXAudio
-
 final class KokoroTokenizerTests: XCTestCase {
     
     private var tokenizer: KokoroTokenizer!

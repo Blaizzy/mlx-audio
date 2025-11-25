@@ -1,6 +1,15 @@
 {
   "pins" : [
     {
+      "identity" : "espeak-ng-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/espeak-ng/espeak-ng-spm.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "dda87cd7efcc832db857c78c7ae68839ba9bb43e"
+      }
+    },
+    {
       "identity" : "mlx-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift",

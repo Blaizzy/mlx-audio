@@ -203,7 +203,7 @@ def hertz_to_mel(pitch: float) -> float:
 
 def generate_audio(
     text: str,
-    model: Optional[Union[str, nn.Module]] = "prince-canuma/Kokoro-82M",
+    model: Optional[Union[str, nn.Module]] = "mlx-community/Kokoro-82M-bf16",
     max_tokens: int = 1200,
     voice: str = "af_heart",
     speed: float = 1.0,

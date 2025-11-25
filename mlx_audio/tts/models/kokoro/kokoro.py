@@ -78,7 +78,7 @@ class Model(nn.Module):
     so there is no need to repeatedly download config.json outside of KokoroModel.
     """
 
-    REPO_ID = "prince-canuma/Kokoro-82M"
+    REPO_ID = "mlx-community/Kokoro-82M-bf16"
 
     def __init__(self, config: ModelConfig, repo_id: str = None):
         super().__init__()
