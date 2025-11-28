@@ -120,3 +120,28 @@ def padding(data: List[mx.array]) -> tuple[mx.array, mx.array]:
         padded_feats[i, :, :seq_len] = feat
 
     return padded_feats, feats_lengths
+
+
+def merge_tokenized_segments(
+    tokenized_segments: List[List[int]], overlap: int, token_rate: int
+) -> List[int]:
+    """
+    Merges tokenized outputs by keeping the middle and dropping half of the overlapped tokens.
+
+    Args:
+        tokenized_segments: List of tokenized sequences.
+        overlap: Overlapping duration in seconds.
+        token_rate: Number of tokens per second.
+
+    Returns:
+        A single merged token sequence.
+    """
+    merged_tokens = []
+    overlap_tokens = (overlap // 2) * token_rate
+
+    for i, tokens in enumerate(tokenized_segments):
+        left = 0 if i == 0 else overlap_tokens
+        right = -overlap_tokens if i != len(tokenized_segments) - 1 else len(tokens)
+        merged_tokens.extend(tokens[left:right])
+
+    return merged_tokens
