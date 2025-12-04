@@ -395,7 +395,7 @@ class Model(nn.Module):
         """
         Load a pretrained Chatterbox model from a checkpoint directory.
 
-        Expects the standard mlx-audio format: a single model.safetensors file
+        Expects the standard mlx-audio-plus format: a single model.safetensors file
         with component prefixes (ve.*, t3.*, s3gen.*, s3_tokenizer.*).
 
         Automatically handles quantized weights if config.json contains quantization info.

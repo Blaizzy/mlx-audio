@@ -201,7 +201,7 @@ def generate_readme(path: Path, upload_repo: str):
     from mlx_audio.version import __version__
 
     card_text = f"""---
-library_name: mlx-audio
+library_name: mlx-audio-plus
 base_model:
 - ResembleAI/chatterbox
 - FunAudioLLM/CosyVoice2-0.5B
@@ -212,14 +212,14 @@ pipeline_tag: text-to-speech
 
 # {upload_repo}
 
-This model was converted to MLX format from [ResembleAI/chatterbox](https://huggingface.co/ResembleAI/chatterbox) using mlx-audio version **{__version__}**.
+This model was converted to MLX format from [ResembleAI/chatterbox](https://huggingface.co/ResembleAI/chatterbox) using mlx-audio-plus version **{__version__}**.
 
 The S3Tokenizer weights are from [FunAudioLLM/CosyVoice2-0.5B](https://huggingface.co/FunAudioLLM/CosyVoice2-0.5B).
 
-## Use with mlx-audio
+## Use with mlx-audio-plus
 
 ```bash
-pip install -U mlx-audio
+pip install -U git+https://github.com/DePasqualeOrg/mlx-audio-plus.git
 ```
 
 ### Command line

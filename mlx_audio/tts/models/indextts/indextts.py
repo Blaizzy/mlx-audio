@@ -68,11 +68,11 @@ class Model(nn.Module):
 
         if not args.gpt.use_mel_codes_as_input:
             raise NotImplementedError(
-                "use_mel_codes_as_input=false is not supported. Please open a new issue in mlx-audio to get this model supported."
+                "use_mel_codes_as_input=false is not supported. Please open a new issue in mlx-audio-plus to request support for this model."
             )
         if args.gpt.condition_type != "conformer_perceiver":
             raise NotImplementedError(
-                f"condition_type={args.gpt.condition_type} is not supported. Please open a new issue in mlx-audio to get this model supported."
+                f"condition_type={args.gpt.condition_type} is not supported. Please open a new issue in mlx-audio-plus to request support for this model."
             )
 
         self.args = args

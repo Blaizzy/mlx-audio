@@ -20,14 +20,13 @@ from mlx_audio.version import __version__
 
 # Setup configuration
 setup(
-    name="mlx-audio",
+    name="mlx-audio-plus",
     version=__version__,
-    description="MLX-Audio is a package for inference of text-to-speech (TTS) and speech-to-speech (STS) models locally on your Mac using MLX",
+    description="MLX Audio Plus is a package for inference of text-to-speech (TTS) and speech-to-speech (STS) models locally on your Mac using MLX",
     long_description=open(root_dir / "README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
-    author_email="prince.gdt@gmail.com",
-    author="Prince Canuma",
-    url="https://github.com/Blaizzy/mlx-audio",
+    author="Anthony DePasquale",
+    url="https://github.com/DePasqualeOrg/mlx-audio-plus",
     license="MIT",
     install_requires=requirements,
     packages=find_packages(where=root_dir),
