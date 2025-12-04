@@ -25,6 +25,7 @@ class PreprocessArgs:
     dither: float
     pad_to: int = 0
     pad_value: float = 0
+    preemph: float = 0.97  # Preemphasis coefficient (set to 0.0 to disable)
 
     @property
     def win_length(self) -> int:
@@ -45,6 +46,13 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
 
     window_fn = STR_TO_WINDOW_FN.get(args.window, None)
     window = window_fn(args.win_length) if window_fn else hanning(args.win_length)
+
+    # Apply preemphasis high-pass filter (matches NeMo training preprocessing)
+    # Formula: y[n] = x[n] - α*x[n-1] where α=0.97
+    # Boosts high frequencies for better consonant recognition
+    preemph = getattr(args, 'preemph', 0.97)  # Backward compatible with old configs
+    if preemph > 0:
+        x = mx.concat([x[:1], x[1:] - preemph * x[:-1]], axis=0)
 
     x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
     x = mx.square(mx.abs(x)).astype(original_dtype)
