@@ -11,11 +11,10 @@ from scipy import signal
 from ..base import GenerationResult
 from .config import ModelConfig
 from .s3gen import S3Token2Wav
-from .s3tokenizer import S3_SR as S3_TOKENIZER_SR
 from .s3tokenizer import S3TokenizerV2, log_mel_spectrogram
 from .t3 import T3
 from .t3.cond_enc import T3Cond
-from .voice_encoder import VoiceEncConfig, VoiceEncoder
+from .voice_encoder import VoiceEncoder
 
 # Constants
 S3_SR = 16000  # Sample rate for speech tokenizer
@@ -232,13 +231,14 @@ class Model(nn.Module):
         Sanitize PyTorch weights for MLX.
 
         This routes weights to the appropriate component's sanitize method
-        based on the weight key prefix. Handles two cases:
+        based on the weight key prefix. S3Tokenizer weights are loaded
+        separately from mlx-community/S3TokenizerV2.
 
+        Handles two cases:
         1. Pre-prefixed weights (from MLX converted models):
            - ve.* -> VoiceEncoder weights
            - t3.* -> T3 model weights
            - s3gen.* -> S3Gen (S3Token2Wav) weights
-           - s3_tokenizer.* -> S3TokenizerV2 weights
 
         2. Original PyTorch weights (without prefix):
            - Infers component from key names
@@ -251,11 +251,10 @@ class Model(nn.Module):
         """
         new_weights = {}
 
-        # Separate weights by component
+        # Separate weights by component (S3Tokenizer loaded separately)
         ve_weights = {}
         t3_weights = {}
         s3gen_weights = {}
-        s3tok_weights = {}
         other_weights = {}
 
         for key, value in weights.items():
@@ -266,11 +265,9 @@ class Model(nn.Module):
                 t3_weights[key[3:]] = value
             elif key.startswith("s3gen."):
                 s3gen_weights[key[6:]] = value
-            elif key.startswith("s3_tokenizer."):
-                s3tok_weights[key[13:]] = value
-            elif key.startswith("tokenizer."):
-                # S3Tokenizer bundled in s3gen.safetensors (PyTorch format)
-                s3tok_weights[key[10:]] = value
+            elif key.startswith("s3_tokenizer.") or key.startswith("tokenizer."):
+                # Skip S3Tokenizer weights - loaded from separate repo
+                continue
             else:
                 # If no prefix, infer from key names
                 # VoiceEncoder keys: lstm.*, similarity_*, proj.*
@@ -324,17 +321,17 @@ class Model(nn.Module):
             for k, v in s3gen_sanitized.items():
                 new_weights[f"s3gen.{k}"] = v
 
-        if s3tok_weights:
-            s3tok_sanitized = self.s3_tokenizer.sanitize(s3tok_weights)
-            for k, v in s3tok_sanitized.items():
-                new_weights[f"s3_tokenizer.{k}"] = v
-
         # Add other weights as-is
         new_weights.update(other_weights)
 
         return new_weights
 
-    def load_weights(self, weights, strict: bool = True):
+    def load_weights(
+        self,
+        weights,
+        strict: bool = True,
+        s3_tokenizer_repo: str = "mlx-community/S3TokenizerV2",
+    ):
         """
         Load weights into the model.
 
@@ -342,19 +339,22 @@ class Model(nn.Module):
         several non-checkpoint parameters (rand_noise, pos_enc.pe, stft_window,
         trim_fade) that are generated during initialization.
 
+        S3Tokenizer weights are always downloaded from s3_tokenizer_repo.
+
         Args:
             weights: List of (key, value) tuples or dict
             strict: If False, ignore missing/extra keys. Default True for
                     compatibility with utils.load_model().
+            s3_tokenizer_repo: Hugging Face repo for S3Tokenizer weights.
+                Default: "mlx-community/S3TokenizerV2"
         """
         if isinstance(weights, dict):
             weights = list(weights.items())
 
-        # Split weights by component prefix
+        # Split weights by component prefix (S3Tokenizer loaded separately)
         ve_weights = []
         t3_weights = []
         s3gen_weights = []
-        s3tok_weights = []
         other_weights = []
 
         for k, v in weights:
@@ -365,7 +365,8 @@ class Model(nn.Module):
             elif k.startswith("s3gen."):
                 s3gen_weights.append((k[6:], v))
             elif k.startswith("s3_tokenizer."):
-                s3tok_weights.append((k[13:], v))
+                # Skip - S3Tokenizer loaded from separate repo
+                continue
             else:
                 other_weights.append((k, v))
 
@@ -376,10 +377,33 @@ class Model(nn.Module):
             self.t3.load_weights(t3_weights, strict=False)
         if s3gen_weights:
             self.s3gen.load_weights(s3gen_weights, strict=False)
-        if s3tok_weights:
-            if self.s3_tokenizer is None:
-                self.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
-            self.s3_tokenizer.load_weights(s3tok_weights, strict=False)
+
+        # Load S3Tokenizer from separate repo
+        from pathlib import Path
+
+        from huggingface_hub import snapshot_download
+
+        print(f"Loading S3Tokenizer from {s3_tokenizer_repo}...")
+        s3tok_dir = Path(
+            snapshot_download(
+                repo_id=s3_tokenizer_repo,
+                allow_patterns=["model.safetensors", "config.json"],
+            )
+        )
+        s3tok_path = s3tok_dir / "model.safetensors"
+        if not s3tok_path.exists():
+            raise FileNotFoundError(
+                f"model.safetensors not found in {s3_tokenizer_repo}. "
+                "S3Tokenizer weights are required for Chatterbox."
+            )
+        s3tok_weights_dict = mx.load(str(s3tok_path))
+        if self.s3_tokenizer is None:
+            self.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
+        if hasattr(self.s3_tokenizer, "sanitize"):
+            s3tok_weights_dict = self.s3_tokenizer.sanitize(s3tok_weights_dict)
+        self.s3_tokenizer.load_weights(
+            list(s3tok_weights_dict.items()), strict=False
+        )
 
         # Handle any remaining weights at the top level
         if other_weights and strict:
@@ -391,12 +415,14 @@ class Model(nn.Module):
     def from_pretrained(
         cls,
         ckpt_dir: Union[str, Path],
+        s3_tokenizer_repo: str = "mlx-community/S3TokenizerV2",
     ) -> "Model":
         """
         Load a pretrained Chatterbox model from a checkpoint directory.
 
         Expects the standard mlx-audio-plus format: a single model.safetensors file
-        with component prefixes (ve.*, t3.*, s3gen.*, s3_tokenizer.*).
+        with component prefixes (ve.*, t3.*, s3gen.*). S3Tokenizer weights are loaded
+        separately from a shared repository.
 
         Automatically handles quantized weights if config.json contains quantization info.
 
@@ -405,13 +431,27 @@ class Model(nn.Module):
         Args:
             ckpt_dir: Path to checkpoint directory containing model.safetensors
                 and tokenizer.json.
+            s3_tokenizer_repo: Hugging Face repo for S3Tokenizer weights.
+                Default: "mlx-community/S3TokenizerV2"
 
         Returns:
             Initialized ChatterboxTTS model
         """
         import json
 
+        from huggingface_hub import snapshot_download
+
         ckpt_dir = Path(ckpt_dir)
+
+        # Download from Hub if path doesn't exist locally
+        if not ckpt_dir.exists():
+            print(f"Downloading {ckpt_dir} from Hugging Face...")
+            ckpt_dir = Path(
+                snapshot_download(
+                    repo_id=str(ckpt_dir),
+                    allow_patterns=["model.safetensors", "tokenizer.json", "config.json"],
+                )
+            )
 
         # Initialize models with default config
         model = cls()
@@ -434,14 +474,11 @@ class Model(nn.Module):
 
         all_weights = mx.load(str(combined_path))
 
-        # Split weights by prefix
+        # Split weights by prefix (S3Tokenizer loaded separately)
         ve_weights = {k[3:]: v for k, v in all_weights.items() if k.startswith("ve.")}
         t3_weights = {k[3:]: v for k, v in all_weights.items() if k.startswith("t3.")}
         s3gen_weights = {
             k[6:]: v for k, v in all_weights.items() if k.startswith("s3gen.")
-        }
-        s3tok_weights = {
-            k[13:]: v for k, v in all_weights.items() if k.startswith("s3_tokenizer.")
         }
 
         # Handle quantization if present in config
@@ -480,12 +517,24 @@ class Model(nn.Module):
             load_component_weights(model.t3, t3_weights, strict=False)
         if s3gen_weights:
             load_component_weights(model.s3gen, s3gen_weights, strict=False)
-        if s3tok_weights:
-            model.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
-            load_component_weights(model.s3_tokenizer, s3tok_weights, strict=False)
-        else:
-            print("Warning: s3_tokenizer weights not found in model.safetensors")
-            model.s3_tokenizer = None
+
+        # Load S3Tokenizer from separate repo
+        print(f"Loading S3Tokenizer from {s3_tokenizer_repo}...")
+        s3tok_dir = Path(
+            snapshot_download(
+                repo_id=s3_tokenizer_repo,
+                allow_patterns=["model.safetensors", "config.json"],
+            )
+        )
+        s3tok_path = s3tok_dir / "model.safetensors"
+        if not s3tok_path.exists():
+            raise FileNotFoundError(
+                f"model.safetensors not found in {s3_tokenizer_repo}. "
+                "S3Tokenizer weights are required for Chatterbox."
+            )
+        s3tok_weights = mx.load(str(s3tok_path))
+        model.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
+        load_component_weights(model.s3_tokenizer, s3tok_weights, strict=False)
 
         # Initialize text tokenizer
         tokenizer_path = ckpt_dir / "tokenizer.json"
