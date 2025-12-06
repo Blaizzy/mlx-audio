@@ -1,0 +1,6 @@
+# Core dependencies (required for all)
+mlx>=0.25.2
+numpy>=1.26.4
+huggingface_hub>=0.27.0
+tqdm>=4.67.1
+dacite>=1.9.2
