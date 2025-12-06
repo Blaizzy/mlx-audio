@@ -170,10 +170,14 @@ class TestKokoroPipeline(unittest.TestCase):
         self.assertEqual(LANG_CODES["a"], "American English")
         self.assertEqual(LANG_CODES["j"], "Japanese")
 
-    def test_init(self):
+    @patch("mlx_audio.tts.models.kokoro.pipeline.en.G2P")
+    def test_init(self, mock_g2p):
         """Test KokoroPipeline initialization."""
         # Import inside the test method
         from mlx_audio.tts.models.kokoro.pipeline import LANG_CODES, KokoroPipeline
+
+        # Mock G2P to avoid spacy download
+        mock_g2p.return_value = MagicMock()
 
         # Mock the KokoroModel - fix the import path
         with patch("mlx_audio.tts.models.kokoro.kokoro.Model") as mock_kokoro_model:
