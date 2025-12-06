@@ -252,11 +252,19 @@ mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format
   
 ## Swift Integration
 
-This repo also ships a Swift package for on-device TTS using Apple's MLX framework on macOS and iOS.
+This repo ships a Swift package for on-device TTS, STT, and STS using Apple's MLX framework on macOS and iOS.
+
+### Available Products
+
+| Product | Description | Dependencies |
+|---------|-------------|--------------|
+| `MLXAudio` | Text-to-Speech (Kokoro, Marvis, Orpheus) | Native Swift |
+| `MLXAudioSTT` | Speech-to-Text (Whisper via PythonKit) | PythonKit + Python-Apple-support |
+| `MLXAudioSTS` | Speech-to-Speech pipeline (STT → LLM → TTS) | MLXAudioSTT |
 
 ### Supported Platforms
 - **macOS**: 14.0+
-- **iOS**: 16.0+
+- **iOS**: 17.0+
 
 ### Adding the Swift Package Dependency
 
@@ -268,7 +276,10 @@ This repo also ships a Swift package for on-device TTS using Apple's MLX framewo
    https://github.com/Blaizzy/mlx-audio.git
    ```
 4. Select the package and choose the version you want to use
-5. Add the **`mlx-swift-audio`** product to your target
+5. Add the desired product(s) to your target:
+   - `MLXAudio` - TTS only (native Swift)
+   - `MLXAudioSTT` - STT via PythonKit
+   - `MLXAudioSTS` - Full speech-to-speech pipeline
 
 #### Via Package.swift
 Add the following dependency to your `Package.swift` file:
@@ -281,14 +292,16 @@ targets: [
     .target(
         name: "YourTarget",
         dependencies: [
-            .product(name: "mlx-swift-audio", package: "mlx-audio")
+            // Choose the products you need:
+            .product(name: "MLXAudio", package: "mlx-audio"),      // TTS
+            .product(name: "MLXAudioSTT", package: "mlx-audio"),   // STT
+            .product(name: "MLXAudioSTS", package: "mlx-audio"),   // STS
         ]
     )
 ]
 ```
 
-### Usage
-After adding the dependency, import and use the module:
+### TTS Usage
 
 ```swift
 import MLXAudio
@@ -332,7 +345,72 @@ let raw2 = try await s2.generateRaw(for: "No auto-play for this one")
 // rawX.audio is [Float] PCM at rawX.sampleRate (mono)
 ```
 
+### STT Usage (requires Python-Apple-support)
 
+> **Note**: STT uses PythonKit to bridge `mlx_audio.stt` (Whisper). You must bundle [Python-Apple-support](https://github.com/beeware/Python-Apple-support) in your app.
+
+```swift
+import MLXAudioSTT
+
+// Initialize Python environment (call once at app startup)
+try PythonSetup.initialize()
+
+// Create STT bridge with progress tracking
+let stt = try await STTBridge(model: .whisperLargeV3Turbo) { progress in
+    print("Loading: \(Int(progress.fractionCompleted * 100))%")
+}
+
+// Transcribe audio file
+let result = try await stt.transcribe(audioURL: audioFileURL)
+print("Transcription: \(result.text)")
+
+// Or transcribe from audio buffer
+let buffer = try AudioBuffer.load(from: audioURL)
+let result = try await stt.transcribe(buffer: buffer)
+```
+
+### STS Usage (Speech-to-Speech Pipeline)
+
+```swift
+import MLXAudioSTS
+import MLXAudio
+
+// Initialize Python for STT
+try PythonSetup.initialize()
+
+// Create TTS session
+let tts = try await MarvisSession(voice: .conversationalA)
+
+// Create voice pipeline
+let pipeline = try await VoicePipeline(
+    config: VoicePipelineConfig(sttModel: .whisperLargeV3Turbo),
+    responseGenerator: { input in
+        // Your LLM response generation here
+        return "You said: \(input)"
+    },
+    ttsGenerate: { text in
+        _ = try await tts.generate(for: text)
+    }
+)
+
+// Listen to pipeline events
+Task {
+    for await event in pipeline.events {
+        switch event {
+        case .transcription(let text):
+            print("You said: \(text)")
+        case .speaking:
+            print("Speaking response...")
+        case .error(let msg):
+            print("Error: \(msg)")
+        default:
+            break
+        }
+    }
+}
+
+// Start listening
+try await pipeline.start()
 ```
 
 ## License

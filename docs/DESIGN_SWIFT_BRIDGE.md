@@ -1,9 +1,9 @@
 # Swift Bridge Design: STT, STS, TTS Modules
 
 **Date**: 2025-12-06
-**Version**: 1.1
-**Status**: In Progress
-**Branch**: `feat/swift-stt-sts-bridge`
+**Version**: 1.2
+**Status**: ✅ Completed
+**Merged**: PR #2 → `main`
 
 ## Technology Stack
 
