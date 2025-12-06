@@ -67,12 +67,12 @@ public enum PythonSetup {
         // Disable Python's signal handlers (important for embedding)
         setenv("PYTHONDONTWRITEBYTECODE", "1", 1)
 
-        // Initialize Python interpreter
-        Py_Initialize()
-
-        // Verify initialization
-        guard Py_IsInitialized() != 0 else {
-            throw PythonSetupError.initializationFailed("Py_Initialize returned false")
+        // Initialize Python interpreter via PythonKit
+        // PythonKit auto-initializes the interpreter on first import
+        do {
+            _ = try Python.attemptImport("sys")
+        } catch {
+            throw PythonSetupError.initializationFailed("Failed to initialize Python: \(error)")
         }
 
         isInitialized = true
@@ -82,9 +82,12 @@ public enum PythonSetup {
     }
 
     /// Check if Python is initialized
+    ///
+    /// Returns true if `initialize()` completed successfully.
+    /// Does not re-verify Python state for performance reasons.
     public static var isPythonReady: Bool {
         #if canImport(PythonKit)
-        return isInitialized && Py_IsInitialized() != 0
+        return isInitialized
         #else
         return false
         #endif
@@ -123,10 +126,14 @@ public enum PythonSetup {
     }
 
     /// Clean up Python interpreter (call at app termination)
+    ///
+    /// Note: PythonKit does not expose Py_FinalizeEx(), and finalizing an embedded
+    /// Python interpreter is generally problematic (modules may not clean up properly).
+    /// This method resets the internal state but does not actually finalize Python.
     public static func finalize() {
         #if canImport(PythonKit)
         guard isInitialized else { return }
-        Py_FinalizeEx()
+        // PythonKit does not expose Py_FinalizeEx - reset internal state only
         isInitialized = false
         #endif
     }

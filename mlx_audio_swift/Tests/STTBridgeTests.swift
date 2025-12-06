@@ -150,6 +150,31 @@ struct STTBridgeTests {
         // In CI, this may vary depending on test order
         #expect(PythonSetup.pythonVersion == nil || PythonSetup.isPythonReady)
     }
+
+    // MARK: - PythonSetupError Tests
+
+    @Test("PythonSetupError has correct descriptions")
+    func testPythonSetupErrorDescriptions() {
+        let resourceError = PythonSetupError.resourceNotFound("test_resource")
+        #expect(resourceError.localizedDescription.contains("test_resource"))
+        #expect(resourceError.localizedDescription.contains("not found"))
+
+        let initError = PythonSetupError.initializationFailed("test_reason")
+        #expect(initError.localizedDescription.contains("test_reason"))
+        #expect(initError.localizedDescription.contains("failed"))
+
+        let moduleError = PythonSetupError.moduleNotFound("test_module")
+        #expect(moduleError.localizedDescription.contains("test_module"))
+        #expect(moduleError.localizedDescription.contains("not found"))
+    }
+
+    @Test("PythonSetup finalize is safe to call multiple times")
+    func testPythonSetupFinalizeIdempotent() {
+        // finalize() should be safe to call even if not initialized
+        PythonSetup.finalize()
+        PythonSetup.finalize()
+        // No crash = test passes
+    }
 }
 
 // MARK: - Integration Tests (require Python)
