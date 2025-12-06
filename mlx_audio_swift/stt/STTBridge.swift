@@ -127,8 +127,10 @@ public struct STTConfig: Sendable {
 /// // Initialize Python first
 /// try PythonSetup.initialize()
 ///
-/// // Create STT bridge
-/// let stt = try await STTBridge(model: .whisperLargeV3Turbo)
+/// // Create STT bridge with progress
+/// let stt = try await STTBridge(model: .whisperLargeV3Turbo) { progress in
+///     print("Loading: \(Int(progress.fractionCompleted * 100))%")
+/// }
 ///
 /// // Transcribe audio file
 /// let result = try await stt.transcribe(audioURL: fileURL)
@@ -173,7 +175,21 @@ public final class STTBridge: @unchecked Sendable {
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let utils = Python.import("mlx_audio.stt.utils")
-                    let loadedModel = utils.load_model(model.rawValue)
+
+                    // Download model with progress if handler provided
+                    let localPath: PythonObject
+                    if let progressHandler = progressHandler {
+                        localPath = Self.downloadWithProgress(
+                            repoId: model.rawValue,
+                            progressHandler: progressHandler
+                        )
+                    } else {
+                        // Use default download (no progress)
+                        localPath = utils.get_model_path(model.rawValue)
+                    }
+
+                    // Load model from local path
+                    let loadedModel = utils.load_model(localPath)
                     continuation.resume(returning: (loadedModel, utils))
                 } catch {
                     continuation.resume(throwing: STTError.modelLoadFailed(model.rawValue))
@@ -187,6 +203,106 @@ public final class STTBridge: @unchecked Sendable {
         throw STTError.pythonNotInitialized
         #endif
     }
+
+    #if canImport(PythonKit)
+    /// Download model with progress callback using custom tqdm class
+    private static func downloadWithProgress(
+        repoId: String,
+        progressHandler: @escaping (Progress) -> Void
+    ) -> PythonObject {
+        let hfHub = Python.import("huggingface_hub")
+
+        // Create Swift callback as Python-callable function
+        let swiftCallback = PythonFunction { (args: [PythonObject]) -> PythonObject in
+            guard args.count >= 2,
+                  let current = Double(args[0]),
+                  let total = Double(args[1]),
+                  total > 0 else {
+                return Python.None
+            }
+            let progress = Progress(totalUnitCount: Int64(total))
+            progress.completedUnitCount = Int64(current)
+            DispatchQueue.main.async {
+                progressHandler(progress)
+            }
+            return Python.None
+        }
+
+        // Store callback in Python globals so tqdm class can access it
+        Python.globals()["_swift_progress_callback"] = swiftCallback.pythonObject
+
+        // Define tqdm-compatible class that calls our Swift callback
+        let tqdmCode = """
+class _SwiftProgressTqdm:
+    _callback = None
+
+    def __init__(self, iterable=None, total=None, **kwargs):
+        self.iterable = iterable
+        self.total = total
+        if self.total is None and iterable is not None:
+            try:
+                self.total = len(iterable)
+            except TypeError:
+                self.total = 0
+        self.n = 0
+
+    def __iter__(self):
+        if self.iterable is None:
+            return
+        for item in self.iterable:
+            yield item
+            self.update(1)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def update(self, n=1):
+        self.n += n
+        cb = globals().get('_swift_progress_callback')
+        if cb and self.total and self.total > 0:
+            cb(self.n, self.total)
+
+    def close(self):
+        pass
+
+    def set_description(self, desc=None, refresh=True):
+        pass
+
+    def set_postfix(self, ordered_dict=None, refresh=True, **kwargs):
+        pass
+
+    def refresh(self):
+        pass
+
+    def clear(self):
+        pass
+
+    def reset(self, total=None):
+        self.n = 0
+        if total is not None:
+            self.total = total
+"""
+        // Execute class definition in Python
+        let builtins = Python.import("builtins")
+        builtins.exec(tqdmCode, Python.globals())
+        let SwiftProgressTqdm = Python.globals()["_SwiftProgressTqdm"]
+
+        // Download with custom tqdm class
+        let localPath = hfHub.snapshot_download(
+            repoId,
+            allow_patterns: ["*.json", "*.safetensors", "*.py", "*.model", "*.tiktoken", "*.txt"],
+            tqdm_class: SwiftProgressTqdm
+        )
+
+        // Clean up global callback
+        Python.globals()["_swift_progress_callback"] = Python.None
+
+        return localPath
+    }
+    #endif
 
     /// Transcribe audio from file URL
     public func transcribe(audioURL: URL) async throws -> TranscriptionResult {
