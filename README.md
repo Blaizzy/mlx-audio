@@ -23,6 +23,28 @@ pip install mlx-audio
 pip install -r requirements.txt
 ```
 
+### Modular Imports
+
+MLX-Audio supports modular imports, allowing you to use STT, TTS, or STS independently without loading unnecessary dependencies. This is useful for embedding in applications where you only need specific functionality.
+
+```python
+# Import only STT (doesn't load TTS dependencies)
+from mlx_audio.stt.utils import load_model as load_stt_model
+model = load_stt_model("mlx-community/whisper-large-v3-turbo")
+
+# Import only TTS (doesn't load STT dependencies)
+from mlx_audio.tts.utils import load_model as load_tts_model
+model = load_tts_model("prince-canuma/Kokoro-82M")
+
+# Import shared DSP functions directly
+from mlx_audio.dsp import stft, istft, mel_filters, hanning
+```
+
+**Benefits:**
+- **Reduced bundle size**: STT-only imports ~400MB vs full package ~1.7GB
+- **Faster startup**: Only loads required modules
+- **Ideal for embedding**: Perfect for iOS/macOS apps needing only transcription
+
 ### Quick Start
 
 To generate audio with an LLM use:

@@ -1,0 +1,17 @@
+# TTS dependencies (heavy)
+misaki[en]>=0.8.2
+loguru>=0.7.3
+num2words>=0.5.14
+spacy>=3.8.4
+phonemizer-fork>=3.3.2
+espeakng-loader>=0.2.4
+mlx-vlm>=0.1.27
+transformers>=4.49.0
+sentencepiece>=0.2.0
+sounddevice>=0.5.1
+soundfile>=0.13.1
+einops>=0.8.1
+pyloudnorm>=0.1.1
+omegaconf==2.3.0
+einx==0.3.0
+mistral-common[audio]

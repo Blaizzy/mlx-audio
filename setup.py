@@ -10,10 +10,23 @@ root_dir = Path(__file__).parent
 package_dir = root_dir / "mlx_audio"
 sys.path.append(str(package_dir))
 
-# Read the requirements from the requirements.txt file
-requirements_path = root_dir / "requirements.txt"
-with open(requirements_path) as fid:
-    requirements = [l.strip() for l in fid.readlines()]
+
+def read_requirements(filename):
+    """Read requirements from a file, filtering comments and empty lines."""
+    path = root_dir / filename
+    if not path.exists():
+        return []
+    with open(path) as fid:
+        return [l.strip() for l in fid.readlines()
+                if l.strip() and not l.strip().startswith("#")]
+
+
+# Core requirements (minimal, always installed)
+core_requirements = read_requirements("requirements-core.txt")
+
+# Optional dependencies for extras_require
+stt_requirements = read_requirements("requirements-stt.txt")
+tts_requirements = read_requirements("requirements-tts.txt")
 
 # Import the version from the package
 from mlx_audio.version import __version__
@@ -29,7 +42,7 @@ setup(
     author="Prince Canuma",
     url="https://github.com/Blaizzy/mlx-audio",
     license="MIT",
-    install_requires=requirements,
+    install_requires=core_requirements,
     packages=find_packages(where=root_dir),
     include_package_data=True,
     package_data={
@@ -49,6 +62,9 @@ setup(
     ],
     python_requires=">=3.8",
     extras_require={
+        "stt": stt_requirements,
+        "tts": tts_requirements,
+        "all": stt_requirements + tts_requirements,
         "py38": ["importlib_resources"],
     },
     entry_points={
