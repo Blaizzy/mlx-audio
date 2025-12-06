@@ -33,7 +33,7 @@ from mlx_audio.version import __version__
 
 # Setup configuration
 setup(
-    name="mlx-audio",
+    name="better-mlx-audio",
     version=__version__,
     description="MLX-Audio is a package for inference of text-to-speech (TTS) and speech-to-speech (STS) models locally on your Mac using MLX",
     long_description=open(root_dir / "README.md", encoding="utf-8").read(),
