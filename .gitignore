@@ -69,3 +69,7 @@ xcuserdata/
 
 # uv
 .build
+
+# Project index (local only)
+PROJECT_INDEX.md
+PROJECT_INDEX.json
