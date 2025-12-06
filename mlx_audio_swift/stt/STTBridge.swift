@@ -179,10 +179,15 @@ public final class STTBridge: @unchecked Sendable {
                     // Download model with progress if handler provided
                     let localPath: PythonObject
                     if let progressHandler = progressHandler {
-                        localPath = Self.downloadWithProgress(
-                            repoId: model.rawValue,
-                            progressHandler: progressHandler
-                        )
+                        do {
+                            localPath = try Self.downloadWithProgress(
+                                repoId: model.rawValue,
+                                progressHandler: progressHandler
+                            )
+                        } catch {
+                            continuation.resume(throwing: STTError.modelLoadFailed(model.rawValue))
+                            return
+                        }
                     } else {
                         // Use default download (no progress)
                         localPath = utils.get_model_path(model.rawValue)
@@ -205,12 +210,28 @@ public final class STTBridge: @unchecked Sendable {
     }
 
     #if canImport(PythonKit)
+    /// Unique ID generator for concurrent downloads
+    private static var downloadIdCounter: UInt64 = 0
+    private static let downloadIdLock = NSLock()
+
+    private static func nextDownloadId() -> String {
+        downloadIdLock.lock()
+        defer { downloadIdLock.unlock() }
+        downloadIdCounter += 1
+        return "_swift_progress_\(downloadIdCounter)"
+    }
+
     /// Download model with progress callback using custom tqdm class
+    /// - Throws: Python exception if download fails
     private static func downloadWithProgress(
         repoId: String,
         progressHandler: @escaping (Progress) -> Void
-    ) -> PythonObject {
+    ) throws -> PythonObject {
         let hfHub = Python.import("huggingface_hub")
+
+        // Generate unique callback key for this download (reentrancy safe)
+        let callbackKey = nextDownloadId()
+        let tqdmClassName = "_SwiftProgressTqdm\(callbackKey)"
 
         // Create Swift callback as Python-callable function
         let swiftCallback = PythonFunction { (args: [PythonObject]) -> PythonObject in
@@ -228,14 +249,18 @@ public final class STTBridge: @unchecked Sendable {
             return Python.None
         }
 
-        // Store callback in Python globals so tqdm class can access it
-        Python.globals()["_swift_progress_callback"] = swiftCallback.pythonObject
+        // Store callback with unique key (reentrancy safe)
+        Python.globals()[callbackKey] = swiftCallback.pythonObject
 
-        // Define tqdm-compatible class that calls our Swift callback
+        // Cleanup helper - ensures callback is removed even on error
+        func cleanup() {
+            Python.globals()[callbackKey] = Python.None
+            Python.globals()[tqdmClassName] = Python.None
+        }
+
+        // Define tqdm-compatible class with unique name referencing unique callback
         let tqdmCode = """
-class _SwiftProgressTqdm:
-    _callback = None
-
+class \(tqdmClassName):
     def __init__(self, iterable=None, total=None, **kwargs):
         self.iterable = iterable
         self.total = total
@@ -261,7 +286,7 @@ class _SwiftProgressTqdm:
 
     def update(self, n=1):
         self.n += n
-        cb = globals().get('_swift_progress_callback')
+        cb = globals().get('\(callbackKey)')
         if cb and self.total and self.total > 0:
             cb(self.n, self.total)
 
@@ -288,18 +313,23 @@ class _SwiftProgressTqdm:
         // Execute class definition in Python
         let builtins = Python.import("builtins")
         builtins.exec(tqdmCode, Python.globals())
-        let SwiftProgressTqdm = Python.globals()["_SwiftProgressTqdm"]
+        let SwiftProgressTqdm = Python.globals()[tqdmClassName]
 
-        // Download with custom tqdm class
-        let localPath = hfHub.snapshot_download(
-            repoId,
-            allow_patterns: ["*.json", "*.safetensors", "*.py", "*.model", "*.tiktoken", "*.txt"],
-            tqdm_class: SwiftProgressTqdm
-        )
+        // Download with custom tqdm class (cleanup on success or failure)
+        let localPath: PythonObject
+        do {
+            localPath = try hfHub.snapshot_download.throwing
+                .dynamicallyCall(withKeywordArguments: [
+                    "": repoId,
+                    "allow_patterns": ["*.json", "*.safetensors", "*.py", "*.model", "*.tiktoken", "*.txt"],
+                    "tqdm_class": SwiftProgressTqdm
+                ])
+        } catch {
+            cleanup()
+            throw error
+        }
 
-        // Clean up global callback
-        Python.globals()["_swift_progress_callback"] = Python.None
-
+        cleanup()
         return localPath
     }
     #endif
