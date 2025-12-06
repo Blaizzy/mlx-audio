@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 
-from mlx_audio.utils import (
+from mlx_audio.dsp import (
     STR_TO_WINDOW_FN,
     bartlett,
     blackman,

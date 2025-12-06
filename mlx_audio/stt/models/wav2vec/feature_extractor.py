@@ -9,7 +9,7 @@ from typing import Any, List, Optional, Union
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.tts.utils import get_model_path
+from mlx_audio.stt.utils import get_model_path
 
 logger = logging.getLogger(__name__)
 
