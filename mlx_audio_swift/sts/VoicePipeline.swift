@@ -163,6 +163,7 @@ public actor VoicePipeline {
     private var audioBuffer: [Float] = []
     private var silentFrameCount = 0
     private var speechDetected = false
+    private var deviceSampleRate: Double = 0
 
     // MARK: - Public Event Stream
 
@@ -210,9 +211,6 @@ public actor VoicePipeline {
             throw VoicePipelineError.alreadyRunning
         }
 
-        isRunning = true
-        emit(.listening)
-
         // Setup audio engine
         audioEngine = AVAudioEngine()
         guard let audioEngine = audioEngine else {
@@ -222,8 +220,11 @@ public actor VoicePipeline {
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
 
-        // Install tap on input node
-        let frameSize = Int(Double(config.inputSampleRate) * Double(config.frameDurationMs) / 1000.0)
+        // Store device sample rate for resampling
+        deviceSampleRate = format.sampleRate
+
+        // Calculate frame size based on device sample rate (not target rate)
+        let frameSize = Int(deviceSampleRate * Double(config.frameDurationMs) / 1000.0)
 
         inputNode.installTap(onBus: 0, bufferSize: AVAudioFrameCount(frameSize), format: format) { [weak self] buffer, _ in
             guard let self else { return }
@@ -232,7 +233,12 @@ public actor VoicePipeline {
 
         do {
             try audioEngine.start()
+            isRunning = true
+            emit(.listening)
         } catch {
+            // Clean up on failure
+            inputNode.removeTap(onBus: 0)
+            self.audioEngine = nil
             throw VoicePipelineError.audioInputFailed(error.localizedDescription)
         }
     }
@@ -319,9 +325,18 @@ public actor VoicePipeline {
         emit(.processing)
 
         do {
+            // Resample from device rate to STT rate if needed
+            let sttSamples: [Float]
+            if Int(deviceSampleRate) != config.inputSampleRate {
+                let buffer = AudioBuffer(samples: samples, sampleRate: Int(deviceSampleRate))
+                sttSamples = buffer.resampled(to: config.inputSampleRate).samples
+            } else {
+                sttSamples = samples
+            }
+
             // Run STT
             let transcription = try await stt.transcribe(
-                samples: samples,
+                samples: sttSamples,
                 sampleRate: config.inputSampleRate
             )
 

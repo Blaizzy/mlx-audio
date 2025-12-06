@@ -134,6 +134,11 @@ public struct STTConfig: Sendable {
 /// let result = try await stt.transcribe(audioURL: fileURL)
 /// print(result.text)
 /// ```
+///
+/// - Note: Marked `@unchecked Sendable` because `PythonObject` is not Sendable.
+///   Thread safety is ensured by serializing all Python calls through a dedicated
+///   `DispatchQueue` (`queue`), which prevents concurrent access to Python objects
+///   and respects Python's GIL.
 public final class STTBridge: @unchecked Sendable {
     #if canImport(PythonKit)
     private let model: PythonObject
@@ -210,8 +215,10 @@ public final class STTBridge: @unchecked Sendable {
 
                     // Parse segments if available
                     var segments: [TranscriptionResult.Segment] = []
-                    if let pySegments = result.segments, Python.len(pySegments) > 0 {
-                        for i in 0..<Int(Python.len(pySegments))! {
+                    if let pySegments = result.segments,
+                       let segmentCount = Int(Python.len(pySegments)),
+                       segmentCount > 0 {
+                        for i in 0..<segmentCount {
                             let seg = pySegments[i]
                             segments.append(TranscriptionResult.Segment(
                                 text: String(seg.text) ?? "",
