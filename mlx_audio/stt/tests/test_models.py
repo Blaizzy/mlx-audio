@@ -1,6 +1,7 @@
 import json
 import unittest
 from pathlib import Path
+from typing import List
 from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
 import mlx.core as mx
@@ -8,6 +9,7 @@ import mlx.nn as nn
 import numpy as np
 
 from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT
+from mlx_audio.stt.models.voxtral.config import AudioConfig, ModelConfig, TextConfig
 from mlx_audio.stt.models.whisper.audio import (
     HOP_LENGTH,
     N_FRAMES,
@@ -375,6 +377,95 @@ class TestParakeetModel(unittest.TestCase):
         )  # d_model is correct for ConformerArgs
         self.assertEqual(model.vocabulary, dummy_vocabulary)
         self.assertEqual(model.durations, [0, 1, 2, 3])
+
+
+class TestVoxtralConfig(unittest.TestCase):
+    """Tests for Voxtral configuration classes."""
+
+    def test_text_config_layer_types_initialization(self):
+        """Test that layer_types is auto-initialized in __post_init__."""
+        config = TextConfig()
+        self.assertIsNotNone(config.layer_types)
+        self.assertEqual(len(config.layer_types), config.num_hidden_layers)
+        self.assertTrue(all(lt == "full_attention" for lt in config.layer_types))
+
+    def test_text_config_layer_types_custom(self):
+        """Test that custom layer_types is preserved."""
+        custom_layers = ["sliding_attention", "full_attention"] * 15
+        config = TextConfig(layer_types=custom_layers)
+        self.assertEqual(config.layer_types, custom_layers)
+
+    def test_text_config_no_duplicate_fields(self):
+        """Test that TextConfig has no duplicate fields (rope_theta, rope_scaling)."""
+        config = TextConfig()
+        self.assertEqual(config.rope_theta, 100000000.0)
+        self.assertIsNone(config.rope_scaling)
+
+    def test_text_config_use_cache_default(self):
+        """Test that use_cache is True by default (required by LlamaModel)."""
+        config = TextConfig()
+        self.assertTrue(config.use_cache)
+
+    def test_text_config_from_dict(self):
+        """Test TextConfig.from_dict with layer_types."""
+        params = {
+            "model_type": "llama",
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "layer_types": ["full_attention"] * 32,
+        }
+        config = TextConfig.from_dict(params)
+        self.assertEqual(config.hidden_size, 4096)
+        self.assertEqual(config.num_hidden_layers, 32)
+        self.assertEqual(len(config.layer_types), 32)
+
+    def test_model_config_from_dict(self):
+        """Test ModelConfig.from_dict creates nested configs correctly."""
+        params = {
+            "model_type": "voxtral",
+            "audio_token_id": 24,
+            "audio_config": {
+                "hidden_size": 1280,
+                "num_hidden_layers": 32,
+            },
+            "text_config": {
+                "hidden_size": 3072,
+                "num_hidden_layers": 30,
+            },
+        }
+        config = ModelConfig.from_dict(params)
+        self.assertIsInstance(config.audio_config, AudioConfig)
+        self.assertIsInstance(config.text_config, TextConfig)
+        self.assertEqual(config.text_config.hidden_size, 3072)
+        self.assertIsNotNone(config.text_config.layer_types)
+        self.assertEqual(len(config.text_config.layer_types), 30)
+
+
+class TestGenerateEmptySegments(unittest.TestCase):
+    """Tests for generate.py empty segments handling."""
+
+    @patch("mlx_audio.stt.generate.save_as_txt")
+    def test_generate_fallback_to_txt_on_none_segments(self, mock_save_txt):
+        """Test that None segments falls back to txt format."""
+        from mlx_audio.stt.generate import generate
+        from mlx_audio.stt.models.voxtral.voxtral import STTOutput
+
+        mock_model = MagicMock()
+        mock_model.generate.return_value = STTOutput(text="Hello world", segments=None)
+
+        with patch("mlx_audio.stt.generate.load_model", return_value=mock_model):
+            with patch("mlx_audio.stt.generate.os.makedirs"):
+                with patch("builtins.print"):
+                    result = generate(
+                        model="test-model",
+                        audio_path="test.wav",
+                        output_path="/tmp/test_output",
+                        format="json",
+                        verbose=False,
+                    )
+
+        mock_save_txt.assert_called_once()
+        self.assertIsNone(result.segments)
 
 
 if __name__ == "__main__":

@@ -228,8 +228,12 @@ def generate(
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    if format == "txt":
+    if format == "txt" or segments.segments is None:
         save_as_txt(segments, output_path)
+        if segments.segments is None and format != "txt":
+            print(
+                f"\033[93m[WARNING]\033[0m No segments found for '{format}' format, saving as txt only"
+            )
     elif format == "srt":
         save_as_srt(segments, output_path)
     elif format == "vtt":
