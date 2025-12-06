@@ -10,9 +10,16 @@ import AVFoundation
 
 // MARK: - Voice Pipeline Configuration
 
+/// Configuration for VoicePipeline
+///
+/// - Note: Some fields are reserved for future use and not yet wired up:
+///   - `outputSampleRate`: TTS output rate (handled by native TTS implementation)
+///   - `ttsVoice`: Voice selection (passed to TTS externally)
+///   - `streamingInterval`: For future streaming response support
 public struct VoicePipelineConfig: Sendable {
     // Audio settings
     public var inputSampleRate: Int
+    /// Reserved: TTS output sample rate (handled by native TTS implementation)
     public var outputSampleRate: Int
 
     // VAD settings
@@ -22,9 +29,10 @@ public struct VoicePipelineConfig: Sendable {
 
     // Model settings
     public var sttModel: STTModelVariant
+    /// Reserved: Voice selection (passed to external TTS)
     public var ttsVoice: String?
 
-    // Streaming
+    /// Reserved: Streaming response interval
     public var streamingInterval: TimeInterval
 
     public init(

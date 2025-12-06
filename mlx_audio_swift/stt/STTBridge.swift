@@ -204,8 +204,20 @@ public final class STTBridge: @unchecked Sendable {
                     // Load audio using Python
                     let audio = self.sttUtils.load_audio(audioURL.path, sr: self.config.sampleRate)
 
-                    // Run transcription
-                    let result = self.model.generate(audio)
+                    // Run transcription with language/task options
+                    let result: PythonObject
+                    if let language = self.config.language {
+                        result = self.model.generate(
+                            audio,
+                            language: PythonObject(language),
+                            task: PythonObject(self.config.task.rawValue)
+                        )
+                    } else {
+                        result = self.model.generate(
+                            audio,
+                            task: PythonObject(self.config.task.rawValue)
+                        )
+                    }
 
                     let processingTime = CFAbsoluteTimeGetCurrent() - startTime
 
@@ -270,8 +282,20 @@ public final class STTBridge: @unchecked Sendable {
                     let pyArray = np.array(targetBuffer.samples, dtype: np.float32)
                     let mxArray = mx.array(pyArray)
 
-                    // Run transcription
-                    let result = self.model.generate(mxArray)
+                    // Run transcription with language/task options
+                    let result: PythonObject
+                    if let language = self.config.language {
+                        result = self.model.generate(
+                            mxArray,
+                            language: PythonObject(language),
+                            task: PythonObject(self.config.task.rawValue)
+                        )
+                    } else {
+                        result = self.model.generate(
+                            mxArray,
+                            task: PythonObject(self.config.task.rawValue)
+                        )
+                    }
 
                     let processingTime = CFAbsoluteTimeGetCurrent() - startTime
 
