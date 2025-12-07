@@ -123,6 +123,7 @@ all = [
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=1.0.0",
+    "tomli>=2.0.0; python_version < '3.11'",
 ]
 
 [project.scripts]
