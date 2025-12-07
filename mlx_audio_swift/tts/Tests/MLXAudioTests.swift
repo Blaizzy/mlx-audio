@@ -8,7 +8,7 @@
 import Testing
 
 @testable import MLXAudio
-@testable import ESpeakNG
+@testable import MLXESpeakNG
 
 struct MLXAudioTests {
 

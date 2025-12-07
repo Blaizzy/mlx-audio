@@ -27,7 +27,7 @@ let package = Package(
         // MARK: - TTS
         .binaryTarget(
             name: "MLXESpeakNG",
-            path: "mlx_audio_swift/tts/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework"
+            path: "mlx_audio_swift/tts/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework"
         ),
         .target(
             name: "MLXAudio",
