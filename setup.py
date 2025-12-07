@@ -17,8 +17,11 @@ def read_requirements(filename):
     if not path.exists():
         return []
     with open(path) as fid:
-        return [l.strip() for l in fid.readlines()
-                if l.strip() and not l.strip().startswith("#")]
+        return [
+            l.strip()
+            for l in fid.readlines()
+            if l.strip() and not l.strip().startswith("#")
+        ]
 
 
 # Core requirements (minimal, always installed)

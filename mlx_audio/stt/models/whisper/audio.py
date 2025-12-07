@@ -5,8 +5,8 @@ from typing import Union
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.stt.utils import load_audio
 from mlx_audio.dsp import hanning, mel_filters, stft
+from mlx_audio.stt.utils import load_audio
 
 # hard-coded audio hyperparameters
 SAMPLE_RATE = 16000
