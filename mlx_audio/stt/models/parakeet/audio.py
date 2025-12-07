@@ -50,7 +50,7 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     # Apply preemphasis high-pass filter (matches NeMo training preprocessing)
     # Formula: y[n] = x[n] - α*x[n-1] where α=0.97
     # Boosts high frequencies for better consonant recognition
-    preemph = getattr(args, 'preemph', 0.97)  # Backward compatible with old configs
+    preemph = getattr(args, "preemph", 0.97)  # Backward compatible with old configs
     if preemph > 0:
         x = mx.concat([x[:1], x[1:] - preemph * x[:-1]], axis=0)
 
