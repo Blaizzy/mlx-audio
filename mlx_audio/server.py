@@ -590,23 +590,38 @@ class MLXAudioStudioServer:
         """Start UI with logs redirected to file"""
         ui_path = Path(__file__).parent / "ui"
 
-        # Install deps silently
-        subprocess.run(
-            ["npm", "install"],
-            cwd=str(ui_path),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            # Install deps silently
+            result = subprocess.run(
+                ["npm", "install"],
+                cwd=str(ui_path),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                check=True,
+            )
+        except FileNotFoundError:
+            raise Exception(
+                "✗ Error: 'npm' is not installed or not found in PATH. UI will not start."
+            )
+        except subprocess.CalledProcessError as e:
+            raise Exception("✗ Error running 'npm install':\n", e)
 
-        # Start UI with logs to file
-        ui_log = open(self.log_dir / "ui.log", "w")
-        self.ui_process = subprocess.Popen(
-            ["npm", "run", "dev"],
-            cwd=str(ui_path),
-            stdout=ui_log,
-            stderr=subprocess.STDOUT,
-        )
-        print(f"✓ UI started (logs: {self.log_dir}/ui.log)")
+        try:
+            # Start UI with logs to file
+            ui_log = open(self.log_dir / "ui.log", "w")
+            self.ui_process = subprocess.Popen(
+                ["npm", "run", "dev"],
+                cwd=str(ui_path),
+                stdout=ui_log,
+                stderr=subprocess.STDOUT,
+            )
+            print(f"✓ UI started (logs: {self.log_dir}/ui.log)")
+        except FileNotFoundError:
+            raise Exception(
+                "✗ Error: 'npm' is not installed or not found in PATH. UI server not started."
+            )
+        except Exception as e:
+            raise Exception(f"✗ Failed to start UI: {e}")
 
     def start_server(self, host="localhost", port=8000, reload=False, workers=2):
         if self.start_ui:
