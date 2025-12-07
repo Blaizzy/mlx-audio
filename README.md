@@ -16,11 +16,26 @@ A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX f
 ## Installation
 
 ```bash
-# Install the package
+# Core only (DSP utilities)
 pip install mlx-audio
 
-# For web interface and API dependencies
-pip install -r requirements.txt
+# Speech-to-Text only
+pip install mlx-audio[stt]
+
+# Text-to-Speech only
+pip install mlx-audio[tts]
+
+# Speech-to-Speech (includes STT + TTS)
+pip install mlx-audio[sts]
+
+# FastAPI server
+pip install mlx-audio[server]
+
+# Everything
+pip install mlx-audio[all]
+
+# Development
+pip install mlx-audio[dev]
 ```
 
 ### Modular Imports
