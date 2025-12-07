@@ -1,3 +1,9 @@
+"""Utility functions for mlx_audio.
+
+This module provides a unified interface for loading TTS and STT models,
+with lazy imports to avoid loading unnecessary dependencies.
+"""
+
 import importlib.util
 from pathlib import Path
 from typing import List, Optional, Union
@@ -12,11 +18,6 @@ from mlx_audio.dsp import (
     mel_filters,
     stft,
 )
-from mlx_audio.stt.utils import MODEL_REMAPPING as MODEL_STT_REMAPPING
-from mlx_audio.stt.utils import load_model as load_stt_model
-from mlx_audio.tts.utils import MODEL_REMAPPING as MODEL_TTS_REMAPPING
-from mlx_audio.tts.utils import load_config
-from mlx_audio.tts.utils import load_model as load_tts_model
 
 __all__ = [
     "hanning",
@@ -30,6 +31,30 @@ __all__ = [
     "load_model",
 ]
 
+# Lazy-loaded modules
+_stt_utils = None
+_tts_utils = None
+
+
+def _get_stt_utils():
+    """Lazy load STT utils."""
+    global _stt_utils
+    if _stt_utils is None:
+        from mlx_audio.stt import utils as stt_utils
+
+        _stt_utils = stt_utils
+    return _stt_utils
+
+
+def _get_tts_utils():
+    """Lazy load TTS utils."""
+    global _tts_utils
+    if _tts_utils is None:
+        from mlx_audio.tts import utils as tts_utils
+
+        _tts_utils = tts_utils
+    return _tts_utils
+
 
 def is_valid_module_name(name: str) -> bool:
     """Check if a string is a valid Python module name."""
@@ -41,12 +66,14 @@ def is_valid_module_name(name: str) -> bool:
 
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
     """Determine whether a model belongs to the TTS or STT category."""
+    stt_utils = _get_stt_utils()
+    tts_utils = _get_tts_utils()
 
     candidates = [model_type] + (model_name or [])
 
     for category, remap in (
-        ("tts", MODEL_TTS_REMAPPING),
-        ("stt", MODEL_STT_REMAPPING),
+        ("tts", tts_utils.MODEL_REMAPPING),
+        ("stt", stt_utils.MODEL_REMAPPING),
     ):
         for hint in candidates:
             arch = remap.get(hint, hint)
@@ -84,7 +111,10 @@ def load_model(model_name: str):
     Raises:
         ValueError: If the model type cannot be determined or is not supported
     """
-    config = load_config(model_name)
+    tts_utils = _get_tts_utils()
+    stt_utils = _get_stt_utils()
+
+    config = tts_utils.load_config(model_name)
     model_name_parts = get_model_name_parts(model_name)
 
     # Try to determine model type from config first, then from name
@@ -94,7 +124,7 @@ def load_model(model_name: str):
     if not model_category:
         raise ValueError(f"Could not determine model type for {model_name}")
 
-    model_loaders = {"tts": load_tts_model, "stt": load_stt_model}
+    model_loaders = {"tts": tts_utils.load_model, "stt": stt_utils.load_model}
 
     if model_category not in model_loaders:
         raise ValueError(f"Model type '{model_category}' not supported")
