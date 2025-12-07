@@ -1,28 +1,33 @@
 """Tests for mlx_audio.dsp module."""
 
+import subprocess
 import sys
-
-import pytest
 
 
 def test_dsp_import_isolation():
-    """Verify dsp.py doesn't import TTS/STT modules."""
-    # Clear any cached imports
-    modules_to_remove = [mod for mod in sys.modules.keys() if "mlx_audio" in mod]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
+    """Verify dsp.py doesn't import TTS/STT modules.
 
-    from mlx_audio.dsp import stft
-
-    assert "mlx_audio.tts" not in sys.modules
-    assert "mlx_audio.stt" not in sys.modules
+    Runs in subprocess to avoid interference with other tests.
+    """
+    code = """
+import sys
+from mlx_audio.dsp import stft
+assert "mlx_audio.tts" not in sys.modules, "TTS was imported"
+assert "mlx_audio.stt" not in sys.modules, "STT was imported"
+print("OK")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"Import isolation failed: {result.stderr}"
 
 
 def test_dsp_backward_compat():
     """Verify backward compatible imports from utils.py still work."""
     from mlx_audio.utils import hanning, istft, mel_filters, stft
 
-    # Just verify they're callable
     assert callable(stft)
     assert callable(istft)
     assert callable(mel_filters)
@@ -49,15 +54,20 @@ def test_dsp_all_exports():
 
 
 def test_utils_lazy_imports():
-    """Verify utils.py uses lazy imports for TTS/STT."""
-    # Clear any cached imports
-    modules_to_remove = [mod for mod in sys.modules.keys() if "mlx_audio" in mod]
-    for mod in modules_to_remove:
-        del sys.modules[mod]
+    """Verify utils.py uses lazy imports for TTS/STT.
 
-    # Import just the DSP functions from utils
-    from mlx_audio.utils import stft
-
-    # TTS/STT should not be loaded yet (lazy imports)
-    assert "mlx_audio.tts.utils" not in sys.modules
-    assert "mlx_audio.stt.utils" not in sys.modules
+    Runs in subprocess to avoid interference with other tests.
+    """
+    code = """
+import sys
+from mlx_audio.utils import stft
+assert "mlx_audio.tts.utils" not in sys.modules, "TTS utils was imported"
+assert "mlx_audio.stt.utils" not in sys.modules, "STT utils was imported"
+print("OK")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"Lazy import failed: {result.stderr}"
