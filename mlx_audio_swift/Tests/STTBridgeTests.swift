@@ -7,6 +7,9 @@
 
 import Testing
 import Foundation
+@testable import MLXAudioCore
+@testable import MLXAudioSTT
+@testable import MLXAudioSTS
 
 // Note: These tests require PythonKit and Python-Apple-support to be configured
 // They will be skipped if Python is not available
@@ -192,7 +195,11 @@ struct STTBridgeIntegrationTests {
             _ = try await STTBridge(model: .whisperTiny)
             Issue.record("Expected STTError.pythonNotInitialized")
         } catch let error as STTError {
-            #expect(error == .pythonNotInitialized)
+            if case .pythonNotInitialized = error {
+                // Expected error
+            } else {
+                Issue.record("Expected pythonNotInitialized, got \(error)")
+            }
         } catch {
             Issue.record("Unexpected error type: \(error)")
         }

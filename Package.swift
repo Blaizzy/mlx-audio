@@ -81,7 +81,7 @@ let package = Package(
         // MARK: - STT/STS Tests
         .testTarget(
             name: "MLXAudioSTTTests",
-            dependencies: ["MLXAudioSTT", "MLXAudioCore"],
+            dependencies: ["MLXAudioSTT", "MLXAudioSTS", "MLXAudioCore"],
             path: "mlx_audio_swift/Tests"
         ),
     ]

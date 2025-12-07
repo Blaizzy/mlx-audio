@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import MLXAudioCore
 
 #if canImport(PythonKit)
 import PythonKit
@@ -373,7 +374,8 @@ class \(tqdmClassName):
 
                     // Parse segments if available
                     var segments: [TranscriptionResult.Segment] = []
-                    if let pySegments = result.segments,
+                    let pySegments = result.segments
+                    if pySegments != Python.None,
                        let segmentCount = Int(Python.len(pySegments)),
                        segmentCount > 0 {
                         for i in 0..<segmentCount {

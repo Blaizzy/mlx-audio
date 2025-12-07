@@ -7,6 +7,8 @@
 
 import Foundation
 import AVFoundation
+import MLXAudioCore
+import MLXAudioSTT
 
 // MARK: - Voice Pipeline Configuration
 
