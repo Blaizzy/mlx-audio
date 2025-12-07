@@ -9,11 +9,10 @@ import mlx.nn as nn
 from mlx_lm.generate import stream_generate
 from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
-from mlx_lm.tokenizer_utils import load_tokenizer
+from mlx_lm.tokenizer_utils import load as load_tokenizer
 from tqdm import tqdm
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
-from mlx_audio.tts.utils import get_model_path
 
 from .audio_tokenizer import BiCodecTokenizer
 from .utils.token_parser import GENDER_MAP, LEVELS_MAP, TASK_TOKEN_MAP
