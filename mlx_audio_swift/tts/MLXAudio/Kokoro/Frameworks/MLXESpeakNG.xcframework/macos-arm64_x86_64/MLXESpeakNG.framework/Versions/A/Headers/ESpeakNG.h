@@ -1,2 +1,2 @@
-#include <ESpeakNG/speak_lib.h>
-#include <ESpeakNG/espeak_ng.h>
+#include <MLXESpeakNG/speak_lib.h>
+#include <MLXESpeakNG/espeak_ng.h>
