@@ -7,7 +7,7 @@ let package = Package(
     products: [
         .library(
             name: "MLXAudio",
-            targets: ["MLXAudio", "ESpeakNG"]
+            targets: ["MLXAudio", "MLXESpeakNG"]
         ),
         .library(
             name: "MLXAudioSTT",
@@ -26,7 +26,7 @@ let package = Package(
     targets: [
         // MARK: - TTS
         .binaryTarget(
-            name: "ESpeakNG",
+            name: "MLXESpeakNG",
             path: "mlx_audio_swift/tts/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework"
         ),
         .target(
@@ -35,7 +35,7 @@ let package = Package(
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "Transformers", package: "swift-transformers"),
-                "ESpeakNG"
+                "MLXESpeakNG"
             ],
             path: "mlx_audio_swift/tts/MLXAudio",
             exclude: ["Preview Content", "Assets.xcassets", "MLXAudioApp.swift", "MLXAudio.entitlements"],
