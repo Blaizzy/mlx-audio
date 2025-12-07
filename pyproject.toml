@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mlx-audio"
-version = "0.2.10"
+version = "0.2.11"
 description = "MLX-Audio is a package for inference of text-to-speech (TTS) and speech-to-speech (STS) models locally on your Mac using MLX"
 readme = "README.md"
 license = {text = "MIT"}
