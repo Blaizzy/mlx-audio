@@ -187,11 +187,11 @@
 		8FA197C82EBD6B4500389E17 /* Exceptions for "MLXAudio" folder in "Embed Frameworks" phase from "MLXAudio-iOS" target */ = {
 			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
 			attributesByRelativePath = {
-				Kokoro/Frameworks/ESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
+				Kokoro/Frameworks/MLXESpeakNG.xcframework = (CodeSignOnCopy, RemoveHeadersOnCopy, );
 			};
 			buildPhase = 7BBF58302DDF0A010047DCFF /* Embed Frameworks */;
 			membershipExceptions = (
-				Kokoro/Frameworks/ESpeakNG.xcframework,
+				Kokoro/Frameworks/MLXESpeakNG.xcframework,
 			);
 		};
 /* End PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
@@ -659,7 +659,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework/ios-arm64/MLXESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Debug;
@@ -701,7 +701,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework/ios-arm64/MLXESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -718,8 +718,8 @@
 				ENABLE_PREVIEWS = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64",
-					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework/ios-arm64",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework",
 					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
@@ -737,13 +737,13 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-framework",
-					ESpeakNG,
+					MLXESpeakNG,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio-iOS";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework/ios-arm64/MLXESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -761,8 +761,8 @@
 				ENABLE_PREVIEWS = YES;
 				FRAMEWORK_SEARCH_PATHS = (
 					"$(inherited)",
-					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64",
-					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework/ios-arm64",
+					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework",
 					"$(SRCROOT)/MLXAudio/Kokoro/Frameworks",
 				);
 				GENERATE_INFOPLIST_FILE = YES;
@@ -780,13 +780,13 @@
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-framework",
-					ESpeakNG,
+					MLXESpeakNG,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = "com.lumen-digital.MLXAudio-iOS";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/ESpeakNG.xcframework/ios-arm64/ESpeakNG.framework/Headers";
+				SWIFT_INCLUDE_PATHS = "$(SRCROOT)/MLXAudio/Kokoro/Frameworks/MLXESpeakNG.xcframework/ios-arm64/MLXESpeakNG.framework/Headers";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				VALIDATE_PRODUCT = YES;

@@ -140,7 +140,7 @@ final class ESpeakNGEngine {
       withUnsafeMutablePointer(to: &textPtr) { ptr in
         var resultWords: [String] = []
         while ptr.pointee != nil {
-          if let result = ESpeakNG.espeak_TextToPhonemes(ptr, espeakCHARS_UTF8, phonemes_mode) {
+          if let result = MLXESpeakNG.espeak_TextToPhonemes(ptr, espeakCHARS_UTF8, phonemes_mode) {
             // Create a copy of the returned string to ensure we own the memory
             resultWords.append(String(cString: result, encoding: .utf8)!)
           }
