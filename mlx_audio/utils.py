@@ -39,30 +39,35 @@ __all__ = [
 def _get_tts_remapping():
     """Lazy import of TTS model remapping."""
     from mlx_audio.tts.utils import MODEL_REMAPPING
+
     return MODEL_REMAPPING
 
 
 def _get_stt_remapping():
     """Lazy import of STT model remapping."""
     from mlx_audio.stt.utils import MODEL_REMAPPING
+
     return MODEL_REMAPPING
 
 
 def _get_tts_loader():
     """Lazy import of TTS model loader."""
     from mlx_audio.tts.utils import load_model
+
     return load_model
 
 
 def _get_stt_loader():
     """Lazy import of STT model loader."""
     from mlx_audio.stt.utils import load_model
+
     return load_model
 
 
 def _get_config_loader():
     """Lazy import of config loader."""
     from mlx_audio.tts.utils import load_config
+
     return load_config
 
 

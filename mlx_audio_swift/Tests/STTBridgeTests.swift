@@ -7,6 +7,9 @@
 
 import Testing
 import Foundation
+@testable import MLXAudioCore
+@testable import MLXAudioSTT
+@testable import MLXAudioSTS
 
 // Note: These tests require PythonKit and Python-Apple-support to be configured
 // They will be skipped if Python is not available
@@ -150,6 +153,31 @@ struct STTBridgeTests {
         // In CI, this may vary depending on test order
         #expect(PythonSetup.pythonVersion == nil || PythonSetup.isPythonReady)
     }
+
+    // MARK: - PythonSetupError Tests
+
+    @Test("PythonSetupError has correct descriptions")
+    func testPythonSetupErrorDescriptions() {
+        let resourceError = PythonSetupError.resourceNotFound("test_resource")
+        #expect(resourceError.localizedDescription.contains("test_resource"))
+        #expect(resourceError.localizedDescription.contains("not found"))
+
+        let initError = PythonSetupError.initializationFailed("test_reason")
+        #expect(initError.localizedDescription.contains("test_reason"))
+        #expect(initError.localizedDescription.contains("failed"))
+
+        let moduleError = PythonSetupError.moduleNotFound("test_module")
+        #expect(moduleError.localizedDescription.contains("test_module"))
+        #expect(moduleError.localizedDescription.contains("not found"))
+    }
+
+    @Test("PythonSetup finalize is safe to call multiple times")
+    func testPythonSetupFinalizeIdempotent() {
+        // finalize() should be safe to call even if not initialized
+        PythonSetup.finalize()
+        PythonSetup.finalize()
+        // No crash = test passes
+    }
 }
 
 // MARK: - Integration Tests (require Python)
@@ -167,7 +195,11 @@ struct STTBridgeIntegrationTests {
             _ = try await STTBridge(model: .whisperTiny)
             Issue.record("Expected STTError.pythonNotInitialized")
         } catch let error as STTError {
-            #expect(error == .pythonNotInitialized)
+            if case .pythonNotInitialized = error {
+                // Expected error
+            } else {
+                Issue.record("Expected pythonNotInitialized, got \(error)")
+            }
         } catch {
             Issue.record("Unexpected error type: \(error)")
         }
