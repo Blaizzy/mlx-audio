@@ -6,12 +6,28 @@ are correctly defined and can be resolved by package managers.
 
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
+# tomllib is stdlib in Python 3.11+, use tomli as fallback for 3.9-3.10
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        tomllib = None
+
 # Find project root (where pyproject.toml lives)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+# Skip marker for tests requiring tomllib
+needs_tomllib = pytest.mark.skipif(
+    tomllib is None,
+    reason="Requires Python 3.11+ or tomli package",
+)
 
 
 def get_package_manager() -> str:
@@ -44,10 +60,9 @@ def run_dry_run(extra: str = None) -> subprocess.CompletedProcess:
 class TestOptionalDeps:
     """Test that optional dependency groups resolve correctly."""
 
+    @needs_tomllib
     def test_core_deps_defined(self):
         """Verify core dependencies are minimal."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
@@ -58,10 +73,9 @@ class TestOptionalDeps:
         assert "numpy" in dep_names
         assert "huggingface_hub" in dep_names
 
+    @needs_tomllib
     def test_stt_extra_defined(self):
         """Verify [stt] extra contains expected deps."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
@@ -70,10 +84,9 @@ class TestOptionalDeps:
         assert "transformers" in dep_names
         assert "tiktoken" in dep_names
 
+    @needs_tomllib
     def test_tts_extra_defined(self):
         """Verify [tts] extra contains expected deps."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
@@ -82,10 +95,9 @@ class TestOptionalDeps:
         assert "misaki" in dep_names
         assert "spacy" in dep_names
 
+    @needs_tomllib
     def test_sts_extra_no_self_reference(self):
         """Verify [sts] extra doesn't use self-referencing (mlx-audio[...])."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
@@ -95,10 +107,9 @@ class TestOptionalDeps:
                 "mlx-audio["
             ), f"Self-reference found in sts: {dep}"
 
+    @needs_tomllib
     def test_all_extra_no_self_reference(self):
         """Verify [all] extra doesn't use self-referencing."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
@@ -108,10 +119,9 @@ class TestOptionalDeps:
                 "mlx-audio["
             ), f"Self-reference found in all: {dep}"
 
+    @needs_tomllib
     def test_server_extra_defined(self):
         """Verify [server] extra contains expected deps."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
@@ -120,10 +130,9 @@ class TestOptionalDeps:
         assert "fastapi" in dep_names
         assert "uvicorn" in dep_names
 
+    @needs_tomllib
     def test_dev_extra_defined(self):
         """Verify [dev] extra contains expected deps."""
-        import tomllib
-
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
