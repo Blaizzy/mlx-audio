@@ -1,0 +1,6 @@
+framework module MLXESpeakNG {
+    umbrella header "ESpeakNG.h"
+
+    export *
+    module * { export * }
+}

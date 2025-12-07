@@ -1,5 +1,5 @@
 //
-import ESpeakNG
+import MLXESpeakNG
 
 //  Kokoro-tts-lib
 //
