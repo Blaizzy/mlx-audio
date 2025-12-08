@@ -364,6 +364,8 @@ let raw2 = try await s2.generateRaw(for: "No auto-play for this one")
 
 > **Note**: STT uses PythonKit to bridge `mlx_audio.stt` (Whisper). You must bundle [Python-Apple-support](https://github.com/beeware/Python-Apple-support) in your app.
 
+#### Basic Usage
+
 ```swift
 import MLXAudioSTT
 
@@ -380,11 +382,76 @@ let result = try await stt.transcribe(audioURL: audioFileURL)
 print("Transcription: \(result.text)")
 
 // Or transcribe from audio buffer
-let buffer = try AudioBuffer.load(from: audioURL)
+let buffer = AudioBuffer(samples: floatSamples, sampleRate: 16000)
 let result = try await stt.transcribe(buffer: buffer)
+
+// Or transcribe from raw Float samples
+let result = try await stt.transcribe(samples: floatArray, sampleRate: 16000)
+```
+
+#### Available Models
+
+| Model | Enum Value | Description |
+|-------|------------|-------------|
+| `mlx-community/whisper-large-v3-turbo` | `.whisperLargeV3Turbo` | Default, best balance of speed/quality |
+| `mlx-community/whisper-large-v3` | `.whisperLargeV3` | Highest quality |
+| `mlx-community/whisper-medium` | `.whisperMedium` | Medium size |
+| `mlx-community/whisper-small` | `.whisperSmall` | Smaller, faster |
+| `mlx-community/whisper-base` | `.whisperBase` | Base model |
+| `mlx-community/whisper-tiny` | `.whisperTiny` | Smallest, fastest |
+
+#### Configuration Options
+
+```swift
+// Configure STT behavior
+let config = STTConfig(
+    sampleRate: 16_000,      // Audio sample rate (default: 16kHz)
+    language: "en",          // Force language (nil for auto-detect)
+    task: .transcribe        // .transcribe or .translate (to English)
+)
+
+let stt = try await STTBridge(model: .whisperLargeV3Turbo, config: config)
+```
+
+#### Transcription Result
+
+```swift
+let result = try await stt.transcribe(audioURL: url)
+
+print(result.text)              // Full transcription text
+print(result.language)          // Detected language (e.g., "en")
+print(result.processingTime)    // Time taken in seconds
+
+// Access word-level segments (if available)
+for segment in result.segments {
+    print("\(segment.start)-\(segment.end): \(segment.text)")
+}
+```
+
+#### AudioBuffer Utilities
+
+```swift
+import MLXAudioCore
+
+// Create from Float samples
+let buffer = AudioBuffer(samples: [Float], sampleRate: 16000)
+
+// Create from Int16 samples (auto-converts to Float)
+let buffer = AudioBuffer(int16Samples: [Int16], sampleRate: 16000)
+
+// Resample to different rate
+let resampled = buffer.resampled(to: 8000)
+
+// Get properties
+print(buffer.sampleCount)  // Number of samples
+print(buffer.duration)     // Duration in seconds
 ```
 
 ### STS Usage (Speech-to-Speech Pipeline)
+
+The `VoicePipeline` orchestrates a complete voice assistant flow: STT → LLM → TTS.
+
+#### Basic Usage
 
 ```swift
 import MLXAudioSTS
@@ -426,6 +493,69 @@ Task {
 
 // Start listening
 try await pipeline.start()
+```
+
+#### Pipeline Configuration
+
+```swift
+let config = VoicePipelineConfig(
+    inputSampleRate: 16_000,     // Microphone sample rate
+    outputSampleRate: 24_000,    // TTS output rate (reserved)
+    silenceThreshold: 0.03,      // VAD energy threshold
+    silenceDuration: 1.5,        // Seconds of silence to end speech
+    frameDurationMs: 30,         // Audio frame size for VAD
+    sttModel: .whisperLargeV3Turbo,
+    ttsVoice: nil,               // Reserved for future use
+    streamingInterval: 0.5       // Reserved for streaming responses
+)
+```
+
+#### Pipeline Events
+
+| Event | Description |
+|-------|-------------|
+| `.listening` | Pipeline is listening for speech |
+| `.speechDetected` | Voice activity detected |
+| `.processing` | Running STT on captured audio |
+| `.transcription(String)` | STT result available |
+| `.generatingResponse` | LLM is generating response |
+| `.speaking` | TTS is playing response |
+| `.speakingComplete` | TTS playback finished |
+| `.idle` | Pipeline stopped |
+| `.error(String)` | Error occurred |
+
+#### Custom Response Generator
+
+```swift
+// Using a protocol implementation
+struct MyLLMGenerator: ResponseGenerator {
+    func generateResponse(for input: String) async throws -> String {
+        // Call your LLM API here
+        return await myLLM.chat(input)
+    }
+}
+
+let pipeline = try await VoicePipeline(
+    config: config,
+    responseGenerator: MyLLMGenerator(),
+    ttsGenerate: { text in _ = try await tts.generate(for: text) }
+)
+```
+
+#### Pipeline Control
+
+```swift
+// Start listening
+try await pipeline.start()
+
+// Stop the pipeline
+pipeline.stop()
+
+// Inject text manually (bypass STT)
+try await pipeline.injectText("Hello, how are you?")
+
+// Interrupt current speech
+pipeline.interrupt()
 ```
 
 ## License
