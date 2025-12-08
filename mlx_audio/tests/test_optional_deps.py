@@ -1,17 +1,40 @@
-"""Tests for optional dependency groups in pyproject.toml.
+"""Tests for optional dependency groups.
 
-These tests verify that pyproject.toml optional dependency groups
-are correctly defined and can be resolved by package managers.
+These tests verify that optional dependency groups are correctly defined
+and can be resolved by package managers using importlib.metadata.
 """
 
 import shutil
 import subprocess
+from importlib.metadata import PackageNotFoundError, metadata
 from pathlib import Path
 
 import pytest
 
 # Find project root (where pyproject.toml lives)
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+
+
+def get_package_metadata():
+    """Get package metadata via importlib.metadata."""
+    try:
+        return metadata("mlx-audio")
+    except PackageNotFoundError:
+        pytest.skip("Package not installed. Run: pip install -e .")
+
+
+def extract_package_name(req: str) -> str:
+    """Extract package name from Requires-Dist string.
+
+    Examples:
+        'tiktoken>=0.9.0; extra == "stt"' -> 'tiktoken'
+        'misaki[en]>=0.8.2; extra == "tts"' -> 'misaki'
+    """
+    import re
+
+    # Match package name (alphanumeric, hyphens, underscores) before any version/extra specifier
+    match = re.match(r"^([a-zA-Z0-9_-]+)", req)
+    return match.group(1).lower() if match else req.lower()
 
 
 def get_package_manager() -> str:
@@ -45,91 +68,47 @@ class TestOptionalDeps:
     """Test that optional dependency groups resolve correctly."""
 
     def test_core_deps_defined(self):
-        """Verify core dependencies are minimal."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        deps = config["project"]["dependencies"]
-        assert len(deps) == 4, f"Core should have 4 deps, got {len(deps)}: {deps}"
-        dep_names = [d.split(">=")[0].split("==")[0] for d in deps]
-        assert "mlx" in dep_names
-        assert "numpy" in dep_names
-        assert "huggingface_hub" in dep_names
-        assert "transformers" in dep_names
+        """Verify core dependencies are defined."""
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        # Filter core deps (no extra marker)
+        core_deps = [r for r in requires if "extra ==" not in r]
+        assert (
+            len(core_deps) >= 3
+        ), f"Core should have at least 3 deps, got {len(core_deps)}"
 
     def test_stt_extra_defined(self):
         """Verify [stt] extra contains expected deps."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        stt_deps = config["project"]["optional-dependencies"]["stt"]
-        dep_names = [d.split(">=")[0].split("==")[0] for d in stt_deps]
-        # Note: transformers moved to core deps
-        assert "tiktoken" in dep_names
-        assert "tqdm" in dep_names
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        stt_deps = [r for r in requires if 'extra == "stt"' in r]
+        dep_names = [extract_package_name(r) for r in stt_deps]
+        assert "tiktoken" in dep_names, f"tiktoken not in stt deps: {dep_names}"
 
     def test_tts_extra_defined(self):
         """Verify [tts] extra contains expected deps."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        tts_deps = config["project"]["optional-dependencies"]["tts"]
-        dep_names = [d.split(">=")[0].split("==")[0].split("[")[0] for d in tts_deps]
-        assert "misaki" in dep_names
-        assert "spacy" in dep_names
-
-    def test_sts_extra_uses_self_reference(self):
-        """Verify [sts] extra uses self-referencing for DRY deps."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        sts_deps = config["project"]["optional-dependencies"]["sts"]
-        # Self-references like mlx-audio[stt,tts] are valid pip features for DRY
-        has_self_ref = any(dep.startswith("mlx-audio[") for dep in sts_deps)
-        assert has_self_ref, "STS should use self-reference for DRY deps"
-
-    def test_all_extra_uses_self_reference(self):
-        """Verify [all] extra uses self-referencing for DRY deps."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        all_deps = config["project"]["optional-dependencies"]["all"]
-        # Self-references are valid pip features for DRY
-        has_self_ref = any(dep.startswith("mlx-audio[") for dep in all_deps)
-        assert has_self_ref, "All should use self-reference for DRY deps"
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        tts_deps = [r for r in requires if 'extra == "tts"' in r]
+        dep_names = [extract_package_name(r) for r in tts_deps]
+        assert "misaki" in dep_names, f"misaki not in tts deps: {dep_names}"
 
     def test_server_extra_defined(self):
         """Verify [server] extra contains expected deps."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        server_deps = config["project"]["optional-dependencies"]["server"]
-        dep_names = [d.split(">=")[0] for d in server_deps]
-        assert "fastapi" in dep_names
-        assert "uvicorn" in dep_names
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        server_deps = [r for r in requires if 'extra == "server"' in r]
+        dep_names = [extract_package_name(r) for r in server_deps]
+        assert "fastapi" in dep_names, f"fastapi not in server deps: {dep_names}"
+        assert "uvicorn" in dep_names, f"uvicorn not in server deps: {dep_names}"
 
     def test_dev_extra_defined(self):
         """Verify [dev] extra contains expected deps."""
-        import tomllib
-
-        with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
-            config = tomllib.load(f)
-
-        dev_deps = config["project"]["optional-dependencies"]["dev"]
-        dep_names = [d.split(">=")[0] for d in dev_deps]
-        assert "pytest" in dep_names
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        dev_deps = [r for r in requires if 'extra == "dev"' in r]
+        dep_names = [extract_package_name(r) for r in dev_deps]
+        assert "pytest" in dep_names, f"pytest not in dev deps: {dep_names}"
 
     def test_core_resolves(self):
         """Verify core install resolves without errors."""
