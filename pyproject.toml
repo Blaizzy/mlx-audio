@@ -18,17 +18,17 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 
-# Core dependencies (minimal for DSP-only usage)
+# Core dependencies
 dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
     "huggingface_hub>=0.27.0",
+    "transformers>=4.49.0",
 ]
 
 [project.optional-dependencies]
 # STT dependencies
 stt = [
-    "transformers>=4.49.0",
     "tiktoken>=0.9.0",
     "tqdm>=4.67.1",
 ]
@@ -41,7 +41,6 @@ tts = [
     "spacy>=3.8.4",
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
-    "transformers>=4.49.0",
     "sentencepiece>=0.2.0",
     "sounddevice>=0.5.1",
     "soundfile>=0.13.1",
@@ -60,29 +59,9 @@ server = [
     "uvicorn>=0.22.0",
 ]
 
-# STS (Speech-to-Speech) requires both STT and TTS deps
+# STS (Speech-to-Speech) requires both STT and TTS + additional deps
 sts = [
-    # STT deps
-    "transformers>=4.49.0",
-    "tiktoken>=0.9.0",
-    "tqdm>=4.67.1",
-    # TTS deps
-    "misaki[en]>=0.8.2",
-    "loguru>=0.7.3",
-    "num2words>=0.5.14",
-    "spacy>=3.8.4",
-    "phonemizer-fork>=3.3.2",
-    "espeakng-loader>=0.2.4",
-    "sentencepiece>=0.2.0",
-    "sounddevice>=0.5.1",
-    "soundfile>=0.13.1",
-    "einops>=0.8.1",
-    "pyloudnorm>=0.1.1",
-    "omegaconf==2.3.0",
-    "einx==0.3.0",
-    "dacite>=1.9.2",
-    "mistral-common[audio]",
-    # STS-specific deps
+    "mlx-audio[stt,tts]",
     "mlx-vlm>=0.1.27",
     "fastrtc[vad,stt]",
     "webrtcvad>=2.0.10",
@@ -90,33 +69,7 @@ sts = [
 
 # Full installation (all features)
 all = [
-    # STT deps
-    "transformers>=4.49.0",
-    "tiktoken>=0.9.0",
-    "tqdm>=4.67.1",
-    # TTS deps
-    "misaki[en]>=0.8.2",
-    "loguru>=0.7.3",
-    "num2words>=0.5.14",
-    "spacy>=3.8.4",
-    "phonemizer-fork>=3.3.2",
-    "espeakng-loader>=0.2.4",
-    "sentencepiece>=0.2.0",
-    "sounddevice>=0.5.1",
-    "soundfile>=0.13.1",
-    "einops>=0.8.1",
-    "pyloudnorm>=0.1.1",
-    "omegaconf==2.3.0",
-    "einx==0.3.0",
-    "dacite>=1.9.2",
-    "mistral-common[audio]",
-    # STS-specific deps
-    "mlx-vlm>=0.1.27",
-    "fastrtc[vad,stt]",
-    "webrtcvad>=2.0.10",
-    # Server deps
-    "fastapi>=0.95.0",
-    "uvicorn>=0.22.0",
+    "mlx-audio[stt,tts,sts,server]",
 ]
 
 # Development dependencies
