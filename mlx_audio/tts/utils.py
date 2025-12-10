@@ -15,7 +15,13 @@ from mlx_lm.convert import mixed_quant_predicate_builder
 from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
 from transformers import AutoConfig
 
-MODEL_REMAPPING = {"outetts": "outetts", "spark": "spark", "csm": "sesame"}
+MODEL_REMAPPING = {
+    "outetts": "outetts", 
+    "spark": "spark", 
+    "csm": "sesame",
+    "voxcpm": "voxcpm",
+    "voxcpm1.5": "voxcpm"
+}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
@@ -50,6 +56,7 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
                     "*.yaml",
                     "*.wav",
                     "*.txt",
+                    "*.pth",
                 ],
             )
         )
@@ -172,17 +179,25 @@ def load_model(
     if isinstance(model_path, str):
         model_name = model_path.lower().split("/")[-1].split("-")
         model_path = get_model_path(model_path)
-    elif isinstance(model_path, Path):
-        index = model_path.parts.index("hub")
-        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+    if isinstance(model_path, Path):
+        try:
+            index = model_path.parts.index("hub")
+            model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+        except ValueError:
+             # Fallback for local paths not in HF cache structure
+             model_name = model_path.name.lower().split("-")
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path, **kwargs)
     config["tokenizer_name"] = model_path
+    config["model_path"] = str(model_path) # Ensure explicit string path in config dict for strict parsers
 
     # Determine model_type from config or model_name
     model_type = config.get("model_type", None)
+    if model_type is None:
+        model_type = config.get("architecture", None) # Fallback to architecture
+        
     if model_type is None:
         model_type = model_name[0].lower() if model_name is not None else None
 
