@@ -14,8 +14,6 @@ class RMSNorm(nn.Module):
 
     def __call__(self, x):
         # x: (..., D)
-        # variance = mean(x^2, axis=-1)
-        # rsqrt(variance + eps) * x * weight
         return mx.fast.rms_norm(x, self.weight, self.eps)
 
 class MiniCPMLongRoPE(nn.Module):
@@ -24,16 +22,7 @@ class MiniCPMLongRoPE(nn.Module):
         self.config = config
         self.dim = config.hidden_size // config.num_attention_heads # Head dim
         if config.num_key_value_heads: # If GQA
-             # Check if head_dim needs adjustment? usually head_dim is constant.
              pass
-        # Wait, the PyTorch code:
-        # self.dim = config.kv_channels if config.kv_channels else config.hidden_size // config.num_attention_heads
-        
-        # In config.py we don't have kv_channels?
-        # Let's check config.py again. Not explicitly.
-        # But we have `dim_model_base`?
-        
-        # We'll assume head_dim = hidden_size / num_attention_heads.
         
         self.base = config.rope_theta
         self.max_position_embeddings = config.max_position_embeddings
@@ -50,9 +39,6 @@ class MiniCPMLongRoPE(nn.Module):
         # inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
         half_dim = self.dim // 2
         exponents = mx.arange(0, half_dim, dtype=mx.float32) / half_dim 
-        # Wait, PyTorch: arange(0, dim, 2) / dim
-        # 0, 2, 4... / dim
-        # = 0, 1, 2... / (dim/2)
         inv_freq = 1.0 / (self.base ** exponents)
         self.inv_freq = inv_freq # (dim/2,)
 
@@ -64,13 +50,6 @@ class MiniCPMLongRoPE(nn.Module):
         
         # Decide factors
         factors = self.long_factor if seq_len > self.original_max_position_embeddings else self.short_factor
-        
-        # freqs calculation
-        # t: (L, 1)
-        # inv_freq: (D/2,)
-        # factors: (D/2,) expected?
-        # PyTorch: tensor(self.long_factor)
-        # Check config length of factors. usually matches dim/2.
         
         t = mx.arange(seq_len, dtype=mx.float32)
         
@@ -94,12 +73,6 @@ def rotate_half(x):
 
 def apply_rotary_pos_emb(q, k, cos, sin):
     # q: (B, L, H, D) or (B, H, L, D)?
-    # MLX attention expects (B, H, L, D) usually? 
-    # Actually mx.fast.scaled_dot_product_attention expects (B, H, L, D).
-    # But usually implementation uses (B, L, H, D) and transposes.
-    
-    # Let's assume input q is (B, L, H, D).
-    # cos, sin are (B, L, D) or (1, L, D). Broadcasat over H.
     
     # Need to expand dims for H
     cos = cos[:, :, None, :]

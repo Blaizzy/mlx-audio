@@ -259,27 +259,12 @@ class AudioVAE(nn.Module):
         decoder_rates = config.decoder_rates
         depthwise = True # Hardcoded to match PyTorch default in config snippet or usage
         self.decoder_rates = decoder_rates
-        
-        # AudioVAEConfig definition in config.py did not have depthwise, need to double check
-        # But in PyTorch it does.
-        # I'll Assume True or check config again.
-        
-        # Let's check config.py I just wrote.
-        # It does NOT have depthwise. I should add it or update it.
-        # The PyTorch code shows it defaults to True.
-        
         self.encoder = CausalEncoder(encoder_dim, latent_dim, encoder_rates, depthwise=True)
         self.decoder = CausalDecoder(latent_dim, decoder_dim, decoder_rates, depthwise=True, d_out=1, use_noise_block=False)
 
     def encode(self, x):
-        # x: (N, T) for audio?
-        # Expect input to be (N, T, 1) or (N, T).
         if x.ndim == 2:
             x = x[:, :, None] # Add channel dim
-        
-        # Preprocessing?
-        # PyTorch `preprocess` pads based on hop_length.
-        # We should probably handle that in `generate` or here.
         
         z = self.encoder(x)
         return z
@@ -387,7 +372,6 @@ class AudioVAE(nn.Module):
                 
                 # Encoder Block Internals
                 # Context: we are inside [encoder, blocks, layers, N] or [decoder, blocks, layers, N]
-                # Next part is 'block'?
                 if p == "block" and i+1 < len(new_parts) and new_parts[i+1].isdigit():
                     idx = int(new_parts[i+1])
                     suffix_idx = i + 2
@@ -415,9 +399,7 @@ class AudioVAE(nn.Module):
                         final_parts.append(mapping.get(idx, f"unknown_{idx}"))
                         i += 2
                         continue
-                        
-                    # If we are deeper, it must be ResidualUnit internals
-                    # e.g. ...res1.block.M...
+
                     # PyTorch ResidualUnit uses `self.block` Sequential.
                     # M: 0->snake1, 1->conv1, 2->snake2, 3->conv2
                     mapping = {0: "snake1", 1: "conv1", 2: "snake2", 3: "conv2"}

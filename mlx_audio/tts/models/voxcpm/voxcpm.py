@@ -146,13 +146,6 @@ class Model(nn.Module):
                  del weights[k]
              for k, v in sanitized_vae.items():
                  weights[f"audio_vae.{k}"] = v
-                 
-        # General sanitization for other layers (transpose Linear if needed?)
-        # MLX Linear: (out, in). PyTorch: (out, in). Matched.
-        # But wait, MLX nn.Linear weight is (in, out) if using library?
-        # Checking MLX docs: `nn.Linear(input_dims, output_dims)`. Weight shape `(input_dims, output_dims)`.
-        # PyTorch `nn.Linear(in_features, out_features)`. Weight shape `(out_features, in_features)`.
-        # So we NEED to transpose all Linear weights!
         
         new_weights = {}
         curr_shapes = {k: v.shape for k, v in tree_flatten(self.parameters())}
@@ -261,17 +254,10 @@ class Model(nn.Module):
         
         # Handle prompt
         if prompt_wav_path:
-             # TODO: implement audio loading and VAE encoding
-             # For now assume no prompt or prompt feature cache handling needs pydub/librosa
              raise NotImplementedError("Prompt audio not fully implemented yet")
         else:
-             # dummy prompt? The code handles it, looks like empty prompt features.
              pass
-             
-        # Just text generation for now
-        # We need to construct combined embedding.
-        
-        # Text embedding
+
         # scale_emb
         scale_emb = self.args.lm_config.scale_emb if not self.args.lm_config.use_mup else 1.0 
         

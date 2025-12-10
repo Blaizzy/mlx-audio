@@ -59,12 +59,6 @@ class VoxCPMLocDiT(nn.Module):
 
     def __call__(self, x, mu, t, cond, dt):
         # x: (N, C, T) -> Transpose to (N, T, C)
-        # MLX Linear expects (..., C).
-        # We assume input x is (N, C, T) to match PyTorch interface derived from existing code?
-        # My implementation of inference loop will probably work with (N, T, C) easier, 
-        # but let's stick to (N, C, T) if that's what `voxcpm.py` generates.
-        # Actually `UnifiedCFM` operates on (N, C, T). `z` initialized as (batch, in_channels, t).
-        
         x = x.transpose(0, 2, 1) # (N, T, C)
         x_proj = self.in_proj(x)
         
@@ -79,21 +73,9 @@ class VoxCPMLocDiT(nn.Module):
         
         t_comb = t_emb + dt_emb # (N, H)
         
-        # mu: (N, H)? No, mu is (b, h_dit) from `voxcpm.py`.
-        # So mu + t_comb -> (N, H)
         start_token = (mu + t_comb)[:, None, :] # (N, 1, H)
         
-        # concat: start, cond, x
         hidden = mx.concatenate([start_token, cond_proj, x_proj], axis=1) # (N, 1 + T' + T, H)
-        
-        # pass to decoder
-        # is_causal=False implicit if no mask passed to my MiniCPM?
-        # My MiniCPM applies RoPE.
-        # RoPE usually assumes causal positions 0..L.
-        # Here we concatenate.
-        # `voxcpm.py` says `is_causal=False` for DiT.
-        # In this case, attention is full.
-        # My `MiniCPMModel` does full attention if cache is None and mask is None.
         
         # Pass is_causal=False for full bidirectional attention (DiT uses non-causal)
         hidden, _ = self.decoder(inputs_embeds=hidden, is_causal=False)
@@ -132,11 +114,11 @@ class UnifiedCFM(nn.Module):
                 # Classifier-Free Guidance inference introduced in VoiceBox
                 b = current_x.shape[0]
                 
-                # CRITICAL: For CFG, the unconditional branch needs zeros for mu!
+                # For CFG, the unconditional branch needs zeros for mu
                 # First batch: conditional (with mu)
                 # Second batch: unconditional (with zeros for mu)
                 x_in = mx.concatenate([current_x, current_x], axis=0)
-                mu_in = mx.concatenate([mu, mx.zeros_like(mu)], axis=0)  # FIXED: zeros for uncond branch
+                mu_in = mx.concatenate([mu, mx.zeros_like(mu)], axis=0)  # zeros for uncond branch
                 
                 # t and dt
                 t_val = mx.full((x_in.shape[0],), t)
@@ -185,14 +167,7 @@ class UnifiedCFM(nn.Module):
     def sample(self, mu, n_timesteps, patch_size, cond, temperature=1.0, cfg_value=1.0):
         # mu: (B, H) (hidden_size/dit dim)
         B = mu.shape[0]
-        T = patch_size # Wait, patch_size arg in `voxcpm.py` seems to be passed as `feat_pred_seq` length logic?
-        # In `voxcpm.py`:
-        # pred_feat = self.feat_decoder(..., patch_size=self.patch_size, ...)
-        # self.patch_size = config.patch_size (e.g. 2 or 4)
-        
-        # `UnifiedCFM.forward` (mapped to `sample` here conceptually):
-        # t = patch_size.
-        # z = randn(b, in_channels, t)
+        T = patch_size 
         
         z = mx.random.normal((B, self.in_channels, T)) * temperature
         
