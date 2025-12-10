@@ -282,6 +282,13 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         mx.eval(model.parameters())
 
     model.eval()
+    
+    # Call post-load hook if the model defines one
+    # This allows models to initialize tokenizers or other resources
+    # Note: model_class is actually the module, Model class is model_class.Model
+    if hasattr(model_class.Model, 'post_load_hook'):
+        model = model_class.Model.post_load_hook(model, model_path)
+    
     return model
 
 

@@ -134,12 +134,16 @@ class Attention(nn.Module):
         
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
         
-        # KV Cache Logic here if needed
+        # KV Cache Logic - concatenate BEFORE transpose
+        # Cache format: (B, L_past, H_kv, D)
         if cache is not None:
              k_cache, v_cache = cache
              k = mx.concatenate([k_cache, k], axis=1)
              v = mx.concatenate([v_cache, v], axis=1)
              
+        # Store cache in (B, L, H_kv, D) format for next iteration
+        new_cache = (k, v)
+        
         # Transpose to (B, H, L, D) for attention
         q = q.transpose(0, 2, 1, 3)
         k = k.transpose(0, 2, 1, 3)
@@ -149,10 +153,7 @@ class Attention(nn.Module):
         out = mx.fast.scaled_dot_product_attention(q, k, v, scale=1/math.sqrt(self.head_dim), mask=mask)
         
         out = out.transpose(0, 2, 1, 3).reshape(B, L, -1)
-        return self.o_proj(out), (k, v) # Return cache in transposed form? No, usually (B, L, H, D) for easier cat?
-        # Wait, if I transpose back, cache should probably be stored in (B, L, H, D) or (B, H, L, D).
-        # MLX usually prefers (B, H, L, D).
-        # Let's return transposed k, v as cache. (B, H, L, D)
+        return self.o_proj(out), new_cache
         
 class MLP(nn.Module):
     def __init__(self, config: LMConfig):
@@ -209,7 +210,7 @@ class MiniCPMModel(nn.Module):
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rope = MiniCPMLongRoPE(config)
 
-    def __call__(self, inputs_embeds=None, input_ids=None, mask=None, cache=None):
+    def __call__(self, inputs_embeds=None, input_ids=None, mask=None, cache=None, is_causal=True):
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
             
@@ -220,8 +221,8 @@ class MiniCPMModel(nn.Module):
         offset = 0
         if cache is not None:
              # cache is list of (k, v)
-             # k shape (B, H, L_past, D)
-             offset = cache[0][0].shape[2]
+             # k shape (B, L_past, H_kv, D) - note: cache format is (B, L, H, D)
+             offset = cache[0][0].shape[1]
              
         position_ids = mx.arange(offset, offset + L).astype(mx.int32)
         # expand to batch? RoPE expects (L) usually if broadcastable.
@@ -231,6 +232,13 @@ class MiniCPMModel(nn.Module):
         # resize for batch? apply_rotary_pos_emb handles broadcasting
         cos = cos[None, :, :]
         sin = sin[None, :, :]
+        
+        # Generate attention mask if is_causal=True and no explicit mask provided
+        if mask is None and is_causal and L > 1:
+            # Create causal mask: (1, 1, L, L) with -inf above diagonal
+            causal_mask = mx.triu(mx.full((L, L), float('-inf')), k=1)
+            mask = causal_mask[None, None, :, :]  # (1, 1, L, L)
+        # If is_causal=False (like for DiT), mask stays None for full attention
         
         h = inputs_embeds
         new_caches = []
@@ -242,3 +250,4 @@ class MiniCPMModel(nn.Module):
             
         h = self.norm(h)
         return h, new_caches
+

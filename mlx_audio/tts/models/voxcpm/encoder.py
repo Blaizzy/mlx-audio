@@ -35,8 +35,8 @@ class VoxCPMLocEnc(nn.Module):
         # Flatten B, T -> (B*T, P+1, H)
         x = x.reshape(B * T, P + 1, -1)
         
-        # Run encoder
-        outputs, _ = self.encoder(inputs_embeds=x) # (B*T, P+1, H)
+        # Run encoder with bidirectional attention (is_causal=False)
+        outputs, _ = self.encoder(inputs_embeds=x, is_causal=False) # (B*T, P+1, H)
         
         # Take CLS token (index 0)
         cls_output = outputs[:, 0, :] # (B*T, H)

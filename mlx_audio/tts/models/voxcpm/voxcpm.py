@@ -108,8 +108,6 @@ class Model(nn.Module):
                     if "state_dict" in state:
                         state = state["state_dict"]
                     
-                    print(f"[DEBUG] Loaded {len(state)} keys from audiovae.pth")
-                    
                     # Convert to numpy/mlx and prefix
                     vae_weights_pth = {}
                     for k, v in state.items():
@@ -193,6 +191,17 @@ class Model(nn.Module):
                  new_weights[k] = v
                     
         return new_weights
+
+    @classmethod
+    def post_load_hook(cls, model: 'Model', model_path: Path):
+        """
+        Hook called after model weights are loaded.
+        Used to initialize the tokenizer which is required for text input.
+        """
+        from transformers import AutoTokenizer
+        if model.tokenizer is None:
+            model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        return model
 
     @classmethod
     def from_pretrained(cls, model_path: str):
@@ -342,7 +351,7 @@ class Model(nn.Module):
         elapsed_time = end_time - start_time
         
         samples = audio.shape[0]
-        sample_rate = 24000 # Config?
+        sample_rate = self.args.audio_vae_config.sample_rate  # Use config value (44100)
         audio_duration_seconds = samples / sample_rate
         
         rtf = audio_duration_seconds / elapsed_time if elapsed_time > 0 else 0

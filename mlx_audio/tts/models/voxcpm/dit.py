@@ -95,7 +95,8 @@ class VoxCPMLocDiT(nn.Module):
         # In this case, attention is full.
         # My `MiniCPMModel` does full attention if cache is None and mask is None.
         
-        hidden, _ = self.decoder(inputs_embeds=hidden)
+        # Pass is_causal=False for full bidirectional attention (DiT uses non-causal)
+        hidden, _ = self.decoder(inputs_embeds=hidden, is_causal=False)
         
         # slice output
         prefix = cond.shape[1]
@@ -115,6 +116,7 @@ class UnifiedCFM(nn.Module):
         
     def solve_euler(self, x, t_span, mu, cond, cfg_value=1.0, use_cfg_zero_star=True):
         t = t_span[0]
+        dt = t_span[0] - t_span[1]  # Initial dt
         # t_span is linspace 1 -> 0
         
         # For MLX, we can't modify list in place well, but we can iterate.
@@ -123,56 +125,60 @@ class UnifiedCFM(nn.Module):
         zero_init_steps = max(1, int(len(t_span) * 0.04))
         
         for step in range(1, len(t_span)):
-            next_t = t_span[step]
-            dt = t - next_t # Positive dt since t goes down
-            
-            # Form batch for CFG: [pos, neg]
-            # PyTorch: x_in = cat([x, x]), mu_in = mu, t_in = t, dt_in = dt
-            
-            x_in = mx.concatenate([current_x, current_x], axis=0)
-            mu_in = mx.concatenate([mu, mu], axis=0)
-            
-            # t and dt are scalars?
-            # In PyTorch, they are expanded to (2*b).
-            # t is a scalar from loop.
-            t_val = mx.full((x_in.shape[0],), t)
-            dt_val_in = mx.full((x_in.shape[0],), dt) # dt_val_in
-            
-            # cond
-            cond_in = mx.concatenate([cond, cond], axis=0)
-            
             if use_cfg_zero_star and step <= zero_init_steps:
                  # dphi_dt = 0
-                 # Instead of running model, just zero?
-                 # PyTorch: if step <= zero_init_steps: dphi_dt = zeros...
                  dphi_dt = mx.zeros_like(current_x)
             else:
+                # Classifier-Free Guidance inference introduced in VoiceBox
+                b = current_x.shape[0]
+                
+                # CRITICAL: For CFG, the unconditional branch needs zeros for mu!
+                # First batch: conditional (with mu)
+                # Second batch: unconditional (with zeros for mu)
+                x_in = mx.concatenate([current_x, current_x], axis=0)
+                mu_in = mx.concatenate([mu, mx.zeros_like(mu)], axis=0)  # FIXED: zeros for uncond branch
+                
+                # t and dt
+                t_val = mx.full((x_in.shape[0],), t)
+                
+                # Mean mode uses dt, otherwise zeros (PyTorch: if not self.mean_mode: dt_in = zeros)
+                # Our config has mean_mode=False by default
+                dt_val_in = mx.zeros((x_in.shape[0],))  # FIXED: zeros for dt when mean_mode=False
+                
+                # cond - both branches get the same conditioning
+                cond_in = mx.concatenate([cond, cond], axis=0)
+                
                 # Estimator call
                 out = self.estimator(x_in, mu_in, t_val, cond_in, dt_val_in)
                 
-                # split
+                # split: dphi_dt (conditional), cfg_dphi_dt (unconditional)
                 chunk_size = current_x.shape[0]
-                dphi_dt_pos = out[:chunk_size]
-                dphi_dt_neg = out[chunk_size:]
+                dphi_dt = out[:chunk_size]       # conditional result
+                cfg_dphi_dt = out[chunk_size:]   # unconditional result
                 
                 if use_cfg_zero_star:
                     # Optimized scale
                     # flat views
-                    pos_flat = dphi_dt_pos.reshape(chunk_size, -1)
-                    neg_flat = dphi_dt_neg.reshape(chunk_size, -1)
+                    positive_flat = dphi_dt.reshape(chunk_size, -1)
+                    negative_flat = cfg_dphi_dt.reshape(chunk_size, -1)
                     
-                    dot_prod = mx.sum(pos_flat * neg_flat, axis=1, keepdims=True)
-                    sq_norm = mx.sum(neg_flat**2, axis=1, keepdims=True) + 1e-8
+                    dot_prod = mx.sum(positive_flat * negative_flat, axis=1, keepdims=True)
+                    sq_norm = mx.sum(negative_flat**2, axis=1, keepdims=True) + 1e-8
                     st_star = dot_prod / sq_norm
                     # reshape st_star to (B, 1, 1)
                     st_star = st_star.reshape(chunk_size, 1, 1)
                 else:
                     st_star = 1.0
                     
-                dphi_dt = dphi_dt_neg * st_star + cfg_value * (dphi_dt_pos - dphi_dt_neg * st_star)
+                # CFG formula: cfg_dphi_dt * st_star + cfg_value * (dphi_dt - cfg_dphi_dt * st_star)
+                dphi_dt = cfg_dphi_dt * st_star + cfg_value * (dphi_dt - cfg_dphi_dt * st_star)
             
             current_x = current_x - dt * dphi_dt
-            t = next_t
+            t = t - dt
+            
+            # Update dt for next step (variable step sizes due to sway sampling)
+            if step < len(t_span) - 1:
+                dt = t - t_span[step + 1]
             
         return current_x
 
