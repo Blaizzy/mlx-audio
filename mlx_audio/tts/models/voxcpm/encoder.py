@@ -18,7 +18,6 @@ class VoxCPMLocEnc(nn.Module):
         self.encoder = MiniCPMModel(config)
 
     def __call__(self, x):
-        # x: (B, T, P, D)
         B, T, P, D = x.shape
         
         x = self.in_proj(x) # (B, T, P, H)
