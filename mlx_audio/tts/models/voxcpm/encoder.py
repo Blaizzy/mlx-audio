@@ -24,7 +24,6 @@ class VoxCPMLocEnc(nn.Module):
         x = self.in_proj(x) # (B, T, P, H)
         
         # Expand special token: (1, 1, 1, H) -> (B, T, 1, H)
-        # MLX broadcast works automatically for elementwise, but checked via concat.
         special_tokens = mx.broadcast_to(self.special_token, (B, T, 1, self.config.hidden_size))
         
         # concat along P dimension (axis 2)
