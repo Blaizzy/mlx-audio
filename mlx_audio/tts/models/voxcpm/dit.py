@@ -100,7 +100,6 @@ class UnifiedCFM(nn.Module):
         dt = t_span[0] - t_span[1]  # Initial dt
         # t_span is linspace 1 -> 0
         
-        # For MLX, we can't modify list in place well, but we can iterate.
         current_x = x
         
         zero_init_steps = max(1, int(len(t_span) * 0.04))
