@@ -215,10 +215,49 @@ class Model(nn.Module):
             model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
         return model
 
+    def _encode_prompt_audio(self, audio: mx.array) -> mx.array:
+        """
+        Encode prompt audio into latent features.
+
+        Args:
+            audio: Audio waveform as mx.array, shape (T,) - already loaded and resampled
+
+        Returns:
+            audio_feat: Encoded audio features of shape (audio_length, patch_size, latent_dim)
+        """
+        # Ensure proper length for patch alignment
+        patch_len = self.patch_size * self.audio_vae.hop_length
+
+        if audio.shape[0] % patch_len != 0:
+            # Left padding to keep valid audio data at the end
+            padding_size = patch_len - audio.shape[0] % patch_len
+            audio = mx.pad(audio, [(padding_size, 0)])
+
+        audio_input = audio[None, None, :]  # (1, 1, T)
+        audio_feat = self.audio_vae.encode(
+            audio_input, self.audio_vae.sample_rate
+        )  # (1, T', D) in MLX format
+
+        # audio_feat is (1, T', D) - batch, time, latent_dim
+        audio_feat = audio_feat.squeeze(0)  # (T', D)
+
+        # Reshape into patches: (T', D) -> (audio_length, patch_size, D)
+        T_prime = audio_feat.shape[0]
+        audio_length = T_prime // self.patch_size
+        audio_feat = audio_feat[
+            : audio_length * self.patch_size, :
+        ]  # Trim to exact multiple
+        audio_feat = audio_feat.reshape(
+            audio_length, self.patch_size, -1
+        )  # (audio_length, patch_size, D)
+
+        return audio_feat
+
     def generate(
         self,
         text: str,
         max_tokens: int = 4096,
+        ref_text: Optional[str] = None,
         ref_audio: Optional[str] = None,
         inference_timesteps: int = 10,
         cfg_value: float = 2.0,
@@ -230,48 +269,110 @@ class Model(nn.Module):
 
         start_time = time.perf_counter()
 
-        input_ids = self.tokenizer.encode(text)
-        input_ids = mx.array(input_ids)
-        token_count = len(input_ids)
-
-        # Handle prompt
-        if ref_audio:
-            raise NotImplementedError("Prompt audio not fully implemented yet")
-        else:
-            pass
-
         # scale_emb
         scale_emb = (
             self.args.lm_config.scale_emb if not self.args.lm_config.use_mup else 1.0
         )
 
-        text_embed = (
-            self.base_lm.embed_tokens(input_ids[None, :]) * scale_emb
-        )  # (1, L, D)
+        audio_start_token = 101
+        text_mask = None
+        audio_mask = None
+        feat_embed = None
 
-        # Initial run of base_lm
+        if ref_audio is not None and ref_text is not None:
+            # Voice cloning mode: ref_text + target_text
+            combined_text = ref_text + text
+            input_ids = self.tokenizer.encode(combined_text)
+            input_ids = mx.array(input_ids)
 
-        start_token = mx.array([101])
-        input_ids = mx.concatenate([input_ids, start_token])
-        text_embed = self.base_lm.embed_tokens(input_ids[None, :])
+            input_ids = mx.concatenate([input_ids, mx.array([audio_start_token])])
+            text_length = len(input_ids)
 
-        # combined_embed
+            audio_feat = self._encode_prompt_audio(
+                ref_audio
+            )  # (audio_length, patch_size, D)
+            audio_length = audio_feat.shape[0]
 
-        enc_outputs, lm_cache = self.base_lm(text_embed)
+            text_pad_token = mx.zeros(audio_length, dtype=mx.int32)
+            text_token = mx.concatenate([input_ids, text_pad_token])
+
+            audio_pad_feat = mx.zeros(
+                (text_length, self.patch_size, self.feat_dim),
+                dtype=mx.float32,
+            )
+            audio_feat = mx.concatenate(
+                [audio_pad_feat, audio_feat], axis=0
+            )  # (text_length + audio_length, patch_size, D)
+
+            text_mask = mx.concatenate(
+                [
+                    mx.ones(text_length, dtype=mx.float32),
+                    mx.zeros(audio_length, dtype=mx.float32),
+                ]
+            )
+            audio_mask = mx.concatenate(
+                [
+                    mx.zeros(text_length, dtype=mx.float32),
+                    mx.ones(audio_length, dtype=mx.float32),
+                ]
+            )
+
+            text_token = text_token[None, :]  # (1, T)
+            audio_feat = audio_feat[None, :, :, :]  # (1, T, P, D)
+            text_mask = text_mask[None, :]  # (1, T)
+            audio_mask = audio_mask[None, :]  # (1, T)
+
+            feat_embed = self.feat_encoder(audio_feat)  # (1, T, H)
+            feat_embed = self.enc_to_lm_proj(feat_embed)  # (1, T, H)
+
+            text_embed = self.base_lm.embed_tokens(text_token) * scale_emb  # (1, T, H)
+
+            combined_embed = (
+                text_mask[:, :, None] * text_embed + audio_mask[:, :, None] * feat_embed
+            )  # (1, T, H)
+
+            prefix_feat_cond = audio_feat[:, -1, :, :]  # (1, P, D)
+
+            token_count = len(input_ids)
+
+        else:
+            # No voice cloning
+            input_ids = self.tokenizer.encode(text)
+            input_ids = mx.array(input_ids)
+            token_count = len(input_ids)
+
+            start_token = mx.array([audio_start_token])
+            input_ids = mx.concatenate([input_ids, start_token])
+
+            combined_embed = (
+                self.base_lm.embed_tokens(input_ids[None, :]) * scale_emb
+            )  # (1, L, D)
+
+            prefix_feat_cond = mx.zeros((1, self.patch_size, self.feat_dim))
+
+        enc_outputs, lm_cache = self.base_lm(combined_embed)
+
+        if text_mask is not None and audio_mask is not None:
+            enc_outputs = (
+                self.fsq_layer(enc_outputs) * audio_mask[:, :, None]
+                + enc_outputs * text_mask[:, :, None]
+            )
+
         lm_hidden = enc_outputs[:, -1, :]
 
-        # fsq
-        lm_hidden = self.fsq_layer(lm_hidden)
+        if text_mask is None:
+            lm_hidden = self.fsq_layer(lm_hidden)
 
-        # residual_lm initial run
+        if text_mask is not None and audio_mask is not None:
+            residual_input = enc_outputs + audio_mask[:, :, None] * feat_embed
+        else:
+            residual_input = enc_outputs
 
-        residual_outputs, res_cache = self.residual_lm(enc_outputs)
+        residual_outputs, res_cache = self.residual_lm(residual_input)
         residual_hidden = residual_outputs[:, -1, :]
 
         # Generation Loop
-
         pred_feat_seq = []
-        prefix_feat_cond = mx.zeros((1, self.patch_size, self.feat_dim))
 
         for i in range(max_tokens):
             # DiT
@@ -291,7 +392,6 @@ class Model(nn.Module):
 
             pred_feat = pred_feat.transpose(0, 2, 1)
             pred_feat_seq.append(pred_feat)
-
             curr_embed = self.feat_encoder(pred_feat[:, None, :, :])  # (B, 1, H)
             curr_embed = self.enc_to_lm_proj(curr_embed)
 
