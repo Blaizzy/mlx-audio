@@ -356,7 +356,7 @@ class AudioVAE(nn.Module):
         )
         self.sample_rate = config.sample_rate
 
-    def encode(self, x, sample_rate):
+    def encode(self, x, sample_rate: Optional[int] = None):
         if x.ndim == 2:
             x = x[:, :, None]  # Add channel dim
         if (
