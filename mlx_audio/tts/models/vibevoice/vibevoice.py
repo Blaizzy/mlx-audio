@@ -409,8 +409,6 @@ class Model(nn.Module):
         cfg_scale: float = 1.3,
         ddpm_steps: Optional[int] = None,
         voice_cache_path: Optional[Union[str, Path]] = None,
-        audio_headroom: float = 0.99,
-        post_smooth: float = 0.0,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
@@ -421,9 +419,7 @@ class Model(nn.Module):
             max_tokens: Maximum number of tokens to generate
             cfg_scale: Classifier-free guidance scale
             ddpm_steps: Override diffusion inference steps (higher = better quality, slower)
-            voice_cache_path: Optional path to a `.safetensors` voice cache for conditioning
-            audio_headroom: Peak normalization target. Helps avoid clipping crackle.
-            post_smooth: 0..1 mix of a tiny low-pass smoother to reduce hiss (0 disables).
+
             verbose: Whether to show progress
 
         Yields:
@@ -452,12 +448,7 @@ class Model(nn.Module):
         batch_size = 1
         seq_len = input_ids.shape[1]
 
-        # If we have a voice cache, start from its KV caches and hidden states.
-        use_voice_cache = hasattr(self, "_voice_lm_cache") and hasattr(
-            self, "_voice_tts_cache"
-        )
-
-        if use_voice_cache:
+        if voice_cache_path is not None:
             # Start from cached context
             lm_cache = list(self._voice_lm_cache)
             tts_cache = list(self._voice_tts_cache)
