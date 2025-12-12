@@ -1,5 +1,6 @@
 import time
 from pathlib import Path
+from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -217,10 +218,10 @@ class Model(nn.Module):
     def generate(
         self,
         text: str,
-        prompt_wav_path: str = None,
+        max_tokens: int = 4096,
+        ref_audio: Optional[str] = None,
         inference_timesteps: int = 10,
         cfg_value: float = 2.0,
-        max_len: int = 4096,
         **kwargs,
     ):
         # Tokenize
@@ -234,7 +235,7 @@ class Model(nn.Module):
         token_count = len(input_ids)
 
         # Handle prompt
-        if prompt_wav_path:
+        if ref_audio:
             raise NotImplementedError("Prompt audio not fully implemented yet")
         else:
             pass
@@ -270,7 +271,7 @@ class Model(nn.Module):
         pred_feat_seq = []
         prefix_feat_cond = mx.zeros((1, self.patch_size, self.feat_dim))
 
-        for i in range(max_len):
+        for i in range(max_tokens):
             # DiT
             dit_h1 = self.lm_to_dit_proj(lm_hidden)
             dit_h2 = self.res_to_dit_proj(residual_hidden)
