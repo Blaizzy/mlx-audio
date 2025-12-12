@@ -559,9 +559,6 @@ class AudioVAE(nn.Module):
                     elif w.transpose(1, 2, 0).shape == expected_shape:
                         w = w.transpose(1, 2, 0)
 
-            if "encoder.conv_in" in k:
-                print(f"[DEBUG] sanitize: final {k} shape={w.shape}")
-
             final_weights[k] = w
 
         return final_weights

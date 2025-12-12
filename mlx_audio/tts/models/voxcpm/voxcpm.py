@@ -110,7 +110,6 @@ class Model(nn.Module):
         has_vae = any(k.startswith("audio_vae.") for k in weights.keys())
         if not has_vae and self.args.model_path:
             p = Path(self.args.model_path) / "audiovae.pth"
-            print(f"[DEBUG] Looking for audiovae at: {p}")
             if p.exists():
                 try:
                     import torch
