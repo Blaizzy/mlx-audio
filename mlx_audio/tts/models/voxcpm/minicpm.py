@@ -122,7 +122,6 @@ class Attention(nn.Module):
         k = k.transpose(0, 2, 1, 3)
         v = v.transpose(0, 2, 1, 3)
         
-        # MLX scaled_dot_product_attention supports mask
         out = mx.fast.scaled_dot_product_attention(q, k, v, scale=1/math.sqrt(self.head_dim), mask=mask)
         
         out = out.transpose(0, 2, 1, 3).reshape(B, L, -1)
