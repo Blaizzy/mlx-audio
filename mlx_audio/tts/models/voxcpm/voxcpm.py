@@ -97,6 +97,10 @@ class Model(nn.Module):
         # Placeholder for tokenizer
         self.tokenizer = None
 
+    @property
+    def sample_rate(self):
+        return self.args.audio_vae_config.sample_rate
+
     def sanitize(self, weights: dict):
         from mlx.utils import tree_flatten
 
