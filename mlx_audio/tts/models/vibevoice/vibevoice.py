@@ -3,6 +3,7 @@
 Port of microsoft/VibeVoice-Realtime-0.5B to MLX.
 """
 
+import os
 import time
 from pathlib import Path
 from typing import Generator, Optional, Tuple, Union
@@ -136,9 +137,6 @@ class Model(nn.Module):
     def load_voice_cache(self, voice_cache_path: Union[str, Path]) -> None:
         """Load a VibeVoice voice-cache (.safetensors) for conditioning.
 
-        The Swift reference implementation (mzbac/vibevoice.swift) uses a voice cache
-        containing precomputed KV caches + hidden states for both the LM and TTS LM,
-        as well as their negative/unconditional counterparts.
 
         Expected keys (per layer):
           - lm_hidden
@@ -419,7 +417,7 @@ class Model(nn.Module):
             max_tokens: Maximum number of tokens to generate
             cfg_scale: Classifier-free guidance scale
             ddpm_steps: Override diffusion inference steps (higher = better quality, slower)
-
+            voice_cache_path: Optional path to a `.safetensors` voice cache for conditioning
             verbose: Whether to show progress
 
         Yields:
@@ -448,13 +446,18 @@ class Model(nn.Module):
         batch_size = 1
         seq_len = input_ids.shape[1]
 
-        if voice_cache_path is not None:
+        # If we have a voice cache, start from its KV caches and hidden states.
+        use_voice_cache = hasattr(self, "_voice_lm_cache") and hasattr(
+            self, "_voice_tts_cache"
+        )
+
+        if use_voice_cache:
             # Start from cached context
-            lm_cache = list(self._voice_lm_cache)
-            tts_cache = list(self._voice_tts_cache)
+            lm_cache = self._voice_lm_cache
+            tts_cache = self._voice_tts_cache
             tts_hidden = self._voice_tts_hidden
             neg_hidden = self._voice_neg_tts_hidden
-            neg_cache = list(self._voice_neg_tts_cache)
+            neg_cache = self._voice_neg_tts_cache
         else:
             lm_cache = None
             tts_cache = None
@@ -463,6 +466,9 @@ class Model(nn.Module):
             # Initialize negative condition (unconditional) for TTS LM
             neg_hidden = None
             neg_cache = None
+            # Without a proper negative prompt/cache, CFG often degrades text following.
+            # Disable it by default in the no-cache path.
+            cfg_scale = 1.0
 
         # Audio generation loop
         # IMPORTANT: we must decode with full temporal context.
@@ -513,8 +519,8 @@ class Model(nn.Module):
                 # Negative path:
                 # In the reference implementation, negative TTS LM is primed from voice cache and
                 # then advanced only on speech tokens (not text tokens). If we do NOT have voice
-                # cache, initialize it with zeros for this text window.
-                if neg_hidden is None:
+                # cache, keep a shape-aligned unconditional stream (zeros + type embed).
+                if neg_hidden is None or not use_voice_cache:
                     neg_embed = mx.zeros(
                         (batch_size, cur_window, self.config.decoder_config.hidden_size)
                     )
@@ -525,8 +531,10 @@ class Model(nn.Module):
                     neg_out, neg_cache = self.tts_language_model(
                         inputs_embeds=neg_in, cache=neg_cache
                     )
-                    neg_hidden = neg_out
-                # else: keep as-is (voice-cache path), no text updates.
+                    if neg_hidden is None:
+                        neg_hidden = neg_out
+                    else:
+                        neg_hidden = mx.concatenate([neg_hidden, neg_out], axis=1)
 
             # Safety: must have conditioning now
             if tts_hidden is None or neg_hidden is None:
