@@ -16,7 +16,7 @@ class TestVoxCPM(unittest.TestCase):
             latent_dim=64,
             decoder_dim=128,
             decoder_rates=[2, 2],
-            sample_rate=16000,
+            sample_rate=24000,
         )
         vae = AudioVAE(config)
 

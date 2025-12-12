@@ -374,18 +374,16 @@ class AudioVAE(nn.Module):
 
     def preprocess(self, audio_data, sample_rate):
         if sample_rate is None:
-            sample_rate = sample_rate
-            assert sample_rate == self.sample_rate
-            pad_to = self.hop_length
-            length = audio_data.shape[-1]
-            right_pad = math.ceil(length / pad_to) * pad_to - length
-            audio_data = mx.pad(audio_data, ((0, 0), (0, right_pad)))
+            sample_rate = self.sample_rate
+        assert sample_rate == self.sample_rate
+        pad_to = self.hop_length
+        length = audio_data.shape[-1]
+        right_pad = math.ceil(length / pad_to) * pad_to - length
+        audio_data = mx.pad(audio_data, ((0, 0), (0, right_pad), (0, 0)))
 
         return audio_data
 
     def sanitize(self, weights):
-        # Helper for remapping
-        import re
 
         # 0. Filter out fc_logvar immediately (not used in inference, only fc_mu)
         weights = {k: v for k, v in weights.items() if "fc_logvar" not in k}
