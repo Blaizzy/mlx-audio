@@ -245,7 +245,9 @@ class Model(nn.Module):
             self.args.lm_config.scale_emb if not self.args.lm_config.use_mup else 1.0
         )
 
-        text_embed = self.base_lm.embed_tokens(input_ids[None, :])  # (1, L, D)
+        text_embed = (
+            self.base_lm.embed_tokens(input_ids[None, :]) * scale_emb
+        )  # (1, L, D)
 
         # Initial run of base_lm
 
