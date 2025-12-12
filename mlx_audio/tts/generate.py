@@ -210,6 +210,7 @@ def generate_audio(
     lang_code: str = "a",
     voice_cache: Optional[str] = None,
     cfg_scale: Optional[float] = None,
+    ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
     stt_model: Optional[Union[str, nn.Module]] = "mlx-community/whisper-large-v3-turbo",
@@ -328,6 +329,11 @@ def generate_audio(
             and "cfg_scale" in inspect.signature(model.generate).parameters
         ):
             gen_kwargs["cfg_scale"] = cfg_scale
+        if (
+            ddpm_steps is not None
+            and "ddpm_steps" in inspect.signature(model.generate).parameters
+        ):
+            gen_kwargs["ddpm_steps"] = ddpm_steps
 
         results = model.generate(**gen_kwargs)
 
@@ -422,6 +428,13 @@ def parse_args():
         default=None,
         help="Classifier-free guidance scale (VibeVoice only). Lower (≈1.0-1.5) is often more stable.",
     )
+    parser.add_argument(
+        "--ddpm_steps",
+        type=int,
+        default=None,
+        help="Override diffusion steps (VibeVoice only). Higher = better quality, slower (try 30-50).",
+    )
+
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument(
         "--gender", type=str, default="male", help="Gender of the voice [male, female]"

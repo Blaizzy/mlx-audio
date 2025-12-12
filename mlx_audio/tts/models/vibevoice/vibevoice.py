@@ -5,24 +5,18 @@ Port of microsoft/VibeVoice-Realtime-0.5B to MLX.
 
 import time
 from pathlib import Path
-from typing import Generator, List, Optional, Tuple, Union
+from typing import Generator, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from transformers import AutoTokenizer
 
 from mlx_audio.tts.models.base import GenerationResult
 
 from .acoustic_tokenizer import AcousticTokenizer
-from .config import (
-    AcousticTokenizerConfig,
-    DiffusionHeadConfig,
-    ModelConfig,
-    Qwen2DecoderConfig,
-)
+from .config import ModelConfig, Qwen2DecoderConfig
 from .diffusion_head import DiffusionHead
-from .language_model import BinaryClassifier, Qwen2Model, RMSNorm, SpeechConnector
+from .language_model import BinaryClassifier, Qwen2Model, SpeechConnector
 from .scheduler import DPMSolverMultistepScheduler
 
 # Constants from original implementation
@@ -123,6 +117,16 @@ class Model(nn.Module):
 
         # Tokenizer placeholder
         self.tokenizer = None
+
+        # Optional voice cache state (loaded via load_voice_cache)
+        self._voice_cache_path: Optional[str] = None
+        self._voice_lm_hidden: Optional[mx.array] = None
+        self._voice_tts_hidden: Optional[mx.array] = None
+        self._voice_neg_tts_hidden: Optional[mx.array] = None
+        self._voice_lm_cache: Optional[list] = None
+        self._voice_tts_cache: Optional[list] = None
+        self._voice_neg_tts_cache: Optional[list] = None
+        self._voice_neg_lm_cache: Optional[list] = None
 
     @property
     def sample_rate(self) -> int:
@@ -313,7 +317,7 @@ class Model(nn.Module):
             tokenizer_name = "Qwen/Qwen2.5-0.5B"  # Default
 
             if preprocessor_config_path.exists():
-                with open(preprocessor_config_path) as f:
+                with open(preprocessor_config_path, encoding="utf-8") as f:
                     preprocessor_config = json.load(f)
                     tokenizer_name = preprocessor_config.get(
                         "language_model_pretrained_name", tokenizer_name
@@ -327,6 +331,7 @@ class Model(nn.Module):
         condition: mx.array,
         neg_condition: mx.array,
         cfg_scale: float = 3.0,
+        ddpm_steps: Optional[int] = None,
     ) -> mx.array:
         """Sample speech latents using diffusion with classifier-free guidance.
 
@@ -338,9 +343,13 @@ class Model(nn.Module):
         Returns:
             Sampled speech latents, shape (B, acoustic_vae_dim)
         """
+        # Use float32 for diffusion math; this tends to reduce gritty artifacts.
+        condition = condition.astype(mx.float32)
+        neg_condition = neg_condition.astype(mx.float32)
+
         # Reset scheduler for new generation
         self.noise_scheduler.reset()
-        self.noise_scheduler.set_timesteps(self.ddpm_inference_steps)
+        self.noise_scheduler.set_timesteps(ddpm_steps or self.ddpm_inference_steps)
 
         # Concatenate conditions for batched prediction
         condition_combined = mx.concatenate([condition, neg_condition], axis=0)
@@ -348,14 +357,14 @@ class Model(nn.Module):
         # Initialize noise
         batch_size = condition.shape[0]
         latent_dim = self.config.acoustic_vae_dim
-        speech = mx.random.normal((batch_size, latent_dim))
+        speech = mx.random.normal((batch_size, latent_dim), dtype=mx.float32)
 
         prev_x0 = None
 
         # Get timesteps as list
         timesteps_list = self.noise_scheduler.timesteps.tolist()
 
-        for step_idx, t_val in enumerate(timesteps_list):
+        for _, t_val in enumerate(timesteps_list):
             # Create timestep array for both positive and negative
             t_float = float(t_val)
             timesteps = mx.array([t_float, t_float], dtype=mx.float32)
@@ -398,7 +407,10 @@ class Model(nn.Module):
         text: str,
         max_tokens: int = 512,
         cfg_scale: float = 1.3,
+        ddpm_steps: Optional[int] = None,
         voice_cache_path: Optional[Union[str, Path]] = None,
+        audio_headroom: float = 0.99,
+        post_smooth: float = 0.0,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
@@ -408,7 +420,10 @@ class Model(nn.Module):
             text: Input text to synthesize
             max_tokens: Maximum number of tokens to generate
             cfg_scale: Classifier-free guidance scale
+            ddpm_steps: Override diffusion inference steps (higher = better quality, slower)
             voice_cache_path: Optional path to a `.safetensors` voice cache for conditioning
+            audio_headroom: Peak normalization target. Helps avoid clipping crackle.
+            post_smooth: 0..1 mix of a tiny low-pass smoother to reduce hiss (0 disables).
             verbose: Whether to show progress
 
         Yields:
@@ -449,9 +464,6 @@ class Model(nn.Module):
             tts_hidden = self._voice_tts_hidden
             neg_hidden = self._voice_neg_tts_hidden
             neg_cache = list(self._voice_neg_tts_cache)
-
-            # We'll stream text in windows below; caches/hidden are already primed.
-            pass
         else:
             lm_cache = None
             tts_cache = None
@@ -476,6 +488,8 @@ class Model(nn.Module):
         text_pos = 0
 
         while not finished and step < max_tokens:
+            _ = verbose  # kept for API compatibility
+            _ = kwargs  # kept for API compatibility
             # 1) Prefill next text window (if any)
             if text_pos < seq_len:
                 cur_text_ids = input_ids[
@@ -537,6 +551,7 @@ class Model(nn.Module):
                     positive_condition,
                     negative_condition,
                     cfg_scale=cfg_scale,
+                    ddpm_steps=ddpm_steps,
                 )
                 speech_latent = mx.expand_dims(speech_latent, 1)  # (B, 1, D)
 

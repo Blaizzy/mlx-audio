@@ -1,35 +1,11 @@
 """Acoustic tokenizer (VAE decoder) for VibeVoice - converts latents to audio."""
 
 import math
-from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
 
 from .config import AcousticTokenizerConfig
-
-
-class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization."""
-
-    def __init__(self, dim: int, eps: float = 1e-5, elementwise_affine: bool = True):
-        super().__init__()
-        self.dim = dim
-        self.eps = eps
-        self.elementwise_affine = elementwise_affine
-        if elementwise_affine:
-            self.weight = mx.ones((dim,))
-        else:
-            self.weight = None
-
-    def _norm(self, x: mx.array) -> mx.array:
-        return x * mx.rsqrt(mx.mean(x**2, axis=-1, keepdims=True) + self.eps)
-
-    def __call__(self, x: mx.array) -> mx.array:
-        output = self._norm(x.astype(mx.float32)).astype(x.dtype)
-        if self.weight is not None:
-            output = output * self.weight
-        return output
 
 
 class ConvRMSNorm(nn.Module):
@@ -231,7 +207,7 @@ class FeedForward(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.linear1(x)
-        x = nn.silu(x)
+        x = nn.gelu(x)
         x = self.linear2(x)
         return x
 
@@ -242,13 +218,14 @@ class Block1D(nn.Module):
     def __init__(
         self,
         dim: int,
-        layernorm: str = "RMSNorm",
+        layernorm: str = "RMSNorm",  # kept for config compatibility
         eps: float = 1e-6,
         causal: bool = True,
         bias: bool = True,
         layer_scale_init_value: float = 1e-6,
     ):
         super().__init__()
+        _ = layernorm
         self.dim = dim
 
         # Normalization
@@ -448,7 +425,7 @@ class TokenizerDecoder(nn.Module):
         for i in range(self.n_stages):
             in_ch = self.n_filters * (2 ** (self.n_stages - 1 - i))
             stage_blocks = []
-            for j in range(self.depths[i]):
+            for _ in range(self.depths[i]):
                 stage_blocks.append(
                     Block1D(
                         dim=in_ch,
