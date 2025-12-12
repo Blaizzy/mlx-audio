@@ -208,6 +208,8 @@ def generate_audio(
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
+    voice_cache: Optional[str] = None,
+    cfg_scale: Optional[float] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
     stt_model: Optional[Union[str, nn.Module]] = "mlx-community/whisper-large-v3-turbo",
@@ -299,7 +301,9 @@ def generate_audio(
             f"\033[94mLanguage:\033[0m {lang_code}"
         )
 
-        results = model.generate(
+        import inspect
+
+        gen_kwargs = dict(
             text=text,
             voice=voice,
             speed=speed,
@@ -313,6 +317,19 @@ def generate_audio(
             streaming_interval=streaming_interval,
             **kwargs,
         )
+        # VibeVoice supports a speaker-conditioning voice cache (recommended).
+        if (
+            voice_cache
+            and "voice_cache_path" in inspect.signature(model.generate).parameters
+        ):
+            gen_kwargs["voice_cache_path"] = voice_cache
+        if (
+            cfg_scale is not None
+            and "cfg_scale" in inspect.signature(model.generate).parameters
+        ):
+            gen_kwargs["cfg_scale"] = cfg_scale
+
+        results = model.generate(**gen_kwargs)
 
         audio_list = []
         file_name = f"{file_prefix}.{audio_format}"
@@ -393,6 +410,18 @@ def parse_args():
         help="Text to generate (leave blank to input via stdin)",
     )
     parser.add_argument("--voice", type=str, default=None, help="Voice name")
+    parser.add_argument(
+        "--voice_cache",
+        type=str,
+        default=None,
+        help="Path to a VibeVoice voice cache (.safetensors) for speaker conditioning",
+    )
+    parser.add_argument(
+        "--cfg_scale",
+        type=float,
+        default=None,
+        help="Classifier-free guidance scale (VibeVoice only). Lower (≈1.0-1.5) is often more stable.",
+    )
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument(
         "--gender", type=str, default="male", help="Gender of the voice [male, female]"
