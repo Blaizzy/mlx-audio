@@ -1,15 +1,12 @@
-import json
 import time
 from pathlib import Path
-from typing import Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from transformers import AutoTokenizer
 
 from ..base import GenerationResult
 from .audio_vae import AudioVAE
-from .config import AudioVAEConfig, LMConfig, ModelArgs
+from .config import LMConfig, ModelArgs
 from .dit import UnifiedCFM, VoxCPMLocDiT
 from .encoder import VoxCPMLocEnc
 from .minicpm import MiniCPMModel
@@ -211,52 +208,6 @@ class Model(nn.Module):
 
         if model.tokenizer is None:
             model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
-        return model
-
-    @classmethod
-    def from_pretrained(cls, model_path: str):
-        import numpy as np
-        from huggingface_hub import snapshot_download
-        from safetensors import safe_open
-
-        model_path = Path(model_path)
-        if not model_path.exists():
-            model_path = Path(snapshot_download(str(model_path)))
-
-        with open(model_path / "config.json") as f:
-            config = json.load(f)
-
-        args = ModelArgs.from_dict(config)
-        model = cls(args)
-
-        # Load main weights
-        weights = {}
-        if (model_path / "model.safetensors").exists():
-            with safe_open(model_path / "model.safetensors", framework="numpy") as f:
-                for k in f.keys():
-                    weights[k] = mx.array(f.get_tensor(k))
-
-        # Load AudioVAE weights
-        # PyTorch checkpoint for VAE
-        if (model_path / "audiovae.pth").exists():
-            import torch
-
-            vae_pt = torch.load(model_path / "audiovae.pth", map_location="cpu")
-            if "state_dict" in vae_pt:
-                vae_pt = vae_pt["state_dict"]
-
-            for k, v in vae_pt.items():
-                weights[f"audio_vae.{k}"] = mx.array(v.numpy())
-
-        # Sanitize
-        weights = model.sanitize(weights)
-
-        # Load weights
-        model.load_weights(list(weights.items()), strict=False)
-
-        # Tokenizer
-        model.tokenizer = AutoTokenizer.from_pretrained(model_path)
-
         return model
 
     def generate(
