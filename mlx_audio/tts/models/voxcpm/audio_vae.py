@@ -468,27 +468,11 @@ class AudioVAE(nn.Module):
             else:
                 new_parts = parts
 
-            # Internal Block Remapping
-            # Pattern: ... blocks.layers.X.block.Y ... -> ... blocks.layers.X.component ...
-            # We iterate looking for "block" in substitutions
-
-            # Check for CausalResidualUnit internal mapping (snake1 etc)
-            # It usually appears inside EncoderBlock/DecoderBlock which ALSO use .block.Y
-            # So we have nested structure.
-            # E.g. encoder.blocks.layers.0.block.0.block.1.weight
-            # Mapped: encoder.blocks.layers.0.res1.conv1.weight
-
-            # Let's process the suffix parts for mapping.
-            # We need to handle this iteratively or carefully.
-
-            # Let's start with current new_parts.
             final_parts = []
             i = 0
             while i < len(new_parts):
                 p = new_parts[i]
 
-                # Encoder Block Internals
-                # Context: we are inside [encoder, blocks, layers, N] or [decoder, blocks, layers, N]
                 if (
                     p == "block"
                     and i + 1 < len(new_parts)
@@ -497,19 +481,12 @@ class AudioVAE(nn.Module):
                     idx = int(new_parts[i + 1])
                     suffix_idx = i + 2
 
-                    # Determine context (Encoder or Decoder block?)
-                    # Look at preceding parts.
                     is_encoder_block = (
                         "encoder" in new_parts[:i] and "blocks" in new_parts[:i]
                     )
                     is_decoder_block = (
                         "decoder" in new_parts[:i] and "blocks" in new_parts[:i]
                     )
-                    # Also ResidualUnit uses 'block'
-
-                    # We need to distinguish between Block level and Residual level
-                    # ResidualUnit is nested INSIDE Block.
-                    # PyTorch Block -> .block.0 (Residual) -> .block.1 (Conv)
 
                     if is_encoder_block and len(final_parts) == 4:
                         # encoder.blocks.layers.N.block.M
@@ -551,16 +528,12 @@ class AudioVAE(nn.Module):
             new_key = ".".join(final_parts)
             remapped_weights[new_key] = v
 
-        # 3. Transpose based on model structure
         from mlx.utils import tree_flatten
 
         final_weights = {}
         model_params = dict(tree_flatten(self.parameters()))
 
         for k, w in remapped_weights.items():
-            is_conv = "conv" in k and w.ndim == 3
-            is_transpose = "conv_t" in k or "upsample" in k
-            is_snake_alpha = "snake" in k and "alpha" in k and w.ndim == 3
 
             # Check if this is a 3D weight that needs transposition by comparing with model shape
             if k in model_params and w.ndim == 3 and model_params[k].ndim == 3:
