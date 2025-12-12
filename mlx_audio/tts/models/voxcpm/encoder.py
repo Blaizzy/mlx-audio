@@ -8,8 +8,6 @@ class VoxCPMLocEnc(nn.Module):
         super().__init__()
         self.config = config
         
-        # special_token parameter
-        # Shape (1, 1, 1, hidden_size)
         self.special_token = mx.random.normal((1, 1, 1, config.hidden_size))
         self.in_proj = nn.Linear(input_dim, config.hidden_size, bias=True)
         
