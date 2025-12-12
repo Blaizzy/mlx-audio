@@ -128,7 +128,6 @@ class UnifiedCFM(nn.Module):
                 # cond - both branches get the same conditioning
                 cond_in = mx.concatenate([cond, cond], axis=0)
                 
-                # Estimator call
                 out = self.estimator(x_in, mu_in, t_val, cond_in, dt_val_in)
                 
                 # split: dphi_dt (conditional), cfg_dphi_dt (unconditional)
