@@ -21,6 +21,8 @@ MODEL_REMAPPING = {
     "csm": "sesame",
     "voxcpm": "voxcpm",
     "voxcpm1.5": "voxcpm",
+    "vibevoice": "vibevoice",
+    "vibevoice_streaming": "vibevoice",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
