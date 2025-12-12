@@ -3,6 +3,7 @@ from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 
 from .config import AudioVAEConfig
 
@@ -339,9 +340,8 @@ class AudioVAE(nn.Module):
         latent_dim = config.latent_dim
         decoder_dim = config.decoder_dim
         decoder_rates = config.decoder_rates
-        depthwise = (
-            True  # Hardcoded to match PyTorch default in config snippet or usage
-        )
+        self.hop_length = np.prod(encoder_rates)
+
         self.decoder_rates = decoder_rates
         self.encoder = CausalEncoder(
             encoder_dim, latent_dim, encoder_rates, depthwise=True
@@ -354,11 +354,16 @@ class AudioVAE(nn.Module):
             d_out=1,
             use_noise_block=False,
         )
+        self.sample_rate = config.sample_rate
 
-    def encode(self, x):
+    def encode(self, x, sample_rate):
         if x.ndim == 2:
             x = x[:, :, None]  # Add channel dim
-
+        if (
+            x.shape[1] < x.shape[2]
+        ):  # If channels < sequence length, it's in PyTorch format
+            x = x.transpose(0, 2, 1)  # (N, C, T) -> (N, T, C)
+        x = self.preprocess(x, sample_rate)
         z = self.encoder(x)
         return z
 
@@ -366,6 +371,17 @@ class AudioVAE(nn.Module):
         # z: (N, T, C)
         out = self.decoder(z)
         return out.squeeze(-1)  # (N, T)
+
+    def preprocess(self, audio_data, sample_rate):
+        if sample_rate is None:
+            sample_rate = sample_rate
+            assert sample_rate == self.sample_rate
+            pad_to = self.hop_length
+            length = audio_data.shape[-1]
+            right_pad = math.ceil(length / pad_to) * pad_to - length
+            audio_data = mx.pad(audio_data, ((0, 0), (0, right_pad)))
+
+        return audio_data
 
     def sanitize(self, weights):
         # Helper for remapping
