@@ -16,11 +16,11 @@ from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_mod
 from transformers import AutoConfig
 
 MODEL_REMAPPING = {
-    "outetts": "outetts", 
-    "spark": "spark", 
+    "outetts": "outetts",
+    "spark": "spark",
     "csm": "sesame",
     "voxcpm": "voxcpm",
-    "voxcpm1.5": "voxcpm"
+    "voxcpm1.5": "voxcpm",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
@@ -184,20 +184,22 @@ def load_model(
             index = model_path.parts.index("hub")
             model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
         except ValueError:
-             # Fallback for local paths not in HF cache structure
-             model_name = model_path.name.lower().split("-")
+            # Fallback for local paths not in HF cache structure
+            model_name = model_path.name.lower().split("-")
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path, **kwargs)
     config["tokenizer_name"] = model_path
-    config["model_path"] = str(model_path) # Ensure explicit string path in config dict for strict parsers
+    config["model_path"] = str(
+        model_path
+    )  # Ensure explicit string path in config dict for strict parsers
 
     # Determine model_type from config or model_name
     model_type = config.get("model_type", None)
     if model_type is None:
-        model_type = config.get("architecture", None) # Fallback to architecture
-        
+        model_type = config.get("architecture", None)  # Fallback to architecture
+
     if model_type is None:
         model_type = model_name[0].lower() if model_name is not None else None
 
@@ -282,13 +284,13 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         mx.eval(model.parameters())
 
     model.eval()
-    
+
     # Call post-load hook if the model defines one
     # This allows models to initialize tokenizers or other resources
     # Note: model_class is actually the module, Model class is model_class.Model
-    if hasattr(model_class.Model, 'post_load_hook'):
+    if hasattr(model_class.Model, "post_load_hook"):
         model = model_class.Model.post_load_hook(model, model_path)
-    
+
     return model
 
 
