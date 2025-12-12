@@ -82,7 +82,6 @@ class VoxCPMLocDiT(nn.Module):
         
         # slice output
         prefix = cond.shape[1]
-        # hidden[:, prefix+1:, :]
         hidden = hidden[:, prefix + 1 :, :]
         
         hidden = self.out_proj(hidden) # (N, T, C)
