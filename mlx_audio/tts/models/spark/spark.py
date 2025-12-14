@@ -305,7 +305,7 @@ class Model(nn.Module):
 
             # Decode the generated tokens into text
             predicts = self.tokenizer._tokenizer.batch_decode(
-                generated_ids, skip_special_tokens=True
+                generated_ids, skip_special_tokens=False
             )[0]
 
             # Extract semantic token IDs from the generated text
