@@ -425,7 +425,7 @@ def parse_args():
     parser.add_argument(
         "--cfg_scale",
         type=float,
-        default=None,
+        default=1.5,
         help="Classifier-free guidance scale (VibeVoice only). Lower (≈1.0-1.5) is often more stable.",
     )
     parser.add_argument(
