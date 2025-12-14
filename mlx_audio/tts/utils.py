@@ -21,7 +21,6 @@ MODEL_REMAPPING = {
     "csm": "sesame",
     "voxcpm": "voxcpm",
     "voxcpm1.5": "voxcpm",
-    "vibevoice": "vibevoice",
     "vibevoice_streaming": "vibevoice",
 }
 MAX_FILE_SIZE_GB = 5
@@ -374,17 +373,15 @@ def convert(
         quant_predicate = mixed_quant_predicate_builder(quant_predicate, model)
 
     # Get model-specific quantization predicate if available
-    model_quant_predicate = getattr(
-        model, "model_quant_predicate", lambda p, m, config: True
-    )
+    model_quant_predicate = getattr(model, "model_quant_predicate", lambda p, m: True)
 
     # Define base quantization requirements
-    def base_quant_requirements(p, m, config):
+    def base_quant_requirements(p, m):
         return (
             hasattr(m, "weight")
             and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
             and hasattr(m, "to_quantized")
-            and model_quant_predicate(p, m, config)
+            and model_quant_predicate(p, m)
         )
 
     # Combine with user-provided predicate if available
@@ -392,8 +389,8 @@ def convert(
         quant_predicate = base_quant_requirements
     else:
         original_predicate = quant_predicate
-        quant_predicate = lambda p, m, config: (
-            base_quant_requirements(p, m, config) and original_predicate(p, m, config)
+        quant_predicate = lambda p, m: (
+            base_quant_requirements(p, m) and original_predicate(p, m)
         )
 
     weights = dict(tree_flatten(model.parameters()))
