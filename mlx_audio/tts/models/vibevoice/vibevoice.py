@@ -120,7 +120,7 @@ class Model(nn.Module):
         self.tokenizer = None
 
         # Optional voice cache state (loaded via load_voice_cache)
-        self._voice_cache_path: Optional[str] = None
+        self._voice_path: Optional[str] = None
         self._voice_lm_hidden: Optional[mx.array] = None
         self._voice_tts_hidden: Optional[mx.array] = None
         self._voice_neg_tts_hidden: Optional[mx.array] = None
@@ -134,7 +134,7 @@ class Model(nn.Module):
         """Audio sample rate."""
         return self.config.sample_rate
 
-    def load_voice_cache(self, voice_cache_path: Union[str, Path]) -> None:
+    def load_voice(self, voice: str) -> None:
         """Load a VibeVoice voice-cache (.safetensors) for conditioning.
 
 
@@ -147,18 +147,12 @@ class Model(nn.Module):
           - neg_lm_key_{i}, neg_lm_value_{i}   (optional for our inference)
           - neg_tts_lm_key_{i}, neg_tts_lm_value_{i}
         """
-        voice_cache_path = Path(voice_cache_path)
-        if not voice_cache_path.exists():
-            raise FileNotFoundError(f"Voice cache not found: {voice_cache_path}")
+        voice_path = Path(self.config.model_path) / f"voices/{voice}.safetensors"
 
-        try:
-            from safetensors.numpy import load_file as st_load
-        except Exception as e:  # pragma: no cover
-            raise ImportError(
-                "Missing dependency for voice cache loading. Install `safetensors`."
-            ) from e
+        if not voice_path.exists():
+            raise FileNotFoundError(f"Voice cache not found: {voice_path}")
 
-        tensors = st_load(str(voice_cache_path))
+        tensors = mx.load(str(voice_path))
 
         lm_layers = self.language_model.config.num_hidden_layers
         tts_layers = self.tts_language_model.config.num_hidden_layers
@@ -180,7 +174,7 @@ class Model(nn.Module):
             return (k, v)
 
         # Store caches/hidden states for generation
-        self._voice_cache_path = str(voice_cache_path)
+        self._voice_path = str(voice_path)
         self._voice_lm_hidden = _mx("lm_hidden")
         self._voice_tts_hidden = _mx("tts_lm_hidden")
         self._voice_neg_tts_hidden = _mx("neg_tts_lm_hidden")
@@ -191,7 +185,6 @@ class Model(nn.Module):
             _load_kv("neg_tts_lm", i) for i in range(tts_layers)
         ]
 
-        # Optional (not required for current Python inference flow, but keep if present)
         if all(
             f"neg_lm_key_{i}" in tensors and f"neg_lm_value_{i}" in tensors
             for i in range(lm_layers)
@@ -404,9 +397,9 @@ class Model(nn.Module):
         self,
         text: str,
         max_tokens: int = 512,
-        cfg_scale: float = 1.3,
+        cfg_scale: float = 1.5,
         ddpm_steps: Optional[int] = None,
-        voice_cache_path: Optional[Union[str, Path]] = None,
+        voice: Optional[Union[str, Path]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
@@ -417,7 +410,7 @@ class Model(nn.Module):
             max_tokens: Maximum number of tokens to generate
             cfg_scale: Classifier-free guidance scale
             ddpm_steps: Override diffusion inference steps (higher = better quality, slower)
-            voice_cache_path: Optional path to a `.safetensors` voice cache for conditioning
+            voice: Optional path to a `.safetensors` voice cache for conditioning
             verbose: Whether to show progress
 
         Yields:
@@ -429,12 +422,12 @@ class Model(nn.Module):
         start_time = time.perf_counter()
 
         # Optional: prime caches/hidden states from a voice cache (recommended for coherence)
-        if voice_cache_path is not None:
+        if voice is not None:
             # Only reload if different
-            if not hasattr(self, "_voice_cache_path") or str(
-                voice_cache_path
-            ) != getattr(self, "_voice_cache_path"):
-                self.load_voice_cache(voice_cache_path)
+            if not hasattr(self, "_voice_path") or str(voice) != getattr(
+                self, "_voice_path"
+            ):
+                self.load_voice(voice)
 
         # Tokenize input
         # NOTE: Reference implementations (Microsoft + Swift) do not add special tokens here.
@@ -466,9 +459,8 @@ class Model(nn.Module):
             # Initialize negative condition (unconditional) for TTS LM
             neg_hidden = None
             neg_cache = None
-            # Without a proper negative prompt/cache, CFG often degrades text following.
-            # Disable it by default in the no-cache path.
-            cfg_scale = 1.0
+
+            cfg_scale = 1.5
 
         # Audio generation loop
         # IMPORTANT: we must decode with full temporal context.
@@ -485,8 +477,7 @@ class Model(nn.Module):
         text_pos = 0
 
         while not finished and step < max_tokens:
-            _ = verbose  # kept for API compatibility
-            _ = kwargs  # kept for API compatibility
+
             # 1) Prefill next text window (if any)
             if text_pos < seq_len:
                 cur_text_ids = input_ids[
