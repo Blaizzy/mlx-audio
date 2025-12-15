@@ -441,7 +441,7 @@ class Model(nn.Module):
 
         self._sample_rate = mimi.cfg.sample_rate
 
-    def model_quant_predicate(self, p, m, config):
+    def model_quant_predicate(self, p, m):
         """
         Model modules to skip during quantization
         """
