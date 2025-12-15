@@ -208,6 +208,8 @@ def generate_audio(
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
+    cfg_scale: Optional[float] = None,
+    ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
     stt_model: Optional[Union[str, nn.Module]] = "mlx-community/whisper-large-v3-turbo",
@@ -299,13 +301,15 @@ def generate_audio(
             f"\033[94mLanguage:\033[0m {lang_code}"
         )
 
-        results = model.generate(
+        gen_kwargs = dict(
             text=text,
             voice=voice,
             speed=speed,
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
+            cfg_scale=cfg_scale,
+            ddpm_steps=ddpm_steps,
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
@@ -313,6 +317,8 @@ def generate_audio(
             streaming_interval=streaming_interval,
             **kwargs,
         )
+
+        results = model.generate(**gen_kwargs)
 
         audio_list = []
         file_name = f"{file_prefix}.{audio_format}"
@@ -393,6 +399,19 @@ def parse_args():
         help="Text to generate (leave blank to input via stdin)",
     )
     parser.add_argument("--voice", type=str, default=None, help="Voice name")
+    parser.add_argument(
+        "--cfg_scale",
+        type=float,
+        default=1.5,
+        help="Classifier-free guidance scale. Lower (≈1.0-1.5) is often more stable.",
+    )
+    parser.add_argument(
+        "--ddpm_steps",
+        type=int,
+        default=None,
+        help="Override diffusion steps. Higher = better quality, slower (try 30-50).",
+    )
+
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument(
         "--gender", type=str, default="male", help="Gender of the voice [male, female]"
