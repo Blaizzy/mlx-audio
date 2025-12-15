@@ -1,4 +1,4 @@
-"""Qwen2-based language model backbone for VibeVoice."""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
 from typing import List, Optional, Tuple

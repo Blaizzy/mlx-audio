@@ -1,5 +1,8 @@
-"""Acoustic tokenizer (VAE decoder) for VibeVoice - converts latents to audio."""
-
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
+# All rights reserved.
+#
+# This source code is licensed under the MIT license found in the
+# LICENSE file in the root directory of this source tree.
 import math
 
 import mlx.core as mx

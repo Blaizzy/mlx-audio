@@ -1,4 +1,4 @@
-"""DPM-Solver Multistep Scheduler for VibeVoice diffusion sampling."""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
 from dataclasses import dataclass

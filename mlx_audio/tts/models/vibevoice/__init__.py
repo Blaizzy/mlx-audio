@@ -1,8 +1,3 @@
-"""VibeVoice streaming TTS model for MLX.
-
-Port of microsoft/VibeVoice-Realtime-0.5B to MLX.
-"""
-
 from .config import (
     AcousticTokenizerConfig,
     DiffusionHeadConfig,
