@@ -262,8 +262,10 @@ async def tts_speech(payload: SpeechRequest):
     model = model_provider.load_model(payload.model)
     return StreamingResponse(
         generate_audio(model, payload),
-        media_type="audio/wav",
-        headers={"Content-Disposition": "attachment; filename=speech.wav"},
+        media_type=f"audio/{payload.response_format}",
+        headers={
+            "Content-Disposition": f"attachment; filename=speech.{payload.response_format}"
+        },
     )
 
 
