@@ -208,7 +208,6 @@ def generate_audio(
     voice: str = "af_heart",
     speed: float = 1.0,
     lang_code: str = "a",
-    voice_cache: Optional[str] = None,
     cfg_scale: Optional[float] = None,
     ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
@@ -302,8 +301,6 @@ def generate_audio(
             f"\033[94mLanguage:\033[0m {lang_code}"
         )
 
-        import inspect
-
         gen_kwargs = dict(
             text=text,
             voice=voice,
@@ -311,6 +308,8 @@ def generate_audio(
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
+            cfg_scale=cfg_scale,
+            ddpm_steps=ddpm_steps,
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
