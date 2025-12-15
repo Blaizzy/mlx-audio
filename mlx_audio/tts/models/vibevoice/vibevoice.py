@@ -457,8 +457,6 @@ class Model(nn.Module):
             neg_hidden = None
             neg_cache = None
 
-            cfg_scale = 1.5
-
         # Audio generation loop
         # IMPORTANT: we must decode with full temporal context.
         # Decoding one latent at a time resets the convolutional decoder state

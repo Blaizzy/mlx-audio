@@ -318,22 +318,6 @@ def generate_audio(
             streaming_interval=streaming_interval,
             **kwargs,
         )
-        # VibeVoice supports a speaker-conditioning voice cache (recommended).
-        if (
-            voice_cache
-            and "voice_cache_path" in inspect.signature(model.generate).parameters
-        ):
-            gen_kwargs["voice_cache_path"] = voice_cache
-        if (
-            cfg_scale is not None
-            and "cfg_scale" in inspect.signature(model.generate).parameters
-        ):
-            gen_kwargs["cfg_scale"] = cfg_scale
-        if (
-            ddpm_steps is not None
-            and "ddpm_steps" in inspect.signature(model.generate).parameters
-        ):
-            gen_kwargs["ddpm_steps"] = ddpm_steps
 
         results = model.generate(**gen_kwargs)
 
@@ -417,22 +401,16 @@ def parse_args():
     )
     parser.add_argument("--voice", type=str, default=None, help="Voice name")
     parser.add_argument(
-        "--voice_cache",
-        type=str,
-        default=None,
-        help="Path to a VibeVoice voice cache (.safetensors) for speaker conditioning",
-    )
-    parser.add_argument(
         "--cfg_scale",
         type=float,
         default=1.5,
-        help="Classifier-free guidance scale (VibeVoice only). Lower (≈1.0-1.5) is often more stable.",
+        help="Classifier-free guidance scale. Lower (≈1.0-1.5) is often more stable.",
     )
     parser.add_argument(
         "--ddpm_steps",
         type=int,
         default=None,
-        help="Override diffusion steps (VibeVoice only). Higher = better quality, slower (try 30-50).",
+        help="Override diffusion steps. Higher = better quality, slower (try 30-50).",
     )
 
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
