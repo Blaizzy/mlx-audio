@@ -163,6 +163,7 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
+    response_format: str | None = "WAV"
 
 
 # Initialize the ModelProvider
@@ -250,7 +251,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
 
         sample_rate = result.sample_rate
         buffer = io.BytesIO()
-        sf.write(buffer, result.audio, sample_rate, format="WAV")
+        sf.write(buffer, result.audio, sample_rate, format=payload.response_format)
         buffer.seek(0)
         yield buffer.getvalue()
 
@@ -261,8 +262,10 @@ async def tts_speech(payload: SpeechRequest):
     model = model_provider.load_model(payload.model)
     return StreamingResponse(
         generate_audio(model, payload),
-        media_type="audio/wav",
-        headers={"Content-Disposition": "attachment; filename=speech.wav"},
+        media_type=f"audio/{payload.response_format}",
+        headers={
+            "Content-Disposition": f"attachment; filename=speech.{payload.response_format}"
+        },
     )
 
 
