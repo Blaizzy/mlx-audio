@@ -3,7 +3,7 @@
 import os
 import time
 from pathlib import Path
-from typing import Generator, Optional, Tuple, Union
+from typing import Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -392,22 +392,22 @@ class Model(nn.Module):
 
     def generate(
         self,
-        text: str,
+        text: Union[str, List[str]],
         max_tokens: int = 512,
         cfg_scale: float = 1.5,
         ddpm_steps: Optional[int] = None,
-        voice: Optional[Union[str, Path]] = None,
+        voice: Optional[Union[str, Path, List[Tuple[str, str]]]] = None,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech from text.
 
         Args:
-            text: Input text to synthesize
-            max_tokens: Maximum number of tokens to generate
+            text: Input text to synthesize (must be a list if voice is a list of tuples)
+            max_tokens: Maximum number of tokens to generate (per segment if multi-speaker)
             cfg_scale: Classifier-free guidance scale
             ddpm_steps: Override diffusion inference steps (higher = better quality, slower)
-            voice: Optional path to a `.safetensors` voice cache for conditioning
+            voice: Either a single voice name/path, or a list
             verbose: Whether to show progress
 
         Yields:
@@ -416,9 +416,26 @@ class Model(nn.Module):
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
 
-        start_time = time.perf_counter()
+        # Handle multi-speaker dialogue mode
+        if isinstance(text, list) and isinstance(voice, list):
+            if len(text) != len(voice):
+                raise ValueError(
+                    f"text and voice lists must have the same length. "
+                    f"Got {len(text)} texts and {len(voice)} voices."
+                )
 
-        # Optional: prime caches/hidden states from a voice cache (recommended for coherence)
+            dialogue = list(zip(voice, text))
+            yield from self._generate_multi_speaker(
+                dialogue=dialogue,
+                max_tokens=max_tokens,
+                cfg_scale=cfg_scale,
+                ddpm_steps=ddpm_steps,
+                verbose=verbose,
+                **kwargs,
+            )
+            return
+
+        # Single voice mode - load voice and delegate to single speaker generator
         if voice is not None:
             # Only reload if different
             if not hasattr(self, "_voice_path") or str(voice) != getattr(
@@ -426,23 +443,137 @@ class Model(nn.Module):
             ):
                 self.load_voice(voice)
 
+        yield from self._generate_single_speaker(
+            text=text,
+            max_tokens=max_tokens,
+            cfg_scale=cfg_scale,
+            ddpm_steps=ddpm_steps,
+            verbose=verbose,
+            **kwargs,
+        )
+
+    def _generate_multi_speaker(
+        self,
+        dialogue: List[Tuple[str, str]],
+        max_tokens: int = 512,
+        cfg_scale: float = 1.5,
+        ddpm_steps: Optional[int] = None,
+        verbose: bool = False,
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
+        """Generate speech from multiple speakers.
+
+        Args:
+            dialogue: List of (voice_name, text) tuples for each speaker segment
+            max_tokens: Maximum tokens per segment
+            cfg_scale: Classifier-free guidance scale
+            ddpm_steps: Override diffusion inference steps
+            verbose: Whether to show progress
+
+        Yields:
+            GenerationResult containing combined audio from all speakers
+        """
+        start_time = time.perf_counter()
+        all_audio_segments = []
+        total_tokens = 0
+
+        for segment_idx, (voice_name, segment_text) in enumerate(dialogue):
+            if verbose:
+                print(
+                    f"Generating segment {segment_idx + 1}/{len(dialogue)}: {voice_name}"
+                )
+
+            # Load the voice for this segment
+            self.load_voice(voice_name)
+
+            # Generate audio for this segment (single speaker path)
+            for result in self._generate_single_speaker(
+                text=segment_text,
+                max_tokens=max_tokens,
+                cfg_scale=cfg_scale,
+                ddpm_steps=ddpm_steps,
+                verbose=verbose,
+                **kwargs,
+            ):
+                all_audio_segments.append(result.audio)
+                total_tokens += result.token_count
+
+        # Combine all audio segments
+        if all_audio_segments:
+            final_audio = mx.concatenate(all_audio_segments)
+        else:
+            final_audio = mx.array([])
+
+        end_time = time.perf_counter()
+        elapsed_time = end_time - start_time
+
+        # Calculate statistics
+        samples = final_audio.shape[0] if final_audio.size > 0 else 0
+        audio_duration_seconds = samples / self.sample_rate if samples > 0 else 0
+
+        # Format duration
+        duration_mins = int(audio_duration_seconds // 60)
+        duration_secs = int(audio_duration_seconds % 60)
+        duration_ms = int((audio_duration_seconds % 1) * 1000)
+        duration_str = f"{int(audio_duration_seconds // 3600):02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+        rtf = audio_duration_seconds / elapsed_time if elapsed_time > 0 else 0
+
+        yield GenerationResult(
+            audio=final_audio,
+            samples=samples,
+            sample_rate=self.sample_rate,
+            segment_idx=0,
+            token_count=total_tokens,
+            audio_duration=duration_str,
+            real_time_factor=rtf,
+            prompt={
+                "tokens": total_tokens,
+                "tokens-per-sec": (
+                    round(total_tokens / elapsed_time, 2) if elapsed_time > 0 else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (
+                    round(samples / elapsed_time, 2) if elapsed_time > 0 else 0
+                ),
+            },
+            processing_time_seconds=elapsed_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
+
+    def _generate_single_speaker(
+        self,
+        text: str,
+        max_tokens: int = 512,
+        cfg_scale: float = 1.5,
+        ddpm_steps: Optional[int] = None,
+        verbose: bool = False,
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
+        """Generate speech for a single speaker segment (internal method).
+
+        This contains the core generation logic, used by both generate() and
+        _generate_multi_speaker().
+        """
+        start_time = time.perf_counter()
+
         # Tokenize input
-        # NOTE: Reference implementations (Microsoft + Swift) do not add special tokens here.
         text_token_ids = self.tokenizer.encode(
             text.strip() + "\n", add_special_tokens=False
         )
-        input_ids = mx.array([text_token_ids], dtype=mx.int32)  # (1, L_text)
+        input_ids = mx.array([text_token_ids], dtype=mx.int32)
 
         batch_size = 1
         seq_len = input_ids.shape[1]
 
-        # If we have a voice cache, start from its KV caches and hidden states.
+        # Use voice cache if available
         use_voice_cache = hasattr(self, "_voice_lm_cache") and hasattr(
             self, "_voice_tts_cache"
         )
 
         if use_voice_cache:
-            # Start from cached context
             lm_cache = self._voice_lm_cache
             tts_cache = self._voice_tts_cache
             tts_hidden = self._voice_tts_hidden
@@ -452,43 +583,27 @@ class Model(nn.Module):
             lm_cache = None
             tts_cache = None
             tts_hidden = None
-
-            # Initialize negative condition (unconditional) for TTS LM
             neg_hidden = None
             neg_cache = None
 
-        # Audio generation loop
-        # IMPORTANT: we must decode with full temporal context.
-        # Decoding one latent at a time resets the convolutional decoder state
-        # and produces incoherent audio. Instead, collect latents and decode once.
         speech_latents = []
         finished = False
-        step = 0  # speech tokens generated
-        total_speech_tokens = 0
-
-        # Stream text in windows, interleaving speech generation.
-        # This matches the upstream algorithm and is important for coherence.
-        text_window_index = 0
+        step = 0
         text_pos = 0
 
         while not finished and step < max_tokens:
-
-            # 1) Prefill next text window (if any)
             if text_pos < seq_len:
                 cur_text_ids = input_ids[
                     :, text_pos : min(seq_len, text_pos + TTS_TEXT_WINDOW_SIZE)
                 ]
                 cur_window = cur_text_ids.shape[1]
                 text_pos += cur_window
-                text_window_index += 1
 
-                # Base LM forward on text window
                 text_embeds = self.language_model.embed_tokens(cur_text_ids)
                 lm_out, lm_cache = self.language_model(
                     inputs_embeds=text_embeds, cache=lm_cache
                 )
 
-                # TTS LM forward on text window (type=1)
                 text_type = mx.ones((batch_size, cur_window), dtype=mx.int32)
                 type_embed = self.tts_input_types(text_type)
                 tts_in = lm_out + type_embed
@@ -496,16 +611,11 @@ class Model(nn.Module):
                     inputs_embeds=tts_in, cache=tts_cache
                 )
 
-                # Accumulate hidden states for conditioning
                 if tts_hidden is None:
                     tts_hidden = tts_out
                 else:
                     tts_hidden = mx.concatenate([tts_hidden, tts_out], axis=1)
 
-                # Negative path:
-                # In the reference implementation, negative TTS LM is primed from voice cache and
-                # then advanced only on speech tokens (not text tokens). If we do NOT have voice
-                # cache, keep a shape-aligned unconditional stream (zeros + type embed).
                 if neg_hidden is None or not use_voice_cache:
                     neg_embed = mx.zeros(
                         (batch_size, cur_window, self.config.decoder_config.hidden_size)
@@ -522,44 +632,36 @@ class Model(nn.Module):
                     else:
                         neg_hidden = mx.concatenate([neg_hidden, neg_out], axis=1)
 
-            # Safety: must have conditioning now
             if tts_hidden is None or neg_hidden is None:
                 break
 
-            # 2) Generate a speech window
             for _ in range(TTS_SPEECH_WINDOW_SIZE):
                 positive_condition = tts_hidden[:, -1, :]
                 negative_condition = neg_hidden[:, -1, :]
 
-                # Sample speech latents
                 speech_latent = self.sample_speech_tokens(
                     positive_condition,
                     negative_condition,
                     cfg_scale=cfg_scale,
                     ddpm_steps=ddpm_steps,
                 )
-                speech_latent = mx.expand_dims(speech_latent, 1)  # (B, 1, D)
+                speech_latent = mx.expand_dims(speech_latent, 1)
 
-                # Collect latents for decoding at the end (keeps conv context)
                 speech_latents.append(speech_latent)
 
-                # Embed speech for next step
                 acoustic_embed = self.acoustic_connector(speech_latent)
 
-                # Add type embedding for speech (type=0)
                 type_embed = self.tts_input_types(
                     mx.zeros((batch_size, 1), dtype=mx.int32)
                 )
                 tts_input = acoustic_embed + type_embed
 
-                # Forward through TTS LM
                 tts_out, tts_cache = self.tts_language_model(
                     inputs_embeds=tts_input,
                     cache=tts_cache,
                 )
                 tts_hidden = mx.concatenate([tts_hidden, tts_out], axis=1)
 
-                # Forward through negative path (also with speech type embedding)
                 neg_type_embed = self.tts_input_types(
                     mx.zeros((batch_size, 1), dtype=mx.int32)
                 )
@@ -570,40 +672,32 @@ class Model(nn.Module):
                 )
                 neg_hidden = mx.concatenate([neg_hidden, neg_out], axis=1)
 
-                # Check for EOS
                 eos_logits = mx.sigmoid(self.tts_eos_classifier(tts_out[:, -1, :]))
                 if eos_logits[0].item() > 0.5:
                     finished = True
                     break
 
                 step += 1
-                total_speech_tokens += 1
-
                 if step >= max_tokens:
                     finished = True
                     break
 
-        # Decode full latent sequence at once for coherent audio
         if speech_latents:
-            # (B, T_speech, D)
             speech_latent_seq = mx.concatenate(speech_latents, axis=1)
             scaled_latents = (
                 speech_latent_seq / self.speech_scaling_factor - self.speech_bias_factor
             )
-            # (B, 1, T_audio)
             audio = self.acoustic_tokenizer.decode(scaled_latents)
-            final_audio = audio.squeeze(1).squeeze(0)  # Remove batch and channel dims
+            final_audio = audio.squeeze(1).squeeze(0)
         else:
             final_audio = mx.array([])
 
         end_time = time.perf_counter()
         elapsed_time = end_time - start_time
 
-        # Calculate statistics
         samples = final_audio.shape[0] if final_audio.size > 0 else 0
         audio_duration_seconds = samples / self.sample_rate if samples > 0 else 0
 
-        # Format duration
         duration_mins = int(audio_duration_seconds // 60)
         duration_secs = int(audio_duration_seconds % 60)
         duration_ms = int((audio_duration_seconds % 1) * 1000)
