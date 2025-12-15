@@ -971,5 +971,102 @@ class TestIndexTTS(unittest.TestCase):
         self.assertIsInstance(model, Model)
 
 
+class TestVibeVoiceModel(unittest.TestCase):
+    @property
+    def _default_config(self):
+        from mlx_audio.tts.models.vibevoice.config import ModelConfig
+
+        return ModelConfig(
+            model_path="/fake/model/path",
+            sample_rate=24000,
+        )
+
+    def test_init(self):
+        """Test VibeVoiceModel initialization."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        # Initialize model
+        config = self._default_config
+        model = Model(config)
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
+
+        # Verify model components exist
+        self.assertIsNotNone(model.language_model)
+        self.assertIsNotNone(model.tts_language_model)
+        self.assertIsNotNone(model.acoustic_tokenizer)
+        self.assertIsNotNone(model.prediction_head)
+        self.assertIsNotNone(model.tts_eos_classifier)
+
+    def test_sample_rate(self):
+        """Test VibeVoiceModel sample_rate property."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        self.assertEqual(model.sample_rate, 24000)
+
+    def test_get_input_embeddings(self):
+        """Test VibeVoiceModel get_input_embeddings method."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        embeddings = model.get_input_embeddings()
+        self.assertIsInstance(embeddings, nn.Embedding)
+        self.assertEqual(embeddings.weight.shape[0], config.decoder_config.vocab_size)
+
+    def test_sanitize(self):
+        """Test VibeVoiceModel sanitize method."""
+        from mlx.utils import tree_flatten
+
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        # Test sanitize with model's own weights (no transformation needed)
+        weights = dict(tree_flatten(model.parameters()))
+        sanitized = model.sanitize(weights)
+
+        # Sanitized weights should contain valid keys
+        self.assertIsInstance(sanitized, dict)
+
+    def test_sanitize_huggingface_keys(self):
+        """Test VibeVoiceModel sanitize transforms HuggingFace keys."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        # Create mock weights with HuggingFace-style keys
+        mock_weights = {
+            "model.prediction_head.t_embedder.mlp.0.weight": mx.zeros((64, 64)),
+            "model.prediction_head.adaLN_modulation.1.weight": mx.zeros((64, 64)),
+        }
+
+        sanitized = model.sanitize(mock_weights)
+
+        # Check that keys were transformed (original keys should not exist)
+        self.assertNotIn("model.prediction_head.t_embedder.mlp.0.weight", sanitized)
+        self.assertNotIn("model.prediction_head.adaLN_modulation.1.weight", sanitized)
+
+    def test_config_defaults(self):
+        """Test VibeVoiceModel uses correct config defaults."""
+        from mlx_audio.tts.models.vibevoice.config import ModelConfig
+
+        config = ModelConfig()
+
+        # Verify default values
+        self.assertEqual(config.sample_rate, 24000)
+        self.assertEqual(config.acoustic_vae_dim, 64)
+        self.assertEqual(config.tts_backbone_num_hidden_layers, 20)
+        self.assertEqual(config.decoder_config.hidden_size, 896)
+        self.assertEqual(config.decoder_config.num_hidden_layers, 24)
+
+
 if __name__ == "__main__":
     unittest.main()

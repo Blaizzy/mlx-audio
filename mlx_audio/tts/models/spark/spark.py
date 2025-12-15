@@ -95,7 +95,7 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
-    def model_quant_predicate(self, p, m, config):
+    def model_quant_predicate(self, p, m):
         """
         Model modules to skip during quantization
         """
