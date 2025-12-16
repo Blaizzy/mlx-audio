@@ -10,11 +10,17 @@ The S3Tokenizer is converted separately and uploaded to its own repo, as it's
 shared between multiple TTS models (Chatterbox, CosyVoice2, etc.).
 
 Usage:
-    # Convert Chatterbox (without S3Tokenizer) to fp16
+    # Convert standard Chatterbox (without S3Tokenizer) to fp16
     python scripts/convert.py
+
+    # Convert Chatterbox Turbo
+    python scripts/convert.py --turbo
 
     # Convert to 4-bit quantized
     python scripts/convert.py --quantize
+
+    # Convert Turbo to 4-bit quantized
+    python scripts/convert.py --turbo --quantize
 
     # Convert S3Tokenizer only (shared component)
     python scripts/convert.py --s3-tokenizer-only
@@ -22,11 +28,15 @@ Usage:
     # Upload Chatterbox to Hugging Face
     python scripts/convert.py --quantize --upload-repo
 
+    # Upload Chatterbox Turbo to Hugging Face
+    python scripts/convert.py --turbo --upload-repo
+
     # Upload S3Tokenizer to Hugging Face
     python scripts/convert.py --s3-tokenizer-only --upload-repo
 
     # Custom repos
     python scripts/convert.py --upload-repo my-org/my-chatterbox
+    python scripts/convert.py --turbo --upload-repo my-org/my-chatterbox-turbo
     python scripts/convert.py --s3-tokenizer-only --upload-repo my-org/my-s3tokenizer
 
 Requirements (for conversion only):
