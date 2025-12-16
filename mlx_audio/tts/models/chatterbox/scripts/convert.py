@@ -42,21 +42,18 @@ from typing import Dict
 
 import numpy as np
 
+from mlx_audio.tts.models.chatterbox import tokenizer
 
-def download_chatterbox_weights(cache_dir: Path) -> Path:
+
+def download_chatterbox_weights(repo_id: str, cache_dir: Path) -> Path:
     """Download Chatterbox weights from Hugging Face."""
     from huggingface_hub import snapshot_download
 
     print("Downloading Chatterbox weights from Hugging Face...")
     ckpt_dir = Path(
         snapshot_download(
-            repo_id="ResembleAI/chatterbox",
-            allow_patterns=[
-                "ve.safetensors",
-                "t3_cfg.safetensors",
-                "s3gen.safetensors",
-                "tokenizer.json",
-            ],
+            repo_id=repo_id,
+            allow_patterns=["*.safetensors", "*.json", "*.yaml"],
             cache_dir=cache_dir,
         )
     )
@@ -362,6 +359,7 @@ def convert_s3_tokenizer(
 
 
 def convert_all(
+    repo_id: str,
     output_dir: Path,
     cache_dir: Path = None,
     upload_repo: str = None,
@@ -401,7 +399,7 @@ def convert_all(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Download Chatterbox weights
-    ckpt_dir = download_chatterbox_weights(cache_dir)
+    ckpt_dir = download_chatterbox_weights(repo_id, cache_dir)
 
     # Import model components for their sanitize methods
     from mlx_audio.tts.models.chatterbox.s3gen import S3Token2Wav
@@ -425,7 +423,13 @@ def convert_all(
 
     # Convert T3
     print("\nConverting T3...")
-    t3_weights = load_pytorch_safetensors(ckpt_dir / "t3_cfg.safetensors")
+    # Find T3 weight file (file starting with t3 and ending with .safetensors)
+    t3_files = list(ckpt_dir.glob("t3*.safetensors"))
+    if not t3_files:
+        raise FileNotFoundError("No T3 safetensors file found in checkpoint directory")
+    t3_file = t3_files[0]
+    print(f"  Using T3 weights from: {t3_file}")
+    t3_weights = load_pytorch_safetensors(t3_file)
     t3_weights_mx = numpy_to_mlx(t3_weights)
     t3 = T3()
     t3_weights_mx = t3.sanitize(t3_weights_mx)
@@ -515,7 +519,16 @@ def convert_all(
 
     # Copy tokenizer.json
     print("\nCopying tokenizer.json...")
-    shutil.copy(ckpt_dir / "tokenizer.json", output_dir / "tokenizer.json")
+    # Find tokenizer file that starts with 'tokenizer' and ends with '.json'
+    tokenizer_path = None
+    for file in ckpt_dir.iterdir():
+        if file.name.startswith("tokenizer") and file.name.endswith(".json"):
+            tokenizer_path = file
+            break
+    if tokenizer_path is None:
+        raise FileNotFoundError("No tokenizer JSON file found in checkpoint directory.")
+
+    shutil.copy(tokenizer_path, output_dir / tokenizer_path.name)
 
     # Create config.json
     print("\nCreating config.json...")
@@ -555,7 +568,7 @@ def convert_all(
 
 
 def convert_from_source(
-    model_id: str = "ResembleAI/chatterbox",
+    repo_id: str = "ResembleAI/chatterbox",
     output_dir: Path = None,
     quantize: bool = False,
     q_bits: int = 4,
@@ -580,12 +593,13 @@ def convert_from_source(
     """
     if output_dir is None:
         suffix = f"{q_bits}bit" if quantize else "fp16"
-        output_dir = Path(f"./Chatterbox-TTS-{suffix}")
+        output_dir = Path(f"./{repo_id.split('/')[-1]}-{suffix}")
 
     output_dir = Path(output_dir)
 
     # Call the existing convert_all function
     convert_all(
+        repo_id=repo_id,
         output_dir=output_dir,
         cache_dir=None,  # Use default cache
         upload_repo=upload_repo if not dry_run else None,
@@ -599,6 +613,12 @@ def convert_from_source(
 def main():
     parser = argparse.ArgumentParser(
         description="Convert Chatterbox weights to MLX format"
+    )
+    parser.add_argument(
+        "--repo-id",
+        type=str,
+        default="ResembleAI/chatterbox",
+        help="Hugging Face repo ID (default: ResembleAI/chatterbox)",
     )
     parser.add_argument(
         "--output-dir",
@@ -646,11 +666,9 @@ def main():
     )
     args = parser.parse_args()
 
-    # Determine if we should upload (--upload-repo provided and not --dry-run)
     should_upload = args.upload_repo is not None and not args.dry_run
 
     if args.s3_tokenizer_only:
-        # S3Tokenizer conversion mode
         output_dir = args.output_dir or Path("./S3TokenizerV2")
         upload_repo = args.upload_repo or f"mlx-community/{output_dir.name}"
 
@@ -661,12 +679,14 @@ def main():
             dry_run=not should_upload,
         )
     else:
-        # Chatterbox conversion mode
         precision_suffix = f"{args.q_bits}bit" if args.quantize else "fp16"
-        output_dir = args.output_dir or Path(f"./Chatterbox-TTS-{precision_suffix}")
+        output_dir = args.output_dir or Path(
+            f"./{args.repo_id.split('/')[-1]}-{precision_suffix}"
+        )
         upload_repo = args.upload_repo or f"mlx-community/{output_dir.name}"
 
         convert_all(
+            repo_id=args.repo_id,
             output_dir=output_dir,
             cache_dir=args.cache_dir,
             upload_repo=upload_repo,
