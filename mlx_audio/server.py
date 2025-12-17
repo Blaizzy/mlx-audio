@@ -163,7 +163,7 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
-    response_format: str | None = "WAV"
+    response_format: str | None = "wav"
 
 
 # Initialize the ModelProvider
