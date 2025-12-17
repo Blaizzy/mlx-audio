@@ -19,18 +19,6 @@ from mlx_audio.dsp import (
     stft,
 )
 
-__all__ = [
-    "hanning",
-    "hamming",
-    "blackman",
-    "bartlett",
-    "STR_TO_WINDOW_FN",
-    "stft",
-    "istft",
-    "mel_filters",
-    "load_model",
-]
-
 # Lazy-loaded modules
 _stt_utils = None
 _tts_utils = None
@@ -54,6 +42,19 @@ def _get_tts_utils():
 
         _tts_utils = tts_utils
     return _tts_utils
+
+
+__all__ = [
+    "hanning",
+    "hamming",
+    "blackman",
+    "bartlett",
+    "STR_TO_WINDOW_FN",
+    "stft",
+    "istft",
+    "mel_filters",
+    "load_model",
+]
 
 
 def is_valid_module_name(name: str) -> bool:
