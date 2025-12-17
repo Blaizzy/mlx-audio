@@ -11,9 +11,6 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
-from mlx_lm.convert import mixed_quant_predicate_builder
-from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
-from transformers import AutoConfig
 
 MODEL_REMAPPING = {
     "outetts": "outetts",
@@ -145,6 +142,8 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     Raises:
         FileNotFoundError: If config.json is not found at the path
     """
+    from transformers import AutoConfig
+
     if isinstance(model_path, str):
         model_path = get_model_path(model_path)
 
@@ -364,6 +363,9 @@ def convert(
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
 ):
+    from mlx_lm.convert import mixed_quant_predicate_builder
+    from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
+
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
     model, config = fetch_from_hub(
