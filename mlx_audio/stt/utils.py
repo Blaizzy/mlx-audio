@@ -5,9 +5,7 @@ from typing import List, Optional
 
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
 from huggingface_hub import snapshot_download
-from scipy import signal
 
 SAMPLE_RATE = 16000
 
@@ -17,6 +15,8 @@ MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    from scipy import signal  # Lazy import
+
     gcd = np.gcd(orig_sr, target_sr)
     up = target_sr // gcd
     down = orig_sr // gcd
@@ -45,6 +45,8 @@ def load_audio(
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
+    import soundfile as sf  # Lazy import
+
     audio, sample_rate = sf.read(file, always_2d=True)
     if sample_rate != sr:
         audio = resample_audio(audio, sample_rate, sr)

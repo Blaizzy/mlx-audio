@@ -6,7 +6,6 @@ from typing import Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import soundfile as sf
 from einops.array_api import rearrange
 
 SUPPORTED_VERSIONS = ["1.0.0"]
@@ -129,6 +128,8 @@ class CodecMixin:
         normalize_db: float = -16,
         n_quantizers: int = None,
     ) -> DACFile:
+        import soundfile as sf
+
         audio_signal, original_sr = sf.read(audio_path)
         signal_duration = audio_signal.shape[-1] / original_sr
 
