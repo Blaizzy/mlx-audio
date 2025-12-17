@@ -45,6 +45,7 @@ def _get_tts_utils():
 
 
 __all__ = [
+    # DSP functions (re-exported from dsp.py)
     "hanning",
     "hamming",
     "blackman",
@@ -53,6 +54,10 @@ __all__ = [
     "stft",
     "istft",
     "mel_filters",
+    # Model utilities
+    "is_valid_module_name",
+    "get_model_category",
+    "get_model_name_parts",
     "load_model",
 ]
 

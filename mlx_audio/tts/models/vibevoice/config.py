@@ -140,7 +140,7 @@ class ModelConfig(BaseModelArgs):
                 k: v
                 for k, v in params.items()
                 if hasattr(cls, k) or k in cls.__dataclass_fields__
-            }
+            },
         )
 
         return config
