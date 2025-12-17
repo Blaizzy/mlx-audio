@@ -195,17 +195,17 @@ class Model(nn.Module):
             self.t3 = T3(config.t3_config)
             self.s3gen = S3Token2Wav()
             self.ve = VoiceEncoder()
-            self.conds = None
+            self._conds = None
         else:
             # Initialize with individual components
             self.config = None
             self.t3 = config_or_t3
             self.s3gen = s3gen
             self.ve = ve
-            self.conds = conds
+            self._conds = conds
 
         # S3 tokenizer for speech token extraction (initialized lazily or during load_weights)
-        self.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
+        self._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
         # Text tokenizer (initialized during load_weights if model_path is available)
         self.tokenizer = None
 
@@ -267,9 +267,6 @@ class Model(nn.Module):
                 t3_weights[key[3:]] = value
             elif key.startswith("s3gen."):
                 s3gen_weights[key[6:]] = value
-            elif key.startswith("s3_tokenizer.") or key.startswith("tokenizer."):
-                # Skip S3Tokenizer weights - loaded from separate repo
-                continue
             else:
                 # If no prefix, infer from key names
                 # VoiceEncoder keys: lstm.*, similarity_*, proj.*
@@ -366,8 +363,9 @@ class Model(nn.Module):
                 t3_weights.append((k[3:], v))
             elif k.startswith("s3gen."):
                 s3gen_weights.append((k[6:], v))
-            elif k.startswith("s3_tokenizer."):
-                # Skip - S3Tokenizer loaded from separate repo
+
+            elif k.startswith("gen."):
+                # Skip gen.* keys - these are conditionals, not model weights
                 continue
             else:
                 other_weights.append((k, v))
@@ -379,31 +377,6 @@ class Model(nn.Module):
             self.t3.load_weights(t3_weights, strict=False)
         if s3gen_weights:
             self.s3gen.load_weights(s3gen_weights, strict=False)
-
-        # Load S3Tokenizer from separate repo
-        from pathlib import Path
-
-        from huggingface_hub import snapshot_download
-
-        print(f"Loading S3Tokenizer from {s3_tokenizer_repo}...")
-        s3tok_dir = Path(
-            snapshot_download(
-                repo_id=s3_tokenizer_repo,
-                allow_patterns=["model.safetensors", "config.json"],
-            )
-        )
-        s3tok_path = s3tok_dir / "model.safetensors"
-        if not s3tok_path.exists():
-            raise FileNotFoundError(
-                f"model.safetensors not found in {s3_tokenizer_repo}. "
-                "S3Tokenizer weights are required for Chatterbox."
-            )
-        s3tok_weights_dict = mx.load(str(s3tok_path))
-        if self.s3_tokenizer is None:
-            self.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
-        if hasattr(self.s3_tokenizer, "sanitize"):
-            s3tok_weights_dict = self.s3_tokenizer.sanitize(s3tok_weights_dict)
-        self.s3_tokenizer.load_weights(list(s3tok_weights_dict.items()), strict=False)
 
         # Handle any remaining weights at the top level
         if other_weights and strict:
@@ -537,8 +510,8 @@ class Model(nn.Module):
                 "S3Tokenizer weights are required for Chatterbox."
             )
         s3tok_weights = mx.load(str(s3tok_path))
-        model.s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
-        load_component_weights(model.s3_tokenizer, s3tok_weights, strict=False)
+        model._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
+        load_component_weights(model._s3_tokenizer, s3tok_weights, strict=False)
 
         # Initialize text tokenizer
         tokenizer_path = ckpt_dir / "tokenizer.json"
@@ -557,6 +530,96 @@ class Model(nn.Module):
         # Set to eval mode for inference (important for BatchNorm)
         model.eval()
         print("Model loaded successfully!")
+        return model
+
+    @staticmethod
+    def post_load_hook(model: "Model", model_path: Path) -> "Model":
+        """
+        Post-load hook called by load_model to initialize tokenizer and conditionals.
+
+        Args:
+            model: The loaded model instance
+            model_path: Path to the model directory
+
+        Returns:
+            The model with tokenizer and conditionals initialized
+        """
+        # Load text tokenizer
+        tokenizer_path = model_path / "tokenizer.json"
+        if tokenizer_path.exists():
+            try:
+                from .tokenizer import EnTokenizer
+
+                model.tokenizer = EnTokenizer(tokenizer_path)
+                print("Loaded text tokenizer")
+            except ImportError:
+                print("Warning: tokenizers library not available")
+                model.tokenizer = None
+        else:
+            print(f"Warning: tokenizer.json not found at {tokenizer_path}")
+            model.tokenizer = None
+
+        # Load S3Tokenizer from separate repo
+        from huggingface_hub import snapshot_download
+
+        s3_tokenizer_repo = "mlx-community/S3TokenizerV2"
+        print(f"Loading S3Tokenizer from {s3_tokenizer_repo}...")
+        s3tok_dir = Path(
+            snapshot_download(
+                repo_id=s3_tokenizer_repo,
+                allow_patterns=["model.safetensors", "config.json"],
+            )
+        )
+        s3tok_path = s3tok_dir / "model.safetensors"
+        if s3tok_path.exists():
+            s3tok_weights = mx.load(str(s3tok_path))
+            model._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
+            if hasattr(model._s3_tokenizer, "sanitize"):
+                s3tok_weights = model._s3_tokenizer.sanitize(s3tok_weights)
+            model._s3_tokenizer.load_weights(list(s3tok_weights.items()), strict=False)
+            print("Loaded S3Tokenizer weights")
+        else:
+            print(f"Warning: S3Tokenizer weights not found at {s3tok_path}")
+
+        # Load pre-computed conditionals from conds.safetensors
+        conds_path = model_path / "conds.safetensors"
+
+        if conds_path.exists():
+            conds_data = mx.load(str(conds_path))
+            print("Loaded pre-computed conditionals from conds.safetensors")
+
+            # Extract T3 conditionals
+            speaker_emb = conds_data.get("t3.speaker_emb")
+            if speaker_emb is None:
+                speaker_emb = mx.zeros((1, 256))
+
+            cond_tokens = conds_data.get("t3.cond_prompt_speech_tokens")
+            emotion_adv = conds_data.get("t3.emotion_adv")
+            if emotion_adv is None:
+                emotion_adv = mx.ones((1, 1, 1)) * 0.5
+
+            t3_cond = T3Cond(
+                speaker_emb=speaker_emb,
+                cond_prompt_speech_tokens=cond_tokens,
+                emotion_adv=emotion_adv,
+            )
+
+            # Extract gen conditionals
+            gen_dict = {}
+            for k, v in conds_data.items():
+                if k.startswith("gen."):
+                    gen_dict[k.replace("gen.", "")] = v
+
+            # Compute prompt_feat_len if missing
+            if "prompt_feat_len" not in gen_dict and "prompt_feat" in gen_dict:
+                prompt_feat = gen_dict["prompt_feat"]
+                gen_dict["prompt_feat_len"] = mx.array([prompt_feat.shape[1]])
+
+            model._conds = Conditionals(t3_cond, gen_dict)
+        else:
+            print("Warning: conds.safetensors not found - ref_audio will be required")
+            model._conds = None
+
         return model
 
     def prepare_conditionals(
@@ -608,12 +671,14 @@ class Model(nn.Module):
         s3gen_ref_dict = {}
         t3_cond_prompt_tokens = None
 
-        if self.s3_tokenizer is not None:
+        if self._s3_tokenizer is not None:
             # --- S3Gen tokens (from 10s audio, resampled 24k->16k) ---
             s3gen_mel = log_mel_spectrogram(ref_wav_16k_from_24k)
             s3gen_mel = mx.expand_dims(s3gen_mel, 0)  # Add batch dim
             s3gen_mel_len = mx.array([s3gen_mel.shape[2]])
-            s3gen_tokens, s3gen_token_lens = self.s3_tokenizer(s3gen_mel, s3gen_mel_len)
+            s3gen_tokens, s3gen_token_lens = self._s3_tokenizer(
+                s3gen_mel, s3gen_mel_len
+            )
 
             # Get S3Gen embeddings (tokens may be truncated by embed_ref to match mel)
             s3gen_ref_dict = self.s3gen.embed_ref(
@@ -627,7 +692,7 @@ class Model(nn.Module):
             t3_mel = log_mel_spectrogram(ref_wav_16k)
             t3_mel = mx.expand_dims(t3_mel, 0)
             t3_mel_len = mx.array([t3_mel.shape[2]])
-            t3_tokens, t3_token_lens = self.s3_tokenizer(t3_mel, t3_mel_len)
+            t3_tokens, t3_token_lens = self._s3_tokenizer(t3_mel, t3_mel_len)
 
             # Limit T3 tokens to prompt length
             plen = self.t3.hp.speech_cond_prompt_len if hasattr(self.t3, "hp") else 150
@@ -718,12 +783,12 @@ class Model(nn.Module):
                 conds = self.prepare_conditionals(
                     audio_prompt, audio_prompt_sr, exaggeration
                 )
-            elif self.conds is not None:
-                conds = self.conds
+            elif self._conds is not None:
+                conds = self._conds
             else:
                 raise ValueError(
-                    "Reference audio is required for voice cloning. "
-                    "Please provide audio_prompt and audio_prompt_sr parameters."
+                    "No conditionals available. Either provide audio_prompt/audio_prompt_sr "
+                    "for voice cloning, or ensure conds.safetensors is in the model directory."
                 )
 
         # Update exaggeration if needed
