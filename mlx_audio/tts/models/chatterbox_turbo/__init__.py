@@ -32,8 +32,12 @@ from .models.voice_encoder import VoiceEncoder
 
 __version__ = "0.1.0"
 
+# Alias for load_model compatibility
+Model = ChatterboxTurboTTS
+
 __all__ = [
     "ChatterboxTurboTTS",
+    "Model",
     "Conditionals",
     "punc_norm",
     "T3",

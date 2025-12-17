@@ -5,16 +5,20 @@
 import logging
 import math
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Generator, Optional, Union
 
 import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.tts.models.base import GenerationResult
+
 from .models.s3gen import S3GEN_SIL, S3GEN_SR, S3Gen
+from .models.s3tokenizer import S3TokenizerV2, log_mel_spectrogram
 from .models.t3 import T3, T3Cond, T3Config
 from .models.voice_encoder import VoiceEncoder
 
@@ -48,7 +52,7 @@ def punc_norm(text: str) -> str:
         ("–", "-"),
         (" ,", ","),
         (
-            """, "\""),
+            """, '"'),
         (""",
             '"',
         ),
@@ -93,7 +97,7 @@ class Conditionals:
         return cls(data["t3"], data["gen"])
 
 
-class ChatterboxTurboTTS:
+class ChatterboxTurboTTS(nn.Module):
     """
     MLX implementation of Chatterbox Turbo TTS.
     Optimized for Apple Silicon.
@@ -104,20 +108,243 @@ class ChatterboxTurboTTS:
 
     def __init__(
         self,
-        t3: T3,
-        s3gen: S3Gen,
-        ve: VoiceEncoder,
-        tokenizer,  # HuggingFace tokenizer
+        config_or_t3: Union[dict, T3] = None,
+        s3gen: S3Gen = None,
+        ve: VoiceEncoder = None,
+        tokenizer=None,  # HuggingFace tokenizer
+        s3tokenizer: S3TokenizerV2 = None,  # Speech tokenizer for conditioning
         conds: Optional[Conditionals] = None,
         local_path: Optional[str] = None,
     ):
+        super().__init__()
         self.sr = S3GEN_SR  # Output sample rate
-        self.t3 = t3
-        self.s3gen = s3gen
-        self.ve = ve
+
+        # Check if first argument is a config dict (from load_model)
+        if config_or_t3 is None or isinstance(config_or_t3, dict):
+            # Initialize from config
+            self.config = config_or_t3 or {}
+            hp = T3Config.turbo()
+            self.t3 = T3(hp)
+            self.s3gen = S3Gen(meanflow=True)
+            self.ve = VoiceEncoder()
+        else:
+            # Initialize with individual components
+            self.config = {}
+            self.t3 = config_or_t3
+            self.s3gen = s3gen if s3gen is not None else S3Gen(meanflow=True)
+            self.ve = ve if ve is not None else VoiceEncoder()
+
         self.tokenizer = tokenizer
+        # S3 speech tokenizer for reference audio tokenization
+        self.s3tokenizer = s3tokenizer or S3TokenizerV2("speech_tokenizer_v2_25hz")
         self.conds = conds
         self.local_path = local_path
+
+    @property
+    def sample_rate(self) -> int:
+        """Output sample rate."""
+        return self.sr
+
+    def sanitize(self, weights: dict) -> dict:
+        """
+        Sanitize PyTorch weights for MLX.
+
+        Routes weights to the appropriate component based on prefix:
+        - ve.* -> VoiceEncoder weights
+        - t3.* -> T3 model weights
+        - s3gen.* -> S3Gen weights
+
+        Args:
+            weights: Dictionary of weight name -> array
+
+        Returns:
+            Sanitized weights dictionary
+        """
+        new_weights = {}
+
+        # Separate weights by component prefix
+        ve_weights = {}
+        t3_weights = {}
+        s3gen_weights = {}
+        other_weights = {}
+
+        for key, value in weights.items():
+            if key.startswith("ve."):
+                ve_weights[key[3:]] = value
+            elif key.startswith("t3."):
+                t3_weights[key[3:]] = value
+            elif key.startswith("s3gen."):
+                s3gen_weights[key[6:]] = value
+            else:
+                other_weights[key] = value
+
+        # Sanitize each component's weights if they have sanitize methods
+        if ve_weights:
+            if hasattr(self.ve, "sanitize"):
+                ve_sanitized = self.ve.sanitize(ve_weights)
+            else:
+                ve_sanitized = ve_weights
+            for k, v in ve_sanitized.items():
+                new_weights[f"ve.{k}"] = v
+
+        if t3_weights:
+            if hasattr(self.t3, "sanitize"):
+                t3_sanitized = self.t3.sanitize(t3_weights)
+            else:
+                t3_sanitized = t3_weights
+            for k, v in t3_sanitized.items():
+                new_weights[f"t3.{k}"] = v
+
+        if s3gen_weights:
+            if hasattr(self.s3gen, "sanitize"):
+                s3gen_sanitized = self.s3gen.sanitize(s3gen_weights)
+            else:
+                s3gen_sanitized = s3gen_weights
+            for k, v in s3gen_sanitized.items():
+                new_weights[f"s3gen.{k}"] = v
+
+        # Add other weights as-is
+        new_weights.update(other_weights)
+
+        return new_weights
+
+    def load_weights(self, weights, strict: bool = True):
+        """
+        Load weights into the model.
+
+        Uses strict=False by default for components because ChatterboxTurbo has
+        several non-checkpoint parameters that are generated during initialization.
+
+        Args:
+            weights: List of (key, value) tuples or dict
+            strict: If False, ignore missing/extra keys. Default True for
+                    compatibility with utils.load_model().
+        """
+        if isinstance(weights, dict):
+            weights = list(weights.items())
+
+        # Split weights by component prefix
+        ve_weights = []
+        t3_weights = []
+        s3gen_weights = []
+        other_weights = []
+
+        for k, v in weights:
+            if k.startswith("ve."):
+                ve_weights.append((k[3:], v))
+            elif k.startswith("t3."):
+                t3_weights.append((k[3:], v))
+            elif k.startswith("s3gen."):
+                s3gen_weights.append((k[6:], v))
+            elif k.startswith("gen."):
+                # Skip gen.* keys - these are conditionals, not model weights
+                continue
+            else:
+                other_weights.append((k, v))
+
+        # Load each component with strict=False to handle non-checkpoint params
+        if ve_weights:
+            logger.info(f"Loading {len(ve_weights)} VE weights")
+            self.ve.load_weights(ve_weights, strict=False)
+
+        if t3_weights:
+            logger.info(f"Loading {len(t3_weights)} T3 weights")
+            self.t3.load_weights(t3_weights, strict=False)
+
+        if s3gen_weights:
+            logger.info(f"Loading {len(s3gen_weights)} S3Gen weights")
+            self.s3gen.load_weights(s3gen_weights, strict=False)
+
+        # Warn about unrecognized weights
+        if other_weights and strict:
+            unrecognized = [k for k, _ in other_weights]
+            logger.warning(f"Unrecognized weight keys: {unrecognized}")
+
+        # Evaluate all parameters
+        mx.eval(
+            self.ve.parameters(),
+            self.t3.parameters(),
+            self.s3gen.parameters(),
+        )
+        logger.info("Weights loaded successfully")
+
+    @staticmethod
+    def post_load_hook(
+        model: "ChatterboxTurboTTS", model_path: Path
+    ) -> "ChatterboxTurboTTS":
+        """
+        Post-load hook called by load_model to initialize tokenizer and conditionals.
+
+        Args:
+            model: The loaded model instance
+            model_path: Path to the model directory
+
+        Returns:
+            The model with tokenizer and conditionals initialized
+        """
+        model.local_path = str(model_path)
+
+        # Load text tokenizer
+        try:
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            model.tokenizer = tokenizer
+            logger.info("Loaded text tokenizer")
+        except Exception as e:
+            logger.warning(f"Could not load text tokenizer: {e}")
+
+        # Load S3 speech tokenizer weights
+        try:
+            from huggingface_hub import hf_hub_download
+
+            s3tok_repo = "mlx-community/S3TokenizerV2"
+            s3tok_weights_path = hf_hub_download(
+                repo_id=s3tok_repo,
+                filename="model.safetensors",
+            )
+            s3tok_weights = mx.load(s3tok_weights_path)
+            if hasattr(model.s3tokenizer, "sanitize"):
+                s3tok_weights = model.s3tokenizer.sanitize(s3tok_weights)
+            model.s3tokenizer.load_weights(list(s3tok_weights.items()), strict=False)
+            logger.info("Loaded S3 speech tokenizer weights")
+        except Exception as e:
+            logger.warning(f"Could not load S3 speech tokenizer: {e}")
+
+        # Load pre-computed conditionals (prefer safetensors, fallback to .pt)
+        builtin_voice_safetensors = model_path / "conds.safetensors"
+
+        if builtin_voice_safetensors.exists():
+            try:
+                conds_data = mx.load(str(builtin_voice_safetensors))
+
+                speaker_emb = conds_data.get("t3.speaker_emb")
+                if speaker_emb is None:
+                    speaker_emb = mx.zeros((1, 256))
+
+                cond_tokens = conds_data.get("t3.cond_prompt_speech_tokens")
+
+                t3_cond = T3Cond(
+                    speaker_emb=speaker_emb,
+                    cond_prompt_speech_tokens=cond_tokens,
+                )
+
+                gen_mlx = {}
+                for k, v in conds_data.items():
+                    if k.startswith("gen."):
+                        gen_mlx[k.replace("gen.", "")] = v
+
+                model.conds = Conditionals(t3_cond, gen_mlx)
+                logger.info("Loaded pre-computed conditionals from safetensors")
+
+            except Exception as e:
+                logger.warning(f"Failed to load conds.safetensors: {e}")
+
+        else:
+            raise FileNotFoundError("conds.safetensors not found")
+        return model
 
     @classmethod
     def from_local(
@@ -412,150 +639,122 @@ class ChatterboxTurboTTS:
             logger.warning(f"Error in norm_loudness, skipping: {e}")
         return wav
 
-    def _extract_pytorch_conditionals(
-        self, wav_fpath: str, norm_loudness: bool = True
+    def _extract_conditionals(
+        self,
+        ref_wav_24k: np.ndarray,
+        ref_wav_16k: np.ndarray,
     ) -> tuple:
         """
-        Extract all conditioning using PyTorch (S3Gen embeddings + T3 tokens).
-        This matches the original PyTorch tts_turbo.prepare_conditionals behavior.
+        Extract all conditioning using pure MLX (S3Gen embeddings + T3 tokens).
 
         Args:
-            wav_fpath: Path to reference audio
-            norm_loudness: Whether to normalize loudness
+            ref_wav_24k: Reference audio at 24kHz (for S3Gen mel/decoder)
+            ref_wav_16k: Reference audio at 16kHz (for S3Tokenizer)
 
         Returns:
-            Tuple of (s3gen_ref_dict, t3_cond_prompt_tokens) or (None, None) on failure
+            Tuple of (s3gen_ref_dict, t3_cond_prompt_tokens)
         """
-        try:
-            import sys
+        s3gen_ref_dict = {}
+        t3_cond_prompt_tokens = None
 
-            import torch
-            from safetensors.torch import load_file
+        if self.s3tokenizer is not None:
+            # --- S3Gen tokens (from 10s audio at 16kHz) ---
+            # Trim to decoder conditioning length
+            ref_16k_for_s3gen = ref_wav_16k[: int(self.DEC_COND_LEN * S3_SR / S3GEN_SR)]
+            s3gen_mel = log_mel_spectrogram(mx.array(ref_16k_for_s3gen))
+            s3gen_mel = mx.expand_dims(s3gen_mel, 0)  # Add batch dim
+            s3gen_mel_len = mx.array([s3gen_mel.shape[2]])
+            s3gen_tokens, s3gen_token_lens = self.s3tokenizer(s3gen_mel, s3gen_mel_len)
 
-            # Add PyTorch chatterbox to path
-            pytorch_path = str(Path(__file__).parent.parent / "chatterbox" / "src")
-            if pytorch_path not in sys.path:
-                sys.path.insert(0, pytorch_path)
-
-            from chatterbox.models.s3gen import S3Gen as S3GenPT
-
-            # Initialize PyTorch S3Gen
-            s3gen_pt = S3GenPT()
-
-            # Load weights
-            weights_path = Path(self.local_path) / "s3gen_meanflow.safetensors"
-            if weights_path.exists():
-                state_dict = load_file(str(weights_path))
-                s3gen_pt.load_state_dict(state_dict, strict=False)
-
-            s3gen_pt.eval()
-
-            # Load and process audio at 24kHz for S3Gen
-            s3gen_ref_wav, _ = librosa.load(wav_fpath, sr=S3GEN_SR)
-
-            if norm_loudness:
-                s3gen_ref_wav = self.norm_loudness(s3gen_ref_wav, S3GEN_SR)
-
-            # Resample to 16kHz for tokenizer
-            ref_16k_wav = librosa.resample(
-                s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR
+            # Get S3Gen embeddings with tokens
+            s3gen_ref_dict = self.s3gen.embed_ref(
+                ref_wav=mx.array(ref_wav_24k)[None, :],
+                ref_sr=S3GEN_SR,
+                ref_speech_tokens=s3gen_tokens,
+                ref_speech_token_lens=s3gen_token_lens,
             )
 
-            # Trim to conditioning lengths
-            s3gen_ref_wav = s3gen_ref_wav[: self.DEC_COND_LEN]
-            ref_16k_wav = ref_16k_wav[: self.ENC_COND_LEN]
+            # --- T3 conditioning tokens (from encoder cond length audio) ---
+            ref_16k_for_t3 = ref_wav_16k[: self.ENC_COND_LEN]
+            t3_mel = log_mel_spectrogram(mx.array(ref_16k_for_t3))
+            t3_mel = mx.expand_dims(t3_mel, 0)
+            t3_mel_len = mx.array([t3_mel.shape[2]])
+            t3_tokens, _ = self.s3tokenizer(t3_mel, t3_mel_len)
 
-            with torch.no_grad():
-                # Get S3Gen embeddings
-                ref_dict = s3gen_pt.embed_ref(s3gen_ref_wav, S3GEN_SR)
+            # Limit T3 tokens to prompt length
+            plen = self.t3.hp.speech_cond_prompt_len
+            t3_cond_prompt_tokens = t3_tokens[:, :plen]
 
-                # Get T3 conditioning tokens using S3Gen's tokenizer (matches PyTorch exactly)
-                plen = self.t3.hp.speech_cond_prompt_len
-                t3_cond_prompt_tokens = None
-                if plen and s3gen_pt.tokenizer is not None:
-                    t3_cond_prompt_tokens, _ = s3gen_pt.tokenizer.forward(
-                        [ref_16k_wav], max_len=plen
-                    )
-                    t3_cond_prompt_tokens = torch.atleast_2d(t3_cond_prompt_tokens)
+            logger.info("Extracted conditionals using MLX S3Tokenizer")
+        else:
+            logger.warning("S3Tokenizer not available - using fallback")
+            # Fallback: use S3Gen's embed_ref without tokens
+            s3gen_ref_dict = self.s3gen.embed_ref(
+                ref_wav=mx.array(ref_wav_24k),
+                ref_sr=S3GEN_SR,
+            )
+            # Zero tokens fallback
+            plen = self.t3.hp.speech_cond_prompt_len
+            if plen:
+                t3_cond_prompt_tokens = mx.zeros((1, plen), dtype=mx.int32)
 
-            # Convert S3Gen dict to MLX arrays
-            mlx_ref_dict = {}
-            for k, v in ref_dict.items():
-                if v is not None and torch.is_tensor(v):
-                    mlx_ref_dict[k] = mx.array(v.cpu().numpy())
-                elif v is not None:
-                    mlx_ref_dict[k] = v
-                else:
-                    mlx_ref_dict[k] = None
-
-            # Convert T3 tokens to MLX
-            mlx_t3_tokens = None
-            if t3_cond_prompt_tokens is not None:
-                mlx_t3_tokens = mx.array(t3_cond_prompt_tokens.cpu().numpy())
-
-            logger.info("Extracted all conditionals using PyTorch")
-            return mlx_ref_dict, mlx_t3_tokens
-
-        except Exception as e:
-            logger.warning(f"Failed to extract conditionals with PyTorch: {e}")
-            import traceback
-
-            traceback.print_exc()
-            return None, None
+        return s3gen_ref_dict, t3_cond_prompt_tokens
 
     def prepare_conditionals(
         self,
-        wav_fpath: str,
+        ref_audio: Union[str, mx.array, np.ndarray],
+        sample_rate: Optional[int] = None,
         exaggeration: float = 0.5,
         norm_loudness: bool = True,
     ):
         """
-        Prepare conditioning from a reference audio file.
+        Prepare conditioning from a reference audio file or array.
 
         Args:
-            wav_fpath: Path to reference audio file (should be > 5 seconds)
+            ref_audio: Path to reference audio file or audio array (should be > 5 seconds)
+            sample_rate: Sample rate of audio array (required if ref_audio is array)
             exaggeration: Emotion exaggeration factor (not used in Turbo)
             norm_loudness: Whether to normalize loudness
         """
-        # Load reference audio at 24kHz for S3Gen
-        s3gen_ref_wav, _sr = librosa.load(wav_fpath, sr=S3GEN_SR)
+        # Handle string path vs array input
+        if isinstance(ref_audio, str):
+            # Load reference audio at 24kHz for S3Gen
+            ref_wav_24k, _sr = librosa.load(ref_audio, sr=S3GEN_SR)
+        else:
+            # Convert mx.array to numpy if needed
+            if isinstance(ref_audio, mx.array):
+                ref_wav_24k = np.array(ref_audio)
+            else:
+                ref_wav_24k = np.asarray(ref_audio)
+
+            # Resample to S3GEN_SR if sample_rate provided and different
+            input_sr = sample_rate if sample_rate is not None else S3GEN_SR
+            if input_sr != S3GEN_SR:
+                ref_wav_24k = librosa.resample(
+                    ref_wav_24k, orig_sr=input_sr, target_sr=S3GEN_SR
+                )
 
         assert (
-            len(s3gen_ref_wav) / S3GEN_SR > 5.0
+            len(ref_wav_24k) / S3GEN_SR > 5.0
         ), "Audio prompt must be longer than 5 seconds!"
 
         if norm_loudness:
-            s3gen_ref_wav = self.norm_loudness(s3gen_ref_wav, S3GEN_SR)
+            ref_wav_24k = self.norm_loudness(ref_wav_24k, S3GEN_SR)
 
-        # Resample to 16kHz for voice encoder
-        ref_16k_wav = librosa.resample(s3gen_ref_wav, orig_sr=S3GEN_SR, target_sr=S3_SR)
+        # Resample to 16kHz for S3Tokenizer and voice encoder
+        ref_wav_16k = librosa.resample(ref_wav_24k, orig_sr=S3GEN_SR, target_sr=S3_SR)
 
-        # Trim to conditioning length
-        s3gen_ref_wav = s3gen_ref_wav[: self.DEC_COND_LEN]
+        # Trim 24kHz audio to decoder conditioning length
+        ref_wav_24k_trimmed = ref_wav_24k[: self.DEC_COND_LEN]
 
-        # Try to extract all conditionals using PyTorch (for better quality)
-        s3gen_ref_dict, t3_cond_prompt_tokens = self._extract_pytorch_conditionals(
-            wav_fpath, norm_loudness
+        # Extract S3Gen embeddings and T3 tokens using MLX
+        s3gen_ref_dict, t3_cond_prompt_tokens = self._extract_conditionals(
+            ref_wav_24k_trimmed, ref_wav_16k
         )
 
-        # Fallback if PyTorch extraction failed
-        if s3gen_ref_dict is None:
-            logger.warning(
-                "PyTorch extraction failed, using MLX fallback (may have lower quality)"
-            )
-            s3gen_ref_dict = self.s3gen.embed_ref(s3gen_ref_wav, S3GEN_SR)
-
-        # Fallback for T3 tokens
-        plen = self.t3.hp.speech_cond_prompt_len
-        if plen and t3_cond_prompt_tokens is None:
-            logger.warning(
-                "Using zero tokens for T3 conditioning - audio quality may be poor"
-            )
-            t3_cond_prompt_tokens = mx.zeros((1, plen), dtype=mx.int32)
-
-        # Get voice encoder speaker embedding
+        # Get voice encoder speaker embedding (use full 16kHz audio)
         ve_embed = self.ve.embeds_from_wavs(
-            [ref_16k_wav[: self.ENC_COND_LEN]], sample_rate=S3_SR
+            [ref_wav_16k[: self.ENC_COND_LEN]], sample_rate=S3_SR
         )
         ve_embed = mx.array(np.mean(ve_embed, axis=0, keepdims=True))
 
@@ -576,13 +775,15 @@ class ChatterboxTurboTTS:
         repetition_penalty: float = 1.2,
         min_p: float = 0.0,
         top_p: float = 0.95,
-        audio_prompt_path: Optional[str] = None,
+        ref_audio: Optional[Union[str, mx.array, np.ndarray]] = None,
+        sample_rate: Optional[int] = None,
         exaggeration: float = 0.0,
         cfg_weight: float = 0.0,
         temperature: float = 0.8,
         top_k: int = 1000,
         norm_loudness: bool = True,
-    ) -> mx.array:
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
         """
         Generate speech from text.
 
@@ -591,27 +792,29 @@ class ChatterboxTurboTTS:
             repetition_penalty: Penalty for repeating tokens
             min_p: Minimum probability threshold (not used in Turbo)
             top_p: Nucleus sampling threshold
-            audio_prompt_path: Optional path to reference audio for voice cloning
+            ref_audio: Optional reference audio for voice cloning (path or array)
+            sample_rate: Sample rate of audio array (required if ref_audio is array)
             exaggeration: Emotion exaggeration (not used in Turbo)
             cfg_weight: Classifier-free guidance weight (not used in Turbo)
             temperature: Sampling temperature
             top_k: Top-k sampling parameter
             norm_loudness: Whether to normalize output loudness
 
-        Returns:
-            Generated waveform as MLX array (1, T)
+        Yields:
+            GenerationResult with generated waveform and metrics
         """
         # Prepare conditionals if audio prompt provided
-        if audio_prompt_path:
+        if ref_audio is not None:
             self.prepare_conditionals(
-                audio_prompt_path,
+                ref_audio,
+                sample_rate=sample_rate,
                 exaggeration=exaggeration,
                 norm_loudness=norm_loudness,
             )
         else:
             assert (
                 self.conds is not None
-            ), "Please `prepare_conditionals` first or specify `audio_prompt_path`"
+            ), "Please `prepare_conditionals` first or specify `ref_audio`"
 
         # Warn about unsupported parameters
         if cfg_weight > 0.0 or exaggeration > 0.0 or min_p > 0.0:
@@ -631,6 +834,10 @@ class ChatterboxTurboTTS:
             # Fallback: simple character-level tokenization (for testing)
             logger.warning("No tokenizer available, using simple fallback")
             text_tokens = mx.array([[ord(c) for c in text[:512]]])
+
+        token_count = text_tokens.shape[1]
+
+        start_time = time.time()
 
         # Generate speech tokens with T3
         speech_tokens = self.t3.inference_turbo(
@@ -657,12 +864,54 @@ class ChatterboxTurboTTS:
             n_cfm_timesteps=2,  # Turbo uses 2 steps
         )
 
-        # Post-process
-        wav = wav[0]  # Remove batch dimension
-        wav_np = np.array(wav)
+        # Flatten to 1D if needed
+        if wav.ndim == 2:
+            wav = wav.squeeze(0)
 
-        # # Normalize loudness
-        # if norm_loudness:
-        #     wav_np = self.norm_loudness(wav_np, self.sr)
+        # Calculate timing and metrics
+        processing_time = time.time() - start_time
+        samples = wav.shape[0]
+        audio_duration_seconds = samples / self.sample_rate
 
-        return mx.array(wav_np)[None, :]  # (1, T)
+        # Format duration as HH:MM:SS.mmm
+        duration_hours = int(audio_duration_seconds // 3600)
+        duration_mins = int((audio_duration_seconds % 3600) // 60)
+        duration_secs = int(audio_duration_seconds % 60)
+        duration_ms = int((audio_duration_seconds % 1) * 1000)
+        duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+        # Calculate real-time factor
+        rtf = (
+            processing_time / audio_duration_seconds
+            if audio_duration_seconds > 0
+            else 0
+        )
+
+        yield GenerationResult(
+            audio=wav,
+            samples=samples,
+            sample_rate=self.sample_rate,
+            segment_idx=0,
+            token_count=token_count,
+            audio_duration=duration_str,
+            real_time_factor=round(rtf, 2),
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": (
+                    round(token_count / processing_time, 2)
+                    if processing_time > 0
+                    else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (
+                    round(samples / processing_time, 2) if processing_time > 0 else 0
+                ),
+            },
+            processing_time_seconds=processing_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
+
+        # Clear cache after generation
+        mx.clear_cache()

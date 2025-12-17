@@ -87,6 +87,8 @@ class S3Token2Mel(nn.Module):
         self,
         ref_wav: mx.array,
         ref_sr: int,
+        ref_speech_tokens: Optional[mx.array] = None,
+        ref_speech_token_lens: Optional[mx.array] = None,
         device: str = "auto",
     ) -> Dict[str, mx.array]:
         """
@@ -95,6 +97,8 @@ class S3Token2Mel(nn.Module):
         Args:
             ref_wav: Reference waveform
             ref_sr: Sample rate
+            ref_speech_tokens: Pre-computed speech tokens (optional)
+            ref_speech_token_lens: Token lengths (optional)
 
         Returns:
             Dictionary with prompt tokens, features, and embedding
@@ -118,14 +122,29 @@ class S3Token2Mel(nn.Module):
         ref_mels = mel_spectrogram(ref_wav_24k)
         ref_mels = ref_mels.transpose(0, 2, 1)  # (B, T, 80)
 
-        # Placeholder for speaker embedding (would come from CAMPPlus in full implementation)
-        # For now, use zero embedding
-        ref_x_vector = mx.zeros((1, 192))
+        # Use provided tokens or create placeholder
+        if ref_speech_tokens is None:
+            ref_speech_tokens = mx.zeros((1, ref_mels.shape[1] // 2), dtype=mx.int32)
+            ref_speech_token_lens = mx.array([ref_speech_tokens.shape[1]])
+        else:
+            # Align tokens and mel lengths (mel = 2 * tokens)
+            actual_token_len = ref_speech_tokens.shape[1]
+            expected_token_len = ref_mels.shape[1] // 2
 
-        # Placeholder for speech tokens (would come from S3Tokenizer)
-        # In full implementation, this would tokenize the reference
-        ref_speech_tokens = mx.zeros((1, ref_mels.shape[1] // 2), dtype=mx.int32)
-        ref_speech_token_lens = mx.array([ref_speech_tokens.shape[1]])
+            if actual_token_len != expected_token_len:
+                if actual_token_len < expected_token_len:
+                    # Tokens shorter - truncate mel to match
+                    expected_mel_len = 2 * actual_token_len
+                    ref_mels = ref_mels[:, :expected_mel_len, :]
+                else:
+                    # Tokens longer - truncate tokens to match mel
+                    ref_speech_tokens = ref_speech_tokens[:, :expected_token_len]
+                    actual_token_len = expected_token_len
+
+            ref_speech_token_lens = mx.array([actual_token_len])
+
+        # Placeholder for speaker embedding (CAMPPlus not implemented in Turbo)
+        ref_x_vector = mx.zeros((1, 192))
 
         return {
             "prompt_token": ref_speech_tokens,
