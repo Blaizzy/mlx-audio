@@ -107,7 +107,7 @@ def test_tts_speech(client, mock_model_provider):
     payload = {"model": "test_tts_model", "input": "Hello world", "voice": "alloy"}
     response = client.post("/v1/audio/speech", json=payload)
     assert response.status_code == 200
-    assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["content-type"].lower() == "audio/wav"
     assert response.headers["content-disposition"] == "attachment; filename=speech.wav"
 
     mock_model_provider.load_model.assert_called_once_with("test_tts_model")
