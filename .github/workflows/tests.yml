@@ -6,9 +6,9 @@ on:
       - main
 
 jobs:
-  test:
+  # Style checks run once
+  style:
     runs-on: macos-14
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -18,39 +18,90 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install MLX
-        run: |
-          pip install mlx>=0.15
-
-      - name: Install pre-commit
+      - name: Run pre-commit
         run: |
           python -m pip install pre-commit
           pre-commit run --all
           if ! git diff --quiet; then
-            echo 'Style checks failed, please install pre-commit and run pre-commit run --all and push the change'
+            echo 'Style checks failed. Run: pre-commit run --all-files'
             exit 1
           fi
 
-      - name: Install package and dependencies
-        run: |
-          python -m pip install -e ".[all,dev]"
+  # Core tests (DSP, utils)
+  core:
+    runs-on: macos-14
+    needs: style
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: Run Python tests (TTS)
-        run: |
-          cd mlx_audio/tts/
-          pytest -s ./tests
+      - name: Install all deps
+        run: pip install -e ".[all,dev]"
 
-      - name: Run Python tests (Codec)
+      - name: Test DSP imports without TTS/STT
         run: |
-          cd mlx_audio/codec/
-          pytest -s ./tests
+          python -c "from mlx_audio.dsp import stft, mel_filters; print('DSP OK')"
+          python -c "from mlx_audio.utils import stft; import sys; assert 'mlx_audio.tts.utils' not in sys.modules; print('Lazy imports OK')"
 
-      - name: Run Python tests (STS)
-        run: |
-          cd mlx_audio/sts/
-          pytest -s ./tests
+      - name: Run core tests
+        run: pytest -s mlx_audio/tests/
 
-      - name: Run Python tests (STT)
-        run: |
-          cd mlx_audio/stt/
-          pytest -s ./tests
+  # Modular installation tests - validates issue #287
+  # Only verifies imports work with minimal deps installed.
+  # Full tests run separately with all deps (test files import models that need extra deps).
+  modular:
+    runs-on: macos-14
+    needs: style
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - extra: stt
+            verify: "from mlx_audio.stt.utils import load_model"
+          - extra: tts
+            verify: "from mlx_audio.tts.utils import load_model"
+          - extra: sts
+            verify: "from mlx_audio.sts.voice_pipeline import VoicePipeline"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install [${{ matrix.extra }}] only
+        run: pip install -e ".[${{ matrix.extra }}]"
+
+      - name: Verify ${{ matrix.extra }} imports
+        run: python -c "${{ matrix.verify }}; print('${{ matrix.extra }} imports OK')"
+
+  # Full test suites - need all deps
+  tests:
+    runs-on: macos-14
+    needs: style
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: TTS
+            path: mlx_audio/tts/tests
+          - name: STT
+            path: mlx_audio/stt/tests
+          - name: STS
+            path: mlx_audio/sts/tests
+          - name: Codec
+            path: mlx_audio/codec/tests
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install all deps
+        run: pip install -e ".[all,dev]"
+
+      - name: Run ${{ matrix.name }} tests
+        run: pytest -s ${{ matrix.path }}/
