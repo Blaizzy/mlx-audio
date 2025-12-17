@@ -91,8 +91,12 @@ Repository = "https://github.com/Blaizzy/mlx-audio"
 [tool.setuptools.dynamic]
 version = {attr = "mlx_audio.version.__version__"}
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["mlx_audio", "mlx_audio.*"]
 
 [tool.setuptools.package-data]
 mlx_audio = [
