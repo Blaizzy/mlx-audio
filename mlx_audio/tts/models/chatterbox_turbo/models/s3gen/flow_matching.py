@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# MLX port of Conditional Flow Matching
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from typing import Optional, Tuple
 

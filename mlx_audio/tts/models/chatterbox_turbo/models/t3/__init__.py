@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# T3 module for MLX
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from .cond_enc import T3Cond, T3CondEnc
 from .gpt2 import GPT2Config, GPT2Model

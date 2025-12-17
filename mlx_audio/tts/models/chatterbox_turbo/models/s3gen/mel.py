@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# Mel-spectrogram extraction for S3Gen
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import logging
 from functools import lru_cache

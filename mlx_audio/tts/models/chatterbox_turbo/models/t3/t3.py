@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# MLX port of T3 (Text-to-Token) TTS model
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from typing import Optional, Tuple
 

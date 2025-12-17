@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# Voice Encoder module for MLX
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from .config import VoiceEncConfig
 from .melspec import melspectrogram

@@ -1,3 +1,5 @@
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
+
 from mlx_audio.codec.models.s3 import (
     S3_HOP,
     S3_SR,

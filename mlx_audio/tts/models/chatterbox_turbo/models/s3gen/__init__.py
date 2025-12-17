@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# S3Gen module for MLX
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from .decoder import ConditionalDecoder
 from .encoder import UpsampleConformerEncoder

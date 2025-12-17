@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# MLX implementation of GPT2 for T3 TTS
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from dataclasses import dataclass
 from typing import Optional, Tuple

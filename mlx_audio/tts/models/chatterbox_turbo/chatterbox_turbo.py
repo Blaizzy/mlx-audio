@@ -1,6 +1,4 @@
-# Copyright (c) 2025 Resemble AI
-# MIT License
-# MLX port of ChatterboxTurboTTS
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import logging
 import math
@@ -136,7 +134,7 @@ class ChatterboxTurboTTS(nn.Module):
 
         self.tokenizer = tokenizer
         # S3 speech tokenizer for reference audio tokenization
-        self.s3tokenizer = s3tokenizer or S3TokenizerV2("speech_tokenizer_v2_25hz")
+        self._s3tokenizer = s3tokenizer or S3TokenizerV2("speech_tokenizer_v2_25hz")
         self.conds = conds
         self.local_path = local_path
 
@@ -306,9 +304,9 @@ class ChatterboxTurboTTS(nn.Module):
                 filename="model.safetensors",
             )
             s3tok_weights = mx.load(s3tok_weights_path)
-            if hasattr(model.s3tokenizer, "sanitize"):
-                s3tok_weights = model.s3tokenizer.sanitize(s3tok_weights)
-            model.s3tokenizer.load_weights(list(s3tok_weights.items()), strict=False)
+            if hasattr(model._s3tokenizer, "sanitize"):
+                s3tok_weights = model._s3tokenizer.sanitize(s3tok_weights)
+            model._s3tokenizer.load_weights(list(s3tok_weights.items()), strict=False)
             logger.info("Loaded S3 speech tokenizer weights")
         except Exception as e:
             logger.warning(f"Could not load S3 speech tokenizer: {e}")
@@ -336,7 +334,7 @@ class ChatterboxTurboTTS(nn.Module):
                     if k.startswith("gen."):
                         gen_mlx[k.replace("gen.", "")] = v
 
-                model.conds = Conditionals(t3_cond, gen_mlx)
+                model._conds = Conditionals(t3_cond, gen_mlx)
                 logger.info("Loaded pre-computed conditionals from safetensors")
 
             except Exception as e:
@@ -657,14 +655,14 @@ class ChatterboxTurboTTS(nn.Module):
         s3gen_ref_dict = {}
         t3_cond_prompt_tokens = None
 
-        if self.s3tokenizer is not None:
+        if self._s3tokenizer is not None:
             # --- S3Gen tokens (from 10s audio at 16kHz) ---
             # Trim to decoder conditioning length
             ref_16k_for_s3gen = ref_wav_16k[: int(self.DEC_COND_LEN * S3_SR / S3GEN_SR)]
             s3gen_mel = log_mel_spectrogram(mx.array(ref_16k_for_s3gen))
             s3gen_mel = mx.expand_dims(s3gen_mel, 0)  # Add batch dim
             s3gen_mel_len = mx.array([s3gen_mel.shape[2]])
-            s3gen_tokens, s3gen_token_lens = self.s3tokenizer(s3gen_mel, s3gen_mel_len)
+            s3gen_tokens, s3gen_token_lens = self._s3tokenizer(s3gen_mel, s3gen_mel_len)
 
             # Get S3Gen embeddings with tokens
             s3gen_ref_dict = self.s3gen.embed_ref(
@@ -679,7 +677,7 @@ class ChatterboxTurboTTS(nn.Module):
             t3_mel = log_mel_spectrogram(mx.array(ref_16k_for_t3))
             t3_mel = mx.expand_dims(t3_mel, 0)
             t3_mel_len = mx.array([t3_mel.shape[2]])
-            t3_tokens, _ = self.s3tokenizer(t3_mel, t3_mel_len)
+            t3_tokens, _ = self._s3tokenizer(t3_mel, t3_mel_len)
 
             # Limit T3 tokens to prompt length
             plen = self.t3.hp.speech_cond_prompt_len
@@ -767,7 +765,7 @@ class ChatterboxTurboTTS(nn.Module):
             ),
         )
 
-        self.conds = Conditionals(t3_cond, s3gen_ref_dict)
+        self._conds = Conditionals(t3_cond, s3gen_ref_dict)
 
     def generate(
         self,
@@ -813,7 +811,7 @@ class ChatterboxTurboTTS(nn.Module):
             )
         else:
             assert (
-                self.conds is not None
+                self._conds is not None
             ), "Please `prepare_conditionals` first or specify `ref_audio`"
 
         # Warn about unsupported parameters
@@ -841,7 +839,7 @@ class ChatterboxTurboTTS(nn.Module):
 
         # Generate speech tokens with T3
         speech_tokens = self.t3.inference_turbo(
-            t3_cond=self.conds.t3,
+            t3_cond=self._conds.t3,
             text_tokens=text_tokens,
             temperature=temperature,
             top_k=top_k,
@@ -860,7 +858,7 @@ class ChatterboxTurboTTS(nn.Module):
         # Generate waveform with S3Gen
         wav, _ = self.s3gen.inference(
             speech_tokens=speech_tokens,
-            ref_dict=self.conds.gen,
+            ref_dict=self._conds.gen,
             n_cfm_timesteps=2,  # Turbo uses 2 steps
         )
 
