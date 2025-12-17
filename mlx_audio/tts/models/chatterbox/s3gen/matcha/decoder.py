@@ -1,6 +1,3 @@
-# Ported from https://github.com/shivammehta25/Matcha-TTS
-# Original: matcha/models/components/decoder.py
-
 import math
 
 import mlx.core as mx

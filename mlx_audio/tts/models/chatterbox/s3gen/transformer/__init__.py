@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 from .activation import Swish
 from .attention import MultiHeadedAttention, RelPositionMultiHeadedAttention
 from .convolution import ConvolutionModule

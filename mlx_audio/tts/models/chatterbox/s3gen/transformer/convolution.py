@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 from typing import Tuple
 
 import mlx.core as mx

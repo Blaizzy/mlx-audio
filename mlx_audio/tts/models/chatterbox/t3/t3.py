@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 from typing import Dict, Optional, Tuple
 
 import mlx.core as mx

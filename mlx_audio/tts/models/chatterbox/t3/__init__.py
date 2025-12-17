@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 from .cond_enc import T3CondEnc
 from .learned_pos_emb import LearnedPositionEmbeddings
 from .perceiver import Perceiver

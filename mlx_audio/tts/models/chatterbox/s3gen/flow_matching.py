@@ -1,6 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-# Original: chatterbox/models/s3gen/flow_matching.py
-
 import math
 
 import mlx.core as mx
@@ -8,12 +5,10 @@ import mlx.nn as nn
 
 from .matcha.flow_matching import BASECFM, CFMParams
 
-# Default CFM parameters for Chatterbox
 CFM_PARAMS = CFMParams()
 
 
 class ConditionalCFM(BASECFM):
-    """Conditional Flow Matching with Classifier-Free Guidance."""
 
     def __init__(
         self,
@@ -45,19 +40,13 @@ class ConditionalCFM(BASECFM):
         prompt_len: int = 0,
         flow_cache: mx.array = None,
     ) -> tuple:
-        """
-        Forward diffusion with optional caching.
 
-        Returns:
-            Tuple of (generated_mel, flow_cache)
-        """
         if flow_cache is None:
-            flow_cache = mx.zeros((1, 80, 0, 2))
+            flow_cache = mx.zeros((1, self.n_feats, 0, 2))
 
         z = mx.random.normal(mu.shape) * temperature
         cache_size = flow_cache.shape[2]
 
-        # Fix prompt and overlap part
         if cache_size != 0:
             z = mx.concatenate([flow_cache[:, :, :, 0], z[:, :, cache_size:]], axis=2)
             mu = mx.concatenate([flow_cache[:, :, :, 1], mu[:, :, cache_size:]], axis=2)
@@ -93,14 +82,10 @@ class ConditionalCFM(BASECFM):
 
         sol = []
 
-        # Prepare batch for CFG
+        # Prepare batch for CFG (defaults for when spks/cond are None)
         T_len = x.shape[2]
-        x_in = mx.zeros((2, 80, T_len))
-        mask_in = mx.zeros((2, 1, T_len))
-        mu_in = mx.zeros((2, 80, T_len))
-        t_in = mx.zeros(2)
-        spks_in = mx.zeros((2, 80))
-        cond_in = mx.zeros((2, 80, T_len))
+        spks_in = mx.zeros((2, self.spk_emb_dim))
+        cond_in = mx.zeros((2, self.n_feats, T_len))
 
         for step in range(1, len(t_span)):
             # Prepare inputs for CFG
@@ -134,7 +119,8 @@ class ConditionalCFM(BASECFM):
 
 
 class CausalConditionalCFM(ConditionalCFM):
-    """Causal Conditional Flow Matching with fixed noise."""
+
+    MEL_CHANNELS = 80  # Important: must match PyTorch's hardcoded value
 
     def __init__(
         self,
@@ -145,8 +131,9 @@ class CausalConditionalCFM(ConditionalCFM):
         estimator: nn.Module = None,
     ):
         super().__init__(in_channels, cfm_params, n_spks, spk_emb_dim, estimator)
-        # Pre-generate random noise for deterministic generation
-        self.rand_noise = mx.random.normal((1, 80, 50 * 300))
+
+        mx.random.seed(0)  # Match PyTorch's deterministic seed
+        self.rand_noise = mx.random.normal((1, self.MEL_CHANNELS, 50 * 300))
 
     def __call__(
         self,
@@ -156,13 +143,9 @@ class CausalConditionalCFM(ConditionalCFM):
         temperature: float = 1.0,
         spks: mx.array = None,
         cond: mx.array = None,
+        streaming: bool = False,
     ) -> tuple:
-        """
-        Forward diffusion with fixed noise for causal generation.
 
-        Returns:
-            Tuple of (generated_mel, None)
-        """
         T = mu.shape[2]
         z = self.rand_noise[:, :, :T] * temperature
 

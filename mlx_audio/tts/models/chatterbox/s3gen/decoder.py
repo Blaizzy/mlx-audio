@@ -12,8 +12,63 @@ from .matcha.decoder import (
 from .matcha.transformer import BasicTransformerBlock
 
 
+def subsequent_chunk_mask(
+    size: int,
+    chunk_size: int,
+    num_left_chunks: int = -1,
+) -> mx.array:
+    pos_idx = mx.arange(size)
+    block_value = ((pos_idx // chunk_size) + 1) * chunk_size
+    ret = mx.expand_dims(pos_idx, 0) < mx.expand_dims(block_value, 1)
+    return ret
+
+
+def add_optional_chunk_mask(
+    xs: mx.array,
+    masks: mx.array,
+    use_dynamic_chunk: bool,
+    use_dynamic_left_chunk: bool,
+    decoding_chunk_size: int,
+    static_chunk_size: int,
+    num_decoding_left_chunks: int,
+) -> mx.array:
+    if use_dynamic_chunk:
+        max_len = xs.shape[1]
+        if decoding_chunk_size < 0:
+            chunk_size = max_len
+            num_left_chunks = -1
+        elif decoding_chunk_size > 0:
+            chunk_size = decoding_chunk_size
+            num_left_chunks = num_decoding_left_chunks
+        else:
+            # For training, use full context
+            chunk_size = max_len
+            num_left_chunks = -1
+
+        chunk_masks = subsequent_chunk_mask(xs.shape[1], chunk_size, num_left_chunks)
+        chunk_masks = mx.expand_dims(chunk_masks, 0)  # (1, T, T)
+        chunk_masks = masks & chunk_masks  # (B, T, T)
+    elif static_chunk_size > 0:
+        num_left_chunks = num_decoding_left_chunks
+        chunk_masks = subsequent_chunk_mask(
+            xs.shape[1], static_chunk_size, num_left_chunks
+        )
+        chunk_masks = mx.expand_dims(chunk_masks, 0)  # (1, T, T)
+        chunk_masks = masks & chunk_masks  # (B, T, T)
+    else:
+        # Full attention - broadcast masks to (B, T, T)
+        chunk_masks = mx.broadcast_to(masks, (masks.shape[0], xs.shape[1], xs.shape[1]))
+
+    return chunk_masks
+
+
+def mask_to_bias(mask: mx.array, dtype: mx.Dtype) -> mx.array:
+    mask = mask.astype(dtype)
+    bias = (1.0 - mask) * -1.0e10
+    return bias
+
+
 class CausalConv1d(nn.Module):
-    """Causal 1D convolution with left padding."""
 
     def __init__(
         self,
@@ -39,7 +94,6 @@ class CausalConv1d(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x = mx.swapaxes(x, 1, 2)  # (B, C, T) -> (B, T, C)
-        # Pad on the left for causal convolution (time axis is now 1)
         x = mx.pad(x, [(0, 0), (self.causal_padding, 0), (0, 0)])
         x = self.conv(x)
         x = mx.swapaxes(x, 1, 2)  # (B, T, C) -> (B, C, T)
@@ -47,12 +101,6 @@ class CausalConv1d(nn.Module):
 
 
 class CausalBlock1D(nn.Module):
-    """
-    Causal 1D block with LayerNorm (matches original).
-
-    Unlike Block1D which uses GroupNorm, CausalBlock1D uses LayerNorm
-    as per the original Chatterbox implementation.
-    """
 
     def __init__(self, dim: int, dim_out: int):
         super().__init__()
@@ -61,7 +109,6 @@ class CausalBlock1D(nn.Module):
 
     def __call__(self, x: mx.array, mask: mx.array) -> mx.array:
         output = self.conv(x * mask)
-        # Transpose to (B, T, C), apply LayerNorm, transpose back
         output = mx.swapaxes(output, 1, 2)  # (B, C, T) -> (B, T, C)
         output = self.norm(output)
         output = mx.swapaxes(output, 1, 2)  # (B, T, C) -> (B, C, T)
@@ -70,7 +117,6 @@ class CausalBlock1D(nn.Module):
 
 
 class CausalResnetBlock1D(ResnetBlock1D):
-    """Causal ResNet block."""
 
     def __init__(self, dim: int, dim_out: int, time_emb_dim: int, groups: int = 8):
         super().__init__(dim, dim_out, time_emb_dim, groups)
@@ -79,12 +125,10 @@ class CausalResnetBlock1D(ResnetBlock1D):
 
 
 class DownBlock(nn.Module):
-    """Container for down block components."""
 
     def __init__(self, resnet, transformer_blocks, downsample):
         super().__init__()
         self.resnet = resnet
-        # Store transformer blocks with indexed names for proper weight loading
         for i, block in enumerate(transformer_blocks):
             setattr(self, f"transformer_{i}", block)
         self.n_transformer = len(transformer_blocks)
@@ -96,7 +140,6 @@ class DownBlock(nn.Module):
 
 
 class MidBlock(nn.Module):
-    """Container for mid block components."""
 
     def __init__(self, resnet, transformer_blocks):
         super().__init__()
@@ -111,7 +154,6 @@ class MidBlock(nn.Module):
 
 
 class UpBlock(nn.Module):
-    """Container for up block components."""
 
     def __init__(self, resnet, transformer_blocks, upsample):
         super().__init__()
@@ -127,12 +169,6 @@ class UpBlock(nn.Module):
 
 
 class ConditionalDecoder(nn.Module):
-    """
-    Conditional U-Net decoder for flow matching.
-
-    This is the Chatterbox-specific decoder that uses causal blocks
-    for streaming TTS generation.
-    """
 
     def __init__(
         self,
@@ -146,14 +182,17 @@ class ConditionalDecoder(nn.Module):
         num_mid_blocks: int = 12,
         num_heads: int = 8,
         act_fn: str = "gelu",
+        static_chunk_size: int = 50,
+        num_decoding_left_chunks: int = 2,
     ):
         super().__init__()
         channels = tuple(channels)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.causal = causal
+        self.static_chunk_size = static_chunk_size
+        self.num_decoding_left_chunks = num_decoding_left_chunks
 
-        # Time embeddings
         self.time_embeddings = SinusoidalPosEmb(in_channels)
         time_embed_dim = channels[0] * 4
         self.time_mlp = TimestepEmbedding(
@@ -162,7 +201,6 @@ class ConditionalDecoder(nn.Module):
             act_fn="silu",
         )
 
-        # Down blocks - use indexed attributes for proper weight loading
         output_channel = in_channels
         for i, ch in enumerate(channels):
             input_channel = output_channel
@@ -276,24 +314,12 @@ class ConditionalDecoder(nn.Module):
         t: mx.array,
         spks: mx.array = None,
         cond: mx.array = None,
+        streaming: bool = False,
     ) -> mx.array:
-        """
-        Forward pass.
 
-        Args:
-            x: Noisy input (B, in_channels, T)
-            mask: Mask (B, 1, T)
-            mu: Condition (B, channels, T)
-            t: Timestep (B,)
-            spks: Speaker embeddings (B, spk_dim)
-            cond: Additional conditioning
-
-        Returns:
-            Predicted noise (B, out_channels, T)
-        """
         # Time embedding
-        t = self.time_embeddings(t)
-        t = self.time_mlp(t)
+        t_emb = self.time_embeddings(t)
+        t_emb = self.time_mlp(t_emb)
 
         # Concatenate conditioning
         x = mx.concatenate([x, mu], axis=1)
@@ -310,12 +336,39 @@ class ConditionalDecoder(nn.Module):
         masks = [mask]
         for down_block in self.down_blocks:
             mask_down = masks[-1]
-            x = down_block.resnet(x, mask_down, t)
+            x = down_block.resnet(x, mask_down, t_emb)
 
-            # Transformer blocks
+            # Transformer blocks with attention mask
             x_t = mx.swapaxes(x, 1, 2)  # (B, C, T) -> (B, T, C)
+
+            # Compute attention mask based on streaming mode
+            if streaming:
+                # Use chunk-based causal attention for streaming
+                attn_mask = add_optional_chunk_mask(
+                    x_t,
+                    mask_down.astype(mx.bool_),
+                    False,
+                    False,
+                    0,
+                    self.static_chunk_size,
+                    -1,
+                )
+            else:
+                # Use full context attention (non-streaming)
+                # Expand mask_down to (B, T, T) for full attention
+                attn_mask = add_optional_chunk_mask(
+                    x_t, mask_down.astype(mx.bool_), False, False, 0, 0, -1
+                )
+                # Repeat along query dimension for proper broadcasting
+                attn_mask = mx.broadcast_to(
+                    attn_mask, (attn_mask.shape[0], x_t.shape[1], attn_mask.shape[2])
+                )
+
+            # Convert boolean mask to additive bias
+            attn_bias = mask_to_bias(attn_mask, x_t.dtype)
+
             for transformer_block in down_block.transformer_blocks:
-                x_t = transformer_block(x_t, attention_mask=None, timestep=t)
+                x_t = transformer_block(x_t, attention_mask=attn_bias, timestep=t_emb)
             x = mx.swapaxes(x_t, 1, 2)  # (B, T, C) -> (B, C, T)
 
             hiddens.append(x)
@@ -328,11 +381,33 @@ class ConditionalDecoder(nn.Module):
 
         # Mid blocks
         for mid_block in self.mid_blocks:
-            x = mid_block.resnet(x, mask_mid, t)
+            x = mid_block.resnet(x, mask_mid, t_emb)
 
             x_t = mx.swapaxes(x, 1, 2)
+
+            # Compute attention mask for mid blocks
+            if streaming:
+                attn_mask = add_optional_chunk_mask(
+                    x_t,
+                    mask_mid.astype(mx.bool_),
+                    False,
+                    False,
+                    0,
+                    self.static_chunk_size,
+                    -1,
+                )
+            else:
+                attn_mask = add_optional_chunk_mask(
+                    x_t, mask_mid.astype(mx.bool_), False, False, 0, 0, -1
+                )
+                attn_mask = mx.broadcast_to(
+                    attn_mask, (attn_mask.shape[0], x_t.shape[1], attn_mask.shape[2])
+                )
+
+            attn_bias = mask_to_bias(attn_mask, x_t.dtype)
+
             for transformer_block in mid_block.transformer_blocks:
-                x_t = transformer_block(x_t, attention_mask=None, timestep=t)
+                x_t = transformer_block(x_t, attention_mask=attn_bias, timestep=t_emb)
             x = mx.swapaxes(x_t, 1, 2)
 
         # Up blocks
@@ -341,18 +416,40 @@ class ConditionalDecoder(nn.Module):
             skip = hiddens.pop()
             # Truncate x to match skip length
             x = mx.concatenate([x[:, :, : skip.shape[-1]], skip], axis=1)
-            x = up_block.resnet(x, mask_up, t)
+            x = up_block.resnet(x, mask_up, t_emb)
 
             x_t = mx.swapaxes(x, 1, 2)
+
+            # Compute attention mask for up blocks
+            if streaming:
+                attn_mask = add_optional_chunk_mask(
+                    x_t,
+                    mask_up.astype(mx.bool_),
+                    False,
+                    False,
+                    0,
+                    self.static_chunk_size,
+                    -1,
+                )
+            else:
+                attn_mask = add_optional_chunk_mask(
+                    x_t, mask_up.astype(mx.bool_), False, False, 0, 0, -1
+                )
+                attn_mask = mx.broadcast_to(
+                    attn_mask, (attn_mask.shape[0], x_t.shape[1], attn_mask.shape[2])
+                )
+
+            attn_bias = mask_to_bias(attn_mask, x_t.dtype)
+
             for transformer_block in up_block.transformer_blocks:
-                x_t = transformer_block(x_t, attention_mask=None, timestep=t)
+                x_t = transformer_block(x_t, attention_mask=attn_bias, timestep=t_emb)
             x = mx.swapaxes(x_t, 1, 2)
 
             x = up_block.upsample(x * mask_up)
 
         # Final layers
         x = self.final_block(x, mask_up)
-        # final_proj: (B, C, T) -> transpose -> conv -> transpose back
+
         x_proj = mx.swapaxes(x * mask_up, 1, 2)  # (B, C, T) -> (B, T, C)
         output = self.final_proj(x_proj)
         output = mx.swapaxes(output, 1, 2)  # (B, T, C) -> (B, C, T)

@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 import math
 from typing import Dict, List, Optional
 
@@ -17,17 +15,10 @@ def hann_window_periodic(size: int) -> mx.array:
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
-    """Calculate padding for 'same' convolution."""
     return int((kernel_size * dilation - dilation) / 2)
 
 
 class Snake(nn.Module):
-    """
-    Snake activation function: x + (1/α) * sin²(αx)
-
-    Periodic activation function from:
-    https://arxiv.org/abs/2006.08195
-    """
 
     def __init__(
         self,
@@ -36,53 +27,38 @@ class Snake(nn.Module):
         alpha_trainable: bool = True,
         alpha_logscale: bool = False,
     ):
-        """
-        Args:
-            in_features: Number of input features (channels)
-            alpha: Initial alpha value (frequency parameter)
-            alpha_trainable: Whether alpha should be trainable
-            alpha_logscale: Whether to use log-scale for alpha
-        """
         super().__init__()
         self.in_features = in_features
         self.alpha_logscale = alpha_logscale
 
-        # Initialize alpha
         if alpha_logscale:
-            # Log scale: initialized to zeros
             self.alpha = mx.zeros(in_features) * alpha
         else:
-            # Linear scale: initialized to ones * alpha
             self.alpha = mx.ones(in_features) * alpha
 
-        # Small constant to avoid division by zero
         self.no_div_by_zero = 1e-9
 
     def __call__(self, x: mx.array) -> mx.array:
-        """
-        Forward pass: x + (1/α) * sin²(αx)
 
-        Args:
-            x: Input tensor of shape (B, C, T)
-
-        Returns:
-            Output tensor of same shape
-        """
-        # Reshape alpha to align with x: (C,) -> (1, C, 1)
         alpha = mx.reshape(self.alpha, (1, -1, 1))
 
-        # Apply log scale if needed
         if self.alpha_logscale:
             alpha = mx.exp(alpha)
 
-        # Snake activation: x + (1/α) * sin²(αx)
-        return x + (1.0 / (alpha + self.no_div_by_zero)) * mx.power(
-            mx.sin(x * alpha), 2
-        )
+        no_div_by_zero = 1e-9
+        min_alpha = 1e-4
+
+        alpha_sign = mx.sign(alpha)
+        alpha_abs = mx.abs(alpha)
+
+        alpha_clamped = alpha_sign * mx.maximum(alpha_abs, min_alpha)
+
+        alpha_clamped = mx.where(alpha_abs < no_div_by_zero, min_alpha, alpha_clamped)
+
+        return x + (1.0 / alpha_clamped) * mx.power(mx.sin(x * alpha), 2)
 
 
 class ResBlock(nn.Module):
-    """Residual block with Snake activation for HiFi-GAN."""
 
     def __init__(
         self,
@@ -124,16 +100,8 @@ class ResBlock(nn.Module):
             self.activations2.append(Snake(channels, alpha_logscale=False))
 
     def __call__(self, x: mx.array) -> mx.array:
-        """
-        Args:
-            x: Input tensor (B, C, T)
-
-        Returns:
-            Output tensor (B, C, T)
-        """
         for i in range(len(self.convs1)):
             xt = self.activations1[i](x)
-            # Conv1d: (B, C, T) -> transpose -> conv -> transpose back
             xt = mx.swapaxes(xt, 1, 2)  # (B, C, T) -> (B, T, C)
             xt = self.convs1[i](xt)
             xt = mx.swapaxes(xt, 1, 2)  # (B, T, C) -> (B, C, T)
@@ -145,12 +113,24 @@ class ResBlock(nn.Module):
         return x
 
 
-class SineGen(nn.Module):
-    """
-    Sine wave generator for harmonic synthesis.
+def _linear_interpolate_1d_to_size(x: mx.array, new_size: int) -> mx.array:
 
-    Generates sine waves with harmonics based on F0 (fundamental frequency).
-    """
+    T = x.shape[-1]
+    if new_size == T:
+        return x
+
+    new_positions = mx.linspace(0, T - 1, new_size)
+    indices_low = mx.floor(new_positions).astype(mx.int32)
+    indices_high = mx.minimum(indices_low + 1, T - 1)
+    weights = new_positions - indices_low.astype(x.dtype)
+
+    low_vals = mx.take(x, indices_low, axis=-1)
+    high_vals = mx.take(x, indices_high, axis=-1)
+
+    return low_vals + weights * (high_vals - low_vals)
+
+
+class SineGen(nn.Module):
 
     def __init__(
         self,
@@ -159,77 +139,86 @@ class SineGen(nn.Module):
         sine_amp: float = 0.1,
         noise_std: float = 0.003,
         voiced_threshold: float = 0,
+        use_interpolation: bool = False,
+        upsample_scale: int = 1,
     ):
-        """
-        Args:
-            samp_rate: Sampling rate in Hz
-            harmonic_num: Number of harmonic overtones
-            sine_amp: Amplitude of sine waveform
-            noise_std: Standard deviation of Gaussian noise
-            voiced_threshold: F0 threshold for voiced/unvoiced classification
-        """
         super().__init__()
         self.sine_amp = sine_amp
         self.noise_std = noise_std
         self.harmonic_num = harmonic_num
         self.sampling_rate = samp_rate
         self.voiced_threshold = voiced_threshold
+        self.use_interpolation = use_interpolation
+        self.upsample_scale = upsample_scale
 
     def _f02uv(self, f0: mx.array) -> mx.array:
-        """Convert F0 to voiced/unvoiced signal."""
         return (f0 > self.voiced_threshold).astype(mx.float32)
 
+    def _f02sine_interpolation(self, f0_values: mx.array) -> mx.array:
+
+        B, T, H = f0_values.shape
+
+        rad_values = (f0_values / self.sampling_rate) % 1
+
+        rand_ini = mx.random.uniform(shape=(B, H))
+        rand_ini = mx.concatenate([mx.zeros((B, 1)), rand_ini[:, 1:]], axis=1)
+        rad_values = rad_values.at[:, 0, :].add(rand_ini)
+
+        # Downsample rad_values: (B, T, H) -> (B, T', H)
+        # Transpose to (B, H, T) for interpolation along T axis
+        rad_values_t = mx.swapaxes(rad_values, 1, 2)  # (B, H, T)
+        T_down = max(1, T // self.upsample_scale)
+        rad_values_down = _linear_interpolate_1d_to_size(
+            rad_values_t, new_size=T_down
+        )  # (B, H, T')
+        rad_values_down = mx.swapaxes(rad_values_down, 1, 2)  # (B, T', H)
+
+        # Cumsum at lower rate
+        phase = mx.cumsum(rad_values_down, axis=1) * 2 * math.pi
+
+        # Upsample phase back to original length T: (B, T', H) -> (B, T, H)
+        # Scale phase by upsample_scale before interpolation
+        phase_t = mx.swapaxes(phase, 1, 2) * self.upsample_scale  # (B, H, T')
+        phase_up = _linear_interpolate_1d_to_size(phase_t, new_size=T)  # (B, H, T)
+        phase_up = mx.swapaxes(phase_up, 1, 2)  # (B, T, H)
+
+        return mx.sin(phase_up)
+
     def __call__(self, f0: mx.array) -> tuple:
-        """
-        Generate sine waves from F0.
 
-        Args:
-            f0: Fundamental frequency tensor (B, 1, T) in Hz
-
-        Returns:
-            Tuple of (sine_waves, uv, noise)
-        """
         B, _, T = f0.shape
 
-        # Create frequency matrix for harmonics using broadcasting (no loop)
-        # harmonic_multipliers: [1, 2, 3, ..., harmonic_num+1] shape (1, H, 1)
         harmonic_multipliers = mx.arange(1, self.harmonic_num + 2).reshape(1, -1, 1)
-        # f0 is (B, 1, T), result is (B, H, T)
         F_mat = f0 * harmonic_multipliers / self.sampling_rate
 
-        # Calculate phase
-        theta_mat = 2 * math.pi * (mx.cumsum(F_mat, axis=-1) % 1)
+        if self.use_interpolation:
+            fn = mx.swapaxes(f0, 1, 2) * mx.arange(
+                1, self.harmonic_num + 2
+            )  # (B, T, H)
+            sine_waves = self._f02sine_interpolation(fn) * self.sine_amp
+            sine_waves = mx.swapaxes(sine_waves, 1, 2)
+        else:
+            theta_mat = 2 * math.pi * (mx.cumsum(F_mat, axis=-1) % 1)
 
-        # Random phase offset for each harmonic (no loop)
-        phase_vec = mx.random.uniform(
-            low=-math.pi, high=math.pi, shape=(B, self.harmonic_num + 1, 1)
-        )
-        # Zero out fundamental frequency phase offset (index 0) using where
-        mask = mx.arange(self.harmonic_num + 1).reshape(1, -1, 1) > 0
-        phase_vec = mx.where(mask, phase_vec, 0.0)
+            phase_vec = mx.random.uniform(
+                low=-math.pi, high=math.pi, shape=(B, self.harmonic_num + 1, 1)
+            )
+            mask = mx.arange(self.harmonic_num + 1).reshape(1, -1, 1) > 0
+            phase_vec = mx.where(mask, phase_vec, 0.0)
 
-        # Generate sine waveforms
-        sine_waves = self.sine_amp * mx.sin(theta_mat + phase_vec)
+            sine_waves = self.sine_amp * mx.sin(theta_mat + phase_vec)
 
-        # Generate voiced/unvoiced signal
         uv = self._f02uv(f0)
 
-        # Noise: larger for unvoiced, smaller for voiced
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         noise = noise_amp * mx.random.normal(shape=sine_waves.shape)
 
-        # Voiced regions use sine, unvoiced use noise
         sine_waves = sine_waves * uv + noise
 
         return sine_waves, uv, noise
 
 
 class SourceModuleHnNSF(nn.Module):
-    """
-    Neural Source Filter (NSF) module for harmonic and noise generation.
-
-    Combines multiple sine harmonics into a single excitation signal.
-    """
 
     def __init__(
         self,
@@ -239,29 +228,27 @@ class SourceModuleHnNSF(nn.Module):
         sine_amp: float = 0.1,
         add_noise_std: float = 0.003,
         voiced_threshod: float = 0,
+        use_interpolation: bool = False,
     ):
+
         super().__init__()
         self.sine_amp = sine_amp
         self.noise_std = add_noise_std
 
-        # Sine generator for harmonics
         self.l_sin_gen = SineGen(
-            sampling_rate, harmonic_num, sine_amp, add_noise_std, voiced_threshod
+            sampling_rate,
+            harmonic_num,
+            sine_amp,
+            add_noise_std,
+            voiced_threshod,
+            use_interpolation=use_interpolation,
+            upsample_scale=upsample_scale,
         )
 
-        # Linear layer to merge harmonics
         self.l_linear = nn.Linear(harmonic_num + 1, 1)
 
     def __call__(self, x: mx.array) -> tuple:
-        """
-        Generate harmonic and noise sources from F0.
 
-        Args:
-            x: F0 tensor (B, T, 1)
-
-        Returns:
-            Tuple of (sine_merge, noise, uv)
-        """
         # Generate sine harmonics
         sine_wavs, uv, _ = self.l_sin_gen(mx.swapaxes(x, 1, 2))
         sine_wavs = mx.swapaxes(sine_wavs, 1, 2)
@@ -291,9 +278,14 @@ def stft(x: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tuple:
     """
     B, T = x.shape
 
-    # Pad signal
+    # Pad signal with reflect padding to match PyTorch's torch.stft behavior
     pad_length = n_fft // 2
-    x_padded = mx.pad(x, [(0, 0), (pad_length, pad_length)])
+    # Reflect padding: mirror the signal at the edges
+    # Left pad: reverse of x[:, 1:pad_length+1]
+    # Right pad: reverse of x[:, -(pad_length+1):-1]
+    left_pad = x[:, 1 : pad_length + 1][:, ::-1]
+    right_pad = x[:, -(pad_length + 1) : -1][:, ::-1]
+    x_padded = mx.concatenate([left_pad, x, right_pad], axis=1)
 
     # Calculate number of frames
     num_frames = (x_padded.shape[1] - n_fft) // hop_length + 1
@@ -445,6 +437,7 @@ class HiFTGenerator(nn.Module):
         lrelu_slope: float = 0.1,
         audio_limit: float = 0.99,
         f0_predictor: Optional[nn.Module] = None,
+        use_interpolation: bool = False,
     ):
         """
         Args:
@@ -465,6 +458,7 @@ class HiFTGenerator(nn.Module):
             lrelu_slope: LeakyReLU negative slope
             audio_limit: Audio clipping limit
             f0_predictor: Optional F0 prediction module
+            use_interpolation: Use interpolation-based phase computation in NSF
         """
         super().__init__()
 
@@ -488,6 +482,7 @@ class HiFTGenerator(nn.Module):
             sine_amp=nsf_alpha,
             add_noise_std=nsf_sigma,
             voiced_threshod=nsf_voiced_threshold,
+            use_interpolation=use_interpolation,
         )
 
         # F0 upsampler
@@ -634,15 +629,16 @@ class HiFTGenerator(nn.Module):
             si = self.source_resblocks[i](si)
             x = x + si
 
-            # Apply residual blocks
-            xs = None
-            for j in range(self.num_kernels):
-                idx = i * self.num_kernels + j
-                if xs is None:
-                    xs = self.resblocks[idx](x)
-                else:
-                    xs = xs + self.resblocks[idx](x)
-            x = xs / self.num_kernels
+            # Apply residual blocks and average their outputs
+            # Using mx.stack allows MLX's lazy evaluation to optimize the computation graph
+            start_idx = i * self.num_kernels
+            x = mx.mean(
+                mx.stack(
+                    [self.resblocks[start_idx + j](x) for j in range(self.num_kernels)],
+                    axis=0,
+                ),
+                axis=0,
+            )
 
         x = nn.leaky_relu(x, negative_slope=self.lrelu_slope)
         # conv_post: (B, C, T) -> transpose -> conv -> transpose back

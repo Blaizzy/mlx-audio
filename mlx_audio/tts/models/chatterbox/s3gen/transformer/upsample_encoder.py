@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 from typing import Tuple
 
 import mlx.core as mx
@@ -7,7 +5,7 @@ import mlx.nn as nn
 
 from .attention import MultiHeadedAttention, RelPositionMultiHeadedAttention
 from .convolution import ConvolutionModule
-from .embedding import RelPositionalEncoding
+from .embedding import EspnetRelPositionalEncoding, RelPositionalEncoding
 from .encoder_layer import ConformerEncoderLayer
 from .positionwise_feed_forward import PositionwiseFeedForward
 from .subsampling import LinearNoSubsampling
@@ -88,10 +86,12 @@ class PreLookaheadLayer(nn.Module):
             padding=0,
         )
 
-    def __call__(self, inputs: mx.array) -> mx.array:
+    def __call__(self, inputs: mx.array, context: mx.array = None) -> mx.array:
         """
         Args:
             inputs: Input tensor (B, T, C)
+            context: Optional context tensor for lookahead (B, pre_lookahead_len, C)
+                     Used during streaming inference to provide future context.
 
         Returns:
             outputs: Output tensor (B, T, C)
@@ -100,7 +100,20 @@ class PreLookaheadLayer(nn.Module):
         outputs = inputs
 
         # Look ahead padding on time dimension (axis 1)
-        outputs = mx.pad(outputs, [(0, 0), (0, self.pre_lookahead_len), (0, 0)])
+        if context is None or context.shape[1] == 0:
+            # No context - pad with zeros
+            outputs = mx.pad(outputs, [(0, 0), (0, self.pre_lookahead_len), (0, 0)])
+        else:
+            # Use context for lookahead
+            assert (
+                context.shape[1] == self.pre_lookahead_len
+            ), f"Context length {context.shape[1]} != pre_lookahead_len {self.pre_lookahead_len}"
+            outputs = mx.concatenate([outputs, context], axis=1)
+            # Pad remaining if needed
+            remaining = self.pre_lookahead_len - context.shape[1]
+            if remaining > 0:
+                outputs = mx.pad(outputs, [(0, 0), (0, remaining), (0, 0)])
+
         outputs = nn.leaky_relu(self.conv1(outputs))
 
         # Output padding on time dimension (axis 1)
@@ -264,6 +277,7 @@ class UpsampleConformerEncoder(nn.Module):
         attention_heads: int = 8,
         linear_units: int = 2048,
         num_blocks: int = 6,
+        num_up_blocks: int = 4,
         dropout_rate: float = 0.1,
         positional_dropout_rate: float = 0.1,
         attention_dropout_rate: float = 0.1,
@@ -282,6 +296,8 @@ class UpsampleConformerEncoder(nn.Module):
         causal: bool = False,
         cnn_module_norm: str = "batch_norm",
         key_bias: bool = True,
+        pre_lookahead_len: int = 3,
+        upsample_stride: int = 2,
     ):
         """
         Args:
@@ -289,7 +305,8 @@ class UpsampleConformerEncoder(nn.Module):
             output_size: dimension of attention
             attention_heads: the number of heads of multi head attention
             linear_units: the hidden units number of position-wise feed forward
-            num_blocks: the number of encoder blocks
+            num_blocks: the number of encoder blocks before upsampling
+            num_up_blocks: the number of encoder blocks after upsampling
             dropout_rate: dropout rate
             attention_dropout_rate: dropout rate in attention
             positional_dropout_rate: dropout rate after adding positional encoding
@@ -307,9 +324,21 @@ class UpsampleConformerEncoder(nn.Module):
             causal: whether to use causal convolution
             cnn_module_norm: normalization type for convolution module
             key_bias: whether use bias in attention.linear_k
+            pre_lookahead_len: length of pre-lookahead window for streaming
+            upsample_stride: stride for temporal upsampling (2 = 2x upsample)
         """
         super().__init__()
         self._output_size = output_size
+
+        # Select positional encoding class based on pos_enc_layer_type
+        if pos_enc_layer_type == "rel_pos_espnet":
+            pos_enc_class = EspnetRelPositionalEncoding(
+                output_size, positional_dropout_rate
+            )
+        elif pos_enc_layer_type == "rel_pos":
+            pos_enc_class = RelPositionalEncoding(output_size, positional_dropout_rate)
+        else:
+            raise ValueError(f"Unsupported pos_enc_layer_type: {pos_enc_layer_type}")
 
         # Input embedding layer
         if input_layer == "linear":
@@ -317,7 +346,7 @@ class UpsampleConformerEncoder(nn.Module):
                 input_size,
                 output_size,
                 dropout_rate,
-                RelPositionalEncoding(output_size, positional_dropout_rate),
+                pos_enc_class,
             )
         else:
             raise ValueError(f"Unsupported input_layer: {input_layer}")
@@ -345,11 +374,14 @@ class UpsampleConformerEncoder(nn.Module):
             )
 
         # Pre-lookahead layer
-        self.pre_lookahead_layer = PreLookaheadLayer(channels=512, pre_lookahead_len=3)
+        self.pre_lookahead_layer = PreLookaheadLayer(
+            channels=output_size, pre_lookahead_len=pre_lookahead_len
+        )
 
-        # Main encoder layers
-        self.encoders = [
-            ConformerEncoderLayer(
+        # Main encoder layers - use indexed attributes for weight loading
+        self._num_encoders = num_blocks
+        for i in range(num_blocks):
+            layer = ConformerEncoderLayer(
                 output_size,
                 self_attn_class(
                     attention_heads,
@@ -381,26 +413,40 @@ class UpsampleConformerEncoder(nn.Module):
                 dropout_rate,
                 normalize_before,
             )
-            for _ in range(num_blocks)
-        ]
+            setattr(self, f"encoders_{i}", layer)
 
         # Upsampling layer
-        self.up_layer = Upsample1D(channels=512, out_channels=512, stride=2)
+        self.upsample_stride = upsample_stride
+        self.up_layer = Upsample1D(
+            channels=output_size, out_channels=output_size, stride=upsample_stride
+        )
 
-        # Upsampling embedding layer
+        # Upsampling embedding layer (uses same pos_enc_layer_type)
+        if pos_enc_layer_type == "rel_pos_espnet":
+            up_pos_enc_class = EspnetRelPositionalEncoding(
+                output_size, positional_dropout_rate
+            )
+        elif pos_enc_layer_type == "rel_pos":
+            up_pos_enc_class = RelPositionalEncoding(
+                output_size, positional_dropout_rate
+            )
+        else:
+            raise ValueError(f"Unsupported pos_enc_layer_type: {pos_enc_layer_type}")
+
         if input_layer == "linear":
             self.up_embed = LinearNoSubsampling(
                 input_size,
                 output_size,
                 dropout_rate,
-                RelPositionalEncoding(output_size, positional_dropout_rate),
+                up_pos_enc_class,
             )
         else:
             raise ValueError(f"Unsupported input_layer: {input_layer}")
 
-        # Upsampling encoder layers
-        self.up_encoders = [
-            ConformerEncoderLayer(
+        # Upsampling encoder layers - use indexed attributes for weight loading
+        self._num_up_encoders = num_up_blocks
+        for i in range(num_up_blocks):
+            layer = ConformerEncoderLayer(
                 output_size,
                 self_attn_class(
                     attention_heads,
@@ -432,8 +478,7 @@ class UpsampleConformerEncoder(nn.Module):
                 dropout_rate,
                 normalize_before,
             )
-            for _ in range(4)
-        ]
+            setattr(self, f"up_encoders_{i}", layer)
 
     def output_size(self) -> int:
         return self._output_size
@@ -442,14 +487,18 @@ class UpsampleConformerEncoder(nn.Module):
         self,
         xs: mx.array,
         xs_lens: mx.array,
+        context: mx.array = None,
         decoding_chunk_size: int = 0,
         num_decoding_left_chunks: int = -1,
+        streaming: bool = False,
     ) -> Tuple[mx.array, mx.array]:
         """Embed positions in tensor.
 
         Args:
             xs: padded input tensor (B, T, D)
             xs_lens: input length (B)
+            context: optional context tensor for lookahead (B, pre_lookahead_len, D)
+                     Used during streaming inference to provide future context.
             decoding_chunk_size: decoding chunk size for dynamic chunk
                 0: default for training, use random dynamic chunk.
                 <0: for decoding, use full chunk.
@@ -457,6 +506,9 @@ class UpsampleConformerEncoder(nn.Module):
             num_decoding_left_chunks: number of left chunks
                 >=0: use num_decoding_left_chunks
                 <0: use all left chunks
+            streaming: whether to use streaming (chunk-based) attention
+                When True, uses static_chunk_size for causal masking
+                When False, uses full context attention (chunk_size=0)
 
         Returns:
             encoder output tensor xs, and subsampled masks
@@ -468,7 +520,19 @@ class UpsampleConformerEncoder(nn.Module):
         masks = mx.expand_dims(masks, 1)  # (B, 1, T)
 
         xs, pos_emb, masks = self.embed(xs, masks)
+
+        # Embed context if provided
+        embedded_context = None
+        if context is not None and context.shape[1] > 0:
+            context_masks = mx.ones((1, 1, context.shape[1]), dtype=mx.bool_)
+            embedded_context, _, _ = self.embed(
+                context, context_masks, offset=xs.shape[1]
+            )
+
         mask_pad = masks  # (B, 1, T)
+
+        # Use static_chunk_size when streaming, otherwise full context (0)
+        effective_chunk_size = self.static_chunk_size if streaming else 0
 
         chunk_masks = add_optional_chunk_mask(
             xs,
@@ -476,12 +540,12 @@ class UpsampleConformerEncoder(nn.Module):
             self.use_dynamic_chunk,
             self.use_dynamic_left_chunk,
             decoding_chunk_size,
-            self.static_chunk_size,
+            effective_chunk_size,
             num_decoding_left_chunks,
         )
 
         # Lookahead + conformer encoder
-        xs = self.pre_lookahead_layer(xs)
+        xs = self.pre_lookahead_layer(xs, context=embedded_context)
         xs = self.forward_layers(xs, chunk_masks, pos_emb, mask_pad)
 
         # Upsample + conformer encoder
@@ -496,13 +560,16 @@ class UpsampleConformerEncoder(nn.Module):
         xs, pos_emb, masks = self.up_embed(xs, masks)
         mask_pad = masks  # (B, 1, T')
 
+        # Scale chunk size by upsample stride for upsampled encoder
+        effective_up_chunk_size = effective_chunk_size * self.up_layer.stride
+
         chunk_masks = add_optional_chunk_mask(
             xs,
             masks,
             self.use_dynamic_chunk,
             self.use_dynamic_left_chunk,
             decoding_chunk_size,
-            self.static_chunk_size * self.up_layer.stride,
+            effective_up_chunk_size,
             num_decoding_left_chunks,
         )
 
@@ -513,11 +580,22 @@ class UpsampleConformerEncoder(nn.Module):
 
         return xs, masks
 
+    @property
+    def encoders(self):
+        """Get encoder layers as a list."""
+        return [getattr(self, f"encoders_{i}") for i in range(self._num_encoders)]
+
+    @property
+    def up_encoders(self):
+        """Get up_encoder layers as a list."""
+        return [getattr(self, f"up_encoders_{i}") for i in range(self._num_up_encoders)]
+
     def forward_layers(
         self, xs: mx.array, chunk_masks: mx.array, pos_emb: mx.array, mask_pad: mx.array
     ) -> mx.array:
         """Forward through main encoder layers."""
-        for layer in self.encoders:
+        for i in range(self._num_encoders):
+            layer = getattr(self, f"encoders_{i}")
             xs, chunk_masks, _, _ = layer(xs, chunk_masks, pos_emb, mask_pad)
         return xs
 
@@ -525,6 +603,7 @@ class UpsampleConformerEncoder(nn.Module):
         self, xs: mx.array, chunk_masks: mx.array, pos_emb: mx.array, mask_pad: mx.array
     ) -> mx.array:
         """Forward through upsampling encoder layers."""
-        for layer in self.up_encoders:
+        for i in range(self._num_up_encoders):
+            layer = getattr(self, f"up_encoders_{i}")
             xs, chunk_masks, _, _ = layer(xs, chunk_masks, pos_emb, mask_pad)
         return xs

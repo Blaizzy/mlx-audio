@@ -1,6 +1,3 @@
-# Ported from https://github.com/shivammehta25/Matcha-TTS
-# Original: matcha/models/components/flow_matching.py
-
 from dataclasses import dataclass
 
 import mlx.core as mx

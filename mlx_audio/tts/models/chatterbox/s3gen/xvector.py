@@ -1,6 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-# Modified from 3D-Speaker (https://github.com/alibaba-damo-academy/3D-Speaker)
-
 from collections import OrderedDict
 from typing import Dict
 
@@ -11,11 +8,6 @@ from mlx_audio.utils import mel_filters, stft
 
 
 def _povey_window(size: int) -> mx.array:
-    """
-    Create a Povey window (used by Kaldi).
-
-    The Povey window is a modified Hann window raised to the power of 0.85.
-    """
     # Hann window: 0.5 - 0.5 * cos(2*pi*n/(N-1))
     n = mx.arange(size)
     hann = 0.5 - 0.5 * mx.cos(2 * mx.pi * n / (size - 1))
@@ -24,7 +16,6 @@ def _povey_window(size: int) -> mx.array:
 
 
 def _next_power_of_2(n: int) -> int:
-    """Return next power of 2 >= n."""
     if n <= 1:
         return 1
     return 1 << (n - 1).bit_length()
@@ -37,26 +28,7 @@ def kaldi_fbank(
     frame_length: float = 25.0,  # ms
     frame_shift: float = 10.0,  # ms
 ) -> mx.array:
-    """
-    Extract Kaldi-compatible filterbank features.
 
-    Matches torchaudio.compliance.kaldi.fbank defaults:
-    - window_type: povey (hann^0.85)
-    - round_to_power_of_two: True
-    - snip_edges: True (no padding at edges)
-    - remove_dc_offset: True
-    - preemphasis_coefficient: 0.97
-
-    Args:
-        audio: Audio waveform (T,) at 16kHz
-        sample_rate: Sample rate (default 16000)
-        num_mel_bins: Number of mel bins (default 80)
-        frame_length: Frame length in milliseconds
-        frame_shift: Frame shift in milliseconds
-
-    Returns:
-        Filterbank features (T', num_mel_bins)
-    """
     # Calculate frame parameters
     win_length = int(sample_rate * frame_length / 1000)  # 400 for 25ms @ 16kHz
     hop_length = int(sample_rate * frame_shift / 1000)  # 160 for 10ms @ 16kHz
@@ -146,7 +118,6 @@ def kaldi_fbank(
 
 
 class BasicResBlock(nn.Module):
-    """Basic residual block for 2D convolution."""
 
     expansion = 1
 
@@ -190,7 +161,6 @@ class BasicResBlock(nn.Module):
 
 
 class FCM(nn.Module):
-    """Feature Channel Module - processes input features."""
 
     def __init__(
         self, block=BasicResBlock, num_blocks=[2, 2], m_channels=32, feat_dim=80
@@ -221,10 +191,7 @@ class FCM(nn.Module):
         return layers
 
     def __call__(self, x: mx.array) -> mx.array:
-        # Input x: (B, F, T) where F is features, T is time
-        # (after swapaxes in CAMPPlus to match PyTorch's permute(0,2,1))
-        # MLX Conv2d expects NHWC format: (B, H, W, C)
-        # We treat F as H, T as W, and add C=1
+
         x = mx.expand_dims(x, -1)  # (B, F, T, 1) = (B, H, W, C)
         out = nn.relu(self.bn1(self.conv1(x)))
 
@@ -235,18 +202,14 @@ class FCM(nn.Module):
 
         out = nn.relu(self.bn2(self.conv2(out)))
 
-        # Reshape: (B, H, W, C) -> (B, C*H, W) to match PyTorch output
-        # Note: PyTorch output is (B, C, H, W) reshaped to (B, C*H, W)
-        # Our output is (B, H, W, C), need to permute first then reshape
         B, H, W, C = out.shape
-        # Permute to (B, C, H, W) then reshape
+
         out = mx.transpose(out, (0, 3, 1, 2))  # (B, C, H, W)
         out = mx.reshape(out, (B, C * H, W))
         return out
 
 
 def get_nonlinear(config_str: str, channels: int):
-    """Create non-linear activation layers based on config string."""
     layers = []
     for name in config_str.split("-"):
         if name == "relu":
@@ -263,7 +226,6 @@ def get_nonlinear(config_str: str, channels: int):
 
 
 def statistics_pooling(x: mx.array, axis: int = -1, keepdim: bool = False) -> mx.array:
-    """Compute mean and std statistics along axis."""
     mean = mx.mean(x, axis=axis, keepdims=keepdim)
     std = mx.sqrt(mx.var(x, axis=axis, keepdims=keepdim) + 1e-5)
     stats = mx.concatenate([mean, std], axis=-1 if not keepdim else axis)
@@ -271,7 +233,6 @@ def statistics_pooling(x: mx.array, axis: int = -1, keepdim: bool = False) -> mx
 
 
 def conv1d_pytorch_format(x: mx.array, conv_layer) -> mx.array:
-    """Apply MLX Conv1d to input in PyTorch format (B, C, T)."""
     # MLX Conv1d expects (B, T, C)
     x = mx.swapaxes(x, 1, 2)  # (B, C, T) -> (B, T, C)
     x = conv_layer(x)  # (B, T', C')
@@ -280,14 +241,12 @@ def conv1d_pytorch_format(x: mx.array, conv_layer) -> mx.array:
 
 
 class StatsPool(nn.Module):
-    """Statistics pooling layer."""
 
     def __call__(self, x: mx.array) -> mx.array:
         return statistics_pooling(x)
 
 
 class TDNNLayer(nn.Module):
-    """Time-Delay Neural Network layer."""
 
     def __init__(
         self,
@@ -330,7 +289,6 @@ class TDNNLayer(nn.Module):
 
 
 class CAMLayer(nn.Module):
-    """Context Attentive Module layer."""
 
     def __init__(
         self,
@@ -367,7 +325,6 @@ class CAMLayer(nn.Module):
     def seg_pooling(
         self, x: mx.array, seg_len: int = 100, stype: str = "avg"
     ) -> mx.array:
-        """Segment pooling - pool each segment independently then expand back."""
         B, C, T = x.shape
 
         # Calculate number of segments (ceil mode)
@@ -402,7 +359,6 @@ class CAMLayer(nn.Module):
 
 
 class CAMDenseTDNNLayer(nn.Module):
-    """CAM Dense TDNN layer."""
 
     def __init__(
         self,
@@ -434,8 +390,7 @@ class CAMDenseTDNNLayer(nn.Module):
         )
 
     def __call__(self, x: mx.array) -> mx.array:
-        # Input x: (B, C, T) - PyTorch format
-        # Convert to MLX format for BatchNorm
+
         x = mx.swapaxes(x, 1, 2)  # (B, C, T) -> (B, T, C)
 
         # Apply nonlinear1 (BatchNorm) in MLX format
@@ -458,7 +413,6 @@ class CAMDenseTDNNLayer(nn.Module):
 
 
 class CAMDenseTDNNBlock(nn.Module):
-    """CAM Dense TDNN block with multiple layers."""
 
     def __init__(
         self,
@@ -496,7 +450,6 @@ class CAMDenseTDNNBlock(nn.Module):
 
 
 class TransitLayer(nn.Module):
-    """Transition layer between dense blocks."""
 
     def __init__(
         self,
@@ -510,23 +463,19 @@ class TransitLayer(nn.Module):
         self.linear = nn.Conv1d(in_channels, out_channels, 1, bias=bias)
 
     def __call__(self, x: mx.array) -> mx.array:
-        # Input x: (B, C, T) - PyTorch format
-        # Convert to MLX format for BatchNorm
+
         x = mx.swapaxes(x, 1, 2)  # (B, C, T) -> (B, T, C)
 
         for layer in self.nonlinear:
             x = layer(x) if callable(layer) else layer(x)
 
-        # Apply Conv1d - stays in MLX format
         x = self.linear(x)
 
-        # Convert back to PyTorch format
         x = mx.swapaxes(x, 1, 2)  # (B, T, C) -> (B, C, T)
         return x
 
 
 class DenseLayer(nn.Module):
-    """Dense layer for final embedding."""
 
     def __init__(
         self,
@@ -541,7 +490,6 @@ class DenseLayer(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         if len(x.shape) == 2:
-            # 2D input: (B, C) - expand to (B, 1, C) for MLX conv1d
             x = mx.expand_dims(x, 1)  # (B, C) -> (B, 1, C)
             x = self.linear(x)  # (B, 1, C') - MLX Conv1d
             # Apply nonlinear in MLX format (B, T, C)
@@ -565,11 +513,6 @@ class DenseLayer(nn.Module):
 
 
 class CAMPPlus(nn.Module):
-    """
-    CAM++ speaker embedding model.
-
-    Context-Aware Module Plus for speaker verification.
-    """
 
     def __init__(
         self,
@@ -636,18 +579,7 @@ class CAMPPlus(nn.Module):
             )
 
     def sanitize(self, weights: dict) -> dict:
-        """
-        Sanitize PyTorch weights for MLX.
 
-        Handles:
-        - Name mapping: xvector.block1 -> blocks.0, xvector.transit1 -> transits.0, etc.
-        - Conv2d weight transposition: PyTorch (O,I,H,W) -> MLX (O,H,W,I)
-        - Conv1d weight transposition: PyTorch (O,I,K) -> MLX (O,K,I)
-        - Skip num_batches_tracked for BatchNorm
-
-        This method is idempotent - it checks shapes before transposing to support
-        both PyTorch-format and pre-converted MLX-format weights.
-        """
         import re
 
         from mlx.utils import tree_flatten

@@ -1,6 +1,3 @@
-# Ported from https://github.com/shivammehta25/Matcha-TTS
-# Original: matcha/models/components/transformer.py
-
 import math
 
 import mlx.core as mx
@@ -26,7 +23,8 @@ class DiffusersAttention(nn.Module):
         query_dim: int,
         heads: int = 8,
         dim_head: int = 64,
-        bias: bool = False,
+        qkv_bias: bool = False,
+        out_bias: bool = True,
     ):
         super().__init__()
         self.heads = heads
@@ -35,10 +33,11 @@ class DiffusersAttention(nn.Module):
         self.scale = dim_head**-0.5
 
         # Match sanitized weight naming: query_proj, key_proj, value_proj, out_proj
-        self.query_proj = nn.Linear(query_dim, self.inner_dim, bias=bias)
-        self.key_proj = nn.Linear(query_dim, self.inner_dim, bias=bias)
-        self.value_proj = nn.Linear(query_dim, self.inner_dim, bias=bias)
-        self.out_proj = nn.Linear(self.inner_dim, query_dim, bias=bias)
+        # Note: CosyVoice2 has no bias on q/k/v but has bias on out_proj
+        self.query_proj = nn.Linear(query_dim, self.inner_dim, bias=qkv_bias)
+        self.key_proj = nn.Linear(query_dim, self.inner_dim, bias=qkv_bias)
+        self.value_proj = nn.Linear(query_dim, self.inner_dim, bias=qkv_bias)
+        self.out_proj = nn.Linear(self.inner_dim, query_dim, bias=out_bias)
 
     def __call__(
         self,
@@ -57,19 +56,42 @@ class DiffusersAttention(nn.Module):
         k = k.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
         v = v.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
 
-        # Prepare mask for mx.fast.scaled_dot_product_attention
-        # MLX expects boolean mask broadcastable to (B, heads, T_q, T_kv)
-        # where True = attend, False = mask out
-        mask = None
+        # Handle attention mask
+        # attention_mask can be:
+        # - None: no masking
+        # - Boolean mask (B, T) or (B, T, T): True = attend
+        # - Additive bias (B, T, T): 0 = attend, large negative = mask
         if attention_mask is not None:
-            # attention_mask: (B, T) -> (B, 1, 1, T)
-            if attention_mask.ndim == 2:
-                mask = attention_mask[:, None, None, :]
+            # Check if it's additive bias (contains large negative values)
+            # or boolean mask
+            if attention_mask.dtype == mx.bool_:
+                # Boolean mask - convert to proper shape for SDPA
+                if attention_mask.ndim == 2:
+                    mask = attention_mask[:, None, None, :]
+                elif attention_mask.ndim == 3:
+                    # (B, T_q, T_kv) -> (B, 1, T_q, T_kv)
+                    mask = attention_mask[:, None, :, :]
+                else:
+                    mask = attention_mask
+                out = mx.fast.scaled_dot_product_attention(
+                    q, k, v, scale=self.scale, mask=mask
+                )
             else:
-                mask = attention_mask
-
-        # Use MLX fast attention (fused kernel)
-        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
+                # Additive bias - compute attention manually
+                # attention_mask shape: (B, T_q, T_kv) with values 0 or -1e10
+                scores = (q @ k.transpose(0, 1, 3, 2)) * self.scale  # (B, heads, T, T)
+                # Add bias (broadcast across heads)
+                if attention_mask.ndim == 3:
+                    scores = scores + attention_mask[:, None, :, :]
+                else:
+                    scores = scores + attention_mask
+                weights = mx.softmax(scores, axis=-1)
+                out = weights @ v
+        else:
+            # No mask - use fast path
+            out = mx.fast.scaled_dot_product_attention(
+                q, k, v, scale=self.scale, mask=None
+            )
 
         # Reshape back: (B, heads, T, dim_head) -> (B, T, inner_dim)
         out = out.transpose(0, 2, 1, 3).reshape(B, T, self.inner_dim)
@@ -104,11 +126,13 @@ class BasicTransformerBlock(nn.Module):
         # PyTorch: inner_dim = heads * dim_head = 8 * 64 = 512
         # Projections: (256, 512) for q/k/v, (512, 256) for out
         # Named 'attn' to match sanitized weight keys (e.g., .attn.query_proj)
+        # Note: CosyVoice2 has no bias on q/k/v but has bias on out_proj
         self.attn = DiffusersAttention(
             query_dim=dim,
             heads=num_attention_heads,
             dim_head=attention_head_dim,
-            bias=False,
+            qkv_bias=False,
+            out_bias=True,
         )
         # Feed-forward with GEGLU
         # Sanitize converts: ff.net.0.proj -> ff.layers.0, ff.net.2 -> ff.layers.1
@@ -141,14 +165,37 @@ class FeedForward(nn.Module):
         super().__init__()
         inner_dim = mult  # mult is passed as dim * 4, so inner_dim = dim * 4
         # Weights: ff.net.0.proj (256->1024), ff.net.2 (1024->256)
-        # Sanitize renames: ff.net.0.proj -> ff.layers.0, ff.net.2 -> ff.layers.1
-        self.layers = [
-            nn.Linear(dim, inner_dim),  # 256 -> 1024
-            nn.Linear(inner_dim, dim),  # 1024 -> 256
-        ]
+        # Keys: ff.layers.0.weight/bias, ff.layers.1.weight/bias
+        # Use a container class that exposes indexed attributes
+        self.layers = LayerList(
+            [
+                nn.Linear(dim, inner_dim),  # 256 -> 1024
+                nn.Linear(inner_dim, dim),  # 1024 -> 256
+            ]
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.layers[0](x)
         x = nn.gelu(x)
         x = self.layers[1](x)
         return x
+
+
+class LayerList(nn.Module):
+    """
+    A list-like container for layers that exposes indexed attributes.
+
+    This allows weight loading with keys like 'layers.0.weight'.
+    """
+
+    def __init__(self, layers):
+        super().__init__()
+        for i, layer in enumerate(layers):
+            setattr(self, str(i), layer)
+        self._n_layers = len(layers)
+
+    def __getitem__(self, idx):
+        return getattr(self, str(idx))
+
+    def __len__(self):
+        return self._n_layers
