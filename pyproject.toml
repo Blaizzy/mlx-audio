@@ -23,7 +23,8 @@ dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
     "huggingface_hub>=0.27.0",
-    "transformers>=4.49.0",
+    "transformers>=4.49.0,<5.0.0",
+    "hf_transfer",
 ]
 
 [project.optional-dependencies]
