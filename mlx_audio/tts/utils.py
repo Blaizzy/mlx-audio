@@ -147,6 +147,34 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     if isinstance(model_path, str):
         model_path = get_model_path(model_path)
 
+    def _load_chatterbox_config(mp: Path) -> Optional[dict]:
+        """Build a minimal config for ResembleAI/Chatterbox-Turbo when no config.json is present."""
+        chatterbox_assets = [
+            mp / "t3_turbo_v1.safetensors",
+            mp / "s3gen_meanflow.safetensors",
+            mp / "ve.safetensors",
+        ]
+        if not any(p.exists() for p in chatterbox_assets):
+            return None
+
+        return {
+            "model_type": "chatterbox",
+            "architecture": "chatterbox",
+            "hidden_size": 1024,
+            "num_hidden_layers": 24,
+            "num_attention_heads": 16,
+            "n_positions": 8196,
+            "layer_norm_epsilon": 1e-5,
+            "text_tokens_dict_size": 50276,
+            "speech_tokens_dict_size": 6563,
+            "start_speech_token": 6561,
+            "stop_speech_token": 6562,
+            "speech_cond_prompt_len": 375,
+            "speaker_embed_size": 256,
+            "sample_rate": 24000,
+            "torch_dtype": "float32",
+        }
+
     try:
         return AutoConfig.from_pretrained(model_path, **kwargs).to_dict()
     except ValueError:
@@ -154,6 +182,9 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
             with open(model_path / "config.json", encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError as exc:
+            chatterbox_config = _load_chatterbox_config(model_path)
+            if chatterbox_config is not None:
+                return chatterbox_config
             raise FileNotFoundError(f"Config not found at {model_path}") from exc
 
 

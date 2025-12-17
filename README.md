@@ -193,6 +193,25 @@ python -m mlx_audio.tts.generate --model mlx-community/csm-1b --text "Hello from
 
 You can pass any audio to clone the voice from or download sample audio file from [here](https://huggingface.co/mlx-community/csm-1b/tree/main/prompts).
 
+### Chatterbox-Turbo (ResembleAI)
+
+Turbo is a 350M zero-shot voice cloning model. The text backbone runs in MLX; the speech decoder uses the upstream torch implementation.
+
+Usage:
+
+1. Convert once:
+```bash
+python -m mlx_audio.tts.convert --hf-path ResembleAI/chatterbox-turbo --mlx-path ./chatterbox-turbo-mlx --dtype float16
+```
+2. Install the optional torch deps for decoding (one time):
+```bash
+pip install "git+https://github.com/resemble-ai/chatterbox.git"
+```
+3. Generate (requires a ≥5s reference clip):
+```bash
+python -m mlx_audio.tts.generate --model ./chatterbox-turbo-mlx --text "Hi there, thanks for calling back!" --ref_audio your_voice.wav --temperature 0.8 --top_p 0.95
+```
+
 ## Advanced Features
 
 ### Quantization
