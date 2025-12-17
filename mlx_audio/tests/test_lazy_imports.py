@@ -5,7 +5,7 @@ import unittest
 
 
 class TestLazyImports(unittest.TestCase):
-    """Test utils modules don't eagerly import optional dependencies."""
+    """Test modules don't eagerly import optional dependencies."""
 
     def test_stt_utils_no_eager_imports(self):
         """Importing stt.utils should not import soundfile or scipy."""
@@ -29,6 +29,15 @@ class TestLazyImports(unittest.TestCase):
         self.assertNotIn("mlx_lm", sys.modules)
         self.assertNotIn("mlx_lm.utils", sys.modules)
         self.assertNotIn("mlx_lm.convert", sys.modules)
+
+    def test_codec_no_eager_imports(self):
+        """Importing codec should not import soundfile."""
+        if "mlx_audio.codec" in sys.modules:
+            self.skipTest("codec already imported")
+
+        import mlx_audio.codec  # noqa: F401
+
+        self.assertNotIn("soundfile", sys.modules)
 
 
 if __name__ == "__main__":
