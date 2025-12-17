@@ -63,7 +63,7 @@ jobs:
           - extra: tts
             verify: "from mlx_audio.tts.utils import load_model"
           - extra: sts
-            verify: "from mlx_audio.sts import VoicePipeline"
+            verify: "from mlx_audio.sts.voice_pipeline import VoicePipeline"
 
     steps:
       - uses: actions/checkout@v4
