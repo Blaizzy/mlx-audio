@@ -46,3 +46,18 @@ def test_dsp_all_exports():
 
     for name in expected:
         assert hasattr(dsp, name), f"Missing export: {name}"
+
+
+def test_utils_lazy_imports():
+    """Verify utils.py uses lazy imports for TTS/STT."""
+    # Clear any cached imports
+    modules_to_remove = [mod for mod in sys.modules.keys() if "mlx_audio" in mod]
+    for mod in modules_to_remove:
+        del sys.modules[mod]
+
+    # Import just the DSP functions from utils
+    from mlx_audio.utils import stft
+
+    # TTS/STT should not be loaded yet (lazy imports)
+    assert "mlx_audio.tts.utils" not in sys.modules
+    assert "mlx_audio.stt.utils" not in sys.modules
