@@ -52,11 +52,12 @@ class TestOptionalDeps:
             config = tomllib.load(f)
 
         deps = config["project"]["dependencies"]
-        assert len(deps) == 3, f"Core should have 3 deps, got {len(deps)}: {deps}"
+        assert len(deps) == 4, f"Core should have 4 deps, got {len(deps)}: {deps}"
         dep_names = [d.split(">=")[0].split("==")[0] for d in deps]
         assert "mlx" in dep_names
         assert "numpy" in dep_names
         assert "huggingface_hub" in dep_names
+        assert "transformers" in dep_names
 
     def test_stt_extra_defined(self):
         """Verify [stt] extra contains expected deps."""
@@ -67,8 +68,9 @@ class TestOptionalDeps:
 
         stt_deps = config["project"]["optional-dependencies"]["stt"]
         dep_names = [d.split(">=")[0].split("==")[0] for d in stt_deps]
-        assert "transformers" in dep_names
+        # Note: transformers moved to core deps
         assert "tiktoken" in dep_names
+        assert "tqdm" in dep_names
 
     def test_tts_extra_defined(self):
         """Verify [tts] extra contains expected deps."""
@@ -82,31 +84,29 @@ class TestOptionalDeps:
         assert "misaki" in dep_names
         assert "spacy" in dep_names
 
-    def test_sts_extra_no_self_reference(self):
-        """Verify [sts] extra doesn't use self-referencing (mlx-audio[...])."""
+    def test_sts_extra_uses_self_reference(self):
+        """Verify [sts] extra uses self-referencing for DRY deps."""
         import tomllib
 
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
         sts_deps = config["project"]["optional-dependencies"]["sts"]
-        for dep in sts_deps:
-            assert not dep.startswith(
-                "mlx-audio["
-            ), f"Self-reference found in sts: {dep}"
+        # Self-references like mlx-audio[stt,tts] are valid pip features for DRY
+        has_self_ref = any(dep.startswith("mlx-audio[") for dep in sts_deps)
+        assert has_self_ref, "STS should use self-reference for DRY deps"
 
-    def test_all_extra_no_self_reference(self):
-        """Verify [all] extra doesn't use self-referencing."""
+    def test_all_extra_uses_self_reference(self):
+        """Verify [all] extra uses self-referencing for DRY deps."""
         import tomllib
 
         with open(PROJECT_ROOT / "pyproject.toml", "rb") as f:
             config = tomllib.load(f)
 
         all_deps = config["project"]["optional-dependencies"]["all"]
-        for dep in all_deps:
-            assert not dep.startswith(
-                "mlx-audio["
-            ), f"Self-reference found in all: {dep}"
+        # Self-references are valid pip features for DRY
+        has_self_ref = any(dep.startswith("mlx-audio[") for dep in all_deps)
+        assert has_self_ref, "All should use self-reference for DRY deps"
 
     def test_server_extra_defined(self):
         """Verify [server] extra contains expected deps."""
