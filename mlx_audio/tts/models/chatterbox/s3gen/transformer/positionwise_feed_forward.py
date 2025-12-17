@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 import mlx.core as mx
 import mlx.nn as nn
 

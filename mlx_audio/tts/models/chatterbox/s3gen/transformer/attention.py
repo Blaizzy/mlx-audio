@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 import math
 from typing import Tuple
 

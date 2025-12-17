@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 import math
 from typing import Tuple, Union
 
@@ -161,7 +159,8 @@ class EspnetRelPositionalEncoding(nn.Module):
 
         # Reverse positive and concatenate
         # pe_positive: [0, 1, 2, ...] -> reversed: [..., 2, 1, 0]
-        pe_positive = mx.expand_dims(mx.flip(pe_positive, axis=0), 0)
+        # Use slicing to reverse since MLX doesn't have flip
+        pe_positive = mx.expand_dims(pe_positive[::-1], 0)
         # pe_negative: skip first (which is 0) -> [1, 2, 3, ...]
         pe_negative = mx.expand_dims(pe_negative[1:], 0)
 

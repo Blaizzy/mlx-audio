@@ -1,6 +1,3 @@
-# Chatterbox-specific mel spectrogram computation
-# This matches PyTorch's torch.stft behavior (drops the last frame)
-
 import mlx.core as mx
 
 from mlx_audio.utils import mel_filters, stft

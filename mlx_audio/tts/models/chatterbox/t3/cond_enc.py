@@ -1,5 +1,3 @@
-# Ported from https://github.com/resemble-ai/chatterbox
-
 from dataclasses import dataclass
 from typing import Optional
 
