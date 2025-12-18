@@ -665,6 +665,163 @@ class TestLlamaModel(unittest.TestCase):
             self.assertIn("lm_head.weight", sanitized2)
 
 
+class TestQwen3Model(unittest.TestCase):
+    @property
+    def _default_config(self):
+        return {
+            "head_dim": 128,
+            "hidden_size": 2048,
+            "intermediate_size": 6144,
+            "max_position_embeddings": 40960,
+            "model_type": "qwen3",
+            "num_attention_heads": 16,
+            "num_hidden_layers": 28,
+            "num_key_value_heads": 8,
+            "rms_norm_eps": 1e-06,
+            "rope_theta": 1000000,
+            "tie_word_embeddings": True,
+            "vocab_size": 180352,
+        }
+
+    @patch("transformers.AutoTokenizer")
+    def test_init(self, mock_tokenizer):
+        """Test Qwen3Model initialization."""
+        from mlx_audio.tts.models.qwen3.qwen3 import Model, ModelConfig
+
+        # Mock the tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
+
+        # Create a minimal config
+        config = ModelConfig(**self._default_config)
+
+        # Initialize model
+        model = Model(config)
+
+        # Check that model was created
+        self.assertIsInstance(model, Model)
+        self.assertEqual(model.model_type, "qwen3")
+        self.assertIsNone(model.tokenizer)
+
+    @patch("transformers.AutoTokenizer")
+    def test_forward(self, mock_tokenizer):
+        """Test forward pass."""
+        from mlx_audio.tts.models.qwen3.qwen3 import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+
+        # Test forward pass with random input
+        input_ids = mx.random.randint(0, config.vocab_size, (2, 9))
+        logits = model(input_ids)
+        self.assertEqual(logits.shape, (2, 9, config.vocab_size))
+
+    @patch("transformers.AutoTokenizer")
+    def test_prepare_input_ids_with_voice(self, mock_tokenizer):
+        """Test prepare_input_ids method with voice."""
+        from mlx_audio.tts.models.qwen3.qwen3 import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+
+        # Mock tokenizer __call__ to return proper input_ids
+        def mock_tokenize(text, return_tensors=None):
+            result = MagicMock()
+            # Return a simple token sequence for each text
+            result.input_ids = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int64)
+            return result
+
+        mock_tokenizer_instance.side_effect = mock_tokenize
+        mock_tokenizer_instance.__call__ = mock_tokenize
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+        model.tokenizer = mock_tokenizer_instance
+
+        # Test with voice
+        input_ids, input_mask = model.prepare_input_ids(["Hello", "World"], voice="zoe")
+
+        # Verify batch size
+        self.assertEqual(input_ids.shape[0], 2)
+        self.assertEqual(input_mask.shape[0], 2)
+
+        # Verify mask shape matches input_ids shape
+        self.assertEqual(input_ids.shape, input_mask.shape)
+
+    @patch("transformers.AutoTokenizer")
+    def test_parse_output(self, mock_tokenizer):
+        """Test parse_output method."""
+        from mlx_audio.tts.models.qwen3.qwen3 import (
+            AUDIO_TOKENS_START,
+            END_OF_SPEECH,
+            START_OF_SPEECH,
+            Model,
+            ModelConfig,
+        )
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+
+        # Create input with speech tokens
+        # Format: [START_OF_SPEECH, audio_tokens..., END_OF_SPEECH]
+        audio_tokens = [AUDIO_TOKENS_START + i for i in range(7)]  # 7 audio tokens
+        input_sequence = [START_OF_SPEECH] + audio_tokens + [END_OF_SPEECH]
+        input_ids = mx.array([input_sequence], dtype=mx.int64)
+
+        # Test parse_output
+        code_lists = model.parse_output(input_ids)
+
+        # Should return one code list (one batch item)
+        self.assertEqual(len(code_lists), 1)
+
+        # The code list should have 7 items (trimmed to multiple of 7)
+        self.assertEqual(len(code_lists[0]), 7)
+
+        # Verify codes are offset by AUDIO_TOKENS_START
+        for i, code in enumerate(code_lists[0]):
+            self.assertEqual(code, i)
+
+    @patch("transformers.AutoTokenizer")
+    def test_sample_rate(self, mock_tokenizer):
+        """Test sample_rate property."""
+        from mlx_audio.tts.models.qwen3.qwen3 import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+
+        # Default sample rate should be 24000
+        self.assertEqual(model.sample_rate, 24000)
+
+    @patch("transformers.AutoTokenizer")
+    def test_layers_property(self, mock_tokenizer):
+        """Test layers property returns model layers."""
+        from mlx_audio.tts.models.qwen3.qwen3 import Model, ModelConfig
+
+        # Mock tokenizer instance
+        mock_tokenizer_instance = MagicMock()
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
+
+        config = ModelConfig(**self._default_config)
+        model = Model(config)
+
+        # Verify layers property returns the model's layers
+        layers = model.layers
+        self.assertEqual(len(layers), config.num_hidden_layers)
+
+
 class TestOuteTTSModel(unittest.TestCase):
     @property
     def _default_config(self):
