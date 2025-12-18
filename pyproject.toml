@@ -1,0 +1,109 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mlx-audio"
+dynamic = ["version"]
+description = "MLX-Audio is a package for inference of text-to-speech (TTS) and speech-to-speech (STS) models locally on your Mac using MLX"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Prince Canuma", email = "prince.gdt@gmail.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.9"
+
+# Core dependencies
+dependencies = [
+    "mlx>=0.25.2",
+    "numpy>=1.26.4",
+    "huggingface_hub>=0.27.0",
+    "transformers>=4.49.0,<5.0.0",
+    "hf_transfer",
+]
+
+[project.optional-dependencies]
+# STT dependencies
+stt = [
+    "tiktoken>=0.9.0",
+    "tqdm>=4.67.1",
+]
+
+# TTS dependencies
+tts = [
+    "misaki[en]>=0.8.2",
+    "loguru>=0.7.3",
+    "num2words>=0.5.14",
+    "spacy>=3.8.4",
+    "phonemizer-fork>=3.3.2",
+    "espeakng-loader>=0.2.4",
+    "sentencepiece>=0.2.0",
+    "sounddevice>=0.5.1",
+    "soundfile>=0.13.1",
+    "einops>=0.8.1",
+    "tqdm>=4.67.1",
+    "pyloudnorm>=0.1.1",
+    "omegaconf==2.3.0",
+    "einx==0.3.0",
+    "dacite>=1.9.2",
+    "mistral-common[audio]",
+]
+
+# Server dependencies
+server = [
+    "fastapi>=0.95.0",
+    "uvicorn>=0.22.0",
+]
+
+# STS (Speech-to-Speech) requires both STT and TTS + additional deps
+sts = [
+    "mlx-audio[stt,tts]",
+    "mlx-vlm>=0.1.27",
+    "fastrtc[vad,stt]",
+    "webrtcvad>=2.0.10",
+]
+
+# Full installation (all features)
+all = [
+    "mlx-audio[stt,tts,sts,server]",
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
+[project.scripts]
+"mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
+"mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
+"mlx_audio.server" = "mlx_audio.server:main"
+
+[project.urls]
+Homepage = "https://github.com/Blaizzy/mlx-audio"
+Repository = "https://github.com/Blaizzy/mlx-audio"
+
+[tool.setuptools.dynamic]
+version = {attr = "mlx_audio.version.__version__"}
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mlx_audio", "mlx_audio.*"]
+
+[tool.setuptools.package-data]
+mlx_audio = [
+    "tts/*.html",
+    "tts/*.js",
+    "tts/*.css",
+    "tts/**/*.json",
+    "tts/static/**/*",
+    "stt/**/*.tiktoken",
+]

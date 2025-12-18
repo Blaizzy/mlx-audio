@@ -1,3 +1,15 @@
 include ./requirements.txt
 recursive-include mlx_audio/ *.py
-recursive-include mlx_audio/tts *.html 
+recursive-include mlx_audio/tts *.html
+recursive-include mlx_audio/tts *.json
+recursive-include mlx_audio/tts *.tsx
+recursive-include mlx_audio/tts *.mjs
+recursive-include mlx_audio/tts *.css
+recursive-include mlx_audio/tts *.md
+
+# Exclude large directories
+prune mlx_audio/ui/node_modules
+prune mlx_audio/ui/.next
+prune mlx_audio_swift
+global-exclude *.pyc
+global-exclude __pycache__

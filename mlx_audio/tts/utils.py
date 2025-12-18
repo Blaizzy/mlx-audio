@@ -11,9 +11,6 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
-from mlx_lm.convert import mixed_quant_predicate_builder
-from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
-from transformers import AutoConfig
 
 MODEL_REMAPPING = {
     "outetts": "outetts",
@@ -22,6 +19,7 @@ MODEL_REMAPPING = {
     "voxcpm": "voxcpm",
     "voxcpm1.5": "voxcpm",
     "vibevoice_streaming": "vibevoice",
+    "chatterbox_turbo": "chatterbox_turbo",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
@@ -106,11 +104,11 @@ def get_model_and_args(model_type: str, model_name: List[str]):
         ValueError: If the model type is not supported (module import fails).
     """
     # Stage 1: Check if the model type is in the remapping
-    model_type = MODEL_REMAPPING.get(model_type, model_type)
+    model_type_mapped = MODEL_REMAPPING.get(model_type, None)
 
     # Stage 2: Check for partial matches in segments of the model name
     models = get_available_models()
-    if model_name is not None:
+    if model_name is not None and model_type_mapped is None:
         for part in model_name:
             # First check if the part matches an available model directory name
             if part in models:
@@ -144,6 +142,8 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     Raises:
         FileNotFoundError: If config.json is not found at the path
     """
+    from transformers import AutoConfig
+
     if isinstance(model_path, str):
         model_path = get_model_path(model_path)
 
@@ -394,6 +394,9 @@ def convert(
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
 ):
+    from mlx_lm.convert import mixed_quant_predicate_builder
+    from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
+
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)
     model, config = fetch_from_hub(

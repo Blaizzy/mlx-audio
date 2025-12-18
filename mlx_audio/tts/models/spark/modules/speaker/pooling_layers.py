@@ -246,7 +246,7 @@ class MQMHASTP(nn.Module):
         head_num=8,
         d_s=2,
         bottleneck_dim=64,
-        **kwargs
+        **kwargs,
     ):
         super(MQMHASTP, self).__init__()
         self.n_query = [

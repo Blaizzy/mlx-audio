@@ -1,3 +1,9 @@
+"""Pure audio processing utilities - no TTS/STT imports.
+
+This module contains only audio processing functions (window functions, STFT, mel filterbanks)
+that can be imported without pulling in TTS or STT dependencies.
+"""
+
 import math
 
 __all__ = [
