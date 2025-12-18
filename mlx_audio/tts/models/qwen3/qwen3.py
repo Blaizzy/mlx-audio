@@ -9,11 +9,23 @@ from mlx_lm.models.qwen3 import Model as Qwen3Model
 from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
-from transformers import AutoTokenizer
 
 from mlx_audio.codec.models.snac import SNAC
 
 from ..base import GenerationResult
+
+# VyvoTTS special token IDs (Qwen3-based tokenizer)
+TOKENIZER_LENGTH = 151669
+START_OF_TEXT = 151643
+END_OF_TEXT = 151645
+START_OF_SPEECH = TOKENIZER_LENGTH + 1  # 151670
+END_OF_SPEECH = TOKENIZER_LENGTH + 2  # 151671
+START_OF_HUMAN = TOKENIZER_LENGTH + 3  # 151672
+END_OF_HUMAN = TOKENIZER_LENGTH + 4  # 151673
+START_OF_AI = TOKENIZER_LENGTH + 5  # 151674
+END_OF_AI = TOKENIZER_LENGTH + 6  # 151675
+PAD_TOKEN = TOKENIZER_LENGTH + 7  # 151676
+AUDIO_TOKENS_START = TOKENIZER_LENGTH + 10  # 151679
 
 
 @dataclass
@@ -97,8 +109,8 @@ class Model(Qwen3Model):
         return self.config.sample_rate
 
     def parse_output(self, input_ids):
-        token_to_find = 128257
-        token_to_remove = 128258
+        token_to_find = START_OF_SPEECH  # 151670
+        token_to_remove = END_OF_SPEECH  # 151671
 
         # MLX doesn't have nonzero, so we need to create indices manually
         mask = input_ids == token_to_find
@@ -137,7 +149,7 @@ class Model(Qwen3Model):
             row_length = row.shape[0]
             new_length = (row_length // 7) * 7
             trimmed_row = row[:new_length]
-            trimmed_row = [t - 128266 for t in trimmed_row]
+            trimmed_row = [t - AUDIO_TOKENS_START for t in trimmed_row]  # 151679
             code_lists.append(trimmed_row)
 
         return code_lists
@@ -152,17 +164,19 @@ class Model(Qwen3Model):
         audio_input_ids = None
         if ref_audio is not None and ref_text is not None:
             print(
-                "\033[93mWARNING: Audio cloning doesn't work reliably on Orpheus.\033[0m \nA known issue affecting Torch and MLX versions. \nWill be fixed once the Canopy labs repo update their code or the model."
+                "\033[93mWARNING: Audio cloning doesn't work reliably on this model.\033[0m"
             )
-            audio_input_ids = encode_audio_to_codes(ref_audio) + 128266
+            audio_input_ids = encode_audio_to_codes(ref_audio) + AUDIO_TOKENS_START
             audio_transcript_ids = self.tokenizer(
                 ref_text, return_tensors="mlx"
             ).input_ids
         elif voice is not None:
             prompts = [f"{voice}: " + p for p in prompts]
 
-        start_token = mx.array([[151644]], dtype=mx.int64)  # Start of human
-        end_tokens = mx.array([[151645]], dtype=mx.int64)  # End of text, End of human
+        start_token = mx.array([[START_OF_HUMAN]], dtype=mx.int64)  # 151672
+        end_tokens = mx.array(
+            [[END_OF_TEXT, END_OF_HUMAN]], dtype=mx.int64
+        )  # 151645, 151673
 
         prompt_input_ids = []
         for prompt in prompts:
@@ -171,7 +185,7 @@ class Model(Qwen3Model):
             )
 
         batch_input_ids = []
-        pad_token = mx.array([128263], dtype=mx.int64)
+        pad_token = mx.array([PAD_TOKEN], dtype=mx.int64)  # 151676
         max_len = max([p.shape[1] for p in prompt_input_ids])
 
         for input_ids in prompt_input_ids:
@@ -183,8 +197,12 @@ class Model(Qwen3Model):
 
             # reference audio and transcript
             if audio_input_ids is not None:
-                audio_start_tokens = mx.array([[128261, 128257]], dtype=mx.int64)
-                audio_end_tokens = mx.array([[128258, 128262]], dtype=mx.int64)
+                audio_start_tokens = mx.array(
+                    [[START_OF_AI, START_OF_SPEECH]], dtype=mx.int64
+                )  # 151674, 151670
+                audio_end_tokens = mx.array(
+                    [[END_OF_SPEECH, END_OF_AI]], dtype=mx.int64
+                )  # 151671, 151675
                 ref_input_ids = mx.concatenate(
                     [
                         start_token,
@@ -201,7 +219,7 @@ class Model(Qwen3Model):
             # prompt
             one_prompt_input_ids = mx.concatenate(
                 [start_token, input_ids, end_tokens], axis=1
-            )  # SOH SOT Text EOT EOH
+            )  # SOH Text EOT EOH
             modified_input_ids.append(one_prompt_input_ids)
 
             batch_input_ids.append(mx.concatenate(modified_input_ids, axis=1))
@@ -262,7 +280,7 @@ class Model(Qwen3Model):
             if i % 50 == 0:
                 mx.clear_cache()
 
-            if next_token == 151645:
+            if next_token == END_OF_SPEECH:  # 151671
                 break
 
         code_lists = self.parse_output(input_ids)
