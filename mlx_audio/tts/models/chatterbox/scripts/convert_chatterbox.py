@@ -453,7 +453,9 @@ def convert_all(
     print(f"  Added {len(s3gen_weights)} S3Gen weights")
 
     # Note: S3Tokenizer is NOT included - it's in a separate repo (mlx-community/S3TokenizerV2)
-    print("\nNote: S3Tokenizer weights are loaded separately from mlx-community/S3TokenizerV2")
+    print(
+        "\nNote: S3Tokenizer weights are loaded separately from mlx-community/S3TokenizerV2"
+    )
 
     # Apply quantization if requested
     if quantize:
@@ -470,7 +472,9 @@ def convert_all(
         # Split and load weights by component
         ve_w = {k[3:]: v for k, v in all_weights_mx.items() if k.startswith("ve.")}
         t3_w = {k[3:]: v for k, v in all_weights_mx.items() if k.startswith("t3.")}
-        s3gen_w = {k[6:]: v for k, v in all_weights_mx.items() if k.startswith("s3gen.")}
+        s3gen_w = {
+            k[6:]: v for k, v in all_weights_mx.items() if k.startswith("s3gen.")
+        }
 
         ve_model.load_weights(list(ve_w.items()), strict=False)
         t3_model.load_weights(list(t3_w.items()), strict=False)
