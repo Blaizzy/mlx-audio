@@ -4,23 +4,34 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
 import mlx.core as mx
-import mlx.nn as nn
 import numpy as np
-
-from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT
-from mlx_audio.stt.models.whisper.audio import (
-    HOP_LENGTH,
-    N_FRAMES,
-    N_SAMPLES,
-    SAMPLE_RATE,
-)
-from mlx_audio.stt.models.whisper.decoding import DecodingOptions, DecodingResult
-from mlx_audio.stt.models.whisper.whisper import Model, ModelDimensions, STTOutput
 
 
 class TestWhisperModel(unittest.TestCase):
     def setUp(self):
-        self.dims = ModelDimensions(
+        # Import Whisper modules inside test class to avoid import issues
+        from mlx_audio.stt.models.whisper.audio import N_FRAMES, N_SAMPLES, SAMPLE_RATE
+        from mlx_audio.stt.models.whisper.decoding import (
+            DecodingOptions,
+            DecodingResult,
+        )
+        from mlx_audio.stt.models.whisper.whisper import (
+            Model,
+            ModelDimensions,
+            STTOutput,
+        )
+
+        # Store references for use in test methods
+        self.N_FRAMES = N_FRAMES
+        self.N_SAMPLES = N_SAMPLES
+        self.SAMPLE_RATE = SAMPLE_RATE
+        self.DecodingOptions = DecodingOptions
+        self.DecodingResult = DecodingResult
+        self.Model = Model
+        self.ModelDimensions = ModelDimensions
+        self.STTOutput = STTOutput
+
+        self.dims = self.ModelDimensions(
             n_mels=80,
             n_audio_ctx=1500,
             n_audio_state=384,
@@ -32,7 +43,7 @@ class TestWhisperModel(unittest.TestCase):
             n_text_head=6,
             n_text_layer=4,
         )
-        self.model_mock = MagicMock(spec=Model, name="MockModelInstance")
+        self.model_mock = MagicMock(spec=self.Model, name="MockModelInstance")
 
         self.model_mock.dims = self.dims
         self.model_mock.dtype = mx.float32
@@ -103,11 +114,11 @@ class TestWhisperModel(unittest.TestCase):
         }
         mock_mx_load.return_value = dummy_weights
 
-        model_instance = Model.from_pretrained(
+        model_instance = self.Model.from_pretrained(
             path_or_hf_repo="mlx-community/whisper-tiny", dtype=mx.float32
         )
 
-        self.assertIsInstance(model_instance, Model)
+        self.assertIsInstance(model_instance, self.Model)
         self.assertEqual(model_instance.dims.n_mels, dummy_config["n_mels"])
         mock_snapshot_download.assert_called_once_with(
             repo_id="mlx-community/whisper-tiny"
@@ -128,7 +139,9 @@ class TestWhisperModel(unittest.TestCase):
     ):
         """Test model.generate for a simple case with one segment."""
 
-        mock_mel_data = mx.zeros((N_FRAMES + 100, self.dims.n_mels), dtype=mx.float32)
+        mock_mel_data = mx.zeros(
+            (self.N_FRAMES + 100, self.dims.n_mels), dtype=mx.float32
+        )
         mock_log_mel.return_value = mock_mel_data
 
         EOT_TOKEN_ID = 50257
@@ -156,7 +169,7 @@ class TestWhisperModel(unittest.TestCase):
         mock_get_tokenizer.return_value = mock_tokenizer_inst
 
         decoded_tokens_list = [100, 200, EOT_TOKEN_ID]
-        mock_decoding_result = DecodingResult(
+        mock_decoding_result = self.DecodingResult(
             tokens=mx.array(decoded_tokens_list),
             temperature=0.0,
             avg_logprob=-0.25,
@@ -178,9 +191,9 @@ class TestWhisperModel(unittest.TestCase):
 
         mock_pad_or_trim.side_effect = pad_or_trim_side_effect
 
-        dummy_audio_input = np.zeros(SAMPLE_RATE * 1, dtype=np.float32)
+        dummy_audio_input = np.zeros(self.SAMPLE_RATE * 1, dtype=np.float32)
 
-        real_model_for_test = Model(self.dims, dtype=mx.float32)
+        real_model_for_test = self.Model(self.dims, dtype=mx.float32)
 
         # Patch this specific instance's 'decode' method
         with patch.object(
@@ -197,13 +210,13 @@ class TestWhisperModel(unittest.TestCase):
             mock_instance_decode.assert_called_once()
             args_decode_call, _ = mock_instance_decode.call_args
             self.assertEqual(
-                args_decode_call[0].shape, (N_FRAMES, self.dims.n_mels)
+                args_decode_call[0].shape, (self.N_FRAMES, self.dims.n_mels)
             )  # mel_segment
-            self.assertIsInstance(args_decode_call[1], DecodingOptions)
+            self.assertIsInstance(args_decode_call[1], self.DecodingOptions)
             self.assertEqual(args_decode_call[1].language, "en")
             self.assertEqual(args_decode_call[1].fp16, False)
 
-        self.assertIsInstance(output, STTOutput)
+        self.assertIsInstance(output, self.STTOutput)
         self.assertEqual(output.language, "en")
         expected_text_output = "hello world"
         self.assertEqual(output.text, expected_text_output)  #
@@ -227,7 +240,7 @@ class TestWhisperModel(unittest.TestCase):
         )
 
         mock_log_mel.assert_called_once_with(
-            ANY, n_mels=self.dims.n_mels, padding=N_SAMPLES
+            ANY, n_mels=self.dims.n_mels, padding=self.N_SAMPLES
         )
         np.testing.assert_array_equal(mock_log_mel.call_args[0][0], dummy_audio_input)
         mock_get_tokenizer.assert_called_once_with(
@@ -239,7 +252,7 @@ class TestWhisperModel(unittest.TestCase):
         mock_pad_or_trim.assert_called_once()
         args_pad_call, _ = mock_pad_or_trim.call_args
         self.assertEqual(args_pad_call[0].shape, (100, self.dims.n_mels))
-        self.assertEqual(args_pad_call[1], N_FRAMES)
+        self.assertEqual(args_pad_call[1], self.N_FRAMES)
 
 
 class TestParakeetModel(unittest.TestCase):
@@ -258,6 +271,8 @@ class TestParakeetModel(unittest.TestCase):
         mock_module_load_weights,
     ):
         """Test ParakeetTDT.from_pretrained method."""
+        # Import Parakeet module inside test to avoid import issues
+        from mlx_audio.stt.models.parakeet.parakeet import ParakeetTDT
 
         dummy_repo_id = "dummy/parakeet-tdt-model"
         dummy_config_path = "dummy_path/config.json"
@@ -375,6 +390,325 @@ class TestParakeetModel(unittest.TestCase):
         )  # d_model is correct for ConformerArgs
         self.assertEqual(model.vocabulary, dummy_vocabulary)
         self.assertEqual(model.durations, [0, 1, 2, 3])
+
+
+class TestGLMASRModel(unittest.TestCase):
+    """Tests for the GLM-ASR model."""
+
+    def setUp(self):
+        """Set up test fixtures."""
+        # Import GLM ASR modules inside test class to avoid import issues
+        from mlx_audio.stt.models.glmasr.config import (
+            LlamaConfig,
+            ModelConfig,
+            WhisperConfig,
+        )
+        from mlx_audio.stt.models.glmasr.glmasr import AudioEncoder
+        from mlx_audio.stt.models.glmasr.glmasr import Model as GLMASRModel
+        from mlx_audio.stt.models.glmasr.glmasr import RotaryEmbedding, WhisperEncoder
+
+        # Store references for use in test methods
+        self.WhisperConfig = WhisperConfig
+        self.LlamaConfig = LlamaConfig
+        self.ModelConfig = ModelConfig
+        self.GLMASRModel = GLMASRModel
+        self.RotaryEmbedding = RotaryEmbedding
+        self.WhisperEncoder = WhisperEncoder
+        self.AudioEncoder = AudioEncoder
+
+        self.whisper_config = WhisperConfig(
+            d_model=256,
+            encoder_attention_heads=4,
+            encoder_ffn_dim=1024,
+            encoder_layers=2,
+            num_mel_bins=80,
+            max_source_positions=1500,
+        )
+        self.llama_config = LlamaConfig(
+            vocab_size=1000,
+            hidden_size=256,
+            intermediate_size=512,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            eos_token_id=[2],
+        )
+        self.model_config = ModelConfig(
+            whisper_config=self.whisper_config,
+            lm_config=self.llama_config,
+            merge_factor=4,
+            use_rope=True,
+        )
+
+    def test_whisper_config_from_dict(self):
+        """Test WhisperConfig.from_dict method."""
+        config_dict = {
+            "d_model": 512,
+            "encoder_attention_heads": 8,
+            "encoder_ffn_dim": 2048,
+            "encoder_layers": 6,
+            "num_mel_bins": 128,
+            "max_source_positions": 3000,
+            "unknown_field": "should_be_ignored",
+        }
+        config = self.WhisperConfig.from_dict(config_dict)
+
+        self.assertEqual(config.d_model, 512)
+        self.assertEqual(config.encoder_attention_heads, 8)
+        self.assertEqual(config.encoder_ffn_dim, 2048)
+        self.assertEqual(config.encoder_layers, 6)
+        self.assertEqual(config.num_mel_bins, 128)
+        self.assertEqual(config.max_source_positions, 3000)
+
+    def test_llama_config_from_dict(self):
+        """Test LlamaConfig.from_dict method."""
+        config_dict = {
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "intermediate_size": 11008,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 500000.0,
+            "eos_token_id": [1, 2, 3],
+            "unknown_field": "should_be_ignored",
+        }
+        config = self.LlamaConfig.from_dict(config_dict)
+
+        self.assertEqual(config.vocab_size, 32000)
+        self.assertEqual(config.hidden_size, 4096)
+        self.assertEqual(config.intermediate_size, 11008)
+        self.assertEqual(config.num_hidden_layers, 32)
+        self.assertEqual(config.num_attention_heads, 32)
+        self.assertEqual(config.num_key_value_heads, 8)
+        self.assertEqual(config.rms_norm_eps, 1e-6)
+        self.assertEqual(config.rope_theta, 500000.0)
+        self.assertEqual(config.eos_token_id, [1, 2, 3])
+
+    def test_model_config_from_dict(self):
+        """Test ModelConfig.from_dict with nested configs."""
+        config_dict = {
+            "model_type": "glmasr",
+            "whisper_config": {
+                "d_model": 1280,
+                "encoder_attention_heads": 20,
+                "encoder_layers": 32,
+                "num_mel_bins": 128,
+            },
+            "lm_config": {
+                "vocab_size": 59264,
+                "hidden_size": 2048,
+                "num_hidden_layers": 28,
+            },
+            "merge_factor": 4,
+            "use_rope": True,
+            "max_whisper_length": 1500,
+        }
+        config = self.ModelConfig.from_dict(config_dict)
+
+        self.assertEqual(config.model_type, "glmasr")
+        self.assertEqual(config.merge_factor, 4)
+        self.assertEqual(config.use_rope, True)
+        self.assertEqual(config.max_whisper_length, 1500)
+
+        # Check nested whisper config
+        self.assertIsInstance(config.whisper_config, self.WhisperConfig)
+        self.assertEqual(config.whisper_config.d_model, 1280)
+        self.assertEqual(config.whisper_config.encoder_attention_heads, 20)
+        self.assertEqual(config.whisper_config.encoder_layers, 32)
+        self.assertEqual(config.whisper_config.num_mel_bins, 128)
+
+        # Check nested llama config
+        self.assertIsInstance(config.lm_config, self.LlamaConfig)
+        self.assertEqual(config.lm_config.vocab_size, 59264)
+        self.assertEqual(config.lm_config.hidden_size, 2048)
+        self.assertEqual(config.lm_config.num_hidden_layers, 28)
+
+    def test_rotary_embedding(self):
+        """Test RotaryEmbedding generation."""
+        dim = 64
+        rope = self.RotaryEmbedding(dim, rope_ratio=1.0)
+        max_seq_len = 100
+
+        emb = rope.get_emb(max_seq_len, dtype=mx.float32)
+
+        # Shape should be (max_seq_len, dim//2, 2) for cos/sin stacked
+        self.assertEqual(emb.shape, (max_seq_len, dim // 2, 2))
+
+    def test_whisper_encoder_output_shape(self):
+        """Test WhisperEncoder produces correct output shape."""
+        encoder = self.WhisperEncoder(self.whisper_config, use_rope=True)
+
+        batch_size = 2
+        seq_len = 100
+        input_features = mx.random.normal(
+            (batch_size, seq_len, self.whisper_config.num_mel_bins)
+        )
+
+        output = encoder(input_features)
+
+        # After conv2 with stride=2, seq_len is halved
+        expected_seq_len = seq_len // 2
+        self.assertEqual(output.shape[0], batch_size)
+        self.assertEqual(output.shape[1], expected_seq_len)
+        self.assertEqual(output.shape[2], self.whisper_config.d_model)
+
+    def test_audio_encoder_output_shape(self):
+        """Test AudioEncoder produces correct output shape with merge factor."""
+        audio_encoder = self.AudioEncoder(self.model_config)
+
+        batch_size = 1
+        seq_len = 100
+        input_features = mx.random.normal(
+            (batch_size, seq_len, self.whisper_config.num_mel_bins)
+        )
+
+        audio_embeds, audio_len = audio_encoder(input_features)
+
+        # Check output dimension matches LM hidden size
+        self.assertEqual(audio_embeds.shape[0], batch_size)
+        self.assertEqual(audio_embeds.shape[2], self.llama_config.hidden_size)
+        self.assertEqual(audio_embeds.shape[1], audio_len)
+
+    def test_audio_encoder_boa_eoa_tokens(self):
+        """Test AudioEncoder begin/end of audio token embeddings."""
+        audio_encoder = self.AudioEncoder(self.model_config)
+
+        boa, eoa = audio_encoder.get_boa_eoa_tokens()
+
+        self.assertEqual(boa.shape, (1, self.llama_config.hidden_size))
+        self.assertEqual(eoa.shape, (1, self.llama_config.hidden_size))
+
+    def test_model_sanitize_weights(self):
+        """Test weight sanitization for loading."""
+        model = self.GLMASRModel(self.model_config)
+
+        # Test adapting layer remapping
+        test_weights = {
+            "audio_encoder.adapting.0.weight": mx.zeros((10, 10)),
+            "audio_encoder.adapting.0.bias": mx.zeros((10,)),
+            "audio_encoder.adapting.2.weight": mx.zeros((10, 10)),
+            "audio_encoder.adapting.2.bias": mx.zeros((10,)),
+            "model.layers.0.self_attn.q_proj.weight": mx.zeros((10, 10)),
+        }
+
+        sanitized = model.sanitize(test_weights)
+
+        # Check adapting layer remapping: 0 -> fc1, 2 -> fc2
+        self.assertIn("audio_encoder.adapting.fc1.weight", sanitized)
+        self.assertIn("audio_encoder.adapting.fc1.bias", sanitized)
+        self.assertIn("audio_encoder.adapting.fc2.weight", sanitized)
+        self.assertIn("audio_encoder.adapting.fc2.bias", sanitized)
+        self.assertNotIn("audio_encoder.adapting.0.weight", sanitized)
+        self.assertNotIn("audio_encoder.adapting.2.weight", sanitized)
+
+        # Check other keys are preserved
+        self.assertIn("model.layers.0.self_attn.q_proj.weight", sanitized)
+
+    def test_model_sanitize_conv_transpose(self):
+        """Test conv weight transposition in sanitize."""
+        model = self.GLMASRModel(self.model_config)
+
+        # Conv weight that needs transposition (last dim < second-to-last)
+        conv_weight = mx.zeros((256, 80, 3))  # Needs transpose
+        test_weights = {
+            "audio_encoder.whisper.conv1.weight": conv_weight,
+        }
+
+        sanitized = model.sanitize(test_weights)
+
+        # Should be transposed to (256, 3, 80)
+        self.assertEqual(
+            sanitized["audio_encoder.whisper.conv1.weight"].shape, (256, 3, 80)
+        )
+
+    def test_model_forward_pass(self):
+        """Test basic model forward pass."""
+        model = self.GLMASRModel(self.model_config)
+
+        batch_size = 1
+        seq_len = 10
+        input_ids = mx.array([[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]])
+
+        logits = model(input_ids)
+
+        self.assertEqual(logits.shape[0], batch_size)
+        self.assertEqual(logits.shape[1], seq_len)
+        self.assertEqual(logits.shape[2], self.llama_config.vocab_size)
+
+    @patch("mlx.nn.Module.load_weights")
+    @patch("mlx_audio.stt.models.glmasr.glmasr.get_model_path")
+    @patch("mlx_audio.stt.models.glmasr.glmasr.glob.glob")
+    @patch("mlx_audio.stt.models.glmasr.glmasr.mx.load")
+    @patch("builtins.open", new_callable=MagicMock)
+    @patch("mlx_audio.stt.models.glmasr.glmasr.json.load")
+    @patch("transformers.AutoTokenizer.from_pretrained")
+    def test_from_pretrained(
+        self,
+        mock_auto_tokenizer,
+        mock_json_load,
+        mock_open,
+        mock_mx_load,
+        mock_glob,
+        mock_get_model_path,
+        mock_load_weights,
+    ):
+        """Test GLMASRModel.from_pretrained method."""
+        dummy_repo_id = "dummy/glm-asr-model"
+        dummy_model_path = "/tmp/dummy_model_path"
+
+        mock_get_model_path.return_value = dummy_model_path
+
+        # Mock tokenizer
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.encode.return_value = [1, 2, 3]
+        mock_tokenizer.decode.return_value = "test"
+        mock_auto_tokenizer.return_value = mock_tokenizer
+
+        # Mock config
+        dummy_config_dict = {
+            "model_type": "glmasr",
+            "whisper_config": {
+                "d_model": 256,
+                "encoder_attention_heads": 4,
+                "encoder_ffn_dim": 1024,
+                "encoder_layers": 2,
+                "num_mel_bins": 80,
+            },
+            "lm_config": {
+                "vocab_size": 1000,
+                "hidden_size": 256,
+                "intermediate_size": 512,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "tie_word_embeddings": False,
+            },
+            "merge_factor": 4,
+            "use_rope": True,
+        }
+        mock_json_load.return_value = dummy_config_dict
+
+        # Mock weight files
+        mock_glob.return_value = [f"{dummy_model_path}/model.safetensors"]
+
+        # Mock weights - minimal weights for model initialization
+        mock_mx_load.return_value = {}
+
+        model = self.GLMASRModel.from_pretrained(dummy_repo_id)
+
+        self.assertIsInstance(model, self.GLMASRModel)
+        mock_get_model_path.assert_called_once()
+        mock_auto_tokenizer.assert_called_once_with(
+            dummy_repo_id, trust_remote_code=True
+        )
+        mock_load_weights.assert_called_once()
+
+        # Verify config was loaded correctly
+        self.assertEqual(model.config.whisper_config.d_model, 256)
+        self.assertEqual(model.config.lm_config.vocab_size, 1000)
+        self.assertEqual(model.config.merge_factor, 4)
 
 
 if __name__ == "__main__":
