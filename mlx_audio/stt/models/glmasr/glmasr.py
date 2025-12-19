@@ -679,6 +679,7 @@ class Model(nn.Module):
         max_tokens: int = 128,
         temperature: float = 0.0,
         verbose: bool = False,
+        **kwargs,
     ) -> STTOutput:
         """Generate transcription from audio.
 
@@ -687,6 +688,7 @@ class Model(nn.Module):
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             verbose: Print tokens during generation
+            **kwargs: Additional arguments (ignored for compatibility)
 
         Returns:
             STTOutput with transcription text

@@ -1,5 +1,5 @@
 from .config import LlamaConfig, ModelConfig, WhisperConfig
-from .glm_asr import Model, STTOutput
+from .glmasr import Model, STTOutput
 
 __all__ = [
     "Model",
