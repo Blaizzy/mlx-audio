@@ -581,10 +581,11 @@ class Model(nn.Module):
 
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
 
+        config_path = Path(model_path_resolved) / "config.json"
+        with open(config_path, "r", encoding="utf-8") as f:
+            config_dict = json.load(f)
+
         if config is None:
-            config_path = Path(model_path_resolved) / "config.json"
-            with open(config_path, "r", encoding="utf-8") as f:
-                config_dict = json.load(f)
             config = ModelConfig.from_dict(config_dict)
 
         model = cls(config)
@@ -599,6 +600,30 @@ class Model(nn.Module):
             weights.update(mx.load(file))
 
         weights = model.sanitize(weights)
+
+        # Handle quantized weights
+        quantization = config_dict.get("quantization", None)
+        if quantization is not None:
+
+            def class_predicate(p, m):
+                # Handle custom per layer quantizations
+                if p in quantization:
+                    return quantization[p]
+                if not hasattr(m, "to_quantized"):
+                    return False
+                # Skip layers not divisible by 64
+                if hasattr(m, "weight") and m.weight.size % 64 != 0:
+                    return False
+                # Handle legacy models which may not have everything quantized
+                return f"{p}.scales" in weights
+
+            nn.quantize(
+                model,
+                group_size=quantization["group_size"],
+                bits=quantization["bits"],
+                class_predicate=class_predicate,
+            )
+
         model.load_weights(list(weights.items()))
 
         mx.eval(model.parameters())
