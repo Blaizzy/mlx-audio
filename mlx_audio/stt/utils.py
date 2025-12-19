@@ -9,7 +9,9 @@ from huggingface_hub import snapshot_download
 
 SAMPLE_RATE = 16000
 
-MODEL_REMAPPING = {}
+MODEL_REMAPPING = {
+    "glm": "glmasr",
+}
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
@@ -174,8 +176,10 @@ def load_model(model_path: str, lazy: bool = False, strict: bool = True, **kwarg
         FileNotFoundError: If the weight files (.safetensors) are not found.
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
+
     model_name = None
     model_type = None
+
     if isinstance(model_path, str):
         model_name = model_path.lower().split("/")[-1].split("-")
     elif isinstance(model_path, Path):
