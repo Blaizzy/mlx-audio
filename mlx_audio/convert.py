@@ -231,7 +231,7 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: str = "tts
     )
     stt = dedent(
         f"""
-        ###CLI Example:
+        ### CLI Example:
         ```bash
             python -m mlx_audio.stt.generate --model {upload_repo} --audio "audio.wav"
         ```
