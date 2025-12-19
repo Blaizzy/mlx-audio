@@ -180,7 +180,7 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
             mx.set_wired_limit(old_limit)
 
 
-def generate(
+def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
     audio_path: str = "",
     output_path: str = "",
@@ -244,7 +244,7 @@ def generate(
 
 def main():
     args = parse_args()
-    generate(
+    generate_transcription(
         args.model,
         args.audio,
         args.output,
