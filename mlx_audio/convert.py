@@ -330,7 +330,7 @@ def convert(
         model_domain = detect_model_domain(config, model_path)
 
     model_type = get_model_type(config, model_path, model_domain)
-    print(f"[INFO] Model domain: {model_domain.upper()}, type: {model_type}")
+    print(f"\n[INFO] Model domain: {model_domain.upper()}, type: {model_type}")
 
     # Get model class
     model_class = get_model_class(model_type, model_domain)
@@ -347,7 +347,6 @@ def convert(
         model_config.model_path = model_path
 
     # Load weights
-    print("[INFO] Loading weights")
     weights = {}
     weight_files = glob.glob(str(model_path / "*.safetensors"))
     if not weight_files:
@@ -359,14 +358,11 @@ def convert(
     for wf in weight_files:
         weights.update(mx.load(wf))
 
-    print(f"[INFO] Loaded {len(weights)} weight tensors")
-
     # Instantiate model
     model = model_class.Model(model_config)
 
     # Sanitize weights
     if hasattr(model, "sanitize"):
-        print("[INFO] Sanitizing weights")
         weights = model.sanitize(weights)
 
     # Load weights into model
@@ -405,7 +401,6 @@ def convert(
         ) and mixed_predicate(p, m)
 
     if quantize:
-        print(f"[INFO] Quantizing with {q_bits} bits, group size {q_group_size}")
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
             model, config, q_group_size, q_bits, quant_predicate=final_quant_predicate
@@ -453,7 +448,7 @@ def convert(
     print(f"[INFO] Conversion complete! Model saved to {mlx_path}")
 
     if upload_repo:
-        upload_to_hub(mlx_path, upload_repo, hf_path)
+        upload_to_hub(mlx_path, upload_repo, hf_path, model_domain)
 
 
 def configure_parser() -> argparse.ArgumentParser:
