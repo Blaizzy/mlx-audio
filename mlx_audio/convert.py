@@ -219,7 +219,7 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: str = "tts
         ```python
             from mlx_audio.tts.utils import load_model
             from mlx_audio.tts.generate import generate_audio
-            model = load_model({upload_repo})
+            model = load_model("{upload_repo}")
             generate_audio(
                 model=model, text="Hello, this is a test.",
                 ref_audio="path_to_audio.wav",
