@@ -15,45 +15,51 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 
-# Model type mappings
-TTS_MODEL_TYPES = {
-    "bark",
-    "chatterbox",
-    "chatterbox_turbo",
-    "dia",
-    "indextts",
-    "kokoro",
-    "llama",
-    "outetts",
-    "qwen3",
-    "sesame",
-    "csm",
-    "spark",
-    "vibevoice",
-    "vibevoice_streaming",
-    "voxcpm",
-    "voxcpm1.5",
-}
 
-STT_MODEL_TYPES = {
-    "whisper",
-    "parakeet",
-    "wav2vec",
-    "glmasr",
-    "glm_asr",
-    "voxtral",
-}
+# Auto-discover model types from directory structure
+def _discover_model_types(domain: str) -> set:
+    """Discover available model types by scanning the models directory."""
+    models_dir = Path(__file__).parent / domain / "models"
+    if not models_dir.exists():
+        return set()
+    return {
+        d.name
+        for d in models_dir.iterdir()
+        if d.is_dir()
+        and not d.name.startswith("_")
+        and any((d / init).exists() for init in ["__init__.py", "__init__"])
+    }
 
+
+# Lazily computed model type sets
+_tts_model_types = None
+_stt_model_types = None
+
+
+def get_tts_model_types() -> set:
+    """Get the set of available TTS model types."""
+    global _tts_model_types
+    if _tts_model_types is None:
+        _tts_model_types = _discover_model_types("tts")
+    return _tts_model_types
+
+
+def get_stt_model_types() -> set:
+    """Get the set of available STT model types."""
+    global _stt_model_types
+    if _stt_model_types is None:
+        _stt_model_types = _discover_model_types("stt")
+    return _stt_model_types
+
+
+# Aliases that map to actual model directories
 MODEL_REMAPPING = {
-    # TTS
-    "outetts": "outetts",
-    "spark": "spark",
+    # TTS aliases
     "csm": "sesame",
-    "voxcpm": "voxcpm",
     "voxcpm1.5": "voxcpm",
     "vibevoice_streaming": "vibevoice",
-    # STT
-    "glmasr": "glm_asr",
+    # STT aliases
+    "glm": "glmasr",
 }
 
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
@@ -104,11 +110,14 @@ def detect_model_domain(config: dict, model_path: Path) -> str:
     model_type = config.get("model_type", "").lower()
     architectures = config.get("architectures", [])
 
+    stt_types = get_stt_model_types() | set(MODEL_REMAPPING.keys())
+    tts_types = get_tts_model_types() | set(MODEL_REMAPPING.keys())
+
     if model_type:
         normalized_type = MODEL_REMAPPING.get(model_type, model_type)
-        if normalized_type in STT_MODEL_TYPES or model_type in STT_MODEL_TYPES:
+        if normalized_type in get_stt_model_types() or model_type in stt_types:
             return "stt"
-        if normalized_type in TTS_MODEL_TYPES or model_type in TTS_MODEL_TYPES:
+        if normalized_type in get_tts_model_types() or model_type in tts_types:
             return "tts"
 
     for arch in architectures:
@@ -140,7 +149,7 @@ def get_model_type(config: dict, model_path: Path, domain: str) -> str:
     # Infer from config or path
     if domain == "stt":
         if "whisper_config" in config or "audio_adapter" in config:
-            return "glm_asr"
+            return "glmasr"
         architectures = config.get("architectures", [])
         for arch in architectures:
             arch_lower = arch.lower()
@@ -154,7 +163,7 @@ def get_model_type(config: dict, model_path: Path, domain: str) -> str:
 
     # TTS - try to infer from path
     path_str = str(model_path).lower()
-    for model in TTS_MODEL_TYPES:
+    for model in get_tts_model_types():
         if model in path_str:
             return MODEL_REMAPPING.get(model, model)
 
@@ -180,12 +189,25 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: str = "tts
 
     print(f"[INFO] Uploading to {upload_repo}")
 
+    # Define domain-specific tags
+    tts_tags = ["text-to-speech", "speech", "speech generation", "voice cloning", "tts"]
+    stt_tags = [
+        "speech-to-text",
+        "speech-to-speech",
+        "speech",
+        "speech generation",
+        "stt",
+    ]
+    domain_tags = tts_tags if domain == "tts" else stt_tags
+
     try:
         card = ModelCard.load(hf_path)
         card.data.tags = ["mlx"] if card.data.tags is None else card.data.tags + ["mlx"]
+        card.data.tags += domain_tags
+        card.data.library_name = "mlx-audio"
     except Exception:
         card = ModelCard("")
-        card.data.tags = ["mlx"]
+        card.data.tags = ["mlx"] + domain_tags
 
     tts = dedent(
         f"""
@@ -209,15 +231,15 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: str = "tts
     )
     stt = dedent(
         f"""
-    CLI Example:
+        ###CLI Example:
         ```bash
             python -m mlx_audio.stt.generate --model {upload_repo} --audio "audio.wav"
         ```
-    Python Example:
+        ### Python Example:
         ```python
             from mlx_audio.stt.utils import load_model
             from mlx_audio.stt.generate import generate_transcription
-            model = load_model({upload_repo})
+            model = load_model("{upload_repo}")
             transcription = generate_transcription(
                 model=model,
                 audio_path="path_to_audio.wav",
