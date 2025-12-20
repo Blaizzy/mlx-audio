@@ -1,10 +1,11 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_lm.models.cache import KVCache
 
 
 @dataclass
@@ -66,8 +67,8 @@ class GPT2Attention(nn.Module):
         self,
         hidden_states: mx.array,
         attention_mask: Optional[mx.array] = None,
-        cache: Optional[Tuple[mx.array, mx.array]] = None,
-    ) -> Tuple[mx.array, Optional[Tuple[mx.array, mx.array]]]:
+        cache: Optional[KVCache] = None,
+    ) -> Tuple[mx.array, Optional[KVCache]]:
         B, T, C = hidden_states.shape
 
         # QKV projection
@@ -79,13 +80,8 @@ class GPT2Attention(nn.Module):
         k = k.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
 
-        # Handle KV cache
         if cache is not None:
-            k_cache, v_cache = cache
-            k = mx.concatenate([k_cache, k], axis=2)
-            v = mx.concatenate([v_cache, v], axis=2)
-
-        new_cache = (k, v)
+            k, v = cache.update_and_fetch(k, v)
 
         # Attention
         attn_weights = (q @ k.transpose(0, 1, 3, 2)) * self.scale
@@ -113,7 +109,7 @@ class GPT2Attention(nn.Module):
         # Output projection
         attn_output = self.c_proj(attn_output)
 
-        return attn_output, new_cache
+        return attn_output, cache
 
 
 class GPT2MLP(nn.Module):
@@ -146,12 +142,12 @@ class GPT2Block(nn.Module):
         self,
         hidden_states: mx.array,
         attention_mask: Optional[mx.array] = None,
-        cache: Optional[Tuple[mx.array, mx.array]] = None,
-    ) -> Tuple[mx.array, Optional[Tuple[mx.array, mx.array]]]:
+        cache: Optional[KVCache] = None,
+    ) -> Tuple[mx.array, Optional[KVCache]]:
         # Self-attention
         residual = hidden_states
         hidden_states = self.ln_1(hidden_states)
-        attn_output, new_cache = self.attn(
+        attn_output, cache = self.attn(
             hidden_states,
             attention_mask=attention_mask,
             cache=cache,
@@ -163,7 +159,7 @@ class GPT2Block(nn.Module):
         hidden_states = self.ln_2(hidden_states)
         hidden_states = residual + self.mlp(hidden_states)
 
-        return hidden_states, new_cache
+        return hidden_states, cache
 
 
 class GPT2Model(nn.Module):
@@ -188,8 +184,8 @@ class GPT2Model(nn.Module):
         input_ids: Optional[mx.array] = None,
         inputs_embeds: Optional[mx.array] = None,
         attention_mask: Optional[mx.array] = None,
-        cache: Optional[list] = None,
-    ) -> Tuple[mx.array, list]:
+        cache: Optional[List[KVCache]] = None,
+    ) -> Tuple[mx.array, List[KVCache]]:
         """
         Forward pass of GPT2.
 
@@ -214,7 +210,7 @@ class GPT2Model(nn.Module):
 
         # Add positional embeddings
         if cache is not None and len(cache) > 0 and cache[0] is not None:
-            past_length = cache[0][0].shape[2]
+            past_length = cache[0].offset  # Use KVCache.offset
         else:
             past_length = 0
 
@@ -222,26 +218,21 @@ class GPT2Model(nn.Module):
         position_embeds = self.wpe(position_ids)
         hidden_states = hidden_states + position_embeds
 
-        # Initialize cache if not provided
         if cache is None:
-            cache = [None] * len(self.h)
-
-        new_cache = []
+            cache = [KVCache() for _ in range(len(self.h))]
 
         # Forward through transformer blocks
         for i, block in enumerate(self.h):
-            layer_cache = cache[i] if i < len(cache) else None
-            hidden_states, new_layer_cache = block(
+            hidden_states, _ = block(
                 hidden_states,
                 attention_mask=attention_mask,
-                cache=layer_cache,
+                cache=cache[i],
             )
-            new_cache.append(new_layer_cache)
 
         # Final layer norm
         hidden_states = self.ln_f(hidden_states)
 
-        return hidden_states, new_cache
+        return hidden_states, cache
 
 
 def create_gpt2_config() -> GPT2Config:
