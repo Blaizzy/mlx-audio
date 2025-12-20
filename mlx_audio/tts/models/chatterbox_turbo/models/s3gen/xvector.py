@@ -32,54 +32,209 @@ def pad_list(xs: List[mx.array], pad_value: float = 0) -> mx.array:
     return pad
 
 
+def _mel_scale(freq: np.ndarray) -> np.ndarray:
+    """Convert Hz to mel scale (Kaldi style)."""
+    return 1127.0 * np.log(1.0 + freq / 700.0)
+
+
+def _inverse_mel_scale(mel: np.ndarray) -> np.ndarray:
+    """Convert mel to Hz (Kaldi style)."""
+    return 700.0 * (np.exp(mel / 1127.0) - 1.0)
+
+
+def _get_mel_banks_kaldi(
+    num_bins: int,
+    padded_window_size: int,
+    sample_freq: float,
+    low_freq: float,
+    high_freq: float,
+) -> np.ndarray:
+    """
+    Create mel filterbank matrix exactly matching Kaldi's get_mel_banks.
+
+    Returns:
+        Filterbank matrix of shape (num_bins, padded_window_size // 2)
+    """
+    num_fft_bins = padded_window_size // 2
+    nyquist = 0.5 * sample_freq
+
+    if high_freq <= 0.0:
+        high_freq += nyquist
+
+    # FFT bin width
+    fft_bin_width = sample_freq / padded_window_size
+
+    # Mel scale boundaries
+    mel_low_freq = 1127.0 * np.log(1.0 + low_freq / 700.0)
+    mel_high_freq = 1127.0 * np.log(1.0 + high_freq / 700.0)
+
+    # Mel frequency delta
+    mel_freq_delta = (mel_high_freq - mel_low_freq) / (num_bins + 1)
+
+    # Create filterbank bins
+    bins = np.zeros((num_bins, num_fft_bins))
+
+    for i in range(num_bins):
+        left_mel = mel_low_freq + i * mel_freq_delta
+        center_mel = mel_low_freq + (i + 1) * mel_freq_delta
+        right_mel = mel_low_freq + (i + 2) * mel_freq_delta
+
+        for j in range(num_fft_bins):
+            # Convert FFT bin to mel
+            freq = fft_bin_width * j
+            mel = 1127.0 * np.log(1.0 + freq / 700.0)
+
+            # Triangular filter
+            if mel > left_mel and mel <= center_mel:
+                bins[i, j] = (mel - left_mel) / (center_mel - left_mel)
+            elif mel > center_mel and mel < right_mel:
+                bins[i, j] = (right_mel - mel) / (right_mel - center_mel)
+
+    return bins
+
+
+def _povey_window(length: int) -> np.ndarray:
+    """Create Povey window (Hanning raised to power 0.85)."""
+    n = np.arange(length)
+    # Use periodic=False equivalent: divide by (length - 1)
+    window = 0.5 - 0.5 * np.cos(2 * np.pi * n / (length - 1))
+    return window**0.85
+
+
 def extract_fbank_features(
-    audio: mx.array, num_mel_bins: int = 80, sample_rate: int = 16000
+    audio: mx.array,
+    num_mel_bins: int = 80,
+    sample_rate: int = 16000,
+    frame_length_ms: float = 25.0,
+    frame_shift_ms: float = 10.0,
+    low_freq: float = 20.0,
+    high_freq: float = 0.0,
+    preemphasis_coeff: float = 0.97,
+    remove_dc_offset: bool = True,
+    use_power: bool = True,
+    snip_edges: bool = True,
 ) -> mx.array:
     """
-    Extract log-mel filterbank features from audio.
+    Extract log-mel filterbank features matching Kaldi's fbank implementation exactly.
+
+    This replicates torchaudio.compliance.kaldi.fbank behavior.
 
     Args:
         audio: Audio waveform (T,) or (B, T)
-        num_mel_bins: Number of mel bins
-        sample_rate: Sample rate
+        num_mel_bins: Number of mel bins (default 80)
+        sample_rate: Sample rate (default 16000)
+        frame_length_ms: Frame length in milliseconds (default 25.0)
+        frame_shift_ms: Frame shift in milliseconds (default 10.0)
+        low_freq: Low frequency cutoff (default 20.0)
+        high_freq: High frequency cutoff (0 = Nyquist)
+        preemphasis_coeff: Preemphasis coefficient (default 0.97)
+        remove_dc_offset: Remove DC offset per frame (default True)
+        use_power: Use power spectrum instead of magnitude (default True)
+        snip_edges: If True, output frames where the entire frame fits (default True)
 
     Returns:
         Features (B, T, num_mel_bins)
     """
-    import librosa
-
     if audio.ndim == 1:
         audio = audio[None, :]
 
-    features_list = []
-    for i in range(audio.shape[0]):
-        wav = np.array(audio[i])
-        # Use librosa for mel spectrogram extraction
-        mel = librosa.feature.melspectrogram(
-            y=wav,
-            sr=sample_rate,
-            n_fft=400,
-            hop_length=160,
-            n_mels=num_mel_bins,
-            fmin=0,
-            fmax=sample_rate // 2,
-        )
-        # Convert to log scale
-        log_mel = np.log(np.maximum(mel, 1e-10))
-        # Transpose to (T, num_mel_bins)
-        log_mel = log_mel.T
-        # Mean normalization
-        log_mel = log_mel - log_mel.mean(axis=0, keepdims=True)
-        features_list.append(mx.array(log_mel.astype(np.float32)))
+    # Convert to numpy for processing (use float64 for precision)
+    audio_np = np.array(audio).astype(np.float64)
 
-    # Pad to same length
+    # Frame parameters (exactly matching Kaldi)
+    frame_length = int(sample_rate * frame_length_ms * 0.001)
+    frame_shift = int(sample_rate * frame_shift_ms * 0.001)
+
+    # Round to power of 2 for FFT
+    padded_length = 1
+    while padded_length < frame_length:
+        padded_length *= 2
+
+    # Create mel filterbank (exactly matching Kaldi)
+    mel_banks = _get_mel_banks_kaldi(
+        num_mel_bins, padded_length, sample_rate, low_freq, high_freq
+    )
+    # Pad right column with zeros to match FFT output size
+    mel_banks = np.pad(mel_banks, ((0, 0), (0, 1)), mode="constant", constant_values=0)
+
+    # Create Povey window
+    window = _povey_window(frame_length)
+
+    # Epsilon for numerical stability (matching torch.finfo(torch.float).eps)
+    epsilon = np.finfo(np.float32).eps
+
+    features_list = []
+
+    for b in range(audio_np.shape[0]):
+        wav = audio_np[b]
+
+        # Calculate number of frames
+        if snip_edges:
+            if len(wav) < frame_length:
+                num_frames = 0
+            else:
+                num_frames = 1 + (len(wav) - frame_length) // frame_shift
+        else:
+            num_frames = (len(wav) + frame_shift // 2) // frame_shift
+
+        if num_frames == 0:
+            features_list.append(np.zeros((1, num_mel_bins), dtype=np.float32))
+            continue
+
+        # Extract frames using strided approach (matching Kaldi's _get_strided)
+        frames = np.zeros((num_frames, frame_length))
+        for i in range(num_frames):
+            start = i * frame_shift
+            end = start + frame_length
+            if end <= len(wav):
+                frames[i] = wav[start:end]
+            else:
+                frames[i, : len(wav) - start] = wav[start:]
+
+        # Step 1: Remove DC offset per frame (before preemphasis)
+        if remove_dc_offset:
+            frames = frames - frames.mean(axis=1, keepdims=True)
+
+        # Step 2: Apply preemphasis PER FRAME (Kaldi applies it after framing)
+        if preemphasis_coeff != 0.0:
+            # For each frame, shift and apply preemphasis
+            # strided_input[i,j] -= preemph * strided_input[i, max(0, j-1)]
+            preemph_frames = np.zeros_like(frames)
+            preemph_frames[:, 0] = frames[
+                :, 0
+            ]  # First sample unchanged (replicate padding)
+            preemph_frames[:, 1:] = frames[:, 1:] - preemphasis_coeff * frames[:, :-1]
+            frames = preemph_frames
+
+        # Step 3: Apply window
+        frames = frames * window
+
+        # Step 4: Pad to FFT length
+        padded_frames = np.zeros((num_frames, padded_length))
+        padded_frames[:, :frame_length] = frames
+
+        # Step 5: Compute FFT and get magnitude/power spectrum
+        fft_out = np.fft.rfft(padded_frames, n=padded_length)
+        spectrum = np.abs(fft_out)
+        if use_power:
+            spectrum = spectrum**2
+
+        # Step 6: Apply mel filterbank
+        mel_energies = np.dot(spectrum, mel_banks.T)
+
+        # Step 7: Apply log with epsilon floor
+        log_mel = np.log(np.maximum(mel_energies, epsilon))
+
+        features_list.append(log_mel.astype(np.float32))
+
+    # Pad to same length and stack
     max_len = max(f.shape[0] for f in features_list)
     padded = []
     for f in features_list:
         if f.shape[0] < max_len:
-            pad = mx.zeros((max_len - f.shape[0], num_mel_bins))
-            f = mx.concatenate([f, pad], axis=0)
-        padded.append(f)
+            pad_arr = np.zeros((max_len - f.shape[0], num_mel_bins), dtype=np.float32)
+            f = np.concatenate([f, pad_arr], axis=0)
+        padded.append(mx.array(f))
 
     return mx.stack(padded)
 
@@ -530,6 +685,10 @@ class CAMPPlus(nn.Module):
 
         # Extract features
         features = extract_fbank_features(audio)
+
+        # Apply CMN (Cepstral Mean Normalization) - subtract per-frequency-bin mean
+        # This matches PyTorch: feature = feature - feature.mean(dim=0, keepdim=True)
+        features = features - features.mean(axis=1, keepdims=True)
 
         # Forward pass
         return self(features)
