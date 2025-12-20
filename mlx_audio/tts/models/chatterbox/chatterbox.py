@@ -820,6 +820,9 @@ class Model(nn.Module):
         eot_tokens = mx.full((text_tokens.shape[0], 1), eot, dtype=mx.int32)
         text_tokens = mx.concatenate([sot_tokens, text_tokens, eot_tokens], axis=1)
 
+        # Clear any accumulated cache from previous generations
+        mx.clear_cache()
+
         # Generate speech tokens with T3
         speech_tokens = self.t3.inference(
             t3_cond=conds.t3,
@@ -831,6 +834,9 @@ class Model(nn.Module):
             min_p=min_p,
             top_p=top_p,
         )
+
+        # Clear cache after T3 inference to free memory before S3Gen
+        mx.clear_cache()
 
         # Extract conditional batch (first in CFG pair)
         speech_tokens = speech_tokens[0:1]

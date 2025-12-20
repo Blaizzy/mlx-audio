@@ -837,6 +837,9 @@ class ChatterboxTurboTTS(nn.Module):
 
         start_time = time.time()
 
+        # Clear any accumulated cache from previous generations
+        mx.clear_cache()
+
         # Generate speech tokens with T3
         speech_tokens = self.t3.inference_turbo(
             t3_cond=self._conds.t3,
@@ -846,6 +849,9 @@ class ChatterboxTurboTTS(nn.Module):
             top_p=top_p,
             repetition_penalty=repetition_penalty,
         )
+
+        # Clear cache after T3 inference to free memory before S3Gen
+        mx.clear_cache()
 
         # Remove OOV tokens and add silence
         speech_tokens = speech_tokens.reshape(-1)

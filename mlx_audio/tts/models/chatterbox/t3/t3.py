@@ -438,7 +438,8 @@ class T3(nn.Module):
 
             # Sample next token using the sampler (handles temperature, top_p, min_p)
             next_token = sampler(logits)
-            # Sampler returns 1D array (B,) for each batch item
+
+            mx.eval(next_token)
             next_token_id = int(next_token[0])
 
             # Check for EOS
@@ -465,7 +466,6 @@ class T3(nn.Module):
                 inputs=None, input_embeddings=next_token_embed, cache=cache
             )
 
-            # Pipeline: start computing next step while current finishes
-            mx.async_eval(hidden)
+            mx.eval(hidden)
 
         return mx.array([generated_ids])
