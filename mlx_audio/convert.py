@@ -416,6 +416,9 @@ def convert(
         mlx_path = Path(mlx_path)
     mlx_path.mkdir(parents=True, exist_ok=True)
 
+    # Save model weights
+    save_model(mlx_path, model, donate_model=True)
+
     # Copy supporting files
     for pattern in [
         "*.py",
@@ -429,17 +432,18 @@ def convert(
         "*.safetensors",
     ]:
         for file in glob.glob(str(model_path / pattern)):
+            if Path(file).name == "model.safetensors.index.json":
+                continue
             shutil.copy(file, mlx_path)
 
         # Check subdirectories
         for file in glob.glob(str(model_path / "**" / pattern), recursive=True):
+            if Path(file).name == "model.safetensors.index.json":
+                continue
             rel_path = Path(file).relative_to(model_path)
             dest_dir = mlx_path / rel_path.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(file, dest_dir)
-
-    # Save model weights
-    save_model(mlx_path, model, donate_model=True)
 
     # Save config
     config["model_type"] = model_type
