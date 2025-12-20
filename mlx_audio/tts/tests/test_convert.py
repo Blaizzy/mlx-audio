@@ -65,7 +65,7 @@ class TestConvert(unittest.TestCase):
             q_group_size=128,
             q_bits=8,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo=None,
             revision=None,
             dequantize=False,
@@ -109,7 +109,7 @@ class TestConvert(unittest.TestCase):
             q_group_size=100,
             q_bits=4,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo=None,
             revision=None,
             dequantize=False,
@@ -132,7 +132,7 @@ class TestConvert(unittest.TestCase):
                     q_group_size=64,  # Default q_group_size
                     q_bits=4,  # Default q_bits
                     quant_predicate=recipe,
-                    dtype="float16",
+                    dtype=None,  # Default dtype is None
                     upload_repo=None,  # Default upload_repo
                     revision=None,
                     dequantize=False,  # Default dequantize
@@ -153,7 +153,7 @@ class TestConvert(unittest.TestCase):
             q_group_size=64,
             q_bits=4,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo=None,
             revision=None,
             dequantize=True,
@@ -173,7 +173,7 @@ class TestConvert(unittest.TestCase):
             q_group_size=64,
             q_bits=4,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo="my/repo",
             revision=None,
             dequantize=False,
