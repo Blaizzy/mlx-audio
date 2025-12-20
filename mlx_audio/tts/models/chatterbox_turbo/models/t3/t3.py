@@ -301,7 +301,8 @@ class T3(nn.Module):
             current_speech_token = next_speech_token
 
             # Check for EOS
-            if mx.all(next_speech_token == self.hp.stop_speech_token):
+            mx.eval(next_speech_token)
+            if int(next_speech_token[0, 0]) == self.hp.stop_speech_token:
                 break
 
         # Concatenate all tokens
@@ -310,7 +311,8 @@ class T3(nn.Module):
         # Remove EOS token if present
         if all_tokens.shape[1] > 0:
             # Check last token
-            last_token = all_tokens[0, -1]
+            mx.eval(all_tokens)
+            last_token = int(all_tokens[0, -1])
             if last_token == self.hp.stop_speech_token:
                 all_tokens = all_tokens[:, :-1]
 

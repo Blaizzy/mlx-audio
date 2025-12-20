@@ -782,6 +782,8 @@ class ChatterboxTurboTTS(nn.Module):
         norm_loudness: bool = True,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        split_pattern: Optional[str] = r"(?<=[.!?])\s+",
+        max_tokens: int = 800,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """
@@ -801,10 +803,14 @@ class ChatterboxTurboTTS(nn.Module):
             norm_loudness: Whether to normalize output loudness
             stream: Whether to stream audio chunks as they're generated
             streaming_interval: Time interval in seconds for streaming chunks
+            split_pattern: Regex pattern to split long text into chunks (default: sentence boundaries)
+            max_tokens: Maximum tokens per chunk to maintain quality (default: 900)
 
         Yields:
             GenerationResult with generated waveform and metrics
         """
+        import re
+
         # If streaming is enabled, delegate to stream_generate
         if stream:
             # Convert streaming_interval (seconds) to chunk_size (tokens)
@@ -826,6 +832,7 @@ class ChatterboxTurboTTS(nn.Module):
                 **kwargs,
             )
             return
+
         # Prepare conditionals if audio prompt provided
         if ref_audio is not None:
             self.prepare_conditionals(
@@ -845,105 +852,156 @@ class ChatterboxTurboTTS(nn.Module):
                 "CFG, min_p and exaggeration are not supported by Turbo version and will be ignored."
             )
 
-        # Normalize and tokenize text
+        # Normalize text
         text = punc_norm(text)
 
-        if self.tokenizer is not None:
-            text_tokens = self.tokenizer(
-                text, return_tensors="np", padding=True, truncation=True
-            )
-            text_tokens = mx.array(text_tokens.input_ids)
-        else:
-            # Fallback: simple character-level tokenization (for testing)
-            logger.warning("No tokenizer available, using simple fallback")
-            text_tokens = mx.array([[ord(c) for c in text[:512]]])
+        # Split text into chunks at sentence boundaries to keep speech tokens under limit
+        # Estimate ~8 speech tokens per text token, so max_speech_tokens/8 ≈ 112 text tokens
+        # With ~4 chars per token, that's ~450 chars per chunk
+        max_chars_per_chunk = (max_tokens // 8) * 4
 
-        token_count = text_tokens.shape[1]
+        if split_pattern:
+            sentences = re.split(split_pattern, text)
+            chunks = []
+            current_chunk = ""
+
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+
+                if (
+                    current_chunk
+                    and len(current_chunk) + len(sentence) + 1 > max_chars_per_chunk
+                ):
+                    chunks.append(current_chunk.strip())
+                    current_chunk = sentence
+                else:
+                    if current_chunk:
+                        current_chunk += " " + sentence
+                    else:
+                        current_chunk = sentence
+
+            if current_chunk:
+                chunks.append(current_chunk.strip())
+        else:
+            chunks = [text]
+
+        # Filter empty chunks
+        chunks = [c for c in chunks if c.strip()]
+
+        if not chunks:
+            chunks = [text]
 
         start_time = time.time()
+        total_token_count = 0
+        total_samples = 0
+        segment_idx = 0
 
         # Clear any accumulated cache from previous generations
         mx.clear_cache()
 
-        # Generate speech tokens with T3
-        speech_tokens = self.t3.inference_turbo(
-            t3_cond=self._conds.t3,
-            text_tokens=text_tokens,
-            temperature=temperature,
-            top_k=top_k,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-        )
+        for chunk in chunks:
+            # Tokenize chunk
+            if self.tokenizer is not None:
+                text_tokens = self.tokenizer(
+                    chunk, return_tensors="np", padding=True, truncation=True
+                )
+                text_tokens = mx.array(text_tokens.input_ids)
+            else:
+                logger.warning("No tokenizer available, using simple fallback")
+                text_tokens = mx.array([[ord(c) for c in chunk[:512]]])
 
-        # Clear cache after T3 inference to free memory before S3Gen
-        mx.clear_cache()
+            chunk_token_count = text_tokens.shape[1]
+            total_token_count += chunk_token_count
 
-        # Remove OOV tokens and add silence
-        speech_tokens = speech_tokens.reshape(-1)
-        mask = np.where(speech_tokens < 6561)[0].tolist()
-        speech_tokens = speech_tokens[mask]
-        silence = mx.array([S3GEN_SIL, S3GEN_SIL, S3GEN_SIL], dtype=mx.int32)
-        speech_tokens = mx.concatenate([speech_tokens, silence])
-        speech_tokens = speech_tokens[None, :]  # Add batch dimension
+            # Generate speech tokens with T3
+            speech_tokens = self.t3.inference_turbo(
+                t3_cond=self._conds.t3,
+                text_tokens=text_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                max_gen_len=max_tokens,
+            )
 
-        # Generate waveform with S3Gen
-        wav, _ = self.s3gen.inference(
-            speech_tokens=speech_tokens,
-            ref_dict=self._conds.gen,
-            n_cfm_timesteps=2,  # Turbo uses 2 steps
-        )
+            # Clear cache after T3 inference
+            mx.clear_cache()
 
-        # Flatten to 1D if needed
-        if wav.ndim == 2:
-            wav = wav.squeeze(0)
+            # Remove OOV tokens and add silence
+            speech_tokens = speech_tokens.reshape(-1)
+            mask = np.where(np.array(speech_tokens) < 6561)[0].tolist()
+            speech_tokens = speech_tokens[mask]
+            silence = mx.array([S3GEN_SIL, S3GEN_SIL, S3GEN_SIL], dtype=mx.int32)
+            speech_tokens = mx.concatenate([speech_tokens, silence])
+            speech_tokens = speech_tokens[None, :]  # Add batch dimension
 
-        # Calculate timing and metrics
-        processing_time = time.time() - start_time
-        samples = wav.shape[0]
-        audio_duration_seconds = samples / self.sample_rate
+            # Generate waveform with S3Gen
+            wav, _ = self.s3gen.inference(
+                speech_tokens=speech_tokens,
+                ref_dict=self._conds.gen,
+                n_cfm_timesteps=2,  # Turbo uses 2 steps
+            )
 
-        # Format duration as HH:MM:SS.mmm
-        duration_hours = int(audio_duration_seconds // 3600)
-        duration_mins = int((audio_duration_seconds % 3600) // 60)
-        duration_secs = int(audio_duration_seconds % 60)
-        duration_ms = int((audio_duration_seconds % 1) * 1000)
-        duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+            # Flatten to 1D if needed
+            if wav.ndim == 2:
+                wav = wav.squeeze(0)
 
-        # Calculate real-time factor
-        rtf = (
-            processing_time / audio_duration_seconds
-            if audio_duration_seconds > 0
-            else 0
-        )
+            samples = wav.shape[0]
+            total_samples += samples
 
-        yield GenerationResult(
-            audio=wav,
-            samples=samples,
-            sample_rate=self.sample_rate,
-            segment_idx=0,
-            token_count=token_count,
-            audio_duration=duration_str,
-            real_time_factor=round(rtf, 2),
-            prompt={
-                "tokens": token_count,
-                "tokens-per-sec": (
-                    round(token_count / processing_time, 2)
-                    if processing_time > 0
-                    else 0
-                ),
-            },
-            audio_samples={
-                "samples": samples,
-                "samples-per-sec": (
-                    round(samples / processing_time, 2) if processing_time > 0 else 0
-                ),
-            },
-            processing_time_seconds=processing_time,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
-        )
+            # Calculate timing and metrics
+            processing_time = time.time() - start_time
+            audio_duration_seconds = samples / self.sample_rate
 
-        # Clear cache after generation
-        mx.clear_cache()
+            # Format duration
+            duration_hours = int(audio_duration_seconds // 3600)
+            duration_mins = int((audio_duration_seconds % 3600) // 60)
+            duration_secs = int(audio_duration_seconds % 60)
+            duration_ms = int((audio_duration_seconds % 1) * 1000)
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+            # Calculate real-time factor based on total audio generated
+            total_audio_duration = total_samples / self.sample_rate
+            rtf = (
+                processing_time / total_audio_duration
+                if total_audio_duration > 0
+                else 0
+            )
+
+            yield GenerationResult(
+                audio=wav,
+                samples=samples,
+                sample_rate=self.sample_rate,
+                segment_idx=segment_idx,
+                token_count=chunk_token_count,
+                audio_duration=duration_str,
+                real_time_factor=round(rtf, 2),
+                prompt={
+                    "tokens": chunk_token_count,
+                    "tokens-per-sec": (
+                        round(total_token_count / processing_time, 2)
+                        if processing_time > 0
+                        else 0
+                    ),
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": (
+                        round(total_samples / processing_time, 2)
+                        if processing_time > 0
+                        else 0
+                    ),
+                },
+                processing_time_seconds=processing_time,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )
+
+            segment_idx += 1
+
+            # Clear cache between chunks
+            mx.clear_cache()
 
     def stream_generate(
         self,
