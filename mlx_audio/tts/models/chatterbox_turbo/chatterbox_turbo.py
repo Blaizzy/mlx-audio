@@ -780,6 +780,8 @@ class ChatterboxTurboTTS(nn.Module):
         temperature: float = 0.8,
         top_k: int = 1000,
         norm_loudness: bool = True,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """
@@ -797,10 +799,33 @@ class ChatterboxTurboTTS(nn.Module):
             temperature: Sampling temperature
             top_k: Top-k sampling parameter
             norm_loudness: Whether to normalize output loudness
+            stream: Whether to stream audio chunks as they're generated
+            streaming_interval: Time interval in seconds for streaming chunks
 
         Yields:
             GenerationResult with generated waveform and metrics
         """
+        # If streaming is enabled, delegate to stream_generate
+        if stream:
+            # Convert streaming_interval (seconds) to chunk_size (tokens)
+            # Each token represents ~40ms of audio (25Hz token rate)
+            chunk_size = max(10, int(streaming_interval * 25))
+            yield from self.stream_generate(
+                text=text,
+                repetition_penalty=repetition_penalty,
+                min_p=min_p,
+                top_p=top_p,
+                ref_audio=ref_audio,
+                sample_rate=sample_rate,
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                temperature=temperature,
+                top_k=top_k,
+                norm_loudness=norm_loudness,
+                chunk_size=chunk_size,
+                **kwargs,
+            )
+            return
         # Prepare conditionals if audio prompt provided
         if ref_audio is not None:
             self.prepare_conditionals(
@@ -916,6 +941,236 @@ class ChatterboxTurboTTS(nn.Module):
             processing_time_seconds=processing_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
         )
+
+        # Clear cache after generation
+        mx.clear_cache()
+
+    def stream_generate(
+        self,
+        text: str,
+        repetition_penalty: float = 1.2,
+        min_p: float = 0.0,
+        top_p: float = 0.95,
+        ref_audio: Optional[Union[str, mx.array, np.ndarray]] = None,
+        sample_rate: Optional[int] = None,
+        exaggeration: float = 0.0,
+        cfg_weight: float = 0.0,
+        temperature: float = 0.8,
+        top_k: int = 1000,
+        norm_loudness: bool = True,
+        chunk_size: int = 40,
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Stream generate speech from text, yielding audio chunks as they're generated.
+
+        This method generates audio in a streaming fashion, yielding audio chunks
+        as soon as they're ready. This allows for lower latency audio playback.
+
+        Args:
+            text: Input text to synthesize
+            repetition_penalty: Penalty for repeating tokens
+            min_p: Minimum probability threshold (not used in Turbo)
+            top_p: Nucleus sampling threshold
+            ref_audio: Optional reference audio for voice cloning (path or array)
+            sample_rate: Sample rate of audio array (required if ref_audio is array)
+            exaggeration: Emotion exaggeration (not used in Turbo)
+            cfg_weight: Classifier-free guidance weight (not used in Turbo)
+            temperature: Sampling temperature
+            top_k: Top-k sampling parameter
+            norm_loudness: Whether to normalize output loudness
+            chunk_size: Number of tokens to accumulate before converting to audio
+
+        Yields:
+            GenerationResult with generated audio chunks and metrics
+        """
+        # Prepare conditionals if audio prompt provided
+        if ref_audio is not None:
+            self.prepare_conditionals(
+                ref_audio,
+                sample_rate=sample_rate,
+                exaggeration=exaggeration,
+                norm_loudness=norm_loudness,
+            )
+        else:
+            assert (
+                self._conds is not None
+            ), "Please `prepare_conditionals` first or specify `ref_audio`"
+
+        # Warn about unsupported parameters
+        if cfg_weight > 0.0 or exaggeration > 0.0 or min_p > 0.0:
+            logger.warning(
+                "CFG, min_p and exaggeration are not supported by Turbo version and will be ignored."
+            )
+
+        # Normalize and tokenize text
+        text = punc_norm(text)
+
+        if self.tokenizer is not None:
+            text_tokens = self.tokenizer(
+                text, return_tensors="np", padding=True, truncation=True
+            )
+            text_tokens = mx.array(text_tokens.input_ids)
+        else:
+            # Fallback: simple character-level tokenization (for testing)
+            logger.warning("No tokenizer available, using simple fallback")
+            text_tokens = mx.array([[ord(c) for c in text[:512]]])
+
+        token_count = text_tokens.shape[1]
+        start_time = time.time()
+
+        # Clear any accumulated cache from previous generations
+        mx.clear_cache()
+
+        # Streaming generation - use pre-allocated buffer (in-place approach)
+        max_tokens = 2000  # Pre-allocate for max expected tokens
+        accumulated_tokens = mx.zeros((1, max_tokens), dtype=mx.int32)
+        num_tokens = 0
+        prev_audio_samples = 0
+        segment_idx = 0
+        total_samples = 0
+
+        # Generate speech tokens in chunks
+        for token_chunk, is_final in self.t3.inference_turbo_stream(
+            t3_cond=self._conds.t3,
+            text_tokens=text_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            chunk_size=chunk_size,
+        ):
+            # In-place update of pre-allocated buffer
+            chunk_len = token_chunk.shape[1]
+            mx.eval(token_chunk)
+            token_chunk_np = np.array(token_chunk)
+
+            # Expand buffer if needed
+            if num_tokens + chunk_len > max_tokens:
+                max_tokens = max_tokens * 2
+                new_buffer = mx.zeros((1, max_tokens), dtype=mx.int32)
+                new_buffer[:, :num_tokens] = accumulated_tokens[:, :num_tokens]
+                accumulated_tokens = new_buffer
+
+            accumulated_tokens[:, num_tokens : num_tokens + chunk_len] = token_chunk
+            num_tokens += chunk_len
+
+            # Remove OOV tokens (convert to numpy for masking)
+            token_data = np.array(accumulated_tokens[0, :num_tokens])
+            mask = np.where(token_data < 6561)[0]
+            valid_tokens = mx.array(token_data[mask], dtype=mx.int32)
+
+            # Add silence tokens for final chunk
+            if is_final:
+                silence = mx.array(
+                    [S3GEN_SIL, S3GEN_SIL, S3GEN_SIL, S3GEN_SIL, S3GEN_SIL],
+                    dtype=mx.int32,
+                )
+                valid_tokens = mx.concatenate([valid_tokens, silence])
+
+            valid_tokens = valid_tokens[None, :]  # Add batch dimension
+
+            # Convert tokens to audio
+            try:
+                if is_final:
+                    # For final chunk, use standard inference for complete audio
+                    full_audio, _ = self.s3gen.inference(
+                        speech_tokens=valid_tokens,
+                        ref_dict=self._conds.gen,
+                        n_cfm_timesteps=2,  # Turbo uses 2 steps
+                    )
+                    mx.eval(full_audio)
+
+                    # Return only the new portion (after what was already played)
+                    if full_audio.ndim == 2:
+                        full_audio = full_audio.squeeze(0)
+
+                    mx.clear_cache()
+
+                    if prev_audio_samples > 0 and prev_audio_samples < len(full_audio):
+                        new_audio = mx.array(full_audio[prev_audio_samples:])
+                    else:
+                        new_audio = mx.array(full_audio)
+
+                    total_samples = len(full_audio)
+                else:
+                    new_audio, total_samples = self.s3gen.inference_stream(
+                        speech_tokens=valid_tokens,
+                        ref_dict=self._conds.gen,
+                        n_cfm_timesteps=2,  # Turbo uses 2 steps
+                        prev_audio_samples=prev_audio_samples,
+                        is_final=is_final,
+                    )
+                    # Evaluate and copy to numpy to free MLX memory
+                    mx.eval(new_audio)
+                    mx.clear_cache()
+
+                # Only yield if we have new audio
+                audio_len = (
+                    new_audio.shape[0] if new_audio.ndim == 1 else new_audio.shape[1]
+                )
+                if audio_len > 0:
+                    # Flatten to 1D if needed
+                    if new_audio.ndim == 2:
+                        wav = new_audio.squeeze(0)
+                    else:
+                        wav = new_audio
+
+                    # Calculate timing and metrics
+                    current_time = time.time()
+                    processing_time = current_time - start_time
+                    samples = wav.shape[0]
+                    audio_duration_seconds = samples / self.sample_rate
+
+                    # Format duration
+                    duration_hours = int(audio_duration_seconds // 3600)
+                    duration_mins = int((audio_duration_seconds % 3600) // 60)
+                    duration_secs = int(audio_duration_seconds % 60)
+                    duration_ms = int((audio_duration_seconds % 1) * 1000)
+                    duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+
+                    # Calculate real-time factor
+                    total_audio_duration = total_samples / self.sample_rate
+                    rtf = (
+                        processing_time / total_audio_duration
+                        if total_audio_duration > 0
+                        else 0
+                    )
+
+                    yield GenerationResult(
+                        audio=wav,
+                        samples=samples,
+                        sample_rate=self.sample_rate,
+                        segment_idx=segment_idx,
+                        token_count=token_count,
+                        audio_duration=duration_str,
+                        real_time_factor=round(rtf, 2),
+                        prompt={
+                            "tokens": token_count,
+                            "tokens-per-sec": (
+                                round(token_count / processing_time, 2)
+                                if processing_time > 0
+                                else 0
+                            ),
+                        },
+                        audio_samples={
+                            "samples": samples,
+                            "samples-per-sec": (
+                                round(samples / processing_time, 2)
+                                if processing_time > 0
+                                else 0
+                            ),
+                        },
+                        processing_time_seconds=processing_time,
+                        peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    )
+
+                    segment_idx += 1
+                    prev_audio_samples = total_samples
+
+            except Exception as e:
+                logger.warning(f"Error generating audio chunk: {e}")
+                continue
 
         # Clear cache after generation
         mx.clear_cache()

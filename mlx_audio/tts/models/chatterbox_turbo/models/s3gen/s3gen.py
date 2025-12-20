@@ -350,6 +350,69 @@ class S3Token2Wav(S3Token2Mel):
 
         return output_wavs, output_sources
 
+    def inference_stream(
+        self,
+        speech_tokens: mx.array,
+        ref_dict: Dict[str, mx.array],
+        n_cfm_timesteps: Optional[int] = None,
+        prev_audio_samples: int = 0,
+        is_final: bool = False,
+    ) -> Tuple[mx.array, int]:
+        """
+        Streaming inference: convert speech tokens to waveform for streaming.
+
+        This method processes accumulated tokens and returns the new audio
+        samples that weren't returned in previous chunks.
+
+        Args:
+            speech_tokens: All accumulated speech token IDs (B, T)
+            ref_dict: Pre-computed reference embeddings
+            n_cfm_timesteps: Number of CFM steps
+            prev_audio_samples: Number of audio samples already returned
+            is_final: Whether this is the final chunk
+
+        Returns:
+            new_audio: New audio samples (B, T_new)
+            total_samples: Total number of samples generated so far
+        """
+        # Default timesteps for meanflow
+        if n_cfm_timesteps is None:
+            n_cfm_timesteps = 2 if self.meanflow else 10
+
+        # Generate mel from all accumulated tokens
+        output_mels = self(
+            speech_tokens,
+            ref_dict=ref_dict,
+            n_cfm_timesteps=n_cfm_timesteps,
+            finalize=is_final,
+        )
+
+        # Vocoder
+        output_mels = output_mels.transpose(0, 2, 1)  # (B, T, 80) for HiFiGAN
+        output_wavs, _ = self.mel2wav.inference(output_mels, None)
+
+        # Apply trim fade only on first chunk
+        if prev_audio_samples == 0:
+            fade_len = len(self.trim_fade)
+            if output_wavs.shape[1] >= fade_len:
+                faded_start = output_wavs[:, :fade_len] * self.trim_fade
+                output_wavs = mx.concatenate(
+                    [faded_start, output_wavs[:, fade_len:]], axis=1
+                )
+
+        total_samples = output_wavs.shape[1]
+
+        # Return only new samples (samples after what we've already returned)
+        if prev_audio_samples > 0 and prev_audio_samples < total_samples:
+            new_audio = output_wavs[:, prev_audio_samples:]
+        elif prev_audio_samples == 0:
+            new_audio = output_wavs
+        else:
+            # No new samples
+            new_audio = output_wavs[:, :0]  # Empty with correct shape
+
+        return new_audio, total_samples
+
     def sanitize(self, weights: dict) -> dict:
         """
         Sanitize PyTorch weights for MLX compatibility.

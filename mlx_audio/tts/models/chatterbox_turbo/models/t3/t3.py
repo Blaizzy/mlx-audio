@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 from .cond_enc import T3Cond, T3CondEnc
@@ -82,6 +83,130 @@ class T3(nn.Module):
         embeds = mx.concatenate([cond_emb, text_emb, speech_emb], axis=1)
 
         return embeds, len_cond
+
+    def inference_turbo_stream(
+        self,
+        t3_cond: T3Cond,
+        text_tokens: mx.array,
+        temperature: float = 0.8,
+        top_k: int = 1000,
+        top_p: float = 0.95,
+        repetition_penalty: float = 1.2,
+        max_gen_len: int = 1000,
+        chunk_size: int = 40,
+    ):
+        """
+        Streaming turbo inference: generate speech tokens from text tokens,
+        yielding chunks of tokens as they're generated.
+
+        Args:
+            t3_cond: Conditioning data
+            text_tokens: Input text tokens (B, T)
+            temperature: Sampling temperature
+            top_k: Top-k sampling parameter
+            top_p: Top-p (nucleus) sampling parameter
+            repetition_penalty: Penalty for repeating tokens
+            max_gen_len: Maximum generation length
+            chunk_size: Number of tokens to accumulate before yielding
+
+        Yields:
+            Chunks of generated speech tokens
+        """
+        # Ensure batch dimension
+        if text_tokens.ndim == 1:
+            text_tokens = text_tokens[None, :]
+
+        # Initial speech token
+        B = text_tokens.shape[0]
+        speech_start_token = (
+            mx.ones((B, 1), dtype=mx.int32) * self.hp.start_speech_token
+        )
+
+        # Prepare initial embeddings
+        embeds, _ = self.prepare_input_embeds(
+            t3_cond=t3_cond,
+            text_tokens=text_tokens,
+            speech_tokens=speech_start_token,
+        )
+
+        # Initial forward pass
+        hidden_states, cache = self.tfmr(inputs_embeds=embeds, cache=None)
+
+        # Get first speech prediction
+        speech_hidden = hidden_states[:, -1:, :]
+        speech_logits = self.speech_head(speech_hidden)
+
+        # Sample first token
+        next_speech_token = self._sample_token(
+            speech_logits[:, -1, :],
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+            generated_tokens=None,
+            repetition_penalty=repetition_penalty,
+        )
+
+        # Pre-allocate buffer for generated tokens (in-place approach)
+        all_generated = mx.zeros((B, max_gen_len + 1), dtype=mx.int32)
+        all_generated[:, 0] = next_speech_token[:, 0]
+        num_generated = 1
+
+        chunk_tokens = [next_speech_token]
+        current_speech_token = next_speech_token
+
+        # Generation loop - match non-streaming version closely
+        for _ in range(max_gen_len):
+            # Get embedding for current token
+            current_speech_embed = self.speech_emb(current_speech_token)
+
+            # Forward pass with cache
+            hidden_states, cache = self.tfmr(
+                inputs_embeds=current_speech_embed,
+                cache=cache,
+            )
+
+            # Get logits
+            speech_logits = self.speech_head(hidden_states)
+
+            # Sample next token (use slice of pre-allocated buffer for repetition penalty)
+            next_speech_token = self._sample_token(
+                speech_logits[:, -1, :],
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                generated_tokens=all_generated[:, :num_generated],
+                repetition_penalty=repetition_penalty,
+            )
+
+            # In-place update of pre-allocated buffer
+            all_generated[:, num_generated] = next_speech_token[:, 0]
+            num_generated += 1
+
+            chunk_tokens.append(next_speech_token)
+            current_speech_token = next_speech_token
+
+            # Check for EOS - need to evaluate to check the value
+            mx.eval(next_speech_token)
+            if int(next_speech_token[0, 0]) == self.hp.stop_speech_token:
+                # Yield remaining tokens (excluding EOS)
+                if len(chunk_tokens) > 1:
+                    chunk = mx.concatenate(chunk_tokens[:-1], axis=1)
+                    mx.eval(chunk)
+                    yield chunk, True  # is_final=True
+                return
+
+            # Yield chunk if we've accumulated enough tokens
+            if len(chunk_tokens) >= chunk_size:
+                chunk = mx.concatenate(chunk_tokens, axis=1)
+                mx.eval(chunk)
+                yield chunk, False  # is_final=False
+                chunk_tokens = []
+
+        # Yield any remaining tokens
+        if chunk_tokens:
+            chunk = mx.concatenate(chunk_tokens, axis=1)
+            mx.eval(chunk)
+            yield chunk, True  # is_final=True
 
     def inference_turbo(
         self,
@@ -231,21 +356,29 @@ class T3(nn.Module):
         generated_tokens: mx.array,
         penalty: float,
     ) -> mx.array:
-        """Apply repetition penalty to logits."""
+        """Apply repetition penalty to logits using efficient vectorized operations."""
         if penalty == 1.0:
             return logits
 
-        # Create a mask for tokens that have been generated
         vocab_size = logits.shape[-1]
-        token_mask = mx.zeros((vocab_size,))
 
-        # Mark generated tokens
+        # Convert to numpy for efficient unique token extraction and mask creation
         flat_tokens = generated_tokens.reshape(-1)
-        for token in flat_tokens.tolist():
-            if 0 <= token < vocab_size:
-                token_mask = mx.concatenate(
-                    [token_mask[:token], mx.array([1.0]), token_mask[token + 1 :]]
-                )
+        tokens_np = np.array(flat_tokens)
+
+        # Get unique tokens within vocab range
+        unique_tokens = np.unique(tokens_np)
+        unique_tokens = unique_tokens[
+            (unique_tokens >= 0) & (unique_tokens < vocab_size)
+        ]
+
+        if len(unique_tokens) == 0:
+            return logits
+
+        # Create mask efficiently using numpy
+        token_mask = np.zeros(vocab_size, dtype=np.float32)
+        token_mask[unique_tokens] = 1.0
+        token_mask = mx.array(token_mask)
 
         # Apply penalty: if score < 0, multiply by penalty; if > 0, divide by penalty
         penalized = mx.where(logits < 0, logits * penalty, logits / penalty)
