@@ -2,7 +2,7 @@ import sys  # Import sys to patch argv
 import unittest
 from unittest.mock import MagicMock, patch
 
-from mlx_audio.tts.convert import configure_parser, main
+from mlx_audio.convert import configure_parser, main
 
 
 class TestConvert(unittest.TestCase):
@@ -11,7 +11,7 @@ class TestConvert(unittest.TestCase):
 
         # Mock the actual convert function
         self.convert_mock = MagicMock()
-        self.patcher = patch("mlx_audio.tts.convert.convert", new=self.convert_mock)
+        self.patcher = patch("mlx_audio.convert.convert", new=self.convert_mock)
         self.patcher.start()
 
     def tearDown(self):
@@ -39,7 +39,9 @@ class TestConvert(unittest.TestCase):
             quant_predicate=None,
             dtype="float16",
             upload_repo=None,
+            revision=None,
             dequantize=False,
+            model_domain=None,
         )
 
     def test_quantized_conversion(self):
@@ -63,9 +65,11 @@ class TestConvert(unittest.TestCase):
             q_group_size=128,
             q_bits=8,
             quant_predicate=None,
-            dtype="float16",  # Should be ignored when quantize=True
+            dtype=None,  # Default dtype is None
             upload_repo=None,
+            revision=None,
             dequantize=False,
+            model_domain=None,
         )
 
     def test_quantized_conversion_invalid_group_size_raises_error(self):
@@ -105,9 +109,11 @@ class TestConvert(unittest.TestCase):
             q_group_size=100,
             q_bits=4,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo=None,
+            revision=None,
             dequantize=False,
+            model_domain=None,
         )
 
     def test_quantization_recipes(self):
@@ -126,9 +132,11 @@ class TestConvert(unittest.TestCase):
                     q_group_size=64,  # Default q_group_size
                     q_bits=4,  # Default q_bits
                     quant_predicate=recipe,
-                    dtype="float16",  # Default dtype
+                    dtype=None,  # Default dtype is None
                     upload_repo=None,  # Default upload_repo
+                    revision=None,
                     dequantize=False,  # Default dequantize
+                    model_domain=None,
                 )
                 # No need to reset mock here, it's handled at the start of the loop
 
@@ -145,9 +153,11 @@ class TestConvert(unittest.TestCase):
             q_group_size=64,
             q_bits=4,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo=None,
+            revision=None,
             dequantize=True,
+            model_domain=None,
         )
 
     def test_upload_repo_argument(self):
@@ -163,9 +173,11 @@ class TestConvert(unittest.TestCase):
             q_group_size=64,
             q_bits=4,
             quant_predicate=None,
-            dtype="float16",
+            dtype=None,  # Default dtype is None
             upload_repo="my/repo",
+            revision=None,
             dequantize=False,
+            model_domain=None,
         )
 
 
