@@ -13,6 +13,7 @@ from .encoder import UpsampleConformerEncoder
 from .flow_matching import CausalConditionalCFM
 from .hifigan import F0Predictor, HiFTGenerator
 from .mel import mel_spectrogram
+from .xvector import CAMPPlus
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,15 @@ class S3Token2Mel(nn.Module):
 
         # Token embedding
         self.input_embedding = nn.Embedding(SPEECH_VOCAB_SIZE, 512)
+
+        # Speaker encoder (CAMPPlus for x-vector extraction)
+        self.speaker_encoder = CAMPPlus(
+            feat_dim=80,
+            embedding_size=192,
+            growth_rate=32,
+            bn_size=4,
+            init_channels=128,
+        )
 
         # Speaker embedding projection
         self.spk_embed_affine_layer = nn.Linear(192, 80)
@@ -141,8 +151,15 @@ class S3Token2Mel(nn.Module):
 
             ref_speech_token_lens = mx.array([actual_token_len])
 
-        # Placeholder for speaker embedding (CAMPPlus not implemented in Turbo)
-        ref_x_vector = mx.zeros((1, 192))
+        # Resample to 16kHz for speaker encoder
+        if ref_sr != S3_SR:
+            ref_wav_16k = librosa.resample(ref_wav_np, orig_sr=ref_sr, target_sr=S3_SR)
+        else:
+            ref_wav_16k = ref_wav_np
+
+        # Extract speaker embedding using CAMPPlus
+        ref_x_vector = self.speaker_encoder.inference([mx.array(ref_wav_16k)])
+        mx.eval(ref_x_vector)
 
         return {
             "prompt_token": ref_speech_tokens,
@@ -332,6 +349,57 @@ class S3Token2Wav(S3Token2Mel):
             )
 
         return output_wavs, output_sources
+
+    def sanitize(self, weights: dict) -> dict:
+        """
+        Sanitize PyTorch weights for MLX compatibility.
+
+        Handles:
+        - Conv weight transposition (PyTorch OIHW/OIK -> MLX OHWI/OKI)
+        - BatchNorm running stats
+        - CAMPPlus speaker encoder weights
+        """
+        new_weights = {}
+
+        for key, value in weights.items():
+            new_key = key
+
+            # Skip num_batches_tracked
+            if "num_batches_tracked" in key:
+                continue
+
+            # Handle speaker_encoder (CAMPPlus) weights
+            if key.startswith("speaker_encoder."):
+                # Use CAMPPlus sanitize
+                spk_key = key.replace("speaker_encoder.", "")
+                spk_weights = self.speaker_encoder.sanitize({spk_key: value})
+                for sk, sv in spk_weights.items():
+                    new_weights[f"speaker_encoder.{sk}"] = sv
+                continue
+
+            # Handle Conv weight transposition
+            # Skip if weights are already in MLX format (from pre-converted models)
+            if "weight" in key and value.ndim >= 3:
+                if value.ndim == 4:
+                    # Conv2d: (O, I, H, W) -> (O, H, W, I)
+                    # PyTorch format: shape[2] == shape[3] (square kernel like 3x3, 1x1)
+                    if value.shape[2] == value.shape[3]:
+                        # PyTorch format (O, I, H, W) with H==W: transpose
+                        value = mx.array(np.array(value).transpose(0, 2, 3, 1))
+                    # else: already in MLX format, skip transpose
+                elif value.ndim == 3:
+                    # Conv1d: (O, I, K) -> (O, K, I)
+                    # For pre-converted MLX models, Conv1d weights are already transposed.
+                    # PyTorch format has kernel at end: (O, I, K) where K is typically small (1-7)
+                    # Only transpose if last dim is a typical small kernel size (1-7)
+                    if value.shape[2] <= 7 and value.shape[1] > value.shape[2]:
+                        # PyTorch format with small kernel at end: transpose
+                        value = mx.array(np.array(value).transpose(0, 2, 1))
+                    # else: already in MLX format or ambiguous, skip transpose
+
+            new_weights[new_key] = value
+
+        return new_weights
 
 
 # Alias for compatibility
