@@ -1138,6 +1138,7 @@ class ChatterboxTurboTTS(nn.Module):
             num_tokens = 0
             prev_audio_samples = 0
             total_samples = 0
+            cached_noise = None  # Cache noise for consistent audio across chunks
 
             # Generate speech tokens in chunks
             for token_chunk, is_final in self.t3.inference_turbo_stream(
@@ -1179,42 +1180,27 @@ class ChatterboxTurboTTS(nn.Module):
 
                 valid_tokens = valid_tokens[None, :]  # Add batch dimension
 
-                # Convert tokens to audio
+                # Convert tokens to audio using streaming with cached noise
                 try:
-                    if is_final:
-                        # For final chunk, use standard inference for complete audio
-                        full_audio, _ = self.s3gen.inference(
-                            speech_tokens=valid_tokens,
-                            ref_dict=self._conds.gen,
-                            n_cfm_timesteps=2,  # Turbo uses 2 steps
-                        )
-                        mx.eval(full_audio)
-
-                        # Return only the new portion (after what was already played)
-                        if full_audio.ndim == 2:
-                            full_audio = full_audio.squeeze(0)
-
-                        mx.clear_cache()
-
-                        if prev_audio_samples > 0 and prev_audio_samples < len(
-                            full_audio
-                        ):
-                            new_audio = mx.array(full_audio[prev_audio_samples:])
-                        else:
-                            new_audio = mx.array(full_audio)
-
-                        total_samples = len(full_audio)
-                    else:
-                        new_audio, total_samples = self.s3gen.inference_stream(
+                    new_audio, total_samples, cached_noise = (
+                        self.s3gen.inference_stream(
                             speech_tokens=valid_tokens,
                             ref_dict=self._conds.gen,
                             n_cfm_timesteps=2,  # Turbo uses 2 steps
                             prev_audio_samples=prev_audio_samples,
                             is_final=is_final,
+                            cached_noise=cached_noise,
                         )
-                        # Evaluate and copy to numpy to free MLX memory
-                        mx.eval(new_audio)
-                        mx.clear_cache()
+                    )
+                    mx.eval(new_audio)
+                    if cached_noise is not None:
+                        mx.eval(cached_noise)
+
+                    # Flatten to 1D if needed
+                    if new_audio.ndim == 2:
+                        new_audio = new_audio.squeeze(0)
+
+                    mx.clear_cache()
 
                     # Update global sample count
                     global_total_samples += (
