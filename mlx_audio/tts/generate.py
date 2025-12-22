@@ -350,7 +350,7 @@ def generate_audio(
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
 
-        if join_audio and not stream:
+        if join_audio:
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)

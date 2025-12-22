@@ -539,6 +539,7 @@ class S3Token2Wav(S3Token2Mel):
 
         # Vocoder
         output_mels = output_mels.transpose(0, 2, 1)  # (B, T, 80) for HiFiGAN
+
         output_wavs, output_sources = self.mel2wav.inference(output_mels, None)
 
         # Apply trim fade to reduce artifacts
@@ -640,6 +641,7 @@ class S3Token2Wav(S3Token2Mel):
 
         # Vocoder
         output_mels = output_mels.transpose(0, 2, 1)  # (B, T, 80) for HiFiGAN
+
         output_wavs, _ = self.mel2wav.inference(output_mels, None)
 
         # Apply trim fade only on first chunk

@@ -324,7 +324,7 @@ class Model(nn.Module):
         generation_stream: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
 
-        from mlx_lm.generate import generate_step
+        from mlx_audio.stt.generate import generate_step
 
         input_embeddings = self._merge_input_embeddings(
             input_ids=input_ids,
@@ -385,7 +385,7 @@ class Model(nn.Module):
 
         generated = []
 
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_audio.stt.sample_utils import make_sampler
 
         sampler = make_sampler(
             temperature,

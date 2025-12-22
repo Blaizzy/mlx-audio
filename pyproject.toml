@@ -32,6 +32,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# MLX-CUDA
+cuda = [
+    "mlx-cuda"
+]
+
 # STT dependencies
 stt = [
     "tiktoken>=0.9.0",

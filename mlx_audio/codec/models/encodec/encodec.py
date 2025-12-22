@@ -86,46 +86,90 @@ def preprocess_audio(
     return mx.stack(inputs), mx.stack(masks)
 
 
-_lstm_kernel = mx.fast.metal_kernel(
-    name="lstm",
-    input_names=["x", "h_in", "cell", "hidden_size", "time_step", "num_time_steps"],
-    output_names=["hidden_state", "cell_state"],
-    header="""
-    template <typename T>
-    T sigmoid(T x) {
-        auto y = 1 / (1 + metal::exp(-metal::abs(x)));
-        return (x < 0) ? 1 - y : y;
-    }
-    """,
-    source="""
-        uint b = thread_position_in_grid.x;
-        uint d = hidden_size * 4;
+# Lazy initialization of Metal kernel for non-Metal devices
+_lstm_kernel = None
 
-        uint elem = b * d + thread_position_in_grid.y;
-        uint index = elem;
-        uint x_index = b * num_time_steps * d + time_step * d + index;
 
-        auto i = sigmoid(h_in[index] + x[x_index]);
-        index += hidden_size;
-        x_index += hidden_size;
-        auto f = sigmoid(h_in[index] + x[x_index]);
-        index += hidden_size;
-        x_index += hidden_size;
-        auto g = metal::precise::tanh(h_in[index] + x[x_index]);
-        index += hidden_size;
-        x_index += hidden_size;
-        auto o = sigmoid(h_in[index] + x[x_index]);
+def _get_lstm_kernel():
+    """Lazily create the Metal LSTM kernel."""
+    global _lstm_kernel
+    if _lstm_kernel is None:
+        _lstm_kernel = mx.fast.metal_kernel(
+            name="lstm",
+            input_names=[
+                "x",
+                "h_in",
+                "cell",
+                "hidden_size",
+                "time_step",
+                "num_time_steps",
+            ],
+            output_names=["hidden_state", "cell_state"],
+            header="""
+            template <typename T>
+            T sigmoid(T x) {
+                auto y = 1 / (1 + metal::exp(-metal::abs(x)));
+                return (x < 0) ? 1 - y : y;
+            }
+            """,
+            source="""
+                uint b = thread_position_in_grid.x;
+                uint d = hidden_size * 4;
 
-        cell_state[elem] = f * cell[elem] + i * g;
-        hidden_state[elem] = o * metal::precise::tanh(cell_state[elem]);
-    """,
-)
+                uint elem = b * d + thread_position_in_grid.y;
+                uint index = elem;
+                uint x_index = b * num_time_steps * d + time_step * d + index;
+
+                auto i = sigmoid(h_in[index] + x[x_index]);
+                index += hidden_size;
+                x_index += hidden_size;
+                auto f = sigmoid(h_in[index] + x[x_index]);
+                index += hidden_size;
+                x_index += hidden_size;
+                auto g = metal::precise::tanh(h_in[index] + x[x_index]);
+                index += hidden_size;
+                x_index += hidden_size;
+                auto o = sigmoid(h_in[index] + x[x_index]);
+
+                cell_state[elem] = f * cell[elem] + i * g;
+                hidden_state[elem] = o * metal::precise::tanh(cell_state[elem]);
+            """,
+        )
+    return _lstm_kernel
+
+
+def _lstm_step_cpu(x_t, h_in, cell, hidden_size):
+    """CPU fallback for LSTM step using pure MLX operations."""
+    # x_t: (B, 4*hidden_size), h_in: (B, 4*hidden_size), cell: (B, hidden_size)
+    gates = h_in + x_t  # (B, 4*hidden_size)
+
+    # Split into 4 gates
+    i = mx.sigmoid(gates[:, :hidden_size])
+    f = mx.sigmoid(gates[:, hidden_size : 2 * hidden_size])
+    g = mx.tanh(gates[:, 2 * hidden_size : 3 * hidden_size])
+    o = mx.sigmoid(gates[:, 3 * hidden_size :])
+
+    # Update cell and hidden state
+    new_cell = f * cell + i * g
+    new_hidden = o * mx.tanh(new_cell)
+
+    return new_hidden, new_cell
 
 
 def lstm_custom(x, h_in, cell, time_step):
+    """LSTM custom kernel with CPU fallback for non-Metal devices."""
     assert x.ndim == 3, "Input to LSTM must have 3 dimensions."
+
+    # Use CPU fallback if Metal is not available
+    if not mx.metal.is_available():
+        hidden_size = cell.shape[-1]
+        x_t = x[:, time_step, :]  # (B, 4*hidden_size)
+        return _lstm_step_cpu(x_t, h_in, cell, hidden_size)
+
+    # Metal path
     out_shape = cell.shape
-    return _lstm_kernel(
+    kernel = _get_lstm_kernel()
+    return kernel(
         inputs=[x, h_in, cell, out_shape[-1], time_step, x.shape[-2]],
         output_shapes=[out_shape, out_shape],
         output_dtypes=[h_in.dtype, h_in.dtype],

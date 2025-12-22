@@ -463,6 +463,7 @@ class HiFTGenerator(nn.Module):
         n_fft = self.istft_params["n_fft"]
         hop_len = self.istft_params["hop_len"]
 
+
         # Convert to numpy for efficient STFT
         x_np = np.array(x)
         window_np = np.array(self.stft_window)
@@ -514,6 +515,57 @@ class HiFTGenerator(nn.Module):
         n_fft = self.istft_params["n_fft"]
         hop_len = self.istft_params["hop_len"]
 
+        # Use full numpy path for non-Metal devices to avoid CUDA issues
+        if not mx.metal.is_available():
+            # Force evaluation and convert to numpy immediately
+            mx.eval(magnitude, phase)
+            mag_np = np.array(magnitude).astype(np.float32)
+            phase_np = np.array(phase).astype(np.float32)
+
+            # Clamp magnitude for stability
+            mag_np = np.clip(mag_np, None, 1e2)
+
+            B, _, T = mag_np.shape
+
+            # Reconstruct complex spectrogram
+            real_np = mag_np * np.cos(phase_np)
+            imag_np = mag_np * np.sin(phase_np)
+
+            # Transpose: (B, F, T) -> (B, T, F)
+            spec_real_np = np.transpose(real_np, (0, 2, 1))
+            spec_imag_np = np.transpose(imag_np, (0, 2, 1))
+
+            # IRFFT
+            complex_spec = spec_real_np + 1j * spec_imag_np
+            frames_np = np.fft.irfft(complex_spec, n=n_fft, axis=-1).astype(np.float32)
+
+            window_np = np.array(self.stft_window)
+
+            # Apply synthesis window
+            frames_np = frames_np * window_np[None, None, :]
+
+            # Overlap-add synthesis
+            output_length = (T - 1) * hop_len + n_fft
+            audio_np = np.zeros((B, output_length), dtype=np.float32)
+            window_sum = np.zeros(output_length, dtype=np.float32)
+
+            for i in range(T):
+                start = i * hop_len
+                audio_np[:, start : start + n_fft] += frames_np[:, i, :]
+                window_sum[start : start + n_fft] += window_np**2
+
+            # Normalize by window overlap
+            window_sum = np.maximum(window_sum, 1e-8)
+            audio_np = audio_np / window_sum[None, :]
+
+            # Trim center padding
+            pad = n_fft // 2
+            expected_len = (T - 1) * hop_len
+            audio_np = audio_np[:, pad : pad + expected_len]
+
+            return mx.array(audio_np)
+
+        # Metal path
         # Clamp magnitude for stability
         magnitude = mx.clip(magnitude, a_min=None, a_max=1e2)
 
@@ -527,11 +579,9 @@ class HiFTGenerator(nn.Module):
         spec_real = real.transpose(0, 2, 1)  # (B, T, F)
         spec_imag = imag.transpose(0, 2, 1)  # (B, T, F)
 
-        # Perform IRFFT on each frame using MLX
         frames = mx.fft.irfft(spec_real + 1j * spec_imag, n=n_fft, axis=-1)
-
-        # Convert to numpy for efficient overlap-add
         frames_np = np.array(frames)  # (B, T, n_fft)
+
         window_np = np.array(self.stft_window)
 
         # Apply synthesis window
@@ -570,12 +620,16 @@ class HiFTGenerator(nn.Module):
         Returns:
             audio: Waveform (B, T_audio)
         """
+
+
         # Compute source STFT
         s_real, s_imag = self._stft(s[:, 0, :])
         s_stft = mx.concatenate([s_real, s_imag], axis=1)
 
+
         # Initial conv
         x = self.conv_pre(x)
+
 
         # Upsampling with source fusion
         for i in range(self.num_upsamples):
@@ -602,6 +656,7 @@ class HiFTGenerator(nn.Module):
                 else:
                     xs = xs + self.resblocks[idx](x)
             x = xs / self.num_kernels
+
 
         x = nn.leaky_relu(x)
         x = self.conv_post(x)

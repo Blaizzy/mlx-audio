@@ -308,13 +308,23 @@ def stft(x: mx.array, n_fft: int, hop_length: int, window: mx.array) -> tuple:
     window_expanded = mx.reshape(window, (1, -1, 1))
     frames = frames * window_expanded
 
-    # FFT
-    # MLX doesn't have a direct rfft, so we use fft and take the first half
-    fft_result = mx.fft.fft(frames, axis=1)
+    # FFT - use numpy fallback for non-Metal devices
+    if not mx.metal.is_available():
+        import numpy as np
 
-    # Take positive frequencies
-    real = mx.real(fft_result[:, : n_fft // 2 + 1, :])
-    imag = mx.imag(fft_result[:, : n_fft // 2 + 1, :])
+        # Force evaluation before converting to numpy
+        mx.eval(frames)
+        frames_np = np.array(frames, dtype=np.float32)
+        fft_result = np.fft.fft(frames_np, axis=1)
+        real = mx.array(fft_result[:, : n_fft // 2 + 1, :].real.astype(np.float32))
+        imag = mx.array(fft_result[:, : n_fft // 2 + 1, :].imag.astype(np.float32))
+    else:
+        # MLX doesn't have a direct rfft, so we use fft and take the first half
+        fft_result = mx.fft.fft(frames, axis=1)
+
+        # Take positive frequencies
+        real = mx.real(fft_result[:, : n_fft // 2 + 1, :])
+        imag = mx.imag(fft_result[:, : n_fft // 2 + 1, :])
 
     return real, imag
 
@@ -354,9 +364,18 @@ def istft(
     # Combine into complex
     spectrum = real_full + 1j * imag_full
 
-    # Inverse FFT
-    frames = mx.fft.ifft(spectrum, axis=1)
-    frames = mx.real(frames)  # Take real part
+    # Inverse FFT - use numpy fallback for non-Metal devices
+    if not mx.metal.is_available():
+        import numpy as np
+
+        # Force evaluation before converting to numpy
+        mx.eval(spectrum)
+        spectrum_np = np.array(spectrum)
+        frames_np = np.fft.ifft(spectrum_np, axis=1)
+        frames = mx.array(frames_np.real.astype(np.float32))
+    else:
+        frames = mx.fft.ifft(spectrum, axis=1)
+        frames = mx.real(frames)  # Take real part
 
     # Apply window
     window_expanded = mx.reshape(window, (1, -1, 1))

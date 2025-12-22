@@ -90,8 +90,16 @@ def kaldi_fbank(
             [frames, mx.zeros((frames.shape[0], pad_amount))], axis=1
         )
 
-    # FFT
-    spec = mx.fft.rfft(frames)  # (num_frames, n_fft//2 + 1)
+    # FFT - use numpy fallback for non-Metal devices
+    if not mx.metal.is_available():
+        import numpy as np
+
+        # Force evaluation before converting to numpy
+        mx.eval(frames)
+        frames_np = np.array(frames, dtype=np.float32)
+        spec = mx.array(np.fft.rfft(frames_np, axis=-1))
+    else:
+        spec = mx.fft.rfft(frames)  # (num_frames, n_fft//2 + 1)
 
     # Power spectrum
     power_spec = mx.abs(spec) ** 2  # (num_frames, n_fft//2 + 1)

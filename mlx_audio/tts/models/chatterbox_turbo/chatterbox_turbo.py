@@ -954,8 +954,9 @@ class ChatterboxTurboTTS(nn.Module):
 
             # Remove OOV tokens and add silence
             speech_tokens = speech_tokens.reshape(-1)
-            mask = np.where(np.array(speech_tokens) < 6561)[0].tolist()
-            speech_tokens = speech_tokens[mask]
+            token_data = np.array(speech_tokens)
+            mask = np.where(token_data < 6561)[0]
+            speech_tokens = mx.array(token_data[mask], dtype=mx.int32)
             silence = mx.array([S3GEN_SIL, S3GEN_SIL, S3GEN_SIL], dtype=mx.int32)
             speech_tokens = mx.concatenate([speech_tokens, silence])
             speech_tokens = speech_tokens[None, :]  # Add batch dimension
