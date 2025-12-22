@@ -2,6 +2,7 @@
 
 import glob
 import json
+from calendar import c
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
@@ -24,74 +25,28 @@ class STTOutput:
     language: str = None
 
 
-class RotaryEmbedding:
-    """Rotary Position Embedding implementation."""
-
-    def __init__(self, dim: int, rope_ratio: float = 1.0):
-        self.dim = dim
-        self.rope_ratio = rope_ratio
-
-    def get_emb(self, max_seq_len: int, dtype: mx.Dtype, base: int = 10000) -> mx.array:
-        """Get rotary embeddings for the given sequence length."""
-        base = base * self.rope_ratio
-        n_elem = self.dim
-
-        theta = 1.0 / (base ** (mx.arange(0, n_elem, 2, dtype=mx.float32) / n_elem))
-        seq_idx = mx.arange(max_seq_len, dtype=mx.float32)
-        idx_theta = mx.outer(seq_idx, theta)
-
-        cos_emb = mx.cos(idx_theta)
-        sin_emb = mx.sin(idx_theta)
-        cache = mx.stack([cos_emb, sin_emb], axis=-1)
-
-        if dtype in (mx.float16, mx.bfloat16):
-            cache = cache.astype(dtype)
-
-        return cache
-
-
-def apply_rotary_pos_emb(x: mx.array, rope_cache: mx.array) -> mx.array:
-    """Apply rotary positional embeddings to input tensor."""
-    b, np_heads, sq, _ = x.shape
-    rot_dim = rope_cache.shape[-2] * 2
-
-    x_rot = x[..., :rot_dim]
-    x_pass = x[..., rot_dim:]
-
-    xshaped = x_rot.reshape(b, np_heads, sq, rot_dim // 2, 2)
-    rope_cache = rope_cache[:, :sq].reshape(1, 1, sq, -1, 2)
-
-    x_out = mx.stack(
-        [
-            xshaped[..., 0] * rope_cache[..., 0] - xshaped[..., 1] * rope_cache[..., 1],
-            xshaped[..., 1] * rope_cache[..., 0] + xshaped[..., 0] * rope_cache[..., 1],
-        ],
-        axis=-1,
-    )
-    x_out = x_out.reshape(b, np_heads, sq, rot_dim)
-
-    return mx.concatenate([x_out, x_pass], axis=-1)
-
-
 class WhisperAttention(nn.Module):
     """Whisper attention layer with optional Rotary Position Embeddings."""
 
-    def __init__(self, config: WhisperConfig):
+    def __init__(self, config: WhisperConfig, use_rope: bool = False):
         super().__init__()
         self.embed_dim = config.d_model
         self.num_heads = config.encoder_attention_heads
         self.head_dim = self.embed_dim // self.num_heads
         self.scaling = self.head_dim**-0.5
+        self.use_rope = use_rope
 
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
 
+        if use_rope:
+            self.rope = nn.RoPE(self.head_dim // 2, traditional=config.rope_traditional)
+
     def __call__(
         self,
         hidden_states: mx.array,
-        rotary_pos_emb: Optional[mx.array] = None,
     ) -> mx.array:
         bsz, tgt_len, _ = hidden_states.shape
 
@@ -109,9 +64,9 @@ class WhisperAttention(nn.Module):
             bsz, tgt_len, self.num_heads, self.head_dim
         ).transpose(0, 2, 1, 3)
 
-        if rotary_pos_emb is not None:
-            query_states = apply_rotary_pos_emb(query_states, rotary_pos_emb)
-            key_states = apply_rotary_pos_emb(key_states, rotary_pos_emb)
+        if self.use_rope:
+            query_states = self.rope(query_states)
+            key_states = self.rope(key_states)
 
         attn_output = mx.fast.scaled_dot_product_attention(
             query_states, key_states, value_states, scale=self.scaling
@@ -127,11 +82,11 @@ class WhisperAttention(nn.Module):
 class WhisperEncoderLayer(nn.Module):
     """Whisper encoder layer with optional RoPE support."""
 
-    def __init__(self, config: WhisperConfig):
+    def __init__(self, config: WhisperConfig, use_rope: bool = False):
         super().__init__()
         self.embed_dim = config.d_model
 
-        self.self_attn = WhisperAttention(config)
+        self.self_attn = WhisperAttention(config, use_rope=use_rope)
         self.self_attn_layer_norm = nn.LayerNorm(self.embed_dim)
 
         self.fc1 = nn.Linear(self.embed_dim, config.encoder_ffn_dim)
@@ -141,11 +96,10 @@ class WhisperEncoderLayer(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
-        rotary_pos_emb: Optional[mx.array] = None,
     ) -> mx.array:
         residual = hidden_states
         hidden_states = self.self_attn_layer_norm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, rotary_pos_emb=rotary_pos_emb)
+        hidden_states = self.self_attn(hidden_states)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -169,17 +123,12 @@ class WhisperEncoder(nn.Module):
         self.conv1 = nn.Conv1d(config.num_mel_bins, embed_dim, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(embed_dim, embed_dim, kernel_size=3, stride=2, padding=1)
 
-        if use_rope:
-            self.rotary_embedding = RotaryEmbedding(
-                config.d_model // config.encoder_attention_heads // 2
-            )
-            self.embed_positions = nn.Embedding(config.max_source_positions, embed_dim)
-        else:
-            self.embed_positions = nn.Embedding(config.max_source_positions, embed_dim)
-            self.rotary_embedding = None
+        # Always create for weight loading compatibility (only used when not using RoPE)
+        self.embed_positions = nn.Embedding(config.max_source_positions, embed_dim)
 
         self.layers = [
-            WhisperEncoderLayer(config) for _ in range(config.encoder_layers)
+            WhisperEncoderLayer(config, use_rope=use_rope)
+            for _ in range(config.encoder_layers)
         ]
 
     def __call__(self, input_features: mx.array) -> mx.array:
@@ -187,18 +136,14 @@ class WhisperEncoder(nn.Module):
         hidden_states = nn.gelu(self.conv1(input_features))
         hidden_states = nn.gelu(self.conv2(hidden_states))
 
-        seq_len = hidden_states.shape[1]
-
-        if self.use_rope and self.rotary_embedding is not None:
-            rotary_embs = self.rotary_embedding.get_emb(seq_len, hidden_states.dtype)
-            rotary_embs = rotary_embs[None]
-        else:
-            rotary_embs = None
+        # Add position embeddings if not using RoPE
+        if not self.use_rope:
+            seq_len = hidden_states.shape[1]
             embed_pos = self.embed_positions.weight[:seq_len]
             hidden_states = hidden_states + embed_pos
 
         for layer in self.layers:
-            hidden_states = layer(hidden_states, rotary_pos_emb=rotary_embs)
+            hidden_states = layer(hidden_states)
 
         return hidden_states
 
@@ -359,19 +304,17 @@ class Model(nn.Module):
     def _merge_audio_text_embeddings(
         self,
         input_ids: mx.array,
-        audios: Optional[mx.array] = None,
+        audio_embeds: Optional[mx.array] = None,
         audio_offsets: Optional[List[List[int]]] = None,
         audio_length: Optional[List[List[int]]] = None,
         cache: Optional[List[Any]] = None,
     ) -> mx.array:
-        """Merge audio embeddings into text embeddings at specified positions."""
+        """Merge pre-computed audio embeddings into text embeddings."""
         text_embeds = self.get_input_embeddings()(input_ids)
 
-        # Skip audio embedding if no audio or cache already populated
-        if audios is None or (cache is not None and cache[0].offset > 0):
+        # Skip if no audio or cache already populated
+        if audio_embeds is None or (cache is not None and cache[0].offset > 0):
             return text_embeds
-
-        audio_embeds, _ = self.audio_encoder(audios)
 
         batch_size = text_embeds.shape[0]
 
@@ -395,14 +338,19 @@ class Model(nn.Module):
         self,
         input_ids: mx.array,
         audios: Optional[mx.array] = None,
+        audio_embeds: Optional[mx.array] = None,
         audio_offsets: Optional[List[List[int]]] = None,
         audio_length: Optional[List[List[int]]] = None,
         cache: Optional[List[Any]] = None,
     ) -> mx.array:
         """Forward pass."""
+        # Compute audio embeddings if raw audio provided and no pre-computed embeds
+        if audios is not None and audio_embeds is None:
+            audio_embeds, _ = self.audio_encoder(audios)
+
         input_embeds = self._merge_audio_text_embeddings(
             input_ids=input_ids,
-            audios=audios,
+            audio_embeds=audio_embeds,
             audio_offsets=audio_offsets,
             audio_length=audio_length,
             cache=cache,
@@ -559,7 +507,7 @@ class Model(nn.Module):
         self,
         input_ids: Optional[mx.array] = None,
         *,
-        audios: Optional[mx.array] = None,
+        audio_embeds: Optional[mx.array] = None,
         audio_offsets: Optional[List[List[int]]] = None,
         audio_length: Optional[List[List[int]]] = None,
         max_tokens: int = 128,
@@ -570,7 +518,7 @@ class Model(nn.Module):
 
         Args:
             input_ids: Input token IDs
-            audios: Audio mel spectrogram
+            audio_embeds: Pre-computed audio embeddings
             audio_offsets: Positions to insert audio embeddings
             audio_length: Lengths of audio embeddings
             max_tokens: Maximum tokens to generate
@@ -584,7 +532,7 @@ class Model(nn.Module):
 
         input_embeddings = self._merge_audio_text_embeddings(
             input_ids=input_ids,
-            audios=audios,
+            audio_embeds=audio_embeds,
             audio_offsets=audio_offsets,
             audio_length=audio_length,
         )[
@@ -640,11 +588,12 @@ class Model(nn.Module):
         # Preprocess audio to mel spectrogram
         mel = self._preprocess_audio(audio)
 
+        # Encode audio once (avoid double encoding)
+        audio_embeds, audio_len = self.audio_encoder(mel)
+        mx.eval(audio_embeds)
+
         prompt_text = "<|user|>\n<|begin_of_audio|>"
         tokens = self._tokenizer.encode(prompt_text)
-
-        # Get audio length after encoding
-        _, audio_len = self.audio_encoder(mel)
 
         audio_placeholder_tokens = [0] * audio_len
         tokens.extend(audio_placeholder_tokens)
@@ -672,7 +621,7 @@ class Model(nn.Module):
 
         for token, _ in self.stream_generate(
             input_ids=input_ids,
-            audios=mel,
+            audio_embeds=audio_embeds,
             audio_offsets=audio_offsets,
             audio_length=audio_length,
             max_tokens=max_tokens,
@@ -692,3 +641,9 @@ class Model(nn.Module):
         text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
         return STTOutput(text=text.strip())
+
+    def model_quant_predicate(self, p, m):
+        """Predicate for quantizing the model.
+        Skips quantizing audio_encoder by name.
+        """
+        return not p.startswith("lm_head")
