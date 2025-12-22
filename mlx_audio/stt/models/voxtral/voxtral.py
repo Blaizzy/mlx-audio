@@ -1,7 +1,6 @@
 import glob
-import json
 import math
-from dataclasses import dataclass
+import time
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
@@ -11,14 +10,8 @@ import numpy as np
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
 
+from ..base import STTOutput
 from .config import AudioConfig, ModelConfig
-
-
-@dataclass
-class STTOutput:
-    text: str
-    segments: List[dict] = None
-    language: str = None
 
 
 class Attention(nn.Module):
@@ -369,6 +362,8 @@ class Model(nn.Module):
         generation_stream: bool = False,
     ) -> mx.array:
 
+        start_time = time.time()
+
         if message is None:
             messages = [
                 {
@@ -413,9 +408,17 @@ class Model(nn.Module):
             if verbose:
                 print(self._processor.decode([token]), end="", flush=True)
 
+        end_time = time.time()
+
         # Clear cache after each segment to avoid memory leaks
         mx.clear_cache()
 
         return STTOutput(
             text=self._processor.decode(generated),
+            prompt_tokens=input_ids.shape[1],
+            generation_tokens=len(generated),
+            total_tokens=input_ids.shape[1] + len(generated),
+            total_time=end_time - start_time,
+            prompt_tps=input_ids.shape[1] / (end_time - start_time),
+            generation_tps=len(generated) / (end_time - start_time),
         )

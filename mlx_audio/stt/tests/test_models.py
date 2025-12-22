@@ -405,14 +405,13 @@ class TestGLMASRModel(unittest.TestCase):
         )
         from mlx_audio.stt.models.glmasr.glmasr import AudioEncoder
         from mlx_audio.stt.models.glmasr.glmasr import Model as GLMASRModel
-        from mlx_audio.stt.models.glmasr.glmasr import RotaryEmbedding, WhisperEncoder
+        from mlx_audio.stt.models.glmasr.glmasr import WhisperEncoder
 
         # Store references for use in test methods
         self.WhisperConfig = WhisperConfig
         self.LlamaConfig = LlamaConfig
         self.ModelConfig = ModelConfig
         self.GLMASRModel = GLMASRModel
-        self.RotaryEmbedding = RotaryEmbedding
         self.WhisperEncoder = WhisperEncoder
         self.AudioEncoder = AudioEncoder
 
@@ -525,17 +524,6 @@ class TestGLMASRModel(unittest.TestCase):
         self.assertEqual(config.lm_config.hidden_size, 2048)
         self.assertEqual(config.lm_config.num_hidden_layers, 28)
 
-    def test_rotary_embedding(self):
-        """Test RotaryEmbedding generation."""
-        dim = 64
-        rope = self.RotaryEmbedding(dim, rope_ratio=1.0)
-        max_seq_len = 100
-
-        emb = rope.get_emb(max_seq_len, dtype=mx.float32)
-
-        # Shape should be (max_seq_len, dim//2, 2) for cos/sin stacked
-        self.assertEqual(emb.shape, (max_seq_len, dim // 2, 2))
-
     def test_whisper_encoder_output_shape(self):
         """Test WhisperEncoder produces correct output shape."""
         encoder = self.WhisperEncoder(self.whisper_config, use_rope=True)
@@ -603,8 +591,11 @@ class TestGLMASRModel(unittest.TestCase):
         self.assertNotIn("audio_encoder.adapting.0.weight", sanitized)
         self.assertNotIn("audio_encoder.adapting.2.weight", sanitized)
 
-        # Check other keys are preserved
-        self.assertIn("model.layers.0.self_attn.q_proj.weight", sanitized)
+        # Check model.* keys are remapped to language_model.model.*
+        self.assertIn(
+            "language_model.model.layers.0.self_attn.q_proj.weight", sanitized
+        )
+        self.assertNotIn("model.layers.0.self_attn.q_proj.weight", sanitized)
 
     def test_model_sanitize_conv_transpose(self):
         """Test conv weight transposition in sanitize."""

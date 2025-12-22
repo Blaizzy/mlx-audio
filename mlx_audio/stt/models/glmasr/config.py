@@ -21,6 +21,7 @@ class WhisperConfig:
     activation_dropout: float = 0.0
     init_std: float = 0.02
     scale_embedding: bool = False
+    rope_traditional: bool = True
 
     @classmethod
     def from_dict(cls, params: Dict[str, Any]) -> "WhisperConfig":
@@ -45,9 +46,14 @@ class LlamaConfig:
     num_attention_heads: int = 16
     num_key_value_heads: int = 4
     hidden_act: str = "silu"
+    head_dim: int = None
     max_position_embeddings: int = 8192
+    layer_types: List[str] = None
     initializer_range: float = 0.02
     rms_norm_eps: float = 1e-5
+    sliding_window: Optional[int] = None
+    rope_traditional: bool = False
+    rope_scaling: Optional[Dict[str, Any]] = None
     rope_theta: float = 10000.0
     rope_dim: int = 128
     tie_word_embeddings: bool = False
@@ -55,6 +61,10 @@ class LlamaConfig:
     mlp_bias: bool = False
     pad_token_id: int = 59260
     eos_token_id: List[int] = field(default_factory=lambda: [59246, 59253, 59255])
+
+    def __post_init__(self):
+        if self.layer_types is None:
+            self.layer_types = ["full_attention"] * self.num_hidden_layers
 
     @classmethod
     def from_dict(cls, params: Dict[str, Any]) -> "LlamaConfig":
