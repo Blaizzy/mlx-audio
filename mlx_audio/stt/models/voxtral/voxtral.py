@@ -1,7 +1,5 @@
 import glob
-import json
 import math
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
@@ -11,14 +9,8 @@ import numpy as np
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
 
+from ..base import STTOutput
 from .config import AudioConfig, ModelConfig
-
-
-@dataclass
-class STTOutput:
-    text: str
-    segments: List[dict] = None
-    language: str = None
 
 
 class Attention(nn.Module):

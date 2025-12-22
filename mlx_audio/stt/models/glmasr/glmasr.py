@@ -2,8 +2,6 @@
 
 import glob
 import json
-from calendar import c
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
@@ -13,16 +11,8 @@ import mlx.nn as nn
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
 
+from ..base import STTOutput
 from .config import LlamaConfig, ModelConfig, WhisperConfig
-
-
-@dataclass
-class STTOutput:
-    """Output from speech-to-text generation."""
-
-    text: str
-    segments: List[dict] = None
-    language: str = None
 
 
 class WhisperAttention(nn.Module):
@@ -641,9 +631,3 @@ class Model(nn.Module):
         text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
         return STTOutput(text=text.strip())
-
-    def model_quant_predicate(self, p, m):
-        """Predicate for quantizing the model.
-        Skips quantizing audio_encoder by name.
-        """
-        return not p.startswith("lm_head")
