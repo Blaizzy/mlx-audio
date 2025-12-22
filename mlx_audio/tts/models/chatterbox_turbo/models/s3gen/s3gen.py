@@ -3,10 +3,10 @@
 import logging
 from typing import Dict, Optional, Tuple
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from scipy import signal
 
 from .decoder import ConditionalDecoder
 from .encoder import UpsampleConformerEncoder
@@ -22,6 +22,16 @@ S3GEN_SR = 24000  # Output sample rate
 S3_SR = 16000  # Input tokenizer sample rate
 S3GEN_SIL = 4299  # Silence token
 SPEECH_VOCAB_SIZE = 6561
+
+
+def _resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Resample audio using scipy's polyphase resampling."""
+    if orig_sr == target_sr:
+        return audio
+    gcd = np.gcd(orig_sr, target_sr)
+    up = target_sr // gcd
+    down = orig_sr // gcd
+    return signal.resample_poly(audio, up, down, padtype="edge")
 
 
 def drop_invalid_tokens(x: mx.array) -> mx.array:
@@ -207,9 +217,7 @@ class S3Token2Mel(nn.Module):
         # Resample to 24kHz for mel extraction
         ref_wav_np = np.array(ref_wav[0])
         if ref_sr != S3GEN_SR:
-            ref_wav_24k = librosa.resample(
-                ref_wav_np, orig_sr=ref_sr, target_sr=S3GEN_SR
-            )
+            ref_wav_24k = _resample_audio(ref_wav_np, ref_sr, S3GEN_SR)
         else:
             ref_wav_24k = ref_wav_np
 
@@ -240,7 +248,7 @@ class S3Token2Mel(nn.Module):
 
         # Resample to 16kHz for speaker encoder
         if ref_sr != S3_SR:
-            ref_wav_16k = librosa.resample(ref_wav_np, orig_sr=ref_sr, target_sr=S3_SR)
+            ref_wav_16k = _resample_audio(ref_wav_np, ref_sr, S3_SR)
         else:
             ref_wav_16k = ref_wav_np
 
