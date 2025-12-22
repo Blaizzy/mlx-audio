@@ -4,11 +4,12 @@ import glob
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
 
 from .config import LlamaConfig, ModelConfig, WhisperConfig
@@ -294,157 +295,41 @@ class AudioEncoder(nn.Module):
         return boa, eoa
 
 
-class LlamaAttention(nn.Module):
-    """Multi-head attention with grouped query attention support."""
+class LanguageModel(nn.Module):
+    """Language model wrapper using mlx_lm's LlamaModel."""
 
     def __init__(self, config: LlamaConfig):
         super().__init__()
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.scale = self.head_dim**-0.5
+        self.config = config
+        self.model_type = config.model_type
 
-        self.q_proj = nn.Linear(
-            self.hidden_size, self.num_heads * self.head_dim, bias=False
-        )
-        self.k_proj = nn.Linear(
-            self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
-        )
-        self.v_proj = nn.Linear(
-            self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False
-        )
-        self.o_proj = nn.Linear(
-            self.num_heads * self.head_dim, self.hidden_size, bias=False
-        )
+        from mlx_lm.models.llama import LlamaModel
 
-        self.rope = nn.RoPE(self.head_dim, traditional=False, base=config.rope_theta)
+        self.model = LlamaModel(config)
+
+        if not config.tie_word_embeddings:
+            self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def __call__(
         self,
-        x: mx.array,
-        mask: Optional[mx.array] = None,
-        cache: Optional[Any] = None,
-    ) -> mx.array:
-        batch_size, seq_len, _ = x.shape
-
-        queries = self.q_proj(x)
-        keys = self.k_proj(x)
-        values = self.v_proj(x)
-
-        queries = queries.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
-        queries = queries.transpose(0, 2, 1, 3)
-        keys = keys.reshape(
-            batch_size, seq_len, self.num_key_value_heads, self.head_dim
-        )
-        keys = keys.transpose(0, 2, 1, 3)
-        values = values.reshape(
-            batch_size, seq_len, self.num_key_value_heads, self.head_dim
-        )
-        values = values.transpose(0, 2, 1, 3)
-
-        if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
-            keys, values = cache.update_and_fetch(keys, values)
-        else:
-            queries = self.rope(queries)
-            keys = self.rope(keys)
-
-        output = mx.fast.scaled_dot_product_attention(
-            queries, keys, values, scale=self.scale, mask=mask
-        )
-
-        output = output.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
-        return self.o_proj(output)
-
-
-class LlamaMLP(nn.Module):
-    """LLaMA MLP with SiLU activation."""
-
-    def __init__(self, config: LlamaConfig):
-        super().__init__()
-        self.gate_proj = nn.Linear(
-            config.hidden_size, config.intermediate_size, bias=False
-        )
-        self.up_proj = nn.Linear(
-            config.hidden_size, config.intermediate_size, bias=False
-        )
-        self.down_proj = nn.Linear(
-            config.intermediate_size, config.hidden_size, bias=False
-        )
-
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
-
-
-class LlamaDecoderLayer(nn.Module):
-    """LLaMA decoder layer."""
-
-    def __init__(self, config: LlamaConfig):
-        super().__init__()
-        self.self_attn = LlamaAttention(config)
-        self.mlp = LlamaMLP(config)
-        self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = nn.RMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps
-        )
-
-    def __call__(
-        self,
-        x: mx.array,
-        mask: Optional[mx.array] = None,
-        cache: Optional[Any] = None,
-    ) -> mx.array:
-        residual = x
-        x = self.input_layernorm(x)
-        x = self.self_attn(x, mask=mask, cache=cache)
-        x = residual + x
-
-        residual = x
-        x = self.post_attention_layernorm(x)
-        x = self.mlp(x)
-        x = residual + x
-
-        return x
-
-
-class LlamaModel(nn.Module):
-    """LLaMA language model backbone."""
-
-    def __init__(self, config: LlamaConfig):
-        super().__init__()
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
-        self.layers = [
-            LlamaDecoderLayer(config) for _ in range(config.num_hidden_layers)
-        ]
-        self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
-    def __call__(
-        self,
-        input_ids: Optional[mx.array] = None,
+        inputs: Optional[mx.array] = None,
+        cache: Optional[mx.array] = None,
         input_embeddings: Optional[mx.array] = None,
-        mask: Optional[mx.array] = None,
-        cache: Optional[List[Any]] = None,
-    ) -> mx.array:
-        if input_embeddings is None:
-            hidden_states = self.embed_tokens(input_ids)
+    ):
+        out = self.model(inputs, cache=cache, input_embeddings=input_embeddings)
+        if self.config.tie_word_embeddings:
+            out = self.model.embed_tokens.as_linear(out)
         else:
-            hidden_states = input_embeddings
+            out = self.lm_head(out)
+        return out
 
-        if mask is None:
-            mask = nn.MultiHeadAttention.create_additive_causal_mask(
-                hidden_states.shape[1]
-            )
-            mask = mask.astype(hidden_states.dtype)
+    @property
+    def layers(self):
+        return self.model.layers
 
-        if cache is None:
-            cache = [None] * len(self.layers)
-
-        for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, mask=mask, cache=cache[i])
-
-        return self.norm(hidden_states)
+    @property
+    def embed_tokens(self):
+        return self.model.embed_tokens
 
 
 class Model(nn.Module):
@@ -452,8 +337,8 @@ class Model(nn.Module):
 
     Weight structure matches HuggingFace format:
     - audio_encoder.* : Audio encoder with Whisper + MLP adapter
-    - model.* : LLaMA decoder
-    - lm_head.* : Language modeling head
+    - model.* / language_model.model.* : LLaMA decoder
+    - lm_head.* / language_model.lm_head.* : Language modeling head
     """
 
     def __init__(self, config: ModelConfig):
@@ -464,18 +349,12 @@ class Model(nn.Module):
         # Audio encoder (matches HF naming: audio_encoder.*)
         self.audio_encoder = AudioEncoder(config)
 
-        # LLaMA model (matches HF naming: model.*)
-        self.model = LlamaModel(config.lm_config)
-
-        # LM head (matches HF naming: lm_head.*)
-        if not config.lm_config.tie_word_embeddings:
-            self.lm_head = nn.Linear(
-                config.lm_config.hidden_size, self.vocab_size, bias=False
-            )
+        # Language model with LlamaModel backbone
+        self.language_model = LanguageModel(config.lm_config)
 
     def get_input_embeddings(self) -> nn.Embedding:
         """Get the input embeddings from the language model."""
-        return self.model.embed_tokens
+        return self.language_model.embed_tokens
 
     def _merge_audio_text_embeddings(
         self,
@@ -488,7 +367,8 @@ class Model(nn.Module):
         """Merge audio embeddings into text embeddings at specified positions."""
         text_embeds = self.get_input_embeddings()(input_ids)
 
-        if audios is None or (cache is not None and cache[0] is not None):
+        # Skip audio embedding if no audio or cache already populated
+        if audios is None or (cache is not None and cache[0].offset > 0):
             return text_embeds
 
         audio_embeds, _ = self.audio_encoder(audios)
@@ -528,12 +408,7 @@ class Model(nn.Module):
             cache=cache,
         )
 
-        hidden_states = self.model(input_embeddings=input_embeds, cache=cache)
-
-        if self.config.lm_config.tie_word_embeddings:
-            logits = self.model.embed_tokens.as_linear(hidden_states)
-        else:
-            logits = self.lm_head(hidden_states)
+        logits = self.language_model(input_embeddings=input_embeds, cache=cache)
 
         return logits
 
@@ -552,6 +427,14 @@ class Model(nn.Module):
                 new_key = k.replace(
                     "audio_encoder.adapting.2.", "audio_encoder.adapting.fc2."
                 )
+
+            # Remap model.* -> language_model.model.* for LanguageModel wrapper
+            if new_key.startswith("model."):
+                new_key = "language_model." + new_key
+
+            # Remap lm_head.* -> language_model.lm_head.*
+            if new_key.startswith("lm_head."):
+                new_key = "language_model." + new_key
 
             # Handle conv weight transposition
             if "conv" in new_key and "weight" in new_key:
@@ -672,12 +555,66 @@ class Model(nn.Module):
         # Add batch dimension: (seq_len, n_mels) -> (1, seq_len, n_mels)
         return log_spec[None]
 
+    def stream_generate(
+        self,
+        input_ids: Optional[mx.array] = None,
+        *,
+        audios: Optional[mx.array] = None,
+        audio_offsets: Optional[List[List[int]]] = None,
+        audio_length: Optional[List[List[int]]] = None,
+        max_tokens: int = 128,
+        sampler: Optional[Callable[[mx.array], mx.array]] = None,
+        generation_stream: bool = False,
+    ) -> Generator[Tuple[mx.array, mx.array], None, None]:
+        """Stream generate tokens from input.
+
+        Args:
+            input_ids: Input token IDs
+            audios: Audio mel spectrogram
+            audio_offsets: Positions to insert audio embeddings
+            audio_length: Lengths of audio embeddings
+            max_tokens: Maximum tokens to generate
+            sampler: Sampler function for token selection
+            generation_stream: Whether to enable generation streaming
+
+        Yields:
+            Tuple of (token, logprobs)
+        """
+        from mlx_lm.generate import generate_step
+
+        input_embeddings = self._merge_audio_text_embeddings(
+            input_ids=input_ids,
+            audios=audios,
+            audio_offsets=audio_offsets,
+            audio_length=audio_length,
+        )[
+            0
+        ]  # Remove batch dimension for generate_step
+
+        with wired_limit(self, [generation_stream]):
+            for token, logprobs in generate_step(
+                prompt=mx.array([]),
+                input_embeddings=input_embeddings,
+                model=self.language_model,
+                max_tokens=max_tokens,
+                sampler=sampler,
+            ):
+                if token in self.config.lm_config.eos_token_id:
+                    break
+
+                yield token, logprobs
+
     def generate(
         self,
         audio,
         *,
         max_tokens: int = 128,
         temperature: float = 0.0,
+        top_p: float = 0.95,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        min_tokens_to_keep: int = 1,
+        generation_stream: bool = False,
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
@@ -687,12 +624,19 @@ class Model(nn.Module):
             audio: Audio path (str), waveform (mx.array), or mel spectrogram
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
+            top_p: Top-p sampling parameter
+            top_k: Top-k sampling parameter
+            min_p: Minimum probability threshold
+            min_tokens_to_keep: Minimum tokens to keep in sampling
+            generation_stream: Whether to enable generation streaming
             verbose: Print tokens during generation
             **kwargs: Additional arguments (ignored for compatibility)
 
         Returns:
             STTOutput with transcription text
         """
+        from mlx_lm.sample_utils import make_sampler
+
         # Preprocess audio to mel spectrogram
         mel = self._preprocess_audio(audio)
 
@@ -716,67 +660,35 @@ class Model(nn.Module):
         audio_offsets = [[audio_start]]
         audio_length = [[audio_len]]
 
-        input_embeds = self._merge_audio_text_embeddings(
-            input_ids=input_ids,
-            audios=mel,
-            audio_offsets=audio_offsets,
-            audio_length=audio_length,
+        sampler = make_sampler(
+            temperature,
+            top_p,
+            min_p,
+            min_tokens_to_keep=min_tokens_to_keep,
+            top_k=top_k,
         )
 
         generated_tokens = []
 
-        # Build full sequence with embeddings
-        all_tokens = tokens.copy()
-
-        for step in range(max_tokens):
-            # Create input_ids for current sequence
-            current_ids = mx.array([all_tokens])
-
-            # Forward pass - we need to rebuild embeddings each time for now
-            # since we're doing simple generation without KV cache
-            if step == 0:
-                # First pass: use the merged embeddings
-                hidden_states = self.model(input_embeddings=input_embeds)
-            else:
-                # Subsequent passes: use token embeddings for full sequence
-                full_embeds = self.model.embed_tokens(current_ids)
-                # Replace audio placeholder positions with audio embeddings
-                audio_embeds, _ = self.audio_encoder(mel)
-                for offset, length in zip(audio_offsets[0], audio_length[0]):
-                    end_pos = min(offset + length, full_embeds.shape[1])
-                    actual_length = end_pos - offset
-                    full_embeds[0, offset:end_pos] = audio_embeds[0, :actual_length]
-                hidden_states = self.model(input_embeddings=full_embeds)
-
-            if self.config.lm_config.tie_word_embeddings:
-                logits = self.model.embed_tokens.as_linear(hidden_states)
-            else:
-                logits = self.lm_head(hidden_states)
-
-            # Get next token from last position
-            if temperature == 0:
-                next_token = mx.argmax(logits[:, -1, :], axis=-1).item()
-            else:
-                probs = mx.softmax(logits[:, -1, :] / temperature, axis=-1)
-                next_token = mx.random.categorical(probs).item()
-
-            # Check for EOS
-            if next_token in self.config.lm_config.eos_token_id:
-                break
-
-            generated_tokens.append(next_token)
-            all_tokens.append(next_token)
-
+        for token, _ in self.stream_generate(
+            input_ids=input_ids,
+            audios=mel,
+            audio_offsets=audio_offsets,
+            audio_length=audio_length,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            generation_stream=generation_stream,
+        ):
+            generated_tokens.append(token)
             if verbose:
-                print(self._tokenizer.decode([next_token]), end="", flush=True)
-
-            mx.eval(logits)
+                print(self._tokenizer.decode([token]), end="", flush=True)
 
         if verbose:
             print()
 
-        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
-
+        # Clear cache after generation
         mx.clear_cache()
+
+        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
         return STTOutput(text=text.strip())
