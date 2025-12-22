@@ -17,4 +17,4 @@
 ## Checklist
 - [ ] Tests added/updated
 - [ ] Documentation updated
-- [ ] Issue referenced (e.g., Closes #123)
+- [ ] Issue referenced (e.g., "Closes #...")
