@@ -21,6 +21,7 @@ class WhisperConfig:
     activation_dropout: float = 0.0
     init_std: float = 0.02
     scale_embedding: bool = False
+    rope_traditional: bool = True
 
     @classmethod
     def from_dict(cls, params: Dict[str, Any]) -> "WhisperConfig":
