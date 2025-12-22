@@ -449,6 +449,7 @@ class Model(nn.Module):
         model.load_weights(list(weights.items()))
 
         mx.eval(model.parameters())
+
         return model
 
     def _preprocess_audio(self, audio) -> mx.array:
@@ -479,7 +480,58 @@ class Model(nn.Module):
         if audio.ndim == 3:
             return audio
 
-        # Compute mel spectrogram
+        # Compute mel spectrogram on CPU (FFT not available on CUDA)
+        # Move to CPU for FFT operations if not on Metal
+        # TODO: Create CUDA kernel for FFT
+        if not mx.metal.is_available():
+            # Use numpy for FFT on non-Metal devices
+            import numpy as np
+            from scipy import signal as scipy_signal
+
+            # Force evaluation before converting to numpy
+            mx.eval(audio)
+            audio_np = np.array(audio)
+            _, _, Zxx = scipy_signal.stft(
+                audio_np,
+                fs=SAMPLE_RATE,
+                window="hann",
+                nperseg=N_FFT,
+                noverlap=N_FFT - HOP_LENGTH,
+                nfft=N_FFT,
+                boundary=None,
+                padded=False,
+            )
+            # Zxx shape: (n_freqs, n_frames) where n_freqs = N_FFT/2 + 1 = 201
+            # Compute power spectrogram and transpose to (n_frames, n_freqs)
+            magnitudes = np.abs(Zxx.T) ** 2
+
+            filters = mel_filters(
+                SAMPLE_RATE, N_FFT, N_MELS, norm="slaney", mel_scale=None
+            )
+            filters_np = np.array(filters)
+
+            # filters shape is (n_mels, n_freqs), need to transpose for matmul
+            # magnitudes: (n_frames, n_freqs), filters.T: (n_freqs, n_mels)
+            # result: (n_frames, n_mels)
+            filters_np_t = filters_np.T  # (n_freqs, n_mels)
+
+            # Match dimensions if needed
+            if magnitudes.shape[1] != filters_np_t.shape[0]:
+                min_freqs = min(magnitudes.shape[1], filters_np_t.shape[0])
+                magnitudes = magnitudes[:, :min_freqs]
+                filters_np_t = filters_np_t[:min_freqs, :]
+
+            mel_spec = magnitudes @ filters_np_t
+
+            log_spec = np.maximum(mel_spec, 1e-10)
+            log_spec = np.log10(log_spec)
+            log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
+            log_spec = (log_spec + 4.0) / 4.0
+
+            # Convert back to mx.array and add batch dimension
+            return mx.array(log_spec[None], dtype=mx.float32)
+
+        # Metal path - use MLX FFT
         window = hanning(N_FFT)
         freqs = stft(audio, window=window, n_fft=N_FFT, hop_length=HOP_LENGTH)
         magnitudes = freqs[:-1, :].abs().square()
@@ -503,8 +555,9 @@ class Model(nn.Module):
         audio_length: Optional[List[List[int]]] = None,
         max_tokens: int = 128,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
-        generation_stream: bool = False,
-    ) -> Generator[Tuple[mx.array, mx.array], None, None]:
+        prefill_step_size: int = 2048,
+        prompt_progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Generator[Tuple[int, mx.array], None, None]:
         """Stream generate tokens from input.
 
         Args:
@@ -514,12 +567,13 @@ class Model(nn.Module):
             audio_length: Lengths of audio embeddings
             max_tokens: Maximum tokens to generate
             sampler: Sampler function for token selection
-            generation_stream: Whether to enable generation streaming
+            prefill_step_size: Step size for processing the prompt
+            prompt_progress_callback: Callback for prompt processing progress
 
         Yields:
-            Tuple of (token, logprobs)
+            Tuple of (token_id, logprobs)
         """
-        from mlx_lm.generate import generate_step
+        from mlx_audio.stt.generate import generate_step
 
         input_embeddings = self._merge_audio_text_embeddings(
             input_ids=input_ids,
@@ -530,18 +584,22 @@ class Model(nn.Module):
             0
         ]  # Remove batch dimension for generate_step
 
-        with wired_limit(self, [generation_stream]):
-            for token, logprobs in generate_step(
-                prompt=mx.array([]),
-                input_embeddings=input_embeddings,
-                model=self.language_model,
-                max_tokens=max_tokens,
-                sampler=sampler,
-            ):
-                if token in self.config.lm_config.eos_token_id:
-                    break
+        eos_token_ids = self.config.lm_config.eos_token_id
+        if isinstance(eos_token_ids, int):
+            eos_token_ids = [eos_token_ids]
 
-                yield token, logprobs
+        for token, logprobs in generate_step(
+            prompt=mx.array([]),
+            input_embeddings=input_embeddings,
+            model=self.language_model,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            prefill_step_size=prefill_step_size,
+            prompt_progress_callback=prompt_progress_callback,
+        ):
+            yield token, logprobs
+            if token in eos_token_ids:
+                break
 
     def generate(
         self,
@@ -553,7 +611,7 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         min_tokens_to_keep: int = 1,
-        generation_stream: bool = False,
+        prefill_step_size: int = 2048,
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
@@ -567,7 +625,7 @@ class Model(nn.Module):
             top_k: Top-k sampling parameter
             min_p: Minimum probability threshold
             min_tokens_to_keep: Minimum tokens to keep in sampling
-            generation_stream: Whether to enable generation streaming
+            prefill_step_size: Step size for processing the prompt
             verbose: Print tokens during generation
             **kwargs: Additional arguments (ignored for compatibility)
 
@@ -583,7 +641,6 @@ class Model(nn.Module):
 
         # Encode audio once (avoid double encoding)
         audio_embeds, audio_len = self.audio_encoder(mel)
-        mx.eval(audio_embeds)
 
         prompt_text = "<|user|>\n<|begin_of_audio|>"
         tokens = self._tokenizer.encode(prompt_text)
@@ -611,6 +668,7 @@ class Model(nn.Module):
         )
 
         generated_tokens = []
+        prompt_time = None
 
         for token, _ in self.stream_generate(
             input_ids=input_ids,
@@ -619,13 +677,16 @@ class Model(nn.Module):
             audio_length=audio_length,
             max_tokens=max_tokens,
             sampler=sampler,
-            generation_stream=generation_stream,
+            prefill_step_size=prefill_step_size,
         ):
+            if prompt_time is None:
+                prompt_time = time.time() - start_time
             generated_tokens.append(token)
             if verbose:
                 print(self._tokenizer.decode([token]), end="", flush=True)
 
         end_time = time.time()
+        generation_time = end_time - start_time - (prompt_time or 0)
 
         if verbose:
             print()
@@ -635,12 +696,15 @@ class Model(nn.Module):
 
         text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
+        prompt_tokens = input_ids.shape[1]
+        generation_tokens = len(generated_tokens)
+
         return STTOutput(
             text=text.strip(),
-            prompt_tokens=input_ids.shape[1],
-            generation_tokens=len(generated_tokens),
-            total_tokens=input_ids.shape[1] + len(generated_tokens),
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+            total_tokens=prompt_tokens + generation_tokens,
             total_time=end_time - start_time,
-            prompt_tps=input_ids.shape[1] / (end_time - start_time),
-            generation_tps=len(generated_tokens) / (end_time - start_time),
+            prompt_tps=prompt_tokens / prompt_time if prompt_time else 0.0,
+            generation_tps=generation_tokens / generation_time if generation_time > 0 else 0.0,
         )

@@ -3,10 +3,10 @@ import contextlib
 import json
 import os
 import time
-from typing import List, Optional, Union
+from typing import Any, Callable, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
-import torch.nn as nn
+import mlx.nn as nn
 from mlx.utils import tree_reduce
 
 from mlx_audio.stt.utils import load_model
@@ -140,6 +140,7 @@ def save_as_json(segments, output_path: str):
 generation_stream = mx.new_stream(mx.default_device())
 
 
+
 @contextlib.contextmanager
 def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
     """
@@ -153,31 +154,177 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
         try:
             yield
         finally:
-            pass
-    else:
-        model_bytes = tree_reduce(
-            lambda acc, x: acc + x.nbytes if isinstance(x, mx.array) else acc, model, 0
+            return
+
+
+    model_bytes = tree_reduce(
+        lambda acc, x: acc + x.nbytes if isinstance(x, mx.array) else acc, model, 0
+    )
+    max_rec_size = mx.metal.device_info()["max_recommended_working_set_size"]
+    if model_bytes > 0.9 * max_rec_size:
+        model_mb = model_bytes // 2**20
+        max_rec_mb = max_rec_size // 2**20
+        print(
+            f"[WARNING] Generating with a model that requires {model_mb} MB "
+            f"which is close to the maximum recommended size of {max_rec_mb} "
+            "MB. This can be slow. See the documentation for possible work-arounds: "
+            "https://github.com/ml-explore/mlx-lm/tree/main#large-models"
         )
-        max_rec_size = mx.metal.device_info()["max_recommended_working_set_size"]
-        if model_bytes > 0.9 * max_rec_size:
-            model_mb = model_bytes // 2**20
-            max_rec_mb = max_rec_size // 2**20
-            print(
-                f"[WARNING] Generating with a model that requires {model_mb} MB "
-                f"which is close to the maximum recommended size of {max_rec_mb} "
-                "MB. This can be slow. See the documentation for possible work-arounds: "
-                "https://github.com/ml-explore/mlx-lm/tree/main#large-models"
+    old_limit = mx.set_wired_limit(max_rec_size)
+    try:
+        yield
+    finally:
+        if streams is not None:
+            for s in streams:
+                mx.synchronize(s)
+        else:
+            mx.synchronize()
+        mx.set_wired_limit(old_limit)
+
+
+def generate_step(
+    prompt: mx.array,
+    model: nn.Module,
+    *,
+    max_tokens: int = 256,
+    sampler: Optional[Callable[[mx.array], mx.array]] = None,
+    logits_processors: Optional[List[Callable[[mx.array, mx.array], mx.array]]] = None,
+    max_kv_size: Optional[int] = None,
+    prompt_cache: Optional[Any] = None,
+    prefill_step_size: int = 2048,
+    prompt_progress_callback: Optional[Callable[[int, int], None]] = None,
+    input_embeddings: Optional[mx.array] = None,
+) -> Generator[Tuple[mx.array, mx.array], None, None]:
+    """
+    A generator producing token ids based on the given prompt from the model.
+
+    This is adapted from mlx-lm's generate_step for STT models that use
+    input embeddings (audio + text).
+
+    Args:
+        prompt (mx.array): The input prompt token ids.
+        model (nn.Module): The model to use for generation.
+        max_tokens (int): The maximum number of tokens. Use ``-1`` for an infinite
+          generator. Default: ``256``.
+        sampler (Callable[mx.array, mx.array], optional): A sampler for sampling a
+          token from a vector of log probabilities. Default: ``None``.
+        logits_processors (List[Callable[[mx.array, mx.array], mx.array]], optional):
+          A list of functions that take tokens and logits and return the processed
+          logits. Default: ``None``.
+        max_kv_size (int, optional): Maximum size of the key-value cache. Old
+          entries (except the first 4 tokens) will be overwritten.
+        prompt_cache (List[Any], optional): A pre-computed prompt cache. Note, if
+          provided, the cache will be updated in place.
+        prefill_step_size (int): Step size for processing the prompt.
+        prompt_progress_callback (Callable[[int, int], None]): A call-back which takes the
+           prompt tokens processed so far and the total number of prompt tokens.
+        input_embeddings (mx.array, optional): Input embeddings to use instead of or in
+          conjunction with prompt tokens. Default: ``None``.
+
+    Yields:
+        Tuple[mx.array, mx.array]: One token and a vector of log probabilities.
+    """
+    from mlx_lm.models import cache
+
+    if input_embeddings is None and len(prompt) == 0:
+        raise ValueError(
+            "Either input_embeddings or prompt (or both) must be provided."
+        )
+
+    tokens = None
+
+    # Create the KV cache for generation
+    if prompt_cache is None:
+        prompt_cache = cache.make_prompt_cache(
+            model,
+            max_kv_size=max_kv_size,
+        )
+
+    prompt_progress_callback = prompt_progress_callback or (lambda *_: None)
+
+    sampler = sampler or (lambda x: mx.argmax(x, axis=-1))
+
+    def _model_call(input_tokens: mx.array, input_embeddings: Optional[mx.array]):
+        if input_embeddings is not None:
+            return model(
+                input_tokens, cache=prompt_cache, input_embeddings=input_embeddings
             )
-        old_limit = mx.set_wired_limit(max_rec_size)
-        try:
-            yield
-        finally:
-            if streams is not None:
-                for s in streams:
-                    mx.synchronize(s)
-            else:
-                mx.synchronize()
-            mx.set_wired_limit(old_limit)
+        else:
+            return model(input_tokens, cache=prompt_cache)
+
+    def _step(input_tokens: mx.array, input_embeddings: Optional[mx.array] = None):
+        nonlocal tokens
+
+        with mx.stream(generation_stream):
+            logits = _model_call(
+                input_tokens=input_tokens[None],
+                input_embeddings=(
+                    input_embeddings[None] if input_embeddings is not None else None
+                ),
+            )
+
+            logits = logits[:, -1, :]
+
+            if logits_processors and len(input_tokens) > 0:
+                tokens = (
+                    mx.concat([tokens, input_tokens])
+                    if tokens is not None
+                    else input_tokens
+                )
+                for processor in logits_processors:
+                    logits = processor(tokens, logits)
+
+            logprobs = logits - mx.logsumexp(logits, keepdims=True)
+            sampled = sampler(logprobs)
+            return sampled, logprobs.squeeze(0)
+
+    with mx.stream(generation_stream):
+        total_prompt_tokens = (
+            len(input_embeddings) if input_embeddings is not None else len(prompt)
+        )
+        prompt_processed_tokens = 0
+        prompt_progress_callback(prompt_processed_tokens, total_prompt_tokens)
+        while total_prompt_tokens - prompt_processed_tokens > 1:
+            remaining = (total_prompt_tokens - prompt_processed_tokens) - 1
+            n_to_process = min(prefill_step_size, remaining)
+            _model_call(
+                input_tokens=prompt[:n_to_process][None],
+                input_embeddings=(
+                    input_embeddings[:n_to_process][None]
+                    if input_embeddings is not None
+                    else None
+                ),
+            )
+            mx.eval([c.state for c in prompt_cache])
+            prompt_processed_tokens += n_to_process
+            prompt_progress_callback(prompt_processed_tokens, total_prompt_tokens)
+            prompt = prompt[n_to_process:]
+            input_embeddings = (
+                input_embeddings[n_to_process:]
+                if input_embeddings is not None
+                else input_embeddings
+            )
+            mx.clear_cache()
+
+        y, logprobs = _step(input_tokens=prompt, input_embeddings=input_embeddings)
+
+    mx.async_eval(y, logprobs)
+    n = 0
+    while True:
+        if n != max_tokens:
+            next_y, next_logprobs = _step(y)
+            mx.async_eval(next_y, next_logprobs)
+        if n == 0:
+            mx.eval(y)
+            prompt_progress_callback(total_prompt_tokens, total_prompt_tokens)
+        if n == max_tokens:
+            break
+        yield y.item(), logprobs
+        if n % 256 == 0:
+            mx.clear_cache()
+        y, logprobs = next_y, next_logprobs
+        n += 1
+
 
 
 def generate_transcription(
@@ -240,8 +387,9 @@ def generate_transcription(
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    if format == "txt" or segments.segments is None:
-        if segments.segments is None:
+    is_plain_text_output = (not hasattr(segments, "segments") and not hasattr(segments, "sentences"))
+    if format == "txt" or is_plain_text_output:
+        if is_plain_text_output:
             print("[WARNING] No segments found, saving as plain text.")
         save_as_txt(segments, output_path)
     elif format == "srt":

@@ -113,6 +113,18 @@ def stft(
     shape = (num_frames, n_fft)
     strides = (hop_length, 1)
     frames = mx.as_strided(x, shape=shape, strides=strides)
+
+    # Use numpy fallback for non-Metal devices (FFT not available on CUDA)
+    if not mx.metal.is_available():
+        import numpy as np
+
+        # Force evaluation before converting to numpy
+        windowed = frames * w
+        mx.eval(windowed)
+        frames_np = np.array(windowed, dtype=np.float32)
+        result = np.fft.rfft(frames_np, axis=-1)
+        return mx.array(result.astype(np.complex64))
+
     return mx.fft.rfft(frames * w)
 
 
@@ -147,7 +159,17 @@ def istft(
     window_sum = mx.zeros(t)
 
     # inverse FFT of each frame
-    frames_time = mx.fft.irfft(x, axis=0).transpose(1, 0)
+    # Use numpy fallback for non-Metal devices (IRFFT not available on CUDA)
+    if not mx.metal.is_available():
+        import numpy as np
+
+        # Force evaluation before converting to numpy
+        mx.eval(x)
+        x_np = np.array(x)
+        frames_time_np = np.fft.irfft(x_np, axis=0).T.astype(np.float32)
+        frames_time = mx.array(frames_time_np)
+    else:
+        frames_time = mx.fft.irfft(x, axis=0).transpose(1, 0)
 
     # get the position in the time-domain signal to add the frame
     frame_offsets = mx.arange(num_frames) * hop_length

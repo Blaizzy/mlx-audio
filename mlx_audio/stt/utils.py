@@ -86,6 +86,7 @@ def get_model_path(
                     "*.jsonl",
                     "*.yaml",
                 ],
+                ignore_patterns=["consolidated*.safetensors"],
                 force_download=force_download,
             )
         )
