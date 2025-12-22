@@ -29,6 +29,93 @@ def drop_invalid_tokens(x: mx.array) -> mx.array:
     return x[x < SPEECH_VOCAB_SIZE]
 
 
+def remove_dc_offset(audio: np.ndarray) -> np.ndarray:
+    """Remove DC offset from audio to prevent clicks/pops."""
+    return audio - np.mean(audio)
+
+
+def apply_highpass_filter(
+    audio: np.ndarray, sr: int = S3GEN_SR, cutoff: float = 20.0
+) -> np.ndarray:
+    """
+    Apply a simple highpass filter to remove sub-bass rumble.
+    Uses a first-order IIR filter for efficiency.
+
+    Args:
+        audio: Audio samples
+        sr: Sample rate
+        cutoff: Cutoff frequency in Hz (default 20Hz)
+
+    Returns:
+        Filtered audio
+    """
+    # First-order highpass filter coefficient
+    rc = 1.0 / (2.0 * np.pi * cutoff)
+    dt = 1.0 / sr
+    alpha = rc / (rc + dt)
+
+    # Apply filter
+    filtered = np.zeros_like(audio)
+    filtered[0] = audio[0]
+    for i in range(1, len(audio)):
+        filtered[i] = alpha * (filtered[i - 1] + audio[i] - audio[i - 1])
+
+    return filtered
+
+
+def soft_clip(audio: np.ndarray, threshold: float = 0.95) -> np.ndarray:
+    """
+    Apply soft clipping to prevent harsh distortion.
+    Uses tanh-based soft limiting above threshold.
+
+    Args:
+        audio: Audio samples
+        threshold: Threshold above which soft clipping is applied
+
+    Returns:
+        Soft-clipped audio
+    """
+    # Scale so threshold maps to tanh input of 1
+    scale = 1.0 / threshold
+    return np.tanh(audio * scale) * threshold
+
+
+def smooth_audio(
+    audio: np.ndarray,
+    sr: int = S3GEN_SR,
+    remove_dc: bool = True,
+    highpass: bool = True,
+    highpass_cutoff: float = 20.0,
+    soft_limit: bool = True,
+    limit_threshold: float = 0.95,
+) -> np.ndarray:
+    """
+    Apply audio smoothing to reduce artifacts.
+
+    Args:
+        audio: Audio samples (numpy array)
+        sr: Sample rate
+        remove_dc: Whether to remove DC offset
+        highpass: Whether to apply highpass filter
+        highpass_cutoff: Highpass filter cutoff frequency
+        soft_limit: Whether to apply soft limiting
+        limit_threshold: Soft limiting threshold
+
+    Returns:
+        Smoothed audio
+    """
+    if remove_dc:
+        audio = remove_dc_offset(audio)
+
+    if highpass:
+        audio = apply_highpass_filter(audio, sr, highpass_cutoff)
+
+    if soft_limit:
+        audio = soft_clip(audio, limit_threshold)
+
+    return audio
+
+
 class S3Token2Mel(nn.Module):
     """
     S3Gen's CFM decoder: maps S3 speech tokens to mel-spectrograms.
@@ -407,6 +494,7 @@ class S3Token2Wav(S3Token2Mel):
         ref_wav: Optional[mx.array] = None,
         ref_sr: Optional[int] = None,
         n_cfm_timesteps: Optional[int] = None,
+        apply_smoothing: bool = True,
     ) -> Tuple[mx.array, mx.array]:
         """
         Full inference: speech tokens to waveform.
@@ -417,6 +505,7 @@ class S3Token2Wav(S3Token2Mel):
             ref_wav: Reference waveform (if ref_dict not provided)
             ref_sr: Reference sample rate
             n_cfm_timesteps: Number of CFM steps
+            apply_smoothing: Whether to apply audio smoothing (DC removal, highpass, soft limiting)
 
         Returns:
             audio: Generated waveform (B, T_audio)
@@ -452,6 +541,27 @@ class S3Token2Wav(S3Token2Mel):
                 [faded_start, output_wavs[:, fade_len:]], axis=1
             )
 
+        # Apply audio smoothing to reduce artifacts
+        if apply_smoothing and output_wavs.shape[1] > 0:
+            # Convert to numpy for smoothing, then back to MLX
+            audio_np = np.array(
+                output_wavs.squeeze(0) if output_wavs.ndim == 2 else output_wavs
+            )
+            audio_np = smooth_audio(
+                audio_np,
+                sr=S3GEN_SR,
+                remove_dc=True,
+                highpass=True,
+                highpass_cutoff=20.0,
+                soft_limit=True,
+                limit_threshold=0.95,
+            )
+            output_wavs = (
+                mx.array(audio_np)[None, :]
+                if output_wavs.ndim == 2
+                else mx.array(audio_np)
+            )
+
         return output_wavs, output_sources
 
     def inference_stream(
@@ -462,6 +572,7 @@ class S3Token2Wav(S3Token2Mel):
         prev_audio_samples: int = 0,
         is_final: bool = False,
         cached_noise: Optional[mx.array] = None,
+        apply_smoothing: bool = True,
     ) -> Tuple[mx.array, int, Optional[mx.array]]:
         """
         Streaming inference: convert speech tokens to waveform for streaming.
@@ -477,6 +588,7 @@ class S3Token2Wav(S3Token2Mel):
             prev_audio_samples: Number of audio samples already returned
             is_final: Whether this is the final chunk
             cached_noise: Previously cached noise to reuse for consistency
+            apply_smoothing: Whether to apply audio smoothing (DC removal, highpass, soft limiting)
 
         Returns:
             new_audio: New audio samples (B, T_new)
@@ -541,6 +653,27 @@ class S3Token2Wav(S3Token2Mel):
         else:
             # No new samples
             new_audio = output_wavs[:, :0]  # Empty with correct shape
+
+        # Apply audio smoothing to reduce artifacts
+        if apply_smoothing and new_audio.shape[-1] > 0:
+            # Convert to numpy for smoothing, then back to MLX
+            audio_np = np.array(
+                new_audio.squeeze(0) if new_audio.ndim == 2 else new_audio
+            )
+            audio_np = smooth_audio(
+                audio_np,
+                sr=S3GEN_SR,
+                remove_dc=True,
+                highpass=True,
+                highpass_cutoff=20.0,
+                soft_limit=True,
+                limit_threshold=0.95,
+            )
+            new_audio = (
+                mx.array(audio_np)[None, :]
+                if new_audio.ndim == 2
+                else mx.array(audio_np)
+            )
 
         # Return cached noise for next chunk (unless final)
         next_cached_noise = noised_mels if not is_final else None

@@ -1133,7 +1133,6 @@ class ChatterboxTurboTTS(nn.Module):
             total_token_count += chunk_token_count
 
             # Streaming generation - use pre-allocated buffer (in-place approach)
-            max_tokens = 2000  # Pre-allocate for max expected tokens
             accumulated_tokens = mx.zeros((1, max_tokens), dtype=mx.int32)
             num_tokens = 0
             prev_audio_samples = 0
