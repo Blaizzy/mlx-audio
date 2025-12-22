@@ -416,9 +416,6 @@ def convert(
         mlx_path = Path(mlx_path)
     mlx_path.mkdir(parents=True, exist_ok=True)
 
-    # Save model weights
-    save_model(mlx_path, model, donate_model=True)
-
     # Copy supporting files
     for pattern in [
         "*.py",
@@ -444,6 +441,9 @@ def convert(
             dest_dir = mlx_path / rel_path.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(file, dest_dir)
+
+    # Save model weights and config
+    save_model(mlx_path, model, donate_model=True)
 
     # Save config
     config["model_type"] = model_type
