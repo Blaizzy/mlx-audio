@@ -201,6 +201,8 @@ def generate_transcription(
     Returns:
         segments: The generated transcription segments.
     """
+    from .models.base import STTOutput
+
     if model is None:
         raise ValueError("Model path or model instance must be provided.")
 
@@ -221,9 +223,19 @@ def generate_transcription(
     )
     end_time = time.time()
 
-    print("\n" + "=" * 10)
-    print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
-    print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
+    if verbose:
+        print("\n" + "=" * 10)
+        print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
+        if isinstance(segments, STTOutput):
+            print(
+                f"\033[94mPrompt:\033[0m {segments.prompt_tokens} tokens, "
+                f"{segments.prompt_tps:.3f} tokens-per-sec"
+            )
+            print(
+                f"\033[94mGeneration:\033[0m {segments.generation_tokens} tokens, "
+                f"{segments.generation_tps:.3f} tokens-per-sec"
+            )
+        print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)

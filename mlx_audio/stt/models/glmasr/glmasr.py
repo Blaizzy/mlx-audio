@@ -2,6 +2,7 @@
 
 import glob
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
@@ -575,6 +576,8 @@ class Model(nn.Module):
         """
         from mlx_lm.sample_utils import make_sampler
 
+        start_time = time.time()
+
         # Preprocess audio to mel spectrogram
         mel = self._preprocess_audio(audio)
 
@@ -622,6 +625,8 @@ class Model(nn.Module):
             if verbose:
                 print(self._tokenizer.decode([token]), end="", flush=True)
 
+        end_time = time.time()
+
         if verbose:
             print()
 
@@ -630,4 +635,12 @@ class Model(nn.Module):
 
         text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-        return STTOutput(text=text.strip())
+        return STTOutput(
+            text=text.strip(),
+            prompt_tokens=input_ids.shape[1],
+            generation_tokens=len(generated_tokens),
+            total_tokens=input_ids.shape[1] + len(generated_tokens),
+            total_time=end_time - start_time,
+            prompt_tps=input_ids.shape[1] / (end_time - start_time),
+            generation_tps=len(generated_tokens) / (end_time - start_time),
+        )
