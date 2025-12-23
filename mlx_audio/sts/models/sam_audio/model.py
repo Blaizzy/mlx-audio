@@ -632,6 +632,7 @@ class SAMAudio(nn.Module):
             The SAM-Audio models on HuggingFace are gated and require approval.
             Visit https://huggingface.co/facebook/sam-audio-large to request access.
         """
+        import glob
         import warnings
 
         # Download or locate model
@@ -669,12 +670,14 @@ class SAMAudio(nn.Module):
         model = cls(config)
 
         # Load weights
-        weights_path = model_path / "model.safetensors"
+        weights_path = glob.glob(str(model_path / "*.safetensors"))
         pt_weights_path = model_path / "checkpoint.pt"
 
-        if weights_path.exists():
+        if weights_path:
             try:
-                weights = mx.load(str(weights_path))
+                weights = {}
+                for weights_file in weights_path:
+                    weights.update(mx.load(str(weights_file)))
                 model = _load_weights(model, weights)
             except Exception as e:
                 warnings.warn(f"Could not load weights: {e}")
@@ -711,7 +714,7 @@ class SAMAudio(nn.Module):
         return model
 
 
-def _load_weights(model: SAMAudio, weights: dict) -> SAMAudio:
+def _load_weights(model: SAMAudio, weights: dict, strict: bool = False) -> SAMAudio:
     """
     Load PyTorch weights into MLX model.
 
@@ -805,9 +808,11 @@ def _load_weights(model: SAMAudio, weights: dict) -> SAMAudio:
             f"{', '.join(sorted(missing)[:10])}..."
         )
 
-    # Load weights using update instead of load_weights to avoid strict checking
-    if new_weights:
-        model.update(nn.utils.tree_unflatten(new_weights))
+    model.load_weights(list(new_weights), strict=strict)
+
+    mx.eval(model.parameters())
+
+    model.eval()
 
     return model
 
