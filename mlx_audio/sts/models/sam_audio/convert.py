@@ -1,5 +1,4 @@
 # Copyright (c) 2024 MLX Audio Contributors
-# Weight conversion utilities for SAM-Audio
 
 import argparse
 import json

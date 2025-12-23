@@ -46,8 +46,13 @@ result = model.separate(
     descriptions=batch.descriptions, # List of text prompts
     sizes=batch.sizes,             # Optional: sequence lengths
     ode_opt=None,                  # ODE solver options (see below)
+    predict_spans=False,           # Auto temporal prompts (not yet implemented)
+    reranking_candidates=1,        # Multi-candidate reranking (not yet implemented)
 )
 ```
+
+> **Note**: `predict_spans=True` and `reranking_candidates > 1` require additional models
+> (span_predictor, visual_ranker, text_ranker) which are not yet ported to MLX.
 
 ### `separate_long()` - Chunked Processing
 
@@ -67,13 +72,18 @@ result = model.separate_long(
 
 ## ODE Solver Options
 
-The separation quality vs speed tradeoff is controlled by `ode_opt`:
+The separation quality vs speed tradeoff is controlled by `ode_opt`.
+
+**Reference default** (from official SAM-Audio):
+```python
+DFLT_ODE_OPT = {"method": "midpoint", "step_size": 2/32}  # 16 midpoint steps
+```
 
 | Method | Steps | Speed | Quality | Use Case |
 |--------|-------|-------|---------|----------|
-| `midpoint` | 32 | 0.5x | Maximum | Studio quality, no artifacts |
-| `midpoint` | 16 | 1x | Best | Short audio, quality priority |
-| `euler` | 32 | ~1.5x | Very Good | Long audio, balanced |
+| `midpoint` | 32 | 0.25x | Maximum | Studio quality, no artifacts |
+| `midpoint` | 16 | 0.5x | Best | **Official default**, quality priority |
+| `euler` | 32 | ~1x | Very Good | Long audio, balanced |
 | `euler` | 16 | ~2x | Good | Real-time, speed priority |
 
 ### Configuration Examples
@@ -82,17 +92,19 @@ The separation quality vs speed tradeoff is controlled by `ode_opt`:
 # Maximum Quality - 32 midpoint steps (slowest, cleanest)
 ode_opt = {"method": "midpoint", "step_size": 2/64}  # 32 midpoint steps
 
-# Best Quality - 16 midpoint steps (default for separate())
+# Official Default - 16 midpoint steps
 ode_opt = {"method": "midpoint", "step_size": 2/32}  # 16 midpoint steps
 
-# Balanced - Recommended for separate_long()
+# Balanced - Good for separate_long()
 ode_opt = {"method": "euler", "step_size": 2/64}     # 32 euler steps
 
-# Fastest - May have artifacts on complex audio
+# Fastest - Real-time, may have artifacts
 ode_opt = {"method": "euler", "step_size": 2/32}     # 16 euler steps
 ```
 
 ## Inference Recommendations
+
+**Recommended audio length**: ~10 seconds (training data was around 10s). For longer audio, use `separate_long()` with chunked processing.
 
 ### Short Audio (< 30s)
 
@@ -207,6 +219,23 @@ from mlx_audio.ss import save_audio
 save_audio(result.target[0], "target.wav", sample_rate=model.sample_rate)
 save_audio(result.residual[0], "residual.wav", sample_rate=model.sample_rate)
 ```
+
+## Streaming / Real-time Processing
+
+Native streaming is not yet supported. For pseudo-streaming with `separate_long()`:
+
+```python
+# Pseudo-streaming with small chunks
+result = model.separate_long(
+    batch.audios,
+    batch.descriptions,
+    chunk_seconds=10.0,      # Match training length
+    overlap_seconds=3.0,     # 30% overlap for smooth transitions
+    ode_opt={"method": "euler", "step_size": 2/32},  # Fast
+)
+```
+
+For true streaming, see the [segment-level autoregressive generation](https://arxiv.org/abs/2410.13720) approach from MovieGen paper, as suggested by the SAM-Audio maintainers.
 
 ## Model Weights
 

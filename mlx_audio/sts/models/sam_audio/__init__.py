@@ -1,5 +1,4 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
-# MLX port of Meta's SAM-Audio (Segment Anything Model for Audio)
 
 from .config import DACVAEConfig, SAMAudioConfig, T5EncoderConfig, TransformerConfig
 from .convert import convert_model, download_and_convert
