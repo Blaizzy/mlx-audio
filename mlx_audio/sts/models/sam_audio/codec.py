@@ -620,25 +620,26 @@ class MsgProcessor(nn.Module):
 
 
 class WatermarkEncoderBlock(nn.Module):
-    """Watermark encoder block with Snake/Tanh activations and LSTM."""
+    """Watermark encoder block with Tanh and LSTM.
+
+    Note: pre_0 (Snake) and pre_1 (Conv) are shared with decoder's snake_out and conv_out.
+    They are passed in via set_shared_layers() after construction.
+    """
 
     def __init__(
         self,
-        in_dim: int = 96,
         out_dim: int = 128,
         wm_channels: int = 32,
         hidden: int = 512,
         lstm_layers: int = 2,
     ):
         super().__init__()
-        self.in_dim = in_dim
 
-        # Pre-processing: Snake + Conv, then Tanh + Conv
-        self.pre_0 = Snake1d(in_dim)  # Snake activation
-        self.pre_1 = WNConv1d(
-            in_dim, 1, kernel_size=7, causal=False, pad_mode="none", norm="weight_norm"
-        )
-        self.pre_2 = nn.Tanh()
+        # Shared with decoder - set after construction
+        self._snake_out = None  # Will be decoder.snake_out
+        self._conv_out = None  # Will be decoder.conv_out
+
+        # Pre-processing after shared layers: Tanh + Conv
         self.pre_3 = WNConv1d(
             1, wm_channels, kernel_size=7, causal=True, pad_mode="auto", norm="none"
         )
@@ -650,20 +651,24 @@ class WatermarkEncoderBlock(nn.Module):
             hidden, out_dim, kernel_size=7, causal=True, pad_mode="auto", norm="none"
         )
 
+    def set_shared_layers(self, snake_out: Snake1d, conv_out: WNConv1d):
+        """Set shared layers from decoder."""
+        self._snake_out = snake_out
+        self._conv_out = conv_out
+
     def __call__(self, x: mx.array) -> mx.array:
-        """Forward through pre-processing only."""
-        x = self.pre_0(x)
-        x = self.pre_1(x)
-        x = self.pre_2(x)
+        """Forward through pre-processing (shared + own layers)."""
+        x = self._snake_out(x)
+        x = self._conv_out(x)
+        x = mx.tanh(x)
         x = self.pre_3(x)
         return x
 
-    def forward_no_conv(self, x: mx.array) -> mx.array:
-        """Forward through activation only (skip final conv)."""
-        x = self.pre_0(x)
-        x = self.pre_1(x)
-        x = self.pre_2(x)
-        # Skip pre_3
+    def forward_no_wm_conv(self, x: mx.array) -> mx.array:
+        """Forward through shared layers + tanh only (for blending)."""
+        x = self._snake_out(x)
+        x = self._conv_out(x)
+        x = mx.tanh(x)
         return x
 
     def post_process(self, x: mx.array) -> mx.array:
@@ -717,7 +722,6 @@ class Watermarker(nn.Module):
 
     def __init__(
         self,
-        dim: int,
         d_out: int = 1,
         d_latent: int = 128,
         channels: int = 32,
@@ -729,12 +733,16 @@ class Watermarker(nn.Module):
         self.nbits = nbits
 
         self.encoder_block = WatermarkEncoderBlock(
-            dim, d_latent, channels, hidden, lstm_layers
+            d_latent, channels, hidden, lstm_layers
         )
         self.msg_processor = MsgProcessor(nbits, d_latent)
         self.decoder_block = WatermarkDecoderBlock(
             d_latent, d_out, channels, hidden, lstm_layers
         )
+
+    def set_shared_layers(self, snake_out: Snake1d, conv_out: WNConv1d):
+        """Set shared layers from decoder."""
+        self.encoder_block.set_shared_layers(snake_out, conv_out)
 
     def random_message(self, batch_size: int) -> mx.array:
         """Generate random binary message."""
@@ -775,84 +783,93 @@ class Decoder(nn.Module):
             output_dim = channels // 2 ** (i + 1)
             self.blocks.append(DecoderBlock(input_dim, output_dim, stride, wm_stride))
 
-        # Watermarking
+        # Final output layers (shared with watermark encoder)
         final_dim = channels // 2 ** len(rates)
+        self.snake_out = Snake1d(final_dim)
+        self.conv_out = WNConv1d(final_dim, d_out, kernel_size=7, padding=3)
+
+        # Watermarking (uses snake_out/conv_out as shared layers)
         self.wm_model = Watermarker(
-            final_dim,
-            d_out,
-            d_wm_out,
-            wm_channels,
+            d_out=d_out,
+            d_latent=d_wm_out,
+            channels=wm_channels,
             hidden=512,
             nbits=nbits,
             lstm_layers=2,
         )
+        self.wm_model.set_shared_layers(self.snake_out, self.conv_out)
         self.alpha = wm_channels / d_wm_out
-
-        # Final output layers (snake + conv with tanh)
-        self.snake_out = Snake1d(final_dim)
-        self.conv_out = WNConv1d(final_dim, d_out, kernel_size=7, padding=3)
 
     def __call__(self, x: mx.array, message: Optional[mx.array] = None) -> mx.array:
         """
-        Decode latent features to audio.
+        Decode latent features to audio (without final output layers).
 
         Args:
             x: (B, T, C) latent features
             message: Optional (B, nbits) watermark message
+
+        Returns:
+            Decoded features before snake_out/conv_out
         """
         x = self.conv_in(x)
 
         for block in self.blocks:
             x = block(x)
 
-        # Apply watermarking
-        x = self._watermark(x, message)
-
         return x
 
-    def _watermark(self, x: mx.array, message: Optional[mx.array] = None) -> mx.array:
-        """Apply watermarking to the decoder output."""
-        # TODO: Watermarking path has dimension mismatches - skip for now
-        return x
-        if self.alpha == 0.0:
+    def decode_with_watermark(
+        self, x: mx.array, message: Optional[mx.array] = None
+    ) -> mx.array:
+        """
+        Decode with optional watermarking.
+
+        Args:
+            x: (B, T, C) features from decoder blocks
+            message: Optional watermark message
+
+        Returns:
+            Final audio output with tanh activation
+        """
+        if message is not None and self.alpha > 0.0:
+            return self._watermark(x, message)
+        else:
+            # Standard path: snake -> conv -> tanh
+            x = self.snake_out(x)
+            x = mx.tanh(self.conv_out(x))
             return x
 
-        # Transpose to (B, C, T) for watermarking operations
-        x_t = mx.transpose(x, (0, 2, 1))
-
-        # Watermark encoder
+    def _watermark(self, x: mx.array, message: mx.array) -> mx.array:
+        """Apply watermarking to the decoder output."""
+        # Watermark encoder: snake_out -> conv_out -> tanh -> wm_conv
         h = self.wm_model.encoder_block(x)
 
-        # Upsample through decoder blocks
+        # Upsample through decoder blocks (watermark path)
         for block in reversed(self.blocks):
             h = block.upsample_group(h)
 
-        # Post-process
+        # Post-process: LSTM -> ELU -> conv
         h = self.wm_model.encoder_block.post_process(h)
 
-        # Apply message
-        if message is None:
-            batch_size = x.shape[0]
-            message = self.wm_model.random_message(batch_size)
-
+        # Apply message embedding
         # Transpose h to (B, C, T) for msg_processor
         h_t = mx.transpose(h, (0, 2, 1))
         h_t = self.wm_model.msg_processor(h_t, message)
         h = mx.transpose(h_t, (0, 2, 1))
 
-        # Watermark decoder pre-processing
+        # Watermark decoder: conv -> LSTM
         h = self.wm_model.decoder_block(h)
 
-        # Downsample through decoder blocks
+        # Downsample through decoder blocks (watermark path)
         for block in self.blocks:
             h = block.downsample_group(h)
 
-        # Post-process
+        # Post-process: ELU -> conv
         h = self.wm_model.decoder_block.post_process(h)
 
-        # Blend with original using linear blending
-        x_no_conv = self.wm_model.encoder_block.forward_no_conv(x)
-        result = x_no_conv + self.alpha * h
+        # Blend: snake_out(x) -> conv_out -> tanh + alpha * watermark
+        x_base = self.wm_model.encoder_block.forward_no_wm_conv(x)
+        result = x_base + self.alpha * h
 
         return result
 

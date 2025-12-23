@@ -163,11 +163,6 @@ class SAMAudio(nn.Module):
                 )
             )
             or "wm_rates" in k
-            or (
-                "wm_model" in k
-                and "encoder_block" not in k
-                and "decoder_block" not in k
-            )
         }
 
         # Combine LSTM biases
