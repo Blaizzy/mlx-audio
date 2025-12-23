@@ -4,8 +4,6 @@ from .models.sam_audio import (
     SAMAudioConfig,
     SAMAudioProcessor,
     SeparationResult,
-    convert_model,
-    download_and_convert,
     save_audio,
 )
 from .voice_pipeline import VoicePipeline
@@ -17,7 +15,5 @@ __all__ = [
     "Batch",
     "save_audio",
     "SAMAudioConfig",
-    "convert_model",
-    "download_and_convert",
     "VoicePipeline",
 ]

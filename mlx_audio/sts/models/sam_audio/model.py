@@ -12,6 +12,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_map, tree_reduce
+from tqdm import tqdm
 
 from .align import EmbedAnchors
 from .codec import DACVAE
@@ -88,6 +89,7 @@ class SeparationResult:
     target: List[mx.array]  # Separated target audio(s)
     residual: List[mx.array]  # Residual/background audio(s)
     noise: mx.array  # Initial noise used for generation
+    peak_memory: float  # Peak memory usage in GB
 
 
 class SAMAudio(nn.Module):
@@ -126,6 +128,8 @@ class SAMAudio(nn.Module):
 
         # Timestep embedding
         self.timestep_emb = SinusoidalEmbedding(config.transformer.dim)
+
+        self.dtype = self.proj.weight.dtype
 
     @property
     def sample_rate(self) -> int:
@@ -374,6 +378,9 @@ class SAMAudio(nn.Module):
         audio_pad_mask: Optional[mx.array] = None,
         noise: Optional[mx.array] = None,
         ode_opt: Dict[str, Any] = None,
+        ode_decode_chunk_size: Optional[
+            int
+        ] = None,  # Set it to 50 for better performance
         _text_features: Optional[mx.array] = None,
         _text_mask: Optional[mx.array] = None,
     ) -> SeparationResult:
@@ -389,6 +396,7 @@ class SAMAudio(nn.Module):
             audio_pad_mask: Padding mask for audio
             noise: Initial noise (optional)
             ode_opt: ODE solver options
+            ode_decode_chunk_size: Decode in chunks of N frames (reduces peak memory)
             _text_features: Pre-computed text features (internal use)
             _text_mask: Pre-computed text mask (internal use)
 
@@ -423,7 +431,7 @@ class SAMAudio(nn.Module):
 
             # Initialize noise
             if noise is None:
-                noise = mx.random.normal(audio_features.shape)
+                noise = mx.random.normal(audio_features.shape, dtype=self.dtype)
 
             # ODE integration from t=0 to t=1
             step_size = ode_opt.get("step_size", 2 / 32)
@@ -467,11 +475,15 @@ class SAMAudio(nn.Module):
             residual_features = generated_features[:, channels:, :]
 
             # Decode to waveforms (decode one at a time to save memory)
-            target_wavs = self.audio_codec.decode(target_features)
+            target_wavs = self.audio_codec.decode(
+                target_features, chunk_size=ode_decode_chunk_size
+            )
             mx.eval(target_wavs)
             mx.clear_cache()
 
-            residual_wavs = self.audio_codec.decode(residual_features)
+            residual_wavs = self.audio_codec.decode(
+                residual_features, chunk_size=ode_decode_chunk_size
+            )
             mx.eval(residual_wavs)
             mx.clear_cache()
 
@@ -491,6 +503,7 @@ class SAMAudio(nn.Module):
                 target=target_list,
                 residual=residual_list,
                 noise=noise,
+                peak_memory=mx.get_peak_memory() / 1e9,
             )
 
     def separate_long(
@@ -499,7 +512,10 @@ class SAMAudio(nn.Module):
         descriptions: List[str],
         chunk_seconds: float = 10.0,
         overlap_seconds: float = 3.0,
+        anchor_ids: Optional[mx.array] = None,
+        anchor_alignment: Optional[mx.array] = None,
         ode_opt: Dict[str, Any] = None,
+        ode_decode_chunk_size: Optional[int] = None,
         seed: int = 42,
         verbose: bool = True,
     ) -> SeparationResult:
@@ -511,7 +527,10 @@ class SAMAudio(nn.Module):
             descriptions: Text descriptions of target sounds
             chunk_seconds: Length of each chunk in seconds (default 10s, good balance)
             overlap_seconds: Overlap between chunks for smooth crossfade (default 3s, ~30%)
+            anchor_ids: Anchor token IDs for temporal prompts
+            anchor_alignment: Timestep to anchor mapping
             ode_opt: ODE solver options
+            ode_decode_chunk_size: Decode in chunks of N frames (reduces peak memory)
             seed: Random seed for reproducible noise generation
             verbose: Print progress information
 
@@ -539,7 +558,14 @@ class SAMAudio(nn.Module):
                 key=mx.random.key(seed),
             )
             return self.separate(
-                audios, descriptions, sizes, noise=noise, ode_opt=ode_opt
+                audios,
+                descriptions,
+                sizes,
+                noise=noise,
+                ode_opt=ode_opt,
+                ode_decode_chunk_size=ode_decode_chunk_size,
+                anchor_ids=anchor_ids,
+                anchor_alignment=anchor_alignment,
             )
 
         # Process in chunks
@@ -560,18 +586,9 @@ class SAMAudio(nn.Module):
                 f"Processing {total_duration:.1f}s audio in {num_chunks} chunks ({chunk_seconds}s each)..."
             )
 
-        total_start = time.time()
-        for i in range(num_chunks):
+        for i in tqdm(range(num_chunks), desc="Processing chunks"):
             start = i * hop_samples
             end = min(start + chunk_samples, total_samples)
-            chunk_start = time.time()
-
-            if verbose:
-                print(
-                    f"  Chunk {i+1}/{num_chunks} ({start/sr:.1f}s - {end/sr:.1f}s)...",
-                    end=" ",
-                    flush=True,
-                )
 
             # Extract chunk
             chunk = audios[:, :, start:end]
@@ -585,7 +602,10 @@ class SAMAudio(nn.Module):
                 chunk,
                 descriptions,
                 sizes=None,
+                anchor_ids=anchor_ids,
+                anchor_alignment=anchor_alignment,
                 ode_opt=ode_opt,
+                ode_decode_chunk_size=ode_decode_chunk_size,
                 _text_features=text_features,
                 _text_mask=text_mask,
             )
@@ -659,16 +679,11 @@ class SAMAudio(nn.Module):
 
         mx.eval(full_target, full_residual)
 
-        total_time = time.time() - total_start
-        if verbose:
-            print(
-                f"Done! Total time: {total_time:.1f}s ({total_duration/total_time:.2f}x realtime)"
-            )
-
         return SeparationResult(
             target=[full_target],
             residual=[full_residual],
             noise=full_noise,
+            peak_memory=mx.get_peak_memory() / 1e9,
         )
 
     @classmethod

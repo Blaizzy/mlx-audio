@@ -995,7 +995,11 @@ class DACVAE(nn.Module):
         # Transpose to (batch, channels, frames)
         return mx.transpose(mean, (0, 2, 1))
 
-    def decode(self, encoded_frames: mx.array) -> mx.array:
+    def decode(
+        self,
+        encoded_frames: mx.array,
+        chunk_size: Optional[int] = None,
+    ) -> mx.array:
         """
         Decode latent features back to waveform.
 
@@ -1005,10 +1009,17 @@ class DACVAE(nn.Module):
         Args:
             encoded_frames: Tensor of shape (batch, codebook_dim, frames)
                            Features in VAE codebook space.
+            chunk_size: If provided, decode in chunks of this many frames
+                       to reduce peak memory usage. Recommended: 50-100 for
+                       long audio. None for single-pass decoding.
 
         Returns:
             Waveform of shape (batch, length, 1)
         """
+        # Use chunked decoding for memory efficiency if requested
+        if chunk_size is not None:
+            return self._decode_chunked(encoded_frames, chunk_size)
+
         # Transpose to (batch, frames, codebook_dim)
         encoded_frames = mx.transpose(encoded_frames, (0, 2, 1))
 
@@ -1023,6 +1034,107 @@ class DACVAE(nn.Module):
         out = mx.tanh(self.decoder.conv_out(out))
 
         return out
+
+    def _decode_chunked(
+        self,
+        encoded_frames: mx.array,
+        chunk_size: int,
+        overlap: int = 4,
+    ) -> mx.array:
+        """
+        Decode in chunks to reduce peak memory usage.
+
+        Args:
+            encoded_frames: (batch, codebook_dim, frames)
+            chunk_size: Number of frames per chunk
+            overlap: Number of overlapping frames for smooth transitions
+
+        Returns:
+            Waveform of shape (batch, length, 1)
+        """
+        _, _, total_frames = encoded_frames.shape
+
+        # Transpose to (batch, frames, codebook_dim)
+        encoded_frames = mx.transpose(encoded_frames, (0, 2, 1))
+
+        # Calculate output samples per frame (hop_length)
+        samples_per_frame = self.hop_length
+        overlap_samples = overlap * samples_per_frame
+
+        chunks = []
+        start = 0
+
+        while start < total_frames:
+            end = min(start + chunk_size, total_frames)
+
+            # Extract chunk
+            chunk = encoded_frames[:, start:end, :]
+
+            # Project from codebook_dim to latent_dim
+            emb = self.quantizer_out_proj(chunk)
+
+            # Decode
+            out = self.decoder(emb)
+            out = self.decoder.snake_out(out)
+            out = mx.tanh(self.decoder.conv_out(out))
+            mx.eval(out)
+
+            chunks.append(out)
+
+            # Move to next chunk (with overlap for blending)
+            if end >= total_frames:
+                break
+            start = end - overlap
+
+            # Clear cache between chunks
+            mx.clear_cache()
+
+        # Concatenate chunks with crossfade blending
+        if len(chunks) == 1:
+            return chunks[0]
+
+        # Simple concatenation with crossfade
+        result_parts = []
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                # First chunk: keep all but overlap at end
+                if len(chunks) > 1:
+                    fade_out_start = chunk.shape[1] - overlap_samples
+                    # Apply fade out to overlap region
+                    fade = mx.linspace(1.0, 0.0, overlap_samples)
+                    fade = fade.reshape(1, -1, 1)
+                    chunk_main = chunk[:, :fade_out_start, :]
+                    chunk_fade = chunk[:, fade_out_start:, :] * fade
+                    result_parts.append(chunk_main)
+                    result_parts.append(chunk_fade)
+                else:
+                    result_parts.append(chunk)
+            elif i == len(chunks) - 1:
+                # Last chunk: fade in the overlap, keep rest
+                fade_in = mx.linspace(0.0, 1.0, overlap_samples)
+                fade_in = fade_in.reshape(1, -1, 1)
+                chunk_fade = chunk[:, :overlap_samples, :] * fade_in
+                chunk_rest = chunk[:, overlap_samples:, :]
+                # Add the fade-in part to the previous fade-out
+                result_parts[-1] = result_parts[-1] + chunk_fade
+                result_parts.append(chunk_rest)
+            else:
+                # Middle chunks: fade in at start, fade out at end
+                fade_in = mx.linspace(0.0, 1.0, overlap_samples)
+                fade_in = fade_in.reshape(1, -1, 1)
+                fade_out = mx.linspace(1.0, 0.0, overlap_samples)
+                fade_out = fade_out.reshape(1, -1, 1)
+
+                chunk_fade_in = chunk[:, :overlap_samples, :] * fade_in
+                chunk_middle = chunk[:, overlap_samples:-overlap_samples, :]
+                chunk_fade_out = chunk[:, -overlap_samples:, :] * fade_out
+
+                # Add fade-in to previous fade-out
+                result_parts[-1] = result_parts[-1] + chunk_fade_in
+                result_parts.append(chunk_middle)
+                result_parts.append(chunk_fade_out)
+
+        return mx.concatenate(result_parts, axis=1)
 
     def __call__(self, waveform: mx.array) -> mx.array:
         """
