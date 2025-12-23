@@ -132,6 +132,70 @@ class SAMAudio(nn.Module):
         """Audio sample rate."""
         return self.audio_codec.sample_rate
 
+    @staticmethod
+    def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        """
+        Sanitize PyTorch weights for MLX loading.
+
+        Handles:
+        - Removing keys not needed (text_encoder, span_predictor, etc.)
+        - Combining LSTM biases (bias_ih + bias_hh -> bias)
+        - Converting weight names to MLX conventions
+        - Transposing weights for Conv/Linear layers
+
+        Note: text_encoder weights are NOT in the SAM-Audio checkpoint.
+              T5 is loaded separately from HuggingFace.
+        """
+        import re
+
+        # Keys to remove
+        keys_to_remove = {
+            k
+            for k in weights
+            if k.startswith(
+                (
+                    "text_encoder.",
+                    "span_predictor.",
+                    "visual_ranker.",
+                    "text_ranker.",
+                    "vision_encoder.",
+                    "align_masked_video.",
+                )
+            )
+            or "wm_rates" in k
+            or (
+                "wm_model" in k
+                and "encoder_block" not in k
+                and "decoder_block" not in k
+            )
+        }
+
+        # Combine LSTM biases
+        lstm_biases = {}
+        for key in list(weights.keys()):
+            match = re.search(r"(.+\.lstm)\.bias_(ih|hh)_l(\d+)$", key)
+            if match:
+                base, bias_type, layer_idx = match.groups()
+                lstm_biases.setdefault((base, layer_idx), {})[bias_type] = weights[key]
+                keys_to_remove.add(key)
+
+        # Build sanitized weights
+        sanitized = {}
+
+        # Add combined LSTM biases
+        for (base, idx), biases in lstm_biases.items():
+            if "ih" in biases and "hh" in biases:
+                new_key = _convert_weight_name(f"{base}.combined_bias_l{idx}")
+                sanitized[new_key] = biases["ih"] + biases["hh"]
+
+        # Process remaining weights (no transpose here - done during load with target shape info)
+        for key, value in weights.items():
+            if key in keys_to_remove:
+                continue
+            sanitized[_convert_weight_name(key)] = value
+
+        return sanitized
+
     def align_inputs(
         self,
         noisy_audio: mx.array,
@@ -715,110 +779,65 @@ class SAMAudio(nn.Module):
 
 
 def _load_weights(model: SAMAudio, weights: dict, strict: bool = False) -> SAMAudio:
-    """
-    Load PyTorch weights into MLX model.
-
-    Handles weight name mapping between PyTorch and MLX conventions.
-    """
+    """Load PyTorch weights into MLX model."""
     import mlx.nn as nn
 
-    # Get all MLX parameter names
-    mlx_param_list = nn.utils.tree_flatten(model.parameters())
-    mlx_params = {name: param for name, param in mlx_param_list}
+    # Sanitize weights (remove unwanted keys, combine LSTM biases, rename)
+    sanitized = model.sanitize(weights)
 
-    # Map weights
+    # Get MLX parameter names and shapes
+    mlx_params = dict(nn.utils.tree_flatten(model.parameters()))
+
+    # Match weights to parameters, transposing as needed
     new_weights = []
     loaded_keys = set()
-    skipped_keys = set()
 
-    for key, value in weights.items():
-        # Skip certain keys that are loaded separately or not needed
-        if key.startswith("text_encoder.") or key.startswith("span_predictor."):
-            skipped_keys.add(key)
-            continue
-        if key.startswith("visual_ranker.") or key.startswith("text_ranker."):
-            skipped_keys.add(key)
-            continue
-        if key.startswith("vision_encoder.") or key.startswith("align_masked_video."):
-            skipped_keys.add(key)
-            continue
-        # Skip most watermark-related decoder weights, but keep encoder_block.pre (snake_out, conv_out)
-        if "wm_model" in key:
-            if "encoder_block.pre" not in key:
-                skipped_keys.add(key)
-                continue
-        if "wm_rates" in key:
-            skipped_keys.add(key)
+    for key, value in sanitized.items():
+        if key not in mlx_params:
             continue
 
-        # Convert PyTorch weight names to MLX conventions
-        mlx_key = _convert_weight_name(key)
+        target_shape = mlx_params[key].shape
+        v, t = value.shape, target_shape
 
-        if mlx_key in mlx_params:
-            target_shape = mlx_params[mlx_key].shape
-            # Handle shape mismatches
-            if value.shape != target_shape:
-                # 2D transpose for Linear layers
-                if len(value.shape) == 2 and tuple(value.shape) == tuple(
-                    target_shape[::-1]
-                ):
-                    value = mx.transpose(value)
-                # 3D transpose for Conv1d layers
-                elif len(value.shape) == 3 and len(target_shape) == 3:
-                    # Conv1d: PyTorch (out, in, kernel) -> MLX (out, kernel, in)
-                    if (
-                        value.shape[0] == target_shape[0]
-                        and value.shape[1] == target_shape[2]
-                        and value.shape[2] == target_shape[1]
-                    ):
-                        value = mx.transpose(value, (0, 2, 1))
-                    # ConvTranspose1d: PyTorch (in, out, kernel) -> MLX (out, kernel, in)
-                    elif (
-                        value.shape[0] == target_shape[2]
-                        and value.shape[1] == target_shape[0]
-                        and value.shape[2] == target_shape[1]
-                    ):
-                        value = mx.transpose(value, (1, 2, 0))
-                    # Weight normalization weights (out, 1, 1) or (in, 1, 1)
-                    elif value.shape[1] == 1 and value.shape[2] == 1:
-                        # Check if it's (N, 1, 1) vs (1, 1, N)
-                        if value.shape[0] == target_shape[2]:
-                            # (N, 1, 1) -> (1, 1, N)
-                            value = mx.transpose(value, (1, 2, 0))
-                        # else: keep as is
-                    else:
-                        skipped_keys.add(key)
-                        continue
-                elif value.shape != target_shape:
-                    # Skip if shapes don't match
-                    skipped_keys.add(key)
+        if v != t:
+            # 2D: Linear layers
+            if len(v) == 2 and v == t[::-1]:
+                value = mx.transpose(value)
+            # 3D: Conv layers
+            elif len(v) == 3 and len(t) == 3:
+                if (v[0], v[1], v[2]) == (t[0], t[2], t[1]):  # Conv1d
+                    value = mx.transpose(value, (0, 2, 1))
+                elif (v[0], v[1], v[2]) == (t[2], t[0], t[1]):  # ConvTranspose1d
+                    value = mx.transpose(value, (1, 2, 0))
+                elif v[1:] == (1, 1) and v[0] == t[2]:  # Weight norm (N,1,1)->(1,1,N)
+                    value = mx.transpose(value, (1, 2, 0))
+                elif v != t:
                     continue
+            elif v != t:
+                continue
 
-            new_weights.append((mlx_key, value))
-            loaded_keys.add(mlx_key)
+        new_weights.append((key, value))
+        loaded_keys.add(key)
 
-    # Find missing parameters
-    missing = set(mlx_params.keys()) - loaded_keys
-
-    if missing and len(missing) < 50:
+    # Warn about missing params (exclude wm_model since watermarking is disabled)
+    missing = {k for k in mlx_params.keys() - loaded_keys if "wm_model" not in k}
+    if 0 < len(missing) < 50:
         import warnings
 
         warnings.warn(
-            f"Missing {len(missing)} parameters: "
-            f"{', '.join(sorted(missing)[:10])}..."
+            f"Missing {len(missing)} parameters: {', '.join(sorted(missing)[:10])}..."
         )
 
-    model.load_weights(list(new_weights), strict=strict)
-
+    model.load_weights(new_weights, strict=strict)
     mx.eval(model.parameters())
-
     model.eval()
-
     return model
 
 
 def _convert_weight_name(name: str) -> str:
     """Convert PyTorch weight name to MLX convention."""
+    import re
+
     result = name
 
     # === AUDIO CODEC ENCODER MAPPING ===
@@ -910,6 +929,27 @@ def _convert_weight_name(name: str) -> str:
             "audio_codec.decoder.wm_model.encoder_block.pre.1.",
             "audio_codec.decoder.conv_out.",
         )
+
+    # wm_model block mappings: pre.N -> pre_N, post.N -> post_N
+    for block in ["encoder_block", "decoder_block"]:
+        for prefix in ["pre", "post"]:
+            for idx in range(4):
+                old = f".{block}.{prefix}.{idx}."
+                new = f".{block}.{prefix}_{idx}."
+                if old in result:
+                    result = result.replace(old, new)
+
+    # LSTM weight mapping: weight_ih_lN -> layers.N.Wx, weight_hh_lN -> layers.N.Wh, combined_bias_lN -> layers.N.bias
+    lstm_patterns = [
+        (r"\.lstm\.weight_ih_l(\d+)$", ".lstm.layers.{}.Wx"),
+        (r"\.lstm\.weight_hh_l(\d+)$", ".lstm.layers.{}.Wh"),
+        (r"\.lstm\.combined_bias_l(\d+)$", ".lstm.layers.{}.bias"),
+    ]
+    for pattern, replacement in lstm_patterns:
+        match = re.search(pattern, result)
+        if match:
+            result = re.sub(pattern, replacement.format(match.group(1)), result)
+            break
 
     # === QUANTIZER MAPPING ===
     # quantizer.in_proj.* -> quantizer_in_proj.*
