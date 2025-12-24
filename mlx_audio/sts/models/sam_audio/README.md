@@ -1,6 +1,7 @@
-# SAM-Audio MLX
+# SAM-Audio Usage Guide
 
 MLX implementation of [SAM-Audio](https://github.com/facebookresearch/sam-audio) (Segment Anything Model for Audio) - a foundation model for audio source separation using text prompts.
+
 
 ## Installation
 
@@ -11,7 +12,8 @@ pip install mlx-audio
 ## Quick Start
 
 ```python
-from mlx_audio.ss import SAMAudio, SAMAudioProcessor, save_audio
+from mlx_audio.sts import SAMAudio, SAMAudioProcessor, save_audio
+import mlx.core as mx
 
 # Load model and processor
 processor = SAMAudioProcessor.from_pretrained("facebook/sam-audio-large")
@@ -19,8 +21,9 @@ model = SAMAudio.from_pretrained("facebook/sam-audio-large")
 
 # Process inputs
 batch = processor(
-    descriptions=["A person speaking"],
-    audios=["path/to/audio.wav"],
+    descriptions=["speech"],
+    audios=["path/to/audio.mp3"],
+    # anchors=[[("+", 0.2, 0.5)]],  # Optional: temporal
 )
 
 # Separate audio
@@ -28,10 +31,17 @@ result = model.separate(
     audios=batch.audios,
     descriptions=batch.descriptions,
     sizes=batch.sizes,
+    anchor_ids=batch.anchor_ids,
+    anchor_alignment=batch.anchor_alignment,
+    ode_decode_chunk_size=50,  # Chunked decoding for memory efficiency
 )
 
 # Save output
 save_audio(result.target[0], "separated.wav", sample_rate=model.sample_rate)
+
+# Check memory usage
+print(f"Peak memory: {mx.get_peak_memory() / 1e9:.2f} GB")
+print(f"Active memory: {mx.get_active_memory() / 1e9:.2f} GB")
 ```
 
 ## Methods
@@ -42,17 +52,15 @@ Best for short audio files (< 30 seconds) or when you have enough memory.
 
 ```python
 result = model.separate(
-    audios=batch.audios,           # (B, 1, T) audio tensor
-    descriptions=batch.descriptions, # List of text prompts
-    sizes=batch.sizes,             # Optional: sequence lengths
-    ode_opt=None,                  # ODE solver options (see below)
-    predict_spans=False,           # Auto temporal prompts (not yet implemented)
-    reranking_candidates=1,        # Multi-candidate reranking (not yet implemented)
+    audios=batch.audios,              # (B, 1, T) audio tensor
+    descriptions=batch.descriptions,  # List of text prompts
+    sizes=batch.sizes,                # Optional: sequence lengths
+    anchor_ids=batch.anchor_ids,      # Optional: anchor token IDs
+    anchor_alignment=batch.anchor_alignment,  # Optional: timestep to anchor mapping
+    ode_opt=None,                     # ODE solver options (see below)
+    ode_decode_chunk_size=50,         # Chunked decoding (reduces memory)
 )
 ```
-
-> **Note**: `predict_spans=True` and `reranking_candidates > 1` require additional models
-> (span_predictor, visual_ranker, text_ranker) which are not yet ported to MLX.
 
 ### `separate_long()` - Chunked Processing
 
@@ -62,13 +70,67 @@ Best for long audio files or limited memory. Processes audio in chunks with cros
 result = model.separate_long(
     audios=batch.audios,
     descriptions=batch.descriptions,
-    chunk_seconds=10.0,      # Chunk size (default: 10s)
-    overlap_seconds=3.0,     # Overlap for crossfade (default: 3s)
-    ode_opt=None,            # ODE solver options
-    seed=42,                 # Random seed for reproducibility
-    verbose=True,            # Print progress
+    chunk_seconds=10.0,           # Chunk size (default: 10s)
+    overlap_seconds=3.0,          # Overlap for crossfade (default: 3s)
+    anchor_ids=batch.anchor_ids,  # Optional: anchor token IDs
+    anchor_alignment=batch.anchor_alignment,  # Optional: timestep to anchor mapping
+    ode_opt=None,                 # ODE solver options
+    ode_decode_chunk_size=50,     # Chunked decoding (reduces memory)
+    seed=42,                      # Random seed for reproducibility
+    verbose=True,                 # Print progress
 )
 ```
+
+## Temporal Anchors
+
+Anchors are **temporal prompts** that tell the model which time spans contain the target sound. Use them when the text description alone isn't specific enough (e.g., multiple speakers in audio).
+
+### Anchor Tokens
+
+| Token | Meaning |
+|-------|---------|
+| `"+"` | Positive - "the target sound IS here" |
+| `"-"` | Negative - "the target sound is NOT here" |
+
+### Format
+
+```python
+anchors=[[(token, start_time, end_time), ...]]  # times in seconds
+```
+
+### Examples
+
+```python
+# Extract speech occurring between 1.5s and 3.0s
+batch = processor(
+    descriptions=["speech"],
+    audios=["audio.wav"],
+    anchors=[[("+", 1.5, 3.0)]],
+)
+
+# Multiple anchors - target is here but NOT there
+batch = processor(
+    descriptions=["speech"],
+    audios=["audio.wav"],
+    anchors=[[("+", 1.5, 3.0), ("-", 5.0, 7.0)]],
+)
+
+# Batch processing with different anchors per sample
+batch = processor(
+    descriptions=["speech", "music"],
+    audios=["audio1.wav", "audio2.wav"],
+    anchors=[
+        [("+", 0.0, 2.0)],           # First sample
+        [("+", 1.0, 4.0), ("-", 6.0, 8.0)],  # Second sample
+    ],
+)
+```
+
+### Use Cases
+
+- **Multiple speakers**: Use `+` anchor to specify which speaker's time range
+- **Intermittent sounds**: Mark where the target appears and doesn't appear
+- **Fine-grained control**: When text prompts are ambiguous
 
 ## ODE Solver Options
 
@@ -214,7 +276,7 @@ result.noise     # mx.array - Initial noise (for reproducibility)
 Save outputs:
 
 ```python
-from mlx_audio.ss import save_audio
+from mlx_audio.sts import save_audio
 
 save_audio(result.target[0], "target.wav", sample_rate=model.sample_rate)
 save_audio(result.residual[0], "residual.wav", sample_rate=model.sample_rate)
