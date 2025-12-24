@@ -12,6 +12,7 @@ from .s3gen import (
     S3Gen,
     S3Token2Mel,
     S3Token2Wav,
+    smooth_audio,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "ConditionalDecoder",
     "CausalConditionalCFM",
     "mel_spectrogram",
+    "smooth_audio",
 ]
