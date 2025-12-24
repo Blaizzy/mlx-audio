@@ -602,8 +602,6 @@ class SAMAudio(nn.Module):
                 chunk,
                 descriptions,
                 sizes=None,
-                anchor_ids=anchor_ids,
-                anchor_alignment=anchor_alignment,
                 ode_opt=ode_opt,
                 ode_decode_chunk_size=ode_decode_chunk_size,
                 _text_features=text_features,
