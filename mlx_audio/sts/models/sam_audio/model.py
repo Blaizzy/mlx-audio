@@ -517,7 +517,7 @@ class SAMAudio(nn.Module):
         ode_opt: Dict[str, Any] = None,
         ode_decode_chunk_size: Optional[int] = None,
         seed: int = 42,
-        verbose: bool = True,
+        verbose: bool = False,
     ) -> SeparationResult:
         """
         Separate long audio files using chunked processing to reduce memory usage.
@@ -614,10 +614,6 @@ class SAMAudio(nn.Module):
             # Evaluate to ensure computation is complete before manipulation
             mx.eval(target_chunk, residual_chunk)
             mx.clear_cache()
-
-            if verbose:
-                chunk_time = time.time() - chunk_start
-                print(f"done ({chunk_time:.1f}s)")
 
             # Apply crossfade for overlapping regions
             if i > 0 and overlap_samples > 0:
