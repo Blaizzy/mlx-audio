@@ -67,6 +67,7 @@ public class KokoroTTS {
     case tooManyTokens
     case sentenceSplitError
     case modelNotInitialized
+    case chineseG2PNotInitialized
   }
 
   private var bert: CustomAlbert!
@@ -79,8 +80,14 @@ public class KokoroTTS {
   private var decoder: Decoder!
   private var eSpeakEngine: ESpeakNGEngine!
   private var kokoroTokenizer: KokoroTokenizer!
+  private var chineseTokenizer: ChineseKokoroTokenizer!
   private var chosenVoice: TTSVoice?
   private var voice: MLXArray!
+
+  // Chinese G2P dictionary URLs (set these before using Chinese voices)
+  public var chineseJiebaURL: URL?
+  public var chinesePinyinSingleURL: URL?
+  public var chinesePinyinPhrasesURL: URL?
 
   // Flag to indicate if model components are initialized
   private var isModelInitialized = false
@@ -120,10 +127,54 @@ public class KokoroTTS {
         eSpeakEngine = nil
       }
       kokoroTokenizer = nil
+      chineseTokenizer = nil
     }
 
     // Use plain autoreleasepool to encourage memory release
     autoreleasepool { }
+  }
+
+  /// Check if a voice is Chinese (Mandarin)
+  public static func isChineseVoice(_ voice: TTSVoice) -> Bool {
+    switch voice {
+    case .zfXiaobei, .zfXiaoni, .zfXiaoxiao, .zfXiaoyi,
+         .zmYunjian, .zmYunxi, .zmYunxia, .zmYunyang:
+      return true
+    default:
+      return false
+    }
+  }
+
+  /// Initialize Chinese G2P with dictionary data
+  public func initializeChineseG2P(
+    jiebaData: Data,
+    pinyinSingleData: Data,
+    pinyinPhrasesData: Data? = nil
+  ) throws {
+    if chineseTokenizer == nil {
+      chineseTokenizer = ChineseKokoroTokenizer()
+    }
+    try chineseTokenizer.initialize(
+      jiebaData: jiebaData,
+      pinyinSingleData: pinyinSingleData,
+      pinyinPhrasesData: pinyinPhrasesData
+    )
+  }
+
+  /// Initialize Chinese G2P with dictionary URLs
+  public func initializeChineseG2P(
+    jiebaURL: URL,
+    pinyinSingleURL: URL,
+    pinyinPhrasesURL: URL? = nil
+  ) throws {
+    if chineseTokenizer == nil {
+      chineseTokenizer = ChineseKokoroTokenizer()
+    }
+    try chineseTokenizer.initialize(
+      jiebaURL: jiebaURL,
+      pinyinSingleURL: pinyinSingleURL,
+      pinyinPhrasesURL: pinyinPhrasesURL
+    )
   }
 
   // Initialize model on demand
@@ -576,14 +627,42 @@ public class KokoroTTS {
           self.voice?.eval() // Force immediate evaluation
         }
 
-        try kokoroTokenizer.setLanguage(for: voice)
+        // Only set eSpeak language for non-Chinese voices
+        if !KokoroTTS.isChineseVoice(voice) {
+          try kokoroTokenizer.setLanguage(for: voice)
+        }
         chosenVoice = voice
       }
 
       do {
-        let phonemizedResult = try kokoroTokenizer.phonemize(text)
+        let inputIds: [Int]
 
-        let inputIds = PhonemeTokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
+        // Use native Chinese G2P for Chinese voices
+        if KokoroTTS.isChineseVoice(voice) {
+          // Check if Chinese tokenizer is initialized
+          guard chineseTokenizer != nil && chineseTokenizer.isReady else {
+            // Try to initialize from URLs if provided
+            if let jiebaURL = chineseJiebaURL,
+               let pinyinSingleURL = chinesePinyinSingleURL {
+              try initializeChineseG2P(
+                jiebaURL: jiebaURL,
+                pinyinSingleURL: pinyinSingleURL,
+                pinyinPhrasesURL: chinesePinyinPhrasesURL
+              )
+            } else {
+              throw KokoroTTSError.chineseG2PNotInitialized
+            }
+          }
+
+          // Use native Chinese G2P (Bopomofo-based)
+          let phonemes = try chineseTokenizer.phonemize(text)
+          inputIds = chineseTokenizer.tokenizeWithChineseVocab(phonemes)
+        } else {
+          // Use eSpeak-based phonemization for other languages
+          let phonemizedResult = try kokoroTokenizer.phonemize(text)
+          inputIds = PhonemeTokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
+        }
+
         guard inputIds.count <= Constants.maxTokenCount else {
           throw KokoroTTSError.tooManyTokens
         }
