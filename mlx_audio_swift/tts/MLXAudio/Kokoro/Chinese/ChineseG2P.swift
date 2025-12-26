@@ -14,6 +14,11 @@
 //
 
 import Foundation
+import Hub
+
+/// Default HuggingFace repository for Chinese Kokoro TTS (MLX format)
+/// MLX conversion of https://huggingface.co/hexgrad/Kokoro-82M-v1.1-zh
+public let chineseKokoroRepo = "FluidInference/kokoro-82m-v1.1-zh-mlx"
 
 /// Chinese Grapheme-to-Phoneme converter for Kokoro TTS.
 /// Converts Chinese text to Bopomofo phoneme sequences.
@@ -63,6 +68,48 @@ public final class ChineseG2P {
             try pinyinConverter.loadPhrasePinyin(from: phrasesURL)
         }
         isInitialized = true
+    }
+
+    /// Download and load dictionaries from HuggingFace
+    /// - Parameters:
+    ///   - repoId: HuggingFace repository ID (default: FluidInference/kokoro-82m-v1.1-zh-mlx)
+    ///   - progressHandler: Optional progress callback
+    public func initializeFromHub(
+        repoId: String = chineseKokoroRepo,
+        progressHandler: (@Sendable (Progress) -> Void)? = nil
+    ) async throws {
+        print("[ChineseG2P] Downloading dictionaries from \(repoId)...")
+
+        // Download the g2p directory from HuggingFace
+        let snapshotURL = try await Hub.snapshot(
+            from: repoId,
+            matching: ["g2p/*"],
+            progressHandler: progressHandler
+        )
+
+        let jiebaURL = snapshotURL.appending(path: "g2p/jieba.bin.gz")
+        let pinyinSingleURL = snapshotURL.appending(path: "g2p/pinyin_single.bin.gz")
+        let pinyinPhrasesURL = snapshotURL.appending(path: "g2p/pinyin_phrases.bin.gz")
+
+        // Verify files exist
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: jiebaURL.path) else {
+            throw ChineseG2PError.conversionFailed("jieba.bin.gz not found at \(jiebaURL.path)")
+        }
+        guard fm.fileExists(atPath: pinyinSingleURL.path) else {
+            throw ChineseG2PError.conversionFailed("pinyin_single.bin.gz not found at \(pinyinSingleURL.path)")
+        }
+
+        print("[ChineseG2P] Loading dictionaries...")
+        try tokenizer.loadDictionary(from: jiebaURL)
+        try pinyinConverter.loadSinglePinyin(from: pinyinSingleURL)
+
+        if fm.fileExists(atPath: pinyinPhrasesURL.path) {
+            try pinyinConverter.loadPhrasePinyin(from: pinyinPhrasesURL)
+        }
+
+        isInitialized = true
+        print("[ChineseG2P] Initialization complete")
     }
 
     /// Check if dictionaries are initialized

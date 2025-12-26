@@ -49,6 +49,20 @@ public final class ChineseKokoroTokenizer {
         )
     }
 
+    /// Initialize by downloading dictionaries from HuggingFace
+    /// - Parameters:
+    ///   - repoId: HuggingFace repository ID (default: FluidInference/kokoro-82m-v1.1-zh-mlx)
+    ///   - progressHandler: Optional progress callback
+    public func initializeFromHub(
+        repoId: String = chineseKokoroRepo,
+        progressHandler: (@Sendable (Progress) -> Void)? = nil
+    ) async throws {
+        try await g2p.initializeFromHub(
+            repoId: repoId,
+            progressHandler: progressHandler
+        )
+    }
+
     // MARK: - Public API
 
     /// Convert Chinese text to phonemes for Kokoro TTS

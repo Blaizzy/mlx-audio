@@ -2,6 +2,7 @@
 //  Kokoro-tts-lib
 //
 import Foundation
+import Hub
 import MLX
 import MLXNN
 
@@ -105,6 +106,50 @@ public class KokoroTTS {
     self.customURL = customURL
   }
 
+  /// Download Chinese Kokoro model from HuggingFace and initialize
+  /// - Parameters:
+  ///   - repoId: HuggingFace repository ID (default: FluidInference/kokoro-82m-v1.1-zh-mlx)
+  ///   - progressHandler: Optional progress callback
+  /// - Returns: Initialized KokoroTTS with Chinese model and G2P
+  public static func fromHub(
+    repoId: String = chineseKokoroRepo,
+    progressHandler: (@Sendable (Progress) -> Void)? = nil
+  ) async throws -> KokoroTTS {
+    print("[KokoroTTS] Downloading model from \(repoId)...")
+
+    // Download model weights
+    let snapshotURL = try await Hub.snapshot(
+      from: repoId,
+      matching: ["*.safetensors", "g2p/*"],
+      progressHandler: progressHandler
+    )
+
+    let modelURL = snapshotURL.appending(path: "model.safetensors")
+    guard FileManager.default.fileExists(atPath: modelURL.path) else {
+      throw KokoroTTSError.modelNotInitialized
+    }
+
+    print("[KokoroTTS] Model downloaded to \(modelURL.path)")
+
+    let tts = KokoroTTS(customURL: modelURL)
+
+    // Initialize Chinese G2P from the same snapshot
+    let jiebaURL = snapshotURL.appending(path: "g2p/jieba.bin.gz")
+    let pinyinSingleURL = snapshotURL.appending(path: "g2p/pinyin_single.bin.gz")
+    let pinyinPhrasesURL = snapshotURL.appending(path: "g2p/pinyin_phrases.bin.gz")
+
+    if FileManager.default.fileExists(atPath: jiebaURL.path) {
+      try tts.initializeChineseG2P(
+        jiebaURL: jiebaURL,
+        pinyinSingleURL: pinyinSingleURL,
+        pinyinPhrasesURL: FileManager.default.fileExists(atPath: pinyinPhrasesURL.path) ? pinyinPhrasesURL : nil
+      )
+      print("[KokoroTTS] Chinese G2P initialized")
+    }
+
+    return tts
+  }
+
   // Reset the model to free up memory
   public func resetModel(preserveTextProcessing: Bool = true) {
     // Reset heavy ML model components
@@ -174,6 +219,23 @@ public class KokoroTTS {
       jiebaURL: jiebaURL,
       pinyinSingleURL: pinyinSingleURL,
       pinyinPhrasesURL: pinyinPhrasesURL
+    )
+  }
+
+  /// Initialize Chinese G2P by downloading dictionaries from HuggingFace
+  /// - Parameters:
+  ///   - repoId: HuggingFace repository ID (default: FluidInference/kokoro-82m-v1.1-zh-mlx)
+  ///   - progressHandler: Optional progress callback
+  public func initializeChineseG2PFromHub(
+    repoId: String = chineseKokoroRepo,
+    progressHandler: (@Sendable (Progress) -> Void)? = nil
+  ) async throws {
+    if chineseTokenizer == nil {
+      chineseTokenizer = ChineseKokoroTokenizer()
+    }
+    try await chineseTokenizer.initializeFromHub(
+      repoId: repoId,
+      progressHandler: progressHandler
     )
   }
 
