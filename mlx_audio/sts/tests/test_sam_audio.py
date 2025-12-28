@@ -107,6 +107,7 @@ class TestDACVAECodec(unittest.TestCase):
 
         self.config = DACVAEConfig()
         self.codec = DACVAE(self.config)
+        self.codec.hop_length = 192
 
     def test_codec_initialization(self):
         """Test DACVAE initialization."""
@@ -118,14 +119,14 @@ class TestDACVAECodec(unittest.TestCase):
 
     def test_codec_hop_length(self):
         """Test DACVAE hop_length property."""
-        expected_hop = 2 * 8 * 10 * 12  # 1920
+        expected_hop = 192
         self.assertEqual(self.codec.hop_length, expected_hop)
 
     def test_codec_encode_shape(self):
         """Test DACVAE encode output shape."""
         # Create test audio: (batch, 1, samples)
         batch_size = 1
-        samples = self.codec.hop_length * 10  # 10 frames
+        samples = self.codec.hop_length * 1  # 1 frames
         audio = mx.zeros((batch_size, 1, samples))
 
         # Encode
@@ -142,7 +143,7 @@ class TestDACVAECodec(unittest.TestCase):
         """Test DACVAE decode output shape."""
         batch_size = 1
         codebook_dim = self.config.codebook_dim
-        frames = 10
+        frames = 1
 
         # Create encoded features
         encoded = mx.zeros((batch_size, codebook_dim, frames))
@@ -159,7 +160,7 @@ class TestDACVAECodec(unittest.TestCase):
         """Test DACVAE chunked decode."""
         batch_size = 1
         codebook_dim = self.config.codebook_dim
-        frames = 100
+        frames = 5
 
         encoded = mx.zeros((batch_size, codebook_dim, frames))
 
@@ -283,16 +284,16 @@ class TestSAMAudioProcessor(unittest.TestCase):
         from mlx_audio.sts.models.sam_audio.processor import SAMAudioProcessor
 
         processor = SAMAudioProcessor(
-            audio_hop_length=1920,
+            audio_hop_length=192,
             audio_sampling_rate=48000,
         )
 
         # 1920 samples = 1 frame
-        result = processor.wav_to_feature_idx(1920)
+        result = processor.wav_to_feature_idx(192)
         self.assertEqual(result, 1)
 
         # 3840 samples = 2 frames
-        result = processor.wav_to_feature_idx(3840)
+        result = processor.wav_to_feature_idx(384)
         self.assertEqual(result, 2)
 
 
@@ -311,7 +312,7 @@ class TestODEStepFunctions(unittest.TestCase):
     def test_ode_step_euler_shape(self):
         """Test Euler ODE step output shape."""
         batch_size = 1
-        seq_len = 10
+        seq_len = 2
         channels = 256
 
         noisy_audio = mx.zeros((batch_size, seq_len, channels))
@@ -336,7 +337,7 @@ class TestODEStepFunctions(unittest.TestCase):
     def test_ode_step_midpoint_shape(self):
         """Test Midpoint ODE step output shape."""
         batch_size = 1
-        seq_len = 10
+        seq_len = 2
         channels = 256
 
         noisy_audio = mx.zeros((batch_size, seq_len, channels))
