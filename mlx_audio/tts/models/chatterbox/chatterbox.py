@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Generator, Optional, Union
 
+import librosa
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from scipy import signal
 
 from ..base import GenerationResult
@@ -623,7 +625,10 @@ class Model(nn.Module):
         return model
 
     def prepare_conditionals(
-        self, ref_wav: mx.array, ref_sr: int, exaggeration: float = 0.5
+        self,
+        ref_wav: Union[str, mx.array, np.ndarray],
+        ref_sr: int,
+        exaggeration: float = 0.5,
     ) -> Conditionals:
         """
         Prepare conditioning from a reference audio clip.
@@ -644,6 +649,10 @@ class Model(nn.Module):
             - T3 tokens are computed from 16kHz audio (resampled from original)
         """
         # Ensure 1D waveform
+        if isinstance(ref_wav, str):
+            ref_wav, ref_sr = librosa.load(ref_wav, sr=S3GEN_SR)
+            ref_wav = mx.array(ref_wav)
+
         if ref_wav.ndim == 2:
             ref_wav = ref_wav.squeeze(0)
 
@@ -729,7 +738,7 @@ class Model(nn.Module):
         top_p: float = 1.0,
         max_new_tokens: int = 1000,
         # Standard mlx_audio.tts.generate parameters (mapped to Chatterbox params)
-        ref_audio: Optional[mx.array] = None,
+        ref_audio: Optional[Union[str, mx.array, np.ndarray]] = None,
         voice: Optional[str] = None,
         speed: float = 1.0,
         lang_code: str = "a",
