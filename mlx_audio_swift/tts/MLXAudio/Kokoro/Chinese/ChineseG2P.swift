@@ -84,7 +84,7 @@ public final class ChineseG2P {
         let snapshotURL = try await Hub.snapshot(
             from: repoId,
             matching: ["g2p/*"],
-            progressHandler: progressHandler
+            progressHandler: progressHandler ?? { _ in }
         )
 
         let jiebaURL = snapshotURL.appending(path: "g2p/jieba.bin.gz")

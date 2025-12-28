@@ -121,7 +121,7 @@ public class KokoroTTS {
     let snapshotURL = try await Hub.snapshot(
       from: repoId,
       matching: ["*.safetensors", "g2p/*"],
-      progressHandler: progressHandler
+      progressHandler: progressHandler ?? { _ in }
     )
 
     let modelURL = snapshotURL.appending(path: "model.safetensors")
@@ -701,8 +701,8 @@ public class KokoroTTS {
 
         // Use native Chinese G2P for Chinese voices
         if KokoroTTS.isChineseVoice(voice) {
-          // Check if Chinese tokenizer is initialized
-          guard chineseTokenizer != nil && chineseTokenizer.isReady else {
+          // Initialize Chinese tokenizer if not ready
+          if chineseTokenizer == nil || !chineseTokenizer.isReady {
             // Try to initialize from URLs if provided
             if let jiebaURL = chineseJiebaURL,
                let pinyinSingleURL = chinesePinyinSingleURL {
