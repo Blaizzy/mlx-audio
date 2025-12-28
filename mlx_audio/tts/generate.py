@@ -400,6 +400,12 @@ def parse_args():
     )
     parser.add_argument("--voice", type=str, default=None, help="Voice name")
     parser.add_argument(
+        "--exaggeration",
+        type=float,
+        default=0.5,
+        help="Exaggeration factor for the voice",
+    )
+    parser.add_argument(
         "--cfg_scale",
         type=float,
         default=1.5,
