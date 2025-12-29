@@ -15,11 +15,12 @@ from mlx.utils import tree_flatten
 MODEL_REMAPPING = {
     "outetts": "outetts",
     "spark": "spark",
+    "marvis": "sesame",
     "csm": "sesame",
     "voxcpm": "voxcpm",
     "voxcpm1.5": "voxcpm",
     "vibevoice_streaming": "vibevoice",
-    # "chatterbox_turbo": "chatterbox_turbo",
+    "chatterbox_turbo": "chatterbox_turbo",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
@@ -104,7 +105,7 @@ def get_model_and_args(model_type: str, model_name: List[str]):
         ValueError: If the model type is not supported (module import fails).
     """
     # Stage 1: Check if the model type is in the remapping
-    model_type_mapped = MODEL_REMAPPING.get(model_type, model_type)
+    model_type_mapped = MODEL_REMAPPING.get(model_type, None)
 
     # Stage 2: Check for partial matches in segments of the model name
     models = get_available_models()
