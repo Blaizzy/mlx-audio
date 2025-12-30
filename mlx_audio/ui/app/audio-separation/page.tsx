@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
 import { Upload, Play, Pause, Download, RefreshCw, ChevronDown, Volume2, VolumeX } from "lucide-react"
 
@@ -9,7 +9,9 @@ interface AudioTrack {
   name: string
   url: string | null
   color: string
+  colorHex: string
   muted: boolean
+  waveform: number[]
 }
 
 export default function AudioSeparationPage() {
@@ -24,24 +26,126 @@ export default function AudioSeparationPage() {
   const [error, setError] = useState<string | null>(null)
 
   const [tracks, setTracks] = useState<AudioTrack[]>([
-    { name: "Original", url: null, color: "bg-teal-500", muted: false },
-    { name: "Target (Isolated)", url: null, color: "bg-pink-500", muted: false },
-    { name: "Residual (Background)", url: null, color: "bg-blue-500", muted: false },
+    { name: "Original", url: null, color: "bg-teal-500", colorHex: "#14b8a6", muted: false, waveform: [] },
+    { name: "Target (Isolated)", url: null, color: "bg-pink-500", colorHex: "#ec4899", muted: false, waveform: [] },
+    { name: "Residual (Background)", url: null, color: "bg-blue-500", colorHex: "#3b82f6", muted: false, waveform: [] },
   ])
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const progressAnimationRef = useRef<number | null>(null)
 
   const audioRefs = useRef<(HTMLAudioElement | null)[]>([null, null, null])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const waveformCanvasRefs = useRef<(HTMLCanvasElement | null)[]>([null, null, null])
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Generate waveform data from audio URL
+  const generateWaveform = useCallback(async (url: string, samples: number = 100): Promise<number[]> => {
+    try {
+      const response = await fetch(url)
+      const arrayBuffer = await response.arrayBuffer()
+      const audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)()
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
+
+      const channelData = audioBuffer.getChannelData(0)
+      const blockSize = Math.floor(channelData.length / samples)
+      const waveform: number[] = []
+
+      for (let i = 0; i < samples; i++) {
+        const start = i * blockSize
+        let sum = 0
+        for (let j = 0; j < blockSize; j++) {
+          sum += Math.abs(channelData[start + j] || 0)
+        }
+        waveform.push(sum / blockSize)
+      }
+
+      // Normalize
+      const max = Math.max(...waveform)
+      return waveform.map(v => v / (max || 1))
+    } catch {
+      // Return empty waveform on error
+      return Array(samples).fill(0.5)
+    }
+  }, [])
+
+  // Draw waveform on canvas
+  const drawWaveform = useCallback((
+    canvas: HTMLCanvasElement | null,
+    waveform: number[],
+    colorHex: string,
+    progress: number
+  ) => {
+    if (!canvas || waveform.length === 0) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    const dpr = window.devicePixelRatio || 1
+    const rect = canvas.getBoundingClientRect()
+
+    canvas.width = rect.width * dpr
+    canvas.height = rect.height * dpr
+    ctx.scale(dpr, dpr)
+
+    const width = rect.width
+    const height = rect.height
+    const barWidth = width / waveform.length
+    const progressX = progress * width
+
+    ctx.clearRect(0, 0, width, height)
+
+    waveform.forEach((value, index) => {
+      const x = index * barWidth
+      const barHeight = Math.max(2, value * height * 0.8)
+      const y = (height - barHeight) / 2
+
+      // Set color based on progress
+      if (x < progressX) {
+        ctx.fillStyle = colorHex
+      } else {
+        ctx.fillStyle = `${colorHex}40` // 25% opacity
+      }
+
+      ctx.beginPath()
+      ctx.roundRect(x + 1, y, barWidth - 2, barHeight, 1)
+      ctx.fill()
+    })
+  }, [])
+
+  // Update progress animation
+  const updateProgress = useCallback(() => {
+    const primaryAudio = audioRefs.current.find(audio => audio && !audio.paused)
+    if (primaryAudio) {
+      setCurrentTime(primaryAudio.currentTime)
+      setDuration(primaryAudio.duration || 0)
+    }
+    progressAnimationRef.current = requestAnimationFrame(updateProgress)
+  }, [])
+
+  // Redraw waveforms when progress changes
+  useEffect(() => {
+    const progress = duration > 0 ? currentTime / duration : 0
+    tracks.forEach((track, index) => {
+      if (track.waveform.length > 0) {
+        drawWaveform(waveformCanvasRefs.current[index], track.waveform, track.colorHex, progress)
+      }
+    })
+  }, [currentTime, duration, tracks, drawWaveform])
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const file = e.target.files[0]
       setUploadedFile(file)
       const url = URL.createObjectURL(file)
       setUploadedAudioUrl(url)
+
+      // Generate waveform for uploaded file
+      const waveform = await generateWaveform(url)
+
       setTracks(prev => [
-        { ...prev[0], url },
-        { ...prev[1], url: null },
-        { ...prev[2], url: null },
+        { ...prev[0], url, waveform },
+        { ...prev[1], url: null, waveform: [] },
+        { ...prev[2], url: null, waveform: [] },
       ])
       setError(null)
     }
@@ -57,7 +161,7 @@ export default function AudioSeparationPage() {
     setIsDragging(false)
   }
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault()
     setIsDragging(false)
 
@@ -67,10 +171,14 @@ export default function AudioSeparationPage() {
         setUploadedFile(file)
         const url = URL.createObjectURL(file)
         setUploadedAudioUrl(url)
+
+        // Generate waveform for uploaded file
+        const waveform = await generateWaveform(url)
+
         setTracks(prev => [
-          { ...prev[0], url },
-          { ...prev[1], url: null },
-          { ...prev[2], url: null },
+          { ...prev[0], url, waveform },
+          { ...prev[1], url: null, waveform: [] },
+          { ...prev[2], url: null, waveform: [] },
         ])
         setError(null)
       }
@@ -112,10 +220,16 @@ export default function AudioSeparationPage() {
       const targetUrl = URL.createObjectURL(targetBlob)
       const residualUrl = URL.createObjectURL(residualBlob)
 
+      // Generate waveforms for separated tracks
+      const [targetWaveform, residualWaveform] = await Promise.all([
+        generateWaveform(targetUrl),
+        generateWaveform(residualUrl),
+      ])
+
       setTracks(prev => [
         prev[0],
-        { ...prev[1], url: targetUrl },
-        { ...prev[2], url: residualUrl },
+        { ...prev[1], url: targetUrl, waveform: targetWaveform },
+        { ...prev[2], url: residualUrl, waveform: residualWaveform },
       ])
     } catch (err) {
       console.error("Error separating audio:", err)
@@ -135,20 +249,47 @@ export default function AudioSeparationPage() {
     return new Blob([byteArray], { type: mimeType })
   }
 
+  const formatTime = (seconds: number): string => {
+    if (isNaN(seconds) || !isFinite(seconds)) return "0:00"
+    const mins = Math.floor(seconds / 60)
+    const secs = Math.floor(seconds % 60)
+    return `${mins}:${secs.toString().padStart(2, '0')}`
+  }
+
   const handlePlayPause = () => {
     if (isPlaying) {
       audioRefs.current.forEach(audio => audio?.pause())
+      if (progressAnimationRef.current) {
+        cancelAnimationFrame(progressAnimationRef.current)
+      }
       setIsPlaying(false)
     } else {
       // Only play non-muted tracks that have audio
       audioRefs.current.forEach((audio, idx) => {
         if (audio && tracks[idx].url && !tracks[idx].muted) {
-          audio.currentTime = 0
+          audio.currentTime = currentTime
           audio.play()
         }
       })
+      progressAnimationRef.current = requestAnimationFrame(updateProgress)
       setIsPlaying(true)
     }
+  }
+
+  // Handle seeking on waveform click
+  const handleWaveformClick = (e: React.MouseEvent<HTMLCanvasElement>, index: number) => {
+    const canvas = e.currentTarget
+    const rect = canvas.getBoundingClientRect()
+    const clickX = e.clientX - rect.left
+    const progress = clickX / rect.width
+    const newTime = progress * duration
+
+    setCurrentTime(newTime)
+    audioRefs.current.forEach(audio => {
+      if (audio && audio.src) {
+        audio.currentTime = newTime
+      }
+    })
   }
 
   const toggleMute = (index: number) => {
@@ -192,32 +333,61 @@ export default function AudioSeparationPage() {
     // Reset state
     setUploadedFile(null)
     setUploadedAudioUrl(null)
+    setCurrentTime(0)
+    setDuration(0)
     setTracks([
-      { name: "Original", url: null, color: "bg-teal-500", muted: false },
-      { name: "Target (Isolated)", url: null, color: "bg-pink-500", muted: false },
-      { name: "Residual (Background)", url: null, color: "bg-blue-500", muted: false },
+      { name: "Original", url: null, color: "bg-teal-500", colorHex: "#14b8a6", muted: false, waveform: [] },
+      { name: "Target (Isolated)", url: null, color: "bg-pink-500", colorHex: "#ec4899", muted: false, waveform: [] },
+      { name: "Residual (Background)", url: null, color: "bg-blue-500", colorHex: "#3b82f6", muted: false, waveform: [] },
     ])
     setError(null)
   }
 
   // Sync audio playback
   useEffect(() => {
-    const handleEnded = () => setIsPlaying(false)
+    const handleEnded = () => {
+      setIsPlaying(false)
+      setCurrentTime(0)
+      if (progressAnimationRef.current) {
+        cancelAnimationFrame(progressAnimationRef.current)
+        progressAnimationRef.current = null
+      }
+    }
 
-    audioRefs.current.forEach(audio => {
+    const handleLoadedMetadata = (e: Event) => {
+      const audio = e.target as HTMLAudioElement
+      if (audio.duration && !isNaN(audio.duration)) {
+        setDuration(audio.duration)
+      }
+    }
+
+    const currentAudioRefs = audioRefs.current
+
+    currentAudioRefs.forEach(audio => {
       if (audio) {
         audio.addEventListener("ended", handleEnded)
+        audio.addEventListener("loadedmetadata", handleLoadedMetadata)
       }
     })
 
     return () => {
-      audioRefs.current.forEach(audio => {
+      currentAudioRefs.forEach(audio => {
         if (audio) {
           audio.removeEventListener("ended", handleEnded)
+          audio.removeEventListener("loadedmetadata", handleLoadedMetadata)
         }
       })
     }
   }, [tracks])
+
+  // Cleanup animation frame on unmount only
+  useEffect(() => {
+    return () => {
+      if (progressAnimationRef.current) {
+        cancelAnimationFrame(progressAnimationRef.current)
+      }
+    }
+  }, [])
 
   const hasResults = tracks[1].url !== null && tracks[2].url !== null
 
@@ -385,18 +555,17 @@ export default function AudioSeparationPage() {
                 </div>
               </div>
 
-              {/* Audio Visualization Area */}
-              <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-gray-900 to-black p-8">
-                <div className="w-full h-24 bg-gradient-to-r from-pink-500/20 via-purple-500/30 to-pink-500/20 rounded-lg" />
-              </div>
-
               {/* Playback Controls */}
-              <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
-                <div className="flex items-center justify-center mb-4">
+              <div className="flex-1 flex flex-col p-4 bg-white dark:bg-gray-900 overflow-auto">
+                {/* Progress Time Display */}
+                <div className="flex items-center justify-center mb-2 space-x-4">
+                  <span className="text-xs font-mono text-gray-500 dark:text-gray-400 w-12 text-right">
+                    {formatTime(currentTime)}
+                  </span>
                   <button
                     onClick={handlePlayPause}
                     disabled={!hasResults && !uploadedAudioUrl}
-                    className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-12 h-12 rounded-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                   >
                     {isPlaying ? (
                       <Pause className="h-6 w-6" />
@@ -404,6 +573,9 @@ export default function AudioSeparationPage() {
                       <Play className="h-6 w-6 ml-0.5" />
                     )}
                   </button>
+                  <span className="text-xs font-mono text-gray-500 dark:text-gray-400 w-12">
+                    {formatTime(duration)}
+                  </span>
                 </div>
 
                 {/* Track List */}
@@ -411,7 +583,7 @@ export default function AudioSeparationPage() {
                   {tracks.map((track, index) => (
                     <div
                       key={track.name}
-                      className={`flex items-center space-x-3 p-3 rounded-lg ${
+                      className={`flex items-center space-x-3 p-3 rounded-lg transition-all ${
                         track.url
                           ? "bg-gray-50 dark:bg-gray-800"
                           : "bg-gray-50/50 dark:bg-gray-800/50 opacity-50"
@@ -420,7 +592,7 @@ export default function AudioSeparationPage() {
                       <button
                         onClick={() => toggleMute(index)}
                         disabled={!track.url}
-                        className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 disabled:cursor-not-allowed"
+                        className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 disabled:cursor-not-allowed transition-colors"
                       >
                         {track.muted ? (
                           <VolumeX className="h-4 w-4 text-gray-400" />
@@ -429,21 +601,30 @@ export default function AudioSeparationPage() {
                         )}
                       </button>
 
-                      <div className={`w-1 h-8 rounded-full ${track.color}`} />
+                      <div className={`w-1 h-10 rounded-full ${track.color}`} />
 
-                      <div className="flex-1">
+                      <div className="flex-1 min-w-0">
                         <span className="text-sm font-medium">{track.name}</span>
-                        {track.url && (
-                          <div className="h-6 mt-1 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden">
-                            <div className={`h-full ${track.color} opacity-60`} style={{ width: "100%" }} />
+                        {track.url && track.waveform.length > 0 ? (
+                          <canvas
+                            ref={(el) => { waveformCanvasRefs.current[index] = el }}
+                            className="w-full h-8 mt-1 rounded cursor-pointer hover:opacity-80 transition-opacity"
+                            onClick={(e) => handleWaveformClick(e, index)}
+                            style={{ display: 'block' }}
+                          />
+                        ) : track.url ? (
+                          <div className="h-8 mt-1 bg-gray-200 dark:bg-gray-700 rounded overflow-hidden animate-pulse">
+                            <div className={`h-full ${track.color} opacity-30`} style={{ width: "100%" }} />
                           </div>
+                        ) : (
+                          <div className="h-8 mt-1 bg-gray-200/50 dark:bg-gray-700/50 rounded" />
                         )}
                       </div>
 
                       <button
                         onClick={() => handleDownload(index)}
                         disabled={!track.url}
-                        className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                       >
                         <Download className="h-4 w-4" />
                       </button>
