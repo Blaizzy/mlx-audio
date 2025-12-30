@@ -1,4 +1,6 @@
-from .models.sam_audio import (
+# Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
+
+from .sam_audio import (
     Batch,
     SAMAudio,
     SAMAudioConfig,
@@ -6,7 +8,6 @@ from .models.sam_audio import (
     SeparationResult,
     save_audio,
 )
-from .voice_pipeline import VoicePipeline
 
 __all__ = [
     "SAMAudio",
@@ -15,5 +16,4 @@ __all__ = [
     "Batch",
     "save_audio",
     "SAMAudioConfig",
-    "VoicePipeline",
 ]
