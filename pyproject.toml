@@ -25,6 +25,7 @@ dependencies = [
     "huggingface_hub>=0.27.0",
     "transformers>=4.49.0,<5.0.0",
     "hf_transfer",
+    "mlx-lm>=0.18.0,<0.30.0",  # Used in convert.py, TTS/STT models; <0.30.0 avoids transformers 5.0 conflict
 ]
 
 [project.optional-dependencies]
