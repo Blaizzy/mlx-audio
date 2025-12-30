@@ -17,6 +17,8 @@ interface AudioTrack {
 export default function AudioSeparationPage() {
   const [uploadedFile, setUploadedFile] = useState<File | null>(null)
   const [uploadedAudioUrl, setUploadedAudioUrl] = useState<string | null>(null)
+  const [model, setModel] = useState("mlx-community/sam-audio-large")
+  const [precision, setPrecision] = useState("fp16")
   const [description, setDescription] = useState("speech")
   const [method, setMethod] = useState("midpoint")
   const [steps, setSteps] = useState(16)
@@ -194,9 +196,11 @@ export default function AudioSeparationPage() {
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost'
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000'
 
+    const fullModelName = precision === "fp16" ? `${model}-fp16` : model
+
     const formData = new FormData()
     formData.append("file", uploadedFile)
-    formData.append("model", "facebook/sam-audio-large")
+    formData.append("model", fullModelName)
     formData.append("description", description)
     formData.append("method", method)
     formData.append("steps", steps.toString())
@@ -417,6 +421,39 @@ export default function AudioSeparationPage() {
                 <span>Get target and residual</span>
               </li>
             </ol>
+          </div>
+
+          {/* Model Selection */}
+          <div className="mb-6">
+            <label className="block text-sm font-medium mb-2">Model</label>
+            <div className="relative">
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="w-full appearance-none rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              >
+                <option value="mlx-community/sam-audio-large">SAM Audio Large</option>
+                <option value="mlx-community/sam-audio-small">SAM Audio Small</option>
+                <option value="mlx-community/sam-audio-base">SAM Audio Base</option>
+              </select>
+              <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-gray-400 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Precision Selection */}
+          <div className="mb-6">
+            <label className="block text-sm font-medium mb-2">Precision</label>
+            <div className="relative">
+              <select
+                value={precision}
+                onChange={(e) => setPrecision(e.target.value)}
+                className="w-full appearance-none rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2 pr-8 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+              >
+                <option value="fp16">FP16 (Faster)</option>
+                <option value="fp32">FP32 (Higher Quality)</option>
+              </select>
+              <ChevronDown className="absolute right-2 top-2.5 h-4 w-4 text-gray-400 pointer-events-none" />
+            </div>
           </div>
 
           {/* Description Input */}
