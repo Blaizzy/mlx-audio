@@ -407,6 +407,13 @@ class SAMAudio(nn.Module):
             if ode_opt is None:
                 ode_opt = DFLT_ODE_OPT
 
+            step_size = ode_opt.get("step_size")
+
+            if step_size <= 0 or step_size >= 1:
+                raise ValueError(
+                    f"Step size {step_size} must be between 0 and 1 (exclusive). For instance, use step_size (2 / 32) = 0.0625 for 16 steps. Read more in the sam_audio [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/sts/models/sam_audio/README.md)."
+                )
+
             # Encode audio
             audio_features = self._get_audio_features(audios)
             mx.eval(audio_features)

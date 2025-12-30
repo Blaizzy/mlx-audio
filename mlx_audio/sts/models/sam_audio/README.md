@@ -143,10 +143,18 @@ DFLT_ODE_OPT = {"method": "midpoint", "step_size": 2/32}  # 16 midpoint steps
 
 | Method | Steps | Speed | Quality | Use Case |
 |--------|-------|-------|---------|----------|
-| `midpoint` | 32 | 0.25x | Maximum | Studio quality, no artifacts |
-| `midpoint` | 16 | 0.5x | Best | **Official default**, quality priority |
-| `euler` | 32 | ~1x | Very Good | Long audio, balanced |
-| `euler` | 16 | ~2x | Good | Real-time, speed priority |
+| `midpoint` | 2 / 64 (32 steps) | 0.125x | Maximum | Studio quality, no artifacts |
+| `midpoint` | 2 / 32 (16 steps) | 0.25x | Best | **Official default**, quality priority |
+| `midpoint` | 2 / 16 (8 steps) | 0.5x | Good | Real-time, speed priority |
+| `midpoint` | 2 / 8 (4 steps) | 1x | Good | Real-time, speed priority |
+| `midpoint` | 2 / 4 (2 steps) | 2x | Ok | Real-time, speed priority |
+| `euler` | 2 / 64 (32 steps) | ~0.5x | Very Good | Long audio, balanced |
+| `euler` | 2 / 32 (16 steps) | ~1x | Good | Real-time, speed priority |
+| `euler` | 2 / 16 (8 steps) | ~2x | Good | Real-time, speed priority |
+| `euler` | 2 / 8 (4 steps) | ~4x | Good | Real-time, speed priority |
+| `euler` | 2 / 4 (2 steps) | ~8x | OK | Real-time, speed priority |
+
+Note: The step size must be between 0 and 1 (exclusive). For instance, use step_size (2 / 32) = 0.0625 for 16 steps.
 
 ### Configuration Examples
 
