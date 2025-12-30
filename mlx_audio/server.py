@@ -304,7 +304,7 @@ SAM_PROCESSOR = None
 @app.post("/v1/audio/separations")
 async def audio_separations(
     file: UploadFile = File(...),
-    model: str = Form("facebook/sam-audio-large"),
+    model: str = Form("mlx-community/sam-audio-large-fp16"),
     description: str = Form("speech"),
     method: str = Form("midpoint"),
     steps: int = Form(16),
@@ -313,7 +313,7 @@ async def audio_separations(
 
     Args:
         file: Audio file to process
-        model: SAM Audio model name (default: facebook/sam-audio-large)
+        model: SAM Audio model name (default: mlx-community/sam-audio-large-fp16)
         description: Text description of what to separate (e.g., "speech", "guitar", "drums")
         method: ODE solver method - "midpoint" or "euler" (default: midpoint)
         steps: Number of ODE steps - 2, 4, 8, 16, or 32 (default: 16)
@@ -776,7 +776,7 @@ def main():
     parser.add_argument(
         "--workers",
         type=int_or_float,
-        default=calculate_default_workers(),
+        default=0,
         help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
         Can be either an int or a float.
         If an int, it will be the number of workers to use.
