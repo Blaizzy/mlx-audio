@@ -6,7 +6,7 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -512,6 +512,252 @@ class SAMAudio(nn.Module):
                 noise=noise,
                 peak_memory=mx.get_peak_memory() / 1e9,
             )
+
+    def separate_streaming(
+        self,
+        audios: mx.array,
+        descriptions: List[str],
+        sizes: Optional[mx.array] = None,
+        anchor_ids: Optional[mx.array] = None,
+        anchor_alignment: Optional[mx.array] = None,
+        audio_pad_mask: Optional[mx.array] = None,
+        noise: Optional[mx.array] = None,
+        ode_opt: Dict[str, Any] = None,
+        decode_chunk_size: int = 50,
+        decode_overlap: int = 4,
+    ) -> Generator[Tuple[mx.array, mx.array, bool], None, None]:
+        """
+        Streaming separation that yields decoded chunks progressively.
+
+        This generator performs ODE integration once, then streams the decoded
+        audio in chunks, minimizing peak memory usage during decoding.
+
+        Args:
+            audios: Input audio tensor (B, 1, length)
+            descriptions: Text descriptions of target sounds
+            sizes: Sequence lengths (B,)
+            anchor_ids: Anchor token IDs for temporal prompts
+            anchor_alignment: Timestep to anchor mapping
+            audio_pad_mask: Padding mask for audio
+            noise: Initial noise (optional)
+            ode_opt: ODE solver options
+            decode_chunk_size: Frames per decode chunk (default: 50)
+            decode_overlap: Overlap frames for smooth transitions (default: 4)
+
+        Yields:
+            Tuple of (target_chunk, residual_chunk, is_last):
+                - target_chunk: Decoded target audio (B, samples, 1)
+                - residual_chunk: Decoded residual audio (B, samples, 1)
+                - is_last: True if this is the final chunk
+
+        Example:
+            ```python
+            import soundfile as sf
+
+            # Stream separation directly to files
+            with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as target_f, \
+                 sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as residual_f:
+
+                for target, residual, is_last in model.separate_streaming(
+                    audios, descriptions, decode_chunk_size=50
+                ):
+                    target_f.write(np.array(target[0, :, 0]))
+                    residual_f.write(np.array(residual[0, :, 0]))
+            ```
+        """
+        with wired_limit(self):
+            if ode_opt is None:
+                ode_opt = DFLT_ODE_OPT
+
+            step_size = ode_opt.get("step_size")
+            if step_size <= 0 or step_size >= 1:
+                raise ValueError(f"Step size {step_size} must be between 0 and 1")
+
+            # Encode audio
+            audio_features = self._get_audio_features(audios)
+            mx.eval(audio_features)
+
+            batch_size, seq_len, _ = audio_features.shape
+            if sizes is None:
+                sizes = mx.full((batch_size,), seq_len, dtype=mx.int32)
+
+            # Encode text
+            text_features, text_mask = self.text_encoder(descriptions)
+            mx.eval(text_features, text_mask)
+            mx.clear_cache()
+
+            channels = audio_features.shape[2] // 2
+
+            # Initialize noise
+            if noise is None:
+                noise = mx.random.normal(audio_features.shape, dtype=self.dtype)
+
+            # ODE integration
+            step_size = ode_opt.get("step_size", 2 / 32)
+            method = ode_opt.get("method", "midpoint")
+            num_steps = int(1.0 / step_size)
+
+            ode_step_fn = (
+                self._ode_step_euler if method == "euler" else self._ode_step_midpoint
+            )
+
+            noisy_audio = noise
+            for i in range(num_steps):
+                t = i * step_size
+                noisy_audio = ode_step_fn(
+                    t=t,
+                    dt=step_size,
+                    noisy_audio=noisy_audio,
+                    audio_features=audio_features,
+                    text_features=text_features,
+                    text_mask=text_mask,
+                    anchor_ids=anchor_ids,
+                    anchor_alignment=anchor_alignment,
+                    audio_pad_mask=audio_pad_mask,
+                )
+                mx.eval(noisy_audio)
+                if (i + 1) % 4 == 0:
+                    mx.clear_cache()
+
+            mx.clear_cache()
+
+            # Prepare features for streaming decode
+            generated_features = mx.transpose(noisy_audio, (0, 2, 1))
+            target_features = generated_features[:, :channels, :]
+            residual_features = generated_features[:, channels:, :]
+
+            # Stream decode both target and residual in parallel
+            target_gen = self.audio_codec.decode_streaming(
+                target_features,
+                chunk_size=decode_chunk_size,
+                overlap=decode_overlap,
+            )
+            residual_gen = self.audio_codec.decode_streaming(
+                residual_features,
+                chunk_size=decode_chunk_size,
+                overlap=decode_overlap,
+            )
+
+            # Yield chunks from both generators together
+            for (target_chunk, t_is_last), (residual_chunk, r_is_last) in zip(
+                target_gen, residual_gen
+            ):
+                # Ensure data is materialized before yielding
+                mx.eval(target_chunk, residual_chunk)
+                yield target_chunk, residual_chunk, t_is_last
+                mx.clear_cache()
+
+    def separate_stream(
+        self,
+        audios: mx.array,
+        descriptions: List[str],
+        target_callback: Optional[Callable[[mx.array, int, bool], None]] = None,
+        residual_callback: Optional[Callable[[mx.array, int, bool], None]] = None,
+        sizes: Optional[mx.array] = None,
+        anchor_ids: Optional[mx.array] = None,
+        anchor_alignment: Optional[mx.array] = None,
+        audio_pad_mask: Optional[mx.array] = None,
+        noise: Optional[mx.array] = None,
+        ode_opt: Dict[str, Any] = None,
+        decode_chunk_size: int = 50,
+        decode_overlap: int = 4,
+    ) -> Union[SeparationResult, int]:
+        """
+        Stream separation with optional callbacks - returns accumulated result if no callback.
+
+        This method separates audio using streaming decode. If callbacks are provided,
+        it calls them for each chunk (ideal for writing to disk). If no callbacks are
+        provided, it accumulates chunks and returns a SeparationResult.
+
+        Args:
+            audios: Input audio tensor (B, 1, length)
+            descriptions: Text descriptions of target sounds
+            target_callback: Optional callback for target audio chunks:
+                            callback(chunk, chunk_index, is_last) -> None
+                            If None, chunks are accumulated and returned.
+            residual_callback: Optional callback for residual chunks (same signature)
+            sizes: Sequence lengths (B,)
+            anchor_ids: Anchor token IDs
+            anchor_alignment: Timestep to anchor mapping
+            audio_pad_mask: Padding mask
+            noise: Initial noise (optional)
+            ode_opt: ODE solver options
+            decode_chunk_size: Frames per chunk (default: 50)
+            decode_overlap: Overlap frames (default: 4)
+
+        Returns:
+            If callbacks provided: Total number of samples processed (int)
+            If no callbacks: SeparationResult with accumulated target/residual
+
+        Example:
+            ```python
+            # With callback - stream to disk
+            import soundfile as sf
+            import numpy as np
+
+            with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as f:
+                def write_target(chunk, idx, is_last):
+                    f.write(np.array(chunk[0, :, 0]))
+
+                samples = model.separate_stream(
+                    audios, descriptions,
+                    target_callback=write_target,
+                    decode_chunk_size=50
+                )
+
+            # Without callback - accumulate and return
+            result = model.separate_stream(
+                audios, descriptions,
+                decode_chunk_size=50
+            )
+            save_audio(result.target[0], "target.wav", model.sample_rate)
+            ```
+        """
+        total_samples = 0
+        chunk_idx = 0
+
+        # If no callbacks, accumulate chunks
+        accumulate = target_callback is None
+        target_chunks = [] if accumulate else None
+        residual_chunks = [] if accumulate else None
+
+        for target_chunk, residual_chunk, is_last in self.separate_streaming(
+            audios=audios,
+            descriptions=descriptions,
+            sizes=sizes,
+            anchor_ids=anchor_ids,
+            anchor_alignment=anchor_alignment,
+            audio_pad_mask=audio_pad_mask,
+            noise=noise,
+            ode_opt=ode_opt,
+            decode_chunk_size=decode_chunk_size,
+            decode_overlap=decode_overlap,
+        ):
+            if accumulate:
+                target_chunks.append(target_chunk)
+                residual_chunks.append(residual_chunk)
+            else:
+                target_callback(target_chunk, chunk_idx, is_last)
+                if residual_callback is not None:
+                    residual_callback(residual_chunk, chunk_idx, is_last)
+
+            total_samples += target_chunk.shape[1]
+            chunk_idx += 1
+
+        if accumulate:
+            # Concatenate all chunks
+            target_wav = mx.concatenate(target_chunks, axis=1)
+            residual_wav = mx.concatenate(residual_chunks, axis=1)
+            mx.eval(target_wav, residual_wav)
+
+            return SeparationResult(
+                target=[target_wav[0]],  # Unbatch (currently only batch=1 supported)
+                residual=[residual_wav[0]],
+                noise=None,
+                peak_memory=mx.get_peak_memory() / 1e9,
+            )
+
+        return total_samples
 
     def separate_long(
         self,
