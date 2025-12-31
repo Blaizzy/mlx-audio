@@ -688,17 +688,12 @@ class SAMAudio(nn.Module):
         )
 
     @classmethod
-    def from_pretrained(
-        cls,
-        model_name_or_path: str,
-        dtype: mx.Dtype = mx.float32,
-    ) -> "SAMAudio":
+    def from_pretrained(cls, model_name_or_path: str) -> "SAMAudio":
         """
         Load a pretrained SAM-Audio model.
 
         Args:
             model_name_or_path: HuggingFace model ID or local path
-            dtype: Data type for model weights
 
         Returns:
             Loaded SAMAudio model
@@ -772,18 +767,6 @@ class SAMAudio(nn.Module):
         else:
             warnings.warn(
                 f"Weights not found at {model_path}. " "Model will have random weights."
-            )
-
-        # Cast to specified dtype if needed
-        if dtype != mx.float32:
-
-            def cast_to_dtype(x):
-                if isinstance(x, mx.array) and x.dtype == mx.float32:
-                    return x.astype(dtype)
-                return x
-
-            model.apply_to_modules(
-                lambda k, m: m.update(tree_map(cast_to_dtype, m.parameters()))
             )
 
         return model
