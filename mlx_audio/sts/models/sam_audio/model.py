@@ -3,7 +3,6 @@
 import contextlib
 import json
 import math
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
@@ -11,12 +10,13 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-from mlx.utils import tree_map, tree_reduce
+from mlx.utils import tree_reduce
 from tqdm import tqdm
 
 from .align import EmbedAnchors
 from .codec import DACVAE
 from .config import SAMAudioConfig
+from .processor import Batch, SAMAudioProcessor
 from .text_encoder import T5TextEncoder
 from .transformer import DiT
 
@@ -53,6 +53,10 @@ def wired_limit(model: nn.Module):
     finally:
         mx.synchronize()
         mx.set_wired_limit(old_limit)
+
+
+def _fallback(value, default):
+    return default if value is None else value
 
 
 # Default ODE solver options
@@ -153,6 +157,45 @@ class SAMAudio(nn.Module):
     def sample_rate(self) -> int:
         """Audio sample rate."""
         return self.audio_codec.sample_rate
+
+    def _prepare_inputs(
+        self,
+        audios: Union[mx.array, List[str]],
+        descriptions: List[str] = None,
+        anchors: Optional[List[List[Tuple[str, float, float]]]] = None,
+    ) -> Tuple[mx.array, Optional[mx.array], Optional[mx.array], Optional[mx.array]]:
+        """
+        Prepare audio and anchor inputs, handling both mx.array and file paths.
+
+        Args:
+            audios: Either an mx.array (B, 1, T) or list of audio file paths
+            descriptions: Text descriptions (needed for batch size)
+            anchors: Optional temporal anchors [[("+", start, end), ...], ...]
+
+        Returns:
+            Tuple of (audio_tensor, sizes, anchor_ids, anchor_alignment)
+        """
+        if isinstance(audios, mx.array):
+            return Batch(audios=audios, descriptions=descriptions)
+
+        if isinstance(audios, list) and len(audios) > 0 and isinstance(audios[0], str):
+            batch = self.processor(
+                descriptions=descriptions,
+                audios=audios,
+                anchors=anchors,
+            )
+            return batch
+
+        raise TypeError(f"audios must be mx.array or List[str], got {type(audios)}")
+
+    def post_load_hook(self, model_path: Path) -> "SAMAudio":
+        """
+        Post-load hook called by load_model to initialize tokenizer and conditionals.
+        """
+        # Initialize processor for anchor handling
+        if not hasattr(self, "processor"):
+            self.processor = SAMAudioProcessor.from_pretrained(model_path)
+        return self
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
@@ -388,9 +431,10 @@ class SAMAudio(nn.Module):
 
     def separate(
         self,
-        audios: mx.array,
+        audios: Union[mx.array, List[str]],
         descriptions: List[str],
         sizes: Optional[mx.array] = None,
+        anchors: Optional[List[List[Tuple[str, float, float]]]] = None,
         anchor_ids: Optional[mx.array] = None,
         anchor_alignment: Optional[mx.array] = None,
         audio_pad_mask: Optional[mx.array] = None,
@@ -406,11 +450,12 @@ class SAMAudio(nn.Module):
         Separate audio sources using text prompts.
 
         Args:
-            audios: Input audio tensor (B, 1, length)
+            audios: Input audio tensor (B, 1, length) or list of audio file paths
             descriptions: Text descriptions of target sounds
             sizes: Sequence lengths (B,) - if None, computed from audio_features
-            anchor_ids: Anchor token IDs for temporal prompts
-            anchor_alignment: Timestep to anchor mapping
+            anchors: Temporal anchors [[("+", start, end), ...], ...] - only used with file paths
+            anchor_ids: Anchor token IDs for temporal prompts (use with mx.array input)
+            anchor_alignment: Timestep to anchor mapping (use with mx.array input)
             audio_pad_mask: Padding mask for audio
             noise: Initial noise (optional)
             ode_opt: ODE solver options
@@ -421,6 +466,18 @@ class SAMAudio(nn.Module):
         Returns:
             SeparationResult with target and residual audio
         """
+        # Prepare inputs (handle file paths and anchors)
+        batch = self._prepare_inputs(
+            audios=audios,
+            descriptions=descriptions,
+            anchors=anchors,
+        )
+        audios = _fallback(batch.audios, audios)
+        descriptions = _fallback(batch.descriptions, descriptions)
+        sizes = _fallback(batch.sizes, sizes)
+        anchor_ids = _fallback(batch.anchor_ids, anchor_ids)
+        anchor_alignment = _fallback(batch.anchor_alignment, anchor_alignment)
+
         with wired_limit(self):
             if ode_opt is None:
                 ode_opt = DFLT_ODE_OPT
@@ -436,7 +493,6 @@ class SAMAudio(nn.Module):
             audio_features = self._get_audio_features(audios)
             mx.eval(audio_features)
 
-            # Compute sizes from audio_features if not provided
             batch_size, seq_len, _ = audio_features.shape
             if sizes is None:
                 sizes = mx.full((batch_size,), seq_len, dtype=mx.int32)
@@ -449,12 +505,10 @@ class SAMAudio(nn.Module):
                 text_features, text_mask = self.text_encoder(descriptions)
                 mx.eval(text_features, text_mask)
 
-            # Clear cache after encoding
             mx.clear_cache()
 
             channels = audio_features.shape[2] // 2  # Stacked features
 
-            # Initialize noise
             if noise is None:
                 noise = mx.random.normal(audio_features.shape, dtype=self.dtype)
 
@@ -484,14 +538,11 @@ class SAMAudio(nn.Module):
                 )
                 mx.eval(noisy_audio)
 
-                # Clear cache every 4 steps to prevent memory buildup
                 if (i + 1) % 4 == 0:
                     mx.clear_cache()
 
-            # Clear cache after ODE integration
             mx.clear_cache()
 
-            # Decode generated features
             generated_features = mx.transpose(noisy_audio, (0, 2, 1))
 
             # Split into target and residual
@@ -499,7 +550,7 @@ class SAMAudio(nn.Module):
             target_features = generated_features[:, :channels, :]
             residual_features = generated_features[:, channels:, :]
 
-            # Decode to waveforms (decode one at a time to save memory)
+            # Decode to waveforms
             target_wavs = self.audio_codec.decode(
                 target_features, chunk_size=ode_decode_chunk_size
             )
@@ -533,7 +584,7 @@ class SAMAudio(nn.Module):
 
     def separate_long(
         self,
-        audios: mx.array,
+        audios: Union[mx.array, List[str]],
         descriptions: List[str],
         chunk_seconds: float = 10.0,
         overlap_seconds: float = 3.0,
@@ -548,7 +599,8 @@ class SAMAudio(nn.Module):
         Separate long audio files using chunked processing to reduce memory usage.
 
         Args:
-            audios: Input audio tensor (B, 1, length) - currently only B=1 supported
+            audios: Input audio tensor (B, 1, length) or list of audio file paths
+                    (currently only B=1 supported)
             descriptions: Text descriptions of target sounds
             chunk_seconds: Length of each chunk in seconds (default 10s, good balance)
             overlap_seconds: Overlap between chunks for smooth crossfade (default 3s, ~30%)
@@ -562,6 +614,13 @@ class SAMAudio(nn.Module):
         Returns:
             SeparationResult with target and residual audio
         """
+        # Prepare inputs (handle file paths)
+        batch = self._prepare_inputs(
+            audios=audios, descriptions=descriptions, anchors=None
+        )
+        audios = _fallback(batch.audios, audios)
+        descriptions = _fallback(batch.descriptions, descriptions)
+
         if audios.shape[0] != 1:
             raise ValueError("separate_long currently only supports batch_size=1")
 
@@ -707,7 +766,7 @@ class SAMAudio(nn.Module):
 
     def separate_streaming(
         self,
-        audios: mx.array,
+        audios: Union[mx.array, List[str]],
         descriptions: List[str],
         target_callback: Optional[Callable[[mx.array, int, bool], None]] = None,
         residual_callback: Optional[Callable[[mx.array, int, bool], None]] = None,
@@ -727,11 +786,12 @@ class SAMAudio(nn.Module):
         for the entire audio to be processed.
 
         Can be used in two modes:
-        1. Generator mode (no callbacks): yields StreamingChunk objects
+        1. Generator mode (no callbacks): yields SeparationResult objects
         2. Callback mode: calls callbacks for each chunk, returns total samples
 
         Args:
-            audios: Input audio tensor (B, 1, length) - currently only B=1 supported
+            audios: Input audio tensor (B, 1, length) or list of audio file paths
+                    (currently only B=1 supported)
             descriptions: Text descriptions of target sounds
             target_callback: Optional callback for target audio chunks:
                             callback(audio_chunk, chunk_index, is_last) -> None
@@ -789,6 +849,13 @@ class SAMAudio(nn.Module):
             )
             ```
         """
+        # Prepare inputs (handle file paths)
+        batch = self._prepare_inputs(
+            audios=audios, descriptions=descriptions, anchors=None
+        )
+        audios = _fallback(batch.audios, audios)
+        descriptions = _fallback(batch.descriptions, descriptions)
+
         if audios.shape[0] != 1:
             raise ValueError("separate_streaming currently only supports batch_size=1")
 
@@ -1055,6 +1122,9 @@ class SAMAudio(nn.Module):
 
         # Create model
         model = cls(config)
+
+        # Initialize processor
+        model = model.post_load_hook(model_path)
 
         # Load weights
         weights_path = glob.glob(str(model_path / "*.safetensors"))
