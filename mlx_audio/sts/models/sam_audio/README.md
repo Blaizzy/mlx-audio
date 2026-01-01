@@ -12,37 +12,42 @@ pip install mlx-audio
 ## Quick Start
 
 ```python
-from mlx_audio.sts import SAMAudio, SAMAudioProcessor, save_audio
-import mlx.core as mx
+from mlx_audio.sts import SAMAudio, save_audio
 
-# Load model and processor
-processor = SAMAudioProcessor.from_pretrained("facebook/sam-audio-large")
+# Load model
 model = SAMAudio.from_pretrained("facebook/sam-audio-large")
 
-# Process inputs
-batch = processor(
-    descriptions=["speech"],
-    audios=["path/to/audio.mp3"],
-    # anchors=[[("+", 0.2, 0.5)]],  # Optional: temporal
-)
-
-# Separate audio
+# Separate audio - pass file paths directly!
 result = model.separate(
-    audios=batch.audios,
-    descriptions=batch.descriptions,
-    sizes=batch.sizes,
-    anchor_ids=batch.anchor_ids,
-    anchor_alignment=batch.anchor_alignment,
-    ode_decode_chunk_size=50,  # Chunked decoding for memory efficiency
+    audios=["path/to/audio.mp3"],  # File paths or mx.array
+    descriptions=["speech"],
 )
 
 # Save output
 save_audio(result.target[0], "separated.wav", sample_rate=model.sample_rate)
-
-# Check memory usage
-print(f"Peak memory: {mx.get_peak_memory() / 1e9:.2f} GB")
-print(f"Active memory: {mx.get_active_memory() / 1e9:.2f} GB")
+print(f"Peak memory: {result.peak_memory:.2f} GB")
 ```
+
+### With Temporal Anchors
+
+Anchors tell the model which time spans contain the target sound:
+
+```python
+from mlx_audio.sts import SAMAudio, save_audio
+
+model = SAMAudio.from_pretrained("facebook/sam-audio-large")
+
+# Use anchors directly with file paths
+result = model.separate(
+    audios=["path/to/audio.mp3"],
+    descriptions=["speech"],
+    anchors=[[("+", 1.5, 3.0)]],  # Target speech from 1.5s to 3.0s
+)
+
+save_audio(result.target[0], "separated.wav", sample_rate=model.sample_rate)
+```
+
+**Note:** Anchors are only supported with `separate()`, not with chunked methods (`separate_long()`, `separate_streaming()`).
 
 ## Methods
 
@@ -52,11 +57,9 @@ Best for short audio files (< 30 seconds) or when you have enough memory.
 
 ```python
 result = model.separate(
-    audios=batch.audios,              # (B, 1, T) audio tensor
-    descriptions=batch.descriptions,  # List of text prompts
-    sizes=batch.sizes,                # Optional: sequence lengths
-    anchor_ids=batch.anchor_ids,      # Optional: anchor token IDs
-    anchor_alignment=batch.anchor_alignment,  # Optional: timestep to anchor mapping
+    audios=["audio.mp3"],             # File paths or (B, 1, T) tensor
+    descriptions=["speech"],          # List of text prompts
+    anchors=[[("+", 1.0, 5.0)]],      # Optional: temporal anchors (with file paths)
     ode_opt=None,                     # ODE solver options (see below)
     ode_decode_chunk_size=50,         # Chunked decoding (reduces memory)
 )
@@ -66,16 +69,15 @@ result = model.separate(
 
 Best for long audio files or limited memory. Processes audio in chunks with crossfade blending.
 
+**Note:** Temporal anchors are not supported with chunked processing.
+
 ```python
 result = model.separate_long(
-    audios=batch.audios,
-    descriptions=batch.descriptions,
+    audios=["long_audio.mp3"],    # File paths or (B, 1, T) tensor
+    descriptions=["speech"],
     chunk_seconds=10.0,           # Chunk size (default: 10s)
     overlap_seconds=3.0,          # Overlap for crossfade (default: 3s)
-    anchor_ids=batch.anchor_ids,  # Optional: anchor token IDs
-    anchor_alignment=batch.anchor_alignment,  # Optional: timestep to anchor mapping
     ode_opt=None,                 # ODE solver options
-    ode_decode_chunk_size=50,     # Chunked decoding (reduces memory)
     seed=42,                      # Random seed for reproducibility
     verbose=True,                 # Print progress
 )
@@ -306,8 +308,8 @@ with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
      sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
 
     for result in model.separate_streaming(
-        audios=batch.audios,
-        descriptions=batch.descriptions,
+        audios=["audio.mp3"],         # File paths or mx.array
+        descriptions=["speech"],
         chunk_seconds=10.0,
         overlap_seconds=3.0,
         verbose=True,
@@ -342,8 +344,8 @@ with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
         r_f.flush()
 
     samples = model.separate_streaming(
-        audios=batch.audios,
-        descriptions=batch.descriptions,
+        audios=["audio.mp3"],         # File paths or mx.array
+        descriptions=["speech"],
         target_callback=write_target,
         residual_callback=write_residual,
         chunk_seconds=10.0,
