@@ -296,6 +296,8 @@ For real-time streaming output, use `separate_streaming()` which processes audio
 
 ### Generator Mode (Recommended)
 
+Returns `SeparationResult` objects with streaming-specific fields:
+
 ```python
 import soundfile as sf
 import numpy as np
@@ -303,18 +305,23 @@ import numpy as np
 with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
      sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
 
-    for target, residual, idx, is_last in model.separate_streaming(
+    for result in model.separate_streaming(
         audios=batch.audios,
         descriptions=batch.descriptions,
         chunk_seconds=10.0,
         overlap_seconds=3.0,
         verbose=True,
     ):
-        t_f.write(np.array(target[:, 0]))
-        r_f.write(np.array(residual[:, 0]))
+        t_f.write(np.array(result.target[:, 0]))
+        r_f.write(np.array(result.residual[:, 0]))
         t_f.flush()
         r_f.flush()
-        print(f"Chunk {idx} written, is_last={is_last}")
+        print(f"Chunk {result.chunk_idx} written, is_last={result.is_last}")
+
+        # On last chunk, access metadata
+        if result.is_last:
+            print(f"Peak memory: {result.peak_memory:.2f} GB")
+            print(f"Noise shape: {result.noise.shape}")
 ```
 
 ### Callback Mode
@@ -353,6 +360,19 @@ with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
 | `overlap_seconds` | 3.0 | Overlap between chunks for smooth crossfade |
 | `seed` | 42 | Random seed for reproducibility |
 | `verbose` | False | Print progress during processing |
+
+### SeparationResult Fields (Streaming Mode)
+
+In streaming mode, `SeparationResult` includes these fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target` | `mx.array` | Target audio chunk (samples, 1) |
+| `residual` | `mx.array` | Residual audio chunk (samples, 1) |
+| `chunk_idx` | `int` | Index of this chunk |
+| `is_last` | `bool` | True if this is the final chunk |
+| `peak_memory` | `float` | Peak memory in GB (only on last chunk) |
+| `noise` | `mx.array` | Accumulated noise for reproducibility (only on last chunk) |
 
 ### Performance Comparison
 

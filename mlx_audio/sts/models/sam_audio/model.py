@@ -84,12 +84,30 @@ class SinusoidalEmbedding(nn.Module):
 
 @dataclass
 class SeparationResult:
-    """Result of audio separation."""
+    """Result of audio separation (supports both batch and streaming modes).
 
-    target: List[mx.array]  # Separated target audio(s)
-    residual: List[mx.array]  # Residual/background audio(s)
-    noise: mx.array  # Initial noise used for generation
-    peak_memory: float  # Peak memory usage in GB
+    In batch mode (separate/separate_long):
+        - target/residual: List[mx.array] with all separated audio
+        - noise: mx.array with initial noise
+        - peak_memory: float with peak memory usage
+        - chunk_idx/is_last: None
+
+    In streaming mode (separate_streaming generator):
+        - target/residual: mx.array with the current chunk
+        - noise: mx.array on last chunk only, None otherwise
+        - peak_memory: float on last chunk only, None otherwise
+        - chunk_idx: int index of this chunk
+        - is_last: bool True if this is the final chunk
+    """
+
+    target: Union[List[mx.array], mx.array]  # Separated target audio(s) or chunk
+    residual: Union[List[mx.array], mx.array]  # Residual/background audio(s) or chunk
+    noise: Optional[mx.array] = None  # Initial noise used for generation
+    peak_memory: Optional[float] = None  # Peak memory usage in GB
+
+    # Streaming-specific fields (None for batch mode)
+    chunk_idx: Optional[int] = None  # Index of this chunk
+    is_last: Optional[bool] = None  # True if this is the final chunk
 
 
 class SAMAudio(nn.Module):
@@ -700,7 +718,7 @@ class SAMAudio(nn.Module):
         ode_opt: Dict[str, Any] = None,
         seed: int = 42,
         verbose: bool = False,
-    ) -> Union[Generator[Tuple[mx.array, mx.array, int, bool], None, None], int]:
+    ) -> Union[Generator[SeparationResult, None, None], int]:
         """
         Stream audio separation - get audio ASAP.
 
@@ -709,7 +727,7 @@ class SAMAudio(nn.Module):
         for the entire audio to be processed.
 
         Can be used in two modes:
-        1. Generator mode (no callbacks): yields (target, residual, idx, is_last) tuples
+        1. Generator mode (no callbacks): yields StreamingChunk objects
         2. Callback mode: calls callbacks for each chunk, returns total samples
 
         Args:
@@ -727,7 +745,13 @@ class SAMAudio(nn.Module):
             verbose: Print progress information
 
         Returns:
-            Generator mode: Generator yielding (target, residual, chunk_idx, is_last)
+            Generator mode: Generator yielding StreamingChunk objects
+                - chunk.target: target audio (samples, 1)
+                - chunk.residual: residual audio (samples, 1)
+                - chunk.chunk_idx: chunk index
+                - chunk.is_last: True if final chunk
+                - chunk.peak_memory: peak memory in GB (only on last chunk)
+                - chunk.noise: accumulated noise for reproducibility (only on last chunk)
             Callback mode: Total number of samples processed (int)
 
         Example (Generator mode):
@@ -738,16 +762,18 @@ class SAMAudio(nn.Module):
             with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \\
                  sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
 
-                for target, residual, idx, is_last in model.separate_streaming(
+                for chunk in model.separate_streaming(
                     audios, descriptions,
                     chunk_seconds=10.0,
                     verbose=True,
                 ):
-                    t_f.write(np.array(target[:, 0]))
-                    r_f.write(np.array(residual[:, 0]))
+                    t_f.write(np.array(chunk.target[:, 0]))
+                    r_f.write(np.array(chunk.residual[:, 0]))
                     t_f.flush()
                     r_f.flush()
-                    print(f"Chunk {idx} written")
+
+                    if chunk.is_last:
+                        print(f"Peak memory: {chunk.peak_memory:.2f} GB")
             ```
 
         Example (Callback mode):
@@ -785,12 +811,12 @@ class SAMAudio(nn.Module):
 
         # Callback mode: iterate and call callbacks
         total_written = 0
-        for target, residual, chunk_idx, is_last in gen:
-            target_callback(target, chunk_idx, is_last)
-            total_written += target.shape[0]
+        for chunk in gen:
+            target_callback(chunk.target, chunk.chunk_idx, chunk.is_last)
+            total_written += chunk.target.shape[0]
 
             if residual_callback is not None:
-                residual_callback(residual, chunk_idx, is_last)
+                residual_callback(chunk.residual, chunk.chunk_idx, chunk.is_last)
 
         return total_written
 
@@ -805,7 +831,7 @@ class SAMAudio(nn.Module):
         ode_opt: Dict[str, Any],
         seed: int,
         verbose: bool,
-    ) -> Generator[Tuple[mx.array, mx.array, int, bool], None, None]:
+    ) -> Generator[SeparationResult, None, None]:
         """Internal generator for streaming separation."""
         sr = self.sample_rate
         chunk_samples = int(chunk_seconds * sr)
@@ -831,6 +857,9 @@ class SAMAudio(nn.Module):
         prev_target_tail = None
         prev_residual_tail = None
         chunk_idx = 0
+
+        # Track noise from each audio chunk for reproducibility
+        noise_chunks = []
 
         for i in tqdm(range(num_chunks), desc="Processing chunks", disable=not verbose):
             start = i * hop_samples
@@ -859,6 +888,10 @@ class SAMAudio(nn.Module):
             residual_chunk = result.residual[0]
             mx.eval(target_chunk, residual_chunk)
 
+            # Track noise for reproducibility
+            if result.noise is not None:
+                noise_chunks.append(result.noise)
+
             # Handle crossfade with previous chunk
             if i > 0 and overlap_samples > 0 and prev_target_tail is not None:
                 # Create smooth crossfade weights
@@ -879,24 +912,46 @@ class SAMAudio(nn.Module):
                 mx.eval(blended_target, blended_residual)
 
                 # Yield blended region
-                yield blended_target, blended_residual, chunk_idx, False
+                yield SeparationResult(
+                    target=blended_target,
+                    residual=blended_residual,
+                    chunk_idx=chunk_idx,
+                    is_last=False,
+                )
                 chunk_idx += 1
 
                 # Yield middle part (after overlap, before tail)
                 if is_last_audio_chunk:
-                    # Last chunk: yield everything after overlap
+                    # Last chunk: yield everything after overlap with stats
                     middle_target = target_chunk[overlap_samples:]
                     middle_residual = residual_chunk[overlap_samples:]
                     mx.eval(middle_target, middle_residual)
 
-                    yield middle_target, middle_residual, chunk_idx, True
+                    # Concatenate noise for reproducibility
+                    full_noise = (
+                        mx.concatenate(noise_chunks, axis=1) if noise_chunks else None
+                    )
+
+                    yield SeparationResult(
+                        target=middle_target,
+                        residual=middle_residual,
+                        chunk_idx=chunk_idx,
+                        is_last=True,
+                        peak_memory=mx.get_peak_memory() / 1e9,
+                        noise=full_noise,
+                    )
                 else:
                     # Not last: yield middle, save tail for next crossfade
                     middle_target = target_chunk[overlap_samples:-overlap_samples]
                     middle_residual = residual_chunk[overlap_samples:-overlap_samples]
                     mx.eval(middle_target, middle_residual)
 
-                    yield middle_target, middle_residual, chunk_idx, False
+                    yield SeparationResult(
+                        target=middle_target,
+                        residual=middle_residual,
+                        chunk_idx=chunk_idx,
+                        is_last=False,
+                    )
                     chunk_idx += 1
 
                     # Save tail for next crossfade
@@ -906,15 +961,40 @@ class SAMAudio(nn.Module):
             else:
                 # First chunk or no overlap
                 if is_last_audio_chunk or overlap_samples == 0:
-                    # Yield entire chunk
-                    yield target_chunk, residual_chunk, chunk_idx, is_last_audio_chunk
+                    # Yield entire chunk (possibly with stats if last)
+                    if is_last_audio_chunk:
+                        full_noise = (
+                            mx.concatenate(noise_chunks, axis=1)
+                            if noise_chunks
+                            else None
+                        )
+                        yield SeparationResult(
+                            target=target_chunk,
+                            residual=residual_chunk,
+                            chunk_idx=chunk_idx,
+                            is_last=True,
+                            peak_memory=mx.get_peak_memory() / 1e9,
+                            noise=full_noise,
+                        )
+                    else:
+                        yield SeparationResult(
+                            target=target_chunk,
+                            residual=residual_chunk,
+                            chunk_idx=chunk_idx,
+                            is_last=False,
+                        )
                 else:
                     # First chunk with overlap: yield all but tail
                     write_target = target_chunk[:-overlap_samples]
                     write_residual = residual_chunk[:-overlap_samples]
                     mx.eval(write_target, write_residual)
 
-                    yield write_target, write_residual, chunk_idx, False
+                    yield SeparationResult(
+                        target=write_target,
+                        residual=write_residual,
+                        chunk_idx=chunk_idx,
+                        is_last=False,
+                    )
                     chunk_idx += 1
 
                     # Save tail for crossfade
