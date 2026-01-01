@@ -1,3 +1,8 @@
+from .models.mossformer2_se import (
+    MossFormer2SE,
+    MossFormer2SEConfig,
+    MossFormer2SEModel,
+)
 from .models.sam_audio import (
     Batch,
     SAMAudio,
@@ -5,11 +10,6 @@ from .models.sam_audio import (
     SAMAudioProcessor,
     SeparationResult,
     save_audio,
-)
-from .models.mossformer2_se import (
-    MossFormer2SE,
-    MossFormer2SEConfig,
-    MossFormer2SEProcessor,
 )
 from .voice_pipeline import VoicePipeline
 
@@ -24,6 +24,5 @@ __all__ = [
     # MossFormer2 SE
     "MossFormer2SE",
     "MossFormer2SEConfig",
-    "MossFormer2SEProcessor",
+    "MossFormer2SEModel",
 ]
-

@@ -1,8 +1,3 @@
-# Original: ClearerVoice-Studio (github.com/modelscope/ClearerVoice-Studio)
-# Copyright (c) Speech Lab, Alibaba Group
-# Licensed under Apache License 2.0
-# MLX port by Dmitry Starkov
-
 """
 Processor for MossFormer2 SE speech enhancement.
 
@@ -32,14 +27,14 @@ MAX_WAV_VALUE = 32768.0
 DEFAULT_REPO = "starkdmi/MossFormer2_SE_48K_MLX"
 
 
-class MossFormer2SEProcessor:
-    """Processor for MossFormer2 SE speech enhancement.
+class MossFormer2SEModel:
+    """MossFormer2 SE speech enhancement model.
 
     Handles model loading, audio processing, and enhancement.
 
     Example:
-        >>> processor = MossFormer2SEProcessor.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
-        >>> enhanced = processor.enhance("noisy.wav")
+        >>> model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
+        >>> enhanced = model.enhance("noisy.wav")
         >>> save_audio(enhanced, "clean.wav")
     """
 
@@ -48,7 +43,7 @@ class MossFormer2SEProcessor:
         model,
         config: MossFormer2SEConfig,
     ):
-        """Initialize processor.
+        """Initialize model.
 
         Args:
             model: Loaded MossFormer2 model (TestNet)
@@ -64,17 +59,28 @@ class MossFormer2SEProcessor:
     def from_pretrained(
         cls,
         model_name_or_path: str = DEFAULT_REPO,
-        precision: str = "fp32",
-    ) -> "MossFormer2SEProcessor":
-        """Load processor from pretrained model.
+    ) -> "MossFormer2SEModel":
+        """Load model from pretrained weights.
 
         Args:
-            model_name_or_path: HuggingFace model ID or local path
-            precision: One of "fp32", "fp16", "int8", "int6", "int4"
+            model_name_or_path: HuggingFace model ID or local path.
+                Precision is inferred from suffix (e.g., '-4bit' for int4).
 
         Returns:
-            Configured processor
+            Configured model
         """
+        # Infer precision from repo name suffix (e.g., "-4bit" -> "int4")
+        repo_name = model_name_or_path.split("/")[-1]
+        precision = "fp32"  # default
+        if "-" in repo_name:
+            suffix = repo_name.split("-")[-1].lower()
+            if suffix in ("fp16", "fp32"):
+                precision = suffix
+            elif suffix.endswith("bit"):
+                bits = suffix.replace("bit", "")
+                if bits.isdigit():
+                    precision = f"int{bits}"
+
         print(f"Loading MossFormer2 SE 48K ({precision})...")
 
         # Enable fast LayerNorm

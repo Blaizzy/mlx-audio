@@ -235,13 +235,13 @@ MossFormer2 SE removes noise and enhances speech quality. Unlike SAM-Audio, it d
 #### Example Usage
 
 ```python
-from mlx_audio.sts import MossFormer2SEProcessor, save_audio
+from mlx_audio.sts import MossFormer2SEModel, save_audio
 
 # Load model
-processor = MossFormer2SEProcessor.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX", precision="fp16")
+model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
 
 # Enhance audio
-enhanced = processor.enhance("noisy_speech.wav")
+enhanced = model.enhance("noisy_speech.wav")
 
 # Save result
 save_audio(enhanced, "enhanced.wav", 48000)

@@ -18,7 +18,7 @@ class TestMossFormer2SEConfig(unittest.TestCase):
         self.assertEqual(config.win_inc, 384)
         self.assertEqual(config.fft_len, 1920)
         self.assertEqual(config.num_mels, 60)
-        self.assertEqual(config.win_type, 'hamming')
+        self.assertEqual(config.win_type, "hamming")
         self.assertEqual(config.preemphasis, 0.97)
         self.assertEqual(config.in_channels, 180)
         self.assertEqual(config.out_channels, 512)
@@ -45,7 +45,7 @@ class TestMossFormer2SEConfig(unittest.TestCase):
 
         config = MossFormer2SEConfig()
         config_dict = config.to_dict()
-        
+
         self.assertIn("sample_rate", config_dict)
         self.assertIn("win_len", config_dict)
         self.assertIn("num_mels", config_dict)
@@ -66,9 +66,9 @@ class TestSTFT(unittest.TestCase):
         """Test hamming window creation."""
         from mlx_audio.sts.models.mossformer2_se.stft import create_window
 
-        window = create_window('hamming', 1920, periodic=False)
+        window = create_window("hamming", 1920, periodic=False)
         mx.eval(window)
-        
+
         self.assertEqual(window.shape[0], 1920)
         # Hamming window should have non-zero edges
         self.assertGreater(float(window[0]), 0)
@@ -77,16 +77,16 @@ class TestSTFT(unittest.TestCase):
         """Test hann window creation."""
         from mlx_audio.sts.models.mossformer2_se.stft import create_window
 
-        window = create_window('hann', 1920, periodic=False)
+        window = create_window("hann", 1920, periodic=False)
         mx.eval(window)
-        
+
         self.assertEqual(window.shape[0], 1920)
 
     def test_stft_shape(self):
         """Test STFT output shape."""
-        from mlx_audio.sts.models.mossformer2_se.stft import stft, create_window
+        from mlx_audio.sts.models.mossformer2_se.stft import create_window, stft
 
-        window = create_window('hamming', 1920, periodic=False)
+        window = create_window("hamming", 1920, periodic=False)
         audio = mx.zeros((1, 48000))
 
         real_part, imag_part = stft(audio, 1920, 384, 1920, window, center=False)
@@ -102,7 +102,7 @@ class TestSTFT(unittest.TestCase):
         from mlx_audio.sts.models.mossformer2_se.stft import ISTFTCache, create_window
 
         cache = ISTFTCache()
-        window = create_window('hamming', 1920, periodic=False)
+        window = create_window("hamming", 1920, periodic=False)
 
         # First call should create cache entries
         norm_buffer = cache.get_norm_buffer(1920, 384, 1920, window, 10)
@@ -110,13 +110,13 @@ class TestSTFT(unittest.TestCase):
         mx.eval(norm_buffer, positions)
 
         info = cache.cache_info()
-        self.assertEqual(info['norm_buffers'], 1)
-        self.assertEqual(info['position_indices'], 1)
+        self.assertEqual(info["norm_buffers"], 1)
+        self.assertEqual(info["position_indices"], 1)
 
         # Clear cache
         cache.clear_cache()
         info = cache.cache_info()
-        self.assertEqual(info['total_cached_items'], 0)
+        self.assertEqual(info["total_cached_items"], 0)
 
 
 class TestFeatures(unittest.TestCase):
@@ -135,9 +135,10 @@ class TestFeatures(unittest.TestCase):
 
     def test_fbank_computation(self):
         """Test fbank computation."""
-        from mlx_audio.sts.models.mossformer2_se.fbank import compute_fbank
-        from mlx_audio.sts.models.mossformer2_se.config import MossFormer2SEConfig
         import numpy as np
+
+        from mlx_audio.sts.models.mossformer2_se.config import MossFormer2SEConfig
+        from mlx_audio.sts.models.mossformer2_se.fbank import compute_fbank
 
         config = MossFormer2SEConfig()
         audio = mx.array(np.random.randn(24000).astype(np.float32))
@@ -186,7 +187,9 @@ class TestModelComponents(unittest.TestCase):
 
     def test_scaled_sinu_embedding(self):
         """Test ScaledSinuEmbedding."""
-        from mlx_audio.sts.models.mossformer2_se.scaledsinuembedding import ScaledSinuEmbedding
+        from mlx_audio.sts.models.mossformer2_se.scaledsinuembedding import (
+            ScaledSinuEmbedding,
+        )
 
         emb = ScaledSinuEmbedding(dim=512)
         x = mx.random.normal((1, 100, 512))
@@ -214,14 +217,18 @@ class TestMossFormer2SE(unittest.TestCase):
 
     def test_model_initialization(self):
         """Test MossFormer2SE initialization."""
-        from mlx_audio.sts.models.mossformer2_se.mossformer2_se_wrapper import MossFormer2SE
+        from mlx_audio.sts.models.mossformer2_se.mossformer2_se_wrapper import (
+            MossFormer2SE,
+        )
 
         model = MossFormer2SE()
         self.assertIsNotNone(model.model)
 
     def test_masknet_output_shape(self):
         """Test MossFormer_MaskNet output shape."""
-        from mlx_audio.sts.models.mossformer2_se.mossformer_masknet import MossFormer_MaskNet
+        from mlx_audio.sts.models.mossformer2_se.mossformer_masknet import (
+            MossFormer_MaskNet,
+        )
 
         # Create smaller model for testing
         masknet = MossFormer_MaskNet(

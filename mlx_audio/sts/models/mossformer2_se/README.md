@@ -15,15 +15,15 @@ enables efficient inference on Apple Silicon.
 
 ```python
 from mlx_audio.sts.models.mossformer2_se import (
-    MossFormer2SEProcessor,
+    MossFormer2SEModel,
     save_audio,
 )
 
 # Load model
-processor = MossFormer2SEProcessor.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
+model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
 
 # Enhance audio
-enhanced = processor.enhance("noisy.wav")
+enhanced = model.enhance("noisy.wav")
 
 # Save result
 save_audio(enhanced, "enhanced.wav", 48000)
@@ -36,34 +36,32 @@ save_audio(enhanced, "enhanced.wav", 48000)
 # Automatically selects mode based on duration
 # < 60s: Full mode (faster, best quality)
 # >= 60s: Chunked mode (lower RAM)
-enhanced = processor.enhance("audio.wav")
+enhanced = model.enhance("audio.wav")
 ```
 
 ### Force Chunked Mode
 ```python
 # For very long audio or limited RAM
-enhanced = processor.enhance("long_audio.wav", chunked=True)
+enhanced = model.enhance("long_audio.wav", chunked=True)
 ```
 
 ### Force Full Mode
 ```python
 # For best quality (if RAM allows)
-enhanced = processor.enhance("audio.wav", chunked=False)
+enhanced = model.enhance("audio.wav", chunked=False)
 ```
 
 ## Precision Options
 
+Precision is inferred from the repo name suffix:
+
 ```python
 # Full precision (default)
-processor = MossFormer2SEProcessor.from_pretrained(repo, precision="fp32")
+model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
 
-# Half precision (faster, less RAM)
-processor = MossFormer2SEProcessor.from_pretrained(repo, precision="fp16")
-
-# Quantized (smallest, fastest)
-processor = MossFormer2SEProcessor.from_pretrained(repo, precision="int4")
-processor = MossFormer2SEProcessor.from_pretrained(repo, precision="int6")
-processor = MossFormer2SEProcessor.from_pretrained(repo, precision="int8")
+# Quantized versions
+model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX-4bit")
+model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX-8bit")
 ```
 
 ## Model Architecture

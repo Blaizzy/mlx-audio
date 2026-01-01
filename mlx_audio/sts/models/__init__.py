@@ -1,5 +1,6 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+from .mossformer2_se import MossFormer2SE, MossFormer2SEConfig, MossFormer2SEModel
 from .sam_audio import (
     Batch,
     SAMAudio,
@@ -7,11 +8,6 @@ from .sam_audio import (
     SAMAudioProcessor,
     SeparationResult,
     save_audio,
-)
-from .mossformer2_se import (
-    MossFormer2SE,
-    MossFormer2SEConfig,
-    MossFormer2SEProcessor,
 )
 
 __all__ = [
@@ -24,6 +20,5 @@ __all__ = [
     # MossFormer2 SE
     "MossFormer2SE",
     "MossFormer2SEConfig",
-    "MossFormer2SEProcessor",
+    "MossFormer2SEModel",
 ]
-
