@@ -121,30 +121,90 @@ class TestFeatures(unittest.TestCase):
     """Tests for feature extraction."""
 
     def test_compute_deltas_shape(self):
-        """Test compute_deltas output shape."""
-        from mlx_audio.sts.models.mossformer2_se.deltas import compute_deltas
+        """Test compute_deltas_kaldi output shape."""
+        from mlx_audio.dsp import compute_deltas_kaldi
 
         # Input shape: (freq, time)
         specgram = mx.zeros((60, 100))
-        deltas = compute_deltas(specgram, win_length=5)
+        deltas = compute_deltas_kaldi(specgram, win_length=5)
         mx.eval(deltas)
 
         self.assertEqual(deltas.shape, specgram.shape)
 
     def test_fbank_computation(self):
-        """Test fbank computation."""
+        """Test compute_fbank_kaldi."""
         import numpy as np
 
-        from mlx_audio.sts.models.mossformer2_se.config import MossFormer2SEConfig
-        from mlx_audio.sts.models.mossformer2_se.fbank import compute_fbank
+        from mlx_audio.dsp import compute_fbank_kaldi
 
-        config = MossFormer2SEConfig()
         audio = mx.array(np.random.randn(24000).astype(np.float32))
-        fbank = compute_fbank(audio, config)
+        fbank = compute_fbank_kaldi(
+            audio, sample_rate=48000, win_len=1920, win_inc=384, num_mels=60
+        )
         mx.eval(fbank)
 
-        # Should return (time, num_mels)
-        self.assertEqual(fbank.shape[1], config.num_mels)
+        self.assertEqual(fbank.shape[1], 60)
+
+    def test_compute_deltas_vs_torchaudio(self):
+        """Compare compute_deltas_kaldi with torchaudio."""
+        try:
+            import torch
+            import torchaudio
+        except ImportError:
+            self.skipTest("torchaudio not installed")
+
+        import numpy as np
+
+        from mlx_audio.dsp import compute_deltas_kaldi
+
+        np.random.seed(42)
+        specgram_np = np.random.randn(60, 100).astype(np.float32)
+
+        mlx_deltas = compute_deltas_kaldi(mx.array(specgram_np), win_length=5)
+        mx.eval(mlx_deltas)
+
+        torch_deltas = torchaudio.functional.compute_deltas(
+            torch.from_numpy(specgram_np), win_length=5
+        )
+
+        max_diff = np.max(np.abs(np.array(mlx_deltas) - torch_deltas.numpy()))
+        self.assertLess(max_diff, 1e-5)
+
+    def test_fbank_vs_torchaudio(self):
+        """Compare compute_fbank_kaldi with torchaudio.compliance.kaldi.fbank."""
+        try:
+            import torch
+            import torchaudio
+        except ImportError:
+            self.skipTest("torchaudio not installed")
+
+        import numpy as np
+
+        from mlx_audio.dsp import compute_fbank_kaldi
+
+        np.random.seed(42)
+        audio_np = np.random.randn(24000).astype(np.float32)
+
+        mlx_fbank = compute_fbank_kaldi(
+            mx.array(audio_np),
+            sample_rate=48000,
+            win_len=1920,
+            win_inc=384,
+            num_mels=60,
+            dither=0.0,
+        )
+        mx.eval(mlx_fbank)
+
+        torch_fbank = torchaudio.compliance.kaldi.fbank(
+            torch.from_numpy(audio_np).unsqueeze(0),
+            sample_frequency=48000,
+            frame_length=40.0,
+            frame_shift=8.0,
+            num_mel_bins=60,
+            dither=0.0,
+        )
+
+        self.assertEqual(mlx_fbank.shape, tuple(torch_fbank.shape))
 
 
 class TestModelComponents(unittest.TestCase):

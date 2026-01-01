@@ -14,13 +14,17 @@ import numpy as np
 from huggingface_hub import hf_hub_download
 from mlx.utils import tree_unflatten
 
-from mlx_audio.dsp import ISTFTCache, hamming, stft
+from mlx_audio.dsp import (
+    ISTFTCache,
+    compute_deltas_kaldi,
+    compute_fbank_kaldi,
+    hamming,
+    stft,
+)
 
 # Reuse audio utilities from sam_audio
 from ..sam_audio.processor import load_audio
 from .config import MossFormer2SEConfig
-from .deltas import compute_deltas
-from .fbank import compute_fbank
 from .mossformer2_se_wrapper import MossFormer2SE
 
 # Constants
@@ -367,11 +371,19 @@ class MossFormer2SEModel:
         self, audio_segment: mx.array, window: mx.array, chunk_length: int
     ) -> mx.array:
         """Process a single audio chunk."""
-        # Feature extraction
-        fbanks = compute_fbank(audio_segment, self.config)
+        # Feature extraction using dsp.py Kaldi functions
+        fbanks = compute_fbank_kaldi(
+            audio_segment,
+            sample_rate=self.config.sample_rate,
+            win_len=self.config.win_len,
+            win_inc=self.config.win_inc,
+            num_mels=self.config.num_mels,
+            win_type=self.config.win_type,
+            preemphasis=self.config.preemphasis,
+        )
         fbank_transposed = mx.transpose(fbanks, [1, 0])
-        fbank_delta = compute_deltas(fbank_transposed, win_length=5)
-        fbank_delta_delta = compute_deltas(fbank_delta, win_length=5)
+        fbank_delta = compute_deltas_kaldi(fbank_transposed, win_length=5)
+        fbank_delta_delta = compute_deltas_kaldi(fbank_delta, win_length=5)
         fbank_delta = mx.transpose(fbank_delta, [1, 0])
         fbank_delta_delta = mx.transpose(fbank_delta_delta, [1, 0])
         fbanks = mx.concatenate([fbanks, fbank_delta, fbank_delta_delta], axis=1)
