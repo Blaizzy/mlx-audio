@@ -1,5 +1,6 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -8,6 +9,10 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import T5EncoderConfig
+
+# Suppress HTTPX and HuggingFace Hub logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 
 @dataclass
