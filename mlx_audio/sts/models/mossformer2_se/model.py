@@ -14,13 +14,14 @@ import numpy as np
 from huggingface_hub import hf_hub_download
 from mlx.utils import tree_unflatten
 
+from mlx_audio.dsp import ISTFTCache, hamming, stft
+
 # Reuse audio utilities from sam_audio
 from ..sam_audio.processor import load_audio
 from .config import MossFormer2SEConfig
 from .deltas import compute_deltas
 from .fbank import compute_fbank
 from .mossformer2_se_wrapper import MossFormer2SE
-from .stft import ISTFTCache, create_window, stft
 
 # Constants
 MAX_WAV_VALUE = 32768.0
@@ -135,9 +136,7 @@ class MossFormer2SEModel:
         warmup_start = time.time()
 
         if chunked:
-            window = create_window(
-                self.config.win_type, self.config.win_len, periodic=False
-            )
+            window = hamming(self.config.win_len, periodic=False)
             chunk_audio = mx.random.uniform(-0.1, 0.1, shape=(48000,)).astype(
                 mx.float32
             )
@@ -216,9 +215,7 @@ class MossFormer2SEModel:
         original_len = input_len
         inputs_np = inputs_np * MAX_WAV_VALUE
 
-        window = create_window(
-            self.config.win_type, self.config.win_len, periodic=False
-        )
+        window = hamming(self.config.win_len, periodic=False)
 
         # Check if segmented processing is needed
         if input_len > self.config.sample_rate * self.config.one_time_decode_length:
@@ -300,9 +297,7 @@ class MossFormer2SEModel:
         original_len = inputs_np.shape[0]
         inputs_np = inputs_np * MAX_WAV_VALUE
 
-        window = create_window(
-            self.config.win_type, self.config.win_len, periodic=False
-        )
+        window = hamming(self.config.win_len, periodic=False)
 
         chunk_samples = int(self.config.sample_rate * self.config.chunk_seconds)
         overlap_samples = int(chunk_samples * self.config.chunk_overlap)
@@ -384,21 +379,23 @@ class MossFormer2SEModel:
         Out_List = self.model(fbanks)
         pred_mask = Out_List[-1][0]
 
-        # STFT
-        real_part, imag_part = stft(
-            audio_segment.reshape(1, -1),
+        # STFT - use dsp.stft (returns time, freq complex) and transpose to (freq, time)
+        stft_complex = stft(
+            audio_segment,
             self.config.fft_len,
             self.config.win_inc,
             self.config.win_len,
             window,
             center=False,
         )
+        real_part = mx.real(stft_complex).T  # (freq, time)
+        imag_part = mx.imag(stft_complex).T
 
         # Apply mask
         pred_mask = mx.transpose(pred_mask, [1, 0])
         pred_mask = mx.expand_dims(pred_mask, axis=-1)
-        spectrum_real = real_part[0] * pred_mask[:, :, 0]
-        spectrum_imag = imag_part[0] * pred_mask[:, :, 0]
+        spectrum_real = real_part * pred_mask[:, :, 0]
+        spectrum_imag = imag_part * pred_mask[:, :, 0]
 
         # iSTFT
         output_segment = self._istft_cache.istft(

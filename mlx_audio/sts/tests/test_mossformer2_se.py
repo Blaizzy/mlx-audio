@@ -64,9 +64,9 @@ class TestSTFT(unittest.TestCase):
 
     def test_create_window_hamming(self):
         """Test hamming window creation."""
-        from mlx_audio.sts.models.mossformer2_se.stft import create_window
+        from mlx_audio.dsp import hamming
 
-        window = create_window("hamming", 1920, periodic=False)
+        window = hamming(1920, periodic=False)
         mx.eval(window)
 
         self.assertEqual(window.shape[0], 1920)
@@ -75,34 +75,32 @@ class TestSTFT(unittest.TestCase):
 
     def test_create_window_hann(self):
         """Test hann window creation."""
-        from mlx_audio.sts.models.mossformer2_se.stft import create_window
+        from mlx_audio.dsp import hanning
 
-        window = create_window("hann", 1920, periodic=False)
+        window = hanning(1920, periodic=False)
         mx.eval(window)
 
         self.assertEqual(window.shape[0], 1920)
 
     def test_stft_shape(self):
         """Test STFT output shape."""
-        from mlx_audio.sts.models.mossformer2_se.stft import create_window, stft
+        from mlx_audio.dsp import hamming, stft
 
-        window = create_window("hamming", 1920, periodic=False)
-        audio = mx.zeros((1, 48000))
+        window = hamming(1920, periodic=False)
+        audio = mx.zeros((48000,))
 
-        real_part, imag_part = stft(audio, 1920, 384, 1920, window, center=False)
-        mx.eval(real_part, imag_part)
+        stft_complex = stft(audio, 1920, 384, 1920, window, center=False)
+        mx.eval(stft_complex)
 
-        # Check output shapes
-        self.assertEqual(real_part.shape[0], 1)
-        self.assertEqual(imag_part.shape[0], 1)
-        self.assertEqual(real_part.shape[1], 961)  # n_fft // 2 + 1
+        # Check output shape: (time, freq)
+        self.assertEqual(stft_complex.shape[1], 961)  # n_fft // 2 + 1
 
     def test_istft_cache(self):
         """Test ISTFTCache caching behavior."""
-        from mlx_audio.sts.models.mossformer2_se.stft import ISTFTCache, create_window
+        from mlx_audio.dsp import ISTFTCache, hamming
 
         cache = ISTFTCache()
-        window = create_window("hamming", 1920, periodic=False)
+        window = hamming(1920, periodic=False)
 
         # First call should create cache entries
         norm_buffer = cache.get_norm_buffer(1920, 384, 1920, window, 10)

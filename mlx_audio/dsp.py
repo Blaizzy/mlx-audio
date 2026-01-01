@@ -14,6 +14,7 @@ __all__ = [
     "STR_TO_WINDOW_FN",
     "stft",
     "istft",
+    "ISTFTCache",
     "mel_filters",
 ]
 from functools import lru_cache
@@ -24,34 +25,52 @@ import mlx.core as mx
 
 # Common window functions
 @lru_cache(maxsize=None)
-def hanning(size):
+def hanning(size, periodic=False):
+    """Hanning (Hann) window.
+
+    Args:
+        size: Window length
+        periodic: If True, use periodic window (for spectral analysis)
+    """
+    denom = size if periodic else size - 1
     return mx.array(
-        [0.5 * (1 - math.cos(2 * math.pi * n / (size - 1))) for n in range(size)]
+        [0.5 * (1 - math.cos(2 * math.pi * n / denom)) for n in range(size)]
     )
 
 
 @lru_cache(maxsize=None)
-def hamming(size):
+def hamming(size, periodic=False):
+    """Hamming window.
+
+    Args:
+        size: Window length
+        periodic: If True, use periodic window (for spectral analysis)
+    """
+    denom = size if periodic else size - 1
     return mx.array(
-        [0.54 - 0.46 * math.cos(2 * math.pi * n / (size - 1)) for n in range(size)]
+        [0.54 - 0.46 * math.cos(2 * math.pi * n / denom) for n in range(size)]
     )
 
 
 @lru_cache(maxsize=None)
-def blackman(size):
+def blackman(size, periodic=False):
+    """Blackman window."""
+    denom = size if periodic else size - 1
     return mx.array(
         [
             0.42
-            - 0.5 * math.cos(2 * math.pi * n / (size - 1))
-            + 0.08 * math.cos(4 * math.pi * n / (size - 1))
+            - 0.5 * math.cos(2 * math.pi * n / denom)
+            + 0.08 * math.cos(4 * math.pi * n / denom)
             for n in range(size)
         ]
     )
 
 
 @lru_cache(maxsize=None)
-def bartlett(size):
-    return mx.array([1 - 2 * abs(n - (size - 1) / 2) / (size - 1) for n in range(size)])
+def bartlett(size, periodic=False):
+    """Bartlett (triangular) window."""
+    denom = size if periodic else size - 1
+    return mx.array([1 - 2 * abs(n - denom / 2) / denom for n in range(size)])
 
 
 STR_TO_WINDOW_FN = {
@@ -250,3 +269,138 @@ def mel_filters(
 
     filterbank = filterbank.moveaxis(0, 1)
     return filterbank
+
+
+class ISTFTCache:
+    """
+    Advanced caching for iSTFT operations. Fully vectorized Overlap-Add for MLX.
+    Handles multiple configurations efficiently.
+    Automatically caches normalization buffers and position indices for maximum performance.
+    """
+
+    def __init__(self):
+        self.norm_buffer_cache = {}
+        self.position_cache = {}
+
+    def get_positions(self, num_frames: int, frame_length: int, hop_length: int):
+        """Get cached position indices or create new ones"""
+        key = (num_frames, frame_length, hop_length)
+
+        if key not in self.position_cache:
+            positions = (
+                mx.arange(num_frames)[:, None] * hop_length
+                + mx.arange(frame_length)[None, :]
+            )
+            self.position_cache[key] = positions.reshape(-1)
+
+        return self.position_cache[key]
+
+    def get_norm_buffer(
+        self,
+        n_fft: int,
+        hop_length: int,
+        win_length: int,
+        window: mx.array,
+        num_frames: int,
+    ):
+        """Get cached normalization buffer or create new one"""
+        window_hash = hash(tuple(window.tolist()))
+        key = (n_fft, hop_length, win_length, window_hash, num_frames)
+
+        if key not in self.norm_buffer_cache:
+            frame_length = window.shape[0]
+            ola_len = (num_frames - 1) * hop_length + frame_length
+            positions_flat = self.get_positions(num_frames, frame_length, hop_length)
+
+            window_squared = window**2
+            norm_buffer = mx.zeros(ola_len, dtype=mx.float32)
+            window_sq_tiled = mx.tile(window_squared, num_frames)
+            norm_buffer = norm_buffer.at[positions_flat].add(window_sq_tiled)
+            norm_buffer = mx.maximum(norm_buffer, 1e-10)
+
+            self.norm_buffer_cache[key] = norm_buffer
+
+        return self.norm_buffer_cache[key]
+
+    def istft(
+        self,
+        real_part: mx.array,
+        imag_part: mx.array,
+        n_fft: int,
+        hop_length: int,
+        win_length: int,
+        window: mx.array,
+        center: bool = True,
+        audio_length: int = None,
+    ) -> mx.array:
+        """
+        iSTFT with automatic caching and vectorized overlap-add.
+
+        Args:
+            real_part: Real part of STFT output (batch, freq, time)
+            imag_part: Imaginary part of STFT output (batch, freq, time)
+            n_fft: FFT size
+            hop_length: Hop length
+            win_length: Window length
+            window: Window function
+            center: If True, remove center padding
+            audio_length: Target audio length
+
+        Returns:
+            Reconstructed audio (batch, samples)
+        """
+        # Window padding safety check
+        if window.shape[0] < n_fft:
+            pad = n_fft - window.shape[0]
+            window = mx.concatenate([window, mx.zeros((pad,), dtype=window.dtype)])
+
+        # Inverse FFT
+        stft_complex = real_part + 1j * imag_part
+        time_frames = mx.fft.irfft(stft_complex.transpose(0, 2, 1), n=n_fft, axis=-1)
+
+        # Apply synthesis window
+        windowed_frames = time_frames * window
+
+        batch_size, num_frames, frame_length = windowed_frames.shape
+        ola_len = (num_frames - 1) * hop_length + frame_length
+
+        # Get cached items
+        norm_buffer = self.get_norm_buffer(
+            n_fft, hop_length, win_length, window, num_frames
+        )
+        positions_flat = self.get_positions(num_frames, frame_length, hop_length)
+
+        # Vectorized overlap-add
+        batch_offsets = mx.arange(batch_size) * ola_len
+        global_indices = positions_flat[None, :] + batch_offsets[:, None]
+
+        output = mx.zeros((batch_size * ola_len), dtype=mx.float32)
+        output = output.at[global_indices.reshape(-1)].add(windowed_frames.reshape(-1))
+        output = output.reshape(batch_size, ola_len)
+
+        # Apply normalization
+        output = output / norm_buffer[None, :]
+
+        # Final trimming
+        if center:
+            start_cut = n_fft // 2
+            output = output[:, start_cut:]
+
+        if audio_length is not None:
+            output = output[:, :audio_length]
+
+        return output
+
+    def clear_cache(self):
+        """Clear all cached data to free memory"""
+        self.norm_buffer_cache.clear()
+        self.position_cache.clear()
+
+    def cache_info(self):
+        """Get information about cached items"""
+        return {
+            "norm_buffers": len(self.norm_buffer_cache),
+            "position_indices": len(self.position_cache),
+            "total_cached_items": len(self.norm_buffer_cache)
+            + len(self.position_cache),
+        }
