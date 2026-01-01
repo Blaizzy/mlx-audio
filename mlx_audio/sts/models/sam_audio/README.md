@@ -290,58 +290,64 @@ save_audio(result.target[0], "target.wav", sample_rate=model.sample_rate)
 save_audio(result.residual[0], "residual.wav", sample_rate=model.sample_rate)
 ```
 
-## Streaming Decode
+## Streaming Separation
 
-For memory-efficient processing, you can use streaming decode to write audio directly to disk without holding all decoded audio in memory.
+For real-time streaming output, use `separate_streaming()` which processes audio in chunks and streams output immediately. **First audio arrives in ~10-15 seconds** instead of waiting for the entire file to process.
 
-### `separate_streaming()` - Generator
-
-Yields decoded chunks progressively:
+### `separate_streaming()` - Fast Streaming with Callbacks
 
 ```python
 import soundfile as sf
 import numpy as np
 
-# Stream separation directly to files
-with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as target_f, \
-     sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as residual_f:
+# Stream separation directly to WAV files
+with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
+     sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
 
-    for target, residual, is_last in model.separate_streaming(
-        audios=batch.audios,
-        descriptions=batch.descriptions,
-        decode_chunk_size=50,  # Frames per chunk
-        decode_overlap=4,      # Overlap for smooth crossfade
-    ):
-        target_f.write(np.array(target[0, :, 0]))
-        residual_f.write(np.array(residual[0, :, 0]))
-```
-
-### `separate_stream()` - Callback-based
-
-Uses callbacks for each chunk - ideal for file writing:
-
-```python
-import soundfile as sf
-import numpy as np
-
-# Stream separation directly to WAV file
-with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as f:
     def write_target(chunk, idx, is_last):
-        f.write(np.array(chunk[0, :, 0]))
+        t_f.write(np.array(chunk[:, 0]))
+        t_f.flush()  # Force write to disk immediately
+        print(f"Target chunk {idx}")
 
-    samples = model.separate_stream(
+    def write_residual(chunk, idx, is_last):
+        r_f.write(np.array(chunk[:, 0]))
+        r_f.flush()
+        print(f"Residual chunk {idx}")
+
+    samples = model.separate_streaming(
         audios=batch.audios,
         descriptions=batch.descriptions,
         target_callback=write_target,
-        residual_callback=None,  # Optional: callback for residual
-        decode_chunk_size=50,
+        residual_callback=write_residual,
+        chunk_seconds=10.0,      # Audio chunk size
+        overlap_seconds=3.0,     # Overlap for smooth crossfade
+        verbose=True,            # Show progress
     )
     print(f"Wrote {samples} samples")
 ```
 
+### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `chunk_seconds` | 10.0 | Size of each audio chunk in seconds |
+| `overlap_seconds` | 3.0 | Overlap between chunks for smooth crossfade |
+| `seed` | 42 | Random seed for reproducibility |
+| `verbose` | False | Print progress during processing |
+
+### Performance Comparison
+
+| Method | Time to First Audio | Use Case |
+|--------|---------------------|----------|
+| `separate()` | Full processing time | Short audio (< 30s) |
+| `separate_long()` | Full processing time | Long audio, accumulated |
+| `separate_streaming()` | **~10-15 seconds** | Real-time streaming |
+
+**Note:** Call `flush()` after each write to ensure data is written to disk immediately.
+
 ### Codec-level Streaming
 
-For direct codec access:
+For direct codec access (advanced use):
 
 ```python
 # Stream decode encoded features
@@ -350,19 +356,8 @@ for chunk, is_last in model.audio_codec.decode_streaming(
     chunk_size=50,
     overlap=4,
 ):
-    # Process or write chunk
     process(chunk)
 ```
-
-### Memory Benefits
-
-| Method | Peak Memory | Use Case |
-|--------|-------------|----------|
-| `separate()` | High | Short audio, all in memory |
-| `separate(..., ode_decode_chunk_size=50)` | Medium | Chunked decode, accumulated |
-| `separate_streaming()` | Low | Stream to disk, minimal memory |
-
-For true real-time streaming with segment-level autoregressive generation, see the [MovieGen paper](https://arxiv.org/abs/2410.13720) approach as suggested by the SAM-Audio maintainers.
 
 ## Model Weights
 

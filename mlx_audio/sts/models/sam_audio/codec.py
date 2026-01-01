@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
-from typing import List, Optional, Union
+from typing import Callable, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -1135,6 +1135,196 @@ class DACVAE(nn.Module):
                 result_parts.append(chunk_fade_out)
 
         return mx.concatenate(result_parts, axis=1)
+
+    def decode_streaming(
+        self,
+        encoded_frames: mx.array,
+        chunk_size: int = 50,
+        overlap: int = 4,
+    ) -> Generator[Tuple[mx.array, bool], None, None]:
+        """
+        Streaming decode that yields chunks one at a time for minimal memory usage.
+
+        This generator yields decoded audio chunks progressively, allowing you to
+        write them to disk or process them without holding all decoded audio in memory.
+
+        Args:
+            encoded_frames: (batch, codebook_dim, frames) - encoded features
+            chunk_size: Number of frames per chunk (default: 50)
+            overlap: Number of overlapping frames for smooth transitions (default: 4)
+
+        Yields:
+            Tuple of (audio_chunk, is_last):
+                - audio_chunk: Decoded audio of shape (batch, samples, 1)
+                - is_last: True if this is the final chunk
+
+        Example:
+            ```python
+            # Stream decode and write to file progressively
+            all_audio = []
+            for chunk, is_last in codec.decode_streaming(features, chunk_size=50):
+                all_audio.append(chunk)
+                if is_last:
+                    break
+
+            # Or write directly to disk with soundfile
+            import soundfile as sf
+            with sf.SoundFile('output.wav', 'w', samplerate=48000, channels=1) as f:
+                for chunk, is_last in codec.decode_streaming(features):
+                    f.write(chunk[0, :, 0].tolist())  # Write batch 0
+            ```
+        """
+        _, _, total_frames = encoded_frames.shape
+
+        # Handle edge case: no frames
+        if total_frames == 0:
+            return
+
+        # Transpose to (batch, frames, codebook_dim)
+        encoded_frames = mx.transpose(encoded_frames, (0, 2, 1))
+        mx.eval(encoded_frames)
+
+        # Calculate overlap in samples
+        samples_per_frame = self.hop_length
+        overlap_samples = overlap * samples_per_frame
+
+        # State for crossfade blending
+        prev_fade_out: Optional[mx.array] = None
+        start = 0
+        chunk_idx = 0
+
+        while start < total_frames:
+            end = min(start + chunk_size, total_frames)
+            is_last = end >= total_frames
+
+            # Extract and decode chunk
+            chunk = encoded_frames[:, start:end, :]
+            emb = self.quantizer_out_proj(chunk)
+            out = self.decoder(emb)
+            out = self.decoder.snake_out(out)
+            out = mx.tanh(self.decoder.conv_out(out))
+            mx.eval(out)
+
+            # Get actual output length
+            out_samples = out.shape[1]
+
+            # Handle crossfade blending
+            if chunk_idx == 0:
+                # First chunk
+                if not is_last and out_samples > overlap_samples:
+                    fade_out_start = out_samples - overlap_samples
+                    # Store fade-out region for blending with next chunk
+                    fade_out = mx.linspace(1.0, 0.0, overlap_samples).reshape(1, -1, 1)
+                    prev_fade_out = out[:, fade_out_start:, :] * fade_out
+                    mx.eval(prev_fade_out)  # Ensure it's materialized before yielding
+                    # Yield main part (without overlap)
+                    result = out[:, :fade_out_start, :]
+                    mx.eval(result)
+                    yield result, False
+                else:
+                    # Single chunk or too small for overlap - yield everything
+                    yield out, True
+                    return
+            elif is_last:
+                # Last chunk: blend start with previous overlap, yield all
+                if prev_fade_out is not None and out_samples >= overlap_samples:
+                    fade_in = mx.linspace(0.0, 1.0, overlap_samples).reshape(1, -1, 1)
+                    blended = prev_fade_out + out[:, :overlap_samples, :] * fade_in
+                    mx.eval(blended)
+                    # Yield blended overlap + rest of chunk
+                    final_chunk = mx.concatenate(
+                        [blended, out[:, overlap_samples:, :]], axis=1
+                    )
+                    mx.eval(final_chunk)
+                    yield final_chunk, True
+                else:
+                    # No previous overlap or chunk too small
+                    yield out, True
+                return
+            else:
+                # Middle chunk: blend start, prepare end for next blend
+                if prev_fade_out is not None and out_samples > 2 * overlap_samples:
+                    fade_in = mx.linspace(0.0, 1.0, overlap_samples).reshape(1, -1, 1)
+                    fade_out = mx.linspace(1.0, 0.0, overlap_samples).reshape(1, -1, 1)
+
+                    # Blend with previous overlap
+                    blended = prev_fade_out + out[:, :overlap_samples, :] * fade_in
+                    mx.eval(blended)
+
+                    # Prepare overlap for next chunk
+                    fade_out_start = out_samples - overlap_samples
+                    prev_fade_out = out[:, fade_out_start:, :] * fade_out
+                    mx.eval(prev_fade_out)
+
+                    # Yield blended + middle section
+                    middle_chunk = mx.concatenate(
+                        [blended, out[:, overlap_samples:fade_out_start, :]], axis=1
+                    )
+                    mx.eval(middle_chunk)
+                    yield middle_chunk, False
+                else:
+                    # Chunk too small for proper overlap handling
+                    yield out, False
+
+            # Move to next chunk
+            start = end - overlap
+            chunk_idx += 1
+
+            # Clear cache between chunks
+            mx.clear_cache()
+
+    def decode_stream(
+        self,
+        encoded_frames: mx.array,
+        callback: Callable[[mx.array, int, bool], None],
+        chunk_size: int = 50,
+        overlap: int = 4,
+    ) -> int:
+        """
+        Stream decode with callback for each chunk - ideal for writing directly to disk.
+
+        This method decodes audio in chunks and calls the provided callback for each
+        chunk, allowing progressive writes to disk without holding all audio in memory.
+
+        Args:
+            encoded_frames: (batch, codebook_dim, frames) - encoded features
+            callback: Function called for each chunk with signature:
+                      callback(audio_chunk, chunk_index, is_last) -> None
+                      - audio_chunk: (batch, samples, 1) decoded audio
+                      - chunk_index: 0-based index of the chunk
+                      - is_last: True if this is the final chunk
+            chunk_size: Number of frames per chunk (default: 50)
+            overlap: Number of overlapping frames for smooth transitions (default: 4)
+
+        Returns:
+            Total number of samples decoded
+
+        Example:
+            ```python
+            import soundfile as sf
+
+            # Create output file
+            with sf.SoundFile('output.wav', 'w', samplerate=48000, channels=1) as f:
+                def write_chunk(chunk, idx, is_last):
+                    # Write chunk to file (batch=0, squeeze channel dim)
+                    audio_np = np.array(chunk[0, :, 0])
+                    f.write(audio_np)
+
+                total_samples = codec.decode_stream(features, write_chunk)
+                print(f"Wrote {total_samples} samples")
+            ```
+        """
+        total_samples = 0
+        chunk_idx = 0
+
+        for audio_chunk, is_last in self.decode_streaming(
+            encoded_frames, chunk_size=chunk_size, overlap=overlap
+        ):
+            callback(audio_chunk, chunk_idx, is_last)
+            total_samples += audio_chunk.shape[1]
+            chunk_idx += 1
+
+        return total_samples
 
     def __call__(self, waveform: mx.array) -> mx.array:
         """
