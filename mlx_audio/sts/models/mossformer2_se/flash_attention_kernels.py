@@ -1,8 +1,3 @@
-# Original: ClearerVoice-Studio (github.com/modelscope/ClearerVoice-Studio)
-# Copyright (c) Speech Lab, Alibaba Group
-# Licensed under Apache License 2.0
-# MLX port by Dmitry Starkov
-
 """
 FLASH Attention Metal Kernel Implementations
 Optimized kernels for the ReLU² attention pattern in MossFormer2
@@ -12,6 +7,7 @@ Key findings:
 - More complex fusion attempts are slower due to MLX's already optimized matmul
 - The ReLU² operation is the main bottleneck that benefits from kernel fusion
 """
+
 import mlx.core as mx
 from mlx.core.fast import metal_kernel
 

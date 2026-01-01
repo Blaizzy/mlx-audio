@@ -1,8 +1,3 @@
-# Original: ClearerVoice-Studio (github.com/modelscope/ClearerVoice-Studio)
-# Copyright (c) Speech Lab, Alibaba Group
-# Licensed under Apache License 2.0
-# MLX port by Dmitry Starkov
-
 """
 MLX implementation of compute_deltas function
 Compatible with torchaudio.functional.compute_deltas

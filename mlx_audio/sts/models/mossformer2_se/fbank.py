@@ -1,8 +1,3 @@
-# Original: ClearerVoice-Studio (github.com/modelscope/ClearerVoice-Studio)
-# Copyright (c) Speech Lab, Alibaba Group
-# Licensed under Apache License 2.0
-# MLX port by Dmitry Starkov
-
 """
 MLX implementation of mel-filterbank feature extraction
 Compatible with torchaudio.compliance.kaldi.fbank
