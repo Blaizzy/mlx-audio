@@ -294,34 +294,53 @@ save_audio(result.residual[0], "residual.wav", sample_rate=model.sample_rate)
 
 For real-time streaming output, use `separate_streaming()` which processes audio in chunks and streams output immediately. **First audio arrives in ~10-15 seconds** instead of waiting for the entire file to process.
 
-### `separate_streaming()` - Fast Streaming with Callbacks
+### Generator Mode (Recommended)
 
 ```python
 import soundfile as sf
 import numpy as np
 
-# Stream separation directly to WAV files
+with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
+     sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
+
+    for target, residual, idx, is_last in model.separate_streaming(
+        audios=batch.audios,
+        descriptions=batch.descriptions,
+        chunk_seconds=10.0,
+        overlap_seconds=3.0,
+        verbose=True,
+    ):
+        t_f.write(np.array(target[:, 0]))
+        r_f.write(np.array(residual[:, 0]))
+        t_f.flush()
+        r_f.flush()
+        print(f"Chunk {idx} written, is_last={is_last}")
+```
+
+### Callback Mode
+
+```python
+import soundfile as sf
+import numpy as np
+
 with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
      sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
 
     def write_target(chunk, idx, is_last):
         t_f.write(np.array(chunk[:, 0]))
-        t_f.flush()  # Force write to disk immediately
-        print(f"Target chunk {idx}")
+        t_f.flush()
 
     def write_residual(chunk, idx, is_last):
         r_f.write(np.array(chunk[:, 0]))
         r_f.flush()
-        print(f"Residual chunk {idx}")
 
     samples = model.separate_streaming(
         audios=batch.audios,
         descriptions=batch.descriptions,
         target_callback=write_target,
         residual_callback=write_residual,
-        chunk_seconds=10.0,      # Audio chunk size
-        overlap_seconds=3.0,     # Overlap for smooth crossfade
-        verbose=True,            # Show progress
+        chunk_seconds=10.0,
+        verbose=True,
     )
     print(f"Wrote {samples} samples")
 ```
