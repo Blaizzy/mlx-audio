@@ -206,7 +206,6 @@ def compute_fbank(audio_in, args):
 
     # Apply dither
     if dither != 0.0:
-        # mx.random.seed(42) # Randomness enabled for production
         # Kaldi uses Gaussian dither
         rand_gauss = mx.random.normal(strided_input.shape) * dither
         strided_input = strided_input + rand_gauss
