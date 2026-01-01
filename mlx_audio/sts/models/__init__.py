@@ -8,6 +8,11 @@ from .sam_audio import (
     SeparationResult,
     save_audio,
 )
+from .mossformer2_se import (
+    MossFormer2SE,
+    MossFormer2SEConfig,
+    MossFormer2SEProcessor,
+)
 
 __all__ = [
     "SAMAudio",
@@ -16,4 +21,9 @@ __all__ = [
     "Batch",
     "save_audio",
     "SAMAudioConfig",
+    # MossFormer2 SE
+    "MossFormer2SE",
+    "MossFormer2SEConfig",
+    "MossFormer2SEProcessor",
 ]
+
