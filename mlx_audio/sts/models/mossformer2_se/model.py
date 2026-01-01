@@ -65,22 +65,36 @@ class MossFormer2SEModel:
 
         Args:
             model_name_or_path: HuggingFace model ID or local path.
-                Precision is inferred from suffix (e.g., '-4bit' for int4).
+                Quantization info is read from config.json.
 
         Returns:
             Configured model
         """
-        # Infer precision from repo name suffix (e.g., "-4bit" -> "int4")
-        repo_name = model_name_or_path.split("/")[-1]
-        precision = "fp32"  # default
-        if "-" in repo_name:
-            suffix = repo_name.split("-")[-1].lower()
-            if suffix in ("fp16", "fp32"):
-                precision = suffix
-            elif suffix.endswith("bit"):
-                bits = suffix.replace("bit", "")
-                if bits.isdigit():
-                    precision = f"int{bits}"
+        import json
+
+        # Load config.json
+        if Path(model_name_or_path).exists():
+            config_path = Path(model_name_or_path) / "config.json"
+        else:
+            config_path = hf_hub_download(
+                repo_id=model_name_or_path, filename="config.json"
+            )
+
+        with open(config_path) as f:
+            config_dict = json.load(f)
+
+        # Get quantization config if present
+        quant_config = config_dict.pop("quantization_config", None)
+
+        # Determine precision for logging
+        if quant_config:
+            bits = quant_config.get("bits", 4)
+            if bits == 16:
+                precision = "fp16"
+            else:
+                precision = f"{bits}bit"
+        else:
+            precision = "fp32"
 
         print(f"Loading MossFormer2 SE 48K ({precision})...")
 
@@ -89,34 +103,22 @@ class MossFormer2SEModel:
             x, self.weight, self.bias, self.eps
         )
 
-        config = MossFormer2SEConfig()
+        config = MossFormer2SEConfig.from_dict(config_dict)
         model = MossFormer2SE(config)
 
-        # Check if quantized
-        quantized_precisions = {"int4": 4, "int6": 6, "int8": 8}
-        is_quantized = precision in quantized_precisions
+        # Apply quantization if specified
+        if quant_config and quant_config.get("bits", 32) < 16:
+            bits = quant_config.get("bits", 4)
+            group_size = quant_config.get("group_size", 64)
+            nn.quantize(model, group_size=group_size, bits=bits)
 
-        if is_quantized:
-            bits = quantized_precisions[precision]
-            model_file = f"model_{precision}.safetensors"
-
-            if Path(model_name_or_path).exists():
-                weights_path = str(Path(model_name_or_path) / model_file)
-            else:
-                weights_path = hf_hub_download(
-                    repo_id=model_name_or_path, filename=model_file
-                )
-
-            nn.quantize(model, group_size=64, bits=bits)
+        # Load weights
+        if Path(model_name_or_path).exists():
+            weights_path = str(Path(model_name_or_path) / "model.safetensors")
         else:
-            model_file = f"model_{precision}.safetensors"
-
-            if Path(model_name_or_path).exists():
-                weights_path = str(Path(model_name_or_path) / model_file)
-            else:
-                weights_path = hf_hub_download(
-                    repo_id=model_name_or_path, filename=model_file
-                )
+            weights_path = hf_hub_download(
+                repo_id=model_name_or_path, filename="model.safetensors"
+            )
 
         weights = mx.load(weights_path)
         model.update(tree_unflatten(list(weights.items())))
