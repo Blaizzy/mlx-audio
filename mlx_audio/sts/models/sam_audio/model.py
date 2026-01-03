@@ -164,7 +164,7 @@ class SAMAudio(nn.Module):
         audios: Union[mx.array, List[str]],
         descriptions: List[str] = None,
         anchors: Optional[List[List[Tuple[str, float, float]]]] = None,
-    ) -> Tuple[mx.array, Optional[mx.array], Optional[mx.array], Optional[mx.array]]:
+    ) -> Batch:
         """
         Prepare audio and anchor inputs, handling both mx.array and file paths.
 
@@ -172,9 +172,11 @@ class SAMAudio(nn.Module):
             audios: Either an mx.array (B, 1, T) or list of audio file paths
             descriptions: Text descriptions (needed for batch size)
             anchors: Optional temporal anchors [[("+", start, end), ...], ...]
+                     Note: anchors are only processed when audios is a list of file paths.
+                     When audios is an mx.array, pass anchor_ids and anchor_alignment directly.
 
         Returns:
-            Tuple of (audio_tensor, sizes, anchor_ids, anchor_alignment)
+            Batch with audio tensor and optional anchor data
         """
         if isinstance(audios, mx.array):
             return Batch(audios=audios, descriptions=descriptions)
