@@ -1,13 +1,37 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+import json
 import math
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from huggingface_hub import snapshot_download
 
-from .config import DACVAEConfig
+
+@dataclass
+class DACVAEConfig:
+    """Configuration for the DACVAE audio codec."""
+
+    encoder_dim: int = 64
+    encoder_rates: List[int] = field(default_factory=lambda: [2, 8, 10, 12])
+    latent_dim: int = 1024
+    decoder_dim: int = 1536
+    decoder_rates: List[int] = field(default_factory=lambda: [12, 10, 8, 2])
+    n_codebooks: int = 16
+    codebook_size: int = 1024
+    codebook_dim: int = 128
+    quantizer_dropout: bool = False
+    sample_rate: int = 48_000
+    mean: float = 0.0
+    std: float = 1.0
+
+    @property
+    def hop_length(self) -> int:
+        return int(np.prod(self.encoder_rates))
 
 
 def normalize_weight(x: mx.array, except_dim: int = 0) -> mx.array:
@@ -1197,3 +1221,36 @@ class DACVAE(nn.Module):
         if isinstance(feature_idx, mx.array):
             return feature_idx * self.hop_length
         return int(wav_chunklen)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        repo_id: str,
+    ) -> "DACVAE":
+        path = fetch_from_hub(repo_id)
+        if path is None:
+            raise ValueError(f"Could not find model {path}")
+
+        model_path = Path(path) / "model.safetensors"
+        config_path = Path(path) / "config.json"
+        with open(config_path, "r") as f:
+            config = json.load(f)
+
+        dac_vae = DACVAE(DACVAEConfig(**config))
+        dac_vae.load_weights(model_path.as_posix())
+        mx.eval(dac_vae.parameters())
+
+        return dac_vae
+
+
+# fetch model from hub
+
+
+def fetch_from_hub(hf_repo: str) -> Path:
+    model_path = Path(
+        snapshot_download(
+            repo_id=hf_repo,
+            allow_patterns=["*.safetensors", "*.json"],
+        )
+    )
+    return model_path

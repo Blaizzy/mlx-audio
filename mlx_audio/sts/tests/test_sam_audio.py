@@ -102,7 +102,7 @@ class TestDACVAECodec(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from mlx_audio.sts.models.sam_audio.codec import DACVAE
+        from mlx_audio.codec.models.dacvae import DACVAE
         from mlx_audio.sts.models.sam_audio.config import DACVAEConfig
 
         self.config = DACVAEConfig()

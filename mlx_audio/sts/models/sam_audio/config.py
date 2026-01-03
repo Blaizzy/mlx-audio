@@ -1,31 +1,9 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
-import numpy as np
-
-
-@dataclass
-class DACVAEConfig:
-    """Configuration for the DACVAE audio codec."""
-
-    encoder_dim: int = 64
-    encoder_rates: List[int] = field(default_factory=lambda: [2, 8, 10, 12])
-    latent_dim: int = 1024
-    decoder_dim: int = 1536
-    decoder_rates: List[int] = field(default_factory=lambda: [12, 10, 8, 2])
-    n_codebooks: int = 16
-    codebook_size: int = 1024
-    codebook_dim: int = 128
-    quantizer_dropout: bool = False
-    sample_rate: int = 48_000
-    mean: float = 0.0
-    std: float = 1.0
-
-    @property
-    def hop_length(self) -> int:
-        return int(np.prod(self.encoder_rates))
+from mlx_audio.codec.models.dacvae.codec import DACVAEConfig
 
 
 @dataclass

@@ -14,8 +14,9 @@ from huggingface_hub import snapshot_download
 from mlx.utils import tree_map, tree_reduce
 from tqdm import tqdm
 
+from mlx_audio.codec.models.dacvae import DACVAE
+
 from .align import EmbedAnchors
-from .codec import DACVAE
 from .config import SAMAudioConfig
 from .text_encoder import T5TextEncoder
 from .transformer import DiT
