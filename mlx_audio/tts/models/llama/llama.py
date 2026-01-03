@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Optional
 
 import mlx.core as mx
 from mlx_lm.generate import stream_generate
@@ -94,7 +94,6 @@ class Model(LlamaModel):
         token_to_find = 128257
         token_to_remove = 128258
 
-        # MLX doesn't have nonzero, so we need to create indices manually
         mask = input_ids == token_to_find
         indices = []
         for i in range(mask.shape[0]):
@@ -170,7 +169,7 @@ class Model(LlamaModel):
         )
         return zeroprompt
 
-    def prepare_single_input_ids(
+    def prepare_input_ids(
         self,
         prompt: str,
         voice: Optional[str] = None,
@@ -191,9 +190,54 @@ class Model(LlamaModel):
         )  # [SOH] [text] [EOT EOH]
 
         if zeroprompt is not None:
-            # Prepend zeroprompt to give voice cloning context
             return mx.concatenate([zeroprompt, prompt_input_ids], axis=1)
         return prompt_input_ids
+
+    def generate_result(
+        self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs
+    ) -> GenerationResult:
+        """Helper to create a GenerationResult from audio."""
+        samples = audio.shape[0] if audio is not None else 0
+        assert samples > 0, "No audio generated"
+
+        sample_rate = self.config.sample_rate
+        audio_duration_seconds = samples / sample_rate
+
+        elapsed_time = time.perf_counter() - start_time
+        rtf = audio_duration_seconds / elapsed_time if elapsed_time > 0 else 0
+
+        duration_hours = int(audio_duration_seconds // 3600)
+        duration_mins = int((audio_duration_seconds % 3600) // 60)
+        duration_secs = int(audio_duration_seconds % 60)
+        duration_ms = int((audio_duration_seconds % 1) * 1000)
+        duration_str = (
+            f"{duration_hours:02d}:{duration_mins:02d}:"
+            f"{duration_secs:02d}.{duration_ms:03d}"
+        )
+
+        return GenerationResult(
+            audio=audio,
+            samples=samples,
+            sample_rate=sample_rate,
+            segment_idx=segment_idx,
+            token_count=token_count,
+            audio_duration=duration_str,
+            real_time_factor=rtf,
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": (
+                    round(token_count / elapsed_time, 2) if elapsed_time > 0 else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (
+                    round(samples / elapsed_time, 2) if elapsed_time > 0 else 0
+                ),
+            },
+            processing_time_seconds=elapsed_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
 
     def generate(
         self,
@@ -206,6 +250,8 @@ class Model(LlamaModel):
         verbose: bool = False,
         ref_audio: mx.array = None,
         ref_text: Optional[str] = None,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         **kwargs,
     ):
         prompt_text = text.replace("\\n", "\n").replace("\\t", "\t")
@@ -223,16 +269,22 @@ class Model(LlamaModel):
             kwargs.get("repetition_context_size", 20),
         )
 
+        streaming_token_interval = int(streaming_interval * 137.5)
+
         # Process each prompt segment individually for memory efficiency
         for segment_idx, segment_prompt in enumerate(prompts):
-            time_start = time.time()
+            time_start = time.perf_counter()
 
             # Prepare input_ids for this segment (with zeroprompt if voice cloning)
-            input_ids = self.prepare_single_input_ids(
+            input_ids = self.prepare_input_ids(
                 segment_prompt,
                 voice,
                 zeroprompt,
             )
+
+            generated_token_count = 0
+            yielded_token_count = 0
+            yielded_frame_count = 0
 
             # Generate tokens for this segment
             for i, response in enumerate(
@@ -252,71 +304,45 @@ class Model(LlamaModel):
             ):
                 next_token = mx.array([response.token])
                 input_ids = mx.concatenate([input_ids, next_token[None, :]], axis=1)
+                generated_token_count += 1
+
                 if i % 50 == 0:
                     mx.clear_cache()
+
+                # Stream partial audio at intervals
+                if stream and generated_token_count % streaming_token_interval == 0:
+                    code_lists = self.parse_output(input_ids)
+                    if code_lists and len(code_lists[0]) > 0:
+                        audio = decode_audio_from_codes(code_lists[0])[0]
+                        if audio.shape[0] > yielded_frame_count:
+                            yield self.generate_result(
+                                audio=audio[yielded_frame_count:],
+                                start_time=time_start,
+                                token_count=generated_token_count - yielded_token_count,
+                                segment_idx=segment_idx,
+                            )
+                            yielded_token_count = generated_token_count
+                            yielded_frame_count = audio.shape[0]
+                            time_start = time.perf_counter()
 
                 if next_token == 128258:  # End of speech
                     break
 
-            # Decode audio for this segment
+            # Decode and yield remaining audio for this segment
             code_lists = self.parse_output(input_ids)
 
             for code_list in code_lists:
-                samples_decoded = decode_audio_from_codes(code_list)
-                audio = samples_decoded[0]
+                if len(code_list) == 0:
+                    continue
+                audio = decode_audio_from_codes(code_list)[0]
 
-                time_end = time.time()
-
-                samples = audio.shape[0] if audio is not None else 0
-                assert samples > 0, "No audio generated"
-
-                # Calculate token count
-                token_count = input_ids.shape[1] if input_ids is not None else 0
-
-                # Calculate audio duration in seconds
-                sample_rate = self.config.sample_rate
-                audio_duration_seconds = samples / sample_rate
-
-                # Calculate real-time factor (RTF)
-                rtf = audio_duration_seconds / (time_end - time_start)
-
-                # Format duration as HH:MM:SS.mmm
-                duration_mins = int(audio_duration_seconds // 60)
-                duration_secs = int(audio_duration_seconds % 60)
-                duration_ms = int((audio_duration_seconds % 1) * 1000)
-                duration_hours = int(audio_duration_seconds // 3600)
-                duration_str = (
-                    f"{duration_hours:02d}:{duration_mins:02d}:"
-                    f"{duration_secs:02d}.{duration_ms:03d}"
-                )
-
-                yield GenerationResult(
-                    audio=audio,
-                    samples=samples,
-                    sample_rate=sample_rate,
-                    segment_idx=segment_idx,
-                    token_count=token_count,
-                    audio_duration=duration_str,
-                    real_time_factor=rtf,
-                    prompt={
-                        "tokens": token_count,
-                        "tokens-per-sec": (
-                            round(token_count / audio_duration_seconds, 2)
-                            if audio_duration_seconds > 0
-                            else 0
-                        ),
-                    },
-                    audio_samples={
-                        "samples": samples,
-                        "samples-per-sec": (
-                            round(samples / audio_duration_seconds, 2)
-                            if audio_duration_seconds > 0
-                            else 0
-                        ),
-                    },
-                    processing_time_seconds=time_end - time_start,
-                    peak_memory_usage=mx.get_peak_memory() / 1e9,
-                )
+                if audio.shape[0] > yielded_frame_count:
+                    yield self.generate_result(
+                        audio=audio[yielded_frame_count:],
+                        start_time=time_start,
+                        token_count=generated_token_count - yielded_token_count,
+                        segment_idx=segment_idx,
+                    )
 
             # Clear cache after each segment to avoid memory buildup
             mx.clear_cache()
