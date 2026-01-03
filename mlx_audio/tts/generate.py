@@ -267,7 +267,7 @@ def generate_audio(
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
 
             normalize = False
-            if hasattr(model, "model_type") and model.model_type() == "spark":
+            if hasattr(model, "model_type") and model.model_type == "spark":
                 normalize = True
 
             ref_audio = load_audio(
