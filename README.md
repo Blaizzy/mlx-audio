@@ -193,6 +193,60 @@ python -m mlx_audio.tts.generate --model mlx-community/csm-1b --text "Hello from
 
 You can pass any audio to clone the voice from or download sample audio file from [here](https://huggingface.co/mlx-community/csm-1b/tree/main/prompts).
 
+## Speech-to-Speech (STS)
+
+### SAM-Audio (Source Separation)
+
+SAM-Audio separates audio sources using text prompts. It uses ODE-based diffusion to extract specific sounds from a mix.
+
+#### Example Usage
+
+```python
+from mlx_audio.sts import SAMAudio, SAMAudioProcessor, save_audio
+
+# Load model
+model = SAMAudio.from_pretrained("mlx-community/sam-audio-large")
+processor = SAMAudioProcessor.from_pretrained("mlx-community/sam-audio-large")
+
+# Prepare inputs
+batch = processor(
+    descriptions=["A person speaking"],
+    audios=["mixed_audio.wav"],
+)
+
+# Separate audio
+result = model.separate(
+    batch.audios,
+    descriptions=batch.descriptions,
+    anchors=batch.anchor_ids,
+)
+
+# Save separated audio
+save_audio(result.target[0], "voice.wav")
+save_audio(result.residual[0], "background.wav")
+```
+
+For long audio (>2 min), use `model.separate_long()` for better memory efficiency.
+
+### MossFormer2 SE (Speech Enhancement)
+
+MossFormer2 SE removes noise and enhances speech quality. Unlike SAM-Audio, it doesn't require text prompts.
+
+#### Example Usage
+
+```python
+from mlx_audio.sts import MossFormer2SEModel, save_audio
+
+# Load model
+model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
+
+# Enhance audio
+enhanced = model.enhance("noisy_speech.wav")
+
+# Save result
+save_audio(enhanced, "enhanced.wav", 48000)
+```
+
 ## Advanced Features
 
 ### Quantization
