@@ -53,6 +53,7 @@ def download_chatterbox_weights(cache_dir: Path) -> Path:
             repo_id="ResembleAI/chatterbox",
             allow_patterns=[
                 "Cangjie5_TC.json",
+                "conds.safetensors",
                 "ve.safetensors",
                 "t3_mtl23ls_v2.safetensors",
                 "s3gen.safetensors",
@@ -521,6 +522,9 @@ def convert_all(
     # Copy Cangjie5_TC.json
     print("\nCopying Cangjie5_TC.json...")
     shutil.copy(ckpt_dir / "Cangjie5_TC.json", output_dir / "Cangjie5_TC.json")
+    # Copy conds.safetensors
+    print("\nCopying conds.safetensors...")
+    shutil.copy(ckpt_dir / "conds.safetensors", output_dir / "conds.safetensors")
 
     # Create config.json
     print("\nCreating config.json...")
