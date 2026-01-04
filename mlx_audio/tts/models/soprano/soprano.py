@@ -179,6 +179,7 @@ class Model(nn.Module):
                 str(decoder_weights_path), map_location="cpu", weights_only=True
             )
             decoder_weights = model._convert_decoder_weights(decoder_weights_pt)
+
             model.decoder.load_weights(list(decoder_weights.items()), strict=False)
 
         model.eval()
@@ -188,7 +189,10 @@ class Model(nn.Module):
         sanitized = {}
         for k, v in weights.items():
             k = k.replace("model.", "") if k.startswith("model.") else k
+            if k.startswith("decoder."):  # decoder weights are always fp32
+                v = v.astype(mx.float32)
             sanitized[k] = v
+
         return sanitized
 
     @property
