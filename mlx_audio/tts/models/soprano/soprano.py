@@ -100,9 +100,20 @@ class Model(nn.Module):
 
     def post_load_hook(self, model_path: Path) -> "Model":
         """Post-load hook to initialize tokenizer."""
+
         if self.tokenizer is None:
             tokenizer = AutoTokenizer.from_pretrained(str(model_path))
             self.tokenizer = tokenizer
+
+        # Set stop token ID (encode [STOP] and get the token ID)
+        stop_tokens = self.tokenizer.encode("[STOP]", add_special_tokens=False)
+
+        if self.tokenizer.pad_token_id is not None:
+            self._stop_token_id = self.tokenizer.pad_token_id
+        elif stop_tokens:
+            self._stop_token_id = stop_tokens[0]
+        else:
+            raise ValueError("Stop token not found in tokenizer")
         return self
 
     @classmethod
@@ -148,11 +159,6 @@ class Model(nn.Module):
 
         model = cls(config)
         model.post_load_hook(path)
-
-        # Set stop token ID (encode [STOP] and get the token ID)
-        stop_tokens = model.tokenizer.encode("[STOP]", add_special_tokens=False)
-        if stop_tokens:
-            model._stop_token_id = stop_tokens[0]
 
         # Load LM weights
         lm_weights_path = path / "model.safetensors"
