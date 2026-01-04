@@ -160,27 +160,13 @@ class Model(nn.Module):
         model = cls(config)
         model.post_load_hook(path)
 
-        # Load LM weights
-        lm_weights_path = path / "model.safetensors"
-        if lm_weights_path.exists():
-            lm_weights = mx.load(str(lm_weights_path))
+        weights_path = path / "model.safetensors"
+        if weights_path.exists():
+            weights = mx.load(str(weights_path))
             # Map weights to our structure
-            mapped_weights = model.sanitize(lm_weights)
-            model.language_model.load_weights(
-                list(mapped_weights.items()), strict=False
-            )
-
-        # Load decoder weights
-        decoder_weights_path = path / "decoder.pth"
-        if decoder_weights_path.exists():
-            import torch
-
-            decoder_weights_pt = torch.load(
-                str(decoder_weights_path), map_location="cpu", weights_only=True
-            )
-            decoder_weights = model._convert_decoder_weights(decoder_weights_pt)
-
-            model.decoder.load_weights(list(decoder_weights.items()), strict=False)
+            mapped_weights = model.sanitize(weights)
+            model.load_weights(list(mapped_weights.items()), strict=False)
+            mx.eval(model.parameters())
 
         model.eval()
         return model
@@ -202,25 +188,6 @@ class Model(nn.Module):
     @property
     def layers(self):
         return self.language_model.layers
-
-    def _convert_decoder_weights(self, pt_weights: dict) -> dict:
-        """Convert PyTorch decoder weights to MLX format."""
-        mlx_weights = {}
-        for k, v in pt_weights.items():
-            # Convert tensor to numpy then to mlx
-            np_v = v.cpu().numpy()
-            mx_v = mx.array(np_v)
-
-            # Handle Conv1d weight transposition (PyTorch: out, in, kernel -> MLX: in, kernel, out)
-            if "dwconv.weight" in k or "embed.weight" in k:
-                # Conv1d weights need to be transposed
-                # PyTorch: (out_channels, in_channels, kernel_size)
-                # MLX: (out_channels, kernel_size, in_channels)
-                if len(mx_v.shape) == 3:
-                    mx_v = mx.transpose(mx_v, (0, 2, 1))
-
-            mlx_weights[k] = mx_v
-        return mlx_weights
 
     def _preprocess_text(
         self, texts: List[str], min_length: int = 30
