@@ -217,12 +217,26 @@ class Model(nn.Module):
 
     def _init_tokenizers(self, model_path: Path) -> None:
         """Initialize text tokenizer from model path."""
+        # Check config.json for multilingual setting
+        config_path = model_path / "config.json"
+        is_multilingual = False
+        if config_path.exists():
+            import json
+            with open(config_path) as f:
+                config = json.load(f)
+                is_multilingual = config.get("multilingual", False)
+
         tokenizer_path = model_path / "tokenizer.json"
         if tokenizer_path.exists():
             try:
-                from .tokenizer import EnTokenizer
+                from .tokenizer import EnTokenizer, MTLTokenizer
 
-                self.tokenizer = EnTokenizer(tokenizer_path)
+                if is_multilingual:
+                    self.tokenizer = MTLTokenizer(tokenizer_path)
+                    print("Loaded multilingual tokenizer (MTLTokenizer)")
+                else:
+                    self.tokenizer = EnTokenizer(tokenizer_path)
+                    print("Loaded English tokenizer (EnTokenizer)")
             except ImportError:
                 print("Warning: tokenizers library not available")
                 self.tokenizer = None
@@ -515,13 +529,26 @@ class Model(nn.Module):
         model._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
         load_component_weights(model._s3_tokenizer, s3tok_weights, strict=False)
 
-        # Initialize text tokenizer
+        # Initialize text tokenizer (check config for multilingual setting)
         tokenizer_path = ckpt_dir / "tokenizer.json"
         if tokenizer_path.exists():
             try:
-                from .tokenizer import EnTokenizer
+                from .tokenizer import EnTokenizer, MTLTokenizer
+                
+                # Check if multilingual model from config.json
+                is_multilingual = False
+                config_path = ckpt_dir / "config.json"
+                if config_path.exists():
+                    with open(config_path) as f:
+                        config = json.load(f)
+                        is_multilingual = config.get("multilingual", False)
 
-                model.tokenizer = EnTokenizer(tokenizer_path)
+                if is_multilingual:
+                    model.tokenizer = MTLTokenizer(tokenizer_path)
+                    print("Loaded multilingual tokenizer (MTLTokenizer)")
+                else:
+                    model.tokenizer = EnTokenizer(tokenizer_path)
+                    print("Loaded English tokenizer (EnTokenizer)")
             except ImportError:
                 print("Warning: tokenizers library not available")
                 model.tokenizer = None
@@ -546,14 +573,26 @@ class Model(nn.Module):
         Returns:
             The model with tokenizer and conditionals initialized
         """
-        # Load text tokenizer
+        # Load text tokenizer (check config for multilingual setting)
         tokenizer_path = model_path / "tokenizer.json"
         if tokenizer_path.exists():
             try:
-                from .tokenizer import EnTokenizer
+                from .tokenizer import EnTokenizer, MTLTokenizer
+                
+                # Check if multilingual model from config..json
+                is_multilingual = False
+                config_path = model_path / "config.json"
+                if config_path.exists():
+                    with open(config_path) as f:
+                        config = json.load(f)
+                        is_multilingual = config.get("multilingual", False)
 
-                model.tokenizer = EnTokenizer(tokenizer_path)
-                print("Loaded text tokenizer")
+                if is_multilingual:
+                    model.tokenizer = MTLTokenizer(tokenizer_path)
+                    print("Loaded multilingual tokenizer (MTLTokenizer)")
+                else:
+                    model.tokenizer = EnTokenizer(tokenizer_path)
+                    print("Loaded English tokenizer (EnTokenizer)")
             except ImportError:
                 print("Warning: tokenizers library not available")
                 model.tokenizer = None
