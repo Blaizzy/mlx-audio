@@ -52,10 +52,11 @@ def download_chatterbox_weights(cache_dir: Path) -> Path:
         snapshot_download(
             repo_id="ResembleAI/chatterbox",
             allow_patterns=[
+                "Cangjie5_TC.json",
                 "ve.safetensors",
-                "t3_cfg.safetensors",
+                "t3_mtl23ls_v2.safetensors",
                 "s3gen.safetensors",
-                "tokenizer.json",
+                "grapheme_mtl_merged_expanded_v1.json",
             ],
             cache_dir=cache_dir,
         )
@@ -222,7 +223,7 @@ This model was converted to MLX format from [ResembleAI/chatterbox](https://hugg
 ## Use with mlx-audio
 
 ```bash
-pip install -U mlx-audio
+pip install -U git+https://github.com/litmudoc/mlx-audio.git@main mlx-audio
 ```
 
 ### Command line
@@ -426,7 +427,7 @@ def convert_all(
 
     # Convert T3
     print("\nConverting T3...")
-    t3_weights = load_pytorch_safetensors(ckpt_dir / "t3_cfg.safetensors")
+    t3_weights = load_pytorch_safetensors(ckpt_dir / "t3_mtl23ls_v2.safetensors")
     t3_weights_mx = numpy_to_mlx(t3_weights)
     t3 = T3()
     t3_weights_mx = t3.sanitize(t3_weights_mx)
@@ -516,13 +517,18 @@ def convert_all(
 
     # Copy tokenizer.json
     print("\nCopying tokenizer.json...")
-    shutil.copy(ckpt_dir / "tokenizer.json", output_dir / "tokenizer.json")
+    shutil.copy(ckpt_dir / "grapheme_mtl_merged_expanded_v1.json", output_dir / "tokenizer.json")
+    # Copy Cangjie5_TC.json
+    print("\nCopying Cangjie5_TC.json...")
+    shutil.copy(ckpt_dir / "Cangjie5_TC.json", output_dir / "Cangjie5_TC.json")
 
     # Create config.json
     print("\nCreating config.json...")
     config = {
         "model_type": "chatterbox",
         "version": "1.0",
+        "multilingual": True,
+        "vocab_size": 2454,
     }
     if quantize:
         config["quantization"] = {
@@ -530,6 +536,8 @@ def convert_all(
             "group_size": group_size,
             "quantized_components": ["t3.tfmr.model.layers"],
         }
+    else:
+        config["precision"] = "fp16"
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2)
 
