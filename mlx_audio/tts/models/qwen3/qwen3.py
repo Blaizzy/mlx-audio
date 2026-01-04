@@ -1,7 +1,7 @@
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Union
 
 import mlx.core as mx
 from mlx_lm.generate import stream_generate
@@ -193,27 +193,53 @@ class Model(Qwen3Model):
 
     def prepare_input_ids(
         self,
-        prompt: str,
+        prompt: Union[str, List[str]],
         voice: Optional[str] = None,
         zeroprompt: Optional[mx.array] = None,
     ):
-        """Prepare input ids for a single prompt, optionally with zeroprompt prefix."""
-        if voice is not None and zeroprompt is None:
-            prompt = f"{voice}: {prompt}"
+        """Prepare input ids for a single prompt or batch of prompts, optionally with zeroprompt prefix."""
+        # Handle single prompt vs batch
+        if isinstance(prompt, str):
+            prompts = [prompt]
+        else:
+            prompts = prompt
 
-        start_token = mx.array([[START_OF_HUMAN]], dtype=mx.int64)  # 151672
-        end_tokens = mx.array(
-            [[END_OF_TEXT, END_OF_HUMAN]], dtype=mx.int64
-        )  # 151645, 151673
+        all_input_ids = []
+        for p in prompts:
+            if voice is not None and zeroprompt is None:
+                p = f"{voice}: {p}"
 
-        input_ids = self.tokenizer(prompt, return_tensors="mlx").input_ids
-        prompt_input_ids = mx.concatenate(
-            [start_token, input_ids, end_tokens], axis=1
-        )  # [SOH] [text] [EOT EOH]
+            start_token = mx.array([[START_OF_HUMAN]], dtype=mx.int64)  # 151672
+            end_tokens = mx.array(
+                [[END_OF_TEXT, END_OF_HUMAN]], dtype=mx.int64
+            )  # 151645, 151673
 
-        if zeroprompt is not None:
-            return mx.concatenate([zeroprompt, prompt_input_ids], axis=1)
-        return prompt_input_ids
+            input_ids = self.tokenizer(p, return_tensors="mlx").input_ids
+            prompt_input_ids = mx.concatenate(
+                [start_token, input_ids, end_tokens], axis=1
+            )  # [SOH] [text] [EOT EOH]
+
+            if zeroprompt is not None:
+                prompt_input_ids = mx.concatenate(
+                    [zeroprompt, prompt_input_ids], axis=1
+                )
+
+            all_input_ids.append(prompt_input_ids)
+
+        # If only one prompt, return as-is (keeps original behavior)
+        if len(all_input_ids) == 1:
+            return all_input_ids[0]
+
+        # Pad to same length and stack for batch
+        max_len = max(ids.shape[1] for ids in all_input_ids)
+        padded = []
+        for ids in all_input_ids:
+            if ids.shape[1] < max_len:
+                padding = mx.zeros((1, max_len - ids.shape[1]), dtype=mx.int64)
+                ids = mx.concatenate([ids, padding], axis=1)
+            padded.append(ids)
+
+        return mx.concatenate(padded, axis=0)
 
     def generate_result(
         self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs

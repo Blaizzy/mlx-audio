@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import List, Optional, Union
 
 import mlx.core as mx
 from mlx_lm.generate import stream_generate
@@ -171,27 +171,92 @@ class Model(LlamaModel):
 
     def prepare_input_ids(
         self,
-        prompt: str,
+        prompt: Union[str, List[str]],
         voice: Optional[str] = None,
         zeroprompt: Optional[mx.array] = None,
+        ref_audio: Optional[mx.array] = None,
+        ref_text: Optional[str] = None,
     ):
-        """Prepare input ids for a single prompt, optionally with zeroprompt prefix."""
-        if voice is not None and zeroprompt is None:
-            prompt = f"{voice}: {prompt}"
+        """Prepare input ids for a single prompt or batch of prompts, optionally with zeroprompt prefix.
 
-        start_token = mx.array([[128259]], dtype=mx.int64)  # Start of human
-        end_tokens = mx.array(
-            [[128009, 128260]], dtype=mx.int64
-        )  # End of text, End of human
+        Args:
+            prompt: Single prompt string or list of prompts for batch processing
+            voice: Voice name to prepend to prompts (e.g., "zoe")
+            zeroprompt: Pre-computed zeroprompt array for voice cloning
+            ref_audio: Reference audio for voice cloning (alternative to zeroprompt)
+            ref_text: Reference text caption for voice cloning (used with ref_audio)
 
-        input_ids = self.tokenizer(prompt, return_tensors="mlx").input_ids
-        prompt_input_ids = mx.concatenate(
-            [start_token, input_ids, end_tokens], axis=1
-        )  # [SOH] [text] [EOT EOH]
+        Returns:
+            If ref_audio/ref_text provided: tuple of (input_ids, input_mask)
+            Otherwise: input_ids array
+        """
+        # Compute zeroprompt from ref_audio/ref_text if provided
+        return_mask = False
+        if ref_audio is not None and ref_text is not None:
+            zeroprompt = self.prepare_zeroprompt(ref_audio, ref_text)
+            return_mask = True
 
-        if zeroprompt is not None:
-            return mx.concatenate([zeroprompt, prompt_input_ids], axis=1)
-        return prompt_input_ids
+        # Handle single prompt vs batch
+        if isinstance(prompt, str):
+            prompts = [prompt]
+        else:
+            prompts = prompt
+
+        all_input_ids = []
+        all_lengths = []
+        for p in prompts:
+            if voice is not None and zeroprompt is None:
+                p = f"{voice}: {p}"
+
+            start_token = mx.array([[128259]], dtype=mx.int64)  # Start of human
+            end_tokens = mx.array(
+                [[128009, 128260]], dtype=mx.int64
+            )  # End of text, End of human
+
+            input_ids = self.tokenizer(p, return_tensors="mlx").input_ids
+            prompt_input_ids = mx.concatenate(
+                [start_token, input_ids, end_tokens], axis=1
+            )  # [SOH] [text] [EOT EOH]
+
+            if zeroprompt is not None:
+                prompt_input_ids = mx.concatenate(
+                    [zeroprompt, prompt_input_ids], axis=1
+                )
+
+            all_input_ids.append(prompt_input_ids)
+            all_lengths.append(prompt_input_ids.shape[1])
+
+        # If only one prompt, return as-is (keeps original behavior)
+        if len(all_input_ids) == 1:
+            if return_mask:
+                mask = mx.ones_like(all_input_ids[0], dtype=mx.int64)
+                return all_input_ids[0], mask
+            return all_input_ids[0]
+
+        # Pad to same length and stack for batch
+        max_len = max(ids.shape[1] for ids in all_input_ids)
+        padded = []
+        masks = []
+        for ids, length in zip(all_input_ids, all_lengths):
+            if ids.shape[1] < max_len:
+                padding = mx.zeros((1, max_len - ids.shape[1]), dtype=mx.int64)
+                ids = mx.concatenate([ids, padding], axis=1)
+            padded.append(ids)
+            # Create attention mask: 1 for real tokens, 0 for padding
+            mask = mx.concatenate(
+                [
+                    mx.ones((1, length), dtype=mx.int64),
+                    mx.zeros((1, max_len - length), dtype=mx.int64),
+                ],
+                axis=1,
+            )
+            masks.append(mask)
+
+        input_ids = mx.concatenate(padded, axis=0)
+        if return_mask:
+            input_mask = mx.concatenate(masks, axis=0)
+            return input_ids, input_mask
+        return input_ids
 
     def generate_result(
         self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs
