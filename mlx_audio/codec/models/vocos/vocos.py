@@ -147,7 +147,6 @@ class ConvNeXtBlock(nn.Module):
         intermediate_dim: int,
         layer_scale_init_value: float,
         adanorm_num_embeddings: Optional[int] = None,
-        input_kernel_size: int = 7,
         dw_kernel_size: int = 7,
     ):
         super().__init__()
@@ -248,7 +247,6 @@ class VocosBackbone(nn.Module):
                 intermediate_dim=intermediate_dim,
                 layer_scale_init_value=layer_scale_init_value,
                 adanorm_num_embeddings=adanorm_num_embeddings,
-                input_kernel_size=input_kernel_size,
                 dw_kernel_size=dw_kernel_size,
             )
             for _ in range(num_layers)

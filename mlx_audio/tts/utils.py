@@ -21,6 +21,7 @@ MODEL_REMAPPING = {
     "voxcpm1.5": "voxcpm",
     "vibevoice_streaming": "vibevoice",
     "chatterbox_turbo": "chatterbox_turbo",
+    "soprano": "soprano",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
