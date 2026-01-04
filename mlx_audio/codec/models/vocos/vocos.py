@@ -147,11 +147,19 @@ class ConvNeXtBlock(nn.Module):
         intermediate_dim: int,
         layer_scale_init_value: float,
         adanorm_num_embeddings: Optional[int] = None,
+        input_kernel_size: int = 7,
+        dw_kernel_size: int = 7,
     ):
         super().__init__()
 
         # depthwise conv
-        self.dwconv = nn.Conv1d(dim, dim, kernel_size=7, padding=3, groups=dim)
+        self.dwconv = nn.Conv1d(
+            dim,
+            dim,
+            kernel_size=dw_kernel_size,
+            padding=dw_kernel_size // 2,
+            groups=dim,
+        )
         self.adanorm = adanorm_num_embeddings is not None
         if adanorm_num_embeddings:
             self.norm = AdaLayerNorm(adanorm_num_embeddings, dim, eps=1e-6)
@@ -217,10 +225,17 @@ class VocosBackbone(nn.Module):
         layer_scale_init_value: Optional[float] = None,
         adanorm_num_embeddings: Optional[int] = None,
         bias: bool = True,
+        input_kernel_size: int = 7,
+        dw_kernel_size: int = 7,
     ):
         super().__init__()
         self.input_channels = input_channels
-        self.embed = nn.Conv1d(input_channels, dim, kernel_size=7, padding=3)
+        self.embed = nn.Conv1d(
+            input_channels,
+            dim,
+            kernel_size=input_kernel_size,
+            padding=input_kernel_size // 2,
+        )
         self.adanorm = adanorm_num_embeddings is not None
         if adanorm_num_embeddings:
             self.norm = AdaLayerNorm(adanorm_num_embeddings, dim, eps=1e-6)
@@ -233,6 +248,8 @@ class VocosBackbone(nn.Module):
                 intermediate_dim=intermediate_dim,
                 layer_scale_init_value=layer_scale_init_value,
                 adanorm_num_embeddings=adanorm_num_embeddings,
+                input_kernel_size=input_kernel_size,
+                dw_kernel_size=dw_kernel_size,
             )
             for _ in range(num_layers)
         ]
