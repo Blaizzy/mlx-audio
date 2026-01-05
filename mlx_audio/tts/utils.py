@@ -19,6 +19,7 @@ from mlx_audio.utils import (
 MODEL_REMAPPING = {
     "qwen3_tts": "qwen3_tts",
     "outetts": "outetts",
+    "cosyvoice3": "cosyvoice3",
     "spark": "spark",
     "marvis": "sesame",
     "csm": "sesame",
