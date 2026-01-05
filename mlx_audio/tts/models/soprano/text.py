@@ -1,12 +1,8 @@
-"""
-Text normalization utilities for Soprano TTS.
-Adapted from https://github.com/ekwek1/soprano
-"""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import re
 import unicodedata
 
-# Simple number to words conversion (no external deps)
 ONES = [
     "",
     "one",

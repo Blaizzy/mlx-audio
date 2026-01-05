@@ -1,11 +1,4 @@
-"""
-Soprano Decoder for converting LLM hidden states to audio.
-Ported from https://github.com/ekwek1/soprano
-
-The decoder uses a Vocos-like architecture with ConvNeXt blocks and ISTFT head.
-
-Note: MLX Conv1d uses (B, L, C) format, not PyTorch's (B, C, L).
-"""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 from typing import Optional
 
@@ -19,10 +12,6 @@ from ..interpolate import interpolate
 
 
 class ISTFTHead(nn.Module):
-    """ISTFT Head module for predicting STFT complex coefficients.
-
-    Uses mlx_audio's tested ISTFT implementation for reliable audio reconstruction.
-    """
 
     def __init__(self, dim: int, n_fft: int, hop_length: int, padding: str = "center"):
         super().__init__()
@@ -62,20 +51,6 @@ class ISTFTHead(nn.Module):
 
 
 class SopranoDecoder(nn.Module):
-    """Soprano Decoder that converts LLM hidden states to audio waveforms.
-
-    Uses MLX's (B, L, C) convention.
-
-    Args:
-        num_input_channels (int): Number of input channels from LLM hidden states.
-        decoder_num_layers (int): Number of ConvNeXt layers in the backbone.
-        decoder_dim (int): Hidden dimension of the decoder.
-        decoder_intermediate_dim (int, optional): Intermediate dimension for ConvNeXt.
-        hop_length (int): Hop length for ISTFT.
-        n_fft (int): FFT size for ISTFT.
-        upscale (int): Upscaling factor for hidden states.
-        dw_kernel (int): Kernel size for depthwise convolutions.
-    """
 
     def __init__(
         self,

@@ -1,8 +1,5 @@
-"""
-Soprano TTS Model for MLX.
-Ultra-lightweight text-to-speech with ~80M parameters.
-Ported from https://github.com/ekwek1/soprano
-"""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
+
 
 import re
 import time
