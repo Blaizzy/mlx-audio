@@ -1537,5 +1537,306 @@ class TestChatterboxTurboModelAlias(unittest.TestCase):
         self.assertIs(Model, ChatterboxTurboTTS)
 
 
+class TestSoprano(unittest.TestCase):
+    """Tests for Soprano TTS model."""
+
+    @property
+    def _default_config(self):
+        from mlx_audio.tts.models.soprano import DecoderConfig, ModelConfig
+
+        return ModelConfig(
+            model_type="qwen3",
+            hidden_size=512,
+            num_hidden_layers=4,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            intermediate_size=1024,
+            vocab_size=32000,
+            head_dim=64,
+            rms_norm_eps=1e-5,
+            max_position_embeddings=4096,
+            rope_theta=10000.0,
+            tie_word_embeddings=False,
+            decoder_config=DecoderConfig(),
+        )
+
+    # Config tests
+    def test_decoder_config_defaults(self):
+        """Test DecoderConfig default values."""
+        from mlx_audio.tts.models.soprano import DecoderConfig
+
+        config = DecoderConfig()
+        self.assertEqual(config.decoder_num_layers, 8)
+        self.assertEqual(config.decoder_dim, 512)
+        self.assertEqual(config.decoder_intermediate_dim, 1536)
+        self.assertEqual(config.hop_length, 512)
+        self.assertEqual(config.n_fft, 2048)
+        self.assertEqual(config.upscale, 4)
+        self.assertEqual(config.dw_kernel, 3)
+        self.assertEqual(config.token_size, 2048)
+        self.assertEqual(config.receptive_field, 4)
+
+    def test_model_config_defaults(self):
+        """Test ModelConfig default values."""
+        from mlx_audio.tts.models.soprano import ModelConfig
+
+        config = ModelConfig(
+            model_type="qwen3",
+            hidden_size=512,
+            num_hidden_layers=12,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            intermediate_size=1024,
+            vocab_size=32000,
+            head_dim=64,
+            rms_norm_eps=1e-5,
+            max_position_embeddings=4096,
+            rope_theta=10000.0,
+            tie_word_embeddings=False,
+        )
+        self.assertEqual(config.sample_rate, 32000)
+        self.assertIsNotNone(config.decoder_config)
+
+    def test_model_config_post_init(self):
+        """Test that ModelConfig creates decoder_config if None."""
+        from mlx_audio.tts.models.soprano import DecoderConfig, ModelConfig
+
+        config = ModelConfig(
+            model_type="qwen3",
+            hidden_size=512,
+            num_hidden_layers=12,
+            num_attention_heads=8,
+            num_key_value_heads=4,
+            intermediate_size=1024,
+            vocab_size=32000,
+            head_dim=64,
+            rms_norm_eps=1e-5,
+            max_position_embeddings=4096,
+            rope_theta=10000.0,
+            tie_word_embeddings=False,
+            decoder_config=None,
+        )
+        self.assertIsNotNone(config.decoder_config)
+        self.assertIsInstance(config.decoder_config, DecoderConfig)
+
+    # Model tests
+    def test_model_init(self):
+        """Test Model initialization."""
+        from mlx_audio.tts.models.soprano import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        self.assertIsNotNone(model.language_model)
+        self.assertIsNotNone(model.decoder)
+        self.assertEqual(model.config.sample_rate, 32000)
+
+    def test_sample_rate_property(self):
+        """Test sample_rate property."""
+        from mlx_audio.tts.models.soprano import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        self.assertEqual(model.sample_rate, 32000)
+
+    def test_layers_property(self):
+        """Test layers property returns LM layers."""
+        from mlx_audio.tts.models.soprano import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        layers = model.layers
+        self.assertEqual(len(layers), config.num_hidden_layers)
+
+    def test_sanitize(self):
+        """Test weight sanitization."""
+        from mlx_audio.tts.models.soprano import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        weights = {
+            "model.embed_tokens.weight": mx.zeros((32000, 512)),
+            "model.layers.0.input_layernorm.weight": mx.zeros(512),
+            "decoder.backbone.weight": mx.zeros((512, 512)),
+        }
+
+        sanitized = model.sanitize(weights)
+
+        self.assertIn("embed_tokens.weight", sanitized)
+        self.assertIn("layers.0.input_layernorm.weight", sanitized)
+        self.assertIn("decoder.backbone.weight", sanitized)
+        self.assertNotIn("model.embed_tokens.weight", sanitized)
+
+    def test_sanitize_decoder_float32(self):
+        """Test that decoder weights are converted to float32."""
+        from mlx_audio.tts.models.soprano import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        weights = {
+            "decoder.backbone.weight": mx.zeros((512, 512), dtype=mx.bfloat16),
+            "lm_head.weight": mx.zeros((32000, 512), dtype=mx.bfloat16),
+        }
+
+        sanitized = model.sanitize(weights)
+
+        self.assertEqual(sanitized["decoder.backbone.weight"].dtype, mx.float32)
+        self.assertEqual(sanitized["lm_head.weight"].dtype, mx.bfloat16)
+
+    def test_format_duration(self):
+        """Test _format_duration helper method."""
+        from mlx_audio.tts.models.soprano import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        self.assertEqual(model._format_duration(0), "00:00:00.000")
+        self.assertEqual(model._format_duration(1.5), "00:00:01.500")
+        self.assertEqual(model._format_duration(61.25), "00:01:01.250")
+        self.assertEqual(model._format_duration(3661.123), "01:01:01.123")
+
+    # Text processing tests
+    def test_clean_text(self):
+        """Test clean_text function."""
+        from mlx_audio.tts.models.soprano.text import clean_text
+
+        self.assertEqual(clean_text("Hello World!"), "hello world!")
+        self.assertEqual(clean_text("I have 5 apples."), "i have five apples.")
+
+    def test_normalize_numbers(self):
+        """Test number normalization."""
+        from mlx_audio.tts.models.soprano.text import normalize_numbers
+
+        self.assertIn("five", normalize_numbers("5"))
+        self.assertIn("twenty", normalize_numbers("20"))
+        self.assertIn("hundred", normalize_numbers("100"))
+        self.assertIn("dollar", normalize_numbers("$5"))
+        self.assertIn("first", normalize_numbers("1st"))
+
+    def test_expand_abbreviations(self):
+        """Test abbreviation expansion."""
+        from mlx_audio.tts.models.soprano.text import expand_abbreviations
+
+        self.assertIn("mister", expand_abbreviations("Mr."))
+        self.assertIn("doctor", expand_abbreviations("Dr."))
+        self.assertIn("text to speech", expand_abbreviations("TTS"))
+
+    def test_expand_special_characters(self):
+        """Test special character expansion."""
+        from mlx_audio.tts.models.soprano.text import expand_special_characters
+
+        self.assertIn("at", expand_special_characters("@"))
+        self.assertIn("and", expand_special_characters("&"))
+        self.assertIn("percent", expand_special_characters("%"))
+
+    def test_collapse_whitespace(self):
+        """Test whitespace collapsing."""
+        from mlx_audio.tts.models.soprano.text import collapse_whitespace
+
+        self.assertEqual(collapse_whitespace("hello  world"), "hello world")
+        self.assertEqual(collapse_whitespace("  hello   world  "), "hello world")
+        self.assertEqual(collapse_whitespace("hello ,world"), "hello,world")
+
+    def test_dedup_punctuation(self):
+        """Test punctuation deduplication."""
+        from mlx_audio.tts.models.soprano.text import dedup_punctuation
+
+        self.assertEqual(dedup_punctuation("hello...."), "hello.")
+        self.assertEqual(dedup_punctuation("hello,,,,"), "hello,")
+        self.assertEqual(dedup_punctuation("hello??!!"), "hello?")
+
+    def test_convert_to_ascii(self):
+        """Test unicode to ASCII conversion."""
+        from mlx_audio.tts.models.soprano.text import convert_to_ascii
+
+        self.assertEqual(convert_to_ascii("café"), "cafe")
+        self.assertEqual(convert_to_ascii("naïve"), "naive")
+
+    def test_num_to_words(self):
+        """Test number to words conversion."""
+        from mlx_audio.tts.models.soprano.text import _num_to_words
+
+        self.assertEqual(_num_to_words(0), "zero")
+        self.assertEqual(_num_to_words(1), "one")
+        self.assertEqual(_num_to_words(10), "ten")
+        self.assertEqual(_num_to_words(21), "twenty one")
+        self.assertEqual(_num_to_words(100), "one hundred")
+        self.assertEqual(_num_to_words(1000), "one thousand")
+        self.assertEqual(_num_to_words(-5), "minus five")
+
+    def test_ordinal_to_words(self):
+        """Test ordinal to words conversion."""
+        from mlx_audio.tts.models.soprano.text import _ordinal_to_words
+
+        self.assertEqual(_ordinal_to_words(1), "first")
+        self.assertEqual(_ordinal_to_words(2), "second")
+        self.assertEqual(_ordinal_to_words(3), "third")
+        self.assertEqual(_ordinal_to_words(10), "tenth")
+        self.assertEqual(_ordinal_to_words(21), "twenty first")
+
+    # Decoder tests
+    def test_decoder_init(self):
+        """Test SopranoDecoder initialization."""
+        from mlx_audio.tts.models.soprano.decoder import SopranoDecoder
+
+        decoder = SopranoDecoder(
+            num_input_channels=512,
+            decoder_num_layers=4,
+            decoder_dim=256,
+            decoder_intermediate_dim=768,
+            hop_length=512,
+            n_fft=2048,
+            upscale=4,
+            dw_kernel=3,
+        )
+
+        self.assertEqual(decoder.decoder_initial_channels, 512)
+        self.assertEqual(decoder.num_layers, 4)
+        self.assertEqual(decoder.dim, 256)
+        self.assertEqual(decoder.intermediate_dim, 768)
+        self.assertEqual(decoder.hop_length, 512)
+        self.assertEqual(decoder.n_fft, 2048)
+        self.assertEqual(decoder.upscale, 4)
+        self.assertEqual(decoder.dw_kernel, 3)
+
+    def test_decoder_default_intermediate_dim(self):
+        """Test default intermediate_dim calculation."""
+        from mlx_audio.tts.models.soprano.decoder import SopranoDecoder
+
+        decoder = SopranoDecoder(
+            num_input_channels=512,
+            decoder_num_layers=4,
+            decoder_dim=256,
+            decoder_intermediate_dim=None,
+        )
+
+        self.assertEqual(decoder.intermediate_dim, 256 * 3)
+
+    # ISTFT Head tests
+    def test_istft_head_init(self):
+        """Test ISTFTHead initialization."""
+        from mlx_audio.tts.models.soprano.decoder import ISTFTHead
+
+        head = ISTFTHead(dim=512, n_fft=2048, hop_length=512)
+
+        self.assertEqual(head.n_fft, 2048)
+        self.assertEqual(head.hop_length, 512)
+
+    def test_istft_head_forward(self):
+        """Test ISTFTHead forward pass."""
+        from mlx_audio.tts.models.soprano.decoder import ISTFTHead
+
+        head = ISTFTHead(dim=512, n_fft=2048, hop_length=512)
+        x = mx.zeros((1, 10, 512))
+        audio = head(x)
+
+        self.assertEqual(len(audio.shape), 2)
+        self.assertEqual(audio.shape[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
