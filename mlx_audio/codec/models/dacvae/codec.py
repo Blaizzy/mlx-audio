@@ -4,7 +4,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import Callable, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
