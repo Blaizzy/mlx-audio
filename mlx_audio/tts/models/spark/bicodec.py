@@ -36,7 +36,7 @@ def mel_spectrogram(
         audio = mx.pad(audio, (0, padding))
     window = hanning(win_length + 1)[:-1]
     freqs = stft(
-        audio, window, win_length=win_length, hop_length=hop_length, nfft=n_fft
+        audio, window=window, win_length=win_length, hop_length=hop_length, n_fft=n_fft
     )
     magnitudes = freqs.abs()
     filters = mel_filters(

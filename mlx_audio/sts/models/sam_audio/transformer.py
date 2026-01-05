@@ -172,9 +172,10 @@ class Attention(nn.Module):
 
         # Apply attention mask
         if key_padding_mask is not None:
-            # key_padding_mask: (batch, kv_seq_len) -> (batch, 1, 1, kv_seq_len)
+            # key_padding_mask: (batch, kv_seq_len) where True = attend, False = mask out
+            # mx.where(cond, x, y): returns x where cond is True, y where False
             mask = key_padding_mask[:, None, None, :]
-            scores = mx.where(mask, mx.array(float("-inf")), scores)
+            scores = mx.where(mask, scores, mx.array(float("-inf")))
 
         weights = mx.softmax(scores, axis=-1)
         output = weights @ xv

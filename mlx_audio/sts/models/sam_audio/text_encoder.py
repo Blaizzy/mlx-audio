@@ -1,5 +1,6 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -8,6 +9,10 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import T5EncoderConfig
+
+# Suppress HTTPX and HuggingFace Hub logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 
 @dataclass
@@ -590,7 +595,7 @@ class T5TextEncoder:
         Returns:
             Tuple of (features, attention_mask) as MLX arrays
             - features: (batch, seq_len, dim)
-            - attention_mask: (batch, seq_len) boolean mask where True = masked
+            - attention_mask: (batch, seq_len) boolean mask where True = attend, False = mask out
         """
         self._lazy_load()
 
@@ -609,9 +614,9 @@ class T5TextEncoder:
         # Encode with MLX model
         features = self.model(input_ids=input_ids, attention_mask=attention_mask)
 
-        # Convert attention mask for SAM-Audio
+        # Convert attention mask to boolean
         # HuggingFace: attention_mask=1 means "attend", =0 means "padding"
-        # SAM-Audio: mask=True means "mask out" (padding)
-        inverted_mask = attention_mask == 0
+        # We keep same convention as PyTorch SAM-Audio: True = attend, False = mask out
+        bool_mask = attention_mask.astype(mx.bool_)
 
-        return features, inverted_mask
+        return features, bool_mask

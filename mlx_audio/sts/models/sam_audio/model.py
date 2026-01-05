@@ -3,20 +3,21 @@
 import contextlib
 import json
 import math
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-from mlx.utils import tree_map, tree_reduce
+from mlx.utils import tree_reduce
 from tqdm import tqdm
 
+from mlx_audio.codec.models.dacvae import DACVAE
+
 from .align import EmbedAnchors
-from .codec import DACVAE
 from .config import SAMAudioConfig
+from .processor import Batch, SAMAudioProcessor
 from .text_encoder import T5TextEncoder
 from .transformer import DiT
 
@@ -55,6 +56,10 @@ def wired_limit(model: nn.Module):
         mx.set_wired_limit(old_limit)
 
 
+def _fallback(value, default):
+    return default if value is None else value
+
+
 # Default ODE solver options
 DFLT_ODE_OPT = {"method": "midpoint", "step_size": 2 / 32}
 
@@ -84,12 +89,30 @@ class SinusoidalEmbedding(nn.Module):
 
 @dataclass
 class SeparationResult:
-    """Result of audio separation."""
+    """Result of audio separation (supports both batch and streaming modes).
 
-    target: List[mx.array]  # Separated target audio(s)
-    residual: List[mx.array]  # Residual/background audio(s)
-    noise: mx.array  # Initial noise used for generation
-    peak_memory: float  # Peak memory usage in GB
+    In batch mode (separate/separate_long):
+        - target/residual: List[mx.array] with all separated audio
+        - noise: mx.array with initial noise
+        - peak_memory: float with peak memory usage
+        - chunk_idx/is_last: None
+
+    In streaming mode (separate_streaming generator):
+        - target/residual: mx.array with the current chunk
+        - noise: mx.array on last chunk only, None otherwise
+        - peak_memory: float on last chunk only, None otherwise
+        - chunk_idx: int index of this chunk
+        - is_last: bool True if this is the final chunk
+    """
+
+    target: Union[List[mx.array], mx.array]  # Separated target audio(s) or chunk
+    residual: Union[List[mx.array], mx.array]  # Residual/background audio(s) or chunk
+    noise: Optional[mx.array] = None  # Initial noise used for generation
+    peak_memory: Optional[float] = None  # Peak memory usage in GB
+
+    # Streaming-specific fields (None for batch mode)
+    chunk_idx: Optional[int] = None  # Index of this chunk
+    is_last: Optional[bool] = None  # True if this is the final chunk
 
 
 class SAMAudio(nn.Module):
@@ -135,6 +158,47 @@ class SAMAudio(nn.Module):
     def sample_rate(self) -> int:
         """Audio sample rate."""
         return self.audio_codec.sample_rate
+
+    def _prepare_inputs(
+        self,
+        audios: Union[mx.array, List[str]],
+        descriptions: List[str] = None,
+        anchors: Optional[List[List[Tuple[str, float, float]]]] = None,
+    ) -> Batch:
+        """
+        Prepare audio and anchor inputs, handling both mx.array and file paths.
+
+        Args:
+            audios: Either an mx.array (B, 1, T) or list of audio file paths
+            descriptions: Text descriptions (needed for batch size)
+            anchors: Optional temporal anchors [[("+", start, end), ...], ...]
+                     Note: anchors are only processed when audios is a list of file paths.
+                     When audios is an mx.array, pass anchor_ids and anchor_alignment directly.
+
+        Returns:
+            Batch with audio tensor and optional anchor data
+        """
+        if isinstance(audios, mx.array):
+            return Batch(audios=audios, descriptions=descriptions)
+
+        if isinstance(audios, list) and len(audios) > 0 and isinstance(audios[0], str):
+            batch = self.processor(
+                descriptions=descriptions,
+                audios=audios,
+                anchors=anchors,
+            )
+            return batch
+
+        raise TypeError(f"audios must be mx.array or List[str], got {type(audios)}")
+
+    def post_load_hook(self, model_path: Path) -> "SAMAudio":
+        """
+        Post-load hook called by load_model to initialize tokenizer and conditionals.
+        """
+        # Initialize processor for anchor handling
+        if not hasattr(self, "processor"):
+            self.processor = SAMAudioProcessor.from_pretrained(model_path)
+        return self
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
@@ -370,9 +434,10 @@ class SAMAudio(nn.Module):
 
     def separate(
         self,
-        audios: mx.array,
+        audios: Union[mx.array, List[str]],
         descriptions: List[str],
         sizes: Optional[mx.array] = None,
+        anchors: Optional[List[List[Tuple[str, float, float]]]] = None,
         anchor_ids: Optional[mx.array] = None,
         anchor_alignment: Optional[mx.array] = None,
         audio_pad_mask: Optional[mx.array] = None,
@@ -388,11 +453,12 @@ class SAMAudio(nn.Module):
         Separate audio sources using text prompts.
 
         Args:
-            audios: Input audio tensor (B, 1, length)
+            audios: Input audio tensor (B, 1, length) or list of audio file paths
             descriptions: Text descriptions of target sounds
             sizes: Sequence lengths (B,) - if None, computed from audio_features
-            anchor_ids: Anchor token IDs for temporal prompts
-            anchor_alignment: Timestep to anchor mapping
+            anchors: Temporal anchors [[("+", start, end), ...], ...] - only used with file paths
+            anchor_ids: Anchor token IDs for temporal prompts (use with mx.array input)
+            anchor_alignment: Timestep to anchor mapping (use with mx.array input)
             audio_pad_mask: Padding mask for audio
             noise: Initial noise (optional)
             ode_opt: ODE solver options
@@ -403,6 +469,18 @@ class SAMAudio(nn.Module):
         Returns:
             SeparationResult with target and residual audio
         """
+        # Prepare inputs (handle file paths and anchors)
+        batch = self._prepare_inputs(
+            audios=audios,
+            descriptions=descriptions,
+            anchors=anchors,
+        )
+        audios = _fallback(batch.audios, audios)
+        descriptions = _fallback(batch.descriptions, descriptions)
+        sizes = _fallback(batch.sizes, sizes)
+        anchor_ids = _fallback(batch.anchor_ids, anchor_ids)
+        anchor_alignment = _fallback(batch.anchor_alignment, anchor_alignment)
+
         with wired_limit(self):
             if ode_opt is None:
                 ode_opt = DFLT_ODE_OPT
@@ -418,7 +496,6 @@ class SAMAudio(nn.Module):
             audio_features = self._get_audio_features(audios)
             mx.eval(audio_features)
 
-            # Compute sizes from audio_features if not provided
             batch_size, seq_len, _ = audio_features.shape
             if sizes is None:
                 sizes = mx.full((batch_size,), seq_len, dtype=mx.int32)
@@ -431,12 +508,10 @@ class SAMAudio(nn.Module):
                 text_features, text_mask = self.text_encoder(descriptions)
                 mx.eval(text_features, text_mask)
 
-            # Clear cache after encoding
             mx.clear_cache()
 
             channels = audio_features.shape[2] // 2  # Stacked features
 
-            # Initialize noise
             if noise is None:
                 noise = mx.random.normal(audio_features.shape, dtype=self.dtype)
 
@@ -466,14 +541,11 @@ class SAMAudio(nn.Module):
                 )
                 mx.eval(noisy_audio)
 
-                # Clear cache every 4 steps to prevent memory buildup
                 if (i + 1) % 4 == 0:
                     mx.clear_cache()
 
-            # Clear cache after ODE integration
             mx.clear_cache()
 
-            # Decode generated features
             generated_features = mx.transpose(noisy_audio, (0, 2, 1))
 
             # Split into target and residual
@@ -481,7 +553,7 @@ class SAMAudio(nn.Module):
             target_features = generated_features[:, :channels, :]
             residual_features = generated_features[:, channels:, :]
 
-            # Decode to waveforms (decode one at a time to save memory)
+            # Decode to waveforms
             target_wavs = self.audio_codec.decode(
                 target_features, chunk_size=ode_decode_chunk_size
             )
@@ -515,7 +587,7 @@ class SAMAudio(nn.Module):
 
     def separate_long(
         self,
-        audios: mx.array,
+        audios: Union[mx.array, List[str]],
         descriptions: List[str],
         chunk_seconds: float = 10.0,
         overlap_seconds: float = 3.0,
@@ -530,7 +602,8 @@ class SAMAudio(nn.Module):
         Separate long audio files using chunked processing to reduce memory usage.
 
         Args:
-            audios: Input audio tensor (B, 1, length) - currently only B=1 supported
+            audios: Input audio tensor (B, 1, length) or list of audio file paths
+                    (currently only B=1 supported)
             descriptions: Text descriptions of target sounds
             chunk_seconds: Length of each chunk in seconds (default 10s, good balance)
             overlap_seconds: Overlap between chunks for smooth crossfade (default 3s, ~30%)
@@ -544,6 +617,13 @@ class SAMAudio(nn.Module):
         Returns:
             SeparationResult with target and residual audio
         """
+        # Prepare inputs (handle file paths)
+        batch = self._prepare_inputs(
+            audios=audios, descriptions=descriptions, anchors=None
+        )
+        audios = _fallback(batch.audios, audios)
+        descriptions = _fallback(batch.descriptions, descriptions)
+
         if audios.shape[0] != 1:
             raise ValueError("separate_long currently only supports batch_size=1")
 
@@ -687,18 +767,320 @@ class SAMAudio(nn.Module):
             peak_memory=mx.get_peak_memory() / 1e9,
         )
 
+    def separate_streaming(
+        self,
+        audios: Union[mx.array, List[str]],
+        descriptions: List[str],
+        target_callback: Optional[Callable[[mx.array, int, bool], None]] = None,
+        residual_callback: Optional[Callable[[mx.array, int, bool], None]] = None,
+        chunk_seconds: float = 10.0,
+        overlap_seconds: float = 3.0,
+        anchor_ids: Optional[mx.array] = None,
+        anchor_alignment: Optional[mx.array] = None,
+        ode_opt: Dict[str, Any] = None,
+        seed: int = 42,
+        verbose: bool = False,
+    ) -> Union[Generator[SeparationResult, None, None], int]:
+        """
+        Stream audio separation - get audio ASAP.
+
+        Processes audio in chunks and streams each chunk's output immediately.
+        Time to first audio: ~10-15 seconds (one chunk's ODE) instead of waiting
+        for the entire audio to be processed.
+
+        Can be used in two modes:
+        1. Generator mode (no callbacks): yields SeparationResult objects
+        2. Callback mode: calls callbacks for each chunk, returns total samples
+
+        Args:
+            audios: Input audio tensor (B, 1, length) or list of audio file paths
+                    (currently only B=1 supported)
+            descriptions: Text descriptions of target sounds
+            target_callback: Optional callback for target audio chunks:
+                            callback(audio_chunk, chunk_index, is_last) -> None
+            residual_callback: Optional callback for residual chunks (same signature)
+            chunk_seconds: Length of each audio chunk in seconds (default 10s)
+            overlap_seconds: Overlap between chunks for smooth crossfade (default 3s)
+            anchor_ids: Anchor token IDs for temporal prompts
+            anchor_alignment: Timestep to anchor mapping
+            ode_opt: ODE solver options
+            seed: Random seed for reproducible noise generation
+            verbose: Print progress information
+
+        Returns:
+            Generator mode: Generator yielding StreamingChunk objects
+                - chunk.target: target audio (samples, 1)
+                - chunk.residual: residual audio (samples, 1)
+                - chunk.chunk_idx: chunk index
+                - chunk.is_last: True if final chunk
+                - chunk.peak_memory: peak memory in GB (only on last chunk)
+                - chunk.noise: accumulated noise for reproducibility (only on last chunk)
+            Callback mode: Total number of samples processed (int)
+
+        Example (Generator mode):
+            ```python
+            import soundfile as sf
+            import numpy as np
+
+            with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \\
+                 sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
+
+                for chunk in model.separate_streaming(
+                    audios, descriptions,
+                    chunk_seconds=10.0,
+                    verbose=True,
+                ):
+                    t_f.write(np.array(chunk.target[:, 0]))
+                    r_f.write(np.array(chunk.residual[:, 0]))
+                    t_f.flush()
+                    r_f.flush()
+
+                    if chunk.is_last:
+                        print(f"Peak memory: {chunk.peak_memory:.2f} GB")
+            ```
+
+        Example (Callback mode):
+            ```python
+            def write_target(chunk, idx, is_last):
+                t_f.write(np.array(chunk[:, 0]))
+                t_f.flush()
+
+            samples = model.separate_streaming(
+                audios, descriptions,
+                target_callback=write_target,
+                chunk_seconds=10.0,
+            )
+            ```
+        """
+        # Prepare inputs (handle file paths)
+        batch = self._prepare_inputs(
+            audios=audios, descriptions=descriptions, anchors=None
+        )
+        audios = _fallback(batch.audios, audios)
+        descriptions = _fallback(batch.descriptions, descriptions)
+
+        if audios.shape[0] != 1:
+            raise ValueError("separate_streaming currently only supports batch_size=1")
+
+        # Create the generator
+        gen = self._separate_streaming_generator(
+            audios=audios,
+            descriptions=descriptions,
+            chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds,
+            anchor_ids=anchor_ids,
+            anchor_alignment=anchor_alignment,
+            ode_opt=ode_opt,
+            seed=seed,
+            verbose=verbose,
+        )
+
+        # Generator mode: return the generator directly
+        if target_callback is None:
+            return gen
+
+        # Callback mode: iterate and call callbacks
+        total_written = 0
+        for chunk in gen:
+            target_callback(chunk.target, chunk.chunk_idx, chunk.is_last)
+            total_written += chunk.target.shape[0]
+
+            if residual_callback is not None:
+                residual_callback(chunk.residual, chunk.chunk_idx, chunk.is_last)
+
+        return total_written
+
+    def _separate_streaming_generator(
+        self,
+        audios: mx.array,
+        descriptions: List[str],
+        chunk_seconds: float,
+        overlap_seconds: float,
+        anchor_ids: Optional[mx.array],
+        anchor_alignment: Optional[mx.array],
+        ode_opt: Dict[str, Any],
+        seed: int,
+        verbose: bool,
+    ) -> Generator[SeparationResult, None, None]:
+        """Internal generator for streaming separation."""
+        sr = self.sample_rate
+        chunk_samples = int(chunk_seconds * sr)
+        overlap_samples = int(overlap_seconds * sr)
+        hop_samples = chunk_samples - overlap_samples
+
+        total_samples = audios.shape[2]
+        total_duration = total_samples / sr
+        num_chunks = math.ceil((total_samples - overlap_samples) / hop_samples)
+
+        # Pre-encode text features once
+        if verbose:
+            print("Encoding text prompt...")
+        text_features, text_mask = self.text_encoder(descriptions)
+        mx.eval(text_features, text_mask)
+
+        if verbose:
+            print(
+                f"Processing {total_duration:.1f}s audio in {num_chunks} chunks ({chunk_seconds}s each)..."
+            )
+
+        # Track previous chunk tails for crossfade
+        prev_target_tail = None
+        prev_residual_tail = None
+        chunk_idx = 0
+
+        # Track noise from each audio chunk for reproducibility
+        noise_chunks = []
+
+        for i in tqdm(range(num_chunks), desc="Processing chunks", disable=not verbose):
+            start = i * hop_samples
+            end = min(start + chunk_samples, total_samples)
+            is_last_audio_chunk = i == num_chunks - 1
+
+            # Extract chunk
+            chunk = audios[:, :, start:end]
+
+            # Set random seed for reproducible noise generation
+            mx.random.seed(seed + i)
+
+            # Process chunk
+            result = self.separate(
+                chunk,
+                descriptions,
+                sizes=None,
+                anchor_ids=anchor_ids,
+                anchor_alignment=anchor_alignment,
+                ode_opt=ode_opt,
+                _text_features=text_features,
+                _text_mask=text_mask,
+            )
+
+            target_chunk = result.target[0]  # (samples, 1)
+            residual_chunk = result.residual[0]
+            mx.eval(target_chunk, residual_chunk)
+
+            # Track noise for reproducibility
+            if result.noise is not None:
+                noise_chunks.append(result.noise)
+
+            # Handle crossfade with previous chunk
+            if i > 0 and overlap_samples > 0 and prev_target_tail is not None:
+                # Create smooth crossfade weights
+                t = mx.linspace(0, 1, overlap_samples)[:, None]
+                fade_in = 0.5 * (1 - mx.cos(math.pi * t))
+                fade_out = 1 - fade_in
+
+                # Blend overlapping region
+                curr_target_head = target_chunk[:overlap_samples]
+                curr_residual_head = residual_chunk[:overlap_samples]
+
+                blended_target = (
+                    prev_target_tail * fade_out + curr_target_head * fade_in
+                )
+                blended_residual = (
+                    prev_residual_tail * fade_out + curr_residual_head * fade_in
+                )
+                mx.eval(blended_target, blended_residual)
+
+                # Yield blended region
+                yield SeparationResult(
+                    target=blended_target,
+                    residual=blended_residual,
+                    chunk_idx=chunk_idx,
+                    is_last=False,
+                )
+                chunk_idx += 1
+
+                # Yield middle part (after overlap, before tail)
+                if is_last_audio_chunk:
+                    # Last chunk: yield everything after overlap with stats
+                    middle_target = target_chunk[overlap_samples:]
+                    middle_residual = residual_chunk[overlap_samples:]
+                    mx.eval(middle_target, middle_residual)
+
+                    # Concatenate noise for reproducibility
+                    full_noise = (
+                        mx.concatenate(noise_chunks, axis=1) if noise_chunks else None
+                    )
+
+                    yield SeparationResult(
+                        target=middle_target,
+                        residual=middle_residual,
+                        chunk_idx=chunk_idx,
+                        is_last=True,
+                        peak_memory=mx.get_peak_memory() / 1e9,
+                        noise=full_noise,
+                    )
+                else:
+                    # Not last: yield middle, save tail for next crossfade
+                    middle_target = target_chunk[overlap_samples:-overlap_samples]
+                    middle_residual = residual_chunk[overlap_samples:-overlap_samples]
+                    mx.eval(middle_target, middle_residual)
+
+                    yield SeparationResult(
+                        target=middle_target,
+                        residual=middle_residual,
+                        chunk_idx=chunk_idx,
+                        is_last=False,
+                    )
+                    chunk_idx += 1
+
+                    # Save tail for next crossfade
+                    prev_target_tail = target_chunk[-overlap_samples:]
+                    prev_residual_tail = residual_chunk[-overlap_samples:]
+                    mx.eval(prev_target_tail, prev_residual_tail)
+            else:
+                # First chunk or no overlap
+                if is_last_audio_chunk or overlap_samples == 0:
+                    # Yield entire chunk (possibly with stats if last)
+                    if is_last_audio_chunk:
+                        full_noise = (
+                            mx.concatenate(noise_chunks, axis=1)
+                            if noise_chunks
+                            else None
+                        )
+                        yield SeparationResult(
+                            target=target_chunk,
+                            residual=residual_chunk,
+                            chunk_idx=chunk_idx,
+                            is_last=True,
+                            peak_memory=mx.get_peak_memory() / 1e9,
+                            noise=full_noise,
+                        )
+                    else:
+                        yield SeparationResult(
+                            target=target_chunk,
+                            residual=residual_chunk,
+                            chunk_idx=chunk_idx,
+                            is_last=False,
+                        )
+                else:
+                    # First chunk with overlap: yield all but tail
+                    write_target = target_chunk[:-overlap_samples]
+                    write_residual = residual_chunk[:-overlap_samples]
+                    mx.eval(write_target, write_residual)
+
+                    yield SeparationResult(
+                        target=write_target,
+                        residual=write_residual,
+                        chunk_idx=chunk_idx,
+                        is_last=False,
+                    )
+                    chunk_idx += 1
+
+                    # Save tail for crossfade
+                    prev_target_tail = target_chunk[-overlap_samples:]
+                    prev_residual_tail = residual_chunk[-overlap_samples:]
+                    mx.eval(prev_target_tail, prev_residual_tail)
+
+            mx.clear_cache()
+
     @classmethod
-    def from_pretrained(
-        cls,
-        model_name_or_path: str,
-        dtype: mx.Dtype = mx.float32,
-    ) -> "SAMAudio":
+    def from_pretrained(cls, model_name_or_path: str) -> "SAMAudio":
         """
         Load a pretrained SAM-Audio model.
 
         Args:
             model_name_or_path: HuggingFace model ID or local path
-            dtype: Data type for model weights
 
         Returns:
             Loaded SAMAudio model
@@ -744,6 +1126,9 @@ class SAMAudio(nn.Module):
         # Create model
         model = cls(config)
 
+        # Initialize processor
+        model = model.post_load_hook(model_path)
+
         # Load weights
         weights_path = glob.glob(str(model_path / "*.safetensors"))
         pt_weights_path = model_path / "checkpoint.pt"
@@ -772,18 +1157,6 @@ class SAMAudio(nn.Module):
         else:
             warnings.warn(
                 f"Weights not found at {model_path}. " "Model will have random weights."
-            )
-
-        # Cast to specified dtype if needed
-        if dtype != mx.float32:
-
-            def cast_to_dtype(x):
-                if isinstance(x, mx.array) and x.dtype == mx.float32:
-                    return x.astype(dtype)
-                return x
-
-            model.apply_to_modules(
-                lambda k, m: m.update(tree_map(cast_to_dtype, m.parameters()))
             )
 
         return model
