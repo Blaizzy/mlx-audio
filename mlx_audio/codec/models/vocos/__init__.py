@@ -1,1 +1,1 @@
-from .vocos import Vocos
+from .vocos import Vocos, VocosBackbone
