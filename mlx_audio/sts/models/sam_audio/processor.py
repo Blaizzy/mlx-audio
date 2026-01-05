@@ -10,7 +10,7 @@ import mlx.core as mx
 import numpy as np
 from huggingface_hub import snapshot_download
 
-from .config import DACVAEConfig, SAMAudioConfig
+from .config import DACVAEConfig
 
 # Type alias for anchor format: (token, start_time, end_time)
 Anchor = Tuple[str, float, float]
@@ -174,11 +174,11 @@ class Batch:
     """
 
     audios: mx.array
-    sizes: mx.array
-    wav_sizes: mx.array
-    descriptions: List[str]
-    anchor_ids: mx.array
-    anchor_alignment: mx.array
+    sizes: Optional[mx.array] = None
+    wav_sizes: Optional[mx.array] = None
+    descriptions: Optional[List[str]] = None
+    anchor_ids: Optional[mx.array] = None
+    anchor_alignment: Optional[mx.array] = None
     audio_pad_mask: Optional[mx.array] = None
 
     def __post_init__(self):
@@ -253,7 +253,7 @@ class SAMAudioProcessor:
             return (feature_idx * self.audio_hop_length).astype(mx.int32)
         return feature_idx * self.audio_hop_length
 
-    def _process_anchors(
+    def process_anchors(
         self,
         anchors: Optional[List[List[Anchor]]],
         audio_pad_mask: mx.array,
@@ -381,7 +381,7 @@ class SAMAudioProcessor:
         audio_pad_mask = mask_from_sizes(sizes)
 
         # Process anchors
-        anchor_ids, anchor_alignment = self._process_anchors(
+        anchor_ids, anchor_alignment = self.process_anchors(
             anchors, audio_pad_mask, len(descriptions)
         )
 
