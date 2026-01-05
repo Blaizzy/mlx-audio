@@ -222,6 +222,7 @@ class Model(nn.Module):
         is_multilingual = False
         if config_path.exists():
             import json
+
             with open(config_path) as f:
                 config = json.load(f)
                 is_multilingual = config.get("multilingual", False)
@@ -534,8 +535,9 @@ class Model(nn.Module):
         if tokenizer_path.exists():
             try:
                 import json
+
                 from .tokenizer import EnTokenizer, MTLTokenizer
-                
+
                 # Check if multilingual model from config.json
                 is_multilingual = False
                 config_path = ckpt_dir / "config.json"
@@ -579,8 +581,9 @@ class Model(nn.Module):
         if tokenizer_path.exists():
             try:
                 import json
+
                 from .tokenizer import EnTokenizer, MTLTokenizer
-                
+
                 # Check if multilingual model from config..json
                 is_multilingual = False
                 config_path = model_path / "config.json"
