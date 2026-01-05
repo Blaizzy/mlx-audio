@@ -383,7 +383,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="mlx-community/Kokoro-82M-bf16",
+        required=True,
         help="Path or repo id of the model",
     )
     parser.add_argument(
