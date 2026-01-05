@@ -814,10 +814,8 @@ class Model(nn.Module):
 
         try:
             if lang_code == "en":
-                print("Using English tokenizer")
                 text_tokens = self.tokenizer.text_to_tokens(text)
             elif isinstance(self.mtl_tokenizer, MTLTokenizer):
-                print("Using multilingual tokenizer")
                 text_tokens = self.mtl_tokenizer.text_to_tokens(
                     text, language_id=lang_code
                 )
