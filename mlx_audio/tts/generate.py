@@ -203,11 +203,11 @@ def hertz_to_mel(pitch: float) -> float:
 
 def generate_audio(
     text: str,
-    model: Optional[Union[str, nn.Module]] = "prince-canuma/Kokoro-82M",
+    model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
     voice: str = "af_heart",
     speed: float = 1.0,
-    lang_code: str = "a",
+    lang_code: str = "en",
     cfg_scale: Optional[float] = None,
     ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
@@ -423,7 +423,7 @@ def parse_args():
         "--gender", type=str, default="male", help="Gender of the voice [male, female]"
     )
     parser.add_argument("--pitch", type=float, default=1.0, help="Pitch of the voice")
-    parser.add_argument("--lang_code", type=str, default="a", help="Language code")
+    parser.add_argument("--lang_code", type=str, default="en", help="Language code")
     parser.add_argument(
         "--file_prefix", type=str, default="audio", help="Output file name prefix"
     )
