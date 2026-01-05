@@ -18,6 +18,7 @@ from .s3gen import S3Token2Wav
 from .s3tokenizer import S3TokenizerV2, log_mel_spectrogram
 from .t3 import T3
 from .t3.cond_enc import T3Cond
+from .tokenizer import MTLTokenizer
 from .voice_encoder import VoiceEncoder
 
 # Constants
@@ -852,7 +853,11 @@ class Model(nn.Module):
         text = punc_norm(text)
 
         if self.tokenizer is not None:
-            text_tokens = self.tokenizer.text_to_tokens(text)
+
+            if isinstance(self.tokenizer, MTLTokenizer):
+                text_tokens = self.tokenizer.text_to_tokens(text, language_id=lang_code)
+            else:
+                text_tokens = self.tokenizer.text_to_tokens(text)
         else:
             raise ValueError(
                 "Text tokenizer not initialized. "
