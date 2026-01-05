@@ -14,6 +14,7 @@ from mlx.utils import tree_flatten
 
 MODEL_REMAPPING = {
     "outetts": "outetts",
+    "cosyvoice3": "cosyvoice3",
     "spark": "spark",
     "marvis": "sesame",
     "csm": "sesame",
