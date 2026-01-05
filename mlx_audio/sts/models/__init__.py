@@ -1,5 +1,11 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+from .fun_audio_chat import (
+    FunAudioChatConfig,
+    FunAudioChatForConditionalGeneration,
+    FunAudioChatOutput,
+    FunAudioChatProcessor,
+)
 from .mossformer2_se import MossFormer2SE, MossFormer2SEConfig, MossFormer2SEModel
 from .sam_audio import (
     Batch,
@@ -21,4 +27,9 @@ __all__ = [
     "MossFormer2SE",
     "MossFormer2SEConfig",
     "MossFormer2SEModel",
+    # FunAudioChat
+    "FunAudioChatForConditionalGeneration",
+    "FunAudioChatConfig",
+    "FunAudioChatProcessor",
+    "FunAudioChatOutput",
 ]
