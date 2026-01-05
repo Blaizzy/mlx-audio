@@ -79,6 +79,43 @@ def detect_language(
     return language_tokens, language_probs
 
 
+def get_suppress_tokens(
+    tokenizer: Tokenizer, suppress_tokens: str = "-1"
+) -> Tuple[int, ...]:
+    """Build suppress tokens list for decoding.
+
+    Args:
+        tokenizer: Whisper tokenizer instance.
+        suppress_tokens: Token specification. "-1" means non-speech tokens.
+
+    Returns:
+        Tuple of token IDs to suppress.
+    """
+    if isinstance(suppress_tokens, str):
+        suppress_tokens = [int(t) for t in suppress_tokens.split(",")]
+
+    result = list(suppress_tokens) if suppress_tokens else []
+
+    if -1 in result:
+        result = [t for t in result if t >= 0]
+        result.extend(tokenizer.non_speech_tokens)
+
+    result.extend(
+        [
+            tokenizer.transcribe,
+            tokenizer.translate,
+            tokenizer.sot,
+            tokenizer.sot_prev,
+            tokenizer.sot_lm,
+        ]
+    )
+
+    if tokenizer.no_speech is not None:
+        result.append(tokenizer.no_speech)
+
+    return tuple(sorted(set(result)))
+
+
 @dataclass(frozen=True)
 class DecodingOptions:
     # whether to perform X->X "transcribe" or X->English "translate"
@@ -140,6 +177,20 @@ class Inference:
             tokens, audio_features, kv_cache=self.kv_cache
         )
         return logits.astype(mx.float32)
+
+    def logits_with_cross_qk(self, tokens: mx.array, audio_features: mx.array) -> tuple:
+        """Perform forward pass and return logits WITH cross-attention weights.
+
+        This method is used for AlignAtt streaming to monitor attention patterns.
+
+        Returns:
+            tuple: (logits, cross_qk) where cross_qk is list of attention weights
+                   per decoder layer, shape [batch, n_heads, seq_len, audio_len]
+        """
+        logits, self.kv_cache, cross_qk = self.model.decoder(
+            tokens, audio_features, kv_cache=self.kv_cache
+        )
+        return logits.astype(mx.float32), cross_qk
 
     def rearrange_kv_cache(self, source_indices):
         """Update the key-value cache according to the updated beams"""
@@ -446,7 +497,10 @@ class DecodingTask:
             )
         if self.options.suppress_tokens:
             self.logit_filters.append(
-                SuppressTokens(self._get_suppress_tokens(), model.dims.n_vocab)
+                SuppressTokens(
+                    get_suppress_tokens(self.tokenizer, self.options.suppress_tokens),
+                    model.dims.n_vocab,
+                )
             )
 
         if not options.without_timestamps:
@@ -504,35 +558,6 @@ class DecodingTask:
             )
 
         return tuple(tokens)
-
-    def _get_suppress_tokens(self) -> Tuple[int]:
-        suppress_tokens = self.options.suppress_tokens
-
-        if isinstance(suppress_tokens, str):
-            suppress_tokens = [int(t) for t in suppress_tokens.split(",")]
-
-        if -1 in suppress_tokens:
-            suppress_tokens = [t for t in suppress_tokens if t >= 0]
-            suppress_tokens.extend(self.tokenizer.non_speech_tokens)
-        elif suppress_tokens is None or len(suppress_tokens) == 0:
-            suppress_tokens = []  # interpret empty string as an empty list
-        else:
-            assert isinstance(suppress_tokens, list), "suppress_tokens must be a list"
-
-        suppress_tokens.extend(
-            [
-                self.tokenizer.transcribe,
-                self.tokenizer.translate,
-                self.tokenizer.sot,
-                self.tokenizer.sot_prev,
-                self.tokenizer.sot_lm,
-            ]
-        )
-        if self.tokenizer.no_speech is not None:
-            # no-speech probability is collected separately
-            suppress_tokens.append(self.tokenizer.no_speech)
-
-        return tuple(sorted(set(suppress_tokens)))
 
     def _get_audio_features(self, mel: mx.array):
         if self.options.fp16:

@@ -1,5 +1,4 @@
 import json
-import sys
 import time
 from dataclasses import dataclass
 from numbers import Number
@@ -13,12 +12,6 @@ from ..base import BaseModelArgs, GenerationResult, check_array_shape
 from .istftnet import Decoder
 from .modules import AlbertModelArgs, CustomAlbert, ProsodyPredictor, TextEncoder
 from .pipeline import KokoroPipeline
-
-# Force reset logger configuration at the top of your file
-logger.remove()  # Remove all handlers
-logger.configure(
-    handlers=[{"sink": sys.stderr, "level": "DEBUG"}]
-)  # Add back with explicit level
 
 
 def sanitize_lstm_weights(key: str, state_dict: mx.array) -> dict:

@@ -6,8 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Generator, Optional, Union
 
+import librosa
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from scipy import signal
 
 from ..base import GenerationResult
@@ -16,6 +18,7 @@ from .s3gen import S3Token2Wav
 from .s3tokenizer import S3TokenizerV2, log_mel_spectrogram
 from .t3 import T3
 from .t3.cond_enc import T3Cond
+from .tokenizer import MTLTokenizer
 from .voice_encoder import VoiceEncoder
 
 # Constants
@@ -208,25 +211,7 @@ class Model(nn.Module):
         self._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
         # Text tokenizer (initialized during load_weights if model_path is available)
         self.tokenizer = None
-
-        # Initialize tokenizers from model_path if available in config
-        if self.config is not None and self.config.model_path is not None:
-            self._init_tokenizers(Path(self.config.model_path))
-
-    def _init_tokenizers(self, model_path: Path) -> None:
-        """Initialize text tokenizer from model path."""
-        tokenizer_path = model_path / "tokenizer.json"
-        if tokenizer_path.exists():
-            try:
-                from .tokenizer import EnTokenizer
-
-                self.tokenizer = EnTokenizer(tokenizer_path)
-            except ImportError:
-                print("Warning: tokenizers library not available")
-                self.tokenizer = None
-        else:
-            print(f"Warning: tokenizer.json not found at {tokenizer_path}")
-            self.tokenizer = None
+        self.mtl_tokenizer = None
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """
@@ -329,7 +314,6 @@ class Model(nn.Module):
         self,
         weights,
         strict: bool = True,
-        s3_tokenizer_repo: str = "mlx-community/S3TokenizerV2",
     ):
         """
         Load weights into the model.
@@ -338,14 +322,10 @@ class Model(nn.Module):
         several non-checkpoint parameters (rand_noise, pos_enc.pe, stft_window,
         trim_fade) that are generated during initialization.
 
-        S3Tokenizer weights are always downloaded from s3_tokenizer_repo.
-
         Args:
             weights: List of (key, value) tuples or dict
             strict: If False, ignore missing/extra keys. Default True for
                     compatibility with utils.load_model().
-            s3_tokenizer_repo: Hugging Face repo for S3Tokenizer weights.
-                Default: "mlx-community/S3TokenizerV2"
         """
         if isinstance(weights, dict):
             weights = list(weights.items())
@@ -513,13 +493,27 @@ class Model(nn.Module):
         model._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
         load_component_weights(model._s3_tokenizer, s3tok_weights, strict=False)
 
-        # Initialize text tokenizer
+        # Initialize text tokenizer (check config for multilingual setting)
         tokenizer_path = ckpt_dir / "tokenizer.json"
+        config = None
         if tokenizer_path.exists():
             try:
-                from .tokenizer import EnTokenizer
+                import json
+
+                from .tokenizer import EnTokenizer, MTLTokenizer
+
+                # Check if multilingual model from config.json
+                config_path = ckpt_dir / "config.json"
+                if config_path.exists():
+                    with open(config_path) as f:
+                        config = json.load(f)
+
+                if config and config.get("multilingual", False):
+                    model.mtl_tokenizer = MTLTokenizer(tokenizer_path)
+                    print("Loaded multilingual tokenizer (MTLTokenizer)")
 
                 model.tokenizer = EnTokenizer(tokenizer_path)
+                print("Loaded English tokenizer (EnTokenizer)")
             except ImportError:
                 print("Warning: tokenizers library not available")
                 model.tokenizer = None
@@ -544,14 +538,27 @@ class Model(nn.Module):
         Returns:
             The model with tokenizer and conditionals initialized
         """
-        # Load text tokenizer
+        # Load text tokenizer (check config for multilingual setting)
         tokenizer_path = model_path / "tokenizer.json"
+        config = None
         if tokenizer_path.exists():
             try:
-                from .tokenizer import EnTokenizer
+                import json
+
+                from .tokenizer import EnTokenizer, MTLTokenizer
+
+                # Check if multilingual model from config..json
+                config_path = model_path / "config.json"
+                if config_path.exists():
+                    with open(config_path) as f:
+                        config = json.load(f)
+
+                if config and config.get("multilingual", False):
+                    model.mtl_tokenizer = MTLTokenizer(tokenizer_path)
+                    print("Loaded multilingual tokenizer (MTLTokenizer)")
 
                 model.tokenizer = EnTokenizer(tokenizer_path)
-                print("Loaded text tokenizer")
+                print("Loaded English tokenizer (EnTokenizer)")
             except ImportError:
                 print("Warning: tokenizers library not available")
                 model.tokenizer = None
@@ -623,7 +630,10 @@ class Model(nn.Module):
         return model
 
     def prepare_conditionals(
-        self, ref_wav: mx.array, ref_sr: int, exaggeration: float = 0.5
+        self,
+        ref_wav: Union[str, mx.array, np.ndarray],
+        ref_sr: int,
+        exaggeration: float = 0.5,
     ) -> Conditionals:
         """
         Prepare conditioning from a reference audio clip.
@@ -644,6 +654,10 @@ class Model(nn.Module):
             - T3 tokens are computed from 16kHz audio (resampled from original)
         """
         # Ensure 1D waveform
+        if isinstance(ref_wav, str):
+            ref_wav, ref_sr = librosa.load(ref_wav, sr=S3GEN_SR)
+            ref_wav = mx.array(ref_wav)
+
         if ref_wav.ndim == 2:
             ref_wav = ref_wav.squeeze(0)
 
@@ -729,10 +743,10 @@ class Model(nn.Module):
         top_p: float = 1.0,
         max_new_tokens: int = 1000,
         # Standard mlx_audio.tts.generate parameters (mapped to Chatterbox params)
-        ref_audio: Optional[mx.array] = None,
+        ref_audio: Optional[Union[str, mx.array, np.ndarray]] = None,
         voice: Optional[str] = None,
         speed: float = 1.0,
-        lang_code: str = "a",
+        lang_code: str = "en",
         max_tokens: int = None,
         verbose: bool = True,
         stream: bool = False,
@@ -798,13 +812,32 @@ class Model(nn.Module):
         # Normalize and tokenize text
         text = punc_norm(text)
 
-        if self.tokenizer is not None:
-            text_tokens = self.tokenizer.text_to_tokens(text)
-        else:
-            raise ValueError(
-                "Text tokenizer not initialized. "
-                "Load model with from_pretrained() or set model.tokenizer manually."
-            )
+        try:
+            if lang_code == "en":
+                text_tokens = self.tokenizer.text_to_tokens(text)
+            elif isinstance(self.mtl_tokenizer, MTLTokenizer):
+                text_tokens = self.mtl_tokenizer.text_to_tokens(
+                    text, language_id=lang_code
+                )
+            else:
+                if self.tokenizer is None and self.mtl_tokenizer is None:
+                    raise ValueError(
+                        "Text tokenizer or multilingual tokenizer not initialized.\n"
+                        "Load model with from_pretrained() or set model.tokenizer manually.\n"
+                    )
+                else:
+                    raise ValueError(
+                        "Invalid language code. Supported languages: "
+                        "ar (Arabic), da (Danish), de (German), el (Greek), en (English), "
+                        "es (Spanish), fi (Finnish), fr (French), he (Hebrew), hi (Hindi), "
+                        "it (Italian), ja (Japanese), ko (Korean), ms (Malay), nl (Dutch), "
+                        "no (Norwegian), pl (Polish), pt (Portuguese), ru (Russian), "
+                        "sv (Swedish), sw (Swahili), tr (Turkish), zh (Chinese)"
+                    )
+
+        except Exception as e:
+            print(f"Error tokenizing text: {e}")
+            raise e
 
         token_count = text_tokens.shape[1]
 

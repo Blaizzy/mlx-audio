@@ -2,6 +2,7 @@
 //  Kokoro-tts-lib
 //
 import Foundation
+import Hub
 import MLX
 import MLXNN
 
@@ -67,6 +68,7 @@ public class KokoroTTS {
     case tooManyTokens
     case sentenceSplitError
     case modelNotInitialized
+    case chineseG2PNotInitialized
   }
 
   private var bert: CustomAlbert!
@@ -79,8 +81,14 @@ public class KokoroTTS {
   private var decoder: Decoder!
   private var eSpeakEngine: ESpeakNGEngine!
   private var kokoroTokenizer: KokoroTokenizer!
+  private var chineseTokenizer: ChineseKokoroTokenizer!
   private var chosenVoice: TTSVoice?
   private var voice: MLXArray!
+
+  // Chinese G2P dictionary URLs (set these before using Chinese voices)
+  public var chineseJiebaURL: URL?
+  public var chinesePinyinSingleURL: URL?
+  public var chinesePinyinPhrasesURL: URL?
 
   // Flag to indicate if model components are initialized
   private var isModelInitialized = false
@@ -96,6 +104,50 @@ public class KokoroTTS {
   /// If the custom URL is nil, it will fallback to the bundled kokoro-v1_0.safetensors resource.
   public init(customURL: URL? = nil) {
     self.customURL = customURL
+  }
+
+  /// Download Chinese Kokoro model from HuggingFace and initialize
+  /// - Parameters:
+  ///   - repoId: HuggingFace repository ID (default: FluidInference/kokoro-82m-v1.1-zh-mlx)
+  ///   - progressHandler: Optional progress callback
+  /// - Returns: Initialized KokoroTTS with Chinese model and G2P
+  public static func fromHub(
+    repoId: String = chineseKokoroRepo,
+    progressHandler: (@Sendable (Progress) -> Void)? = nil
+  ) async throws -> KokoroTTS {
+    print("[KokoroTTS] Downloading model from \(repoId)...")
+
+    // Download model weights
+    let snapshotURL = try await Hub.snapshot(
+      from: repoId,
+      matching: ["*.safetensors", "g2p/*"],
+      progressHandler: progressHandler ?? { _ in }
+    )
+
+    let modelURL = snapshotURL.appending(path: "model.safetensors")
+    guard FileManager.default.fileExists(atPath: modelURL.path) else {
+      throw KokoroTTSError.modelNotInitialized
+    }
+
+    print("[KokoroTTS] Model downloaded to \(modelURL.path)")
+
+    let tts = KokoroTTS(customURL: modelURL)
+
+    // Initialize Chinese G2P from the same snapshot
+    let jiebaURL = snapshotURL.appending(path: "g2p/jieba.bin.gz")
+    let pinyinSingleURL = snapshotURL.appending(path: "g2p/pinyin_single.bin.gz")
+    let pinyinPhrasesURL = snapshotURL.appending(path: "g2p/pinyin_phrases.bin.gz")
+
+    if FileManager.default.fileExists(atPath: jiebaURL.path) {
+      try tts.initializeChineseG2P(
+        jiebaURL: jiebaURL,
+        pinyinSingleURL: pinyinSingleURL,
+        pinyinPhrasesURL: FileManager.default.fileExists(atPath: pinyinPhrasesURL.path) ? pinyinPhrasesURL : nil
+      )
+      print("[KokoroTTS] Chinese G2P initialized")
+    }
+
+    return tts
   }
 
   // Reset the model to free up memory
@@ -120,10 +172,71 @@ public class KokoroTTS {
         eSpeakEngine = nil
       }
       kokoroTokenizer = nil
+      chineseTokenizer = nil
     }
 
     // Use plain autoreleasepool to encourage memory release
     autoreleasepool { }
+  }
+
+  /// Check if a voice is Chinese (Mandarin)
+  public static func isChineseVoice(_ voice: TTSVoice) -> Bool {
+    switch voice {
+    case .zfXiaobei, .zfXiaoni, .zfXiaoxiao, .zfXiaoyi,
+         .zmYunjian, .zmYunxi, .zmYunxia, .zmYunyang:
+      return true
+    default:
+      return false
+    }
+  }
+
+  /// Initialize Chinese G2P with dictionary data
+  public func initializeChineseG2P(
+    jiebaData: Data,
+    pinyinSingleData: Data,
+    pinyinPhrasesData: Data? = nil
+  ) throws {
+    if chineseTokenizer == nil {
+      chineseTokenizer = ChineseKokoroTokenizer()
+    }
+    try chineseTokenizer.initialize(
+      jiebaData: jiebaData,
+      pinyinSingleData: pinyinSingleData,
+      pinyinPhrasesData: pinyinPhrasesData
+    )
+  }
+
+  /// Initialize Chinese G2P with dictionary URLs
+  public func initializeChineseG2P(
+    jiebaURL: URL,
+    pinyinSingleURL: URL,
+    pinyinPhrasesURL: URL? = nil
+  ) throws {
+    if chineseTokenizer == nil {
+      chineseTokenizer = ChineseKokoroTokenizer()
+    }
+    try chineseTokenizer.initialize(
+      jiebaURL: jiebaURL,
+      pinyinSingleURL: pinyinSingleURL,
+      pinyinPhrasesURL: pinyinPhrasesURL
+    )
+  }
+
+  /// Initialize Chinese G2P by downloading dictionaries from HuggingFace
+  /// - Parameters:
+  ///   - repoId: HuggingFace repository ID (default: FluidInference/kokoro-82m-v1.1-zh-mlx)
+  ///   - progressHandler: Optional progress callback
+  public func initializeChineseG2PFromHub(
+    repoId: String = chineseKokoroRepo,
+    progressHandler: (@Sendable (Progress) -> Void)? = nil
+  ) async throws {
+    if chineseTokenizer == nil {
+      chineseTokenizer = ChineseKokoroTokenizer()
+    }
+    try await chineseTokenizer.initializeFromHub(
+      repoId: repoId,
+      progressHandler: progressHandler
+    )
   }
 
   // Initialize model on demand
@@ -576,14 +689,42 @@ public class KokoroTTS {
           self.voice?.eval() // Force immediate evaluation
         }
 
-        try kokoroTokenizer.setLanguage(for: voice)
+        // Only set eSpeak language for non-Chinese voices
+        if !KokoroTTS.isChineseVoice(voice) {
+          try kokoroTokenizer.setLanguage(for: voice)
+        }
         chosenVoice = voice
       }
 
       do {
-        let phonemizedResult = try kokoroTokenizer.phonemize(text)
+        let inputIds: [Int]
 
-        let inputIds = PhonemeTokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
+        // Use native Chinese G2P for Chinese voices
+        if KokoroTTS.isChineseVoice(voice) {
+          // Initialize Chinese tokenizer if not ready
+          if chineseTokenizer == nil || !chineseTokenizer.isReady {
+            // Try to initialize from URLs if provided
+            if let jiebaURL = chineseJiebaURL,
+               let pinyinSingleURL = chinesePinyinSingleURL {
+              try initializeChineseG2P(
+                jiebaURL: jiebaURL,
+                pinyinSingleURL: pinyinSingleURL,
+                pinyinPhrasesURL: chinesePinyinPhrasesURL
+              )
+            } else {
+              throw KokoroTTSError.chineseG2PNotInitialized
+            }
+          }
+
+          // Use native Chinese G2P (Bopomofo-based)
+          let phonemes = try chineseTokenizer.phonemize(text)
+          inputIds = chineseTokenizer.tokenizeWithChineseVocab(phonemes)
+        } else {
+          // Use eSpeak-based phonemization for other languages
+          let phonemizedResult = try kokoroTokenizer.phonemize(text)
+          inputIds = PhonemeTokenizer.tokenize(phonemizedText: phonemizedResult.phonemes)
+        }
+
         guard inputIds.count <= Constants.maxTokenCount else {
           throw KokoroTTSError.tooManyTokens
         }

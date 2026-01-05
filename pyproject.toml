@@ -16,7 +16,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 # Core dependencies
 dependencies = [
@@ -25,16 +25,18 @@ dependencies = [
     "huggingface_hub>=0.27.0",
     "transformers>=4.49.0,<5.0.0",
     "hf_transfer",
+    "mlx-lm>=0.18.0,<0.30.0",
+    "tqdm>=4.67.1",
     "sounddevice>=0.5.1",
     "soundfile>=0.13.1",
-    "tqdm>=4.67.1",
-    "mlx-lm<=0.29.0", # TODO: Remove this once transformers updated to v5
+    "pyloudnorm>=0.1.1",
 ]
 
 [project.optional-dependencies]
 # STT dependencies
 stt = [
     "tiktoken>=0.9.0",
+    "mistral-common[audio]",
 ]
 
 # TTS dependencies
@@ -47,11 +49,9 @@ tts = [
     "espeakng-loader>=0.2.4",
     "sentencepiece>=0.2.0",
     "einops>=0.8.1",
-    "pyloudnorm>=0.1.1",
-    "omegaconf==2.3.0", # TODO: remove this
+    "omegaconf==2.3.0",
     "einx==0.3.0",
-    "dacite>=1.9.2", # TODO: remove this
-    "mistral-common[audio]",
+    "dacite>=1.9.2",
 ]
 
 # Server dependencies

@@ -352,6 +352,50 @@ class Model(nn.Module):
         mx.eval(model.parameters())
         return model
 
+    def _prepare_audio(
+        self, audio: Union[str, np.ndarray, mx.array], padding: int = N_SAMPLES
+    ) -> Tuple[mx.array, int]:
+        """Prepare audio for transcription.
+
+        Args:
+            audio: Path to audio file or audio waveform array.
+            padding: Padding samples (default N_SAMPLES for 30s window).
+
+        Returns:
+            Tuple of (mel spectrogram, content_frames).
+        """
+        if isinstance(audio, str):
+            from mlx_audio.stt.utils import load_audio
+
+            audio = load_audio(audio)
+        elif not isinstance(audio, mx.array):
+            audio = mx.array(audio)
+
+        mel = log_mel_spectrogram(audio, n_mels=self.dims.n_mels, padding=padding)
+        content_frames = mel.shape[-2] - N_FRAMES if padding else mel.shape[-2]
+
+        return mel, content_frames
+
+    def _detect_language(self, mel: mx.array, language: Optional[str] = None) -> str:
+        """Detect or validate language for transcription.
+
+        Args:
+            mel: Mel spectrogram.
+            language: Override language code. If None, auto-detect.
+
+        Returns:
+            Language code (e.g., "en", "ja").
+        """
+        if language is not None:
+            return language
+
+        if not self.is_multilingual:
+            return "en"
+
+        mel_segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(self.dtype)
+        _, probs = self.detect_language(mel_segment)
+        return max(probs, key=probs.get)
+
     def generate(
         self,
         audio: Union[str, np.ndarray, mx.array],
@@ -437,9 +481,8 @@ class Model(nn.Module):
         decode_options.pop("max_tokens", None)
         decode_options.pop("generation_stream", None)
 
-        # Pad 30-seconds of silence to the input audio, for slicing
-        mel = log_mel_spectrogram(audio, n_mels=self.dims.n_mels, padding=N_SAMPLES)
-        content_frames = mel.shape[-2] - N_FRAMES
+        # Use shared audio preparation
+        mel, content_frames = self._prepare_audio(audio)
         content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
 
         if verbose:
@@ -451,24 +494,12 @@ class Model(nn.Module):
             else:
                 make_safe = lambda x: x
 
-        if decode_options.get("language", None) is None:
-            if not self.is_multilingual:
-                decode_options["language"] = "en"
-            else:
-                if verbose:
-                    print(
-                        "Detecting language using up to the first 30 seconds. "
-                        "Use the `language` decoding option to specify the language"
-                    )
-                mel_segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(self.dtype)
-                _, probs = self.detect_language(mel_segment)
-                decode_options["language"] = max(probs, key=probs.get)
-                if verbose is not None:
-                    print(
-                        f"Detected language: {LANGUAGES[decode_options['language']].title()}"
-                    )
-
-        language: str = decode_options["language"]
+        # Use shared language detection
+        language = self._detect_language(mel, language=decode_options.get("language"))
+        if decode_options.get("language") is None:
+            if verbose:
+                print(f"Detected language: {LANGUAGES[language].title()}")
+        decode_options["language"] = language
         task: str = decode_options.get("task", "transcribe")
         tokenizer = get_tokenizer(
             self.is_multilingual,
@@ -865,3 +896,80 @@ class Model(nn.Module):
             segments=all_segments,
             language=language,
         )
+
+    def generate_streaming(
+        self,
+        audio,
+        *,
+        chunk_duration: float = 1.0,
+        language: str = None,
+        task: str = "transcribe",
+        frame_threshold: int = 25,
+    ):
+        """Generate transcription with streaming output using AlignAtt.
+
+        This method yields partial transcriptions as audio is processed,
+        achieving ~1 second latency instead of waiting for full 30-second windows.
+
+        Args:
+            audio: Path to audio file or audio waveform array.
+            chunk_duration: Duration of each chunk in seconds (default 1.0).
+            language: Language code (e.g., "en"). Auto-detected if None.
+            task: "transcribe" or "translate" (to English).
+            frame_threshold: AlignAtt threshold (lower = faster, higher = more accurate).
+
+        Yields:
+            StreamingResult objects with partial/final transcriptions.
+
+        Example:
+            >>> for result in model.generate_streaming("audio.wav"):
+            ...     print(f"[{'FINAL' if result.is_final else 'partial'}] {result.text}")
+        """
+        from mlx_audio.stt.models.whisper.streaming import (
+            StreamingConfig,
+            StreamingDecoder,
+        )
+        from mlx_audio.stt.utils import load_audio
+
+        # Load audio if path provided
+        if isinstance(audio, str):
+            audio = load_audio(audio)
+        elif not isinstance(audio, mx.array):
+            audio = mx.array(audio)
+
+        # Auto-detect language if not specified
+        if language is None:
+            # Get mel for first chunk to detect language
+            first_chunk = audio[: int(chunk_duration * SAMPLE_RATE)]
+            mel_detect = log_mel_spectrogram(
+                np.array(first_chunk), n_mels=self.dims.n_mels
+            )
+            language = self._detect_language(mel_detect)
+
+        # Configure streaming
+        config = StreamingConfig(frame_threshold=frame_threshold)
+        decoder = StreamingDecoder(self, config, language=language, task=task)
+
+        # Process audio in chunks
+        chunk_samples = int(chunk_duration * SAMPLE_RATE)
+        total_samples = len(audio)
+        audio_duration = total_samples / SAMPLE_RATE
+
+        for start in range(0, total_samples, chunk_samples):
+            end = min(start + chunk_samples, total_samples)
+            chunk = audio[start:end]
+            is_last = end >= total_samples
+
+            mel = log_mel_spectrogram(np.array(chunk), n_mels=self.dims.n_mels)
+            result = decoder.decode_chunk(mel, is_last=is_last)
+
+            # Add progress info
+            result.progress = end / total_samples
+            result.audio_position = end / SAMPLE_RATE
+            result.audio_duration = audio_duration
+
+            if result.text.strip() or is_last:
+                yield result
+
+            if is_last:
+                break

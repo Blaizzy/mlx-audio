@@ -21,6 +21,9 @@ class ModelConfig(LlamaModelConfig):
     sample_rate: int = 24000
 
     def __post_init__(self):
+        if self.layer_types is None:
+            self.layer_types = ["full_attention"] * self.num_hidden_layers
+
         if self.num_key_value_heads is None:
             self.num_key_value_heads = self.num_attention_heads
 
