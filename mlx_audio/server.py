@@ -163,6 +163,9 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
+    stream: bool | None = True
+    streaming_interval: float | None = 2.0
+    max_tokens: int | None = 1200
     response_format: str | None = "mp3"
 
 
@@ -234,6 +237,9 @@ async def remove_model(model_name: str):
 
 
 async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
+    audio_chunks = []
+    sample_rate = None
+
     for result in model.generate(
         payload.input,
         voice=payload.voice,
@@ -247,11 +253,31 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        stream=payload.stream,
+        streaming_interval=payload.streaming_interval,
+        max_tokens=payload.max_tokens,
     ):
+        if payload.stream:
+            # For streaming, yield each chunk immediately
+            buffer = io.BytesIO()
+            sf.write(
+                buffer, result.audio, result.sample_rate, format=payload.response_format
+            )
+            buffer.seek(0)
+            yield buffer.getvalue()
+        else:
+            # For non-streaming, collect all chunks
+            audio_chunks.append(result.audio)
+            if sample_rate is None:
+                sample_rate = result.sample_rate
 
-        sample_rate = result.sample_rate
+    # For non-streaming, concatenate all chunks and yield once
+    if not payload.stream and audio_chunks:
+        concatenated_audio = np.concatenate(audio_chunks)
         buffer = io.BytesIO()
-        sf.write(buffer, result.audio, sample_rate, format=payload.response_format)
+        sf.write(
+            buffer, concatenated_audio, sample_rate, format=payload.response_format
+        )
         buffer.seek(0)
         yield buffer.getvalue()
 
