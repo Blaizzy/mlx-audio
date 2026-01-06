@@ -128,7 +128,6 @@ class KokoroPipeline:
             self.g2p = espeak.EspeakG2P(language=language)
 
     def load_single_voice(self, voice: str) -> mx.array:
-        print(f"Loading voice: {voice} from safetensors file")
         if voice in self.voices:
             return self.voices[voice]
 
