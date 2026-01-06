@@ -213,8 +213,8 @@ class TestKokoroPipeline(unittest.TestCase):
                 "mlx_audio.tts.models.kokoro.pipeline.load_voice_tensor"
             ) as load_voice_tensor:
                 with patch(
-                    "mlx_audio.tts.models.kokoro.pipeline.hf_hub_download"
-                ) as mock_hf_hub_download:
+                    "mlx_audio.tts.models.kokoro.pipeline.snapshot_download"
+                ) as mock_snapshot_download:
                     pipeline = KokoroPipeline.__new__(KokoroPipeline)
                     pipeline.lang_code = "a"
                     pipeline.voices = {}
@@ -224,16 +224,29 @@ class TestKokoroPipeline(unittest.TestCase):
                     # Mock the load voice return value
                     load_voice_tensor.return_value = mx.zeros((512, 1, 256))
 
+                    # Mock snapshot_download to return a path
+                    # First call with local_files_only=True raises error, second downloads
+                    mock_snapshot_download.side_effect = [
+                        FileNotFoundError(),  # local_files_only=True fails
+                        "/mock/path",  # actual download succeeds
+                    ]
+
                     # Test loading a single voice
                     pipeline.load_single_voice("voice1")
-                    mock_hf_hub_download.assert_called_once()
+                    self.assertEqual(mock_snapshot_download.call_count, 2)
                     self.assertIn("voice1", pipeline.voices)
 
                     # Test loading multiple voices
-                    mock_hf_hub_download.reset_mock()
+                    mock_snapshot_download.reset_mock()
+                    mock_snapshot_download.side_effect = [
+                        FileNotFoundError(),
+                        "/mock/path",
+                        FileNotFoundError(),
+                        "/mock/path",
+                    ]
                     pipeline.voices = {}  # Reset voices
                     result = pipeline.load_voice("voice1,voice2")
-                    self.assertEqual(mock_hf_hub_download.call_count, 2)
+                    self.assertEqual(mock_snapshot_download.call_count, 4)
                     self.assertIn("voice1", pipeline.voices)
                     self.assertIn("voice2", pipeline.voices)
 
