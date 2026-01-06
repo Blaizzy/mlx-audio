@@ -163,10 +163,10 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
-    response_format: str | None = "wav"
     stream: bool | None = True
     streaming_interval: float | None = 2.0
     max_tokens: int | None = 1200
+    response_format: str | None = "mp3"
 
 
 # Initialize the ModelProvider
@@ -306,7 +306,7 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = sf.read(tmp, always_2d=False)
     tmp.close()
-    tmp_path = f"/tmp/{time.time()}.wav"
+    tmp_path = f"/tmp/{time.time()}.mp3"
     sf.write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(model)
@@ -472,7 +472,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     initial_chunk_processed = True
 
                     # Save to temporary file for processing
-                    tmp_path = f"/tmp/realtime_initial_{time.time()}.wav"
+                    tmp_path = f"/tmp/realtime_initial_{time.time()}.mp3"
                     sf.write(tmp_path, audio_array, sample_rate)
 
                     try:
@@ -527,7 +527,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     audio_array = np.array(audio_buffer)
 
                     # Save to temporary file for processing
-                    tmp_path = f"/tmp/realtime_{time.time()}.wav"
+                    tmp_path = f"/tmp/realtime_{time.time()}.mp3"
                     sf.write(tmp_path, audio_array, sample_rate)
 
                     try:

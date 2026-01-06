@@ -213,8 +213,8 @@ class TestKokoroPipeline(unittest.TestCase):
                 "mlx_audio.tts.models.kokoro.pipeline.load_voice_tensor"
             ) as load_voice_tensor:
                 with patch(
-                    "mlx_audio.tts.models.kokoro.pipeline.hf_hub_download"
-                ) as mock_hf_hub_download:
+                    "mlx_audio.tts.models.kokoro.pipeline.snapshot_download"
+                ) as mock_snapshot_download:
                     pipeline = KokoroPipeline.__new__(KokoroPipeline)
                     pipeline.lang_code = "a"
                     pipeline.voices = {}
@@ -224,16 +224,29 @@ class TestKokoroPipeline(unittest.TestCase):
                     # Mock the load voice return value
                     load_voice_tensor.return_value = mx.zeros((512, 1, 256))
 
+                    # Mock snapshot_download to return a path
+                    # First call with local_files_only=True raises error, second downloads
+                    mock_snapshot_download.side_effect = [
+                        FileNotFoundError(),  # local_files_only=True fails
+                        "/mock/path",  # actual download succeeds
+                    ]
+
                     # Test loading a single voice
                     pipeline.load_single_voice("voice1")
-                    mock_hf_hub_download.assert_called_once()
+                    self.assertEqual(mock_snapshot_download.call_count, 2)
                     self.assertIn("voice1", pipeline.voices)
 
                     # Test loading multiple voices
-                    mock_hf_hub_download.reset_mock()
+                    mock_snapshot_download.reset_mock()
+                    mock_snapshot_download.side_effect = [
+                        FileNotFoundError(),
+                        "/mock/path",
+                        FileNotFoundError(),
+                        "/mock/path",
+                    ]
                     pipeline.voices = {}  # Reset voices
                     result = pipeline.load_voice("voice1,voice2")
-                    self.assertEqual(mock_hf_hub_download.call_count, 2)
+                    self.assertEqual(mock_snapshot_download.call_count, 4)
                     self.assertIn("voice1", pipeline.voices)
                     self.assertIn("voice2", pipeline.voices)
 
@@ -572,9 +585,8 @@ class TestLlamaModel(unittest.TestCase):
         model = Model(config)
 
         # Verify batched input creation with a voice
-        input_ids, input_mask = model.prepare_input_ids(["Foo", "Bar Baz"], voice="zoe")
+        input_ids = model.prepare_input_ids(["Foo", "Bar Baz"], voice="zoe")
         self.assertEqual(input_ids.shape[0], 2)
-        self.assertEqual(input_mask.shape[0], 2)
 
         logits = model(input_ids)
         self.assertEqual(logits.shape, (2, 9, config.vocab_size))
@@ -584,7 +596,6 @@ class TestLlamaModel(unittest.TestCase):
             ["Foo", "Bar Baz"], ref_audio=mx.zeros((100,)), ref_text="Caption"
         )
         self.assertEqual(input_ids.shape[0], 2)
-        self.assertEqual(input_mask.shape[0], 2)
 
         logits = model(input_ids)
         self.assertEqual(logits.shape, (2, 22, config.vocab_size))
@@ -744,14 +755,10 @@ class TestQwen3Model(unittest.TestCase):
         model.tokenizer = mock_tokenizer_instance
 
         # Test with voice
-        input_ids, input_mask = model.prepare_input_ids(["Hello", "World"], voice="zoe")
+        input_ids = model.prepare_input_ids(["Hello", "World"], voice="zoe")
 
         # Verify batch size
         self.assertEqual(input_ids.shape[0], 2)
-        self.assertEqual(input_mask.shape[0], 2)
-
-        # Verify mask shape matches input_ids shape
-        self.assertEqual(input_ids.shape, input_mask.shape)
 
     @patch("transformers.AutoTokenizer")
     def test_parse_output(self, mock_tokenizer):

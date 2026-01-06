@@ -1,387 +1,315 @@
 # MLX-Audio
 
-A text-to-speech (TTS) and Speech-to-Speech (STS) library built on Apple's MLX framework, providing efficient speech synthesis on Apple Silicon.
+The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
 
 ## Features
 
-- Fast inference on Apple Silicon (M series chips)
-- Multiple language support
-- Voice customization options
-- Adjustable speech speed control (0.5x to 2.0x)
+- Fast inference optimized for Apple Silicon (M series chips)
+- Multiple model architectures for TTS, STT, and STS
+- Multilingual support across models
+- Voice customization and cloning capabilities
+- Adjustable speech speed control
 - Interactive web interface with 3D audio visualization
-- REST API for TTS generation
-- Quantization support for optimized performance
-- Direct access to output files via Finder/Explorer integration
+- OpenAI-compatible REST API
+- Quantization support (3-bit, 4-bit, 6-bit, 8-bit, and more) for optimized performance
+- Swift package for iOS/macOS integration
 
 ## Installation
 
 ```bash
-# Install the package
 pip install mlx-audio
-
-# For web interface and API dependencies
-pip install -r requirements.txt
 ```
 
-### Quick Start
-
-To generate audio with an LLM use:
+For development or web interface:
 
 ```bash
-# Basic usage
-mlx_audio.tts.generate --text "Hello, world"
-
-# Specify prefix for output file
-mlx_audio.tts.generate --text "Hello, world" --file_prefix hello
-
-# Adjust speaking speed (0.5-2.0)
-mlx_audio.tts.generate --text "Hello, world" --speed 1.4
+git clone https://github.com/Blaizzy/mlx-audio.git
+cd mlx-audio
+pip install -e ".[dev]"
 ```
 
-### How to call from python
+## Quick Start
 
-To generate audio with an LLM use:
+### Command Line
+
+```bash
+# Basic TTS generation
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello, world!"
+
+# With voice selection and speed adjustment
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --voice af_heart --speed 1.2
+
+# Play audio immediately
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play
+```
+
+### Python API
 
 ```python
-from mlx_audio.tts.generate import generate_audio
-
-# Example: Generate an audiobook chapter as mp3 audio
-generate_audio(
-    text=("In the beginning, the universe was created...\n"
-        "...or the simulation was booted up."),
-    model_path="prince-canuma/Kokoro-82M",
-    voice="af_heart",
-    speed=1.2,
-    lang_code="a", # Kokoro: (a)f_heart, or comment out for auto
-    file_prefix="audiobook_chapter1",
-    audio_format="wav",
-    sample_rate=24000,
-    join_audio=True,
-    verbose=True  # Set to False to disable print messages
-)
-
-print("Audiobook chapter successfully generated!")
-
-```
-
-### Web Interface & FastAPI Server
-
-MLX-Audio provides a modern web interface with real-time audio visualization capabilities. The interface offers:
-
-1. Text-to-Speech generation with customizable voices and parameters
-2. Speech-to-Text transcription with support for multiple languages
-3. Audio file upload and playback functionality
-4. Interactive 3D audio visualization
-5. Automatic audio file management in the outputs directory
-6. Direct access to the output folder from the interface (local deployment only)
-
-#### Key Features
-
-- **Voice Customization**: Select from multiple voice presets including AF Heart, AF Nova, AF Bella, and BF Emma
-- **Speech Rate Control**: Fine-tune speech generation speed using an intuitive slider (range: 0.5x - 2.0x)
-- **Dynamic 3D Visualization**: Experience audio through an interactive 3D orb that responds to frequency changes
-- **Audio Management**: Upload, play, and visualize custom audio files
-- **Smart Playback**: Optional automatic playback of generated audio
-- **File Management**: Quick access to the output directory through an integrated file explorer button
-- **Speech Recognition**: Convert speech to text with support for multiple languages and models
-To start the web interface and API server:
-
-UI:
-```bash
-# Configure the API base URL and port
-export NEXT_PUBLIC_API_BASE_URL=http://localhost
-export NEXT_PUBLIC_API_PORT=8000
-
-# Start UI server
-cd mlx_audio/ui
-npm run dev
-```
-
-Server:
-```bash
-# Using the command-line interface
-mlx_audio.server
-
-# With custom host and port
-mlx_audio.server --host 0.0.0.0 --port 9000
-
-# With verbose logging
-mlx_audio.server --verbose
-```
-
-Available command line arguments:
-- `--host`: Host address to bind the server to (default: 127.0.0.1)
-- `--port`: Port to bind the server to (default: 8000)
-
-Then open your browser and navigate to:
-```
-http://127.0.0.1:8000
-```
-
-#### API Endpoints
-
-The server provides the following REST API endpoints:
-
-- `POST /v1/audio/speech`: Generate speech from text following the OpenAI TTS specification.
-  - JSON body parameters:
-    - `model`: Name or path of the TTS model to use.
-    - `input`: Text to convert to speech.
-    - `voice`: Optional voice preset.
-    - `speed`: Optional speech speed (default `1.0`).
-  - Returns the generated audio in WAV format.
-
-- `POST /v1/audio/transcriptions`: Transcribe audio files using an STT model in a format compatible with OpenAI's API.
-  - Multipart form parameters:
-    - `file`: The audio file to transcribe.
-    - `model`: Name or path of the STT model.
-  - Returns JSON containing the transcribed `text`.
-
-- `GET /v1/models`: List loaded models.
-- `POST /v1/models`: Load a model by name.
-- `DELETE /v1/models`: Unload a model.
-
-> Note: Generated audio files are stored in `~/.mlx_audio/outputs` by default, or in a fallback directory if that location is not writable.
-
-## Models
-
-### Kokoro
-
-Kokoro is a multilingual TTS model that supports various languages and voice styles.
-
-#### Example Usage
-
-```python
-from mlx_audio.tts.models.kokoro import KokoroPipeline
 from mlx_audio.tts.utils import load_model
-from IPython.display import Audio
-import soundfile as sf
 
-# Initialize the model
-model_id = 'prince-canuma/Kokoro-82M'
-model = load_model(model_id)
+# Load model
+model = load_model("mlx-community/Kokoro-82M-bf16")
 
-# Create a pipeline with American English
-pipeline = KokoroPipeline(lang_code='a', model=model, repo_id=model_id)
-
-# Generate audio
-text = "The MLX King lives. Let him cook!"
-for _, _, audio in pipeline(text, voice='af_heart', speed=1, split_pattern=r'\n+'):
-    # Display audio in notebook (if applicable)
-    display(Audio(data=audio, rate=24000, autoplay=0))
-
-    # Save audio to file
-    sf.write('audio.wav', audio[0], 24000)
+# Generate speech
+for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
+    print(f"Generated {result.audio.shape[0]} samples")
+    # result.audio contains the waveform as mx.array
 ```
 
-#### Language Options
+## Supported Models
 
-- 🇺🇸 `'a'` - American English
-- 🇬🇧 `'b'` - British English
-- 🇯🇵 `'j'` - Japanese (requires `pip install misaki[ja]`)
-- 🇨🇳 `'z'` - Mandarin Chinese (requires `pip install misaki[zh]`)
+### Text-to-Speech (TTS)
 
-### CSM (Conversational Speech Model)
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
+| **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
+| **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-bf16](https://huggingface.co/mlx-community/Dia-1.6B-bf16) |
+| **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-0.2-500M](https://huggingface.co/mlx-community/OuteTTS-0.2-500M) |
+| **Spark** | SparkTTS model | EN, ZH | [mlx-community/SparkTTS-0.5B-bf16](https://huggingface.co/mlx-community/SparkTTS-0.5B-bf16) |
+| **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/Chatterbox-bf16](https://huggingface.co/mlx-community/Chatterbox-bf16) |
+| **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-bf16](https://huggingface.co/mlx-community/Soprano-bf16) |
 
-CSM is a model from Sesame that allows you text-to-speech and to customize voices using reference audio samples.
+### Speech-to-Text (STT)
 
-#### Example Usage
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-mlx](https://huggingface.co/mlx-community/whisper-large-v3-mlx) |
+| **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
+| **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
+
+### Speech-to-Speech (STS)
+
+| Model | Description | Use Case | Repo |
+|-------|-------------|----------|------|
+| **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
+
+## Model Examples
+
+### Kokoro TTS
+
+Kokoro is a fast, multilingual TTS model with 54 voice presets.
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/Kokoro-82M-bf16")
+
+# Generate with different voices
+for result in model.generate(
+    text="Welcome to MLX-Audio!",
+    voice="af_heart",  # American female
+    speed=1.0,
+    lang_code="a"  # American English
+):
+    audio = result.audio
+```
+
+**Available Voices:**
+- American English: `af_heart`, `af_bella`, `af_nova`, `af_sky`, `am_adam`, `am_echo`, etc.
+- British English: `bf_alice`, `bf_emma`, `bm_daniel`, `bm_george`, etc.
+- Japanese: `jf_alpha`, `jm_kumo`, etc.
+- Chinese: `zf_xiaobei`, `zm_yunxi`, etc.
+
+**Language Codes:**
+| Code | Language | Note |
+|------|----------|------|
+| `a` | American English | Default |
+| `b` | British English | |
+| `j` | Japanese | Requires `pip install misaki[ja]` |
+| `z` | Mandarin Chinese | Requires `pip install misaki[zh]` |
+| `e` | Spanish | |
+| `f` | French | |
+
+### CSM (Voice Cloning)
+
+Clone any voice using a reference audio sample:
 
 ```bash
-# Generate speech using CSM-1B model with reference audio
-python -m mlx_audio.tts.generate --model mlx-community/csm-1b --text "Hello from Sesame." --play --ref_audio ./conversational_a.wav
+mlx_audio.tts.generate \
+    --model mlx-community/csm-1b \
+    --text "Hello from Sesame." \
+    --ref_audio ./reference_voice.wav \
+    --play
 ```
 
-You can pass any audio to clone the voice from or download sample audio file from [here](https://huggingface.co/mlx-community/csm-1b/tree/main/prompts).
+### Whisper STT
 
-## Speech-to-Speech (STS)
+```python
+from mlx_audio.stt.utils import load_model, transcribe
+
+model = load_model("mlx-community/whisper-large-v3-mlx")
+result = transcribe("audio.wav", model=model)
+print(result["text"])
+```
 
 ### SAM-Audio (Source Separation)
 
-SAM-Audio separates audio sources using text prompts. It uses ODE-based diffusion to extract specific sounds from a mix.
-
-#### Example Usage
+Separate specific sounds from audio using text prompts:
 
 ```python
 from mlx_audio.sts import SAMAudio, SAMAudioProcessor, save_audio
 
-# Load model
 model = SAMAudio.from_pretrained("mlx-community/sam-audio-large")
 processor = SAMAudioProcessor.from_pretrained("mlx-community/sam-audio-large")
 
-# Prepare inputs
 batch = processor(
     descriptions=["A person speaking"],
     audios=["mixed_audio.wav"],
 )
 
-# Separate audio
-result = model.separate(
+result = model.separate_long(
     batch.audios,
     descriptions=batch.descriptions,
     anchors=batch.anchor_ids,
+    chunk_seconds=10.0,
+    overlap_seconds=3.0,
+    ode_opt={"method": "midpoint", "step_size": 2/32},
 )
 
-# Save separated audio
 save_audio(result.target[0], "voice.wav")
 save_audio(result.residual[0], "background.wav")
 ```
 
-For long audio (>2 min), use `model.separate_long()` for better memory efficiency.
+### MossFormer2 (Speech Enhancement)
 
-### MossFormer2 SE (Speech Enhancement)
-
-MossFormer2 SE removes noise and enhances speech quality. Unlike SAM-Audio, it doesn't require text prompts.
-
-#### Example Usage
+Remove noise from speech recordings:
 
 ```python
 from mlx_audio.sts import MossFormer2SEModel, save_audio
 
-# Load model
 model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
-
-# Enhance audio
 enhanced = model.enhance("noisy_speech.wav")
-
-# Save result
-save_audio(enhanced, "enhanced.wav", 48000)
+save_audio(enhanced, "clean.wav", 48000)
 ```
 
-## Advanced Features
+## Web Interface & API Server
 
-### Quantization
+MLX-Audio includes a modern web interface and OpenAI-compatible API.
 
-You can quantize models for improved performance:
+### Starting the Server
 
-```python
-from mlx_audio.tts.utils import quantize_model, load_model
-import json
-import mlx.core as mx
+```bash
+# Start API server
+mlx_audio.server --host 0.0.0.0 --port 8000
 
-model = load_model(repo_id='prince-canuma/Kokoro-82M')
-config = model.config
-
-# Quantize to 8-bit
-group_size = 64
-bits = 8
-weights, config = quantize_model(model, config, group_size, bits)
-
-# Save quantized model
-with open('./8bit/config.json', 'w') as f:
-    json.dump(config, f)
-
-mx.save_safetensors("./8bit/kokoro-v1_0.safetensors", weights, metadata={"format": "mlx"})
+# Start web UI (in another terminal)
+cd mlx_audio/ui
+npm install && npm run dev
 ```
 
-## Requirements
+### API Endpoints
 
-- MLX
-- Python 3.8+
-- Apple Silicon Mac (for optimal performance)
-- For the web interface and API:
-  - FastAPI
-  - Uvicorn
-  
+**Text-to-Speech** (OpenAI-compatible):
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model": "mlx-community/Kokoro-82M-bf16", "input": "Hello!", "voice": "af_heart"}' \
+  --output speech.wav
+```
+
+**Speech-to-Text**:
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F "file=@audio.wav" \
+  -F "model=mlx-community/whisper-large-v3-mlx"
+```
+
+## Quantization
+
+Reduce model size and improve performance with quantization using the convert script:
+
+```bash
+# Convert and quantize to 4-bit
+python -m mlx_audio.convert \
+    --hf-path prince-canuma/Kokoro-82M \
+    --mlx-path ./Kokoro-82M-4bit \
+    --quantize \
+    --q-bits 4 \
+    --upload-repo username/Kokoro-82M-4bit (optional: if you want to upload the model to Hugging Face)
+
+# Convert with specific dtype (bfloat16)
+python -m mlx_audio.convert \
+    --hf-path prince-canuma/Kokoro-82M \
+    --mlx-path ./Kokoro-82M-bf16 \
+    --dtype bfloat16 \
+    --upload-repo username/Kokoro-82M-bf16 (optional: if you want to upload the model to Hugging Face)
+```
+
+**Options:**
+| Flag | Description |
+|------|-------------|
+| `--hf-path` | Source Hugging Face model or local path |
+| `--mlx-path` | Output directory for converted model |
+| `-q, --quantize` | Enable quantization |
+| `--q-bits` | Bits per weight (4, 6, or 8) |
+| `--q-group-size` | Group size for quantization (default: 64) |
+| `--dtype` | Weight dtype: `float16`, `bfloat16`, `float32` |
+| `--upload-repo` | Upload converted model to HF Hub |
+
+**Pre-quantized models available:**
+- [mlx-community/Kokoro-82M-4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit)
+- [mlx-community/Kokoro-82M-6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit)
+- [mlx-community/Kokoro-82M-8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit)
+- [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16)
+
 ## Swift Integration
 
-This repo also ships a Swift package for on-device TTS using Apple's MLX framework on macOS and iOS.
+Native Swift package for iOS and macOS apps.
 
-### Supported Platforms
-- **macOS**: 14.0+
-- **iOS**: 16.0+
+### Installation
 
-### Adding the Swift Package Dependency
-
-#### Via Xcode (Recommended)
-1. Open your Xcode project
-2. Navigate to **File** → **Add Package Dependencies...**
-3. In the search bar, enter the package repository URL:
-   ```
-   https://github.com/Blaizzy/mlx-audio.git
-   ```
-4. Select the package and choose the version you want to use
-5. Add the **`mlx-swift-audio`** product to your target
-
-#### Via Package.swift
-Add the following dependency to your `Package.swift` file:
+Add to your `Package.swift`:
 
 ```swift
 dependencies: [
     .package(url: "https://github.com/Blaizzy/mlx-audio.git", from: "0.2.5")
-],
-targets: [
-    .target(
-        name: "YourTarget",
-        dependencies: [
-            .product(name: "mlx-swift-audio", package: "mlx-audio")
-        ]
-    )
 ]
 ```
 
 ### Usage
-After adding the dependency, import and use the module:
 
 ```swift
 import MLXAudio
 
-// Create a session with a built-in voice (auto-downloads model on first use)
-let session = try await MarvisSession(voice: .conversationalA) // playback enabled by default
-
-// One-shot generation (auto-plays if playback is enabled)
-let result = try await session.generate(for: "Your text here")
-print("Generated \(result.sampleCount) samples @ \(result.sampleRate) Hz")
-```
-
-#### Streaming generation
-Get responsive audio chunks as they are decoded. Chunks are auto-played if playback is enabled.
-
-```swift
-import MLXAudio
-
+// Create session (auto-downloads model)
 let session = try await MarvisSession(voice: .conversationalA)
 
-for try await chunk in session.stream(text: "Hello there from streaming mode", streamingInterval: 0.5) {
-    // Each chunk includes PCM samples and timing metrics
-    print("chunk samples=\(chunk.sampleCount) rtf=\(chunk.realTimeFactor)")
+// Generate speech (auto-plays)
+let result = try await session.generate(for: "Hello from Swift!")
+
+// Streaming generation
+for try await chunk in session.stream(text: "Streaming audio...") {
+    print("Chunk: \(chunk.sampleCount) samples")
 }
 ```
 
-#### Raw audio (no playback)
-If you want just the samples without auto-play, disable playback at init or call `generateRaw`.
+**Supported Platforms:** macOS 14.0+, iOS 16.0+
 
-```swift
-import MLXAudio
+## Requirements
 
-// Option A: Disable playback globally for the session
-let s1 = try await MarvisSession(voice: .conversationalA, playbackEnabled: false)
-let raw1 = try await s1.generateRaw(for: "Save this to a file")
-
-// Option B: Keep playback enabled but request a raw result for this call
-let s2 = try await MarvisSession(voice: .conversationalA)
-let raw2 = try await s2.generateRaw(for: "No auto-play for this one")
-
-// rawX.audio is [Float] PCM at rawX.sampleRate (mono)
-```
-
-
-```
+- Python 3.9+
+- Apple Silicon Mac (M1/M2/M3/M4)
+- MLX framework
 
 ## License
 
 [MIT License](LICENSE)
 
-## Acknowledgements
+## Citation
 
-- Thanks to the Apple MLX team for providing a great framework for building TTS and STS models.
-- This project uses the Kokoro model architecture for text-to-speech synthesis.
-- The 3D visualization uses Three.js for rendering.
-
-
+```bibtex
 @misc{mlx-audio,
   author = {Canuma, Prince},
   title = {MLX Audio},
   year = {2025},
   howpublished = {\url{https://github.com/Blaizzy/mlx-audio}},
-  note = {A text-to-speech (TTS), speech-to-text (STT) and speech-to-speech (STS) library built on Apple's MLX framework, providing efficient speech analysis on Apple Silicon.}
+  note = {Audio processing library for Apple Silicon with TTS, STT, and STS capabilities.}
 }
+```
+
+## Acknowledgements
+
+- [Apple MLX Team](https://github.com/ml-explore/mlx) for the MLX framework
