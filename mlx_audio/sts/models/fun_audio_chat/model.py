@@ -866,6 +866,8 @@ class FunAudioChatForConditionalGeneration(nn.Module):
         repetition_penalty: float = 1.0,
         repetition_context_size: int = 20,
         verbose: bool = False,
+        decode_audio: bool = True,
+        audio_decoder: Optional[Any] = None,
         **kwargs,
     ) -> FunAudioChatOutput:
         """Generate text and audio tokens from audio input (S2S mode).
@@ -875,6 +877,7 @@ class FunAudioChatForConditionalGeneration(nn.Module):
         2. Generates text response tokens
         3. When audio_bos token is generated, switches to generating audio tokens
         4. Uses the speech decoder (audio_invert_tower) to generate audio tokens
+        5. Optionally decodes audio tokens to waveform using CosyVoice decoder
 
         Args:
             audio: Audio path or waveform
@@ -890,10 +893,12 @@ class FunAudioChatForConditionalGeneration(nn.Module):
             repetition_penalty: Penalty for repeating tokens (1.0 = no penalty)
             repetition_context_size: Number of recent tokens for repetition penalty
             verbose: Print tokens during generation
+            decode_audio: Whether to decode audio tokens to waveform (default True)
+            audio_decoder: Optional pre-loaded CosyVoiceDecoder instance
             **kwargs: Additional arguments
 
         Returns:
-            FunAudioChatOutput with generated text and audio tokens
+            FunAudioChatOutput with generated text, audio tokens, and optionally audio waveform
         """
         start_time = time.time()
 
@@ -978,10 +983,12 @@ class FunAudioChatForConditionalGeneration(nn.Module):
         generated_tokens = []
         audio_tokens = []
         generating_audio = False
-        hidden_states_for_audio = []
 
         # Speech decoder configuration
         group_size = self.config.audio_config.group_size  # 5 (upsampling factor)
+
+        # Silence token ID in the codebook
+        sil_token_id = self.config.text_config.sil_index
 
         for i in range(max_tokens):
             # Get next token logits
@@ -997,14 +1004,17 @@ class FunAudioChatForConditionalGeneration(nn.Module):
             next_token = text_sampler(next_logits)
             next_token_id = next_token.item()
 
-            # Check for text EOS
+            # Check for text EOS (only if not in audio generation mode)
             if next_token_id in eos_ids and not generating_audio:
                 break
 
             generated_tokens.append(next_token_id)
 
             if verbose:
-                print(self._tokenizer.decode([next_token_id]), end="", flush=True)
+                token_text = self._tokenizer.decode([next_token_id])
+                # Don't print silence tokens individually, they clutter output
+                if next_token_id != sil_token_id:
+                    print(token_text, end="", flush=True)
 
             # Check if we should start generating audio
             if next_token_id == audio_bos_id and not generating_audio:
@@ -1012,20 +1022,46 @@ class FunAudioChatForConditionalGeneration(nn.Module):
                 if verbose:
                     print("\n[Starting audio generation...]", flush=True)
 
-            # If generating audio, also generate audio tokens using speech decoder
-            if generating_audio and next_token_id != audio_bos_id:
+            # If generating audio, generate audio tokens from hidden states at each step
+            if generating_audio and next_token_id not in [audio_bos_id, audio_eos_id]:
                 # Get the hidden states from the last layer for speech decoding
-                # We need to collect hidden states and pass them through the speech decoder
                 last_hidden = self.language_model.get_last_hidden_state()
-                if last_hidden is not None:
-                    hidden_states_for_audio.append(last_hidden[:, -1:, :])
 
-                # Check for audio EOS in text tokens
-                if next_token_id == audio_eos_id:
-                    generating_audio = False
-                    if verbose:
-                        print("\n[Audio generation complete]", flush=True)
-                    break
+                if last_hidden is not None:
+                    # Pass single timestep through speech decoder
+                    # Speech decoder upsamples by group_size (5) to produce 5 audio tokens per text token
+                    speech_logits = self.audio_invert_tower(last_hidden[:, -1:, :])
+                    mx.eval(speech_logits)
+
+                    # Sample audio tokens from logits (group_size tokens per text token)
+                    for t in range(speech_logits.shape[1]):
+                        if len(audio_tokens) >= max_audio_tokens:
+                            break
+
+                        token_logits = speech_logits[:, t, :]
+
+                        # Apply temperature
+                        if audio_temperature > 0:
+                            token_logits = token_logits / audio_temperature
+
+                        # Sample
+                        audio_token = audio_sampler(token_logits)
+                        audio_token_id = audio_token.item()
+
+                        # Filter to valid range and check for EOS
+                        if audio_token_id == audio_eos_token:
+                            break
+
+                        # Keep all valid audio tokens (0 to codebook_size - special_tokens)
+                        if 0 <= audio_token_id < codebook_size - 4:
+                            audio_tokens.append(audio_token_id)
+
+            # Check for audio EOS in text tokens
+            if next_token_id == audio_eos_id:
+                generating_audio = False
+                if verbose:
+                    print(f"\n[Audio generation complete: {len(audio_tokens)} tokens]", flush=True)
+                break
 
             # Prepare next input
             next_embed = self.get_input_embeddings()(next_token[None, :])
@@ -1037,44 +1073,6 @@ class FunAudioChatForConditionalGeneration(nn.Module):
             # Clear memory periodically
             if i % 50 == 0:
                 mx.clear_cache()
-
-        # Now generate audio tokens from collected hidden states
-        if hidden_states_for_audio:
-            if verbose:
-                print("\n[Decoding audio tokens from hidden states...]", flush=True)
-
-            # Concatenate all hidden states
-            combined_hidden = mx.concatenate(hidden_states_for_audio, axis=1)
-            mx.eval(combined_hidden)
-
-            # Pass through speech decoder to get audio token logits
-            # The speech decoder upsamples by group_size (5) to go from 5Hz to 25Hz
-            speech_logits = self.audio_invert_tower(combined_hidden)
-            mx.eval(speech_logits)
-
-            # Sample audio tokens from logits
-            # Shape: (batch, seq_len * group_size, codebook_size)
-            for t in range(speech_logits.shape[1]):
-                if len(audio_tokens) >= max_audio_tokens:
-                    break
-
-                token_logits = speech_logits[:, t, :]
-
-                # Apply temperature
-                if audio_temperature > 0:
-                    token_logits = token_logits / audio_temperature
-
-                # Sample
-                audio_token = audio_sampler(token_logits)
-                audio_token_id = audio_token.item()
-
-                # Filter to valid range and check for EOS
-                if audio_token_id == audio_eos_token:
-                    break
-
-                # Only keep valid audio tokens (0 to codebook_size - 1, excluding special tokens)
-                if 0 <= audio_token_id < codebook_size - 4:  # Exclude BOS, EOS, PAD, SIL tokens
-                    audio_tokens.append(audio_token_id)
 
         if verbose:
             print()
@@ -1088,9 +1086,38 @@ class FunAudioChatForConditionalGeneration(nn.Module):
         # Convert audio tokens to array
         audio_tokens_array = mx.array(audio_tokens, dtype=mx.int32) if audio_tokens else None
 
+        # Decode audio tokens to waveform if requested
+        audio_waveform = None
+        sample_rate = 24000  # CosyVoice sample rate
+
+        if decode_audio and audio_tokens_array is not None and len(audio_tokens) > 0:
+            if verbose:
+                print("[Decoding audio tokens to waveform...]", flush=True)
+
+            try:
+                # Use provided decoder or load default
+                if audio_decoder is None:
+                    from .cosyvoice_decoder import CosyVoiceDecoder
+                    audio_decoder = CosyVoiceDecoder.from_pretrained()
+
+                # Decode tokens to audio
+                audio_waveform = audio_decoder.decode(audio_tokens_array)
+                sample_rate = audio_decoder.sample_rate
+                mx.eval(audio_waveform)
+
+                if verbose:
+                    duration = len(audio_waveform) / sample_rate
+                    print(f"[Audio decoded: {duration:.2f}s at {sample_rate}Hz]", flush=True)
+
+            except Exception as e:
+                if verbose:
+                    print(f"[Warning: Could not decode audio: {e}]", flush=True)
+
         return FunAudioChatOutput(
             text=text.strip(),
             audio_tokens=audio_tokens_array,
+            audio=audio_waveform,
+            sample_rate=sample_rate,
             prompt_tokens=prompt_tokens,
             generation_tokens=len(generated_tokens),
             audio_generation_tokens=len(audio_tokens),
