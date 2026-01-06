@@ -5,9 +5,6 @@ __pycache__/
 *.so
 .Python
 build/
-swiftpm/
-.build/
-.swiftpm/
 develop-eggs/
 dist/
 downloads/
@@ -36,36 +33,13 @@ env/
 *.swp
 *.swo
 
-# Xcode
-xcuserdata/
-*.xcuserstate
-DerivedData/
-*.moved-aside
-*.xccheckout
-*.xcscmblueprint
-
 # OS
 .DS_Store
 Thumbs.db
 
-# Swift Build
-.build/
-*.xcodeproj/xcuserdata/
-*.xcodeproj/project.xcworkspace/xcuserdata/
-
 test.ipynb
 output/
-swift/Swift-TTS/Swift-TTS/Kokoro/Resources/kokoro-v1_0.safetensors
-swift/Swift-TTS/Swift-TTS/Orpheus/Resources/orpheus-3b-0.1-ft-4bit.safetensors
 *.safetensors
-
-# Xcode
-xcuserdata/
-*.xcuserstate
-*.xcbkptlist
-
-# Swift Package Manager
-.swiftpm/
 
 # uv
 .build
