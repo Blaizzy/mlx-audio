@@ -30,6 +30,8 @@ dependencies = [
     "sounddevice>=0.5.1",
     "soundfile>=0.13.1",
     "pyloudnorm>=0.1.1",
+    "librosa==0.11.0",
+    "mlx-audio[all]", # TODO: Reduce deps
 ]
 
 [project.optional-dependencies]
@@ -64,7 +66,7 @@ server = [
 sts = [
     "mlx-audio[stt,tts]",
     "mlx-vlm>=0.1.27",
-    "fastrtc[vad,stt]",
+    "fastrtc[vad,stt]==0.0.34",
     "webrtcvad>=2.0.10",
 ]
 
