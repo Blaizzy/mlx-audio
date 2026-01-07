@@ -50,7 +50,6 @@ tts = [
     "espeakng-loader>=0.2.4",
     "sentencepiece>=0.2.0",
     "einops>=0.8.1",
-    "omegaconf==2.3.0",
     "einx==0.3.0",
     "dacite>=1.9.2",
 ]
