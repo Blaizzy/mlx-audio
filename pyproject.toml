@@ -44,7 +44,6 @@ stt = [
 # TTS dependencies
 tts = [
     "misaki[en]>=0.8.2",
-    "loguru>=0.7.3",
     "num2words>=0.5.14",
     "spacy>=3.8.4",
     "phonemizer-fork>=3.3.2",
