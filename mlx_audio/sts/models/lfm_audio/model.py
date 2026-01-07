@@ -347,23 +347,17 @@ class LFM2AudioModel(nn.Module):
             if "tokenizer" not in wf.name
         ]
         if weight_files:
-            from mlx.utils import tree_unflatten
-            from safetensors import safe_open
-
             weights = {}
             for wf in weight_files:
                 weights.update(mx.load(str(wf)))
 
             # Sanitize and load weights
             weights = model.sanitize(weights)
-            if dtype != mx.float32:
-                print(f"Converting weights to {dtype}")
-                weights = {k: v.astype(dtype) for k, v in weights.items()}
 
             model.load_weights(list(weights.items()), strict=False)
 
-        model.eval()
         mx.eval(model.parameters())
+        model.eval()
 
         return model
 
@@ -537,6 +531,10 @@ class LFM2AudioModel(nn.Module):
                 sanitized[key] = value.transpose(0, 2, 3, 1)
 
         return sanitized
+
+    @property
+    def sample_rate(self) -> int:
+        return self.config.sample_rate
 
     def make_cache(self) -> List[Any]:
         return [
