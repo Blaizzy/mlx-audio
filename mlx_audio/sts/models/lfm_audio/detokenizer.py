@@ -384,15 +384,14 @@ class LFM2AudioDetokenizer(nn.Module):
             self._window = 0.5 - 0.5 * mx.cos(2 * math.pi * mx.arange(n) / n)
         return self._window
 
-    def _create_causal_mask(self, T: int) -> mx.array:
-        """Create causal attention mask."""
-        # Create position indices
-        idx = mx.arange(T)
-        # Distance matrix: col - row
-        d_idx = idx[None, :] - idx[:, None]  # (T, T)
+    def _create_sliding_window_mask(self, T: int) -> mx.array:
 
-        # Causal: can only attend to current and past positions (d_idx <= 0)
-        mask = mx.where(d_idx <= 0, 0.0, float("-inf"))
+        idx = mx.arange(T)
+        d_idx = idx[:, None] - idx[None, :]  # (T, T)
+
+
+        valid = (d_idx >= 0) & (d_idx < self.config.sliding_window)
+        mask = mx.where(valid, 0.0, float("-inf"))
 
         # Add batch and head dimensions
         return mask[None, None, :, :]  # (1, 1, T, T)
@@ -422,9 +421,9 @@ class LFM2AudioDetokenizer(nn.Module):
         # Transpose back: (B, D, T') -> (B, T', D)
         x = x.transpose(0, 2, 1)
 
-        # 3. Create causal mask
+        # 3. Create sliding window causal mask
         T_up = x.shape[1]
-        mask = self._create_causal_mask(T_up)
+        mask = self._create_sliding_window_mask(T_up)
 
         # 4. Apply LFM backbone
         x = self.lfm(x, mask)
@@ -468,7 +467,7 @@ class LFM2AudioDetokenizer(nn.Module):
             # Transpose from (T, F) to (F, T) as expected by istft
             stft_item = stft_complex[b].transpose(1, 0)  # (F, T)
 
-            # Use dsp.istft with center=False to get full output, then trim manually
+    
             # normalized=True for COLA (window²) normalization to match PyTorch
             output = istft(
                 stft_item,
@@ -479,7 +478,7 @@ class LFM2AudioDetokenizer(nn.Module):
                 normalized=True,
             )
 
-            # Trim padding for "same" mode
+            # Trim for "same" padding: output_len = n_frames * hop_length
             if pad > 0:
                 output = output[pad:-pad]
 
