@@ -48,8 +48,6 @@ tts = [
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
     "sentencepiece>=0.2.0",
-    "einops>=0.8.1",
-    "einx==0.3.0",
     "dacite>=1.9.2",
 ]
 
