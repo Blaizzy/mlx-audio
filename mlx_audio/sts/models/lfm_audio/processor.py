@@ -286,42 +286,24 @@ class LFM2AudioProcessor:
 
         return codes
 
-    def decode_audio(self, codes: mx.array) -> mx.array:
+    def decode_audio(self, codes: mx.array, codec: Optional[str] = "detokenizer") -> mx.array:
         """
-        Decode audio codes to waveform using Mimi codec.
+        Decode audio codes to waveform using LFM2 detokenizer or Mimi codec.
 
         Args:
             codes: Audio codes (B, num_codebooks, T) or (num_codebooks, T)
                    LFM2.5-Audio uses 8 codebooks
-
+            codec: Decoder to use, either "detokenizer" or "mimi"
         Returns:
             Audio waveform (B, 1, T_audio) or (1, T_audio)
         """
-        single_input = codes.ndim == 2
-        if single_input:
-            codes = codes[None, :]
+        if codec == "detokenizer":
+            return self.detokenizer(codes)
+        elif codec == "mimi":
+            return self.mimi.decode(codes)
+        else:
+            raise ValueError(f"Invalid codec: {codec}")
 
-        # Decode with Mimi directly - it handles variable codebook counts
-        # No padding needed: the SplitResidualVectorQuantizer only uses
-        # the codebooks provided, and padding with zeros adds noise
-        audio = self.mimi.decode(codes)
-
-        if single_input:
-            return audio[0]
-
-        return audio
-
-    def decode_with_detokenizer(self, codes: mx.array) -> mx.array:
-        """
-        Decode audio codes using the LFM detokenizer (ISTFT-based).
-
-        Args:
-            codes: Audio codes (B, num_codebooks, T)
-
-        Returns:
-            Audio waveform (B, T_audio)
-        """
-        return self.detokenizer(codes)
 
     def tokenize_text(self, text: str) -> mx.array:
         """
@@ -377,7 +359,7 @@ class LFM2AudioProcessor:
         tokens = self.tokenizer.encode(formatted, add_special_tokens=False)
         return mx.array(tokens)
 
-    def decode_text(self, tokens: mx.array) -> str:
+    def decode_text(self, tokens: Union[mx.array, List[int]]) -> str:
         """
         Decode text tokens.
 
@@ -387,10 +369,15 @@ class LFM2AudioProcessor:
         Returns:
             Decoded text string
         """
-        if tokens.ndim == 2:
-            tokens = tokens[0]
-
-        return self.tokenizer.decode(tokens.tolist())
+        
+        
+        if hasattr(tokens, "ndim"):
+            tokens_ = tokens.squeeze().tolist() if tokens.ndim > 1 else tokens.tolist()
+        elif isinstance(tokens, list):
+            tokens_ = tokens
+        else:
+            raise ValueError(f"Invalid tokens type: {type(tokens)}")
+        return self.tokenizer.decode(tokens_)
 
     def _resample(
         self,
