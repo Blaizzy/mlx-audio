@@ -9,7 +9,6 @@ import mlx.nn as nn
 from mlx_lm.generate import stream_generate
 from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.sample_utils import make_logits_processors, make_sampler
-from mlx_lm.tokenizer_utils import load as load_tokenizer
 from tqdm import tqdm
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
@@ -28,7 +27,6 @@ PITCH_MAP = SPEED_MAP = {
 
 @dataclass
 class ModelConfig(BaseModelArgs):
-    model_path: Path = None
     sample_rate: int = 16000
     bos_token_id: int = 151643
     eos_token_id: int = 151645
@@ -68,12 +66,23 @@ class Model(nn.Module):
         """
         self.config = config
 
-        model_dir = config.model_path
-
         self.model = Qwen2Model(config)
-        self.tokenizer = load_tokenizer(model_dir, eos_token_ids=config.eos_token_id)
+        self.tokenizer = None
+        self._audio_tokenizer = None
 
-        self._audio_tokenizer = BiCodecTokenizer(model_dir)
+    @classmethod
+    def post_load_hook(cls, model: "Model", model_path: Path):
+        """
+        Hook called after model weights are loaded.
+        Used to initialize the tokenizer which is required for text input.
+        """
+        from transformers import AutoTokenizer
+
+        model.tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path), eos_token_ids=model.config.eos_token_id
+        )
+        model._audio_tokenizer = BiCodecTokenizer(model_path)
+        return model
 
     def load_weights(self, weights, strict=True):
         self.model.load_weights(weights, strict=strict)
@@ -256,9 +265,11 @@ class Model(nn.Module):
                     text_split, ref_audio, ref_text
                 )
 
-            inputs = self.tokenizer._tokenizer([prompt], return_tensors="pt")
+            inputs = self.tokenizer.encode(
+                prompt, add_special_tokens=False, return_tensors="mlx"
+            )
 
-            input_ids = mx.array(inputs.input_ids)
+            input_ids = mx.array(inputs)
 
             sampler = make_sampler(temperature, top_p=top_p, top_k=top_k)
             logits_processors = make_logits_processors(
@@ -297,14 +308,11 @@ class Model(nn.Module):
             time_end = time.time()
             # Trim the output tokens to remove the input tokens
             generated_ids = mx.array(
-                [
-                    output[len(input) :]
-                    for input, output in zip(inputs.input_ids, input_ids)
-                ]
+                [output[len(input) :] for input, output in zip(inputs, input_ids)]
             ).tolist()
 
             # Decode the generated tokens into text
-            predicts = self.tokenizer._tokenizer.batch_decode(
+            predicts = self.tokenizer.batch_decode(
                 generated_ids, skip_special_tokens=False
             )[0]
 
