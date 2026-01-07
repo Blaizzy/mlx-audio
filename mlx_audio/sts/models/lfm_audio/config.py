@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+from mlx_lm.models.lfm2 import ModelArgs as LFM2Config
 
 
 @dataclass
@@ -61,71 +62,6 @@ class ConformerEncoderConfig:
     dropout_pre_encoder: float = 0.1
     dropout_emb: float = 0.0
     dropout_att: float = 0.1
-
-
-@dataclass
-class LFM2Config:
-    """LFM2 language model backbone configuration."""
-    architectures : List[str] = None
-    eos_token_id: List[int] = None
-    vocab_size: int = 65536
-    hidden_size: int = 2048
-    intermediate_size: int = 12288
-    num_hidden_layers: int = 16
-    num_attention_heads: int = 32
-    num_key_value_heads: int = 8
-    max_position_embeddings: int = 128000
-    rope_theta: float = 1000000.0
-    norm_eps: float = 1e-05
-    use_cache: bool = True
-    use_pos_enc: bool = True
-    _name_or_path: str = None
-    initializer_range: float = 0.02
-    model_type: str = "lfm2_vl"
-    num_heads: int = 8
-    torch_dtype: str = "float32"
-
-    # Block config
-    block_dim: int = 2048
-    block_ff_dim: int = 12288
-    block_norm_eps: float = 1e-05
-    block_use_swiglu: bool = True
-    block_multiple_of: int = 256
-
-    block_auto_adjust_ff_dim: bool = False
-    block_ffn_dim_multiplier: int = 1
-    block_mlp_init_scale: float = 1.0
-    block_out_init_scale: float = 1.0
-    block_use_xavier_init: bool = False
-    conv_use_xavier_init: bool = False
-
-    # Conv config
-    conv_L_cache: int = 3
-    conv_bias: bool = False
-    conv_dim: int = 2048
-    conv_dim_out: int = 2048
-
-    # Layer types: conv or full_attention
-    layer_types: List[str] = field(
-        default_factory=lambda: [
-            "conv",
-            "conv",
-            "full_attention",
-            "conv",
-            "conv",
-            "full_attention",
-            "conv",
-            "conv",
-            "full_attention",
-            "conv",
-            "full_attention",
-            "conv",
-            "full_attention",
-            "conv",
-            "full_attention",
-            "conv",
-        ]
-    )
 
 
 @dataclass
@@ -193,7 +129,7 @@ class LFM2AudioConfig:
         # Parse sub-configs
         preprocessor = PreprocessorConfig(**config_dict.get("preprocessor", {}))
         encoder = ConformerEncoderConfig(**config_dict.get("encoder", {}))
-        lfm = LFM2Config(**config_dict.get("lfm", {}))
+        lfm = LFM2Config.from_dict(config_dict.get("lfm", {}))
         depthformer = DepthformerConfig(**config_dict.get("depthformer", {}))
 
         # Remove nested dicts

@@ -13,15 +13,13 @@ import mlx.nn as nn
 from huggingface_hub import snapshot_download
 
 from .config import (
-    ConformerEncoderConfig,
     DepthformerConfig,
     LFM2AudioConfig,
-    LFM2Config,
-    PreprocessorConfig,
+
 )
 from .conformer import ConformerEncoder, MLP
 from .transformer import Depthformer, RMSNorm
-from mlx_lm.models.lfm2 import Lfm2Model, ModelArgs as Lfm2ModelArgs
+from mlx_lm.models.lfm2 import Lfm2Model
 from mlx_lm.models.cache import KVCache, ArraysCache
 
 
@@ -269,27 +267,7 @@ class LFM2AudioModel(nn.Module):
             dropout=config.adapter_dropout,
         )
 
-        lfm_args = Lfm2ModelArgs(
-            model_type="lfm2",
-            vocab_size=config.lfm.vocab_size,
-            hidden_size=config.lfm.hidden_size,
-            num_hidden_layers=config.lfm.num_hidden_layers,
-            num_attention_heads=config.lfm.num_attention_heads,
-            num_key_value_heads=config.lfm.num_key_value_heads,
-            max_position_embeddings=config.lfm.max_position_embeddings,
-            norm_eps=config.lfm.norm_eps,
-            conv_bias=config.lfm.conv_bias,
-            conv_L_cache=config.lfm.conv_L_cache,
-            block_dim=config.lfm.block_dim,
-            block_ff_dim=config.lfm.block_ff_dim,
-            block_multiple_of=config.lfm.block_multiple_of,
-            block_ffn_dim_multiplier=config.lfm.block_ffn_dim_multiplier,
-            block_auto_adjust_ff_dim=config.lfm.block_auto_adjust_ff_dim,
-            rope_theta=config.lfm.rope_theta,
-            layer_types=config.lfm.layer_types,
-        )
-        self.lfm = Lfm2Model(lfm_args)
-        self._lfm_args = lfm_args  
+        self.lfm = Lfm2Model(config.lfm)
 
 
         self.audio_in_emb = AudioEmbedding(
@@ -338,28 +316,43 @@ class LFM2AudioModel(nn.Module):
 
         config = LFM2AudioConfig.from_dict(config_dict)
 
+        quantization = config_dict.get("quantization", None)
+
         # Create model
         model = cls(config)
 
-     
+        if quantization is not None:
+            def class_predicate(p, m):
+                if p in quantization:
+                    return quantization[p]
+                if not hasattr(m, "to_quantized"):
+                    return False
+                return f"{p}.scales" in weights
+
+            nn.quantize(model, group_size=quantization["group_size"], bits=quantization["bits"], class_predicate=class_predicate)
+
         weight_files = [
             wf for wf in model_path.glob("*.safetensors")
             if "tokenizer" not in wf.name
         ]
-        if weight_files:
-            weights = {}
+        weights = {}
+        if len(weight_files) > 0:
+        
             for wf in weight_files:
                 weights.update(mx.load(str(wf)))
 
-            # Sanitize and load weights
-            weights = model.sanitize(weights)
+        # Sanitize and load weights
+        weights = model.sanitize(weights)
 
-            model.load_weights(list(weights.items()), strict=False)
+        model.load_weights(list(weights.items()), strict=False)
 
         mx.eval(model.parameters())
         model.eval()
 
         return model
+
+    def model_quant_predicate(self, p, m):
+        return 
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
