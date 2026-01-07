@@ -78,6 +78,9 @@ class Model(nn.Module):
         """
         from transformers import AutoTokenizer
 
+        print(
+            f"Loading tokenizer from {model_path} with eos_token_ids={model.config.eos_token_id}"
+        )
         model.tokenizer = AutoTokenizer.from_pretrained(
             str(model_path), eos_token_ids=model.config.eos_token_id
         )

@@ -20,7 +20,6 @@ from functools import wraps
 
 import mlx.core as mx
 import mlx.nn as nn
-from einops import rearrange, repeat
 
 
 def exists(val):
