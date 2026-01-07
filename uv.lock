@@ -220,12 +220,6 @@ wheels = [
 ]
 
 [[package]]
-name = "antlr4-python3-runtime"
-version = "4.9.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/3e/38/7859ff46355f76f8d19459005ca000b6e7012f2f1ca597746cbcd1fbfe5e/antlr4-python3-runtime-4.9.3.tar.gz", hash = "sha256:f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", size = 117034 }
-
-[[package]]
 name = "anyio"
 version = "4.12.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1455,21 +1449,23 @@ wheels = [
 
 [[package]]
 name = "huggingface-hub"
-version = "0.36.0"
+version = "1.2.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64'" },
+    { name = "httpx" },
     { name = "packaging" },
     { name = "pyyaml" },
-    { name = "requests" },
+    { name = "shellingham" },
     { name = "tqdm" },
+    { name = "typer-slim" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/98/63/4910c5fa9128fdadf6a9c5ac138e8b1b6cee4ca44bf7915bbfbce4e355ee/huggingface_hub-0.36.0.tar.gz", hash = "sha256:47b3f0e2539c39bf5cde015d63b72ec49baff67b6931c3d97f3f84532e2b8d25", size = 463358 }
+sdist = { url = "https://files.pythonhosted.org/packages/fb/94/42ed2ff780f4bc58acbe4b8cb98eb4574310ad6feba12f76a820e7546120/huggingface_hub-1.2.4.tar.gz", hash = "sha256:7a1d9ec4802e64372d1d152d69fb8e26d943f15a2289096fbc8e09e7b90c21a5", size = 614771 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cb/bd/1a875e0d592d447cbc02805fd3fe0f497714d6a2583f59d14fa9ebad96eb/huggingface_hub-0.36.0-py3-none-any.whl", hash = "sha256:7bcc9ad17d5b3f07b57c78e79d527102d08313caa278a641993acddcb894548d", size = 566094 },
+    { url = "https://files.pythonhosted.org/packages/dd/b0/113c4a688e7af9f0b92f5585cb425e71134e04c83a0a4a1e62db90edee20/huggingface_hub-1.2.4-py3-none-any.whl", hash = "sha256:2db69b91877d9d34825f5cd2a63b94f259011a77dcf761b437bf510fbe9522e9", size = 520980 },
 ]
 
 [[package]]
@@ -1641,19 +1637,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c9/19/5018e5352019be753b7b07f7759cdabb69ca5779fea2494be8839270df4c/llvmlite-0.46.0-cp314-cp314-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:379fdd1c59badeff8982cb47e4694a6143bec3bb49aa10a466e095410522064d", size = 56275173 },
     { url = "https://files.pythonhosted.org/packages/9f/c9/d57877759d707e84c082163c543853245f91b70c804115a5010532890f18/llvmlite-0.46.0-cp314-cp314-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2e8cbfff7f6db0fa2c771ad24154e2a7e457c2444d7673e6de06b8b698c3b269", size = 55128628 },
     { url = "https://files.pythonhosted.org/packages/30/a8/e61a8c2b3cc7a597073d9cde1fcbb567e9d827f1db30c93cf80422eac70d/llvmlite-0.46.0-cp314-cp314-win_amd64.whl", hash = "sha256:7821eda3ec1f18050f981819756631d60b6d7ab1a6cf806d9efefbe3f4082d61", size = 39153056 },
-]
-
-[[package]]
-name = "loguru"
-version = "0.7.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
-    { name = "win32-setctime", marker = "sys_platform == 'win32'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/05/a1dae3dffd1116099471c643b8924f5aa6524411dc6c63fdae648c4f1aca/loguru-0.7.3.tar.gz", hash = "sha256:19480589e77d47b8d85b2c827ad95d49bf31b0dcde16593892eb51dd18706eb6", size = 63559 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/0c/29/0348de65b8cc732daa3e33e67806420b2ae89bdce2b04af740289c5c6c8c/loguru-0.7.3-py3-none-any.whl", hash = "sha256:31a33c10c8e1e10422bfd431aeb5d351c7cf7fa671e3c4df004162264b28220c", size = 61595 },
 ]
 
 [[package]]
@@ -1849,35 +1832,17 @@ name = "mlx-audio"
 version = "0.2.10"
 source = { editable = "." }
 dependencies = [
-    { name = "dacite" },
-    { name = "einops" },
-    { name = "einx" },
-    { name = "espeakng-loader" },
-    { name = "fastapi" },
-    { name = "fastrtc", extra = ["stt", "vad"] },
     { name = "hf-transfer" },
     { name = "huggingface-hub" },
     { name = "librosa" },
-    { name = "loguru" },
-    { name = "misaki", extra = ["en"] },
-    { name = "mistral-common", extra = ["audio"] },
     { name = "mlx" },
     { name = "mlx-lm" },
-    { name = "mlx-vlm" },
-    { name = "num2words" },
     { name = "numpy" },
-    { name = "omegaconf" },
-    { name = "phonemizer-fork" },
     { name = "pyloudnorm" },
-    { name = "sentencepiece" },
     { name = "sounddevice" },
     { name = "soundfile" },
-    { name = "spacy" },
-    { name = "tiktoken" },
     { name = "tqdm" },
     { name = "transformers" },
-    { name = "uvicorn" },
-    { name = "webrtcvad" },
 ]
 
 [package.optional-dependencies]
@@ -1888,12 +1853,10 @@ all = [
     { name = "espeakng-loader" },
     { name = "fastapi" },
     { name = "fastrtc", extra = ["stt", "vad"] },
-    { name = "loguru" },
     { name = "misaki", extra = ["en"] },
     { name = "mistral-common", extra = ["audio"] },
     { name = "mlx-vlm" },
     { name = "num2words" },
-    { name = "omegaconf" },
     { name = "phonemizer-fork" },
     { name = "sentencepiece" },
     { name = "spacy" },
@@ -1915,12 +1878,10 @@ sts = [
     { name = "einx" },
     { name = "espeakng-loader" },
     { name = "fastrtc", extra = ["stt", "vad"] },
-    { name = "loguru" },
     { name = "misaki", extra = ["en"] },
     { name = "mistral-common", extra = ["audio"] },
     { name = "mlx-vlm" },
     { name = "num2words" },
-    { name = "omegaconf" },
     { name = "phonemizer-fork" },
     { name = "sentencepiece" },
     { name = "spacy" },
@@ -1936,10 +1897,8 @@ tts = [
     { name = "einops" },
     { name = "einx" },
     { name = "espeakng-loader" },
-    { name = "loguru" },
     { name = "misaki", extra = ["en"] },
     { name = "num2words" },
-    { name = "omegaconf" },
     { name = "phonemizer-fork" },
     { name = "sentencepiece" },
     { name = "spacy" },
@@ -1956,36 +1915,33 @@ requires-dist = [
     { name = "hf-transfer" },
     { name = "huggingface-hub", specifier = ">=0.27.0" },
     { name = "librosa", specifier = "==0.11.0" },
-    { name = "loguru", marker = "extra == 'tts'", specifier = ">=0.7.3" },
     { name = "misaki", extras = ["en"], marker = "extra == 'tts'", specifier = ">=0.8.2" },
     { name = "mistral-common", extras = ["audio"], marker = "extra == 'stt'" },
     { name = "mlx", specifier = ">=0.25.2" },
-    { name = "mlx-audio", extras = ["all"] },
     { name = "mlx-audio", extras = ["server", "sts", "stt", "tts"], marker = "extra == 'all'" },
     { name = "mlx-audio", extras = ["stt", "tts"], marker = "extra == 'sts'" },
-    { name = "mlx-lm", specifier = ">=0.18.0,<0.30.0" },
+    { name = "mlx-lm", specifier = "==0.30.2" },
     { name = "mlx-vlm", marker = "extra == 'sts'", specifier = ">=0.1.27" },
     { name = "num2words", marker = "extra == 'tts'", specifier = ">=0.5.14" },
     { name = "numpy", specifier = ">=1.26.4" },
-    { name = "omegaconf", marker = "extra == 'tts'", specifier = "==2.3.0" },
     { name = "phonemizer-fork", marker = "extra == 'tts'", specifier = ">=3.3.2" },
-    { name = "pyloudnorm", specifier = ">=0.1.1" },
+    { name = "pyloudnorm", specifier = ">=0.2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.0.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=1.0.0" },
     { name = "sentencepiece", marker = "extra == 'tts'", specifier = ">=0.2.0" },
-    { name = "sounddevice", specifier = ">=0.5.1" },
+    { name = "sounddevice", specifier = "==0.5.3" },
     { name = "soundfile", specifier = ">=0.13.1" },
     { name = "spacy", marker = "extra == 'tts'", specifier = ">=3.8.4" },
     { name = "tiktoken", marker = "extra == 'stt'", specifier = ">=0.9.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "transformers", specifier = ">=4.49.0,<5.0.0" },
+    { name = "transformers", specifier = "==5.0.0rc1" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.22.0" },
     { name = "webrtcvad", marker = "extra == 'sts'", specifier = ">=2.0.10" },
 ]
 
 [[package]]
 name = "mlx-lm"
-version = "0.29.1"
+version = "0.30.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -1996,9 +1952,9 @@ dependencies = [
     { name = "sentencepiece" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/62/f46e1355256a114808517947f8e83ad6be310c7288c551db0fa678f47923/mlx_lm-0.29.1.tar.gz", hash = "sha256:b99180d8f33d33a077b814e550bfb2d8a59ae003d668fd1f4b3fff62a381d34b", size = 232302 }
+sdist = { url = "https://files.pythonhosted.org/packages/36/c2/8c90a0152b948b2915022d00c8381b2e6942cd2d1458bdfcde8e4941ade5/mlx_lm-0.30.2.tar.gz", hash = "sha256:af43a0ec416437bd5835a06e0b2654e2668e7b51fdf0e7a4f1ae47bb8be40b0b", size = 252081 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/53/913099c91d384e115ea078325efd9a0bc1ea3eb3458c694b4596cbd267f2/mlx_lm-0.29.1-py3-none-any.whl", hash = "sha256:440941b3054c2a2216e97615de584cc90fa1ea874782e20699b9895721fad8dc", size = 324884 },
+    { url = "https://files.pythonhosted.org/packages/f3/23/96068585f05388bb0df17cd4e25aec651eecadcf2811876534970d73029c/mlx_lm-0.30.2-py3-none-any.whl", hash = "sha256:f0cec69b859698f07c840e06d6462a1ddafaaf4f701fc4d61c707acde1484971", size = 351425 },
 ]
 
 [[package]]
@@ -2591,19 +2547,6 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/10/c0/1b303feea90d296f6176f32a2a70b5ef230f9bdeb3a72bddb0dc922dc137/nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:d7ad891da111ebafbf7e015d34879f7112832fc239ff0d7d776b6cb685274615", size = 91161 },
     { url = "https://files.pythonhosted.org/packages/a2/eb/86626c1bbc2edb86323022371c39aa48df6fd8b0a1647bc274577f72e90b/nvidia_nvtx_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:5b17e2001cc0d751a5bc2c6ec6d26ad95913324a4adb86788c944f8ce9ba441f", size = 89954 },
-]
-
-[[package]]
-name = "omegaconf"
-version = "2.3.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "antlr4-python3-runtime" },
-    { name = "pyyaml" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/09/48/6388f1bb9da707110532cb70ec4d2822858ddfb44f1cdf1233c20a80ea4b/omegaconf-2.3.0.tar.gz", hash = "sha256:d5d4b6d29955cc50ad50c46dc269bcd92c6e00f5f90d23ab5fee7bfca4ba4cc7", size = 3298120 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/94/1843518e420fa3ed6919835845df698c7e27e183cb997394e4a670973a65/omegaconf-2.3.0-py3-none-any.whl", hash = "sha256:7b4df175cdb08ba400f45cae3bdcae7ba8365db4d165fc65fd04b050ab63b46b", size = 79500 },
 ]
 
 [[package]]
@@ -4758,7 +4701,7 @@ wheels = [
 
 [[package]]
 name = "transformers"
-version = "4.57.3"
+version = "5.0.0rc1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
@@ -4771,10 +4714,11 @@ dependencies = [
     { name = "safetensors" },
     { name = "tokenizers" },
     { name = "tqdm" },
+    { name = "typer-slim" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dd/70/d42a739e8dfde3d92bb2fff5819cbf331fe9657323221e79415cd5eb65ee/transformers-4.57.3.tar.gz", hash = "sha256:df4945029aaddd7c09eec5cad851f30662f8bd1746721b34cc031d70c65afebc", size = 10139680 }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/33/c4d7a86f5a60fda56e72f90911ce859044ecdac1dcea4cf904c1eb20ecf2/transformers-5.0.0rc1.tar.gz", hash = "sha256:1fdde557b96ef8ea277c45b8e0d558f1e167fe28a98593f4c4aec0277e335821", size = 8208085 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6a/6b/2f416568b3c4c91c96e5a365d164f8a4a4a88030aa8ab4644181fdadce97/transformers-4.57.3-py3-none-any.whl", hash = "sha256:c77d353a4851b1880191603d36acb313411d3577f6e2897814f333841f7003f4", size = 11993463 },
+    { url = "https://files.pythonhosted.org/packages/fb/74/fd8aef40d2bf2a15c0e02a0d867ebbf488ccca79fcf45efa51ec8e40c004/transformers-5.0.0rc1-py3-none-any.whl", hash = "sha256:8b9604700769872cab4280dbcde201f557e93f72ee5a85c4592275ab4f15d330", size = 9873024 },
 ]
 
 [[package]]
@@ -4983,15 +4927,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/fb/c492d6daa5ec067c2988ac80c61359ace5c4c674c532985ac5a123436cec/websockets-15.0.1-pp310-pypy310_pp73-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b359ed09954d7c18bbc1680f380c7301f92c60bf924171629c5db97febb12f04", size = 174155 },
     { url = "https://files.pythonhosted.org/packages/68/a1/dcb68430b1d00b698ae7a7e0194433bce4f07ded185f0ee5fb21e2a2e91e/websockets-15.0.1-pp310-pypy310_pp73-win_amd64.whl", hash = "sha256:cad21560da69f4ce7658ca2cb83138fb4cf695a2ba3e475e0559e05991aa8122", size = 176884 },
     { url = "https://files.pythonhosted.org/packages/fa/a8/5b41e0da817d64113292ab1f8247140aac61cbf6cfd085d6a0fa77f4984f/websockets-15.0.1-py3-none-any.whl", hash = "sha256:f7a866fbc1e97b5c617ee4116daaa09b722101d4a3c170c787450ba409f9736f", size = 169743 },
-]
-
-[[package]]
-name = "win32-setctime"
-version = "1.2.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/b3/8f/705086c9d734d3b663af0e9bb3d4de6578d08f46b1b101c2442fd9aecaa2/win32_setctime-1.2.0.tar.gz", hash = "sha256:ae1fdf948f5640aae05c511ade119313fb6a30d7eabe25fef9764dca5873c4c0", size = 4867 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/07/c6fe3ad3e685340704d314d765b7912993bcb8dc198f0e7a89382d37974b/win32_setctime-1.2.0-py3-none-any.whl", hash = "sha256:95d644c4e708aba81dc3704a116d8cbc974d70b3bdb8be1d150e36be6e9d1390", size = 4083 },
 ]
 
 [[package]]
