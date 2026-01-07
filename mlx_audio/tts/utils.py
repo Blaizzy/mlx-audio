@@ -42,25 +42,38 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
     model_path = Path(path_or_hf_repo)
 
     if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jsonl",
-                    "*.yaml",
-                    "*.wav",
-                    "*.txt",
-                    "*.pth",
-                ],
+        allow_patterns = [
+            "*.json",
+            "*.safetensors",
+            "*.py",
+            "*.model",
+            "*.tiktoken",
+            "*.txt",
+            "*.jsonl",
+            "*.yaml",
+            "*.wav",
+            "*.pth",
+        ]
+
+        # Try loading from local cache first (no network calls)
+        try:
+            model_path = Path(
+                snapshot_download(
+                    path_or_hf_repo,
+                    revision=revision,
+                    allow_patterns=allow_patterns,
+                    local_files_only=True,
+                )
             )
-        )
+        except Exception:
+            # Fall back to network download if not cached
+            model_path = Path(
+                snapshot_download(
+                    path_or_hf_repo,
+                    revision=revision,
+                    allow_patterns=allow_patterns,
+                )
+            )
 
     return model_path
 
@@ -144,19 +157,16 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     Raises:
         FileNotFoundError: If config.json is not found at the path
     """
-    from transformers import AutoConfig
-
     if isinstance(model_path, str):
         model_path = get_model_path(model_path)
 
-    try:
-        return AutoConfig.from_pretrained(model_path, **kwargs).to_dict()
-    except ValueError:
-        try:
-            with open(model_path / "config.json", encoding="utf-8") as f:
-                return json.load(f)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(f"Config not found at {model_path}") from exc
+    # Try direct JSON load first (much faster than AutoConfig)
+    config_file = model_path / "config.json"
+    if config_file.exists():
+        with open(config_file, encoding="utf-8") as f:
+            return json.load(f)
+    else:
+        raise FileNotFoundError(f"Config not found at {model_path}")
 
 
 def load_model(
@@ -231,7 +241,7 @@ processor.save_pretrained("<local_dir>")
 ```
 Then use the <local_dir> as the --hf-path in the convert script.
 ```
-python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
+python -m mlx_audio.convert --hf-path <local_dir> --mlx-path <mlx_dir>
 ```
         """
         raise FileNotFoundError(message)
@@ -250,10 +260,6 @@ python -m mlx_audio.tts.convert --hf-path <local_dir> --mlx-path <mlx_dir>
         if hasattr(model_class, "ModelConfig")
         else config
     )
-
-    if model_config is not None and hasattr(model_config, "model_path"):
-        # For Spark model
-        model_config.model_path = model_path
 
     model = model_class.Model(model_config)
     quantization = config.get("quantization", None)
