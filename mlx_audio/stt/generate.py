@@ -6,7 +6,7 @@ import time
 from typing import List, Optional, Union
 
 import mlx.core as mx
-import torch.nn as nn
+import mlx.nn as nn
 from mlx.utils import tree_reduce
 
 from mlx_audio.stt.utils import load_model
