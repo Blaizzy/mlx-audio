@@ -164,6 +164,7 @@ class LFM2AudioConfig:
     """Complete LFM2.5-Audio model configuration."""
 
     # Model architecture
+    sample_rate: int = 24000
     codebooks: int = 8
     tie_audio_embeddings: bool = False
     semantic_codebook_factor: int = 100
