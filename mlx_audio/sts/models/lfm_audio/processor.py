@@ -17,13 +17,17 @@ from mlx_audio.codec.models.mimi.mimi import MimiConfig, mimi_202407
 from mlx_audio.dsp import mel_filters, stft, STR_TO_WINDOW_FN
 
 from .config import LFM2AudioConfig, PreprocessorConfig
+from .detokenizer import LFM2AudioDetokenizer
 
 
 class LFMModality(IntEnum):
-    """Modality types for LFM2 Audio."""
-    TEXT = 0
-    AUDIO_IN = 1
-    AUDIO_OUT = 2
+    """Modality types for LFM2 Audio.
+
+    Note: Values 1, 2, 3 match PyTorch implementation (0 is reserved/unused).
+    """
+    TEXT = 1
+    AUDIO_IN = 2
+    AUDIO_OUT = 3
 
 
 class AudioPreprocessor(nn.Module):
@@ -34,6 +38,7 @@ class AudioPreprocessor(nn.Module):
         self.config = config
 
         # Precompute mel filterbank
+        # Use slaney mel scale to match PyTorch/NeMo (not HTK)
         self._mel_filters = mel_filters(
             sample_rate=config.sample_rate,
             n_fft=config.n_fft,
@@ -41,7 +46,7 @@ class AudioPreprocessor(nn.Module):
             f_min=0.0,
             f_max=config.sample_rate // 2,
             norm="slaney",
-            mel_scale="htk",
+            mel_scale="slaney",
         )
 
     @property
@@ -75,7 +80,14 @@ class AudioPreprocessor(nn.Module):
             if self.config.dither > 0:
                 waveform = waveform + self.config.dither * mx.random.normal(waveform.shape)
 
-            # STFT
+            # Pre-emphasis high-pass filter: y[n] = x[n] - preemph * x[n-1]
+            if self.config.preemph > 0:
+                waveform = mx.concatenate([
+                    waveform[:1],
+                    waveform[1:] - self.config.preemph * waveform[:-1]
+                ])
+
+            # STFT (use constant padding to match PyTorch/NeMo)
             spec = stft(
                 waveform,
                 n_fft=self.config.n_fft,
@@ -83,6 +95,7 @@ class AudioPreprocessor(nn.Module):
                 win_length=self.win_length,
                 window=self.config.window,
                 center=True,
+                pad_mode="constant",
             )
 
             # Power spectrum
@@ -93,14 +106,26 @@ class AudioPreprocessor(nn.Module):
             # We need (T, n_mels) so use mel_filters.T
             mel_spec = power_spec @ self._mel_filters.T
 
-            # Log mel
+            # Log mel (use add guard like PyTorch, not max guard)
             if self.config.log:
-                mel_spec = mx.log(mx.maximum(mel_spec, 1e-10))
+                log_zero_guard = 5.96e-8  # Same as PyTorch (2^-24)
+                mel_spec = mx.log(mel_spec + log_zero_guard)
 
-            # Normalize
+            # Normalize with Bessel's correction (ddof=1) to match PyTorch
+            # Note: PyTorch computes seq_len differently and excludes last frame from normalization
             if self.config.normalize == "per_feature":
-                mean = mx.mean(mel_spec, axis=0, keepdims=True)
-                std = mx.std(mel_spec, axis=0, keepdims=True) + 1e-5
+                # Compute valid sequence length (matches PyTorch's get_seq_len)
+                # seq_len = floor((audio_len + n_fft - n_fft) / hop_length) = audio_len / hop_length
+                valid_frames = len(waveform) // self.hop_length
+                n = min(valid_frames, mel_spec.shape[0])
+
+                # Compute mean/std only over valid frames
+                valid_mel = mel_spec[:n]
+                mean = mx.mean(valid_mel, axis=0, keepdims=True)
+                # Bessel's correction: divide by (n-1) instead of n
+                variance = mx.sum((valid_mel - mean) ** 2, axis=0, keepdims=True) / (n - 1)
+                std = mx.sqrt(variance) + 1e-5
+                # Apply normalization to ALL frames (including last one)
                 mel_spec = (mel_spec - mean) / std
 
             features_list.append(mel_spec)
@@ -111,166 +136,6 @@ class AudioPreprocessor(nn.Module):
             return features[0]
 
         return features
-
-
-class LFM2AudioDetokenizer(nn.Module):
-    """
-    Audio detokenizer that converts audio codes to waveforms.
-
-    Uses the LFM detokenizer architecture: embeddings -> upsample -> transformer -> ISTFT
-    """
-
-    def __init__(
-        self,
-        dim: int = 512,
-        num_layers: int = 4,
-        num_heads: int = 8,
-        num_codebooks: int = 8,
-        vocab_size: int = 2048,
-        n_fft: int = 1280,
-        hop_length: int = 320,
-        win_length: int = 1280,
-        sliding_window: int = 30,
-    ):
-        super().__init__()
-        self.dim = dim
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-        self.win_length = win_length
-        self.sliding_window = sliding_window
-        self.num_codebooks = num_codebooks
-
-        # Fused embedding for codebooks (sum of individual embeddings)
-        self.embeddings = [nn.Embedding(vocab_size, dim) for _ in range(num_codebooks)]
-
-        # Simple transformer layers
-        from .transformer import TransformerBlock
-
-        self.layers = [
-            TransformerBlock(
-                dim=dim,
-                num_heads=num_heads,
-                num_kv_heads=num_heads,
-                ff_dim=dim * 4,
-                max_seq_len=4096,
-                rope_theta=10000.0,
-            )
-            for _ in range(num_layers)
-        ]
-
-        # Output projection to STFT bins
-        self.out_proj = nn.Linear(dim, n_fft + 2)
-
-    def _embed_codes(self, codes: mx.array) -> mx.array:
-        """Embed audio codes by summing embeddings from all codebooks."""
-        # codes: (B, num_codebooks, T)
-        B, K, T = codes.shape
-        embedded = mx.zeros((B, T, self.dim))
-
-        for i, emb in enumerate(self.embeddings):
-            if i < K:
-                embedded = embedded + emb(codes[:, i, :])
-
-        return embedded
-
-    def __call__(self, codes: mx.array) -> mx.array:
-        """
-        Convert audio codes to waveform.
-
-        Args:
-            codes: (B, num_codebooks, T) with values in [0, vocab_size)
-
-        Returns:
-            Waveform (B, T_audio)
-        """
-        # Embed codes
-        x = self._embed_codes(codes)  # (B, T, dim)
-
-        # Upsample by 6x using nearest neighbor
-        B, T, D = x.shape
-        upsample_size = 6 * T
-        # Transpose: (B, T, D) -> (B, D, T)
-        x = x.transpose(0, 2, 1)
-        # Nearest neighbor upsample
-        indices = mx.arange(upsample_size) // 6
-        x = x[:, :, indices]
-        # Transpose back: (B, D, T') -> (B, T', D)
-        x = x.transpose(0, 2, 1)
-
-        # Create sliding window attention mask
-        T_new = x.shape[1]
-        idx = mx.arange(T_new)
-        d_idx = idx[None, :] - idx[:, None]
-        mask = mx.logical_and(d_idx <= 0, d_idx > -self.sliding_window)
-        mask = mx.where(mask, 0.0, float("-inf"))
-        mask = mx.expand_dims(mask, axis=(0, 1))
-
-        # Apply transformer layers
-        for layer in self.layers:
-            x, _ = layer(x, mask=mask)
-
-        # Project to STFT space
-        x = self.out_proj(x)  # (B, T', n_fft + 2)
-
-        # Split into magnitude and phase
-        n_bins = self.n_fft // 2 + 1
-        log_mag = x[:, :, :n_bins]
-        angle = x[:, :, n_bins:]
-
-        # Reconstruct magnitude
-        mag = mx.exp(log_mag)
-
-        # ISTFT reconstruction using DSP utilities
-        waveform = self._istft(mag, angle)
-
-        return waveform
-
-    def _istft(self, mag: mx.array, angle: mx.array) -> mx.array:
-        """Inverse STFT to reconstruct waveform using overlap-add."""
-        from mlx_audio.dsp import hanning
-
-        B, T, F = mag.shape
-
-        # Create complex STFT
-        real = mag * mx.cos(angle)
-        imag = mag * mx.sin(angle)
-
-        # Get window
-        window = hanning(self.win_length, periodic=True)
-        if window.shape[0] < self.n_fft:
-            pad = self.n_fft - window.shape[0]
-            window = mx.concatenate([window, mx.zeros((pad,))])
-
-        # Overlap-add reconstruction
-        output_length = (T - 1) * self.hop_length + self.win_length
-        output = mx.zeros((B, output_length))
-        window_sum = mx.zeros((output_length,))
-
-        # Prepare for IRFFT
-        stft_complex = real + 1j * imag
-
-        # IRFFT each frame
-        time_frames = mx.fft.irfft(stft_complex, n=self.n_fft, axis=-1)
-
-        # Overlap-add
-        for t in range(T):
-            start = t * self.hop_length
-            end = start + self.n_fft
-
-            # Add windowed frame
-            frame = time_frames[:, t, :] * window
-            output = output.at[:, start:end].add(frame)
-            window_sum = window_sum.at[start:end].add(window**2)
-
-        # Normalize
-        window_sum = mx.maximum(window_sum, 1e-8)
-        output = output / window_sum[None, :]
-
-        # Trim center padding
-        trim = self.n_fft // 2
-        output = output[:, trim:-trim] if trim > 0 else output
-
-        return output
 
 
 class LFM2AudioProcessor:
@@ -341,14 +206,10 @@ class LFM2AudioProcessor:
 
     @property
     def detokenizer(self) -> LFM2AudioDetokenizer:
-        """Lazy load detokenizer."""
+        """Lazy load detokenizer with pretrained weights."""
         if self._detokenizer is None:
-            self._detokenizer = LFM2AudioDetokenizer(
-                dim=512,
-                num_layers=4,
-                num_heads=8,
-                num_codebooks=self.config.codebooks,
-                vocab_size=self.config.audio_vocab_size - 1,  # Exclude padding token
+            self._detokenizer = LFM2AudioDetokenizer.from_pretrained(
+                "LiquidAI/LFM2.5-Audio-1.5B"
             )
         return self._detokenizer
 
@@ -440,15 +301,9 @@ class LFM2AudioProcessor:
         if single_input:
             codes = codes[None, :]
 
-        # LFM2.5-Audio uses 8 codebooks, Mimi has 32
-        # Pad with zeros for unused codebooks
-        B, K, T = codes.shape
-        if K < 32:
-            # Pad to 32 codebooks with zeros
-            padding = mx.zeros((B, 32 - K, T), dtype=codes.dtype)
-            codes = mx.concatenate([codes, padding], axis=1)
-
-        # Decode with Mimi
+        # Decode with Mimi directly - it handles variable codebook counts
+        # No padding needed: the SplitResidualVectorQuantizer only uses
+        # the codebooks provided, and padding with zeros adds noise
         audio = self.mimi.decode(codes)
 
         if single_input:
@@ -543,36 +398,47 @@ class LFM2AudioProcessor:
         orig_sr: int,
         target_sr: int,
     ) -> mx.array:
-        """Simple resampling using linear interpolation."""
+        """Resample audio using scipy's high-quality polyphase resampling."""
         if orig_sr == target_sr:
             return audio
 
-        # Get original length
-        if audio.ndim == 3:
-            orig_len = audio.shape[-1]
-        elif audio.ndim == 2:
-            orig_len = audio.shape[-1]
-        else:
-            orig_len = audio.shape[0]
+        import numpy as np
+        from scipy import signal
 
-        # Calculate new length
-        new_len = int(orig_len * target_sr / orig_sr)
+        # Convert to numpy for scipy processing
+        audio_np = np.array(audio)
+        orig_dtype = audio_np.dtype
 
-        # Create interpolation indices
-        indices = mx.arange(new_len) * (orig_len - 1) / (new_len - 1)
-        idx_low = mx.floor(indices).astype(mx.int32)
-        idx_high = mx.minimum(idx_low + 1, orig_len - 1)
-        weights = indices - idx_low.astype(mx.float32)
+        # Calculate target length
+        if audio_np.ndim == 1:
+            orig_len = audio_np.shape[0]
+            new_len = int(orig_len * target_sr / orig_sr)
+            resampled_np = signal.resample_poly(
+                audio_np.astype(np.float64),
+                target_sr,
+                orig_sr,
+            ).astype(orig_dtype)
+        elif audio_np.ndim == 2:
+            # Shape: (channels, samples) or (batch, samples)
+            orig_len = audio_np.shape[-1]
+            new_len = int(orig_len * target_sr / orig_sr)
+            resampled_np = signal.resample_poly(
+                audio_np.astype(np.float64),
+                target_sr,
+                orig_sr,
+                axis=-1,
+            ).astype(orig_dtype)
+        else:  # 3D: (batch, channels, samples)
+            orig_len = audio_np.shape[-1]
+            new_len = int(orig_len * target_sr / orig_sr)
+            resampled_np = signal.resample_poly(
+                audio_np.astype(np.float64),
+                target_sr,
+                orig_sr,
+                axis=-1,
+            ).astype(orig_dtype)
 
-        # Interpolate
-        if audio.ndim == 1:
-            resampled = audio[idx_low] * (1 - weights) + audio[idx_high] * weights
-        elif audio.ndim == 2:
-            resampled = audio[:, idx_low] * (1 - weights) + audio[:, idx_high] * weights
-        else:
-            resampled = audio[:, :, idx_low] * (1 - weights) + audio[:, :, idx_high] * weights
-
-        return resampled
+        return mx.array(resampled_np)
 
 
 @dataclass
@@ -591,13 +457,20 @@ class ChatState:
     modalities: List[LFMModality]
     current_turn: Optional[str]
 
-    def __init__(self, processor: LFM2AudioProcessor):
+    def __init__(self, processor: LFM2AudioProcessor, add_bos: bool = True):
         self.processor = processor
         self.text_tokens = []
         self.audio_features = None
         self.audio_out_codes = []
         self.modalities = []
         self.current_turn = None
+
+        # Add BOS token at the start (token ID 1)
+        if add_bos:
+            bos_token_id = getattr(processor.tokenizer, 'bos_token_id', 1)
+            if bos_token_id is not None:
+                self.text_tokens.append(bos_token_id)
+                self.modalities.append(LFMModality.TEXT)
 
     def new_turn(self, role: str):
         """Start a new conversation turn."""
@@ -606,20 +479,20 @@ class ChatState:
         # Add role tokens: <|im_start|>role\n
         # Note: tokenizer uses <|im_start|> (id=6) and <|im_end|> (id=7)
         turn_prefix = f"<|im_start|>{role}\n"
-        self.text_tokens.extend(
-            self.processor.tokenizer.encode(turn_prefix, add_special_tokens=False)
-        )
+        tokens = self.processor.tokenizer.encode(turn_prefix, add_special_tokens=False)
+        self.text_tokens.extend(tokens)
 
-        for _ in range(len(self.text_tokens) - len(self.modalities)):
+        # Add TEXT modality for each token (not based on difference, which breaks after audio)
+        for _ in range(len(tokens)):
             self.modalities.append(LFMModality.TEXT)
 
     def end_turn(self):
         """End the current turn."""
         # Add <|im_end|>\n
-        self.text_tokens.extend(
-            self.processor.tokenizer.encode("<|im_end|>\n", add_special_tokens=False)
-        )
-        for _ in range(len(self.text_tokens) - len(self.modalities)):
+        tokens = self.processor.tokenizer.encode("<|im_end|>\n", add_special_tokens=False)
+        self.text_tokens.extend(tokens)
+        # Add TEXT modality for each token (not based on difference, which breaks after audio)
+        for _ in range(len(tokens)):
             self.modalities.append(LFMModality.TEXT)
         self.current_turn = None
 
@@ -639,8 +512,18 @@ class ChatState:
         else:
             self.audio_features = mx.concatenate([self.audio_features, features], axis=0)
 
-        # Add audio in modality markers
-        num_frames = features.shape[0] // self.processor.config.encoder.subsampling_factor
+        # Calculate the actual encoder output length after subsampling
+        # Subsampling uses 3 stride-2 convolutions with kernel=3, padding=1
+        # Formula: output = floor((input + 2*padding - kernel) / stride) + 1
+        def calc_conv_output(input_len, kernel=3, stride=2, padding=1):
+            return (input_len + 2 * padding - kernel) // stride + 1
+
+        mel_frames = features.shape[0]
+        t = calc_conv_output(mel_frames)  # After first stride-2 conv
+        t = calc_conv_output(t)           # After second stride-2 conv
+        t = calc_conv_output(t)           # After third stride-2 conv
+        num_frames = t
+
         for _ in range(num_frames):
             self.modalities.append(LFMModality.AUDIO_IN)
 

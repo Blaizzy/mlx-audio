@@ -21,6 +21,7 @@ class PreprocessorConfig:
     dither: float = 1e-05
     pad_to: int = 0
     pad_value: float = 0.0
+    preemph: float = 0.97  # Pre-emphasis high-pass filter coefficient
 
     @property
     def hop_length(self) -> int:

@@ -13,9 +13,9 @@ from .model import LFM2AudioModel, LFMModality, GenerationConfig
 from .processor import (
     AudioPreprocessor,
     ChatState,
-    LFM2AudioDetokenizer,
     LFM2AudioProcessor,
 )
+from .detokenizer import LFM2AudioDetokenizer
 
 __all__ = [
     # Config

@@ -30,10 +30,13 @@ logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 
 class LFMModality(IntEnum):
-    """Modality types for LFM2 Audio."""
-    TEXT = 0
-    AUDIO_IN = 1
-    AUDIO_OUT = 2
+    """Modality types for LFM2 Audio.
+
+    Note: Values 1, 2, 3 match PyTorch implementation (0 is reserved/unused).
+    """
+    TEXT = 1
+    AUDIO_IN = 2
+    AUDIO_OUT = 3
 
 
 # Special token IDs used by LFM2.5-Audio
@@ -353,19 +356,14 @@ class LFM2AudioModel(nn.Module):
 
             # Sanitize and load weights
             weights = model.sanitize(weights)
+            if dtype != mx.float32:
+                print(f"Converting weights to {dtype}")
+                weights = {k: v.astype(dtype) for k, v in weights.items()}
 
             model.load_weights(list(weights.items()), strict=False)
 
-        # Convert to dtype using tree_map
-        if dtype != mx.float32:
-            def convert_dtype(x):
-                if isinstance(x, mx.array):
-                    return x.astype(dtype)
-                return x
-
-            import mlx.utils
-            new_params = mlx.utils.tree_map(convert_dtype, model.parameters())
-            model.update(new_params)
+        model.eval()
+        mx.eval(model.parameters())
 
         return model
 
@@ -382,7 +380,7 @@ class LFM2AudioModel(nn.Module):
             "quantizer.",  # Mimi quantizer
             "encoder_transformer.", "decoder_transformer.",  # Mimi transformers
             "encoder.", "decoder.",  # Mimi encoder/decoder
-            ".running_mean", ".running_var", ".num_batches_tracked",  # BatchNorm stats
+            ".num_batches_tracked",  # BatchNorm counter (not needed for inference)
             "pos_enc.pe",  # Positional encoding buffer (precomputed)
             ".freqs",  # RoPE frequencies (precomputed)
         ]
@@ -532,6 +530,10 @@ class LFM2AudioModel(nn.Module):
             elif ".conv.weight" in key and value.ndim == 3:
                 sanitized[key] = value.transpose(0, 2, 1)
             elif "subsampling.conv" in key and "weight" in key and value.ndim == 4:
+                # PyTorch uses NCHW format: (out_ch, in_ch, kH, kW)
+                # MLX uses NHWC format: (out_ch, kH, kW, in_ch)
+                # Both use the same spatial order (T, D) -> (H, W)
+                # Only need to move in_ch from axis 1 to axis 3
                 sanitized[key] = value.transpose(0, 2, 3, 1)
 
         return sanitized
@@ -885,15 +887,15 @@ class LFM2AudioModel(nn.Module):
                 text_token = self._sample_text_token(text_logits, temperature, top_k)
                 token_id = text_token.item()
 
+                # Check for im_end - stop generation
+                if token_id == IM_END_TOKEN:
+                    break
+
                 yield text_token, LFMModality.TEXT
 
                 # Check for text_end token - marks text generation complete
                 if token_id == TEXT_END_TOKEN:
                     text_done = True
-
-                # Check for im_end - stop generation
-                if token_id == IM_END_TOKEN:
-                    break
 
                 # Embed and continue
                 next_emb = self._embed_text(text_token[:, None])
@@ -907,7 +909,7 @@ class LFM2AudioModel(nn.Module):
                 generated += 1
 
                 # Switch to audio after n_text tokens
-                if modality_left <= 0:
+                if modality_left <= 0 or text_done:
                     modality_left = n_audio
                     current_modality = LFMModality.AUDIO_OUT
 
@@ -920,8 +922,16 @@ class LFM2AudioModel(nn.Module):
                     top_k=audio_top_k,
                 )
 
-                # Check for audio EOS - switch back to text mode
+                # Check for audio EOS
                 if audio_frame[0, 0].item() == AUDIO_EOS_TOKEN:
+                    # Set all codebooks to EOS
+                    audio_frame = mx.full(audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype)
+                    yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
+                    generated += 1
+                    # If text is done, break after final audio EOS
+                    if text_done:
+                        break
+                    # Otherwise switch back to text mode
                     modality_left = n_text
                     current_modality = LFMModality.TEXT
                     continue
@@ -939,13 +949,10 @@ class LFM2AudioModel(nn.Module):
                 modality_left -= 1
                 generated += 1
 
-                # Switch back to text after n_audio tokens (unless text is done)
-                if modality_left <= 0:
-                    modality_left = n_text if not text_done else n_audio
-                    current_modality = LFMModality.TEXT if not text_done else LFMModality.AUDIO_OUT
-
-        # Yield final audio EOS token
-        yield mx.array([AUDIO_EOS_TOKEN] * self.config.codebooks), LFMModality.AUDIO_OUT
+                # Switch back to text after n_audio tokens only if text not done
+                if modality_left <= 0 and not text_done:
+                    modality_left = n_text
+                    current_modality = LFMModality.TEXT
 
     def generate_sequential(
         self,

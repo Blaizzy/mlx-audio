@@ -11,27 +11,63 @@ from .config import ConformerEncoderConfig
 
 
 class RelativePositionalEncoding(nn.Module):
-    """Relative positional encoding for attention."""
 
-    def __init__(self, d_model: int, max_len: int = 5000):
+
+    def __init__(self, d_model: int, max_len: int = 5000, xscale: bool = True):
         super().__init__()
         self.d_model = d_model
         self.max_len = max_len
+        self.xscale = math.sqrt(d_model) if xscale else None
+        self._pe_cache_len = 0
+        self.pe = None
 
-        # Create positional encoding matrix
-        pe = mx.zeros((max_len, d_model))
-        position = mx.arange(0, max_len, dtype=mx.float32)[:, None]
-        div_term = mx.exp(
+        # div_term for sinusoidal encoding: 10000^(-2i/d_model)
+        self._div_term = mx.exp(
             mx.arange(0, d_model, 2, dtype=mx.float32) * (-math.log(10000.0) / d_model)
         )
-        pe = pe.at[:, 0::2].add(mx.sin(position * div_term))
-        pe = pe.at[:, 1::2].add(mx.cos(position * div_term))
-        self.pe = pe
 
-    def __call__(self, x: mx.array) -> mx.array:
-        """Get positional encodings for sequence length."""
+    def _extend_pe(self, length: int):
+        """Extend positional encodings if needed."""
+        needed_size = 2 * length - 1
+        if self.pe is not None and self.pe.shape[0] >= needed_size:
+            return
+
+        # Generate positions from (length-1) to -(length-1) in descending order
+        # E.g., for length=39: [38, 37, ..., 1, 0, -1, ..., -37, -38]
+        positions = mx.arange(length - 1, -length, -1, dtype=mx.float32)[:, None]
+
+        # Create positional encoding
+        pe = mx.zeros((needed_size, self.d_model))
+        pe = pe.at[:, 0::2].add(mx.sin(positions * self._div_term))
+        pe = pe.at[:, 1::2].add(mx.cos(positions * self._div_term))
+
+        self.pe = pe
+        self._pe_cache_len = length
+
+    def __call__(self, x: mx.array) -> Tuple[mx.array, mx.array]:
+        """Get positional encodings for sequence.
+
+        Args:
+            x: Input tensor (B, T, D)
+
+        Returns:
+            Tuple of (scaled_x, pos_emb) where pos_emb has shape (2*T-1, D)
+        """
         seq_len = x.shape[1]
-        return self.pe[:seq_len]
+        self._extend_pe(seq_len)
+
+        # Scale input if needed
+        if self.xscale is not None:
+            x = x * self.xscale
+
+        # Return positions for this sequence length
+        # For input of length L, we need 2*L-1 positions
+        center = self.pe.shape[0] // 2
+        start = center - seq_len + 1
+        end = center + seq_len
+        pos_emb = self.pe[start:end]
+
+        return x, pos_emb
 
 
 class ConformerFeedForward(nn.Module):
@@ -69,9 +105,7 @@ class ConformerConvolution(nn.Module):
     ):
         super().__init__()
         self.pointwise_conv1 = nn.Linear(d_model, 2 * d_model)
-        # Depthwise convolution: each channel is convolved independently
-        # groups=d_model means each input channel is convolved with its own set of filters
-        # MLX Conv1d expects (B, L, C) format
+
         self.depthwise_conv = nn.Conv1d(
             in_channels=d_model,
             out_channels=d_model,
@@ -79,8 +113,10 @@ class ConformerConvolution(nn.Module):
             padding=(kernel_size - 1) // 2,
             groups=d_model,  # Depthwise: each channel processed independently
         )
-        # Use LayerNorm for simplicity (works on last dimension in MLX)
-        self.norm = nn.LayerNorm(d_model)
+        if norm_type == "batch_norm":
+            self.norm = nn.BatchNorm(d_model)
+        else:
+            self.norm = nn.LayerNorm(d_model)
         self.pointwise_conv2 = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
@@ -105,7 +141,7 @@ class ConformerConvolution(nn.Module):
 
 
 class RelativeMultiHeadAttention(nn.Module):
-    """Multi-head attention with relative positional encoding."""
+
 
     def __init__(
         self,
@@ -118,17 +154,15 @@ class RelativeMultiHeadAttention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
-        self.scale = self.head_dim**-0.5
+        self.scale = 1.0 / math.sqrt(self.head_dim)
 
         self.q_proj = nn.Linear(d_model, d_model)
         self.k_proj = nn.Linear(d_model, d_model)
         self.v_proj = nn.Linear(d_model, d_model)
         self.out_proj = nn.Linear(d_model, d_model)
 
-        # Position projection
         self.pos_proj = nn.Linear(d_model, d_model, bias=False)
 
-        # Learnable biases for relative position
         if pos_bias:
             self.pos_bias_u = mx.zeros((num_heads, self.head_dim))
             self.pos_bias_v = mx.zeros((num_heads, self.head_dim))
@@ -138,14 +172,29 @@ class RelativeMultiHeadAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def _relative_shift(self, x: mx.array) -> mx.array:
-        """Compute relative position scores."""
-        B, H, T, _ = x.shape
-        # Pad and reshape for relative position
+    def _rel_shift(self, x: mx.array) -> mx.array:
+        """Compute relative positional encoding shift.
+
+        This aligns the position scores so that position i attends to the
+        correct relative positions in the positional embedding.
+
+        Args:
+            x: Position scores (B, H, T, 2T-1)
+
+        Returns:
+            Shifted scores (B, H, T, T) where score[i,j] corresponds to
+            relative position i-j.
+        """
+        B, H, T, pos_len = x.shape
+        # Pad on the left: (B, H, T, 2T-1) -> (B, H, T, 2T)
         x = mx.pad(x, [(0, 0), (0, 0), (0, 0), (1, 0)])
-        x = x.reshape(B, H, -1, T)
+        # Reshape: (B, H, T, 2T) -> (B, H, 2T, T)
+        x = x.reshape(B, H, pos_len + 1, T)
+        # Remove first row: (B, H, 2T, T) -> (B, H, 2T-1, T)
         x = x[:, :, 1:, :]
-        x = x.reshape(B, H, T, -1)
+        # Reshape back: (B, H, 2T-1, T) -> (B, H, T, 2T-1)
+        x = x.reshape(B, H, T, pos_len)
+        # Take only the first T columns (the valid relative positions)
         return x[:, :, :, :T]
 
     def __call__(
@@ -154,38 +203,47 @@ class RelativeMultiHeadAttention(nn.Module):
         pos_emb: mx.array,
         mask: Optional[mx.array] = None,
     ) -> mx.array:
+        """Compute attention with relative positional encoding.
+
+        Args:
+            x: Input tensor (B, T, D)
+            pos_emb: Positional embeddings (2T-1, D) or (1, 2T-1, D)
+            mask: Attention mask
+
+        Returns:
+            Output tensor (B, T, D)
+        """
         B, T, _ = x.shape
 
-        # Projections
+        # Projections: (B, T, D) -> (B, T, H, d_k)
         q = self.q_proj(x).reshape(B, T, self.num_heads, self.head_dim)
         k = self.k_proj(x).reshape(B, T, self.num_heads, self.head_dim)
         v = self.v_proj(x).reshape(B, T, self.num_heads, self.head_dim)
 
-        # Position projection
-        pos = self.pos_proj(pos_emb).reshape(1, -1, self.num_heads, self.head_dim)
+        # Position projection: (2T-1, D) -> (1, 2T-1, H, d_k)
+        if pos_emb.ndim == 2:
+            pos_emb = pos_emb[None, :, :]
+        p = self.pos_proj(pos_emb).reshape(1, -1, self.num_heads, self.head_dim)
 
-        # Transpose to (B, H, T, D)
-        q = q.transpose(0, 2, 1, 3)
+        
+        if self.pos_bias_u is not None:
+            q_with_bias_u = (q + self.pos_bias_u[None, None, :, :]).transpose(0, 2, 1, 3)
+            q_with_bias_v = (q + self.pos_bias_v[None, None, :, :]).transpose(0, 2, 1, 3)
+        else:
+            q_with_bias_u = q.transpose(0, 2, 1, 3)
+            q_with_bias_v = q.transpose(0, 2, 1, 3)
+
         k = k.transpose(0, 2, 1, 3)
         v = v.transpose(0, 2, 1, 3)
-        pos = pos.transpose(0, 2, 1, 3)
+        p = p.transpose(0, 2, 1, 3)  
 
-        # Compute content and position scores
-        if self.pos_bias_u is not None:
-            q_with_bias_u = q + self.pos_bias_u[None, :, None, :]
-            q_with_bias_v = q + self.pos_bias_v[None, :, None, :]
-        else:
-            q_with_bias_u = q
-            q_with_bias_v = q
+        matrix_ac = q_with_bias_u @ k.transpose(0, 1, 3, 2)
+        matrix_bd = q_with_bias_v @ p.transpose(0, 1, 3, 2)
 
-        # Content-to-content
-        content_score = q_with_bias_u @ k.transpose(0, 1, 3, 2)
+        matrix_bd = self._rel_shift(matrix_bd)
 
-        # Content-to-position
-        pos_score = q_with_bias_v @ pos.transpose(0, 1, 3, 2)
-        pos_score = self._relative_shift(pos_score)
 
-        scores = (content_score + pos_score) * self.scale
+        scores = (matrix_ac + matrix_bd) * self.scale
 
         if mask is not None:
             scores = scores + mask
@@ -269,29 +327,17 @@ class ConvSubsampling(nn.Module):
         self.conv_channels = conv_channels
         self.in_channels = in_channels
 
-        # The checkpoint uses 2D convolutions in depthwise-separable structure:
-        # conv.0: strided 3x3 (1 -> 256 channels)
-        # conv.2: strided 3x3 depthwise (groups=256)
-        # conv.3: pointwise 1x1
-        # conv.5: strided 3x3 depthwise
-        # conv.6: pointwise 1x1
-        # Indices 1, 4 are ReLU (not stored)
 
-        # Using a list-based structure that MLX can load weights into
-        # The conv list will have entries at indices 0, 2, 3, 5, 6
-        # We use placeholder Nones for ReLU positions
         self.conv = [
-            nn.Conv2d(1, conv_channels, kernel_size=3, stride=2, padding=1),  # 0
+            nn.Conv2d(1, conv_channels, kernel_size=3, stride=2, padding=1),  # 0: standard conv
             None,  # 1 (ReLU)
-            nn.Conv2d(1, conv_channels, kernel_size=3, stride=2, padding=1),  # 2
+            nn.Conv2d(conv_channels, conv_channels, kernel_size=3, stride=2, padding=1, groups=conv_channels),  # 2
             nn.Conv2d(conv_channels, conv_channels, kernel_size=1, stride=1, padding=0),  # 3
             None,  # 4 (ReLU)
-            nn.Conv2d(1, conv_channels, kernel_size=3, stride=2, padding=1),  # 5
+            nn.Conv2d(conv_channels, conv_channels, kernel_size=3, stride=2, padding=1, groups=conv_channels),  # 5
             nn.Conv2d(conv_channels, conv_channels, kernel_size=1, stride=1, padding=0),  # 6
         ]
 
-        # Output projection - checkpoint shows (512, 4096)
-        # 4096 = 256 * 16, where 16 = 128 / 8 (mel features / subsampling factor)
         self.out_proj = nn.Linear(conv_channels * (in_channels // subsampling_factor), out_channels)
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -307,34 +353,17 @@ class ConvSubsampling(nn.Module):
         # Reshape for 2D conv: (B, T, D) -> (B, T, D, 1) - MLX uses NHWC format
         x = x[:, :, :, None]
 
-        # Block 1: strided 3x3 conv
         x = nn.relu(self.conv[0](x))  # (B, T/2, D/2, 256)
 
-        # Block 2: depthwise 3x3 + pointwise 1x1
-        # For depthwise, we apply conv[2] per channel (it has 1 input channel)
-        B, T2, D2, C = x.shape
-        # Simplified: apply strided conv that reduces spatial dims
-        x_out = nn.relu(self.conv[2](x[:, :, :, 0:1]))  # First channel
-        for c in range(1, C):
-            x_c = nn.relu(self.conv[2](x[:, :, :, c:c+1]))
-            x_out = x_out + x_c
-        x = x_out / C  # Average
-        x = mx.broadcast_to(x, (B, x.shape[1], x.shape[2], C))
-        x = nn.relu(self.conv[3](x))  # pointwise
+        x = self.conv[2](x)           # (B, T/4, D/4, 256) - depthwise
+        x = nn.relu(self.conv[3](x))  # pointwise 1x1 + relu
 
-        # Block 3: depthwise 3x3 + pointwise 1x1
-        B, T3, D3, C = x.shape
-        x_out = nn.relu(self.conv[5](x[:, :, :, 0:1]))
-        for c in range(1, C):
-            x_c = nn.relu(self.conv[5](x[:, :, :, c:c+1]))
-            x_out = x_out + x_c
-        x = x_out / C
-        x = mx.broadcast_to(x, (B, x.shape[1], x.shape[2], C))
-        x = nn.relu(self.conv[6](x))  # pointwise
+        x = self.conv[5](x)           # (B, T/8, D/8, 256) - depthwise
+        x = nn.relu(self.conv[6](x))  # pointwise 1x1 + relu
 
-        # Flatten and project: (B, T_out, D_out, C) -> (B, T_out, C*D_out)
         B, T_out, D_out, C = x.shape
-        x = x.reshape(B, T_out, -1)  # (B, T_out, D_out*C)
+        x = x.transpose(0, 1, 3, 2)  # (B, T_out, C, D_out)
+        x = x.reshape(B, T_out, -1)  # (B, T_out, C*D_out)
         x = self.out_proj(x)
 
         return x
@@ -356,8 +385,7 @@ class ConformerEncoder(nn.Module):
             subsampling_type=config.subsampling,
         )
 
-        # Positional encoding
-        self.pos_enc = RelativePositionalEncoding(config.d_model, config.pos_emb_max_len)
+        self.pos_enc = RelativePositionalEncoding(config.d_model, config.pos_emb_max_len, xscale=False)
 
         # Pre-encoder dropout
         self.pre_dropout = nn.Dropout(config.dropout_pre_encoder)
@@ -398,8 +426,9 @@ class ConformerEncoder(nn.Module):
         else:
             lengths = mx.array([x.shape[1]] * x.shape[0])
 
-        # Get positional embeddings
-        pos_emb = self.pos_enc(x)
+        # Get positional embeddings and scale input
+        # pos_enc returns (scaled_x, pos_emb) where pos_emb has shape (2T-1, D)
+        x, pos_emb = self.pos_enc(x)
 
         # Pre-encoder dropout
         x = self.pre_dropout(x)
