@@ -23,15 +23,14 @@ dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
     "huggingface_hub>=0.27.0",
-    "transformers>=4.49.0,<5.0.0",
+    "transformers==5.0.0rc1",
     "hf_transfer",
-    "mlx-lm>=0.18.0,<0.30.0",
+    "mlx-lm==0.30.2",
     "tqdm>=4.67.1",
-    "sounddevice>=0.5.1",
+    "sounddevice==0.5.3",
     "soundfile>=0.13.1",
-    "pyloudnorm>=0.1.1",
+    "pyloudnorm>=0.2.0",
     "librosa==0.11.0",
-    "mlx-audio[all]", # TODO: Reduce deps
 ]
 
 [project.optional-dependencies]
