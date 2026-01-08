@@ -677,7 +677,7 @@ export default function SpeechSynthesis() {
           <div className="flex flex-col justify-between h-full flex-1 px-4 py-2">
             <div className="flex items-center justify-between w-full">
               <div className="text-sm">
-                {selectedVoice}: {text.length > 20 ? text.substring(0, 20) + "..." : text}
+                {isChatterboxModel(baseModel) ? (refAudioFile ? refAudioFile.name : "Voice Clone") : selectedVoice}: {text.length > 20 ? text.substring(0, 20) + "..." : text}
               </div>
               <div className="flex items-center space-x-2">
                 <div className="text-xs text-gray-500 dark:text-gray-400 mr-2">How did this sound?</div>
