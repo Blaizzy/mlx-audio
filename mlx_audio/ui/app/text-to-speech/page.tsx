@@ -64,11 +64,68 @@ export default function SpeechSynthesis() {
   const [liked, setLiked] = useState<boolean | null>(null)
   const [selectedVoice, setSelectedVoice] = useState("conversational_a")
 
+  // Chatterbox-specific state
+  const [exaggeration, setExaggeration] = useState(0.5)
+  const [cfgWeight, setCfgWeight] = useState(0.5)
+  const [chatterboxLang, setChatterboxLang] = useState("en")
+  const [refAudioFile, setRefAudioFile] = useState<File | null>(null)
+  const [refAudioBase64, setRefAudioBase64] = useState<string | null>(null)
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null)  // Store blob for download
+
+  // Chatterbox supported languages
+  const chatterboxLanguages = [
+    { code: "en", name: "English" },
+    { code: "ar", name: "Arabic" },
+    { code: "da", name: "Danish" },
+    { code: "de", name: "German" },
+    { code: "el", name: "Greek" },
+    { code: "es", name: "Spanish" },
+    { code: "fi", name: "Finnish" },
+    { code: "fr", name: "French" },
+    { code: "he", name: "Hebrew" },
+    { code: "hi", name: "Hindi" },
+    { code: "it", name: "Italian" },
+    { code: "ja", name: "Japanese" },
+    { code: "ko", name: "Korean" },
+    { code: "ms", name: "Malay" },
+    { code: "nl", name: "Dutch" },
+    { code: "no", name: "Norwegian" },
+    { code: "pl", name: "Polish" },
+    { code: "pt", name: "Portuguese" },
+    { code: "ru", name: "Russian" },
+    { code: "sv", name: "Swedish" },
+    { code: "sw", name: "Swahili" },
+    { code: "tr", name: "Turkish" },
+    { code: "zh", name: "Chinese" },
+  ]
+
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   // Helper function to check if the model is a Marvis model
   const isMarvisModel = (modelName: string) => {
     return modelName.toLowerCase().includes("marvis")
+  }
+
+  // Helper function to check if the model is a Chatterbox model
+  const isChatterboxModel = (modelName: string) => {
+    return modelName.toLowerCase().includes("chatterbox")
+  }
+
+  // Handle reference audio file selection
+  const handleRefAudioChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) {
+      setRefAudioFile(file)
+      // Convert to base64 for API
+      const reader = new FileReader()
+      reader.onload = () => {
+        const result = reader.result as string
+        // Remove data URL prefix to get just the base64
+        setRefAudioBase64(result)
+      }
+      reader.readAsDataURL(file)
+    }
   }
 
   // Helper function to get available quantizations for a model
@@ -134,28 +191,55 @@ export default function SpeechSynthesis() {
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
-    const voice = (model.includes("marvis") ? "conversational_a" : "af_heart");
+    // Determine voice based on model type
+    let voice = "af_heart"; // default for Kokoro/SparkTTS
+    if (model.includes("marvis")) {
+      voice = "conversational_a";
+    } else if (model.includes("chatterbox")) {
+      voice = ""; // Chatterbox uses voice cloning, no preset voice needed
+    }
 
     try {
+      // Build request body
+      const requestBody: Record<string, unknown> = {
+        model: model,
+        input: text,
+        voice: voice,
+        speed: speed,
+      }
+
+      // Add Chatterbox-specific parameters
+      if (isChatterboxModel(model)) {
+        requestBody.exaggeration = exaggeration
+        requestBody.cfg_weight = cfgWeight
+        requestBody.lang_code = chatterboxLang
+        if (refAudioBase64) {
+          requestBody.ref_audio = refAudioBase64
+        }
+      }
+
+      // Add timeout for slow models like Chatterbox (5 minutes)
+      const controller = new AbortController()
+      const timeoutMs = isChatterboxModel(model) ? 300000 : 60000 // 5 min for Chatterbox, 1 min for others
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
       const response = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/speech`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model: model, // Or the specific model identifier if different
-          input: text,
-          voice: voice,
-          speed: speed,
-          // pitch and other parameters can be added here if supported by the backend
-        }),
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
       })
+
+      clearTimeout(timeoutId)
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`)
       }
 
       const blob = await response.blob()
+      setAudioBlob(blob)  // Store blob for download
       const audioUrl = URL.createObjectURL(blob)
       audioRef.current.src = audioUrl
 
@@ -173,10 +257,7 @@ export default function SpeechSynthesis() {
       audioRef.current.onended = () => {
         setIsPlaying(false)
         setCurrentTime("00:00")
-         // Revoke the object URL to free up resources
-        if (audioRef.current?.src.startsWith("blob:")) {
-          URL.revokeObjectURL(audioRef.current.src)
-        }
+        // Don't revoke the blob URL - keep it for potential download
       }
     } catch (error) {
       console.error("Error generating speech:", error)
@@ -187,8 +268,20 @@ export default function SpeechSynthesis() {
   }
 
   const handleDownload = () => {
-    // In a real app, this would download the audio file
-    alert("Downloading audio...")
+    if (!audioBlob) {
+      alert("No audio generated yet. Please generate audio first.")
+      return
+    }
+
+    // Create download link from the stored blob
+    const url = URL.createObjectURL(audioBlob)
+    const link = document.createElement("a")
+    link.href = url
+    link.download = `speech_${Date.now()}.mp3`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)  // Clean up after download
   }
 
   const handleFeedback = (isPositive: boolean) => {
@@ -231,12 +324,6 @@ export default function SpeechSynthesis() {
           </div>
           <div className="mt-4 flex items-center justify-between">
             <div className="flex items-center space-x-2">
-              <div className="relative">
-                <button className="flex items-center space-x-1 rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-gray-800">
-                  <span>{language}</span>
-                  <ChevronDown className="h-3 w-3" />
-                </button>
-              </div>
               <button
                 className="rounded-md border border-gray-200 dark:border-gray-700 p-1 hover:bg-gray-50 dark:hover:bg-gray-800"
                 onClick={handleDownload}
@@ -299,6 +386,8 @@ export default function SpeechSynthesis() {
                       <option value="Marvis-AI/marvis-tts-250m-v0.1">Marvis-TTS-250m-v0.1</option>
                       <option value="mlx-community/Kokoro-82M-bf16">Kokoro</option>
                       <option value="mlx-community/Spark-TTS-0.5B-bf16">SparkTTS</option>
+                      <option value="mlx-community/chatterbox-fp16">Chatterbox</option>
+                      <option value="mlx-community/chatterbox-turbo">Chatterbox Turbo</option>
                     </select>
                     <ChevronDown className="absolute right-2 top-2 h-4 w-4 pointer-events-none" />
                   </div>
@@ -325,6 +414,115 @@ export default function SpeechSynthesis() {
                     </div>
                   </div>
                 </div>
+              )}
+
+              {/* Chatterbox-specific controls */}
+              {isChatterboxModel(baseModel) && (
+                <>
+                  {/* Reference Audio Upload */}
+                  <div className="mb-6">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm">Reference Audio</span>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <input
+                        type="file"
+                        ref={fileInputRef}
+                        accept="audio/*"
+                        onChange={handleRefAudioChange}
+                        className="hidden"
+                      />
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-full rounded-md border border-dashed border-gray-300 dark:border-gray-600 px-3 py-2 text-sm text-gray-600 dark:text-gray-400 hover:border-sky-500 hover:text-sky-500 transition-colors"
+                      >
+                        {refAudioFile ? refAudioFile.name : "Choose audio file for voice cloning..."}
+                      </button>
+                      {refAudioFile && (
+                        <button
+                          onClick={() => {
+                            setRefAudioFile(null)
+                            setRefAudioBase64(null)
+                            if (fileInputRef.current) fileInputRef.current.value = ""
+                          }}
+                          className="text-xs text-red-500 hover:text-red-600"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Upload a 5-10 second audio clip for voice cloning
+                    </p>
+                  </div>
+
+                  {/* Language Selection */}
+                  <div className="mb-6">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm">Language</span>
+                      <div className="relative">
+                        <select
+                          className="flex w-32 appearance-none items-center justify-between rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-sm pr-8 bg-white dark:bg-gray-800"
+                          value={chatterboxLang}
+                          onChange={(e) => setChatterboxLang(e.target.value)}
+                        >
+                          {chatterboxLanguages.map((lang) => (
+                            <option key={lang.code} value={lang.code}>
+                              {lang.name}
+                            </option>
+                          ))}
+                        </select>
+                        <ChevronDown className="absolute right-2 top-2 h-4 w-4 pointer-events-none" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Exaggeration Slider */}
+                  <div className="mb-6">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm">Emotion Exaggeration</span>
+                      <span className="text-sm font-medium">{exaggeration.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center">
+                      <span className="text-xs text-gray-500 mr-2">0</span>
+                      <RangeInput
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={exaggeration}
+                        onChange={(e) => setExaggeration(Number.parseFloat(e.target.value))}
+                        ariaLabel="Emotion exaggeration control"
+                      />
+                      <span className="text-xs text-gray-500 ml-2">1</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Controls emotional expressiveness (0.3-0.7 typical)
+                    </p>
+                  </div>
+
+                  {/* CFG Weight Slider */}
+                  <div className="mb-6">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span className="text-sm">Guidance Weight</span>
+                      <span className="text-sm font-medium">{cfgWeight.toFixed(2)}</span>
+                    </div>
+                    <div className="flex items-center">
+                      <span className="text-xs text-gray-500 mr-2">0</span>
+                      <RangeInput
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        value={cfgWeight}
+                        onChange={(e) => setCfgWeight(Number.parseFloat(e.target.value))}
+                        ariaLabel="CFG weight control"
+                      />
+                      <span className="text-xs text-gray-500 ml-2">1</span>
+                    </div>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Classifier-free guidance strength
+                    </p>
+                  </div>
+                </>
               )}
 
               <div className="mb-6">

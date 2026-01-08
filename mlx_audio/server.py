@@ -96,7 +96,6 @@ app = FastAPI()
 
 
 def int_or_float(value):
-
     try:
         return int(value)
     except ValueError:
@@ -164,6 +163,9 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    # Chatterbox-specific parameters
+    exaggeration: float | None = 0.5
+    cfg_weight: float | None = 0.5
 
 
 # Initialize the ModelProvider
@@ -234,26 +236,69 @@ async def remove_model(model_name: str):
 
 
 async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
-    for result in model.generate(
-        payload.input,
-        voice=payload.voice,
-        speed=payload.speed,
-        gender=payload.gender,
-        pitch=payload.pitch,
-        lang_code=payload.lang_code,
-        ref_audio=payload.ref_audio,
-        ref_text=payload.ref_text,
-        temperature=payload.temperature,
-        top_p=payload.top_p,
-        top_k=payload.top_k,
-        repetition_penalty=payload.repetition_penalty,
-    ):
+    import base64
+    import tempfile
 
-        sample_rate = result.sample_rate
-        buffer = io.BytesIO()
-        sf.write(buffer, result.audio, sample_rate, format=payload.response_format)
-        buffer.seek(0)
-        yield buffer.getvalue()
+    # Handle base64 ref_audio - decode to temp file
+    ref_audio = payload.ref_audio
+    temp_audio_path = None
+
+    if ref_audio and ref_audio.startswith("data:"):
+        # Parse data URL: data:audio/wav;base64,XXXX...
+        try:
+            header, data = ref_audio.split(",", 1)
+            audio_bytes = base64.b64decode(data)
+
+            # Determine file extension from MIME type
+            ext = ".wav"
+            if "audio/mp3" in header or "audio/mpeg" in header:
+                ext = ".mp3"
+            elif "audio/ogg" in header:
+                ext = ".ogg"
+
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as f:
+                f.write(audio_bytes)
+                temp_audio_path = f.name
+                ref_audio = temp_audio_path
+        except Exception as e:
+            print(f"Error decoding base64 audio: {e}")
+            ref_audio = None
+
+    # Debug logging
+    if ref_audio:
+        print(
+            f"[DEBUG] Using ref_audio: {ref_audio[:50] if isinstance(ref_audio, str) else 'array'}..."
+        )
+    else:
+        print("[DEBUG] No ref_audio provided - will use default voice")
+
+    try:
+        for result in model.generate(
+            payload.input,
+            voice=payload.voice,
+            speed=payload.speed,
+            gender=payload.gender,
+            pitch=payload.pitch,
+            lang_code=payload.lang_code,
+            ref_audio=ref_audio,
+            ref_text=payload.ref_text,
+            temperature=payload.temperature,
+            top_p=payload.top_p,
+            top_k=payload.top_k,
+            repetition_penalty=payload.repetition_penalty,
+            exaggeration=payload.exaggeration,
+            cfg_weight=payload.cfg_weight,
+        ):
+            sample_rate = result.sample_rate
+            buffer = io.BytesIO()
+            sf.write(buffer, result.audio, sample_rate, format=payload.response_format)
+            buffer.seek(0)
+            yield buffer.getvalue()
+    finally:
+        # Clean up temp file
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
 
 
 @app.post("/v1/audio/speech")
@@ -395,7 +440,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     if len(audio_buffer) % (sample_rate * 2) < len(audio_chunk_float):
                         # Log every ~2 seconds of buffer
                         print(
-                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)} samples ({len(audio_buffer)/sample_rate:.2f}s)"
+                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)} samples ({len(audio_buffer) / sample_rate:.2f}s)"
                         )
                 else:
                     silence_skip_count += 1
@@ -420,7 +465,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     ):
                         should_process_initial = True
                         print(
-                            f"Processing initial chunk for real-time feedback: {initial_chunk_size/sample_rate:.2f}s, total buffer: {len(audio_buffer)/sample_rate:.2f}s"
+                            f"Processing initial chunk for real-time feedback: {initial_chunk_size / sample_rate:.2f}s, total buffer: {len(audio_buffer) / sample_rate:.2f}s"
                         )
                     # Process if we have enough silence after speech (end of utterance)
                     elif (
@@ -429,13 +474,13 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     ):
                         should_process_final = True
                         print(
-                            f"Processing due to silence gap: {time_since_last_speech:.2f}s silence, buffer: {len(audio_buffer)/sample_rate:.2f}s"
+                            f"Processing due to silence gap: {time_since_last_speech:.2f}s silence, buffer: {len(audio_buffer) / sample_rate:.2f}s"
                         )
                     # Or if buffer is getting too large (continuous speech)
                     elif len(audio_buffer) >= max_chunk_size:
                         should_process_final = True
                         print(
-                            f"Processing due to max buffer size: {len(audio_buffer)/sample_rate:.2f}s"
+                            f"Processing due to max buffer size: {len(audio_buffer) / sample_rate:.2f}s"
                         )
 
                 # Process initial chunk for real-time feedback
@@ -542,7 +587,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         initial_chunk_processed = False
                         last_process_time = current_time
                         print(
-                            f"Processed final chunk: {process_size} samples ({process_size/sample_rate:.2f}s), buffer cleared"
+                            f"Processed final chunk: {process_size} samples ({process_size / sample_rate:.2f}s), buffer cleared"
                         )
 
                     except Exception as e:
