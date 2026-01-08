@@ -70,3 +70,4 @@ xcuserdata/
 # uv
 .build
 claude.md
+logs/
