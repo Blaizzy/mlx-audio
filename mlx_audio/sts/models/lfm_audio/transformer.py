@@ -125,7 +125,7 @@ class Attention(nn.Module):
             self.k_norm = RMSNorm(self.head_dim)
 
         # RoPE frequencies
-        self.freqs = precompute_freqs_cis(self.head_dim, max_seq_len, rope_theta)
+        self._freqs = precompute_freqs_cis(self.head_dim, max_seq_len, rope_theta)
 
     def __call__(
         self,
@@ -152,7 +152,7 @@ class Attention(nn.Module):
 
         # Apply RoPE
         offset = 0 if cache is None else cache[0].shape[1]
-        q, k = apply_rotary_emb(q, k, self.freqs, offset)
+        q, k = apply_rotary_emb(q, k, self._freqs, offset)
 
         # Handle KV cache
         if cache is not None:
