@@ -48,7 +48,6 @@ tts = [
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
     "sentencepiece>=0.2.0",
-    "dacite>=1.9.2",
 ]
 
 # Server dependencies

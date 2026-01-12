@@ -65,12 +65,22 @@ def save_as_txt(segments, output_path: str):
 
 def save_as_srt(segments, output_path: str):
     with open(f"{output_path}.srt", "w", encoding="utf-8") as f:
-        for i, sentence in enumerate(segments.sentences, 1):
-            f.write(f"{i}\n")
-            f.write(
-                f"{format_timestamp(sentence.start)} --> {format_timestamp(sentence.end)}\n"
-            )
-            f.write(f"{sentence.text}\n\n")
+        if hasattr(segments, "sentences"):
+            # Parakeet model (AlignedResult)
+            for i, sentence in enumerate(segments.sentences, 1):
+                f.write(f"{i}\n")
+                f.write(
+                    f"{format_timestamp(sentence.start)} --> {format_timestamp(sentence.end)}\n"
+                )
+                f.write(f"{sentence.text}\n\n")
+        else:
+            # Whisper model
+            for i, segment in enumerate(segments.segments, 1):
+                f.write(f"{i}\n")
+                f.write(
+                    f"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\n"
+                )
+                f.write(f"{segment['text']}\n\n")
 
 
 def save_as_vtt(segments, output_path: str):
@@ -240,8 +250,12 @@ def generate_transcription(
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    if format == "txt" or segments.segments is None:
-        if segments.segments is None:
+    # Check for segments (Whisper) or sentences (Parakeet)
+    has_segments = hasattr(segments, "segments") and segments.segments is not None
+    has_sentences = hasattr(segments, "sentences") and segments.sentences is not None
+
+    if format == "txt" or (not has_segments and not has_sentences):
+        if not has_segments and not has_sentences:
             print("[WARNING] No segments found, saving as plain text.")
         save_as_txt(segments, output_path)
     elif format == "srt":
