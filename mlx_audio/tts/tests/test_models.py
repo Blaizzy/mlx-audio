@@ -79,7 +79,7 @@ class TestSanitizeLSTMWeights(unittest.TestCase):
 
 @patch("importlib.resources.open_text", patched_open_text)
 class TestKokoroModel(unittest.TestCase):
-    @patch("mlx_audio.tts.models.kokoro.kokoro.json.load")
+    @patch("json.load")
     @patch("builtins.open", new_callable=MagicMock)
     @patch("mlx_audio.tts.models.kokoro.kokoro.mx.load")
     @patch.object(nn.Module, "load_weights")
@@ -175,16 +175,14 @@ class TestKokoroPipeline(unittest.TestCase):
         # Import inside the test method
         from mlx_audio.tts.models.kokoro.pipeline import LANG_CODES, KokoroPipeline
 
-        # Mock the KokoroModel - fix the import path
-        with patch("mlx_audio.tts.models.kokoro.kokoro.Model") as mock_kokoro_model:
+        # Mock the G2P class to avoid spacy download during tests
+        with patch("mlx_audio.tts.models.kokoro.pipeline.en.G2P") as mock_g2p:
             with patch(
-                "mlx_audio.tts.models.kokoro.pipeline.isinstance"
-            ) as mock_isinstance:
+                "mlx_audio.tts.models.kokoro.pipeline.espeak.EspeakFallback"
+            ) as mock_fallback:
                 mock_model = MagicMock()
-                mock_kokoro_model.return_value = mock_model
-
-                # Simply make isinstance always return True when checking for KokoroModel
-                mock_isinstance.return_value = True
+                mock_g2p.return_value = MagicMock()
+                mock_fallback.return_value = MagicMock()
 
                 # Initialize with default model
                 pipeline = KokoroPipeline(
@@ -947,7 +945,6 @@ class TestSparkTTSModel(unittest.TestCase):
     @property
     def _default_config(self):
         return {
-            "model_path": "/fake/model/path",
             "sample_rate": 16000,
             "bos_token_id": 151643,
             "eos_token_id": 151645,
@@ -973,28 +970,16 @@ class TestSparkTTSModel(unittest.TestCase):
             "rope_scaling": None,
         }
 
-    @patch("mlx_audio.tts.models.spark.spark.load_tokenizer")
-    @patch("mlx_audio.tts.models.spark.spark.BiCodecTokenizer")
     @patch("mlx_audio.tts.models.spark.spark.Qwen2Model")
-    def test_init(
-        self,
-        mock_qwen2_model,
-        mock_bicodec_tokenizer,
-        mock_load_tokenizer,
-    ):
+    def test_init(self, mock_qwen2_model):
         """Test SparkTTSModel initialization."""
-        from pathlib import Path
-
         from mlx_audio.tts.models.spark.spark import Model, ModelConfig
 
-        # Mock return values for patched functions
-        mock_load_tokenizer.return_value = MagicMock()
-        mock_bicodec_tokenizer.return_value = MagicMock()
+        # Mock return value for Qwen2Model
         mock_qwen2_model.return_value = MagicMock()
 
         # Create a config instance
         config = ModelConfig(**self._default_config)
-        config.model_path = Path("/fake/model/path")
 
         # Initialize the model
         model = Model(config)
@@ -1002,13 +987,10 @@ class TestSparkTTSModel(unittest.TestCase):
         # Check that the model was initialized correctly
         self.assertIsInstance(model, Model)
 
-        # Verify the tokenizer was loaded correctly
-        mock_load_tokenizer.assert_called_once_with(
-            config.model_path, eos_token_ids=config.eos_token_id
-        )
-        mock_bicodec_tokenizer.assert_called_once_with(config.model_path)
+        # Verify tokenizer is None initially (loaded via post_load_hook)
+        self.assertIsNone(model.tokenizer)
 
-        # Verify the model was initialized correctly
+        # Verify the Qwen2Model was initialized correctly
         mock_qwen2_model.assert_called_once_with(config)
 
 
