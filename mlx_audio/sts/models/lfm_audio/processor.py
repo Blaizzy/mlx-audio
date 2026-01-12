@@ -170,6 +170,8 @@ class LFM2AudioProcessor:
         # Detokenizer for audio output (lazy loaded)
         self._detokenizer = detokenizer
 
+        self.model_path = None
+
     @property
     def tokenizer(self):
         """Lazy load tokenizer."""
@@ -177,7 +179,7 @@ class LFM2AudioProcessor:
             try:
                 from transformers import AutoTokenizer
                 self._tokenizer = AutoTokenizer.from_pretrained(
-                    "LiquidAI/LFM2.5-Audio-1.5B",
+                    self.model_path,
                     trust_remote_code=True,
                 )
             except ImportError:
@@ -197,7 +199,7 @@ class LFM2AudioProcessor:
             self._mimi = Mimi(cfg)
             # Load pretrained weights
             model_file = hf_hub_download(
-                "LiquidAI/LFM2.5-Audio-1.5B",
+                self.model_path,
                 "tokenizer-e351c8d8-checkpoint125.safetensors"
             )
             # Use strict=False to skip training-only params (cluster_usage, embedding_sum, initialized)
@@ -209,7 +211,7 @@ class LFM2AudioProcessor:
         """Lazy load detokenizer with pretrained weights."""
         if self._detokenizer is None:
             self._detokenizer = LFM2AudioDetokenizer.from_pretrained(
-                "LiquidAI/LFM2.5-Audio-1.5B"
+                self.model_path
             )
         return self._detokenizer
 
@@ -236,8 +238,10 @@ class LFM2AudioProcessor:
             config_dict = json.load(f)
 
         config = LFM2AudioConfig.from_dict(config_dict)
+        processor = cls(config)
+        processor.model_path = model_path
 
-        return cls(config)
+        return processor
 
     def preprocess_audio(
         self,
