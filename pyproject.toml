@@ -43,7 +43,6 @@ stt = [
 # TTS dependencies
 tts = [
     "misaki[en]>=0.8.2",
-    "num2words>=0.5.14",
     "spacy>=3.8.4",
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
@@ -60,8 +59,6 @@ server = [
 # STS (Speech-to-Speech) requires both STT and TTS + additional deps
 sts = [
     "mlx-audio[stt,tts]",
-    "mlx-vlm>=0.1.27",
-    "fastrtc[vad,stt]==0.0.34",
     "webrtcvad>=2.0.10",
 ]
 
@@ -103,5 +100,4 @@ mlx_audio = [
     "tts/*.css",
     "tts/**/*.json",
     "tts/static/**/*",
-    "stt/**/*.tiktoken",
 ]
