@@ -1,4 +1,3 @@
-import json
 import time
 from dataclasses import dataclass
 from numbers import Number
@@ -6,7 +5,6 @@ from typing import Dict, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from loguru import logger
 
 from ..base import BaseModelArgs, GenerationResult, check_array_shape
 from .istftnet import Decoder
@@ -251,7 +249,7 @@ class Model(nn.Module):
     def _get_pipeline(self, lang_code: str) -> KokoroPipeline:
         """Retrieves or creates a cached KokoroPipeline for the given language code."""
         if lang_code not in self._pipelines:
-            logger.info(f"Creating new KokoroPipeline for language: {lang_code}")
+            print(f"Creating new KokoroPipeline for language: {lang_code}")
             self._pipelines[lang_code] = KokoroPipeline(
                 model=self,
                 repo_id=self.REPO_ID if self.repo_id is None else self.repo_id,

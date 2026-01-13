@@ -4,7 +4,6 @@ from typing import Iterable, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from einops.array_api import rearrange
 
 from .utils import make_non_pad_mask, mask_to_bias
 
@@ -168,8 +167,8 @@ class EuclideanCodebook(nn.Module):
         self.embed = mx.zeros((codebook_size, dim))
 
     def preprocess(self, x: mx.array) -> mx.array:
-        x = rearrange(x, "... d -> (...) d")
-        return x
+        # rearrange "... d -> (...) d" - flatten all dims except last
+        return x.reshape(-1, x.shape[-1])
 
     def quantize(self, x: mx.array) -> mx.array:
         embed = self.embed.T
@@ -226,7 +225,8 @@ class VectorQuantization(nn.Module):
 
     def decode(self, embed_ind: mx.array) -> mx.array:
         quantize = self._codebook.decode(embed_ind)
-        quantize = rearrange(quantize, "b n d -> b d n")
+        # rearrange "b n d -> b d n"
+        quantize = quantize.transpose(0, 2, 1)
         return quantize
 
 

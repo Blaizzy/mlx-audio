@@ -2,7 +2,6 @@ from typing import Any, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-from einops.array_api import repeat
 
 from .config import DiaConfig
 
@@ -347,12 +346,11 @@ class Attention(nn.Module):
             # S=1 for Decode Step
 
             if self.num_gqa_groups > 1:
-                Xk_BxNxSxH = repeat(
-                    Xk_BxKxSxH, "b k s h -> b (k g) s h", g=self.num_gqa_groups
-                )
-                Xv_BxNxSxH = repeat(
-                    Xv_BxKxSxH, "b k s h -> b (k g) s h", g=self.num_gqa_groups
-                )
+                # repeat "b k s h -> b (k g) s h" - repeat each k head g times
+                b, k, s, h = Xk_BxKxSxH.shape
+                # Expand k dim, then tile along new axis, then reshape
+                Xk_BxNxSxH = mx.repeat(Xk_BxKxSxH, self.num_gqa_groups, axis=1)
+                Xv_BxNxSxH = mx.repeat(Xv_BxKxSxH, self.num_gqa_groups, axis=1)
             else:
                 Xk_BxNxSxH = Xk_BxKxSxH
                 Xv_BxNxSxH = Xv_BxKxSxH

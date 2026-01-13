@@ -1,6 +1,5 @@
 import mlx.core as mx
 import mlx.nn as nn
-from einops.array_api import rearrange
 
 
 class LocalMHA(nn.Module):
@@ -8,6 +7,7 @@ class LocalMHA(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
         self.heads = dim // dim_head
+        self.dim_head = dim_head
         self.window_size = window_size
         self.to_qkv = nn.Linear(dim, dim * 3, bias=False)
         if use_rotary_pos_emb:
@@ -25,9 +25,16 @@ class LocalMHA(nn.Module):
         qkv = self.to_qkv(x)
         q, k, v = mx.split(qkv, 3, axis=-1)
 
-        q = rearrange(q, "b (w n) (h d) -> b h w n d", w=windows, h=self.heads)
-        k = rearrange(k, "b (w n) (h d) -> b h w n d", w=windows, h=self.heads)
-        v = rearrange(v, "b (w n) (h d) -> b h w n d", w=windows, h=self.heads)
+        # rearrange "b (w n) (h d) -> b h w n d"
+        q = q.reshape(
+            B, windows, self.window_size, self.heads, self.dim_head
+        ).transpose(0, 3, 1, 2, 4)
+        k = k.reshape(
+            B, windows, self.window_size, self.heads, self.dim_head
+        ).transpose(0, 3, 1, 2, 4)
+        v = v.reshape(
+            B, windows, self.window_size, self.heads, self.dim_head
+        ).transpose(0, 3, 1, 2, 4)
 
         if self.rel_pos is not None:
             pos_emb, scale = self.rel_pos(k)
@@ -38,7 +45,10 @@ class LocalMHA(nn.Module):
         attn_weights = mx.softmax(scores, axis=-1)
         out = mx.matmul(attn_weights, v)
 
-        out = rearrange(out, "b h w n d -> b (w n) (h d)")
+        # rearrange "b h w n d -> b (w n) (h d)"
+        out = out.transpose(0, 2, 3, 1, 4).reshape(
+            B, windows * self.window_size, self.heads * self.dim_head
+        )
         out = self.to_out(out)
         return out.moveaxis(1, 2) + residual
 
@@ -70,7 +80,8 @@ class SinusoidalEmbeddings(nn.Module):
             return freqs, mx.ones((1,))
 
         power = (t - (seq_len // 2)) / self.scale_base
-        power_reshaped = rearrange(power, "n -> n 1")
+        # rearrange "n -> n 1"
+        power_reshaped = mx.expand_dims(power, axis=-1)
         scale = mx.power(self.scale, power_reshaped)
         scale = mx.concatenate([scale, scale], axis=-1)
 
@@ -78,7 +89,9 @@ class SinusoidalEmbeddings(nn.Module):
 
 
 def rotate_half(x):
-    x = rearrange(x, "b ... (r d) -> b ... r d", r=2)
+    # rearrange "b ... (r d) -> b ... r d" with r=2: split last dim in half
+    *batch_dims, last_dim = x.shape
+    x = x.reshape(*batch_dims, 2, last_dim // 2)
     x1, x2 = mx.split(x, 2, axis=-2)
     return mx.concatenate([-x2, x1], axis=-1)
 

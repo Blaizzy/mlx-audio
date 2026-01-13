@@ -48,6 +48,7 @@ class TestVoicePipeline:
         assert pipeline.llm_model == "custom/llm"
         assert pipeline.tts_model == "custom/tts"
 
+    @pytest.mark.asyncio
     @mock.patch("mlx_audio.sts.voice_pipeline.load_llm")
     @mock.patch("mlx_audio.sts.voice_pipeline.load_tts")
     @mock.patch("mlx_audio.sts.voice_pipeline.Whisper.from_pretrained")

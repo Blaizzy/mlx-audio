@@ -4,8 +4,6 @@ from typing import Any, Dict, Optional
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from omegaconf import DictConfig
-from safetensors.torch import load_file
 
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_decoder import Decoder
 from mlx_audio.tts.models.spark.modules.encoder_decoder.feat_encoder import Encoder
@@ -122,7 +120,7 @@ class BiCodec(nn.Module):
             postnet=postnet,
         )
 
-        weights = load_file(ckpt_path)
+        weights = mx.load(ckpt_path)
 
         # Convert PyTorch weights to MLX arrays and sanitize
         weights = {

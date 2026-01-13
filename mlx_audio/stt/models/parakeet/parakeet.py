@@ -5,7 +5,6 @@ from typing import Callable, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from dacite import from_dict
 from huggingface_hub import hf_hub_download
 from mlx.utils import tree_flatten, tree_unflatten
 
@@ -32,6 +31,7 @@ from mlx_audio.stt.models.parakeet.rnnt import (
     PredictNetwork,
 )
 from mlx_audio.stt.utils import load_audio
+from mlx_audio.utils import from_dict
 
 
 @dataclass

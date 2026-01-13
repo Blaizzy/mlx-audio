@@ -4,9 +4,10 @@ This module provides a unified interface for loading TTS and STT models,
 with lazy imports to avoid loading unnecessary dependencies.
 """
 
+import dataclasses
 import importlib.util
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Type, TypeVar, Union, get_origin, get_type_hints
 
 from mlx_audio.dsp import (
     STR_TO_WINDOW_FN,
@@ -18,6 +19,42 @@ from mlx_audio.dsp import (
     mel_filters,
     stft,
 )
+
+T = TypeVar("T")
+
+
+def from_dict(data_class: Type[T], data: dict) -> T:
+
+    if not dataclasses.is_dataclass(data_class):
+        raise TypeError(f"{data_class} is not a dataclass")
+
+    field_types = get_type_hints(data_class)
+    kwargs = {}
+
+    for field in dataclasses.fields(data_class):
+        field_name = field.name
+        if field_name not in data:
+            continue
+
+        value = data[field_name]
+        field_type = field_types[field_name]
+
+        # Handle Optional types
+        origin = get_origin(field_type)
+        if origin is Union:
+            # For Optional[X], get the non-None type
+            args = [a for a in field_type.__args__ if a is not type(None)]
+            if args:
+                field_type = args[0]
+
+        # Recursively convert nested dataclasses
+        if dataclasses.is_dataclass(field_type) and isinstance(value, dict):
+            value = from_dict(field_type, value)
+
+        kwargs[field_name] = value
+
+    return data_class(**kwargs)
+
 
 # Lazy-loaded modules
 _stt_utils = None
@@ -55,6 +92,7 @@ __all__ = [
     "istft",
     "mel_filters",
     # Model utilities
+    "from_dict",
     "is_valid_module_name",
     "get_model_category",
     "get_model_name_parts",

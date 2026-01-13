@@ -2,11 +2,12 @@ import logging
 import re
 from dataclasses import dataclass
 from numbers import Number
+from pathlib import Path
 from typing import Any, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from huggingface_hub import hf_hub_download
+from huggingface_hub import snapshot_download
 from misaki import en, espeak
 
 from .voice import load_voice_tensor
@@ -129,17 +130,43 @@ class KokoroPipeline:
     def load_single_voice(self, voice: str) -> mx.array:
         if voice in self.voices:
             return self.voices[voice]
-        if voice.endswith(".pt"):
+
+        if voice.endswith(".safetensors"):
+            # Direct path to safetensors file
             f = voice
         else:
-            f = hf_hub_download(repo_id=self.repo_id, filename=f"voices/{voice}.pt")
+            # Check if voice exists in local snapshot first
+            try:
+                local_dir = Path(
+                    snapshot_download(
+                        repo_id=self.repo_id,
+                        allow_patterns=[f"voices/{voice}.safetensors"],
+                        local_files_only=True,
+                    )
+                )
+                local_voice = local_dir / "voices" / f"{voice}.safetensors"
+                if local_voice.exists():
+                    f = str(local_voice)
+                else:
+                    raise FileNotFoundError
+            except (FileNotFoundError, Exception):
+                # Download the specific voice file
+                local_dir = Path(
+                    snapshot_download(
+                        repo_id=self.repo_id,
+                        allow_patterns=[f"voices/{voice}.safetensors"],
+                    )
+                )
+                f = str(local_dir / "voices" / f"{voice}.safetensors")
+
             if not voice.startswith(self.lang_code):
                 v = LANG_CODES.get(voice, voice)
                 p = LANG_CODES.get(self.lang_code, self.lang_code)
                 logging.warning(
                     f"Language mismatch, loading {v} voice into {p} pipeline."
                 )
-        pack = mx.array(load_voice_tensor(f))
+
+        pack = load_voice_tensor(f)
         self.voices[voice] = pack
         return pack
 
