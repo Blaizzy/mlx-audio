@@ -503,7 +503,6 @@ class Model(nn.Module):
         ]  # Remove batch dimension for generate_step
 
         with wired_limit(self, [generation_stream]):
-            # Pass input_ids as prompt to provide sequence length info for generate_step
             prompt = input_ids[0] if input_ids.ndim > 1 else input_ids
             for token, logprobs in generate_step(
                 prompt=prompt,
