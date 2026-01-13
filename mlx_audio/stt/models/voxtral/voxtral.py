@@ -272,6 +272,9 @@ class Model(nn.Module):
                 sanitized_weights[k] = v
         return sanitized_weights
 
+    def model_quant_predicate(self, p, m):
+        return not p.startswith("audio_tower")
+
     @classmethod
     def from_pretrained(
         cls,
@@ -296,6 +299,7 @@ class Model(nn.Module):
                 config_dict = json.load(f)
             config = ModelConfig.from_dict(config_dict)
 
+        quantization = config_dict.get("quantization", None)
         model = cls(config)
         model._processor = processor
         model._processor.tokenizer.eos_token_ids = getattr(
@@ -304,11 +308,37 @@ class Model(nn.Module):
         model.config.model_repo = model_repo
 
         weights = {}
-        weight_files = glob.glob(str(model_path / "model-*.safetensors"))
+        weight_files = glob.glob(str(model_path / "model*.safetensors"))
         for file in weight_files:
             weights.update(mx.load(file))
 
         weights = model.sanitize(weights)
+
+        if quantization is not None:
+
+            def get_class_predicate(p, m):
+                # Skip layers without quantization capability
+                if not hasattr(m, "to_quantized"):
+                    return False
+                # Skip layers not divisible by 64
+                if hasattr(m, "weight") and m.weight.size % 64 != 0:
+                    return False
+                # Skip audio_tower layers
+                if not model.model_quant_predicate(p, m):
+                    return False
+                # Handle custom per layer quantizations
+                if p in config_dict["quantization"]:
+                    return config_dict["quantization"][p]
+                # Handle legacy models which may not have everything quantized
+                return f"{p}.scales" in weights
+
+            nn.quantize(
+                model,
+                group_size=quantization["group_size"],
+                bits=quantization["bits"],
+                mode=quantization["mode"],
+                class_predicate=get_class_predicate,
+            )
 
         model.load_weights(list(weights.items()))
         mx.eval(model.parameters())
