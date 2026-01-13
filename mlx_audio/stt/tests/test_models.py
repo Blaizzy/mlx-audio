@@ -629,7 +629,8 @@ class TestGLMASRModel(unittest.TestCase):
         self.assertEqual(logits.shape[2], self.llama_config.vocab_size)
 
     @patch("mlx.nn.Module.load_weights")
-    @patch("mlx_audio.stt.models.glmasr.glmasr.get_model_path")
+    @patch("mlx_audio.utils.load_config")
+    @patch("mlx_audio.utils.get_model_path")
     @patch("mlx_audio.stt.models.glmasr.glmasr.glob.glob")
     @patch("mlx_audio.stt.models.glmasr.glmasr.mx.load")
     @patch("builtins.open", new_callable=MagicMock)
@@ -643,11 +644,12 @@ class TestGLMASRModel(unittest.TestCase):
         mock_mx_load,
         mock_glob,
         mock_get_model_path,
+        mock_load_config,
         mock_load_weights,
     ):
         """Test GLMASRModel.from_pretrained method."""
         dummy_repo_id = "dummy/glm-asr-model"
-        dummy_model_path = "/tmp/dummy_model_path"
+        dummy_model_path = Path("/tmp/dummy_model_path")
 
         mock_get_model_path.return_value = dummy_model_path
 
@@ -680,9 +682,10 @@ class TestGLMASRModel(unittest.TestCase):
             "use_rope": True,
         }
         mock_json_load.return_value = dummy_config_dict
+        mock_load_config.return_value = dummy_config_dict
 
         # Mock weight files
-        mock_glob.return_value = [f"{dummy_model_path}/model.safetensors"]
+        mock_glob.return_value = [str(dummy_model_path / "model.safetensors")]
 
         # Mock weights - minimal weights for model initialization
         mock_mx_load.return_value = {}
@@ -692,7 +695,7 @@ class TestGLMASRModel(unittest.TestCase):
         self.assertIsInstance(model, self.GLMASRModel)
         mock_get_model_path.assert_called_once()
         mock_auto_tokenizer.assert_called_once_with(
-            dummy_repo_id, trust_remote_code=True
+            str(dummy_model_path), trust_remote_code=True
         )
         mock_load_weights.assert_called_once()
 
