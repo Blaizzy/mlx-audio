@@ -3,6 +3,7 @@
 import glob
 import json
 import time
+import warnings
 from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
@@ -386,70 +387,42 @@ class Model(nn.Module):
         return sanitized
 
     @classmethod
+    def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+        """
+        Hook called after model weights are loaded.
+        Used to initialize the tokenizer which is required for text input.
+        """
+        from transformers import AutoTokenizer
+
+        if not hasattr(model, "_tokenizer") or model._tokenizer is None:
+            model._tokenizer = AutoTokenizer.from_pretrained(
+                str(model_path), trust_remote_code=True
+            )
+
+        return model
+
+    @classmethod
     def from_pretrained(
         cls,
         model_path: str,
         config: Optional[ModelConfig] = None,
         **kwargs,
     ) -> "Model":
-        """Load model from pretrained weights."""
-        from transformers import AutoTokenizer
+        """
+        Load model from pretrained weights.
 
-        revision = kwargs.get("revision", None)
-        force_download = kwargs.get("force_download", False)
-        model_path_resolved = get_model_path(
-            model_path, revision=revision, force_download=force_download
+        .. deprecated::
+            Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
+        """
+        warnings.warn(
+            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
 
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        from mlx_audio.stt.utils import load
 
-        config_path = Path(model_path_resolved) / "config.json"
-        with open(config_path, "r", encoding="utf-8") as f:
-            config_dict = json.load(f)
-
-        if config is None:
-            config = ModelConfig.from_dict(config_dict)
-
-        model = cls(config)
-        model._tokenizer = tokenizer
-
-        weights = {}
-        weight_files = glob.glob(str(Path(model_path_resolved) / "model*.safetensors"))
-        if not weight_files:
-            weight_files = glob.glob(str(Path(model_path_resolved) / "*.safetensors"))
-
-        for file in weight_files:
-            weights.update(mx.load(file))
-
-        weights = model.sanitize(weights)
-
-        # Handle quantized weights
-        quantization = config_dict.get("quantization", None)
-        if quantization is not None:
-
-            def class_predicate(p, m):
-                # Handle custom per layer quantizations
-                if p in quantization:
-                    return quantization[p]
-                if not hasattr(m, "to_quantized"):
-                    return False
-                # Skip layers not divisible by 64
-                if hasattr(m, "weight") and m.weight.size % 64 != 0:
-                    return False
-                # Handle legacy models which may not have everything quantized
-                return f"{p}.scales" in weights
-
-            nn.quantize(
-                model,
-                group_size=quantization["group_size"],
-                bits=quantization["bits"],
-                class_predicate=class_predicate,
-            )
-
-        model.load_weights(list(weights.items()))
-
-        mx.eval(model.parameters())
-        return model
+        return load(model_path, **kwargs)
 
     def _preprocess_audio(self, audio) -> mx.array:
         """Preprocess audio to mel spectrogram.

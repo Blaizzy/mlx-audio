@@ -1,6 +1,8 @@
 import glob
 import math
 import time
+import warnings
+from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
@@ -276,75 +278,64 @@ class Model(nn.Module):
         return not p.startswith("audio_tower")
 
     @classmethod
+    def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+        """
+        Hook called after model weights are loaded.
+        Used to initialize the processor which is required for audio/text input.
+        """
+        from transformers import AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(str(model_path))
+        model._processor = processor
+        model._processor.tokenizer.eos_token_ids = getattr(
+            model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
+        )
+
+        # Store model_repo for transcription requests
+        if not hasattr(model.config, "model_repo") or model.config.model_repo is None:
+            # Try to extract from model_path
+            try:
+                index = model_path.parts.index("hub")
+                model.config.model_repo = (
+                    model_path.parts[index + 1]
+                    .replace("models--", "")
+                    .replace("--", "/")
+                )
+            except (ValueError, IndexError):
+                model.config.model_repo = str(model_path)
+
+        return model
+
+    @classmethod
     def from_pretrained(
         cls,
         model_path: str,
         config: Optional[ModelConfig] = None,
         **kwargs,
     ):
-        from transformers import AutoProcessor
+        """
+        Load a pretrained Voxtral model.
 
-        processor = AutoProcessor.from_pretrained(model_path)
-        model_repo = model_path
-        revision = kwargs.get("revision", None)
-        force_download = kwargs.get("force_download", False)
-        model_path = get_model_path(
-            model_path, revision=revision, force_download=force_download
+        .. deprecated::
+            Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
+
+        Args:
+            model_path: Path to the model or HuggingFace repo ID
+            config: Optional model configuration
+            **kwargs: Additional arguments (revision, force_download)
+
+        Returns:
+            Model: The loaded model
+        """
+        warnings.warn(
+            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
 
-        if config is None:
-            import json
+        from mlx_audio.stt.utils import load
 
-            with open(f"{model_path}/config.json", "r") as f:
-                config_dict = json.load(f)
-            config = ModelConfig.from_dict(config_dict)
-
-        quantization = config_dict.get("quantization", None)
-        model = cls(config)
-        model._processor = processor
-        model._processor.tokenizer.eos_token_ids = getattr(
-            model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
-        )
-        model.config.model_repo = model_repo
-
-        weights = {}
-        weight_files = glob.glob(str(model_path / "model*.safetensors"))
-        for file in weight_files:
-            weights.update(mx.load(file))
-
-        weights = model.sanitize(weights)
-
-        if quantization is not None:
-
-            def get_class_predicate(p, m):
-                # Skip layers without quantization capability
-                if not hasattr(m, "to_quantized"):
-                    return False
-                # Skip layers not divisible by 64
-                if hasattr(m, "weight") and m.weight.size % 64 != 0:
-                    return False
-                # Skip audio_tower layers
-                if not model.model_quant_predicate(p, m):
-                    return False
-                # Handle custom per layer quantizations
-                if p in config_dict["quantization"]:
-                    return config_dict["quantization"][p]
-                # Handle legacy models which may not have everything quantized
-                return f"{p}.scales" in weights
-
-            nn.quantize(
-                model,
-                group_size=quantization["group_size"],
-                bits=quantization["bits"],
-                mode=quantization["mode"],
-                class_predicate=get_class_predicate,
-            )
-
-        model.load_weights(list(weights.items()))
-        mx.eval(model.parameters())
-        model.eval()
-
-        return model
+        return load(model_path, **kwargs)
 
     def stream_generate(
         self,

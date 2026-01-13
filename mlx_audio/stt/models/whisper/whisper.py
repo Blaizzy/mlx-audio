@@ -77,6 +77,22 @@ class ModelDimensions:
     n_text_head: int
     n_text_layer: int
 
+    @classmethod
+    def from_dict(cls, config: dict) -> "ModelDimensions":
+        """Create ModelDimensions from a config dict, filtering out unknown keys."""
+        # Remove keys that aren't part of ModelDimensions
+        config = config.copy()
+        config.pop("model_type", None)
+        config.pop("quantization", None)
+        # Filter to only known fields
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered = {k: v for k, v in config.items() if k in known_fields}
+        return cls(**filtered)
+
+
+# Alias for compatibility with load_model
+ModelConfig = ModelDimensions
+
 
 def sinusoids(length, channels, max_timescale=10000):
     """Returns sinusoids for positional embedding"""
@@ -322,6 +338,18 @@ class Model(nn.Module):
         path_or_hf_repo: str = "mlx-community/whisper-tiny",
         dtype: mx.Dtype = mx.float16,
     ) -> "Whisper":
+        """
+        Load a pretrained Whisper model.
+
+        .. deprecated::
+            Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
+        """
+        warnings.warn(
+            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         model_path = Path(path_or_hf_repo)
         if not model_path.exists():
             model_path = Path(snapshot_download(repo_id=path_or_hf_repo))
