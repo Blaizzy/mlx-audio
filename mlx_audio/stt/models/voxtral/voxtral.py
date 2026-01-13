@@ -311,6 +311,8 @@ class Model(nn.Module):
         weights = model.sanitize(weights)
 
         model.load_weights(list(weights.items()))
+        mx.eval(model.parameters())
+        model.eval()
 
         return model
 
