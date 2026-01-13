@@ -115,13 +115,13 @@ class TestWhisperModel(unittest.TestCase):
         mock_mx_load.return_value = dummy_weights
 
         model_instance = self.Model.from_pretrained(
-            path_or_hf_repo="mlx-community/whisper-tiny", dtype=mx.float32
+            path_or_hf_repo="mlx-community/whisper-tiny-asr-fp16", dtype=mx.float32
         )
 
         self.assertIsInstance(model_instance, self.Model)
         self.assertEqual(model_instance.dims.n_mels, dummy_config["n_mels"])
         mock_snapshot_download.assert_called_once_with(
-            repo_id="mlx-community/whisper-tiny"
+            repo_id="mlx-community/whisper-tiny-asr-fp16"
         )
         mock_open.assert_called_once_with("dummy_path/config.json", "r")
         mock_mx_load.assert_called_once_with("dummy_path/weights.safetensors")

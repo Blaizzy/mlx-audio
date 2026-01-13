@@ -189,7 +189,7 @@ class TestStreamingDecoder:
         from mlx_audio.stt.utils import load_model
 
         # Use tiny model for fast tests
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     def test_initialization(self, whisper_model):
         """StreamingDecoder initializes with model and config."""
@@ -226,7 +226,7 @@ class TestDecodeChunk:
         """Load a small Whisper model."""
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     @pytest.fixture
     def sample_audio(self):
@@ -282,7 +282,7 @@ class TestGenerateStreaming:
         """Load Whisper model."""
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     @pytest.fixture
     def sample_audio_file(self, tmp_path):
@@ -332,7 +332,7 @@ class TestStreamingIntegration:
         """Load Whisper model."""
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     @pytest.fixture
     def speech_audio(self, tmp_path):
@@ -409,7 +409,7 @@ class TestSharedHelpers:
     def whisper_model(self):
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     def test_prepare_audio_from_path(self, whisper_model, tmp_path):
         """_prepare_audio loads audio from file path."""

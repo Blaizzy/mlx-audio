@@ -223,7 +223,7 @@ class AudioProcessor:
     def create_speaker_from_whisper(
         self,
         audio: str,
-        whisper_model: str = "mlx-community/whisper-large-v3-turbo",
+        whisper_model: str = "mlx-community/whisper-large-v3-turbo-asr-fp16",
     ):
         if isinstance(audio, str):
             audio = self.audio_codec.load_audio(audio)

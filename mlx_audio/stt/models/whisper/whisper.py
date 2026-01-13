@@ -517,7 +517,7 @@ class Model(nn.Module):
     @classmethod
     def from_pretrained(
         cls,
-        path_or_hf_repo: str = "mlx-community/whisper-tiny",
+        path_or_hf_repo: str = "mlx-community/whisper-tiny-asr-fp16",
         dtype: mx.Dtype = mx.float16,
     ) -> "Whisper":
         """

@@ -298,7 +298,9 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
     try:
         # Receive initial configuration
         config = await websocket.receive_json()
-        model_name = config.get("model", "mlx-community/whisper-large-v3-turbo")
+        model_name = config.get(
+            "model", "mlx-community/whisper-large-v3-turbo-asr-fp16"
+        )
         language = config.get("language", None)
         sample_rate = config.get("sample_rate", 16000)
 

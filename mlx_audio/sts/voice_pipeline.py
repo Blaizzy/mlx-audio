@@ -29,7 +29,7 @@ class VoicePipeline:
         streaming_interval=3,
         frame_duration_ms=30,
         vad_mode=3,
-        stt_model="mlx-community/whisper-large-v3-turbo",
+        stt_model="mlx-community/whisper-large-v3-turbo-asr-fp16",
         llm_model="Qwen/Qwen2.5-0.5B-Instruct-4bit",
         tts_model="mlx-community/csm-1b-fp16",
     ):
@@ -284,7 +284,7 @@ async def main():
     parser.add_argument(
         "--stt_model",
         type=str,
-        default="mlx-community/whisper-large-v3-turbo",
+        default="mlx-community/whisper-large-v3-turbo-asr-fp16",
         help="STT model",
     )
     parser.add_argument(

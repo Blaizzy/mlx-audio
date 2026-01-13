@@ -75,7 +75,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
-| **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-mlx](https://huggingface.co/mlx-community/whisper-large-v3-mlx) |
+| **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 
@@ -140,7 +140,7 @@ mlx_audio.tts.generate \
 ```python
 from mlx_audio.stt.utils import load_model, transcribe
 
-model = load_model("mlx-community/whisper-large-v3-mlx")
+model = load_model("mlx-community/whisper-large-v3-turbo-asr-fp16")
 result = transcribe("audio.wav", model=model)
 print(result["text"])
 ```
@@ -214,7 +214,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "file=@audio.wav" \
-  -F "model=mlx-community/whisper-large-v3-mlx"
+  -F "model=mlx-community/whisper-large-v3-turbo-asr-fp16"
 ```
 
 ## Quantization

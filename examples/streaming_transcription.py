@@ -27,8 +27,8 @@ def main():
     parser.add_argument(
         "--model",
         "-m",
-        default="mlx-community/whisper-tiny",
-        help="Whisper model to use (default: mlx-community/whisper-tiny)",
+        default="mlx-community/whisper-tiny-asr-fp16",
+        help="Whisper model to use (default: mlx-community/whisper-tiny-asr-fp16)",
     )
     parser.add_argument(
         "--chunk-duration",

@@ -101,7 +101,7 @@ def load(
 
     Example:
         >>> from mlx_audio.stt import load
-        >>> model = load("mlx-community/whisper-tiny")
+        >>> model = load("mlx-community/whisper-tiny-asr-fp16")
         >>> result = model.generate(audio)
     """
     return load_model(model_path, lazy=lazy, strict=strict, **kwargs)

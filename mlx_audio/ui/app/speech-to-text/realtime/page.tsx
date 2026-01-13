@@ -11,11 +11,11 @@ export default function RealtimeTranscriptionPage() {
   const [isRecording, setIsRecording] = useState(false)
   const [transcript, setTranscript] = useState<string>("")
   const [language, setLanguage] = useState("Detect")
-  const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo")
+  const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo-asr-fp16")
   const [status, setStatus] = useState<"idle" | "connecting" | "ready" | "recording" | "error">("idle")
   const [error, setError] = useState<string | null>(null)
   const [isSpeechDetected, setIsSpeechDetected] = useState(false)
-  
+
   const websocketRef = useRef<WebSocket | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -28,7 +28,7 @@ export default function RealtimeTranscriptionPage() {
   ) => {
     console.log("Starting audio processing, sample rate:", audioContext.sampleRate)
     const source = audioContext.createMediaStreamSource(stream)
-    
+
     // Create a ScriptProcessorNode for processing audio
     // Use buffer size that works well with 16kHz target
     const bufferSize = 4096
@@ -41,12 +41,12 @@ export default function RealtimeTranscriptionPage() {
       if (ws.readyState === WebSocket.OPEN) {
         const inputData = event.inputBuffer.getChannelData(0)
         sampleCount += inputData.length
-        
+
         // Resample if needed (browser usually uses 48kHz, we need 16kHz)
         const targetSampleRate = 16000
         const sourceSampleRate = audioContext.sampleRate
         let processedData = inputData
-        
+
         if (sourceSampleRate !== targetSampleRate) {
           // Simple downsampling: take every Nth sample
           const ratio = sourceSampleRate / targetSampleRate
@@ -56,14 +56,14 @@ export default function RealtimeTranscriptionPage() {
             processedData[i] = inputData[Math.floor(i * ratio)]
           }
         }
-        
+
         // Convert float32 to int16
         const int16Array = new Int16Array(processedData.length)
         for (let i = 0; i < processedData.length; i++) {
           const s = Math.max(-1, Math.min(1, processedData[i]))
           int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7fff
         }
-        
+
         // Send audio data
         try {
           ws.send(int16Array.buffer)
@@ -84,7 +84,7 @@ export default function RealtimeTranscriptionPage() {
     gainNode.gain.value = 0
     processor.connect(gainNode)
     gainNode.connect(audioContext.destination)
-    
+
     console.log("Audio processing started")
   }
 
@@ -110,7 +110,7 @@ export default function RealtimeTranscriptionPage() {
         },
       })
       streamRef.current = stream
-      
+
       // Apply additional constraints for better noise suppression
       const audioTrack = stream.getAudioTracks()[0]
       if (audioTrack && typeof audioTrack.getCapabilities === 'function') {
@@ -162,13 +162,13 @@ export default function RealtimeTranscriptionPage() {
             setStatus("ready")
             setIsRecording(true)
             setStatus("recording")
-            
+
             // Start processing audio stream
             startAudioProcessing(stream, audioContext, ws)
           } else if (data.text) {
             // Handle transcription (partial or final)
             const isPartial = data.is_partial || false
-            
+
             if (isPartial) {
               // Partial transcription - append with a marker that it might be updated
               setTranscript((prev) => {
@@ -189,16 +189,16 @@ export default function RealtimeTranscriptionPage() {
                 if (!prev || prev.trim().length === 0) {
                   return finalText
                 }
-                
+
                 // If we have a previous partial transcription, try to replace it
                 // Estimate: partial is usually ~1.5 seconds, roughly 3-4 words
                 const words = prev.trim().split(/\s+/).filter(w => w.length > 0)
                 const estimatedPartialWords = 4
-                
+
                 if (words.length >= estimatedPartialWords) {
                   // Replace last few words (likely the partial) with final transcription
                   const wordsToKeep = words.slice(0, Math.max(0, words.length - estimatedPartialWords))
-                  const newText = wordsToKeep.length > 0 
+                  const newText = wordsToKeep.length > 0
                     ? wordsToKeep.join(" ") + " " + finalText
                     : finalText
                   return newText
@@ -211,7 +211,7 @@ export default function RealtimeTranscriptionPage() {
                 }
               })
             }
-            
+
             setIsSpeechDetected(true)
             // Reset speech indicator after a delay
             setTimeout(() => setIsSpeechDetected(false), 100)
