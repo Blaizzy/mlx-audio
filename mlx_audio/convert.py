@@ -429,13 +429,21 @@ def convert(
         "*.safetensors",
     ]:
         for file in glob.glob(str(model_path / pattern)):
-            if Path(file).name == "model.safetensors.index.json":
+            if (
+                Path(file).name == "model.safetensors.index.json"
+                or Path(file).name.startswith("model")
+                and Path(file).name.endswith(".safetensors")
+            ):
                 continue
             shutil.copy(file, mlx_path)
 
         # Check subdirectories
         for file in glob.glob(str(model_path / "**" / pattern), recursive=True):
-            if Path(file).name == "model.safetensors.index.json":
+            if (
+                Path(file).name == "model.safetensors.index.json"
+                or Path(file).name.startswith("model")
+                and Path(file).name.endswith(".safetensors")
+            ):
                 continue
             rel_path = Path(file).relative_to(model_path)
             dest_dir = mlx_path / rel_path.parent
