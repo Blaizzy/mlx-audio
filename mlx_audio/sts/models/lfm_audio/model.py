@@ -19,6 +19,7 @@ from .config import (
 )
 from .conformer import ConformerEncoder, MLP
 from .transformer import Depthformer, RMSNorm
+from ....base import check_array_shape
 from mlx_lm.models.lfm2 import Lfm2Model
 from mlx_lm.models.cache import KVCache, ArraysCache
 
@@ -207,8 +208,6 @@ class AudioHead(nn.Module):
         self.codebook_weight = codebook_weight
         self.depthformer_dim = depthformer_config.dim
 
-        self.in_proj = nn.Linear(input_dim, num_codebooks * depthformer_config.dim)
-
         self.depthformer = Depthformer(
             layers=depthformer_config.layers,
             dim=depthformer_config.dim,
@@ -269,8 +268,7 @@ class LFM2AudioModel(nn.Module):
 
         self.lfm = Lfm2Model(config.lfm)
 
-
-        self.audio_in_emb = AudioEmbedding(
+        self.audio_embedding = AudioEmbedding(
             config.audio_vocab_size,
             config.lfm.hidden_size,
             config.codebooks,
@@ -284,6 +282,9 @@ class LFM2AudioModel(nn.Module):
             config.codebooks,
         )
 
+
+        self.depth_linear = nn.Linear(config.lfm.hidden_size, config.codebooks * config.depthformer.dim)
+
         self.audio_head = AudioHead(
             config.lfm.hidden_size,
             config.depthformer,
@@ -292,11 +293,11 @@ class LFM2AudioModel(nn.Module):
             config.codebook_weight,
         )
 
+
     @classmethod
     def from_pretrained(
         cls,
         model_name_or_path: str,
-        dtype: mx.Dtype = mx.bfloat16,
     ) -> "LFM2AudioModel":
         # Download or get local path
         if Path(model_name_or_path).exists():
@@ -321,16 +322,7 @@ class LFM2AudioModel(nn.Module):
         # Create model
         model = cls(config)
 
-        if quantization is not None:
-            def class_predicate(p, m):
-                if p in quantization:
-                    return quantization[p]
-                if not hasattr(m, "to_quantized"):
-                    return False
-                return f"{p}.scales" in weights
-
-            nn.quantize(model, group_size=quantization["group_size"], bits=quantization["bits"], class_predicate=class_predicate)
-
+        
         weight_files = [
             wf for wf in model_path.glob("*.safetensors")
             if "tokenizer" not in wf.name
@@ -340,11 +332,28 @@ class LFM2AudioModel(nn.Module):
         
             for wf in weight_files:
                 weights.update(mx.load(str(wf)))
+        else:
+            raise FileNotFoundError(f"No safetensors found in {model_path}")
 
         # Sanitize and load weights
+        
         weights = model.sanitize(weights)
 
-        model.load_weights(list(weights.items()), strict=False)
+
+        for key, value in weights.items():
+            if value.dtype == mx.float32:
+                if "conv" in key or "norm" in key:
+                    continue
+                else:
+                    weights[key] = value.astype(mx.float16)
+
+        if quantization:
+            from ....convert import build_quant_predicate
+            final_predicate = build_quant_predicate(model)
+            nn.quantize(model, group_size=quantization["group_size"], bits=quantization["bits"], mode=config_dict.get("quantization_mode", "affine"), class_predicate=final_predicate)
+        
+
+        model.load_weights(list(weights.items()), strict=True)
 
         mx.eval(model.parameters())
         model.eval()
@@ -352,11 +361,14 @@ class LFM2AudioModel(nn.Module):
         return model
 
     def model_quant_predicate(self, p, m):
-        return 
+        # Quantize if not norm or conv
+        if "norm" in p or "conv" in p:
+            return False
+        else:
+            return True
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-
         import re
         sanitized = {}
 
@@ -450,13 +462,7 @@ class LFM2AudioModel(nn.Module):
                     else:
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.{rest}"
 
-            # =========== Depth Linear ===========
-            elif key.startswith("depth_linear."):
-                new_key = key.replace("depth_linear.", "audio_head.in_proj.")
-
-            # =========== Audio Embedding (input) ===========
-            elif key.startswith("audio_embedding."):
-                new_key = key.replace("audio_embedding.", "audio_in_emb.")
+    
 
             # =========== Depth Embeddings (output per codebook) ===========
             elif key.startswith("depth_embeddings."):
@@ -475,7 +481,7 @@ class LFM2AudioModel(nn.Module):
                     if any(p in new_key for p in norm_patterns):
                         new_key = new_key.replace(".weight", ".scale")
                 # Audio embedding norms (custom RMSNorm uses .scale)
-                elif "audio_in_emb.embedding_norm" in new_key or "depth_embeddings." in new_key:
+                elif "audio_embedding.embedding_norm" in new_key or "depth_embeddings." in new_key:
                     if "embedding_norm" in new_key:
                         new_key = new_key.replace(".weight", ".scale")
 
@@ -511,17 +517,10 @@ class LFM2AudioModel(nn.Module):
 
             if "pointwise_conv" in key and "weight" in key and value.ndim == 3:
                 sanitized[key] = value.squeeze(-1)
- 
-            elif "depthwise_conv" in key and "weight" in key and value.ndim == 3:
+            elif ("depthwise_conv" in key or ".conv.weight" in key) and value.ndim == 3:
                 sanitized[key] = value.transpose(0, 2, 1)
-            elif ".conv.weight" in key and value.ndim == 3:
-                sanitized[key] = value.transpose(0, 2, 1)
-            elif "subsampling.conv" in key and "weight" in key and value.ndim == 4:
-                # PyTorch uses NCHW format: (out_ch, in_ch, kH, kW)
-                # MLX uses NHWC format: (out_ch, kH, kW, in_ch)
-                # Both use the same spatial order (T, D) -> (H, W)
-                # Only need to move in_ch from axis 1 to axis 3
-                sanitized[key] = value.transpose(0, 2, 3, 1)
+            elif "subsampling.conv" in key and value.ndim == 4:
+                sanitized[key] = value.transpose(0, 2, 3, 1)  # NCHW -> NHWC
 
         return sanitized
 
@@ -540,10 +539,10 @@ class LFM2AudioModel(nn.Module):
 
     def _embed_audio_in(self, audio_codes: mx.array) -> mx.array:
 
-        return self.audio_in_emb(audio_codes)
+        return self.audio_embedding(audio_codes)
 
     def _embed_audio_out(self, audio_codes: mx.array) -> mx.array:
-        return self.audio_in_emb(audio_codes)
+        return self.audio_embedding(audio_codes)
 
     def _encode_audio(
         self,
@@ -667,9 +666,9 @@ class LFM2AudioModel(nn.Module):
         if text_tokens is not None:
             text_emb = self._embed_text(text_tokens)  # (B, T_text, D)
 
-        audio_in_emb = None
+        audio_embedding = None
         if audio_features is not None:
-            audio_in_emb, _ = self._encode_audio(audio_features)  # (B, T_audio_in, D)
+            audio_embedding, _ = self._encode_audio(audio_features)  # (B, T_audio_in, D)
 
         audio_out_emb = None
         if audio_codes is not None:
@@ -699,11 +698,11 @@ class LFM2AudioModel(nn.Module):
                 pos = text_positions[i]
                 embeddings = embeddings.at[:, pos:pos+1, :].add(text_emb[:, i:i+1, :])
 
-        if audio_in_emb is not None and audio_in_positions:
-            n_audio_in = min(len(audio_in_positions), audio_in_emb.shape[1])
+        if audio_embedding is not None and audio_in_positions:
+            n_audio_in = min(len(audio_in_positions), audio_embedding.shape[1])
             for i in range(n_audio_in):
                 pos = audio_in_positions[i]
-                embeddings = embeddings.at[:, pos:pos+1, :].add(audio_in_emb[:, i:i+1, :])
+                embeddings = embeddings.at[:, pos:pos+1, :].add(audio_embedding[:, i:i+1, :])
 
         if audio_out_emb is not None and audio_out_positions:
             n_audio_out = min(len(audio_out_positions), audio_out_emb.shape[1])
@@ -763,7 +762,7 @@ class LFM2AudioModel(nn.Module):
         B = hidden_state.shape[0]
 
         # Project to depthformer inputs: (B, 1, D) -> (B, 1, 8*1024)
-        depthformer_in = self.audio_head.in_proj(hidden_state)  # (B, 1, 8192)
+        depthformer_in = self.depth_linear(hidden_state)  # (B, 1, 8192)
 
         # Reshape to per-codebook inputs: (B, 1, 8, 1024)
         depthformer_in = depthformer_in.reshape(
@@ -1080,6 +1079,7 @@ class LFM2AudioModel(nn.Module):
 
         # Text head
         text_logits = self.lfm.embed_tokens.as_linear(hidden_states)
+        hidden_states = self.depth_linear(hidden_states)
 
         # Audio head - get hidden states per codebook
         audio_hidden, _ = self.audio_head(hidden_states)  # (B, L, 8, 1024)
