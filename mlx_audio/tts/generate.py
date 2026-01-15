@@ -212,7 +212,9 @@ def generate_audio(
     ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
-    stt_model: Optional[Union[str, nn.Module]] = "mlx-community/whisper-large-v3-turbo",
+    stt_model: Optional[
+        Union[str, nn.Module]
+    ] = "mlx-community/whisper-large-v3-turbo-asr-fp16",
     file_prefix: str = "audio",
     audio_format: str = "wav",
     join_audio: bool = False,
@@ -444,7 +446,7 @@ def parse_args():
     parser.add_argument(
         "--stt_model",
         type=str,
-        default="mlx-community/whisper-large-v3-turbo",
+        default="mlx-community/whisper-large-v3-turbo-asr-fp16",
         help="STT model to use to transcribe reference audio",
     )
     parser.add_argument(

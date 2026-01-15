@@ -18,7 +18,7 @@ class TestVoicePipeline:
         assert pipeline.output_sample_rate == 24_000
         assert pipeline.streaming_interval == 3
         assert pipeline.frame_duration_ms == 30
-        assert pipeline.stt_model == "mlx-community/whisper-large-v3-turbo"
+        assert pipeline.stt_model == "mlx-community/whisper-large-v3-turbo-asr-fp16"
         assert pipeline.llm_model == "Qwen/Qwen2.5-0.5B-Instruct-4bit"
         assert pipeline.tts_model == "mlx-community/csm-1b-fp16"
 
@@ -48,6 +48,7 @@ class TestVoicePipeline:
         assert pipeline.llm_model == "custom/llm"
         assert pipeline.tts_model == "custom/tts"
 
+    @pytest.mark.asyncio
     @mock.patch("mlx_audio.sts.voice_pipeline.load_llm")
     @mock.patch("mlx_audio.sts.voice_pipeline.load_tts")
     @mock.patch("mlx_audio.sts.voice_pipeline.Whisper.from_pretrained")

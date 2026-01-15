@@ -2,7 +2,6 @@ from typing import List
 
 import mlx.core as mx
 import mlx.nn as nn
-from einops.array_api import rearrange
 
 from .layers import WNConv1d
 
@@ -60,7 +59,9 @@ class VectorQuantize(nn.Module):
         return self.embed_code(embed_id).moveaxis(1, 2)
 
     def decode_latents(self, latents):
-        encodings = rearrange(latents, "b d t -> (b t) d")
+        # rearrange "b d t -> (b t) d"
+        b, d, t = latents.shape
+        encodings = latents.transpose(0, 2, 1).reshape(b * t, d)
         codebook = self.codebook.weight  # codebook: (N x D)
 
         encodings = normalize(encodings)
@@ -72,7 +73,8 @@ class VectorQuantize(nn.Module):
             + mx.power(codebook, 2).sum(1, keepdims=True).T
         )
         min_dist = (-dist).argmax(1)
-        indices = rearrange(min_dist, "(b t) -> b t", b=latents.shape[0])
+        # rearrange "(b t) -> b t"
+        indices = min_dist.reshape(b, t)
         z_q = self.decode_code(indices)
         return z_q, indices
 

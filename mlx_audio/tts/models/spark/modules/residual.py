@@ -2,7 +2,6 @@ from typing import Any, Dict, List
 
 import mlx.core as mx
 import mlx.nn as nn
-from einops.array_api import rearrange
 
 from mlx_audio.codec.models.descript.nn.layers import WNConv1d
 
@@ -153,7 +152,9 @@ class FactorizedVectorQuantize(nn.Module):
         return x / mx.maximum(norm, 1e-12)
 
     def decode_latents(self, latents):
-        encodings = rearrange(latents, "b d t -> (b t) d")
+        # rearrange "b d t -> (b t) d"
+        b, d, t = latents.shape
+        encodings = latents.transpose(0, 2, 1).reshape(b * t, d)
         codebook = self.codebook.weight
 
         # L2 normalize encodings and codebook
@@ -168,7 +169,7 @@ class FactorizedVectorQuantize(nn.Module):
             + mx.sum(mx.power(codebook, 2), axis=1, keepdims=True).T
         )
         min_encoding_indices = mx.argmax(-dist, axis=1)
-        indices = mx.reshape(min_encoding_indices, (latents.shape[0], latents.shape[2]))
+        indices = mx.reshape(min_encoding_indices, (b, t))
         z_q = self.decode_code(indices)
 
         return z_q, indices, dist

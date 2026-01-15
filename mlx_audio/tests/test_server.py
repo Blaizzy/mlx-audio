@@ -4,6 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 import soundfile as sf
+
+# python-multipart is required for FastAPI file uploads
+pytest.importorskip("multipart", reason="python-multipart is required for server tests")
+
 from fastapi.testclient import TestClient
 
 from mlx_audio.server import app

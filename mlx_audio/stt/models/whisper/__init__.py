@@ -5,4 +5,4 @@ from .streaming import (
     get_most_attended_frame,
     should_emit,
 )
-from .whisper import Model
+from .whisper import Model, ModelConfig

@@ -24,7 +24,7 @@ export default function SpeechToTextPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [primaryLanguage, setPrimaryLanguage] = useState("Detect")
   const [tagAudioEvents, setTagAudioEvents] = useState(false)
-  const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo")
+  const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo-asr-fp16")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
 

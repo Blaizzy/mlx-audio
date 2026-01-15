@@ -1,11 +1,11 @@
 import json
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from dacite import from_dict
 from huggingface_hub import hf_hub_download
 from mlx.utils import tree_flatten, tree_unflatten
 
@@ -32,6 +32,7 @@ from mlx_audio.stt.models.parakeet.rnnt import (
     PredictNetwork,
 )
 from mlx_audio.stt.utils import load_audio
+from mlx_audio.utils import from_dict
 
 
 @dataclass
@@ -104,8 +105,29 @@ class ParakeetTDTCTCArgs(ParakeetTDTArgs):
     aux_ctc: AuxCTCArgs
 
 
+class ModelConfig:
+    """Config wrapper for Parakeet models."""
+
+    def __init__(self, config: dict):
+        self._config = config
+
+    @classmethod
+    def from_dict(cls, config: dict) -> "ModelConfig":
+        return cls(config)
+
+
 class Model(nn.Module):
+    def __new__(cls, config):
+        # If config is a ModelConfig wrapper, use from_config factory
+        if isinstance(config, ModelConfig):
+            return cls.from_config(config._config)
+        # Otherwise proceed with normal instantiation
+        return super().__new__(cls)
+
     def __init__(self, preprocess_args: PreprocessArgs):
+        # Skip init if already initialized via from_config
+        if hasattr(self, "preprocessor_config"):
+            return
         super().__init__()
 
         self.preprocessor_config = preprocess_args
@@ -262,7 +284,17 @@ class Model(nn.Module):
 
     @classmethod
     def from_pretrained(cls, path_or_hf_repo: str, *, dtype: mx.Dtype = mx.bfloat16):
-        """Loads model from Hugging Face or local directory"""
+        """
+        Loads model from Hugging Face or local directory.
+
+        .. deprecated::
+            Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
+        """
+        warnings.warn(
+            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         try:
             config = json.load(
@@ -286,6 +318,9 @@ class Model(nn.Module):
 
 class ParakeetTDT(Model):
     def __init__(self, args: ParakeetTDTArgs):
+        # Skip init if already initialized via from_config
+        if hasattr(self, "preprocessor_config"):
+            return
         super().__init__(args.preprocessor)
 
         assert args.decoding.model_type == "tdt", "Model must be a TDT model"
@@ -393,6 +428,9 @@ class ParakeetTDT(Model):
 
 class ParakeetRNNT(Model):
     def __init__(self, args: ParakeetRNNTArgs):
+        # Skip init if already initialized via from_config
+        if hasattr(self, "preprocessor_config"):
+            return
         super().__init__(args.preprocessor)
 
         self.encoder_config = args.encoder
@@ -490,6 +528,9 @@ class ParakeetRNNT(Model):
 
 class ParakeetCTC(Model):
     def __init__(self, args: ParakeetCTCArgs):
+        # Skip init if already initialized via from_config
+        if hasattr(self, "preprocessor_config"):
+            return
         super().__init__(args.preprocessor)
 
         self.encoder_config = args.encoder
@@ -603,6 +644,9 @@ class ParakeetTDTCTC(ParakeetTDT):
     """Has ConvASRDecoder decoder in `.ctc_decoder` but `.generate` uses TDT decoder all the times (Please open an issue if you need CTC decoder use-case!)"""
 
     def __init__(self, args: ParakeetTDTCTCArgs):
+        # Skip init if already initialized via from_config
+        if hasattr(self, "preprocessor_config"):
+            return
         super().__init__(args)
 
         self.ctc_decoder = ConvASRDecoder(args.aux_ctc.decoder)
