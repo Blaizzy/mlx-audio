@@ -137,58 +137,29 @@ class AudioEmbedding(nn.Module):
 
         return embedded
 
+class AudioEmbeddingWithNorm(nn.Module):
 
-class AudioOutputEmbedding(nn.Module):
-    """Audio output embeddings with per-codebook norms and logits."""
-
-    def __init__(
-        self,
-        vocab_size: int,
-        dim: int,
-        num_codebooks: int = 8,
-    ):
+    def __init__(self, vocab_size: int, dim: int):
         super().__init__()
         self.vocab_size = vocab_size
         self.dim = dim
-        self.num_codebooks = num_codebooks
+        self.embedding = nn.Embedding(vocab_size, dim)
+        self.embedding_norm = RMSNorm(dim)
+        self.to_logits = nn.Linear(dim, vocab_size, bias=False)
 
-        self.embeddings = [
-            AudioEmbeddingWithNorm(vocab_size, dim)
-            for _ in range(num_codebooks)
-        ]
+    def embed(self, x: mx.array) -> mx.array:
+        """Embed tokens with normalization."""
+        return self.embedding_norm(self.embedding(x))
 
-    def embed(self, codes: mx.array, codebook_idx: int) -> mx.array:
-        return self.embeddings[codebook_idx].embed(codes)
+    def embed_raw(self, x: mx.array) -> mx.array:
+        """Embed tokens WITHOUT normalization (used for conditioning)."""
+        return self.embedding(x)
 
-    def embed_raw(self, codes: mx.array, codebook_idx: int) -> mx.array:
-        return self.embeddings[codebook_idx].embed_raw(codes)
+    def logits(self, x: mx.array) -> mx.array:
+        """Project to vocabulary logits."""
+        return self.to_logits(x)
 
-    def logits(self, x: mx.array, codebook_idx: int) -> mx.array:
-        return self.embeddings[codebook_idx].logits(x)
-
-    def __call__(self, codes: mx.array) -> mx.array:
-        """
-        Embed audio codes by summing across codebooks.
-
-        Args:
-            codes: (B, num_codebooks) or (num_codebooks,) audio codes
-
-        Returns:
-            Summed embeddings (B, dim) or (dim,)
-        """
-        if codes.ndim == 1:
-            codes = codes[None, :]
-
-        B, K = codes.shape
-        embedded = mx.zeros((B, self.dim))
-
-        for i in range(min(K, self.num_codebooks)):
-            embedded = embedded + self.embeddings[i].embed(codes[:, i])
-
-        if codes.ndim == 1:
-            return embedded.squeeze(0)
-
-        return embedded
+    
 
 
 class AudioHead(nn.Module):
@@ -276,11 +247,12 @@ class LFM2AudioModel(nn.Module):
         )
 
  
-        self.depth_embeddings = AudioOutputEmbedding(
-            config.audio_vocab_size,
-            config.depthformer.dim,
-            config.codebooks,
-        )
+        self.depth_embeddings =  [ 
+            AudioEmbeddingWithNorm(
+                config.audio_vocab_size,
+                config.depthformer.dim
+            ) for _ in range(config.codebooks) 
+         ]
 
 
         self.depth_linear = nn.Linear(config.lfm.hidden_size, config.codebooks * config.depthformer.dim)
@@ -450,9 +422,9 @@ class LFM2AudioModel(nn.Module):
                     elif rest == "operator.out_proj.weight":
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.o_proj.weight"
                     elif rest == "operator.bounded_attention.q_layernorm.weight":
-                        new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.q_norm.scale"
+                        new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.q_norm.weight"
                     elif rest == "operator.bounded_attention.k_layernorm.weight":
-                        new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.k_norm.scale"
+                        new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.k_norm.weight"
                     elif rest.startswith("operator_norm."):
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn_norm.{rest.split('.', 1)[1]}"
                     elif rest.startswith("feed_forward."):
@@ -461,29 +433,8 @@ class LFM2AudioModel(nn.Module):
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.ffn_norm.{rest.split('.', 1)[1]}"
                     else:
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.{rest}"
-
-    
-
-            # =========== Depth Embeddings (output per codebook) ===========
-            elif key.startswith("depth_embeddings."):
-                new_key = key.replace("depth_embeddings.", "depth_embeddings.embeddings.")
-
-            # =========== Audio Output Heads ===========
-            elif key.startswith("linears."):
-                new_key = key.replace("linears.", "audio_head.heads.")
-
-            # =========== Handle norm weight -> scale ===========
            
-            if new_key.endswith(".weight"):
-                # Depthformer norms (custom RMSNorm uses .scale)
-                if "audio_head.depthformer." in new_key:
-                    norm_patterns = ["_norm."]
-                    if any(p in new_key for p in norm_patterns):
-                        new_key = new_key.replace(".weight", ".scale")
-                # Audio embedding norms (custom RMSNorm uses .scale)
-                elif "audio_embedding.embedding_norm" in new_key or "depth_embeddings." in new_key:
-                    if "embedding_norm" in new_key:
-                        new_key = new_key.replace(".weight", ".scale")
+
 
             sanitized[new_key] = value
 
@@ -792,7 +743,7 @@ class LFM2AudioModel(nn.Module):
             )
 
             # Get logits for this codebook
-            logits = self.depth_embeddings.logits(depthformer_out[:, -1, :], i)  # (B, vocab)
+            logits = self.depth_embeddings[i].logits(depthformer_out[:, -1, :])  # (B, vocab)
 
             # Sample token
             if greedy:
@@ -813,7 +764,7 @@ class LFM2AudioModel(nn.Module):
             codes.append(code.squeeze(-1))
 
             # Get raw embedding for next codebook conditioning (no norm - matches PyTorch)
-            depthformer_token = self.depth_embeddings.embed_raw(code.squeeze(-1), i)  # (B, 1024)
+            depthformer_token = self.depth_embeddings[i].embed_raw(code.squeeze(-1))  # (B, 1024)
 
         return mx.stack(codes, axis=-1), audio_cache
 
@@ -1086,7 +1037,7 @@ class LFM2AudioModel(nn.Module):
 
         # Apply logits projection for each codebook using depth_embeddings
         audio_logits = [
-            self.depth_embeddings.embeddings[i].to_logits(audio_hidden[:, :, i, :])
+            self.depth_embeddings[i].logits(audio_hidden[:, :, i, :])
             for i in range(self.config.codebooks)
         ]
 
