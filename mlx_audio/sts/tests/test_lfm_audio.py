@@ -1,11 +1,10 @@
 import unittest
 
-
 DEFAULT_LFM_CONFIG = {
     "model_type": "lfm2",
     "vocab_size": 65536,
-    "hidden_size": 512,  
-    "num_hidden_layers": 4,  
+    "hidden_size": 512,
+    "num_hidden_layers": 4,
     "num_attention_heads": 8,
     "num_key_value_heads": 4,
     "max_position_embeddings": 32768,
@@ -97,6 +96,7 @@ class TestLFM2AudioModelOutput(unittest.TestCase):
 
     def test_call_returns_text_and_audio_logits(self):
         import mlx.core as mx
+
         from mlx_audio.sts.models.lfm_audio.config import LFM2AudioConfig
         from mlx_audio.sts.models.lfm_audio.model import LFM2AudioModel
 
@@ -175,10 +175,10 @@ class TestSpecialTokens(unittest.TestCase):
 
     def test_token_values(self):
         from mlx_audio.sts.models.lfm_audio.model import (
+            AUDIO_EOS_TOKEN,
             AUDIO_START_TOKEN,
             IM_END_TOKEN,
             TEXT_END_TOKEN,
-            AUDIO_EOS_TOKEN,
         )
 
         self.assertEqual(AUDIO_START_TOKEN, 128)
