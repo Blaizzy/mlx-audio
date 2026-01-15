@@ -338,7 +338,7 @@ class ConvSubsampling(nn.Module):
             nn.Conv2d(conv_channels, conv_channels, kernel_size=1, stride=1, padding=0),  # 6
         ]
 
-        self.out_proj = nn.Linear(conv_channels * (in_channels // subsampling_factor), out_channels)
+        self.out = nn.Linear(conv_channels * (in_channels // subsampling_factor), out_channels)
 
     def __call__(self, x: mx.array) -> mx.array:
         """
@@ -364,7 +364,7 @@ class ConvSubsampling(nn.Module):
         B, T_out, D_out, C = x.shape
         x = x.transpose(0, 1, 3, 2)  # (B, T_out, C, D_out)
         x = x.reshape(B, T_out, -1)  # (B, T_out, C*D_out)
-        x = self.out_proj(x)
+        x = self.out(x)
 
         return x
 
@@ -377,7 +377,7 @@ class ConformerEncoder(nn.Module):
         self.config = config
 
         # Subsampling
-        self.subsampling = ConvSubsampling(
+        self.pre_encode = ConvSubsampling(
             in_channels=config.feat_in,
             out_channels=config.d_model,
             subsampling_factor=config.subsampling_factor,
@@ -418,7 +418,7 @@ class ConformerEncoder(nn.Module):
             Encoded features (B, T', D) and new lengths
         """
         # Subsampling
-        x = self.subsampling(x)
+        x = self.pre_encode(x)
 
         # Update lengths
         if lengths is not None:

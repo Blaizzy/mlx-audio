@@ -364,10 +364,6 @@ class LFM2AudioModel(nn.Module):
             if key.startswith("conformer."):
                 new_key = key.replace("conformer.", "audio_encoder.")
 
-                # Subsampling (pre_encode)
-                # Maps conformer.pre_encode.conv.X.* -> audio_encoder.subsampling.conv.X.*
-                new_key = new_key.replace(".pre_encode.conv.", ".subsampling.conv.")
-                new_key = new_key.replace(".pre_encode.out.", ".subsampling.out_proj.")
 
                 # Layer norms
                 new_key = new_key.replace(".norm_feed_forward1.", ".ff1_norm.")
@@ -393,7 +389,7 @@ class LFM2AudioModel(nn.Module):
                 new_key = new_key.replace(".conv.batch_norm.", ".conv.norm.")
 
             # =========== Audio Adapter (MLP) ===========
-            elif key.startswith("audio_adapter."):
+            elif key.startswith("audio_adapter.model."):
                 new_key = key.replace("audio_adapter.model.", "audio_adapter.layers.")
 
             # =========== LFM Backbone ===========
@@ -461,11 +457,11 @@ class LFM2AudioModel(nn.Module):
         for key, value in list(sanitized.items()):
 
             if "pointwise_conv" in key and "weight" in key and value.ndim == 3:
-                sanitized[key] = value.squeeze(-1)
+                sanitized[key] = value if value.ndim == 2 else value.squeeze(-1)
             elif ("depthwise_conv" in key or ".conv.weight" in key) and value.ndim == 3:
-                sanitized[key] = value.transpose(0, 2, 1)
-            elif "subsampling.conv" in key and value.ndim == 4:
-                sanitized[key] = value.transpose(0, 2, 3, 1)  # NCHW -> NHWC
+                sanitized[key] = value if check_array_shape(value) else value.transpose(0, 2, 1)
+            elif "pre_encode.conv" in key and value.ndim == 4:
+                sanitized[key] = value if check_array_shape(value) else value.transpose(0, 2, 3, 1)  # NCHW -> NHWC
 
         return sanitized
 
