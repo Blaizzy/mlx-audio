@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from huggingface_hub import hf_hub_download, snapshot_download
+from huggingface_hub import snapshot_download
 
 from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
 from mlx_audio.codec.models.mimi.mimi import MimiConfig, mimi_202407
@@ -198,12 +198,9 @@ class LFM2AudioProcessor:
             cfg = mimi_202407(num_codebooks=32)
             self._mimi = Mimi(cfg)
             # Load pretrained weights
-            model_file = hf_hub_download(
-                self.model_path,
-                "tokenizer-e351c8d8-checkpoint125.safetensors"
-            )
+            model_file =self.model_path / "tokenizer-e351c8d8-checkpoint125.safetensors"
             # Use strict=False to skip training-only params (cluster_usage, embedding_sum, initialized)
-            self._mimi.load_pytorch_weights(model_file, strict=False)
+            self._mimi.load_pytorch_weights(str(model_file), strict=False)
         return self._mimi
 
     @property
@@ -236,7 +233,6 @@ class LFM2AudioProcessor:
         config_path = model_path / "config.json"
         with open(config_path) as f:
             config_dict = json.load(f)
-
         config = LFM2AudioConfig.from_dict(config_dict)
         processor = cls(config)
         processor.model_path = model_path
