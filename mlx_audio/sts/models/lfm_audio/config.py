@@ -1,13 +1,14 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
-# LFM2.5-Audio: Liquid Foundation Model for Audio
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from mlx_lm.models.lfm2 import ModelArgs as LFM2Config
 
+from mlx_audio.base import BaseModelArgs
+
 
 @dataclass
-class PreprocessorConfig:
+class PreprocessorConfig(BaseModelArgs):
     """Audio preprocessor configuration for mel spectrogram extraction."""
 
     sample_rate: int = 16000
@@ -34,7 +35,7 @@ class PreprocessorConfig:
 
 
 @dataclass
-class ConformerEncoderConfig:
+class ConformerEncoderConfig(BaseModelArgs):
     """FastConformer audio encoder configuration."""
 
     feat_in: int = 128
@@ -65,7 +66,7 @@ class ConformerEncoderConfig:
 
 
 @dataclass
-class DepthformerConfig:
+class DepthformerConfig(BaseModelArgs):
     """Depthformer configuration for audio frame generation."""
 
     layers: int = 6
@@ -76,7 +77,7 @@ class DepthformerConfig:
 
 
 @dataclass
-class MimiConfig:
+class MimiConfig(BaseModelArgs):
     """Mimi audio codec configuration."""
 
     sample_rate: int = 24000
@@ -96,10 +97,11 @@ class MimiConfig:
 
 
 @dataclass
-class LFM2AudioConfig:
+class LFM2AudioConfig(BaseModelArgs):
     """Complete LFM2.5-Audio model configuration."""
 
     # Model architecture
+    model_type: str = "lfm_audio"
     sample_rate: int = 24000
     codebooks: int = 8
     tie_audio_embeddings: bool = False
@@ -136,7 +138,7 @@ class LFM2AudioConfig:
         config_dict = {
             k: v
             for k, v in config_dict.items()
-            if k not in ("preprocessor", "encoder", "lfm", "depthformer", "architectures")
+            if k not in ("preprocessor", "encoder", "lfm", "depthformer", "architectures", "quantization", "quantization_config")
         }
 
         return cls(
