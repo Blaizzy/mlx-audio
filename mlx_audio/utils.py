@@ -294,12 +294,17 @@ def get_model_class(
                 available_models.append(item.name)
 
     if model_name is not None and model_type_mapped != model_type:
+        found_in_name = False
         for part in model_name:
             if part in available_models:
                 model_type = part
+                found_in_name = True
             if part in model_remapping:
                 model_type = model_remapping[part]
+                found_in_name = True
                 break
+        if not found_in_name and model_type_mapped is not None:
+            model_type = model_type_mapped
     elif model_type_mapped is not None:
         model_type = model_type_mapped
 
