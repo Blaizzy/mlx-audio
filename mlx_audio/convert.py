@@ -46,39 +46,37 @@ DOMAIN_CONFIGS = {
         name="TTS",
         tags=["text-to-speech", "speech", "speech generation", "voice cloning", "tts"],
         cli_example='python -m mlx_audio.tts.generate --model {repo} --text "Hello, this is a test."',
-        python_example=dedent(
-            """\
-            from mlx_audio.tts.utils import load_model
-            from mlx_audio.tts.generate import generate_audio
+        python_example="""
+        from mlx_audio.tts.utils import load_model
+        from mlx_audio.tts.generate import generate_audio
 
-            model = load_model("{repo}")
-            generate_audio(
-                model=model,
-                text="Hello, this is a test.",
-                ref_audio="path_to_audio.wav",
-                file_prefix="test_audio",
-            )"""
-        ),
+        model = load_model("{repo}")
+        generate_audio(
+            model=model,
+            text="Hello, this is a test.",
+            ref_audio="path_to_audio.wav",
+            file_prefix="test_audio",
+        )
+        """,
     ),
     Domain.STT: DomainConfig(
         name="STT",
         tags=["speech-to-text", "speech", "transcription", "asr", "stt"],
         cli_example='python -m mlx_audio.stt.generate --model {repo} --audio "audio.wav"',
-        python_example=dedent(
-            """\
-            from mlx_audio.stt.utils import load_model
-            from mlx_audio.stt.generate import generate_transcription
+        python_example="""
+        from mlx_audio.stt.utils import load_model
+        from mlx_audio.stt.generate import generate_transcription
 
-            model = load_model("{repo}")
-            transcription = generate_transcription(
-                model=model,
-                audio_path="path_to_audio.wav",
-                output_path="path_to_output.txt",
-                format="txt",
-                verbose=True,
-            )
-            print(transcription.text)"""
-        ),
+        model = load_model("{repo}")
+        transcription = generate_transcription(
+            model=model,
+            audio_path="path_to_audio.wav",
+            output_path="path_to_output.txt",
+            format="txt",
+            verbose=True,
+        )
+        print(transcription.text)
+        """,
     ),
     Domain.STS: DomainConfig(
         name="STS",
@@ -91,14 +89,12 @@ DOMAIN_CONFIGS = {
             "sts",
         ],
         cli_example='python -m mlx_audio.sts.generate --model {repo} --audio "audio.wav"',
-        python_example=dedent(
-            """\
-            from mlx_audio.sts.utils import load_model
-
-            model = load_model("{repo}")
-            # Usage depends on the specific STS model type
-            # See model documentation for details"""
-        ),
+        python_example="""
+        from mlx_audio.sts.utils import load_model
+        model = load_model("{repo}")
+        # Usage depends on the specific STS model type
+        # See model documentation for details
+        """,
     ),
 }
 
@@ -401,7 +397,7 @@ def generate_readme_content(
         ```
 
         ### Python Example:
-        ```python
+        ```python\
         {config.python_example.format(repo=upload_repo)}
         ```
         """
