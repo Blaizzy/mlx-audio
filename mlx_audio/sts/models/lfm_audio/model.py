@@ -202,8 +202,6 @@ class AudioHead(nn.Module):
         """
         B, L, D = x.shape
 
-        x = self.in_proj(x)  # (B, L, 8192)
-
         x = x.reshape(B, L, self.num_codebooks, self.depthformer_dim)  # (B, L, 8, 1024)
         x = x.transpose(0, 2, 1, 3)  # (B, 8, L, 1024)
         x = x.reshape(B * self.num_codebooks, L, self.depthformer_dim)  # (B*8, L, 1024)
