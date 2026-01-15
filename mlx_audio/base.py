@@ -1,6 +1,7 @@
 import inspect
 from dataclasses import dataclass
 
+
 @dataclass
 class BaseModelArgs:
     @classmethod

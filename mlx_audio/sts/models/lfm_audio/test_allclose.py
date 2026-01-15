@@ -81,7 +81,9 @@ def test_rms_norm():
     mlx_np = np.array(mlx_output)
 
     # Basic sanity checks
-    assert mlx_np.shape == np_input.shape, f"Shape mismatch: {mlx_np.shape} vs {np_input.shape}"
+    assert (
+        mlx_np.shape == np_input.shape
+    ), f"Shape mismatch: {mlx_np.shape} vs {np_input.shape}"
 
     # Check normalization (RMS should be ~1)
     rms = np.sqrt(np.mean(mlx_np**2, axis=-1, keepdims=True))
@@ -115,7 +117,11 @@ def test_swiglu():
     mlx_output = mlx_swiglu(mlx_input)
     mx.eval(mlx_output)
 
-    assert mlx_output.shape == (batch, seq_len, dim), f"Shape mismatch: {mlx_output.shape}"
+    assert mlx_output.shape == (
+        batch,
+        seq_len,
+        dim,
+    ), f"Shape mismatch: {mlx_output.shape}"
     print(f"Input shape: {np_input.shape}")
     print(f"Output shape: {mlx_output.shape}")
     print("SwiGLU shape test: PASSED")
@@ -316,13 +322,13 @@ def test_full_model():
 
     import mlx.core as mx
 
+    from mlx_audio.sts.models.lfm_audio import LFM2AudioModel
     from mlx_audio.sts.models.lfm_audio.config import (
         ConformerEncoderConfig,
         DepthformerConfig,
         LFM2AudioConfig,
         LFM2Config,
     )
-    from mlx_audio.sts.models.lfm_audio import LFM2AudioModel
 
     # Small configs for testing
     lfm_config = LFM2Config(
@@ -389,6 +395,7 @@ def test_pretrained_model():
     print("=" * 60)
 
     import mlx.core as mx
+
     from mlx_audio.sts.models.lfm_audio import LFM2AudioModel
 
     print("Loading pretrained model...")
@@ -404,9 +411,17 @@ def test_pretrained_model():
     print(f"Audio logits count: {len(audio_logits)}")
 
     # Verify outputs
-    assert text_logits.shape == (1, 5, 65536), f"Unexpected text logits shape: {text_logits.shape}"
+    assert text_logits.shape == (
+        1,
+        5,
+        65536,
+    ), f"Unexpected text logits shape: {text_logits.shape}"
     assert len(audio_logits) == 8, f"Unexpected audio logits count: {len(audio_logits)}"
-    assert audio_logits[0].shape == (1, 5, 2049), f"Unexpected audio logits shape: {audio_logits[0].shape}"
+    assert audio_logits[0].shape == (
+        1,
+        5,
+        2049,
+    ), f"Unexpected audio logits shape: {audio_logits[0].shape}"
 
     # Check for NaN/Inf
     text_np = np.array(text_logits.astype(mx.float32))

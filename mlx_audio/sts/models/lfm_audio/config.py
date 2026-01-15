@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
+
 from mlx_lm.models.lfm2 import ModelArgs as LFM2Config
 
 from mlx_audio.base import BaseModelArgs
@@ -138,7 +139,16 @@ class LFM2AudioConfig(BaseModelArgs):
         config_dict = {
             k: v
             for k, v in config_dict.items()
-            if k not in ("preprocessor", "encoder", "lfm", "depthformer", "architectures", "quantization", "quantization_config")
+            if k
+            not in (
+                "preprocessor",
+                "encoder",
+                "lfm",
+                "depthformer",
+                "architectures",
+                "quantization",
+                "quantization_config",
+            )
         }
 
         return cls(

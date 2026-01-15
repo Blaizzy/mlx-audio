@@ -8,16 +8,12 @@ from .config import (
     LFM2Config,
     PreprocessorConfig,
 )
-from .model import LFM2AudioModel, LFMModality, GenerationConfig
-from .processor import (
-    AudioPreprocessor,
-    ChatState,
-    LFM2AudioProcessor,
-)
 from .detokenizer import LFM2AudioDetokenizer
+from .model import GenerationConfig, LFM2AudioModel, LFMModality
+from .processor import AudioPreprocessor, ChatState, LFM2AudioProcessor
 
-Model = LFM2AudioModel # Alias for LFM2AudioModel
-ModelConfig = LFM2AudioConfig # Alias for LFM2AudioConfig
+Model = LFM2AudioModel  # Alias for LFM2AudioModel
+ModelConfig = LFM2AudioConfig  # Alias for LFM2AudioConfig
 
 __all__ = [
     # Config

@@ -14,7 +14,7 @@ from huggingface_hub import snapshot_download
 
 from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
 from mlx_audio.codec.models.mimi.mimi import MimiConfig, mimi_202407
-from mlx_audio.dsp import mel_filters, stft, STR_TO_WINDOW_FN
+from mlx_audio.dsp import STR_TO_WINDOW_FN, mel_filters, stft
 
 from .config import LFM2AudioConfig, PreprocessorConfig
 from .detokenizer import LFM2AudioDetokenizer
@@ -25,6 +25,7 @@ class LFMModality(IntEnum):
 
     Note: Values 1, 2, 3 match PyTorch implementation (0 is reserved/unused).
     """
+
     TEXT = 1
     AUDIO_IN = 2
     AUDIO_OUT = 3
@@ -78,14 +79,15 @@ class AudioPreprocessor(nn.Module):
             # Add dithering
             waveform = audio[i]
             if self.config.dither > 0:
-                waveform = waveform + self.config.dither * mx.random.normal(waveform.shape)
+                waveform = waveform + self.config.dither * mx.random.normal(
+                    waveform.shape
+                )
 
             # Pre-emphasis high-pass filter: y[n] = x[n] - preemph * x[n-1]
             if self.config.preemph > 0:
-                waveform = mx.concatenate([
-                    waveform[:1],
-                    waveform[1:] - self.config.preemph * waveform[:-1]
-                ])
+                waveform = mx.concatenate(
+                    [waveform[:1], waveform[1:] - self.config.preemph * waveform[:-1]]
+                )
 
             # STFT (use constant padding to match PyTorch/NeMo)
             spec = stft(
@@ -123,7 +125,9 @@ class AudioPreprocessor(nn.Module):
                 valid_mel = mel_spec[:n]
                 mean = mx.mean(valid_mel, axis=0, keepdims=True)
                 # Bessel's correction: divide by (n-1) instead of n
-                variance = mx.sum((valid_mel - mean) ** 2, axis=0, keepdims=True) / (n - 1)
+                variance = mx.sum((valid_mel - mean) ** 2, axis=0, keepdims=True) / (
+                    n - 1
+                )
                 std = mx.sqrt(variance) + 1e-5
                 # Apply normalization to ALL frames (including last one)
                 mel_spec = (mel_spec - mean) / std
@@ -178,6 +182,7 @@ class LFM2AudioProcessor:
         if self._tokenizer is None:
             try:
                 from transformers import AutoTokenizer
+
                 self._tokenizer = AutoTokenizer.from_pretrained(
                     self.model_path,
                     trust_remote_code=True,
@@ -198,7 +203,9 @@ class LFM2AudioProcessor:
             cfg = mimi_202407(num_codebooks=32)
             self._mimi = Mimi(cfg)
             # Load pretrained weights
-            model_file =self.model_path / "tokenizer-e351c8d8-checkpoint125.safetensors"
+            model_file = (
+                self.model_path / "tokenizer-e351c8d8-checkpoint125.safetensors"
+            )
             # Use strict=False to skip training-only params (cluster_usage, embedding_sum, initialized)
             self._mimi.load_pytorch_weights(str(model_file), strict=False)
         return self._mimi
@@ -207,9 +214,7 @@ class LFM2AudioProcessor:
     def detokenizer(self) -> LFM2AudioDetokenizer:
         """Lazy load detokenizer with pretrained weights."""
         if self._detokenizer is None:
-            self._detokenizer = LFM2AudioDetokenizer.from_pretrained(
-                self.model_path
-            )
+            self._detokenizer = LFM2AudioDetokenizer.from_pretrained(self.model_path)
         return self._detokenizer
 
     @classmethod
@@ -256,7 +261,9 @@ class LFM2AudioProcessor:
         """
         # Resample if needed
         if sample_rate != self.config.preprocessor.sample_rate:
-            audio = self._resample(audio, sample_rate, self.config.preprocessor.sample_rate)
+            audio = self._resample(
+                audio, sample_rate, self.config.preprocessor.sample_rate
+            )
 
         return self.audio_preprocessor(audio)
 
@@ -286,7 +293,9 @@ class LFM2AudioProcessor:
 
         return codes
 
-    def decode_audio(self, codes: mx.array, codec: Optional[str] = "detokenizer") -> mx.array:
+    def decode_audio(
+        self, codes: mx.array, codec: Optional[str] = "detokenizer"
+    ) -> mx.array:
         """
         Decode audio codes to waveform using LFM2 detokenizer or Mimi codec.
 
@@ -303,7 +312,6 @@ class LFM2AudioProcessor:
             return self.mimi.decode(codes)
         else:
             raise ValueError(f"Invalid codec: {codec}")
-
 
     def tokenize_text(self, text: str) -> mx.array:
         """
@@ -369,8 +377,7 @@ class LFM2AudioProcessor:
         Returns:
             Decoded text string
         """
-        
-        
+
         if hasattr(tokens, "ndim"):
             tokens_ = tokens.squeeze().tolist() if tokens.ndim > 1 else tokens.tolist()
         elif isinstance(tokens, list):
@@ -454,7 +461,7 @@ class ChatState:
 
         # Add BOS token at the start (token ID 1)
         if add_bos:
-            bos_token_id = getattr(processor.tokenizer, 'bos_token_id', 1)
+            bos_token_id = getattr(processor.tokenizer, "bos_token_id", 1)
             if bos_token_id is not None:
                 self.text_tokens.append(bos_token_id)
                 self.modalities.append(LFMModality.TEXT)
@@ -476,7 +483,9 @@ class ChatState:
     def end_turn(self):
         """End the current turn."""
         # Add <|im_end|>\n
-        tokens = self.processor.tokenizer.encode("<|im_end|>\n", add_special_tokens=False)
+        tokens = self.processor.tokenizer.encode(
+            "<|im_end|>\n", add_special_tokens=False
+        )
         self.text_tokens.extend(tokens)
         # Add TEXT modality for each token (not based on difference, which breaks after audio)
         for _ in range(len(tokens)):
@@ -497,7 +506,9 @@ class ChatState:
         if self.audio_features is None:
             self.audio_features = features
         else:
-            self.audio_features = mx.concatenate([self.audio_features, features], axis=0)
+            self.audio_features = mx.concatenate(
+                [self.audio_features, features], axis=0
+            )
 
         # Calculate the actual encoder output length after subsampling
         # Subsampling uses 3 stride-2 convolutions with kernel=3, padding=1
@@ -507,8 +518,8 @@ class ChatState:
 
         mel_frames = features.shape[0]
         t = calc_conv_output(mel_frames)  # After first stride-2 conv
-        t = calc_conv_output(t)           # After second stride-2 conv
-        t = calc_conv_output(t)           # After third stride-2 conv
+        t = calc_conv_output(t)  # After second stride-2 conv
+        t = calc_conv_output(t)  # After third stride-2 conv
         num_frames = t
 
         for _ in range(num_frames):
@@ -540,11 +551,13 @@ class ChatState:
 
     def __iter__(self):
         """Allow unpacking for model input."""
-        return iter([
-            ("text_tokens", self.get_text_tokens()),
-            ("audio_features", self.get_audio_features()),
-            ("modalities", self.get_modalities()),
-        ])
+        return iter(
+            [
+                ("text_tokens", self.get_text_tokens()),
+                ("audio_features", self.get_audio_features()),
+                ("modalities", self.get_modalities()),
+            ]
+        )
 
     def items(self):
         """Dict-like items for model input."""

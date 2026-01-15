@@ -10,8 +10,6 @@ import mlx.nn as nn
 from .config import LFM2Config
 
 
-
-
 def precompute_freqs_cis(
     dim: int,
     max_seq_len: int,
@@ -223,12 +221,16 @@ class ConvBlock(nn.Module):
         # Handle caching for causal convolution
         if cache is not None:
             x_conv = mx.concatenate([cache, x_gated], axis=1)
-            new_cache = x_conv[:, -(self.kernel_size - 1):, :]
+            new_cache = x_conv[:, -(self.kernel_size - 1) :, :]
         else:
             # Pad for causal conv
             pad = mx.zeros((B, self.kernel_size - 1, D))
             x_conv = mx.concatenate([pad, x_gated], axis=1)
-            new_cache = x_gated[:, -(self.kernel_size - 1):, :] if L >= self.kernel_size - 1 else x_gated
+            new_cache = (
+                x_gated[:, -(self.kernel_size - 1) :, :]
+                if L >= self.kernel_size - 1
+                else x_gated
+            )
 
         # Apply convolution
         out = self.conv(x_conv)
@@ -256,7 +258,9 @@ class TransformerBlock(nn.Module):
     ):
         super().__init__()
         self.attn_norm = nn.RMSNorm(dim, eps=norm_eps)
-        self.attn = Attention(dim, num_heads, num_kv_heads, max_seq_len, rope_theta, use_qk_norm)
+        self.attn = Attention(
+            dim, num_heads, num_kv_heads, max_seq_len, rope_theta, use_qk_norm
+        )
         self.ffn_norm = nn.RMSNorm(dim, eps=norm_eps)
         self.ffn = SwiGLU(dim, ff_dim, multiple_of)
 

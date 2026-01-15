@@ -12,7 +12,6 @@ from .config import ConformerEncoderConfig
 
 class RelativePositionalEncoding(nn.Module):
 
-
     def __init__(self, d_model: int, max_len: int = 5000, xscale: bool = True):
         super().__init__()
         self.d_model = d_model
@@ -142,7 +141,6 @@ class ConformerConvolution(nn.Module):
 
 class RelativeMultiHeadAttention(nn.Module):
 
-
     def __init__(
         self,
         d_model: int,
@@ -225,23 +223,25 @@ class RelativeMultiHeadAttention(nn.Module):
             pos_emb = pos_emb[None, :, :]
         p = self.pos_proj(pos_emb).reshape(1, -1, self.num_heads, self.head_dim)
 
-        
         if self.pos_bias_u is not None:
-            q_with_bias_u = (q + self.pos_bias_u[None, None, :, :]).transpose(0, 2, 1, 3)
-            q_with_bias_v = (q + self.pos_bias_v[None, None, :, :]).transpose(0, 2, 1, 3)
+            q_with_bias_u = (q + self.pos_bias_u[None, None, :, :]).transpose(
+                0, 2, 1, 3
+            )
+            q_with_bias_v = (q + self.pos_bias_v[None, None, :, :]).transpose(
+                0, 2, 1, 3
+            )
         else:
             q_with_bias_u = q.transpose(0, 2, 1, 3)
             q_with_bias_v = q.transpose(0, 2, 1, 3)
 
         k = k.transpose(0, 2, 1, 3)
         v = v.transpose(0, 2, 1, 3)
-        p = p.transpose(0, 2, 1, 3)  
+        p = p.transpose(0, 2, 1, 3)
 
         matrix_ac = q_with_bias_u @ k.transpose(0, 1, 3, 2)
         matrix_bd = q_with_bias_v @ p.transpose(0, 1, 3, 2)
 
         matrix_bd = self._rel_shift(matrix_bd)
-
 
         scores = (matrix_ac + matrix_bd) * self.scale
 
@@ -279,7 +279,9 @@ class ConformerLayer(nn.Module):
         self.attn = RelativeMultiHeadAttention(d_model, num_heads, dropout_att)
 
         self.conv_norm = nn.LayerNorm(d_model)
-        self.conv = ConformerConvolution(d_model, conv_kernel_size, conv_norm_type, dropout)
+        self.conv = ConformerConvolution(
+            d_model, conv_kernel_size, conv_norm_type, dropout
+        )
 
         self.ff2_norm = nn.LayerNorm(d_model)
         self.ff2 = ConformerFeedForward(d_model, d_ff, dropout)
@@ -327,18 +329,39 @@ class ConvSubsampling(nn.Module):
         self.conv_channels = conv_channels
         self.in_channels = in_channels
 
-
         self.conv = [
-            nn.Conv2d(1, conv_channels, kernel_size=3, stride=2, padding=1),  # 0: standard conv
+            nn.Conv2d(
+                1, conv_channels, kernel_size=3, stride=2, padding=1
+            ),  # 0: standard conv
             None,  # 1 (ReLU)
-            nn.Conv2d(conv_channels, conv_channels, kernel_size=3, stride=2, padding=1, groups=conv_channels),  # 2
-            nn.Conv2d(conv_channels, conv_channels, kernel_size=1, stride=1, padding=0),  # 3
+            nn.Conv2d(
+                conv_channels,
+                conv_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                groups=conv_channels,
+            ),  # 2
+            nn.Conv2d(
+                conv_channels, conv_channels, kernel_size=1, stride=1, padding=0
+            ),  # 3
             None,  # 4 (ReLU)
-            nn.Conv2d(conv_channels, conv_channels, kernel_size=3, stride=2, padding=1, groups=conv_channels),  # 5
-            nn.Conv2d(conv_channels, conv_channels, kernel_size=1, stride=1, padding=0),  # 6
+            nn.Conv2d(
+                conv_channels,
+                conv_channels,
+                kernel_size=3,
+                stride=2,
+                padding=1,
+                groups=conv_channels,
+            ),  # 5
+            nn.Conv2d(
+                conv_channels, conv_channels, kernel_size=1, stride=1, padding=0
+            ),  # 6
         ]
 
-        self.out = nn.Linear(conv_channels * (in_channels // subsampling_factor), out_channels)
+        self.out = nn.Linear(
+            conv_channels * (in_channels // subsampling_factor), out_channels
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
         """
@@ -355,10 +378,10 @@ class ConvSubsampling(nn.Module):
 
         x = nn.relu(self.conv[0](x))  # (B, T/2, D/2, 256)
 
-        x = self.conv[2](x)           # (B, T/4, D/4, 256) - depthwise
+        x = self.conv[2](x)  # (B, T/4, D/4, 256) - depthwise
         x = nn.relu(self.conv[3](x))  # pointwise 1x1 + relu
 
-        x = self.conv[5](x)           # (B, T/8, D/8, 256) - depthwise
+        x = self.conv[5](x)  # (B, T/8, D/8, 256) - depthwise
         x = nn.relu(self.conv[6](x))  # pointwise 1x1 + relu
 
         B, T_out, D_out, C = x.shape
@@ -385,7 +408,9 @@ class ConformerEncoder(nn.Module):
             subsampling_type=config.subsampling,
         )
 
-        self.pos_enc = RelativePositionalEncoding(config.d_model, config.pos_emb_max_len, xscale=False)
+        self.pos_enc = RelativePositionalEncoding(
+            config.d_model, config.pos_emb_max_len, xscale=False
+        )
 
         # Pre-encoder dropout
         self.pre_dropout = nn.Dropout(config.dropout_pre_encoder)

@@ -15,13 +15,20 @@ from huggingface_hub import hf_hub_download
 @dataclass
 class DetokenizerConfig:
     """Configuration for LFM2 Audio Detokenizer."""
+
     hidden_size: int = 512
     num_hidden_layers: int = 8
     num_attention_heads: int = 16
     num_key_value_heads: int = 8
     layer_types: Tuple[str, ...] = (
-        "conv", "conv", "sliding_attention", "conv",
-        "sliding_attention", "conv", "sliding_attention", "conv"
+        "conv",
+        "conv",
+        "sliding_attention",
+        "conv",
+        "sliding_attention",
+        "conv",
+        "sliding_attention",
+        "conv",
     )
     sliding_window: int = 30
     intermediate_size: int = 2304  # Actually 2304 from weights
@@ -58,6 +65,7 @@ class FusedEmbedding(nn.Module):
 
     Maps tokens from each codebook to offset positions in a single large embedding table.
     """
+
     def __init__(self, num_codebooks: int, vocab_size: int, dim: int):
         super().__init__()
         self.num_codebooks = num_codebooks
@@ -87,6 +95,7 @@ class FusedEmbedding(nn.Module):
 
 class RMSNorm(nn.Module):
     """RMS normalization."""
+
     def __init__(self, dim: int, eps: float = 1e-5):
         super().__init__()
         self.eps = eps
@@ -107,13 +116,16 @@ class ConvLayer(nn.Module):
     4. C * conv_out: output gating
     5. out_proj: project back to dim
     """
+
     def __init__(self, dim: int):
         super().__init__()
         # in_proj splits into B, C, x (each dim)
         self.in_proj = nn.Linear(dim, dim * 3, bias=False)
         # Depthwise conv with kernel=3, padding=2 to match PyTorch's causal behavior
         # PyTorch pads 2 on each side, then truncates output to original length
-        self.conv = nn.Conv1d(dim, dim, kernel_size=3, padding=2, groups=dim, bias=False)
+        self.conv = nn.Conv1d(
+            dim, dim, kernel_size=3, padding=2, groups=dim, bias=False
+        )
         self.out_proj = nn.Linear(dim, dim, bias=False)
 
     def __call__(self, x: mx.array, mask: Optional[mx.array] = None) -> mx.array:
@@ -144,6 +156,7 @@ class ConvLayer(nn.Module):
 
 class SlidingWindowAttention(nn.Module):
     """Sliding window self-attention with RoPE."""
+
     def __init__(
         self,
         dim: int,
@@ -158,7 +171,7 @@ class SlidingWindowAttention(nn.Module):
         self.num_kv_heads = num_kv_heads
         self.head_dim = dim // num_heads
         self.sliding_window = sliding_window
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.k_proj = nn.Linear(dim, num_kv_heads * self.head_dim, bias=False)
@@ -195,14 +208,17 @@ class SlidingWindowAttention(nn.Module):
         # Split-half rotation (LLaMA style):
         # rotate_half(x) = [-x[D/2:], x[:D/2]]
         # out = x * cos + rotate_half(x) * sin
-        x1 = x[..., :D // 2]  # First half
-        x2 = x[..., D // 2:]  # Second half
+        x1 = x[..., : D // 2]  # First half
+        x2 = x[..., D // 2 :]  # Second half
 
         # Apply rotation
-        rotated = mx.concatenate([
-            x1 * cos[..., :D // 2] - x2 * sin[..., :D // 2],
-            x2 * cos[..., D // 2:] + x1 * sin[..., D // 2:]
-        ], axis=-1)
+        rotated = mx.concatenate(
+            [
+                x1 * cos[..., : D // 2] - x2 * sin[..., : D // 2],
+                x2 * cos[..., D // 2 :] + x1 * sin[..., D // 2 :],
+            ],
+            axis=-1,
+        )
 
         return rotated
 
@@ -249,6 +265,7 @@ class SlidingWindowAttention(nn.Module):
 
 class SwiGLU(nn.Module):
     """SwiGLU feedforward layer."""
+
     def __init__(self, dim: int, hidden_dim: int):
         super().__init__()
         self.w1 = nn.Linear(dim, hidden_dim, bias=False)
@@ -261,6 +278,7 @@ class SwiGLU(nn.Module):
 
 class DetokenizerBlock(nn.Module):
     """A block in the detokenizer (either conv or attention based)."""
+
     def __init__(
         self,
         dim: int,
@@ -307,6 +325,7 @@ class DetokenizerBlock(nn.Module):
 
 class LFMDetokenizerModel(nn.Module):
     """The LFM backbone for the detokenizer."""
+
     def __init__(self, config: DetokenizerConfig):
         super().__init__()
         self.config = config
@@ -320,16 +339,18 @@ class LFMDetokenizerModel(nn.Module):
         # Build layers based on layer_types
         self.layers = []
         for layer_type in config.layer_types:
-            self.layers.append(DetokenizerBlock(
-                dim=config.hidden_size,
-                hidden_dim=config.intermediate_size,
-                layer_type=layer_type,
-                num_heads=config.num_attention_heads,
-                num_kv_heads=config.num_key_value_heads,
-                sliding_window=config.sliding_window,
-                norm_eps=config.norm_eps,
-                rope_theta=config.rope_theta,
-            ))
+            self.layers.append(
+                DetokenizerBlock(
+                    dim=config.hidden_size,
+                    hidden_dim=config.intermediate_size,
+                    layer_type=layer_type,
+                    num_heads=config.num_attention_heads,
+                    num_kv_heads=config.num_key_value_heads,
+                    sliding_window=config.sliding_window,
+                    norm_eps=config.norm_eps,
+                    rope_theta=config.rope_theta,
+                )
+            )
 
     def __call__(self, x: mx.array, mask: Optional[mx.array] = None) -> mx.array:
         # Apply all layers first
@@ -389,7 +410,6 @@ class LFM2AudioDetokenizer(nn.Module):
 
         idx = mx.arange(T)
         d_idx = idx[:, None] - idx[None, :]  # (T, T)
-
 
         valid = (d_idx >= 0) & (d_idx < self.config.sliding_window)
         mask = mx.where(valid, 0.0, float("-inf"))
@@ -468,7 +488,6 @@ class LFM2AudioDetokenizer(nn.Module):
             # Transpose from (T, F) to (F, T) as expected by istft
             stft_item = stft_complex[b].transpose(1, 0)  # (F, T)
 
-    
             # normalized=True for COLA (window²) normalization to match PyTorch
             output = istft(
                 stft_item,
@@ -533,8 +552,15 @@ class LFM2AudioDetokenizer(nn.Module):
         quantization = config_dict.get("quantization", None)
         if quantization:
             from mlx_audio.convert import build_quant_predicate
+
             final_predicate = build_quant_predicate(model)
-            nn.quantize(model, group_size=quantization["group_size"], bits=quantization["bits"], mode=config_dict.get("quantization_mode", "affine"), class_predicate=final_predicate)
+            nn.quantize(
+                model,
+                group_size=quantization["group_size"],
+                bits=quantization["bits"],
+                mode=config_dict.get("quantization_mode", "affine"),
+                class_predicate=final_predicate,
+            )
 
         # Load into model
         model.load_weights(list(mapped_weights.items()))
@@ -551,6 +577,7 @@ class LFM2AudioDetokenizer(nn.Module):
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Map PyTorch weight names to MLX names."""
         from mlx_audio.base import check_array_shape
+
         mapped = {}
         for key, value in weights.items():
             if "conv.conv.weight" in key and not check_array_shape(value):

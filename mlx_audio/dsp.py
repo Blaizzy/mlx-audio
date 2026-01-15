@@ -204,7 +204,9 @@ def istft(
     window_sum = window_sum.at[indices_flat].add(updates_window)
 
     # normalize by the sum of (squared) window values
-    reconstructed = mx.where(window_sum > 1e-10, reconstructed / window_sum, reconstructed)
+    reconstructed = mx.where(
+        window_sum > 1e-10, reconstructed / window_sum, reconstructed
+    )
 
     if center and length is None:
         reconstructed = reconstructed[win_length // 2 : -win_length // 2]

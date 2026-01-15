@@ -46,7 +46,8 @@ DOMAIN_CONFIGS = {
         name="TTS",
         tags=["text-to-speech", "speech", "speech generation", "voice cloning", "tts"],
         cli_example='python -m mlx_audio.tts.generate --model {repo} --text "Hello, this is a test."',
-        python_example=dedent("""\
+        python_example=dedent(
+            """\
             from mlx_audio.tts.utils import load_model
             from mlx_audio.tts.generate import generate_audio
 
@@ -56,13 +57,15 @@ DOMAIN_CONFIGS = {
                 text="Hello, this is a test.",
                 ref_audio="path_to_audio.wav",
                 file_prefix="test_audio",
-            )"""),
+            )"""
+        ),
     ),
     Domain.STT: DomainConfig(
         name="STT",
         tags=["speech-to-text", "speech", "transcription", "asr", "stt"],
         cli_example='python -m mlx_audio.stt.generate --model {repo} --audio "audio.wav"',
-        python_example=dedent("""\
+        python_example=dedent(
+            """\
             from mlx_audio.stt.utils import load_model
             from mlx_audio.stt.generate import generate_transcription
 
@@ -74,7 +77,8 @@ DOMAIN_CONFIGS = {
                 format="txt",
                 verbose=True,
             )
-            print(transcription.text)"""),
+            print(transcription.text)"""
+        ),
     ),
     Domain.STS: DomainConfig(
         name="STS",
@@ -87,12 +91,14 @@ DOMAIN_CONFIGS = {
             "sts",
         ],
         cli_example='python -m mlx_audio.sts.generate --model {repo} --audio "audio.wav"',
-        python_example=dedent("""\
+        python_example=dedent(
+            """\
             from mlx_audio.sts.utils import load_model
 
             model = load_model("{repo}")
             # Usage depends on the specific STS model type
-            # See model documentation for details"""),
+            # See model documentation for details"""
+        ),
     ),
 }
 
@@ -111,9 +117,7 @@ def _discover_model_types(domain: str) -> set[str]:
     return {
         d.name
         for d in models_dir.iterdir()
-        if d.is_dir()
-        and not d.name.startswith("_")
-        and (d / "__init__.py").exists()
+        if d.is_dir() and not d.name.startswith("_") and (d / "__init__.py").exists()
     }
 
 
@@ -129,7 +133,9 @@ def _get_config_keys(config_class) -> set[str]:
     """Extract field names from a config class (dataclass or regular class)."""
     if is_dataclass(config_class):
         return {f.name for f in fields(config_class)}
-    return set(vars(config_class).keys()) if hasattr(config_class, "__dict__") else set()
+    return (
+        set(vars(config_class).keys()) if hasattr(config_class, "__dict__") else set()
+    )
 
 
 def _discover_detection_hints(domain: str) -> dict:
@@ -157,9 +163,13 @@ def _discover_detection_hints(domain: str) -> dict:
                 if "config_keys" in model_hints:
                     hints["config_keys"][model_type] = set(model_hints["config_keys"])
                 if "architectures" in model_hints:
-                    hints["architectures"][model_type] = set(model_hints["architectures"])
+                    hints["architectures"][model_type] = set(
+                        model_hints["architectures"]
+                    )
                 if "path_patterns" in model_hints:
-                    hints["path_patterns"][model_type] = set(model_hints["path_patterns"])
+                    hints["path_patterns"][model_type] = set(
+                        model_hints["path_patterns"]
+                    )
             else:
                 # Infer from ModelConfig if available
                 if hasattr(module, "ModelConfig"):
@@ -167,7 +177,10 @@ def _discover_detection_hints(domain: str) -> dict:
                     hints["config_keys"][model_type] = config_keys
 
                 # Use model_type as default path pattern
-                hints["path_patterns"][model_type] = {model_type, model_type.replace("_", "")}
+                hints["path_patterns"][model_type] = {
+                    model_type,
+                    model_type.replace("_", ""),
+                }
 
         except ImportError:
             continue
@@ -292,7 +305,6 @@ def detect_model_domain(config: dict, model_path: Path) -> Domain:
     if match:
         return match[0]
 
-
     # 2. Direct model_type/name match
     domain = _match_by_model_type(model_identifier)
     if domain:
@@ -302,7 +314,6 @@ def detect_model_domain(config: dict, model_path: Path) -> Domain:
     match = _match_by_config_keys(config)
     if match:
         return match[0]
-
 
     # Default to TTS
     return Domain.TTS
@@ -370,7 +381,8 @@ def generate_readme_content(
     tags = ["mlx"] + config.tags
     tags.append("mlx-audio")
 
-    content = dedent(f"""\
+    content = dedent(
+        f"""\
         # {upload_repo}
 
         This model was converted to MLX format from [`{hf_path}`](https://huggingface.co/{hf_path}) using mlx-audio version **{__version__}**.
@@ -392,7 +404,8 @@ def generate_readme_content(
         ```python
         {config.python_example.format(repo=upload_repo)}
         ```
-        """)
+        """
+    )
 
     return tags, content
 

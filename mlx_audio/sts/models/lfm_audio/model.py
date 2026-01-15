@@ -2,6 +2,7 @@
 # LFM2.5-Audio: Main model implementation
 
 import json
+import logging
 import math
 from dataclasses import dataclass
 from enum import IntEnum
@@ -11,20 +12,14 @@ from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-
-from .config import (
-    DepthformerConfig,
-    LFM2AudioConfig,
-
-)
-from .conformer import ConformerEncoder, MLP
-from .transformer import Depthformer
-from ....base import check_array_shape
+from mlx_lm.models.cache import ArraysCache, KVCache
 from mlx_lm.models.lfm2 import Lfm2Model
-from mlx_lm.models.cache import KVCache, ArraysCache
 
+from ....base import check_array_shape
+from .config import DepthformerConfig, LFM2AudioConfig
+from .conformer import MLP, ConformerEncoder
+from .transformer import Depthformer
 
-import logging
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 
@@ -33,6 +28,7 @@ class LFMModality(IntEnum):
 
     Note: Values 1, 2, 3 match PyTorch implementation (0 is reserved/unused).
     """
+
     TEXT = 1
     AUDIO_IN = 2
     AUDIO_OUT = 3
@@ -104,7 +100,9 @@ class AudioEmbedding(nn.Module):
         self.embedding = nn.Embedding(total_vocab, dim)
 
         # Precompute codebook offsets: [0, 2049, 4098, ...]
-        self._codebook_offsets = mx.array([i * vocab_size for i in range(num_codebooks)])
+        self._codebook_offsets = mx.array(
+            [i * vocab_size for i in range(num_codebooks)]
+        )
 
         self.embedding_norm = nn.RMSNorm(dim)
         self.to_logits = nn.Linear(dim, total_vocab, bias=False)
@@ -128,7 +126,6 @@ class AudioEmbedding(nn.Module):
         # codes[:, i] + i * vocab_size
         offset_codes = codes + self._codebook_offsets[:K]
 
- 
         # (B, K) -> (B, K, dim) -> sum over K -> (B, dim)
         embedded = self.embedding(offset_codes).sum(axis=1)
 
@@ -136,6 +133,7 @@ class AudioEmbedding(nn.Module):
             return embedded.squeeze(0)
 
         return embedded
+
 
 class AudioEmbeddingWithNorm(nn.Module):
 
@@ -158,8 +156,6 @@ class AudioEmbeddingWithNorm(nn.Module):
     def logits(self, x: mx.array) -> mx.array:
         """Project to vocabulary logits."""
         return self.to_logits(x)
-
-    
 
 
 class AudioHead(nn.Module):
@@ -186,7 +182,6 @@ class AudioHead(nn.Module):
             num_kv_heads=depthformer_config.num_kv_heads,
             tie=depthformer_config.tie,
         )
-
 
     def __call__(
         self,
@@ -246,16 +241,14 @@ class LFM2AudioModel(nn.Module):
             config.tie_audio_embeddings,
         )
 
- 
-        self.depth_embeddings =  [ 
-            AudioEmbeddingWithNorm(
-                config.audio_vocab_size,
-                config.depthformer.dim
-            ) for _ in range(config.codebooks) 
-         ]
+        self.depth_embeddings = [
+            AudioEmbeddingWithNorm(config.audio_vocab_size, config.depthformer.dim)
+            for _ in range(config.codebooks)
+        ]
 
-
-        self.depth_linear = nn.Linear(config.lfm.hidden_size, config.codebooks * config.depthformer.dim)
+        self.depth_linear = nn.Linear(
+            config.lfm.hidden_size, config.codebooks * config.depthformer.dim
+        )
 
         self.audio_head = AudioHead(
             config.lfm.hidden_size,
@@ -264,7 +257,6 @@ class LFM2AudioModel(nn.Module):
             config.audio_vocab_size,
             config.codebook_weight,
         )
-
 
     @classmethod
     def from_pretrained(
@@ -294,23 +286,20 @@ class LFM2AudioModel(nn.Module):
         # Create model
         model = cls(config)
 
-        
         weight_files = [
-            wf for wf in model_path.glob("*.safetensors")
-            if "tokenizer" not in wf.name
+            wf for wf in model_path.glob("*.safetensors") if "tokenizer" not in wf.name
         ]
         weights = {}
         if len(weight_files) > 0:
-        
+
             for wf in weight_files:
                 weights.update(mx.load(str(wf)))
         else:
             raise FileNotFoundError(f"No safetensors found in {model_path}")
 
         # Sanitize and load weights
-        
-        weights = model.sanitize(weights)
 
+        weights = model.sanitize(weights)
 
         for key, value in weights.items():
             if value.dtype == mx.float32:
@@ -321,9 +310,15 @@ class LFM2AudioModel(nn.Module):
 
         if quantization:
             from ....convert import build_quant_predicate
+
             final_predicate = build_quant_predicate(model)
-            nn.quantize(model, group_size=quantization["group_size"], bits=quantization["bits"], mode=config_dict.get("quantization_mode", "affine"), class_predicate=final_predicate)
-        
+            nn.quantize(
+                model,
+                group_size=quantization["group_size"],
+                bits=quantization["bits"],
+                mode=config_dict.get("quantization_mode", "affine"),
+                class_predicate=final_predicate,
+            )
 
         model.load_weights(list(weights.items()), strict=True)
 
@@ -342,12 +337,15 @@ class LFM2AudioModel(nn.Module):
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         import re
+
         sanitized = {}
 
         # Skip buffers and Mimi codec weights
         skip_keys = [
-            "audio_loss_weights", "codebook_offsets",
-            "downsample.", "upsample.",
+            "audio_loss_weights",
+            "codebook_offsets",
+            "downsample.",
+            "upsample.",
             ".num_batches_tracked",  # BatchNorm counter (not needed for inference)
             "pos_enc.pe",  # Positional encoding buffer (precomputed)
             ".freqs",  # RoPE frequencies (precomputed)
@@ -363,7 +361,6 @@ class LFM2AudioModel(nn.Module):
             # =========== Conformer Encoder ===========
             if key.startswith("conformer."):
                 new_key = key.replace("conformer.", "audio_encoder.")
-
 
                 # Layer norms
                 new_key = new_key.replace(".norm_feed_forward1.", ".ff1_norm.")
@@ -400,7 +397,7 @@ class LFM2AudioModel(nn.Module):
 
             # =========== Depthformer ===========
             elif key.startswith("depthformer."):
-   
+
                 match = re.match(r"depthformer\.layers\.(\d+)\.(.*)", key)
                 if match:
                     layer_idx = int(match.group(1))
@@ -408,7 +405,9 @@ class LFM2AudioModel(nn.Module):
 
                     # operator.qkv_proj -> split QKV
                     if rest == "operator.qkv_proj.weight":
-                        new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.qkv_weight"
+                        new_key = (
+                            f"audio_head.depthformer.blocks.{layer_idx}.attn.qkv_weight"
+                        )
                     elif rest == "operator.out_proj.weight":
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.attn.o_proj.weight"
                     elif rest == "operator.bounded_attention.q_layernorm.weight":
@@ -423,8 +422,6 @@ class LFM2AudioModel(nn.Module):
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.ffn_norm.{rest.split('.', 1)[1]}"
                     else:
                         new_key = f"audio_head.depthformer.blocks.{layer_idx}.{rest}"
-           
-
 
             sanitized[new_key] = value
 
@@ -440,8 +437,8 @@ class LFM2AudioModel(nn.Module):
                 kv_dim = 256  # 8 heads * 32 head_dim
 
                 q_weight = value[:q_dim, :]
-                k_weight = value[q_dim:q_dim + kv_dim, :]
-                v_weight = value[q_dim + kv_dim:, :]
+                k_weight = value[q_dim : q_dim + kv_dim, :]
+                v_weight = value[q_dim + kv_dim :, :]
 
                 base_key = key.replace(".qkv_weight", "")
                 keys_to_add[f"{base_key}.q_proj.weight"] = q_weight
@@ -459,9 +456,13 @@ class LFM2AudioModel(nn.Module):
             if "pointwise_conv" in key and "weight" in key and value.ndim == 3:
                 sanitized[key] = value if value.ndim == 2 else value.squeeze(-1)
             elif ("depthwise_conv" in key or ".conv.weight" in key) and value.ndim == 3:
-                sanitized[key] = value if check_array_shape(value) else value.transpose(0, 2, 1)
+                sanitized[key] = (
+                    value if check_array_shape(value) else value.transpose(0, 2, 1)
+                )
             elif "pre_encode.conv" in key and value.ndim == 4:
-                sanitized[key] = value if check_array_shape(value) else value.transpose(0, 2, 3, 1)  # NCHW -> NHWC
+                sanitized[key] = (
+                    value if check_array_shape(value) else value.transpose(0, 2, 3, 1)
+                )  # NCHW -> NHWC
 
         return sanitized
 
@@ -602,14 +603,15 @@ class LFM2AudioModel(nn.Module):
         if unique_mods == {LFMModality.AUDIO_IN} and audio_features is not None:
             return self._encode_audio(audio_features)[0]
 
-  
         text_emb = None
         if text_tokens is not None:
             text_emb = self._embed_text(text_tokens)  # (B, T_text, D)
 
         audio_embedding = None
         if audio_features is not None:
-            audio_embedding, _ = self._encode_audio(audio_features)  # (B, T_audio_in, D)
+            audio_embedding, _ = self._encode_audio(
+                audio_features
+            )  # (B, T_audio_in, D)
 
         audio_out_emb = None
         if audio_codes is not None:
@@ -637,19 +639,25 @@ class LFM2AudioModel(nn.Module):
             n_text = min(len(text_positions), text_emb.shape[1])
             for i in range(n_text):
                 pos = text_positions[i]
-                embeddings = embeddings.at[:, pos:pos+1, :].add(text_emb[:, i:i+1, :])
+                embeddings = embeddings.at[:, pos : pos + 1, :].add(
+                    text_emb[:, i : i + 1, :]
+                )
 
         if audio_embedding is not None and audio_in_positions:
             n_audio_in = min(len(audio_in_positions), audio_embedding.shape[1])
             for i in range(n_audio_in):
                 pos = audio_in_positions[i]
-                embeddings = embeddings.at[:, pos:pos+1, :].add(audio_embedding[:, i:i+1, :])
+                embeddings = embeddings.at[:, pos : pos + 1, :].add(
+                    audio_embedding[:, i : i + 1, :]
+                )
 
         if audio_out_emb is not None and audio_out_positions:
             n_audio_out = min(len(audio_out_positions), audio_out_emb.shape[1])
             for i in range(n_audio_out):
                 pos = audio_out_positions[i]
-                embeddings = embeddings.at[:, pos:pos+1, :].add(audio_out_emb[:, i:i+1, :])
+                embeddings = embeddings.at[:, pos : pos + 1, :].add(
+                    audio_out_emb[:, i : i + 1, :]
+                )
 
         return embeddings
 
@@ -670,7 +678,7 @@ class LFM2AudioModel(nn.Module):
             # Get indices that would sort the logits (descending)
             sorted_indices = mx.argsort(-logits, axis=-1)
             # Get the k-th largest value as threshold
-            kth_indices = sorted_indices[..., top_k - 1:top_k]
+            kth_indices = sorted_indices[..., top_k - 1 : top_k]
             kth_values = mx.take_along_axis(logits, kth_indices, axis=-1)
             # Mask out values below threshold
             logits = mx.where(logits >= kth_values, logits, float("-inf"))
@@ -727,13 +735,13 @@ class LFM2AudioModel(nn.Module):
 
             # Run through depthformer with caching
             depthformer_out, audio_cache = self.audio_head.depthformer(
-                cur_input,
-                cache=audio_cache,
-                use_cache=True
+                cur_input, cache=audio_cache, use_cache=True
             )
 
             # Get logits for this codebook
-            logits = self.depth_embeddings[i].logits(depthformer_out[:, -1, :])  # (B, vocab)
+            logits = self.depth_embeddings[i].logits(
+                depthformer_out[:, -1, :]
+            )  # (B, vocab)
 
             # Sample token
             if greedy:
@@ -744,7 +752,7 @@ class LFM2AudioModel(nn.Module):
                 # Top-k filtering
                 if top_k > 0 and top_k < logits.shape[-1]:
                     sorted_indices = mx.argsort(-logits, axis=-1)
-                    kth_indices = sorted_indices[:, top_k - 1:top_k]
+                    kth_indices = sorted_indices[:, top_k - 1 : top_k]
                     kth_values = mx.take_along_axis(logits, kth_indices, axis=-1)
                     logits = mx.where(logits >= kth_values, logits, float("-inf"))
 
@@ -754,7 +762,9 @@ class LFM2AudioModel(nn.Module):
             codes.append(code.squeeze(-1))
 
             # Get raw embedding for next codebook conditioning (no norm - matches PyTorch)
-            depthformer_token = self.depth_embeddings[i].embed_raw(code.squeeze(-1))  # (B, 1024)
+            depthformer_token = self.depth_embeddings[i].embed_raw(
+                code.squeeze(-1)
+            )  # (B, 1024)
 
         return mx.stack(codes, axis=-1), audio_cache
 
@@ -856,7 +866,9 @@ class LFM2AudioModel(nn.Module):
                 # Check for audio EOS
                 if audio_frame[0, 0].item() == AUDIO_EOS_TOKEN:
                     # Set all codebooks to EOS
-                    audio_frame = mx.full(audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype)
+                    audio_frame = mx.full(
+                        audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype
+                    )
                     yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
                     generated += 1
                     # If text is done, break after final audio EOS
@@ -979,13 +991,14 @@ class LFM2AudioModel(nn.Module):
                 # Check for audio EOS - switch back to text mode
                 if audio_frame[0, 0].item() == AUDIO_EOS_TOKEN:
                     # Set all codebooks to EOS
-                    audio_frame = mx.full(audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype)
+                    audio_frame = mx.full(
+                        audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype
+                    )
                     current_modality = LFMModality.TEXT
-
 
                 yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
 
-                # Embed and continue 
+                # Embed and continue
                 next_emb = self._embed_audio_out(audio_frame)[:, None, :]
                 last_hidden = self.lfm(
                     inputs=None,
