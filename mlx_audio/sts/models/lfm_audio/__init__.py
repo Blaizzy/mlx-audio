@@ -1,5 +1,4 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
-# LFM2.5-Audio: Liquid Foundation Model for Audio
 
 from .config import (
     ConformerEncoderConfig,
@@ -16,6 +15,9 @@ from .processor import (
     LFM2AudioProcessor,
 )
 from .detokenizer import LFM2AudioDetokenizer
+
+Model = LFM2AudioModel # Alias for LFM2AudioModel
+ModelConfig = LFM2AudioConfig # Alias for LFM2AudioConfig
 
 __all__ = [
     # Config
@@ -34,4 +36,6 @@ __all__ = [
     "AudioPreprocessor",
     "LFM2AudioDetokenizer",
     "ChatState",
+    "Model",
+    "ModelConfig",
 ]
