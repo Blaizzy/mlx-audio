@@ -280,9 +280,9 @@ class DetokenizerBlock(nn.Module):
 
         # Either conv or attention
         if layer_type == "conv":
-            self.operator = ConvLayer(dim)
+            self.conv = ConvLayer(dim)
         else:  # sliding_attention
-            self.operator = SlidingWindowAttention(
+            self.self_attn = SlidingWindowAttention(
                 dim, num_heads, num_kv_heads, sliding_window, rope_theta
             )
 
@@ -293,7 +293,8 @@ class DetokenizerBlock(nn.Module):
     def __call__(self, x: mx.array, mask: Optional[mx.array] = None) -> mx.array:
         # Operator (conv or attention) with residual
         h = self.operator_norm(x)
-        h = self.operator(h, mask)
+        h = self.conv(h, mask) if self.layer_type == "conv" else self.self_attn(h, mask)
+
         x = x + h
 
         # FFN with residual
@@ -527,7 +528,13 @@ class LFM2AudioDetokenizer(nn.Module):
         istft_window = weights.pop("istft.window", None)
 
         # Map weight names
-        mapped_weights = cls._map_weights(weights)
+        mapped_weights = cls.sanitize(weights)
+
+        quantization = config_dict.get("quantization", None)
+        if quantization:
+            from mlx_audio.convert import build_quant_predicate
+            final_predicate = build_quant_predicate(model)
+            nn.quantize(model, group_size=quantization["group_size"], bits=quantization["bits"], mode=config_dict.get("quantization_mode", "affine"), class_predicate=final_predicate)
 
         # Load into model
         model.load_weights(list(mapped_weights.items()))
@@ -541,25 +548,12 @@ class LFM2AudioDetokenizer(nn.Module):
         return model
 
     @staticmethod
-    def _map_weights(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+    def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Map PyTorch weight names to MLX names."""
+        from mlx_audio.base import check_array_shape
         mapped = {}
-
         for key, value in weights.items():
-            new_key = key
-
-            # Handle conv weight transpose: PyTorch (out, in/groups, k) -> MLX (out, k, in/groups)
-            if "conv.conv.weight" in key:
-                # (512, 1, 3) -> (512, 3, 1)
+            if "conv.conv.weight" in key and not check_array_shape(value):
                 value = value.transpose(0, 2, 1)
-
-            # Handle self_attn name mapping
-            new_key = new_key.replace("self_attn", "operator")
-
-            # Handle conv layer name mapping
-            if ".conv." in new_key and "layers" in new_key:
-                new_key = new_key.replace(".conv.", ".operator.")
-
-            mapped[new_key] = value
-
+            mapped[key] = value
         return mapped
