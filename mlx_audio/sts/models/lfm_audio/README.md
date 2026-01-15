@@ -28,40 +28,44 @@ from mlx_audio.sts.models.lfm_audio import (
     ChatState,
     LFMModality,
 )
+from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
 
 # Load model and processor
-model = LFM2AudioModel.from_pretrained("LiquidAI/LFM2.5-Audio-1.5B")
-processor = LFM2AudioProcessor.from_pretrained("LiquidAI/LFM2.5-Audio-1.5B")
+model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
+processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 
 # Create chat state
 chat = ChatState(processor)
 chat.new_turn("system")
-chat.add_text("Respond with audio.")
+chat.add_text("Perform TTS. Use a UK male voice.")
 chat.end_turn()
 chat.new_turn("user")
-chat.add_text("Say: Hello, welcome to MLX Audio!")
+chat.add_text("Hello, welcome to MLX Audio!")
 chat.end_turn()
 chat.new_turn("assistant")
 
 # Generate with interleaved text and audio
-text_out, audio_out = [], []
-for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=2048):
+audio_codes = []
+for token, modality in model.generate_sequential(
+    **dict(chat),
+    max_new_tokens=2048,
+    temperature=0.8,
+
+):
     mx.eval(token)
-    if modality == LFMModality.TEXT:
-        text_out.append(token)
-        print(processor.decode_text(token[None]), end="", flush=True)
-    else:
-        audio_out.append(token)
+    if modality == LFMModality.AUDIO_OUT:
+        if token[0].item() == AUDIO_EOS_TOKEN:
+            break
+        audio_codes.append(token)
 
-# Decode audio - each token is (8,) for all codebooks
-if audio_out:
-    audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]  # (1, 8, T)
-    waveform = processor.decode_with_detokenizer(audio_codes)
-    # Or use Mimi codec: waveform = processor.decode_audio(audio_codes[0])
+# Decode audio
+audio_codes = mx.stack(audio_codes, axis=0)[None, :].transpose(0, 2, 1)
+waveform = processor.decode_audio(audio_codes)
 
-    # Save audio (24kHz sample rate)
-    import soundfile as sf
-    sf.write("output.wav", waveform[0].tolist(), 24000)
+# Save audio (24kHz sample rate)
+import soundfile as sf
+sf.write("output.wav", waveform[0].tolist(), model.sample_rate)
+
 ```
 
 ### Speech-to-Text (ASR)
@@ -78,8 +82,8 @@ from mlx_audio.sts.models.lfm_audio import (
 )
 
 # Load model and processor
-model = LFM2AudioModel.from_pretrained("LiquidAI/LFM2.5-Audio-1.5B")
-processor = LFM2AudioProcessor.from_pretrained("LiquidAI/LFM2.5-Audio-1.5B")
+model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
+processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 
 # Load audio (must be 24kHz for audio input)
 audio, sr = sf.read("input.wav")
@@ -116,8 +120,8 @@ from mlx_audio.sts.models.lfm_audio import (
 )
 
 # Load model and processor
-model = LFM2AudioModel.from_pretrained("LiquidAI/LFM2.5-Audio-1.5B")
-processor = LFM2AudioProcessor.from_pretrained("LiquidAI/LFM2.5-Audio-1.5B")
+model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
+processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 
 # Load input audio (24kHz)
 audio, sr = sf.read("input.wav")
