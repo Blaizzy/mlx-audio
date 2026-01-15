@@ -18,7 +18,7 @@ from .config import (
 
 )
 from .conformer import ConformerEncoder, MLP
-from .transformer import Depthformer, RMSNorm
+from .transformer import Depthformer
 from ....base import check_array_shape
 from mlx_lm.models.lfm2 import Lfm2Model
 from mlx_lm.models.cache import KVCache, ArraysCache
@@ -62,7 +62,7 @@ class AudioEmbeddingWithNorm(nn.Module):
         self.vocab_size = vocab_size
         self.dim = dim
         self.embedding = nn.Embedding(vocab_size, dim)
-        self.embedding_norm = RMSNorm(dim)
+        self.embedding_norm = nn.RMSNorm(dim)
         self.to_logits = nn.Linear(dim, vocab_size, bias=False)
 
     def embed(self, x: mx.array) -> mx.array:
@@ -106,7 +106,7 @@ class AudioEmbedding(nn.Module):
         # Precompute codebook offsets: [0, 2049, 4098, ...]
         self._codebook_offsets = mx.array([i * vocab_size for i in range(num_codebooks)])
 
-        self.embedding_norm = RMSNorm(dim)
+        self.embedding_norm = nn.RMSNorm(dim)
         self.to_logits = nn.Linear(dim, total_vocab, bias=False)
 
     def __call__(self, codes: mx.array) -> mx.array:
@@ -144,7 +144,7 @@ class AudioEmbeddingWithNorm(nn.Module):
         self.vocab_size = vocab_size
         self.dim = dim
         self.embedding = nn.Embedding(vocab_size, dim)
-        self.embedding_norm = RMSNorm(dim)
+        self.embedding_norm = nn.RMSNorm(dim)
         self.to_logits = nn.Linear(dim, vocab_size, bias=False)
 
     def embed(self, x: mx.array) -> mx.array:

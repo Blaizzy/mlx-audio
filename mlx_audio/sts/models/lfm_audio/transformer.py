@@ -10,17 +10,6 @@ import mlx.nn as nn
 from .config import LFM2Config
 
 
-class RMSNorm(nn.Module):
-    """Root Mean Square Layer Normalization."""
-
-    def __init__(self, dim: int, eps: float = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.scale = mx.ones((dim,))
-
-    def __call__(self, x: mx.array) -> mx.array:
-        rms = mx.sqrt(mx.mean(x * x, axis=-1, keepdims=True) + self.eps)
-        return x / rms * self.scale
 
 
 def precompute_freqs_cis(
@@ -121,8 +110,8 @@ class Attention(nn.Module):
 
         # Optional Q/K layer norms (bounded attention)
         if use_qk_norm:
-            self.q_norm = RMSNorm(self.head_dim)
-            self.k_norm = RMSNorm(self.head_dim)
+            self.q_norm = nn.RMSNorm(self.head_dim)
+            self.k_norm = nn.RMSNorm(self.head_dim)
 
         # RoPE frequencies
         self._freqs = precompute_freqs_cis(self.head_dim, max_seq_len, rope_theta)
@@ -266,9 +255,9 @@ class TransformerBlock(nn.Module):
         use_qk_norm: bool = True,
     ):
         super().__init__()
-        self.attn_norm = RMSNorm(dim, eps=norm_eps)
+        self.attn_norm = nn.RMSNorm(dim, eps=norm_eps)
         self.attn = Attention(dim, num_heads, num_kv_heads, max_seq_len, rope_theta, use_qk_norm)
-        self.ffn_norm = RMSNorm(dim, eps=norm_eps)
+        self.ffn_norm = nn.RMSNorm(dim, eps=norm_eps)
         self.ffn = SwiGLU(dim, ff_dim, multiple_of)
 
     def __call__(
@@ -300,9 +289,9 @@ class ConvTransformerBlock(nn.Module):
         bias: bool = False,
     ):
         super().__init__()
-        self.conv_norm = RMSNorm(dim, eps=norm_eps)
+        self.conv_norm = nn.RMSNorm(dim, eps=norm_eps)
         self.conv = ConvBlock(dim, kernel_size, bias)
-        self.ffn_norm = RMSNorm(dim, eps=norm_eps)
+        self.ffn_norm = nn.RMSNorm(dim, eps=norm_eps)
         self.ffn = SwiGLU(dim, ff_dim, multiple_of)
 
     def __call__(
