@@ -348,9 +348,6 @@ class LFM2AudioModel(nn.Module):
         skip_keys = [
             "audio_loss_weights", "codebook_offsets",
             "downsample.", "upsample.",
-            "quantizer.",  # Mimi quantizer
-            "encoder_transformer.", "decoder_transformer.",  # Mimi transformers
-            "encoder.", "decoder.",  # Mimi encoder/decoder
             ".num_batches_tracked",  # BatchNorm counter (not needed for inference)
             "pos_enc.pe",  # Positional encoding buffer (precomputed)
             ".freqs",  # RoPE frequencies (precomputed)
@@ -401,9 +398,6 @@ class LFM2AudioModel(nn.Module):
 
             # =========== LFM Backbone ===========
             elif key.startswith("lfm."):
-
-                # Feed forward mapping for SwiGLU (w1=gate, w3=up, w2=down)
-                # Checkpoint uses: linear1=gate, linear2=down, linear3=up
                 new_key = new_key.replace(".feed_forward.linear1.", ".feed_forward.w1.")
                 new_key = new_key.replace(".feed_forward.linear2.", ".feed_forward.w2.")
                 new_key = new_key.replace(".feed_forward.linear3.", ".feed_forward.w3.")
