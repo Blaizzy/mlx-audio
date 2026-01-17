@@ -301,57 +301,59 @@ For real-time streaming output, use `separate_streaming()` which processes audio
 Returns `SeparationResult` objects with streaming-specific fields:
 
 ```python
-import soundfile as sf
+from mlx_audio.audio_io import write as audio_write
 import numpy as np
 
-with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
-     sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
+target_chunks = []
+residual_chunks = []
 
-    for result in model.separate_streaming(
-        audios=["audio.mp3"],         # File paths or mx.array
-        descriptions=["speech"],
-        chunk_seconds=10.0,
-        overlap_seconds=3.0,
-        verbose=True,
-    ):
-        t_f.write(np.array(result.target[:, 0]))
-        r_f.write(np.array(result.residual[:, 0]))
-        t_f.flush()
-        r_f.flush()
-        print(f"Chunk {result.chunk_idx} written, is_last={result.is_last}")
+for result in model.separate_streaming(
+    audios=["audio.mp3"],         # File paths or mx.array
+    descriptions=["speech"],
+    chunk_seconds=10.0,
+    overlap_seconds=3.0,
+    verbose=True,
+):
+    target_chunks.append(np.array(result.target[:, 0]))
+    residual_chunks.append(np.array(result.residual[:, 0]))
+    print(f"Chunk {result.chunk_idx} processed, is_last={result.is_last}")
 
-        # On last chunk, access metadata
-        if result.is_last:
-            print(f"Peak memory: {result.peak_memory:.2f} GB")
-            print(f"Noise shape: {result.noise.shape}")
+    # On last chunk, access metadata
+    if result.is_last:
+        print(f"Peak memory: {result.peak_memory:.2f} GB")
+        print(f"Noise shape: {result.noise.shape}")
+
+audio_write('target.wav', np.concatenate(target_chunks), 48000)
+audio_write('residual.wav', np.concatenate(residual_chunks), 48000)
 ```
 
 ### Callback Mode
 
 ```python
-import soundfile as sf
+from mlx_audio.audio_io import write as audio_write
 import numpy as np
 
-with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \
-     sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
+target_chunks = []
+residual_chunks = []
 
-    def write_target(chunk, idx, is_last):
-        t_f.write(np.array(chunk[:, 0]))
-        t_f.flush()
+def collect_target(chunk, idx, is_last):
+    target_chunks.append(np.array(chunk[:, 0]))
 
-    def write_residual(chunk, idx, is_last):
-        r_f.write(np.array(chunk[:, 0]))
-        r_f.flush()
+def collect_residual(chunk, idx, is_last):
+    residual_chunks.append(np.array(chunk[:, 0]))
 
-    samples = model.separate_streaming(
-        audios=["audio.mp3"],         # File paths or mx.array
-        descriptions=["speech"],
-        target_callback=write_target,
-        residual_callback=write_residual,
-        chunk_seconds=10.0,
-        verbose=True,
-    )
-    print(f"Wrote {samples} samples")
+samples = model.separate_streaming(
+    audios=["audio.mp3"],         # File paths or mx.array
+    descriptions=["speech"],
+    target_callback=collect_target,
+    residual_callback=collect_residual,
+    chunk_seconds=10.0,
+    verbose=True,
+)
+print(f"Processed {samples} samples")
+
+audio_write('target.wav', np.concatenate(target_chunks), 48000)
+audio_write('residual.wav', np.concatenate(residual_chunks), 48000)
 ```
 
 ### Parameters

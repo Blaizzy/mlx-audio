@@ -293,6 +293,21 @@ for try await chunk in session.stream(text: "Streaming audio...") {
 - Python 3.9+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
+- **ffmpeg** (required for MP3/FLAC audio encoding)
+
+### Installing ffmpeg
+
+ffmpeg is required for saving audio in MP3 or FLAC format. Install it using:
+
+```bash
+# macOS (using Homebrew)
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt install ffmpeg
+```
+
+WAV format works without ffmpeg.
 
 ## License
 

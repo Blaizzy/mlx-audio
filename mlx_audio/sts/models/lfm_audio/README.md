@@ -63,8 +63,8 @@ audio_codes = mx.stack(audio_codes, axis=0)[None, :].transpose(0, 2, 1)
 waveform = processor.decode_audio(audio_codes)
 
 # Save audio (24kHz sample rate)
-import soundfile as sf
-sf.write("output.wav", waveform[0].tolist(), model.sample_rate)
+from mlx_audio.audio_io import write as audio_write
+audio_write("output.wav", waveform[0].tolist(), model.sample_rate)
 
 ```
 
@@ -73,7 +73,7 @@ sf.write("output.wav", waveform[0].tolist(), model.sample_rate)
 ```python
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
+from mlx_audio.audio_io import read as audio_read
 from mlx_audio.sts.models.lfm_audio import (
     LFM2AudioModel,
     LFM2AudioProcessor,
@@ -86,7 +86,7 @@ model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 
 # Load audio (must be 24kHz for audio input)
-audio, sr = sf.read("input.wav")
+audio, sr = audio_read("input.wav")
 audio = mx.array(audio.astype(np.float32))
 
 # Create chat state with audio input
@@ -111,7 +111,7 @@ for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=5
 ```python
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
+from mlx_audio.audio_io import read as audio_read, write as audio_write
 from mlx_audio.sts.models.lfm_audio import (
     LFM2AudioModel,
     LFM2AudioProcessor,
@@ -124,7 +124,7 @@ model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 
 # Load input audio (24kHz)
-audio, sr = sf.read("input.wav")
+audio, sr = audio_read("input.wav")
 audio = mx.array(audio.astype(np.float32))
 
 # Create chat state with audio input
@@ -151,7 +151,7 @@ for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=2
 if audio_out:
     audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]  # (1, 8, T)
     waveform = processor.decode_with_detokenizer(audio_codes)
-    sf.write("response.wav", waveform[0].tolist(), 24000)
+    audio_write("response.wav", waveform[0].tolist(), 24000)
 ```
 
 ## Interleaved Text and Audio Generation

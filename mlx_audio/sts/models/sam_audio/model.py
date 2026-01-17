@@ -819,24 +819,25 @@ class SAMAudio(nn.Module):
 
         Example (Generator mode):
             ```python
-            import soundfile as sf
+            from mlx_audio.audio_io import write as audio_write
             import numpy as np
 
-            with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \\
-                 sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
+            target_chunks = []
+            residual_chunks = []
 
-                for chunk in model.separate_streaming(
-                    audios, descriptions,
-                    chunk_seconds=10.0,
-                    verbose=True,
-                ):
-                    t_f.write(np.array(chunk.target[:, 0]))
-                    r_f.write(np.array(chunk.residual[:, 0]))
-                    t_f.flush()
-                    r_f.flush()
+            for chunk in model.separate_streaming(
+                audios, descriptions,
+                chunk_seconds=10.0,
+                verbose=True,
+            ):
+                target_chunks.append(np.array(chunk.target[:, 0]))
+                residual_chunks.append(np.array(chunk.residual[:, 0]))
 
-                    if chunk.is_last:
-                        print(f"Peak memory: {chunk.peak_memory:.2f} GB")
+                if chunk.is_last:
+                    print(f"Peak memory: {chunk.peak_memory:.2f} GB")
+
+            audio_write('target.wav', np.concatenate(target_chunks), 48000)
+            audio_write('residual.wav', np.concatenate(residual_chunks), 48000)
             ```
 
         Example (Callback mode):

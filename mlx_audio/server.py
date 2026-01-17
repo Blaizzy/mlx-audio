@@ -20,7 +20,6 @@ from urllib.parse import unquote
 
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
 import uvicorn
 import webrtcvad
 from fastapi import (
@@ -37,6 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from mlx_audio.audio_io import read as audio_read
+from mlx_audio.audio_io import write as audio_write
 from mlx_audio.utils import load_model
 
 
@@ -251,7 +252,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
 
         sample_rate = result.sample_rate
         buffer = io.BytesIO()
-        sf.write(buffer, result.audio, sample_rate, format=payload.response_format)
+        audio_write(buffer, result.audio, sample_rate, format=payload.response_format)
         buffer.seek(0)
         yield buffer.getvalue()
 
@@ -278,10 +279,10 @@ async def stt_transcriptions(
     """Transcribe audio using an STT model in OpenAI format."""
     data = await file.read()
     tmp = io.BytesIO(data)
-    audio, sr = sf.read(tmp, always_2d=False)
+    audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
     tmp_path = f"/tmp/{time.time()}.mp3"
-    sf.write(tmp_path, audio, sr)
+    audio_write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(model)
     result = stt_model.generate(tmp_path)
@@ -449,7 +450,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
                     # Save to temporary file for processing
                     tmp_path = f"/tmp/realtime_initial_{time.time()}.mp3"
-                    sf.write(tmp_path, audio_array, sample_rate)
+                    audio_write(tmp_path, audio_array, sample_rate)
 
                     try:
                         # Generate transcription for initial chunk
@@ -504,7 +505,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
                     # Save to temporary file for processing
                     tmp_path = f"/tmp/realtime_{time.time()}.mp3"
-                    sf.write(tmp_path, audio_array, sample_rate)
+                    audio_write(tmp_path, audio_array, sample_rate)
 
                     try:
                         # Generate transcription

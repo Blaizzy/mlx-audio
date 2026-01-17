@@ -3,8 +3,9 @@ import argparse
 import mlx.core as mx
 import numpy as np
 import silentcipher
-import soundfile as sf
 from scipy import signal
+
+from mlx_audio.audio_io import read as audio_read
 
 # This watermark key is public, it is not secure.
 # If using CSM 1B in another application, use a new private key and keep it secret.
@@ -89,7 +90,7 @@ def check_audio_from_file(audio_path: str) -> None:
 
 
 def load_audio(audio_path: str) -> tuple[mx.array, int]:
-    audio_array_np, sample_rate = sf.read(audio_path, always_2d=True)
+    audio_array_np, sample_rate = audio_read(audio_path, always_2d=True)
 
     if audio_array_np.shape[1] > 1:
         audio_array_np = audio_array_np.mean(axis=1)

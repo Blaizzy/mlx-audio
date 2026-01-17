@@ -526,6 +526,8 @@ class Model(nn.Module):
         .. deprecated::
             Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
         """
+        import glob
+
         warnings.warn(
             "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
             DeprecationWarning,
@@ -541,12 +543,12 @@ class Model(nn.Module):
             config.pop("model_type", None)
             quantization = config.pop("quantization", None)
 
-        model_args = ModelDimensions(**config)
+        model_args = ModelDimensions.from_dict(config)
 
-        wf = model_path / "weights.safetensors"
-        if not wf.exists():
-            wf = model_path / "weights.npz"
-        weights = mx.load(str(wf))
+        wf = glob.glob(str(model_path / "*.safetensors"))
+        weights = {}
+        for wf in wf:
+            weights.update(mx.load(wf))
 
         model = Model(model_args, dtype)
 

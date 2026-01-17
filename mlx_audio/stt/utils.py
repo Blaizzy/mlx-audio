@@ -46,9 +46,9 @@ def load_audio(
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
-    import soundfile as sf
+    from mlx_audio.audio_io import read as audio_read
 
-    audio, sample_rate = sf.read(file, always_2d=True)
+    audio, sample_rate = audio_read(file, always_2d=True)
     if sample_rate != sr:
         audio = resample_audio(audio, sample_rate, sr)
     return mx.array(audio, dtype=dtype).mean(axis=1)
