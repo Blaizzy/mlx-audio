@@ -6,9 +6,109 @@ from typing import Union
 
 import mlx.core as mx
 import numpy as np
-from librosa.filters import mel as librosa_mel_fn
 
 logger = logging.getLogger(__name__)
+
+
+def _hz_to_mel(freq: np.ndarray, htk: bool = False) -> np.ndarray:
+    """Convert Hz to Mel scale."""
+    if htk:
+        return 2595.0 * np.log10(1.0 + freq / 700.0)
+    # Slaney formula
+    f_min = 0.0
+    f_sp = 200.0 / 3
+    min_log_hz = 1000.0
+    min_log_mel = (min_log_hz - f_min) / f_sp
+    logstep = np.log(6.4) / 27.0
+
+    mels = np.where(
+        freq >= min_log_hz,
+        min_log_mel + np.log(freq / min_log_hz) / logstep,
+        (freq - f_min) / f_sp,
+    )
+    return mels
+
+
+def _mel_to_hz(mel: np.ndarray, htk: bool = False) -> np.ndarray:
+    """Convert Mel scale to Hz."""
+    if htk:
+        return 700.0 * (10.0 ** (mel / 2595.0) - 1.0)
+    # Slaney formula
+    f_min = 0.0
+    f_sp = 200.0 / 3
+    min_log_hz = 1000.0
+    min_log_mel = (min_log_hz - f_min) / f_sp
+    logstep = np.log(6.4) / 27.0
+
+    freqs = np.where(
+        mel >= min_log_mel,
+        min_log_hz * np.exp(logstep * (mel - min_log_mel)),
+        f_min + f_sp * mel,
+    )
+    return freqs
+
+
+def _mel_filterbank(
+    sr: int,
+    n_fft: int,
+    n_mels: int = 128,
+    fmin: float = 0.0,
+    fmax: float = None,
+    htk: bool = False,
+    norm: str = "slaney",
+) -> np.ndarray:
+    """
+    Create a mel filterbank matrix.
+
+    This is a pure numpy implementation matching librosa.filters.mel.
+
+    Args:
+        sr: Sample rate
+        n_fft: FFT size
+        n_mels: Number of mel bands
+        fmin: Minimum frequency
+        fmax: Maximum frequency (defaults to sr/2)
+        htk: Use HTK formula for mel scale
+        norm: Normalization type ('slaney' or None)
+
+    Returns:
+        Mel filterbank matrix of shape (n_mels, n_fft // 2 + 1)
+    """
+    if fmax is None:
+        fmax = sr / 2.0
+
+    # FFT frequency bins
+    n_fft_bins = 1 + n_fft // 2
+    fft_freqs = np.linspace(0, sr / 2, n_fft_bins)
+
+    # Mel frequency points
+    mel_min = _hz_to_mel(np.array([fmin]), htk=htk)[0]
+    mel_max = _hz_to_mel(np.array([fmax]), htk=htk)[0]
+    mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+    hz_points = _mel_to_hz(mel_points, htk=htk)
+
+    # Create filterbank
+    filterbank = np.zeros((n_mels, n_fft_bins))
+
+    for i in range(n_mels):
+        # Left slope
+        left = hz_points[i]
+        center = hz_points[i + 1]
+        right = hz_points[i + 2]
+
+        # Rising slope
+        up_slope = (fft_freqs - left) / (center - left + 1e-10)
+        # Falling slope
+        down_slope = (right - fft_freqs) / (right - center + 1e-10)
+
+        filterbank[i] = np.maximum(0, np.minimum(up_slope, down_slope))
+
+    if norm == "slaney":
+        # Slaney-style normalization: divide by bandwidth
+        enorm = 2.0 / (hz_points[2 : n_mels + 2] - hz_points[:n_mels])
+        filterbank *= enorm[:, np.newaxis]
+
+    return filterbank
 
 
 @lru_cache(maxsize=10)
@@ -20,7 +120,7 @@ def get_mel_basis(
     fmax: int,
 ) -> np.ndarray:
     """Get cached mel filter bank."""
-    mel = librosa_mel_fn(
+    mel = _mel_filterbank(
         sr=sampling_rate,
         n_fft=n_fft,
         n_mels=num_mels,

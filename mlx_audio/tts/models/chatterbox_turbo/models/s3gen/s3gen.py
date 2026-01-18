@@ -3,10 +3,10 @@
 import logging
 from typing import Dict, Optional, Tuple
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from scipy import signal
 
 from .decoder import ConditionalDecoder
 from .encoder import UpsampleConformerEncoder
@@ -24,9 +24,106 @@ S3GEN_SIL = 4299  # Silence token
 SPEECH_VOCAB_SIZE = 6561
 
 
+def _resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Resample audio using scipy's polyphase resampling."""
+    if orig_sr == target_sr:
+        return audio
+    gcd = np.gcd(orig_sr, target_sr)
+    up = target_sr // gcd
+    down = orig_sr // gcd
+    return signal.resample_poly(audio, up, down, padtype="edge")
+
+
 def drop_invalid_tokens(x: mx.array) -> mx.array:
     """Remove tokens outside valid vocabulary."""
     return x[x < SPEECH_VOCAB_SIZE]
+
+
+def remove_dc_offset(audio: np.ndarray) -> np.ndarray:
+    """Remove DC offset from audio to prevent clicks/pops."""
+    return audio - np.mean(audio)
+
+
+def apply_highpass_filter(
+    audio: np.ndarray, sr: int = S3GEN_SR, cutoff: float = 20.0
+) -> np.ndarray:
+    """
+    Apply a simple highpass filter to remove sub-bass rumble.
+    Uses a first-order IIR filter for efficiency.
+
+    Args:
+        audio: Audio samples
+        sr: Sample rate
+        cutoff: Cutoff frequency in Hz (default 20Hz)
+
+    Returns:
+        Filtered audio
+    """
+    # First-order highpass filter coefficient
+    rc = 1.0 / (2.0 * np.pi * cutoff)
+    dt = 1.0 / sr
+    alpha = rc / (rc + dt)
+
+    # Apply filter
+    filtered = np.zeros_like(audio)
+    filtered[0] = audio[0]
+    for i in range(1, len(audio)):
+        filtered[i] = alpha * (filtered[i - 1] + audio[i] - audio[i - 1])
+
+    return filtered
+
+
+def soft_clip(audio: np.ndarray, threshold: float = 0.95) -> np.ndarray:
+    """
+    Apply soft clipping to prevent harsh distortion.
+    Uses tanh-based soft limiting above threshold.
+
+    Args:
+        audio: Audio samples
+        threshold: Threshold above which soft clipping is applied
+
+    Returns:
+        Soft-clipped audio
+    """
+    # Scale so threshold maps to tanh input of 1
+    scale = 1.0 / threshold
+    return np.tanh(audio * scale) * threshold
+
+
+def smooth_audio(
+    audio: np.ndarray,
+    sr: int = S3GEN_SR,
+    remove_dc: bool = True,
+    highpass: bool = True,
+    highpass_cutoff: float = 20.0,
+    soft_limit: bool = True,
+    limit_threshold: float = 0.95,
+) -> np.ndarray:
+    """
+    Apply audio smoothing to reduce artifacts.
+
+    Args:
+        audio: Audio samples (numpy array)
+        sr: Sample rate
+        remove_dc: Whether to remove DC offset
+        highpass: Whether to apply highpass filter
+        highpass_cutoff: Highpass filter cutoff frequency
+        soft_limit: Whether to apply soft limiting
+        limit_threshold: Soft limiting threshold
+
+    Returns:
+        Smoothed audio
+    """
+    if remove_dc:
+        audio = remove_dc_offset(audio)
+
+    if highpass:
+        audio = apply_highpass_filter(audio, sr, highpass_cutoff)
+
+    if soft_limit:
+        audio = soft_clip(audio, limit_threshold)
+
+    return audio
 
 
 class S3Token2Mel(nn.Module):
@@ -120,9 +217,7 @@ class S3Token2Mel(nn.Module):
         # Resample to 24kHz for mel extraction
         ref_wav_np = np.array(ref_wav[0])
         if ref_sr != S3GEN_SR:
-            ref_wav_24k = librosa.resample(
-                ref_wav_np, orig_sr=ref_sr, target_sr=S3GEN_SR
-            )
+            ref_wav_24k = _resample_audio(ref_wav_np, ref_sr, S3GEN_SR)
         else:
             ref_wav_24k = ref_wav_np
 
@@ -153,7 +248,7 @@ class S3Token2Mel(nn.Module):
 
         # Resample to 16kHz for speaker encoder
         if ref_sr != S3_SR:
-            ref_wav_16k = librosa.resample(ref_wav_np, orig_sr=ref_sr, target_sr=S3_SR)
+            ref_wav_16k = _resample_audio(ref_wav_np, ref_sr, S3_SR)
         else:
             ref_wav_16k = ref_wav_np
 
@@ -296,6 +391,110 @@ class S3Token2Wav(S3Token2Mel):
         trim_fade[n_trim:] = (np.cos(np.linspace(np.pi, 0, n_trim)) + 1) / 2
         self.trim_fade = mx.array(trim_fade.astype(np.float32))
 
+    def _forward_with_noise(
+        self,
+        speech_tokens: mx.array,
+        ref_dict: Dict[str, mx.array],
+        n_cfm_timesteps: Optional[int] = None,
+        finalize: bool = True,
+        noised_mels: Optional[mx.array] = None,
+    ) -> mx.array:
+        """
+        Generate mel-spectrogram from speech tokens with provided noise.
+
+        This is like __call__ but accepts pre-computed noise for streaming
+        consistency across chunks.
+
+        Args:
+            speech_tokens: Speech token IDs (B, T)
+            ref_dict: Reference embedding dictionary
+            n_cfm_timesteps: Number of CFM steps
+            finalize: Whether this is the final chunk
+            noised_mels: Pre-computed noise for flow matching (for consistency)
+
+        Returns:
+            Mel-spectrogram (B, 80, T_mel)
+        """
+        B = speech_tokens.shape[0]
+
+        # Get reference data
+        prompt_token = ref_dict["prompt_token"]
+        prompt_token_len = ref_dict["prompt_token_len"]
+        prompt_feat = ref_dict["prompt_feat"]
+        embedding = ref_dict["embedding"]
+
+        # Broadcast reference data if needed
+        if prompt_token.shape[0] != B:
+            prompt_token = mx.broadcast_to(prompt_token, (B,) + prompt_token.shape[1:])
+        if embedding.shape[0] != B:
+            embedding = mx.broadcast_to(embedding, (B,) + embedding.shape[1:])
+        if prompt_feat.shape[0] != B:
+            prompt_feat = mx.broadcast_to(prompt_feat, (B,) + prompt_feat.shape[1:])
+
+        # Speaker embedding projection
+        embedding = embedding / (
+            mx.linalg.norm(embedding, axis=-1, keepdims=True) + 1e-8
+        )
+        embedding = self.spk_embed_affine_layer(embedding)
+
+        # Concatenate prompt and input tokens
+        token_len = mx.array([speech_tokens.shape[1]] * B)
+        token = mx.concatenate([prompt_token, speech_tokens], axis=1)
+        token_len = prompt_token_len + token_len
+
+        # Create mask
+        max_len = token.shape[1]
+        mask = mx.arange(max_len)[None, :] < token_len[:, None]
+        mask = mask[:, :, None].astype(mx.float32)
+
+        # Embed tokens
+        token_emb = self.input_embedding(token.astype(mx.int32)) * mask
+
+        # Encode
+        h, h_masks = self.encoder(token_emb, token_len)
+
+        # Handle non-finalized chunks
+        if not finalize:
+            h = h[:, : -self.pre_lookahead_len * self.token_mel_ratio]
+
+        h_lengths = mx.sum(h_masks[:, 0, :].astype(mx.int32), axis=-1)
+        mel_len1 = prompt_feat.shape[1]
+        mel_len2 = h.shape[1] - mel_len1
+        h = self.encoder_proj(h)
+
+        # Prepare conditioning
+        zeros_padding = mx.zeros((B, mel_len2, 80))
+        conds = mx.concatenate([prompt_feat, zeros_padding], axis=1)
+        conds = conds.transpose(0, 2, 1)  # (B, 80, T)
+
+        # Mask for decoder
+        mask = mx.arange(h.shape[1])[None, :] < h_lengths[:, None]
+        mask = mask[:, None, :].astype(mx.float32)
+
+        # Default timesteps
+        if n_cfm_timesteps is None:
+            n_cfm_timesteps = 2 if self.meanflow else 10
+
+        # Use provided noise or generate new (for non-streaming calls)
+        if noised_mels is None and self.meanflow:
+            noised_mels = mx.random.normal((B, 80, speech_tokens.shape[1] * 2))
+
+        # Flow matching
+        feat, _ = self.decoder(
+            mu=h.transpose(0, 2, 1),
+            mask=mask,
+            n_timesteps=n_cfm_timesteps,
+            spks=embedding,
+            cond=conds,
+            noised_mels=noised_mels,
+            meanflow=self.meanflow,
+        )
+
+        # Remove prompt portion
+        feat = feat[:, :, mel_len1:]
+
+        return feat
+
     def inference(
         self,
         speech_tokens: mx.array,
@@ -303,6 +502,7 @@ class S3Token2Wav(S3Token2Mel):
         ref_wav: Optional[mx.array] = None,
         ref_sr: Optional[int] = None,
         n_cfm_timesteps: Optional[int] = None,
+        apply_smoothing: bool = True,
     ) -> Tuple[mx.array, mx.array]:
         """
         Full inference: speech tokens to waveform.
@@ -313,6 +513,7 @@ class S3Token2Wav(S3Token2Mel):
             ref_wav: Reference waveform (if ref_dict not provided)
             ref_sr: Reference sample rate
             n_cfm_timesteps: Number of CFM steps
+            apply_smoothing: Whether to apply audio smoothing (DC removal, highpass, soft limiting)
 
         Returns:
             audio: Generated waveform (B, T_audio)
@@ -348,6 +549,27 @@ class S3Token2Wav(S3Token2Mel):
                 [faded_start, output_wavs[:, fade_len:]], axis=1
             )
 
+        # Apply audio smoothing to reduce artifacts
+        if apply_smoothing and output_wavs.shape[1] > 0:
+            # Convert to numpy for smoothing, then back to MLX
+            audio_np = np.array(
+                output_wavs.squeeze(0) if output_wavs.ndim == 2 else output_wavs
+            )
+            audio_np = smooth_audio(
+                audio_np,
+                sr=S3GEN_SR,
+                remove_dc=True,
+                highpass=True,
+                highpass_cutoff=20.0,
+                soft_limit=True,
+                limit_threshold=0.95,
+            )
+            output_wavs = (
+                mx.array(audio_np)[None, :]
+                if output_wavs.ndim == 2
+                else mx.array(audio_np)
+            )
+
         return output_wavs, output_sources
 
     def inference_stream(
@@ -357,12 +579,15 @@ class S3Token2Wav(S3Token2Mel):
         n_cfm_timesteps: Optional[int] = None,
         prev_audio_samples: int = 0,
         is_final: bool = False,
-    ) -> Tuple[mx.array, int]:
+        cached_noise: Optional[mx.array] = None,
+        apply_smoothing: bool = True,
+    ) -> Tuple[mx.array, int, Optional[mx.array]]:
         """
         Streaming inference: convert speech tokens to waveform for streaming.
 
         This method processes accumulated tokens and returns the new audio
-        samples that weren't returned in previous chunks.
+        samples that weren't returned in previous chunks. It caches and extends
+        the random noise to ensure audio consistency across chunks.
 
         Args:
             speech_tokens: All accumulated speech token IDs (B, T)
@@ -370,21 +595,47 @@ class S3Token2Wav(S3Token2Mel):
             n_cfm_timesteps: Number of CFM steps
             prev_audio_samples: Number of audio samples already returned
             is_final: Whether this is the final chunk
+            cached_noise: Previously cached noise to reuse for consistency
+            apply_smoothing: Whether to apply audio smoothing (DC removal, highpass, soft limiting)
 
         Returns:
             new_audio: New audio samples (B, T_new)
             total_samples: Total number of samples generated so far
+            cached_noise: Extended noise cache for next chunk (None if is_final)
         """
         # Default timesteps for meanflow
         if n_cfm_timesteps is None:
             n_cfm_timesteps = 2 if self.meanflow else 10
 
-        # Generate mel from all accumulated tokens
-        output_mels = self(
+        B = speech_tokens.shape[0]
+        required_noise_len = speech_tokens.shape[1] * 2  # mel = 2 * tokens
+
+        # Handle noise caching for consistent audio across chunks
+        if self.meanflow:
+            if cached_noise is None:
+                # First chunk: generate new noise
+                noised_mels = mx.random.normal((B, 80, required_noise_len))
+            else:
+                # Subsequent chunks: extend cached noise if needed
+                current_noise_len = cached_noise.shape[2]
+                if current_noise_len >= required_noise_len:
+                    # Reuse existing noise (truncate if longer)
+                    noised_mels = cached_noise[:, :, :required_noise_len]
+                else:
+                    # Extend noise: keep old noise, add new noise for new portion
+                    new_noise_len = required_noise_len - current_noise_len
+                    new_noise = mx.random.normal((B, 80, new_noise_len))
+                    noised_mels = mx.concatenate([cached_noise, new_noise], axis=2)
+        else:
+            noised_mels = None
+
+        # Generate mel from all accumulated tokens with consistent noise
+        output_mels = self._forward_with_noise(
             speech_tokens,
             ref_dict=ref_dict,
             n_cfm_timesteps=n_cfm_timesteps,
             finalize=is_final,
+            noised_mels=noised_mels,
         )
 
         # Vocoder
@@ -411,7 +662,31 @@ class S3Token2Wav(S3Token2Mel):
             # No new samples
             new_audio = output_wavs[:, :0]  # Empty with correct shape
 
-        return new_audio, total_samples
+        # Apply audio smoothing to reduce artifacts
+        if apply_smoothing and new_audio.shape[-1] > 0:
+            # Convert to numpy for smoothing, then back to MLX
+            audio_np = np.array(
+                new_audio.squeeze(0) if new_audio.ndim == 2 else new_audio
+            )
+            audio_np = smooth_audio(
+                audio_np,
+                sr=S3GEN_SR,
+                remove_dc=True,
+                highpass=True,
+                highpass_cutoff=20.0,
+                soft_limit=True,
+                limit_threshold=0.95,
+            )
+            new_audio = (
+                mx.array(audio_np)[None, :]
+                if new_audio.ndim == 2
+                else mx.array(audio_np)
+            )
+
+        # Return cached noise for next chunk (unless final)
+        next_cached_noise = noised_mels if not is_final else None
+
+        return new_audio, total_samples, next_cached_noise
 
     def sanitize(self, weights: dict) -> dict:
         """

@@ -2,14 +2,59 @@
 
 from typing import List, Optional, Union
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
+from scipy import signal
 
 from .config import VoiceEncConfig
 from .melspec import melspectrogram
+
+
+def _resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    """Resample audio using scipy's polyphase resampling."""
+    if orig_sr == target_sr:
+        return audio
+    gcd = np.gcd(orig_sr, target_sr)
+    up = target_sr // gcd
+    down = orig_sr // gcd
+    return signal.resample_poly(audio, up, down, padtype="edge")
+
+
+def _trim_silence(audio: np.ndarray, top_db: float = 20) -> np.ndarray:
+    """
+    Trim leading and trailing silence from audio.
+
+    Args:
+        audio: Audio waveform
+        top_db: Threshold in dB below max amplitude to consider silence
+
+    Returns:
+        Trimmed audio
+    """
+    # Convert to absolute values
+    abs_audio = np.abs(audio)
+
+    # Compute threshold
+    max_amplitude = abs_audio.max()
+    if max_amplitude == 0:
+        return audio
+
+    threshold = max_amplitude * (10 ** (-top_db / 20))
+
+    # Find non-silent indices
+    non_silent = abs_audio > threshold
+
+    if not np.any(non_silent):
+        return audio
+
+    # Find start and end of non-silent region
+    non_silent_indices = np.where(non_silent)[0]
+    start = non_silent_indices[0]
+    end = non_silent_indices[-1] + 1
+
+    return audio[start:end]
 
 
 def pack(arrays, seq_len: int = None, pad_value=0):
@@ -291,17 +336,11 @@ class VoiceEncoder(nn.Module):
         """
         if sample_rate != self.hp.sample_rate:
             wavs = [
-                librosa.resample(
-                    wav,
-                    orig_sr=sample_rate,
-                    target_sr=self.hp.sample_rate,
-                    res_type="kaiser_fast",
-                )
-                for wav in wavs
+                _resample_audio(wav, sample_rate, self.hp.sample_rate) for wav in wavs
             ]
 
         if trim_top_db:
-            wavs = [librosa.effects.trim(wav, top_db=trim_top_db)[0] for wav in wavs]
+            wavs = [_trim_silence(wav, top_db=trim_top_db) for wav in wavs]
 
         if "rate" not in kwargs:
             kwargs["rate"] = 1.3  # Resemble's default value

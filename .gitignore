@@ -69,4 +69,7 @@ xcuserdata/
 
 # uv
 .build
+
+# voices
+voices/
 claude.md
