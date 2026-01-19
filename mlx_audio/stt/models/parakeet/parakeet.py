@@ -8,6 +8,7 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import hf_hub_download
 from mlx.utils import tree_flatten, tree_unflatten
+from tqdm import tqdm
 
 from mlx_audio.stt.models.parakeet import tokenizer
 from mlx_audio.stt.models.parakeet.alignment import (
@@ -195,7 +196,10 @@ class Model(nn.Module):
 
         all_tokens = []
 
-        for start in range(0, len(audio_data), chunk_samples - overlap_samples):
+        for start in tqdm(
+            range(0, len(audio_data), chunk_samples - overlap_samples),
+            disable=not verbose,
+        ):
             end = min(start + chunk_samples, len(audio_data))
 
             if chunk_callback is not None:
