@@ -669,6 +669,7 @@ class Model(nn.Module):
         audio: Union[str, np.ndarray, mx.array],
         *,
         verbose: Optional[bool] = None,
+        stream: bool = False,
         generation_stream: bool = False,
         temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
         compression_ratio_threshold: Optional[float] = 2.4,
@@ -746,9 +747,11 @@ class Model(nn.Module):
         the spoken language ("language"), which is detected when `decode_options["language"]` is None.
         """
 
+        if stream:
+            return self.generate_streaming(audio, **decode_options)
+
         decode_options.pop("max_tokens", None)
         decode_options.pop("generation_stream", None)
-
         # Use shared audio preparation
         mel, content_frames = self._prepare_audio(audio)
         content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
@@ -1230,6 +1233,7 @@ class Model(nn.Module):
             result.progress = end / total_samples
             result.audio_position = end / SAMPLE_RATE
             result.audio_duration = audio_duration
+            result.language = language
 
             if result.text.strip() or is_last:
                 yield result
