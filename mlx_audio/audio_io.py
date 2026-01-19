@@ -2,6 +2,7 @@
 
 This module provides functions for reading and writing audio files.
 - Reading: Uses miniaudio to support WAV, MP3, FLAC, and Vorbis formats.
+           Uses ffmpeg for M4A/AAC format support.
 - Writing: Uses miniaudio for WAV/FLAC and ffmpeg for MP3 encoding.
 """
 
@@ -20,6 +21,8 @@ _FORMAT_MAP = {
     "flac": "flac",
     "ogg": "vorbis",
     "vorbis": "vorbis",
+    "m4a": "m4a",
+    "aac": "m4a",
 }
 
 # Sample format mapping
@@ -40,8 +43,138 @@ def _detect_format_from_bytes(data: bytes) -> str:
         return "flac"
     elif data[:4] == b"OggS":
         return "vorbis"
+    elif data[4:8] == b"ftyp":
+        # M4A/MP4/AAC container format
+        return "m4a"
     else:
         raise ValueError("Unable to detect audio format from bytes")
+
+
+def _decode_ffmpeg(
+    input_data: Union[str, Path, bytes],
+) -> Tuple[np.ndarray, int, int]:
+    """Decode audio using ffmpeg (for formats not supported by miniaudio like M4A).
+
+    Args:
+        input_data: Path to the audio file or raw bytes data.
+
+    Returns:
+        Tuple of (samples as int16 numpy array, sample_rate, nchannels).
+
+    Raises:
+        RuntimeError: If ffmpeg is not found or decoding fails.
+    """
+    ffmpeg_path = shutil.which("ffmpeg")
+    if ffmpeg_path is None:
+        raise RuntimeError(
+            "\n"
+            "========================================\n"
+            "  ffmpeg not found!\n"
+            "========================================\n"
+            "\n"
+            "ffmpeg is required for M4A/AAC audio decoding.\n"
+            "\n"
+            "Install ffmpeg:\n"
+            "  macOS:  brew install ffmpeg\n"
+            "  Ubuntu: sudo apt install ffmpeg\n"
+        )
+
+    # First, get audio info using ffprobe
+    ffprobe_path = shutil.which("ffprobe")
+    if ffprobe_path is None:
+        raise RuntimeError("ffprobe not found (usually installed with ffmpeg)")
+
+    if isinstance(input_data, bytes):
+        # Use stdin for bytes input
+        probe_cmd = [
+            ffprobe_path,
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-select_streams",
+            "a:0",
+            "-i",
+            "pipe:0",
+        ]
+        probe_result = subprocess.run(
+            probe_cmd,
+            input=input_data,
+            capture_output=True,
+        )
+    else:
+        probe_cmd = [
+            ffprobe_path,
+            "-v",
+            "quiet",
+            "-print_format",
+            "json",
+            "-show_streams",
+            "-select_streams",
+            "a:0",
+            str(input_data),
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True)
+
+    if probe_result.returncode != 0:
+        raise RuntimeError(f"ffprobe failed: {probe_result.stderr.decode()}")
+
+    import json
+
+    probe_info = json.loads(probe_result.stdout.decode())
+    if not probe_info.get("streams"):
+        raise RuntimeError("No audio streams found in file")
+
+    stream = probe_info["streams"][0]
+    sample_rate = int(stream.get("sample_rate", 44100))
+    nchannels = int(stream.get("channels", 2))
+
+    # Decode to raw PCM using ffmpeg
+    if isinstance(input_data, bytes):
+        decode_cmd = [
+            ffmpeg_path,
+            "-i",
+            "pipe:0",
+            "-f",
+            "s16le",  # Output: signed 16-bit little-endian PCM
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(nchannels),
+            "pipe:1",
+        ]
+        decode_result = subprocess.run(
+            decode_cmd,
+            input=input_data,
+            capture_output=True,
+        )
+    else:
+        decode_cmd = [
+            ffmpeg_path,
+            "-i",
+            str(input_data),
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(nchannels),
+            "pipe:1",
+        ]
+        decode_result = subprocess.run(decode_cmd, capture_output=True)
+
+    if decode_result.returncode != 0:
+        raise RuntimeError(f"ffmpeg decoding failed: {decode_result.stderr.decode()}")
+
+    # Convert raw PCM bytes to numpy array
+    samples = np.frombuffer(decode_result.stdout, dtype=np.int16)
+
+    return samples, sample_rate, nchannels
 
 
 def read(
@@ -49,7 +182,7 @@ def read(
     always_2d: bool = False,
     dtype: str = "float64",
 ) -> Tuple[np.ndarray, int]:
-    """Read an audio file using miniaudio.
+    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC).
 
     Args:
         file: Path to the audio file or a BytesIO object.
@@ -60,45 +193,68 @@ def read(
         Tuple of (audio_data, sample_rate).
         audio_data is a numpy array with shape (samples,) for mono or (samples, channels) for multi-channel.
     """
-    import miniaudio
-
+    # Check if this is an M4A file that needs ffmpeg
+    use_ffmpeg = False
     if isinstance(file, (str, Path)):
-        # Get file info to preserve original sample rate and channels
-        info = miniaudio.get_file_info(str(file))
-        decoded = miniaudio.decode_file(
-            str(file),
-            nchannels=info.nchannels,
-            sample_rate=info.sample_rate,
-        )
+        ext = Path(file).suffix.lstrip(".").lower()
+        if ext in ("m4a", "aac"):
+            use_ffmpeg = True
     elif isinstance(file, io.BytesIO):
         file.seek(0)
-        data = file.read()
-        # Detect format and get info to preserve original sample rate and channels
-        fmt = _detect_format_from_bytes(data)
-        if fmt == "wav":
-            info = miniaudio.wav_get_info(data)
-        elif fmt == "mp3":
-            info = miniaudio.mp3_get_info(data)
-        elif fmt == "flac":
-            info = miniaudio.flac_get_info(data)
-        elif fmt == "vorbis":
-            info = miniaudio.vorbis_get_info(data)
+        header = file.read(12)
+        file.seek(0)
+        if header[4:8] == b"ftyp":
+            use_ffmpeg = True
+
+    if use_ffmpeg:
+        # Use ffmpeg for M4A/AAC decoding
+        if isinstance(file, io.BytesIO):
+            file.seek(0)
+            input_data = file.read()
         else:
-            raise ValueError(f"Unsupported format: {fmt}")
-        decoded = miniaudio.decode(
-            data,
-            nchannels=info.nchannels,
-            sample_rate=info.sample_rate,
-        )
+            input_data = file
+        samples, sample_rate, nchannels = _decode_ffmpeg(input_data)
     else:
-        raise TypeError(f"Unsupported file type: {type(file)}")
+        # Use miniaudio for other formats
+        import miniaudio
 
-    sample_rate = decoded.sample_rate
-    nchannels = decoded.nchannels
+        if isinstance(file, (str, Path)):
+            # Get file info to preserve original sample rate and channels
+            info = miniaudio.get_file_info(str(file))
+            decoded = miniaudio.decode_file(
+                str(file),
+                nchannels=info.nchannels,
+                sample_rate=info.sample_rate,
+            )
+        elif isinstance(file, io.BytesIO):
+            file.seek(0)
+            data = file.read()
+            # Detect format and get info to preserve original sample rate and channels
+            fmt = _detect_format_from_bytes(data)
+            if fmt == "wav":
+                info = miniaudio.wav_get_info(data)
+            elif fmt == "mp3":
+                info = miniaudio.mp3_get_info(data)
+            elif fmt == "flac":
+                info = miniaudio.flac_get_info(data)
+            elif fmt == "vorbis":
+                info = miniaudio.vorbis_get_info(data)
+            else:
+                raise ValueError(f"Unsupported format: {fmt}")
+            decoded = miniaudio.decode(
+                data,
+                nchannels=info.nchannels,
+                sample_rate=info.sample_rate,
+            )
+        else:
+            raise TypeError(f"Unsupported file type: {type(file)}")
 
-    # Convert to numpy array
-    # miniaudio returns samples as array of signed 16-bit integers interleaved
-    samples = np.array(decoded.samples, dtype=np.int16)
+        sample_rate = decoded.sample_rate
+        nchannels = decoded.nchannels
+
+        # Convert to numpy array
+        # miniaudio returns samples as array of signed 16-bit integers interleaved
+        samples = np.array(decoded.samples, dtype=np.int16)
 
     # Reshape to (samples, channels) if multi-channel
     if nchannels > 1:
@@ -141,7 +297,7 @@ def _get_ffmpeg_path() -> str:
             "  ffmpeg not found!\n"
             "========================================\n"
             "\n"
-            "ffmpeg is required for MP3 and FLAC audio encoding.\n"
+            "ffmpeg is required for MP3/FLAC encoding and M4A/AAC decoding.\n"
             "\n"
             "Install ffmpeg:\n"
             "  macOS:  brew install ffmpeg\n"
