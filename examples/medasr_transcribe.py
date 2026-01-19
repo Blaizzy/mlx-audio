@@ -1,14 +1,13 @@
 
 import argparse
 import sys
+import time
 import numpy as np
 import mlx.core as mx
 
 # Ensure we can find local mlx-audio if running from root without install
-# Ensure we can find local mlx-audio if running from root without install
 from mlx_audio.stt.utils import load as load_mlx
-import torch
-from transformers import AutoModelForCTC, AutoProcessor
+from transformers import AutoProcessor
 
 def record_audio(duration=None, sr=16000):
     try:
@@ -59,35 +58,16 @@ def main():
         type=float,
         help="Duration to record in seconds (optional, default: unlimited/Ctrl+C)"
     )
-    parser.add_argument(
-        "--backend",
-        type=str,
-        default="mlx",
-        choices=["mlx", "transformers"],
-        help="Backend to use for inference: 'mlx' (default) or 'transformers'"
-    )
     
     args = parser.parse_args()
     
     model = None
-    if args.backend == "mlx":
-        print(f"Loading MLX model from {args.model_path}...")
-        try:
-            model = load_mlx(args.model_path)
-        except Exception as e:
-            print(f"Error loading MLX model: {e}")
-            sys.exit(1)
-    else:
-        print("Loading Transformers model (google/medasr)...")
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"Using device: {device}")
-        try:
-            model = AutoModelForCTC.from_pretrained("google/medasr", trust_remote_code=True)
-            model.to(device)
-            model.eval()
-        except Exception as e:
-            print(f"Error loading Transformers model: {e}")
-            sys.exit(1)
+    print(f"Loading MLX model from {args.model_path}...")
+    try:
+        model = load_mlx(args.model_path)
+    except Exception as e:
+        print(f"Error loading MLX model: {e}")
+        sys.exit(1)
         
     sr = 16000
     
@@ -107,7 +87,6 @@ def main():
             sys.exit(0)
 
     try:
-        from transformers import AutoProcessor
         import logging
         logging.getLogger("transformers").setLevel(logging.ERROR)
         
@@ -121,26 +100,16 @@ def main():
     input_features = mx.array(inputs.input_features)
     
     # Run Inference
-    print(f"Transcribing using {args.backend} backend...")
+    print(f"Transcribing...")
     
-    import time
     start_time = time.time()
     
-    if args.backend == "mlx":
-        input_features = mx.array(inputs.input_features)
-        logits = model(input_features)
-        # Decode
-        log_probs = mx.softmax(logits, axis=-1)
-        tokens = mx.argmax(log_probs, axis=-1)
-        predicted_ids = np.array(tokens)
-    else:
-        # Transformers backend
-        device = next(model.parameters()).device
-        input_features = torch.tensor(inputs.input_features).to(device)
-        with torch.no_grad():
-            logits = model(input_features).logits.cpu()
-        predicted_ids = torch.argmax(logits, dim=-1)
-        predicted_ids = predicted_ids.numpy()
+    logits = model(input_features)
+    # Decode
+    log_probs = mx.softmax(logits, axis=-1)
+    tokens = mx.argmax(log_probs, axis=-1)
+    predicted_ids = np.array(tokens)
+    
     transcription = processor.batch_decode(predicted_ids)[0]
     
     end_time = time.time()

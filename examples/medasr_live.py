@@ -5,13 +5,12 @@ import numpy as np
 import mlx.core as mx
 import queue
 import time
-import torch
 import sounddevice as sd
 from collections import deque
 
 # Ensure we can find local mlx-audio if running from root without install
 from mlx_audio.stt.utils import load as load_mlx
-from transformers import AutoModelForCTC, AutoProcessor
+from transformers import AutoProcessor
 from ten_vad import TenVad
 
 def main():
@@ -22,37 +21,17 @@ def main():
         default="medasr_mlx_converted", 
         help="Path to the converted MLX model"
     )
-    parser.add_argument(
-        "--backend",
-        type=str,
-        default="mlx",
-        choices=["mlx", "transformers"],
-        help="Backend to use for inference: 'mlx' (default) or 'transformers'"
-    )
     
     args = parser.parse_args()
     
     # Load Model
     model = None
-    if args.backend == "mlx":
-        print(f"Loading MLX model from {args.model_path}...")
-        try:
-            model = load_mlx(args.model_path)
-            # Warmup?
-        except Exception as e:
-            print(f"Error loading MLX model: {e}")
-            sys.exit(1)
-    else:
-        print("Loading Transformers model (google/medasr)...")
-        device = "mps" if torch.backends.mps.is_available() else "cpu"
-        print(f"Using device: {device}")
-        try:
-            model = AutoModelForCTC.from_pretrained("google/medasr", trust_remote_code=True)
-            model.to(device)
-            model.eval()
-        except Exception as e:
-            print(f"Error loading Transformers model: {e}")
-            sys.exit(1)
+    print(f"Loading MLX model from {args.model_path}...")
+    try:
+        model = load_mlx(args.model_path)
+    except Exception as e:
+        print(f"Error loading MLX model: {e}")
+        sys.exit(1)
 
     # Load Processor
     try:
@@ -82,8 +61,17 @@ def main():
     PAUSE_FRAMES = int(PAUSE_THRESHOLD_SEC * SR / FRAME_SIZE)
     MIN_FRAMES = int(MIN_DURATION_SEC * SR / FRAME_SIZE)
     
+    # Ring Buffer for Context (0.5s)
+    BUFFER_DURATION = 0.5
+    BUFFER_SIZE = int(BUFFER_DURATION * SR) # in samples?
+    # Note: working with frames of 256 samples
+    # We will buffer the raw float samples
+    # BUFFER_SIZE samples
+    
     # State
-    audio_buffer = []
+    audio_buffer = [] # Current utterance buffer
+    context_buffer = deque(maxlen=int(BUFFER_DURATION * SR / 256) * 256) # Pre-speech context (approx)
+    
     silence_counter = 0
     is_speaking = False
     
@@ -113,70 +101,71 @@ def main():
                     continue # Should not happen with fixed blocksize
                 
                 prob, is_speech_flag = vad.process(frame_flat)
-                # is_speech_flag seems to be 0 or 1.
+                
+                # Convert to float for processing/buffering
+                frame_float = frame_flat.astype(np.float32) / 32768.0
+                
+                # Maintain context buffer
+                if not is_speaking:
+                    context_buffer.extend(frame_float)
                 
                 if is_speech_flag == 1:
-                    is_speaking = True
-                    silence_counter = 0
-                    audio_buffer.append(frame_flat)
+                    if not is_speaking:
+                        # Start of speech
+                        is_speaking = True
+                        silence_counter = 0
+                        # Prepend context
+                        audio_buffer = list(context_buffer)
+                        audio_buffer.extend(frame_float)
+                    else:
+                        audio_buffer.extend(frame_float)
                 else:
                     if is_speaking:
                         # verifying silence while previously speaking
                         silence_counter += 1
-                        audio_buffer.append(frame_flat) # Keep silence tail
+                        audio_buffer.extend(frame_float) # Keep silence tail
                         
                         if silence_counter >= PAUSE_FRAMES:
                             # End of utterance
                             is_speaking = False
                             
                             # Process Utterance
-                            total_samples = len(audio_buffer) * FRAME_SIZE
-                            duration = total_samples / SR
+                            # audio_buffer is list of floats. (or list of list of floats? frame_float is array)
+                            # Let's fix extension above: extend(frame_float) adds elements.
+                            
+                            raw_audio = np.array(audio_buffer)
+                            duration = len(raw_audio) / SR
                             
                             if duration >= MIN_DURATION_SEC:
                                 # Transcribe
-                                raw_audio = np.concatenate(audio_buffer)
                                 
-                                # Normalize float32 for model
-                                float_audio = raw_audio.astype(np.float32) / 32768.0
-                                
-                                # Peak normalize slightly to ensure good volume? 
-                                # MedASR might expect specific levels, but let's just make sure it's not silent.
-                                # Simple peak norm within reasonable bounds
-                                max_val = np.max(np.abs(float_audio))
+                                # Peak normalize slightly
+                                max_val = np.max(np.abs(raw_audio))
                                 if max_val > 0:
-                                    # Normalize to 0.9
-                                    float_audio = float_audio / max_val * 0.9
+                                    raw_audio = raw_audio / max_val * 0.9
                                 
-                                inputs = processor(float_audio, sampling_rate=SR, return_tensors="np")
+                                inputs = processor(raw_audio, sampling_rate=SR, return_tensors="np")
                                 
-                                if args.backend == "mlx":
-                                    input_features = mx.array(inputs.input_features)
-                                    logits = model(input_features)
-                                    log_probs = mx.softmax(logits, axis=-1)
-                                    tokens = mx.argmax(log_probs, axis=-1)
-                                    predicted_ids = np.array(tokens)
-                                else:
-                                    device_t = next(model.parameters()).device
-                                    input_features = torch.tensor(inputs.input_features).to(device_t)
-                                    with torch.no_grad():
-                                        logits = model(input_features).logits.cpu()
-                                    predicted_ids = torch.argmax(logits, dim=-1)
-                                    predicted_ids = predicted_ids.numpy()
+                                input_features = mx.array(inputs.input_features)
+                                
+                                logits = model(input_features)
+                                log_probs = mx.softmax(logits, axis=-1)
+                                tokens = mx.argmax(log_probs, axis=-1)
+                                predicted_ids = np.array(tokens)
                                     
                                 transcription = processor.batch_decode(predicted_ids)[0]
                                 
                                 clean_text = transcription.replace("</s>", "").strip()
                                 if clean_text:
-                                    print(f"\rUser: {clean_text}")
+                                    print(f"User: {clean_text}")
                                     sys.stdout.flush()
                             
                             # Reset
                             audio_buffer = []
                             silence_counter = 0
+                            context_buffer.clear()
                     else:
-                        # Just silence, do nothing or keep minimal context?
-                        # For now, drop it.
+                        # Just silence
                         pass
                         
     except KeyboardInterrupt:
