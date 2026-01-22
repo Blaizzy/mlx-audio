@@ -41,6 +41,9 @@ mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --v
 
 # Play audio immediately
 mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play
+
+# Save to a specific directory
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --output_path ./my_audio
 ```
 
 ### Python API
