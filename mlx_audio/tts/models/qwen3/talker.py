@@ -694,6 +694,16 @@ class Qwen3TTSTalkerCodePredictor(nn.Module):
         super().__init__()
         self.config = config
         self.num_code_groups = config.num_code_groups
+        self.talker_hidden_size = talker_hidden_size
+
+        # Projection from talker hidden size to code predictor hidden size
+        # Used when they differ (e.g., in CustomVoice models)
+        if config.hidden_size != talker_hidden_size:
+            self.small_to_mtp_projection = nn.Linear(
+                talker_hidden_size, config.hidden_size, bias=True
+            )
+        else:
+            self.small_to_mtp_projection = None
 
         # Inner model (matches PyTorch weight structure: code_predictor.model.*)
         self.model = CodePredictorModel(config, talker_hidden_size)
@@ -717,6 +727,10 @@ class Qwen3TTSTalkerCodePredictor(nn.Module):
         cache: Optional[List[KVCache]] = None,
         generation_step: int = 0,
     ) -> Tuple[mx.array, Optional[List[KVCache]], int]:
+        # Apply projection if needed (when talker and code predictor have different hidden sizes)
+        if self.small_to_mtp_projection is not None:
+            inputs_embeds = self.small_to_mtp_projection(inputs_embeds)
+
         # Forward through inner model
         x = self.model(inputs_embeds, position_ids, mask, cache)
 
