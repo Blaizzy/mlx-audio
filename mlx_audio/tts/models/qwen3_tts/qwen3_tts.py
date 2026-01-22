@@ -279,8 +279,10 @@ class Model(nn.Module):
         if ref_audio is not None and self.speaker_encoder is not None:
             speaker_embed = self.extract_speaker_embedding(ref_audio)
         elif speaker and speaker.lower() in (config.spk_id or {}):
-            spk_ids = mx.array(config.spk_id[speaker.lower()])
-            speaker_embed = self.talker.get_input_embeddings()(spk_ids)
+            spk_ids = mx.array([[config.spk_id[speaker.lower()]]])  # [1, 1]
+            speaker_embed = self.talker.get_input_embeddings()(
+                spk_ids
+            )  # [1, 1, hidden]
 
         # Language ID
         language_id = None
