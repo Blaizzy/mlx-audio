@@ -11,12 +11,13 @@ import mlx.core as mx
 import mlx.nn as nn
 
 
-def sinusoidal_embedding(timesteps: mx.array, dim: int) -> mx.array:
-    """Create sinusoidal timestep embeddings."""
+def sinusoidal_embedding(timesteps: mx.array, dim: int, scale: float = 1000.0) -> mx.array:
+    """Create sinusoidal timestep embeddings matching PyTorch SinusPositionEmbedding."""
     half_dim = dim // 2
     emb = math.log(10000) / (half_dim - 1)
-    emb = mx.exp(mx.arange(half_dim) * -emb)
-    emb = timesteps[:, None] * emb[None, :]
+    emb = mx.exp(mx.arange(half_dim).astype(mx.float32) * -emb)
+    # PyTorch uses: scale * x.unsqueeze(1) * emb.unsqueeze(0)
+    emb = scale * timesteps[:, None] * emb[None, :]
     emb = mx.concatenate([mx.sin(emb), mx.cos(emb)], axis=-1)
     return emb
 
@@ -84,9 +85,10 @@ class AdaLayerNormZeroFinal(nn.Module):
     def __call__(self, x: mx.array, t: mx.array) -> mx.array:
         emb = self.linear(nn.silu(t))
         emb = emb[:, None, :]  # (B, 1, 2*dim)
-        shift, scale = mx.split(emb, 2, axis=-1)
+        # Match PyTorch order: scale, shift = chunk(emb, 2, dim=1)
+        scale, shift = mx.split(emb, 2, axis=-1)
 
-        # Layer norm
+        # Layer norm (elementwise_affine=False)
         mean = mx.mean(x, axis=-1, keepdims=True)
         var = mx.var(x, axis=-1, keepdims=True)
         x = (x - mean) / mx.sqrt(var + 1e-6)
@@ -95,40 +97,84 @@ class AdaLayerNormZeroFinal(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    """Rotary Position Embedding."""
+    """Rotary Position Embedding matching x_transformers implementation."""
 
-    def __init__(self, dim: int, theta: float = 10000.0):
+    def __init__(self, dim: int, theta: float = 10000.0, use_xpos: bool = False):
         super().__init__()
         self.dim = dim
         self.theta = theta
+        self.use_xpos = use_xpos
         inv_freq = 1.0 / (theta ** (mx.arange(0, dim, 2).astype(mx.float32) / dim))
         self.inv_freq = inv_freq
 
-    def __call__(self, seq_len: int) -> Tuple[mx.array, mx.array]:
+    def __call__(self, seq_len: int) -> Tuple[mx.array, float]:
+        """Returns (freqs, scale) tuple matching x_transformers format.
+
+        Returns:
+            Tuple of (freqs, scale) where:
+            - freqs: (1, T, dim) interleaved frequency tensor
+            - scale: 1.0 (no xpos scaling)
+        """
         t = mx.arange(seq_len).astype(mx.float32)
+        # (T, dim//2)
         freqs = mx.outer(t, self.inv_freq)
-        cos = mx.cos(freqs)
-        sin = mx.sin(freqs)
-        return cos, sin
+        # Stack and interleave: [f0, f0, f1, f1, ...] -> (T, dim)
+        # This matches x_transformers: stack((freqs, freqs), dim=-1).rearrange('... d r -> ... (d r)')
+        freqs = mx.stack([freqs, freqs], axis=-1).reshape(seq_len, -1)
+        # Add batch dimension: (1, T, dim)
+        freqs = freqs[None, :, :]
+        # Return tuple (freqs, scale) matching x_transformers
+        return freqs, 1.0
 
 
-def apply_rotary_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
-    """Apply rotary embeddings to input tensor."""
-    # x: (B, H, T, D)
-    # cos, sin: (T, D//2)
-    d = x.shape[-1]
-    x1 = x[..., : d // 2]
-    x2 = x[..., d // 2 :]
+def rotate_half(x: mx.array) -> mx.array:
+    """Rotate half the hidden dims - interleaved version matching x_transformers."""
+    # x: (..., d) where d is even
+    # Reshape to (..., d//2, 2)
+    x = x.reshape(*x.shape[:-1], -1, 2)
+    x1, x2 = x[..., 0], x[..., 1]
+    # Stack as (-x2, x1) pairs
+    rotated = mx.stack([-x2, x1], axis=-1)
+    # Flatten back to (..., d)
+    return rotated.reshape(*rotated.shape[:-2], -1)
 
-    cos = cos[None, None, :, :]  # (1, 1, T, D//2)
-    sin = sin[None, None, :, :]
 
-    # Rotate
-    x_rot = mx.concatenate([-x2, x1], axis=-1)
-    cos_full = mx.concatenate([cos, cos], axis=-1)
-    sin_full = mx.concatenate([sin, sin], axis=-1)
+def apply_rotary_emb(x: mx.array, freqs: mx.array, scale: float = 1.0) -> mx.array:
+    """Apply rotary embeddings to input tensor - matching x_transformers.
 
-    return x * cos_full + x_rot * sin_full
+    This implements partial rotary embeddings: only the first rot_dim
+    dimensions are rotated, the rest are left unchanged.
+
+    Args:
+        x: Input tensor of shape (B, T, D) or (B, H, T, D)
+        freqs: Frequencies tensor of shape (1, T, rot_dim) with interleaved values
+        scale: Scale factor for xpos (default 1.0)
+
+    Returns:
+        Rotated tensor of same shape as input
+    """
+    # Get the rotation dimension
+    rot_dim = freqs.shape[-1]
+    seq_len = x.shape[-2] if x.ndim == 4 else x.shape[1]
+
+    # Slice freqs to match sequence length
+    freqs = freqs[:, -seq_len:, :]
+
+    # Handle different input dimensions
+    if x.ndim == 4:
+        # x is (B, H, T, D) - add head dimension to freqs
+        freqs = freqs[:, None, :, :]  # (1, 1, T, rot_dim)
+    # else x is (B, T, D) and freqs is (1, T, rot_dim) - broadcast works
+
+    # Split into rotated and unrotated parts (partial rotary embeddings)
+    t, t_unrotated = x[..., :rot_dim], x[..., rot_dim:]
+
+    # Apply rotation: (t * cos(freqs) + rotate_half(t) * sin(freqs)) * scale
+    # Matching x_transformers: t = (t * freqs.cos() * scale) + (rotate_half(t) * freqs.sin() * scale)
+    t = (t * mx.cos(freqs) * scale) + (rotate_half(t) * mx.sin(freqs) * scale)
+
+    # Concatenate back
+    return mx.concatenate([t, t_unrotated], axis=-1)
 
 
 class CausalConvPositionEmbedding(nn.Module):
@@ -150,10 +196,10 @@ class CausalConvPositionEmbedding(nn.Module):
         # Causal padding on time dimension
         pad = self.kernel_size - 1
         x = mx.pad(x, [(0, 0), (pad, 0), (0, 0)])
-        x = nn.silu(self.conv1(x))
+        x = nn.mish(self.conv1(x))
 
         x = mx.pad(x, [(0, 0), (pad, 0), (0, 0)])
-        x = nn.silu(self.conv2(x))
+        x = nn.mish(self.conv2(x))
 
         return x
 
@@ -186,7 +232,8 @@ class Attention(nn.Module):
         self,
         x: mx.array,
         mask: Optional[mx.array] = None,
-        rope: Optional[Tuple[mx.array, mx.array]] = None,
+        rope: Optional[Tuple[mx.array, float]] = None,
+        output_mask: Optional[mx.array] = None,
     ) -> mx.array:
         B, T, _ = x.shape
 
@@ -195,16 +242,21 @@ class Attention(nn.Module):
         k = self.to_k(x)
         v = self.to_v(x)
 
+        # Apply rotary embeddings BEFORE reshaping to heads (partial rotary)
+        # This matches PyTorch x_transformers which only rotates first dim_head dimensions
+        if rope is not None:
+            # Unpack rope tuple (freqs, xpos_scale)
+            freqs, xpos_scale = rope
+            # Apply scale to query (scale) and key (1/scale) as in x_transformers
+            q_scale = xpos_scale if xpos_scale is not None else 1.0
+            k_scale = (1.0 / xpos_scale) if xpos_scale is not None and xpos_scale != 1.0 else 1.0
+            q = apply_rotary_emb(q, freqs, q_scale)
+            k = apply_rotary_emb(k, freqs, k_scale)
+
         # Reshape to (B, H, T, D)
         q = q.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
         k = k.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
         v = v.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
-
-        # Apply rotary embeddings
-        if rope is not None:
-            cos, sin = rope
-            q = apply_rotary_emb(q, cos, sin)
-            k = apply_rotary_emb(k, cos, sin)
 
         # Attention
         attn = (q @ k.transpose(0, 1, 3, 2)) * self.scale
@@ -222,7 +274,14 @@ class Attention(nn.Module):
         out = attn @ v
         out = out.transpose(0, 2, 1, 3).reshape(B, T, -1)
 
-        return self.to_out(out)
+        out = self.to_out(out)
+
+        # Zero out padded positions in output (matching PyTorch AttnProcessor)
+        if output_mask is not None:
+            # output_mask: (B, T) -> (B, T, 1)
+            out = mx.where(output_mask[:, :, None], out, mx.zeros_like(out))
+
+        return out
 
 
 class FeedForward(nn.Module):
@@ -233,7 +292,7 @@ class FeedForward(nn.Module):
         inner_dim = dim * mult
         self.ff = nn.Sequential(
             nn.Linear(dim, inner_dim),
-            nn.GELU(),
+            nn.GELU(approx="tanh"),  # Match PyTorch's approximate="tanh"
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim),
         )
@@ -263,7 +322,8 @@ class DiTBlock(nn.Module):
         x: mx.array,
         t: mx.array,
         mask: Optional[mx.array] = None,
-        rope: Optional[Tuple[mx.array, mx.array]] = None,
+        rope: Optional[mx.array] = None,
+        output_mask: Optional[mx.array] = None,
     ) -> mx.array:
         # Get modulation parameters
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.attn_norm(
@@ -274,8 +334,8 @@ class DiTBlock(nn.Module):
         x_norm = mx.fast.layer_norm(x, None, None, eps=1e-6)
         x_mod = x_norm * (1 + scale_msa) + shift_msa
 
-        # Attention with gating
-        x = x + gate_msa * self.attn(x_mod, mask=mask, rope=rope)
+        # Attention with gating - pass output_mask for zeroing padded positions
+        x = x + gate_msa * self.attn(x_mod, mask=mask, rope=rope, output_mask=output_mask)
 
         # Pre-norm with modulation for FF
         x_norm = mx.fast.layer_norm(x, None, None, eps=1e-6)
@@ -385,7 +445,7 @@ class DiT(nn.Module):
 
         Args:
             x: Noised input (B, mel_dim, T)
-            mask: Attention mask (B, T)
+            mask: Attention mask (B, T) or (B, 1, T)
             mu: Mean/condition from token embedding (B, mel_dim, T)
             t: Timestep (B,) or scalar
             spks: Speaker embedding (B, spk_dim)
@@ -412,9 +472,16 @@ class DiT(nn.Module):
         # Input embedding
         x = self.input_embed(x, cond, mu, spks)
 
-        # Get rotary embeddings
-        cos, sin = self.rotary_embed(T)
-        rope = (cos, sin)
+        # Get rotary embeddings (single freqs tensor in x_transformers format)
+        rope = self.rotary_embed(T)
+
+        # Extract padding mask for output masking (B, T)
+        # This is used to zero out padded positions after attention
+        if mask.ndim == 2:
+            output_mask = mask.astype(mx.bool_)
+        else:
+            # mask is (B, 1, T), squeeze to (B, T)
+            output_mask = mask.squeeze(1).astype(mx.bool_)
 
         # Create attention mask
         if streaming:
@@ -422,12 +489,21 @@ class DiT(nn.Module):
             attn_mask = self._create_chunk_mask(B, T, mask)
         else:
             # Full attention with padding mask
-            attn_mask = mask[:, None, :].astype(mx.bool_)
-            attn_mask = mx.broadcast_to(attn_mask, (B, T, T))
+            # Handle both (B, T) and (B, 1, T) mask formats
+            if mask.ndim == 2:
+                # mask is (B, T), add dim to (B, 1, T)
+                mask_3d = mask[:, None, :]
+            else:
+                # mask is (B, 1, T)
+                mask_3d = mask
+            # Broadcast to (B, T, T) for attention
+            # Each row (query position) can attend to all valid key positions
+            attn_mask = mx.broadcast_to(mask_3d, (B, T, T))
+            attn_mask = attn_mask.astype(mx.bool_)
 
-        # Transformer blocks
+        # Transformer blocks - pass output_mask to zero padded positions
         for block in self.transformer_blocks:
-            x = block(x, t_emb, mask=attn_mask, rope=rope)
+            x = block(x, t_emb, mask=attn_mask, rope=rope, output_mask=output_mask)
 
         # Output
         x = self.norm_out(x, t_emb)

@@ -25,6 +25,13 @@ except ImportError:
     TRANSFORMERS_AVAILABLE = False
 
 try:
+    import soundfile as sf
+
+    SOUNDFILE_AVAILABLE = True
+except ImportError:
+    SOUNDFILE_AVAILABLE = False
+
+try:
     import librosa
 
     LIBROSA_AVAILABLE = True
@@ -104,6 +111,88 @@ class CosyVoice3Frontend:
         tokens = self.tokenizer.encode(text, add_special_tokens=True)
         return mx.array([tokens], dtype=mx.int32)
 
+    def _extract_mel_for_campplus(
+        self, audio: np.ndarray, sr: int = 16000
+    ) -> np.ndarray:
+        """
+        Extract mel spectrogram features for CAMPPlus (without librosa).
+
+        Uses scipy for STFT and custom mel filterbank.
+
+        Args:
+            audio: Audio waveform
+            sr: Sample rate (should be 16000)
+
+        Returns:
+            Mel features (1, T, 80)
+        """
+        from scipy import signal
+
+        n_fft = 512
+        hop_length = 160
+        n_mels = 80
+        fmin = 20
+        fmax = 7600
+
+        # Compute STFT
+        f, t, Zxx = signal.stft(
+            audio, fs=sr, nperseg=n_fft, noverlap=n_fft - hop_length
+        )
+        power = np.abs(Zxx) ** 2
+
+        # Create mel filterbank
+        mel_fb = self._mel_filterbank(sr, n_fft, n_mels, fmin, fmax)
+
+        # Apply mel filterbank
+        mel_spec = np.dot(mel_fb, power)
+
+        # Log mel
+        log_mel = np.log(np.maximum(mel_spec, 1e-6))
+
+        # Normalize (remove mean)
+        log_mel = log_mel - np.mean(log_mel, axis=0, keepdims=True)
+
+        # Transpose to (T, 80) and add batch dimension
+        features = log_mel.T[np.newaxis, :, :].astype(np.float32)
+
+        return features
+
+    def _mel_filterbank(
+        self,
+        sr: int = 16000,
+        n_fft: int = 512,
+        n_mels: int = 80,
+        fmin: float = 20,
+        fmax: float = 7600,
+    ) -> np.ndarray:
+        """Create mel filterbank matrix."""
+        freqs = np.fft.rfftfreq(n_fft, 1 / sr)
+
+        def hz_to_mel(hz):
+            return 2595 * np.log10(1 + hz / 700)
+
+        def mel_to_hz(mel):
+            return 700 * (10 ** (mel / 2595) - 1)
+
+        mel_min = hz_to_mel(fmin)
+        mel_max = hz_to_mel(fmax)
+        mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
+        hz_points = mel_to_hz(mel_points)
+
+        filterbank = np.zeros((n_mels, len(freqs)))
+        for i in range(n_mels):
+            lower = hz_points[i]
+            center = hz_points[i + 1]
+            upper = hz_points[i + 2]
+
+            for j, freq in enumerate(freqs):
+                if lower <= freq < center:
+                    filterbank[i, j] = (freq - lower) / (center - lower)
+                elif center <= freq < upper:
+                    filterbank[i, j] = (upper - freq) / (upper - center)
+
+        return filterbank
+
     def extract_speaker_embedding(
         self,
         audio: np.ndarray,
@@ -122,34 +211,16 @@ class CosyVoice3Frontend:
         if self.campplus_session is None:
             raise RuntimeError("CAMPPlus not loaded. Please provide campplus_path.")
 
-        if not LIBROSA_AVAILABLE:
-            raise RuntimeError(
-                "librosa required for audio processing. Install with: pip install librosa"
-            )
-
-        # Resample to 16kHz if needed
+        # Resample to 16kHz if needed (using scipy)
         if sample_rate != 16000:
-            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=16000)
+            from scipy import signal
+
+            num_samples = int(len(audio) * 16000 / sample_rate)
+            audio = signal.resample(audio, num_samples)
 
         # Compute mel filterbank features (80 bins, like Kaldi)
-        mel_spec = librosa.feature.melspectrogram(
-            y=audio,
-            sr=16000,
-            n_fft=512,
-            hop_length=160,
-            n_mels=80,
-            fmin=20,
-            fmax=7600,
-        )
-
-        # Log mel
-        log_mel = np.log(np.maximum(mel_spec, 1e-6))
-
-        # Normalize (remove mean)
-        log_mel = log_mel - np.mean(log_mel, axis=0, keepdims=True)
-
-        # Transpose to (T, 80) and add batch dimension
-        features = log_mel.T[np.newaxis, :, :].astype(np.float32)
+        # Using scipy-based implementation to avoid librosa/numba dependency
+        features = self._extract_mel_for_campplus(audio, sr=16000)
 
         # Run CAMPPlus
         input_name = self.campplus_session.get_inputs()[0].name
@@ -168,10 +239,19 @@ class CosyVoice3Frontend:
         Returns:
             Tuple of (audio_waveform, sample_rate)
         """
-        if not LIBROSA_AVAILABLE:
-            raise RuntimeError("librosa required. Install with: pip install librosa")
-
-        audio, sr = librosa.load(audio_path, sr=None)
+        # Try soundfile first (faster and no numba dependency)
+        if SOUNDFILE_AVAILABLE:
+            audio, sr = sf.read(audio_path)
+            # Convert stereo to mono if needed
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            audio = audio.astype(np.float32)
+        elif LIBROSA_AVAILABLE:
+            audio, sr = librosa.load(audio_path, sr=None)
+        else:
+            raise RuntimeError(
+                "Either soundfile or librosa required. Install with: pip install soundfile"
+            )
         return audio, sr
 
     def extract_mel_features(
@@ -182,8 +262,11 @@ class CosyVoice3Frontend:
         """
         Extract mel spectrogram features for prompt audio.
 
-        Uses hop_length=480 to match CosyVoice3 training config.
-        50 fps (24000/480) = 25 tokens/s * token_mel_ratio (2)
+        Matches PyTorch matcha.utils.audio.mel_spectrogram exactly:
+        - n_fft=1920, hop_size=480, win_size=1920
+        - Reflect padding before STFT
+        - Magnitude spectrum (not power)
+        - Dynamic range compression: log(clamp(x, min=1e-5))
 
         Args:
             audio: Audio waveform
@@ -192,30 +275,55 @@ class CosyVoice3Frontend:
         Returns:
             Mel features as mx.array (1, 80, T)
         """
-        if not LIBROSA_AVAILABLE:
-            raise RuntimeError("librosa required. Install with: pip install librosa")
+        from scipy import signal
 
         # Resample to model sample rate if needed
         if sample_rate != self.sample_rate:
-            audio = librosa.resample(
-                audio, orig_sr=sample_rate, target_sr=self.sample_rate
-            )
+            num_samples = int(len(audio) * self.sample_rate / sample_rate)
+            audio = signal.resample(audio, num_samples)
 
-        # Compute mel spectrogram matching CosyVoice3 training config
-        # n_fft=1920, hop_size=480, win_size=1920 from cosyvoice3.yaml
-        mel_spec = librosa.feature.melspectrogram(
-            y=audio,
-            sr=self.sample_rate,
-            n_fft=1920,
-            hop_length=480,
-            win_length=1920,
-            n_mels=80,
-            fmin=0,
-            fmax=self.sample_rate // 2,
-        )
+        # Ensure audio is float32 in range [-1, 1]
+        if audio.dtype != np.float32:
+            audio = audio.astype(np.float32)
+        if np.abs(audio).max() > 1.0:
+            audio = audio / np.abs(audio).max()
 
-        # Log mel
-        log_mel = np.log(np.maximum(mel_spec, 1e-6))
+        # CosyVoice3 config from cosyvoice3.yaml
+        n_fft = 1920
+        hop_length = 480
+        win_length = 1920
+        n_mels = 80
+        fmin = 0
+        fmax = None  # PyTorch uses None which defaults to sr/2
+
+        # Reflect padding (matching PyTorch: pad with (n_fft - hop_size) / 2 on each side)
+        pad_size = int((n_fft - hop_length) / 2)  # 720
+        audio_padded = np.pad(audio, (pad_size, pad_size), mode='reflect')
+
+        # STFT with Hann window (matching PyTorch torch.stft with center=False)
+        window = np.hanning(win_length)
+
+        # Manual STFT to match PyTorch behavior exactly
+        num_frames = 1 + (len(audio_padded) - n_fft) // hop_length
+        stft_result = np.zeros((n_fft // 2 + 1, num_frames), dtype=np.complex64)
+
+        for i in range(num_frames):
+            start = i * hop_length
+            frame = audio_padded[start:start + n_fft] * window
+            stft_result[:, i] = np.fft.rfft(frame)
+
+        # Magnitude spectrum (not power) - matching PyTorch
+        magnitudes = np.abs(stft_result)
+
+        # Mel filterbank (using librosa-compatible formula)
+        if fmax is None:
+            fmax = self.sample_rate / 2
+        mel_fb = self._mel_filterbank(self.sample_rate, n_fft, n_mels, fmin, fmax)
+        mel_spec = np.dot(mel_fb, magnitudes)
+
+        # Dynamic range compression (matching PyTorch spectral_normalize_torch)
+        # log(clamp(x, min=1e-5))
+        log_mel = np.log(np.clip(mel_spec, a_min=1e-5, a_max=None))
 
         # Add batch dimension: (80, T) -> (1, 80, T)
         return mx.array(log_mel[np.newaxis, :, :].astype(np.float32))
@@ -237,17 +345,17 @@ class CosyVoice3Frontend:
         Returns:
             Speech tokens as mx.array (1, T)
         """
+        from scipy import signal
+
         if self.speech_tokenizer_session is None:
             raise RuntimeError(
                 "Speech tokenizer not loaded. Please provide speech_tokenizer_path."
             )
 
-        if not LIBROSA_AVAILABLE:
-            raise RuntimeError("librosa required. Install with: pip install librosa")
-
         # Resample to 16kHz (whisper uses 16kHz)
         if sample_rate != 16000:
-            audio = librosa.resample(audio, orig_sr=sample_rate, target_sr=16000)
+            num_samples = int(len(audio) * 16000 / sample_rate)
+            audio = signal.resample(audio, num_samples)
 
         # Limit to 30 seconds
         max_samples = 30 * 16000
@@ -256,15 +364,21 @@ class CosyVoice3Frontend:
 
         # Compute 128-bin log mel spectrogram (whisper-style)
         # whisper uses: n_fft=400, hop_length=160, n_mels=128
-        mel_spec = librosa.feature.melspectrogram(
-            y=audio,
-            sr=16000,
-            n_fft=400,
-            hop_length=160,
-            n_mels=128,
-            fmin=0,
-            fmax=8000,
+        n_fft = 400
+        hop_length = 160
+        n_mels = 128
+        fmin = 0
+        fmax = 8000
+
+        # STFT
+        f, t, Zxx = signal.stft(
+            audio, fs=16000, nperseg=n_fft, noverlap=n_fft - hop_length
         )
+        power = np.abs(Zxx) ** 2
+
+        # Mel filterbank
+        mel_fb = self._mel_filterbank(16000, n_fft, n_mels, fmin, fmax)
+        mel_spec = np.dot(mel_fb, power)
 
         # Log mel (whisper uses log10 with floor)
         log_mel = np.log10(np.maximum(mel_spec, 1e-10))
@@ -312,12 +426,34 @@ class CosyVoice3Frontend:
         speaker_embedding = self.extract_speaker_embedding(prompt_audio, prompt_sr)
 
         # Extract mel features for prompt (for Flow model conditioning)
+        # Returns (1, 80, T) format
         prompt_mel = self.extract_mel_features(prompt_audio, prompt_sr)
 
         # Extract speech tokens from prompt audio (for LLM context)
         prompt_speech_tokens = None
         if self.speech_tokenizer_session is not None:
             prompt_speech_tokens = self.extract_speech_tokens(prompt_audio, prompt_sr)
+
+        # Align mel and token lengths (matching PyTorch CosyVoice3)
+        # Force: mel_len = 2 * token_len (token_mel_ratio = 2)
+        if prompt_speech_tokens is not None and prompt_mel is not None:
+            # prompt_mel is (1, 80, T_mel)
+            # prompt_speech_tokens is (1, T_tokens)
+            mel_len = prompt_mel.shape[2]
+            token_len = prompt_speech_tokens.shape[1]
+
+            # Align: token_len = min(mel_len // 2, token_len)
+            aligned_token_len = min(mel_len // 2, token_len)
+            aligned_mel_len = aligned_token_len * 2
+
+            # Truncate both to aligned lengths
+            prompt_mel = prompt_mel[:, :, :aligned_mel_len]
+            prompt_speech_tokens = prompt_speech_tokens[:, :aligned_token_len]
+
+        # Transpose mel to (B, T, mel_dim) format to match PyTorch
+        # PyTorch: speech_feat = feat.squeeze(0).transpose(0, 1).unsqueeze(0) -> (1, T, 80)
+        if prompt_mel is not None:
+            prompt_mel = mx.transpose(prompt_mel, (0, 2, 1))  # (1, 80, T) -> (1, T, 80)
 
         return {
             "text_tokens": text_tokens,

@@ -68,9 +68,7 @@ class ModelConfig(BaseModelArgs):
     # HIFT config
     hift_base_channels: int = 512
     nb_harmonics: int = 8  # For m_source (l_linear)
-    source_harmonics: int = 17  # For source processing (source_downs)
     upsample_rates: List[int] = field(default_factory=lambda: [8, 5, 3])
-    source_down_kernel_sizes: List[int] = field(default_factory=lambda: [30, 6, 1])
 
 
 class Model(nn.Module):
@@ -152,11 +150,9 @@ class Model(nn.Module):
             in_channels=config.mel_dim,
             base_channels=config.hift_base_channels,
             nb_harmonics=config.nb_harmonics,
-            source_harmonics=config.source_harmonics,
             sampling_rate=config.sample_rate,
             upsample_rates=config.upsample_rates,
             upsample_kernel_sizes=[16, 11, 7],
-            source_down_kernel_sizes=config.source_down_kernel_sizes,
         )
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
@@ -261,11 +257,27 @@ class Model(nn.Module):
                     new_key,
                 )
 
-            # f0_predictor.condnet: Sequential of CausalConv1d
-            # condnet.N. -> condnet.layers.N.conv.
+            # ups layers: CausalConv1dUpsample has nested .conv
+            # hift.ups.N.weight -> hift.ups.N.conv.weight
+            new_key = re.sub(
+                r"hift\.ups\.(\d+)\.(weight|bias)",
+                r"hift.ups.\1.conv.\2",
+                new_key,
+            )
+
+            # source_downs layers: CausalConv1d/CausalConv1dDownSample have nested .conv
+            # hift.source_downs.N.weight -> hift.source_downs.N.conv.weight
+            new_key = re.sub(
+                r"hift\.source_downs\.(\d+)\.(weight|bias)",
+                r"hift.source_downs.\1.conv.\2",
+                new_key,
+            )
+
+            # f0_predictor.condnet: List of CausalConv1d (each has nested .conv)
+            # condnet.N. -> condnet.N.conv. (N is index into list, CausalConv1d has .conv)
             new_key = re.sub(
                 r"f0_predictor\.condnet\.(\d+)\.(weight|bias)",
-                r"f0_predictor.condnet.layers.\1.conv.\2",
+                r"f0_predictor.condnet.\1.conv.\2",
                 new_key,
             )
 
@@ -323,7 +335,7 @@ class Model(nn.Module):
             token_len: Token lengths (B,)
             prompt_token: Prompt tokens (B, T_prompt)
             prompt_token_len: Prompt token lengths (B,)
-            prompt_feat: Prompt mel features (B, mel_dim, T_prompt * ratio)
+            prompt_feat: Prompt mel features (B, T_prompt * ratio, mel_dim) - PyTorch format
             prompt_feat_len: Prompt feature lengths (B,)
             embedding: Speaker embedding (B, spk_embed_dim)
             n_timesteps: Number of flow ODE steps
@@ -333,8 +345,8 @@ class Model(nn.Module):
         Returns:
             Audio waveform (B, T_audio)
         """
-        # Generate mel-spectrogram
-        mel = self.flow(
+        # Generate mel-spectrogram (using inference to get only generated part)
+        mel = self.flow.inference(
             token,
             token_len,
             prompt_token,
@@ -369,7 +381,7 @@ class Model(nn.Module):
             speech_tokens: Speech token IDs (B, T)
             speaker_embedding: Speaker embedding (B, spk_embed_dim)
             prompt_speech_tokens: Optional prompt tokens (B, T_prompt)
-            prompt_mel: Optional prompt mel features (B, mel_dim, T_prompt_mel)
+            prompt_mel: Optional prompt mel features (B, T_prompt_mel, mel_dim) - PyTorch format
             n_timesteps: Number of flow ODE steps
             streaming: Whether to use streaming mode
             temperature: Sampling temperature
@@ -389,11 +401,12 @@ class Model(nn.Module):
         else:
             prompt_token_len = mx.array([prompt_speech_tokens.shape[1]] * B)
 
+        # prompt_mel is now (B, T, mel_dim) format (matching PyTorch)
         if prompt_mel is None:
-            prompt_mel = mx.zeros((B, self.config.mel_dim, 0))
+            prompt_mel = mx.zeros((B, 0, self.config.mel_dim))
             prompt_feat_len = mx.zeros((B,), dtype=mx.int32)
         else:
-            prompt_feat_len = mx.array([prompt_mel.shape[2]] * B)
+            prompt_feat_len = mx.array([prompt_mel.shape[1]] * B)  # T is at index 1
 
         # Generate audio
         audio = self.token2wav(
@@ -592,16 +605,22 @@ class Model(nn.Module):
         inputs = self.frontend.frontend_zero_shot(text, prompt_text, prompt_wav)
 
         # Generate speech tokens from text using LLM
-        # Pass prompt speech tokens for context (voice cloning)
+        # Pass prompt text and speech tokens for context (voice cloning)
         text_tokens = inputs["text_tokens"]
+        prompt_text_tokens = inputs.get("prompt_text_tokens")
         prompt_speech_tokens = inputs.get("prompt_speech_tokens")
         speech_tokens_list = []
 
+        # Estimate minimum tokens based on text length (roughly 2-4 tokens per character)
+        min_tokens = max(10, len(text) * 2)
+
         for token in self.llm.generate(
             text_tokens,
+            prompt_text_tokens=prompt_text_tokens,
             prompt_speech_tokens=prompt_speech_tokens,
             temperature=temperature,
             top_k=top_k,
+            min_tokens=min_tokens,
         ):
             speech_tokens_list.append(token)
 
@@ -612,9 +631,11 @@ class Model(nn.Module):
         mx.eval(speech_tokens)
 
         # Convert speech tokens to audio
+        # Pass prompt_speech_tokens for flow token embedding (required for voice cloning)
         for result in self.generate(
             speech_tokens=speech_tokens,
             speaker_embedding=inputs["speaker_embedding"],
+            prompt_speech_tokens=prompt_speech_tokens,
             prompt_mel=inputs.get("prompt_mel"),
             n_timesteps=n_timesteps,
         ):
@@ -665,11 +686,15 @@ class Model(nn.Module):
             )
 
         # Generate speech tokens
+        # Estimate minimum tokens based on text length
+        min_tokens = max(10, len(text) * 2)
+
         speech_tokens_list = []
         for token in self.llm.generate(
             text_tokens,
             temperature=temperature,
             top_k=top_k,
+            min_tokens=min_tokens,
         ):
             speech_tokens_list.append(token)
 

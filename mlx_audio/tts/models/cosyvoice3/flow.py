@@ -60,8 +60,8 @@ class PreLookaheadLayer(nn.Module):
             if remaining_pad > 0:
                 outputs = mx.pad(outputs, [(0, 0), (0, remaining_pad), (0, 0)])
 
-        # First conv with LeakyReLU
-        outputs = nn.leaky_relu(self.conv1(outputs), negative_slope=0.1)
+        # First conv with LeakyReLU (PyTorch default negative_slope=0.01)
+        outputs = nn.leaky_relu(self.conv1(outputs), negative_slope=0.01)
 
         # Causal padding for second conv - pad on time axis
         outputs = mx.pad(outputs, [(0, 0), (2, 0), (0, 0)])  # kernel_size - 1
@@ -104,6 +104,38 @@ class CausalConditionalCFM(nn.Module):
         # The DiT estimator
         self.estimator = estimator
 
+        # Fixed random noise for reproducibility (matching PyTorch)
+        # PyTorch: set_all_random_seed(0); self.rand_noise = torch.randn([1, 80, 50 * 300])
+        # We need to use the exact same random noise as PyTorch
+        # This is generated once with torch.manual_seed(0); torch.randn([1, 80, 50*300])
+        self._rand_noise = None  # Will be initialized lazily or loaded
+
+    def _init_rand_noise(self):
+        """Initialize random noise matching PyTorch's rand_noise."""
+        import numpy as np
+        import os
+
+        # Try to load from cached file first
+        cache_path = "/tmp/pt_rand_noise_full.npy"
+        if os.path.exists(cache_path):
+            rand_noise_np = np.load(cache_path)
+            self._rand_noise = mx.array(rand_noise_np)
+            return
+
+        # Otherwise, generate using torch if available (for exact match)
+        try:
+            import torch
+
+            torch.manual_seed(0)
+            rand_noise = torch.randn([1, 80, 50 * 300])
+            self._rand_noise = mx.array(rand_noise.numpy())
+            # Save for future use
+            np.save(cache_path, rand_noise.numpy())
+        except ImportError:
+            # Fallback to MLX random (won't match PyTorch exactly)
+            mx.random.seed(0)
+            self._rand_noise = mx.random.normal((1, 80, 50 * 300))
+
     def __call__(
         self,
         mu: mx.array,
@@ -131,8 +163,16 @@ class CausalConditionalCFM(nn.Module):
         """
         B, D, T = mu.shape
 
-        # Initialize with noise
-        z = mx.random.normal((B, D, T)) * temperature
+        # Initialize random noise lazily if not already done
+        if self._rand_noise is None:
+            self._init_rand_noise()
+
+        # Use fixed random noise (matching PyTorch CausalConditionalCFM)
+        # This ensures reproducible outputs
+        z = self._rand_noise[:, :, :T]
+        if B > 1:
+            z = mx.broadcast_to(z, (B, D, T))
+        z = z * temperature
 
         # Time schedule
         if self.t_scheduler == "cosine":
@@ -237,8 +277,10 @@ class CausalConditionalCFM(nn.Module):
             )
 
             # Split and apply CFG
+            # PyTorch formula: (1 + cfg_rate) * cond - cfg_rate * uncond
+            # = cond + cfg_rate * (cond - uncond)
             out_cond, out_uncond = mx.split(out, 2, axis=0)
-            out = out_uncond + cfg_rate * (out_cond - out_uncond)
+            out = (1.0 + cfg_rate) * out_cond - cfg_rate * out_uncond
 
             return out
         else:
@@ -311,7 +353,7 @@ class CausalMaskedDiffWithDiT(nn.Module):
             token_len: Token lengths (B,)
             prompt_token: Prompt tokens (B, T_prompt)
             prompt_token_len: Prompt token lengths (B,)
-            prompt_feat: Prompt mel features (B, mel_dim, T_prompt * ratio)
+            prompt_feat: Prompt mel features (B, T_prompt * ratio, mel_dim) - PyTorch format
             prompt_feat_len: Prompt feature lengths (B,)
             embedding: Speaker embedding (B, spk_embed_dim)
             n_timesteps: Number of ODE steps
@@ -321,51 +363,63 @@ class CausalMaskedDiffWithDiT(nn.Module):
         Returns:
             Generated mel-spectrogram (B, mel_dim, T * ratio)
         """
+        # Normalize speaker embedding (matching PyTorch F.normalize)
+        embedding_norm = mx.sqrt(mx.sum(embedding ** 2, axis=1, keepdims=True) + 1e-12)
+        embedding = embedding / embedding_norm
+
+        # Speaker embedding projection
+        spks = self.spk_embed_affine_layer(embedding)  # (B, output_size)
+
         # Combine prompt and target tokens
         if prompt_token.size > 0:
             all_tokens = mx.concatenate([prompt_token, token], axis=1)
+            total_token_len = prompt_token_len + token_len
         else:
             all_tokens = token
+            total_token_len = token_len
 
-        # Token embedding
-        token_embed = self.input_embedding(all_tokens)  # (B, T, D)
+        # Clamp tokens to valid range (matching PyTorch torch.clamp(token, min=0))
+        all_tokens = mx.maximum(all_tokens, 0)
+
+        # Create mask for token embedding (B, T, 1)
+        B = all_tokens.shape[0]
+        T = all_tokens.shape[1]
+        token_mask = (mx.arange(T)[None, :] < total_token_len[:, None]).astype(mx.float32)
+        token_mask = token_mask[:, :, None]  # (B, T, 1)
+
+        # Token embedding with mask
+        token_embed = self.input_embedding(all_tokens) * token_mask  # (B, T, D)
 
         # Apply pre-lookahead
         token_embed = self.pre_lookahead_layer(token_embed)
 
-        # Upsample by token_mel_ratio using linear interpolation
-        B, T, D = token_embed.shape
+        # Upsample by token_mel_ratio using repeat_interleave equivalent
+        # (matching PyTorch h.repeat_interleave(self.token_mel_ratio, dim=1))
         T_out = T * self.token_mel_ratio
-
-        # Simple linear interpolation for upsampling
-        mu = self._upsample(token_embed, T_out)  # (B, T_out, D)
+        mu = self._upsample_repeat(token_embed, self.token_mel_ratio)  # (B, T_out, D)
         mu = mu.transpose(0, 2, 1)  # (B, D, T_out)
 
-        # Create mask
-        total_len = (
-            prompt_token_len.astype(mx.int32) + token_len.astype(mx.int32)
-        ) * self.token_mel_ratio
+        # Create mask for mel generation
+        mel_len = total_token_len * self.token_mel_ratio
         max_len = T_out
-        mask = mx.arange(max_len)[None, :] < total_len[:, None]  # (B, T_out)
-
-        # Speaker embedding
-        spks = self.spk_embed_affine_layer(embedding)  # (B, output_size)
+        mask = mx.arange(max_len)[None, :] < mel_len[:, None]  # (B, T_out)
 
         # Condition mel (use prompt_feat padded to full length)
-        B, D_feat, T_feat = (
-            prompt_feat.shape
-            if prompt_feat.ndim == 3
-            else (prompt_feat.shape[0], self.output_size, 0)
-        )
-        if prompt_feat.size > 0 and T_feat > 0:
-            # Pad or truncate prompt features to target length
+        # prompt_feat is expected as (B, T, mel_dim) format (matching PyTorch)
+        if prompt_feat.ndim == 3 and prompt_feat.size > 0:
+            # prompt_feat is (B, T_prompt, mel_dim)
+            B_feat, T_feat, D_feat = prompt_feat.shape
+
+            # Copy prompt features
             T_copy = min(T_feat, T_out)
-            if T_copy < T_out:
-                # Pad with zeros
-                padding = mx.zeros((B, self.output_size, T_out - T_copy))
-                cond = mx.concatenate([prompt_feat[:, :, :T_copy], padding], axis=2)
-            else:
-                cond = prompt_feat[:, :, :T_out]
+            # Create with numpy for easier indexing
+            import numpy as np
+
+            conds_np = np.zeros((B, T_out, self.output_size), dtype=np.float32)
+            conds_np[:, :T_copy, :] = np.array(prompt_feat[:, :T_copy, :])
+            conds_btd = mx.array(conds_np)
+            # Transpose to (B, mel_dim, T) for decoder
+            cond = conds_btd.transpose(0, 2, 1)
         else:
             cond = mx.zeros((B, self.output_size, T_out))
 
@@ -395,6 +449,16 @@ class CausalMaskedDiffWithDiT(nn.Module):
 
         return output
 
+    def _upsample_repeat(self, x: mx.array, ratio: int) -> mx.array:
+        """Upsample by repeating each element (matching PyTorch repeat_interleave)."""
+        B, T, D = x.shape
+        # Repeat each element along the time axis
+        # Shape: (B, T, D) -> (B, T, 1, D) -> (B, T, ratio, D) -> (B, T*ratio, D)
+        x = x[:, :, None, :]  # (B, T, 1, D)
+        x = mx.broadcast_to(x, (B, T, ratio, D))  # (B, T, ratio, D)
+        x = x.reshape(B, T * ratio, D)  # (B, T*ratio, D)
+        return x
+
     def inference(
         self,
         token: mx.array,
@@ -411,7 +475,9 @@ class CausalMaskedDiffWithDiT(nn.Module):
         """
         Inference wrapper for mel generation.
 
-        Returns only the generated part (without prompt).
+        Returns only the generated part (without prompt), matching PyTorch:
+        feat = feat[:, :, mel_len1:]
+        where mel_len1 = prompt_feat.shape[1]
         """
         mel = self(
             token,
@@ -426,9 +492,13 @@ class CausalMaskedDiffWithDiT(nn.Module):
             temperature,
         )
 
-        # Extract only the generated part
-        prompt_mel_len = prompt_feat_len * 1  # Already in mel frames
-        gen_mel_len = token_len * self.token_mel_ratio
+        # Extract only the generated part (matching PyTorch exactly)
+        # PyTorch uses: mel_len1 = prompt_feat.shape[1]
+        # This is the actual prompt mel length, not calculated from token length
+        if prompt_feat.size > 0 and prompt_feat.ndim == 3:
+            mel_len1 = prompt_feat.shape[1]  # (B, T, D) -> T is the mel length
+        else:
+            mel_len1 = 0
 
-        # For now, return full mel and let caller handle slicing
-        return mel
+        # Return only the generated part: feat[:, :, mel_len1:]
+        return mel[:, :, mel_len1:]

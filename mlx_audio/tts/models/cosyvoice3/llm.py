@@ -133,21 +133,134 @@ class CosyVoice3LM(nn.Module):
         """
         return self.llm_decoder(hidden_states)
 
+    def nucleus_sampling(
+        self,
+        logits: mx.array,
+        top_p: float = 0.8,
+        top_k: int = 25,
+    ) -> mx.array:
+        """
+        Nucleus (top-p) sampling combined with top-k.
+
+        Matches PyTorch CosyVoice3's nucleus_sampling function exactly.
+
+        Args:
+            logits: Token logits (V,) - single position
+            top_p: Cumulative probability threshold
+            top_k: Maximum number of tokens to consider
+
+        Returns:
+            Sampled token ID (scalar)
+        """
+        # Convert to probabilities
+        probs = mx.softmax(logits, axis=-1)
+
+        # Sort by probability (descending)
+        sorted_indices = mx.argsort(-probs)
+        sorted_probs = probs[sorted_indices]
+
+        # Cumulative sum to find top-p cutoff
+        cumsum = mx.cumsum(sorted_probs)
+
+        # Find cutoff: where cumsum >= top_p or we've reached top_k
+        # Create mask for tokens to keep
+        n_tokens = min(top_k, logits.shape[0])
+        mask = mx.arange(n_tokens)
+
+        # Get candidates within top-p and top-k
+        valid_probs = []
+        valid_indices = []
+        cum_prob = 0.0
+
+        # Evaluate to get actual values for the loop
+        mx.eval(sorted_probs, sorted_indices)
+        sorted_probs_np = sorted_probs.tolist()
+        sorted_indices_np = sorted_indices.tolist()
+
+        for i in range(min(top_k, len(sorted_probs_np))):
+            if cum_prob < top_p:
+                cum_prob += sorted_probs_np[i]
+                valid_probs.append(sorted_probs_np[i])
+                valid_indices.append(sorted_indices_np[i])
+            else:
+                break
+
+        if len(valid_probs) == 0:
+            # Fallback to argmax
+            return mx.argmax(logits)
+
+        # Sample from valid candidates
+        valid_probs = mx.array(valid_probs)
+        valid_indices = mx.array(valid_indices, dtype=mx.int32)
+
+        # Normalize and sample
+        valid_probs = valid_probs / mx.sum(valid_probs)
+        sampled_idx = mx.random.categorical(valid_probs[None, :])[0]
+        return valid_indices[sampled_idx]
+
+    def ras_sampling(
+        self,
+        logits: mx.array,
+        decoded_tokens: list,
+        top_p: float = 0.8,
+        top_k: int = 25,
+        win_size: int = 10,
+        tau_r: float = 0.1,
+    ) -> mx.array:
+        """
+        Repetition Aware Sampling (RAS).
+
+        Matches PyTorch CosyVoice3's ras_sampling function exactly.
+        If a token appears too frequently in recent history, falls back to random sampling.
+
+        Args:
+            logits: Token logits (V,) - single position
+            decoded_tokens: List of previously decoded token IDs
+            top_p: Nucleus sampling threshold
+            top_k: Top-k sampling limit
+            win_size: Window size for repetition detection
+            tau_r: Repetition threshold ratio
+
+        Returns:
+            Sampled token ID (scalar)
+        """
+        # First, do nucleus sampling
+        top_id = self.nucleus_sampling(logits, top_p=top_p, top_k=top_k)
+        mx.eval(top_id)
+
+        # Check for repetition in recent window
+        recent_tokens = decoded_tokens[-win_size:] if len(decoded_tokens) > 0 else []
+        if len(recent_tokens) > 0:
+            top_id_val = int(top_id.item())
+            rep_count = sum(1 for t in recent_tokens if t == top_id_val)
+
+            # If token appears too frequently, use random sampling
+            if rep_count >= win_size * tau_r:
+                # Fall back to full random sampling from softmax
+                probs = mx.softmax(logits, axis=-1)
+                top_id = mx.random.categorical(probs[None, :])[0]
+
+        return top_id
+
     def sample_next_token(
         self,
         logits: mx.array,
         temperature: float = 1.0,
         top_k: int = 25,
         top_p: float = 0.8,
+        decoded_tokens: list = None,
+        use_ras: bool = True,
     ) -> mx.array:
         """
-        Sample next token from logits.
+        Sample next token from logits using RAS (Repetition Aware Sampling).
 
         Args:
             logits: Token logits (B, 1, V) or (B, V)
             temperature: Sampling temperature
             top_k: Top-k sampling
-            top_p: Nucleus sampling (not implemented yet)
+            top_p: Nucleus sampling threshold
+            decoded_tokens: List of previously decoded tokens (for RAS)
+            use_ras: Whether to use Repetition Aware Sampling
 
         Returns:
             Sampled token IDs (B, 1)
@@ -165,23 +278,23 @@ class CosyVoice3LM(nn.Module):
             # Greedy
             return mx.argmax(logits, axis=-1, keepdims=True)
 
-        # Apply top-k filtering
+        # Use RAS for batch size 1 (most common case)
+        if B == 1 and use_ras:
+            if decoded_tokens is None:
+                decoded_tokens = []
+            token = self.ras_sampling(
+                logits[0], decoded_tokens, top_p=top_p, top_k=top_k
+            )
+            return token[None, None] if token.ndim == 0 else token[None, :]
+
+        # Fallback to basic top-k for batch processing
         if top_k > 0:
-            # Get indices of top-k elements using argpartition
-            # argpartition returns indices that would partition the array
-            # such that the k largest elements are at the end
             top_k_indices = mx.argpartition(-logits, kth=top_k - 1, axis=-1)[
                 :, :top_k
-            ]  # Take first k (largest after negation)
-
-            # Get the corresponding logits
+            ]
             top_k_logits = mx.take_along_axis(logits, top_k_indices, axis=-1)
-
-            # Sample from top-k
             probs = mx.softmax(top_k_logits, axis=-1)
             sampled_idx = mx.random.categorical(probs)
-
-            # Map back to vocabulary
             next_token = mx.take_along_axis(
                 top_k_indices, sampled_idx[:, None], axis=-1
             )
@@ -195,6 +308,7 @@ class CosyVoice3LM(nn.Module):
     def generate(
         self,
         text_tokens: mx.array,
+        prompt_text_tokens: Optional[mx.array] = None,
         prompt_speech_tokens: Optional[mx.array] = None,
         max_tokens: int = 2048,
         temperature: float = 1.0,
@@ -205,10 +319,12 @@ class CosyVoice3LM(nn.Module):
         """
         Generate speech tokens autoregressively from text tokens.
 
-        Input sequence format: [SOS, text_tokens, TASK_ID, prompt_speech_tokens...]
+        Uses RAS (Repetition Aware Sampling) matching PyTorch CosyVoice3.
+        Input sequence format: [SOS, prompt_text + text, TASK_ID, prompt_speech_tokens...]
 
         Args:
-            text_tokens: Text token IDs (B, T)
+            text_tokens: Text token IDs (B, T) - the text to synthesize
+            prompt_text_tokens: Optional prompt text tokens (B, T_prompt_text) - transcript of prompt audio
             prompt_speech_tokens: Optional prompt speech tokens for voice cloning (B, T_prompt)
             max_tokens: Maximum number of tokens to generate
             temperature: Sampling temperature
@@ -224,19 +340,27 @@ class CosyVoice3LM(nn.Module):
         # Create KV cache for incremental generation
         cache = make_prompt_cache(self.llm)
 
-        # Build input sequence: [SOS, text, TASK_ID, prompt_speech]
-        # 1. SOS embedding
+        # Build input sequence: [SOS, prompt_text + text, TASK_ID, prompt_speech]
+        # Following PyTorch: text = torch.concat([prompt_text, text], dim=1)
+
+        # 1. Concatenate prompt_text + text (if prompt_text provided)
+        if prompt_text_tokens is not None and prompt_text_tokens.shape[1] > 0:
+            combined_text = mx.concatenate([prompt_text_tokens, text_tokens], axis=1)
+        else:
+            combined_text = text_tokens
+
+        # 2. SOS embedding
         sos_token = mx.full((B, 1), self.SOS_TOKEN, dtype=mx.int32)
         sos_emb = self.encode_speech(sos_token)
 
-        # 2. Text embeddings
-        text_emb = self.encode_text(text_tokens)
+        # 3. Text embeddings (combined prompt_text + text)
+        text_emb = self.encode_text(combined_text)
 
-        # 3. Task ID embedding
+        # 4. Task ID embedding
         task_id_token = mx.full((B, 1), self.TASK_ID_TOKEN, dtype=mx.int32)
         task_id_emb = self.encode_speech(task_id_token)
 
-        # 4. Prompt speech embeddings (if provided)
+        # 5. Prompt speech embeddings (if provided)
         if prompt_speech_tokens is not None and prompt_speech_tokens.shape[1] > 0:
             prompt_emb = self.encode_speech(prompt_speech_tokens)
             embeddings = mx.concatenate(
@@ -251,21 +375,27 @@ class CosyVoice3LM(nn.Module):
         # Get logits for speech tokens (last position)
         logits = self.decode_to_speech(hidden[:, -1:, :])
 
-        # Sample first token
-        current_token = self.sample_next_token(logits, temperature, top_k, top_p)
+        # Track decoded tokens for RAS (Repetition Aware Sampling)
+        decoded_tokens: List[int] = []
+
+        # Sample first token with RAS
+        current_token = self.sample_next_token(
+            logits, temperature, top_k, top_p, decoded_tokens=decoded_tokens
+        )
         mx.eval(current_token)
 
         generated_count = 0
 
         while generated_count < max_tokens:
-            # Check for EOS
-            if (
-                generated_count >= min_tokens
-                and (current_token == self.EOS_TOKEN).all()
-            ):
+            # Check for EOS (only after min_tokens)
+            current_token_val = int(current_token.item()) if current_token.size == 1 else int(current_token[0, 0].item())
+            if generated_count >= min_tokens and current_token_val == self.EOS_TOKEN:
                 break
 
             yield current_token
+
+            # Track token for RAS
+            decoded_tokens.append(current_token_val)
             generated_count += 1
 
             # Encode current token
@@ -277,8 +407,10 @@ class CosyVoice3LM(nn.Module):
             # Get logits
             logits = self.decode_to_speech(hidden[:, -1:, :])
 
-            # Sample next token
-            current_token = self.sample_next_token(logits, temperature, top_k, top_p)
+            # Sample next token with RAS
+            current_token = self.sample_next_token(
+                logits, temperature, top_k, top_p, decoded_tokens=decoded_tokens
+            )
             mx.eval(current_token)
 
     def __call__(
