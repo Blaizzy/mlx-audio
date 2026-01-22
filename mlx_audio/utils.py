@@ -138,26 +138,14 @@ def get_model_path(
     if allow_patterns is None:
         allow_patterns = DEFAULT_ALLOW_PATTERNS
 
-    # Try loading from local cache first (no network calls)
-    try:
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=allow_patterns,
-                local_files_only=True,
-            )
+    model_path = Path(
+        snapshot_download(
+            path_or_hf_repo,
+            revision=revision,
+            allow_patterns=allow_patterns,
+            force_download=force_download,
         )
-    except Exception:
-        # Fall back to network download if not cached
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=allow_patterns,
-                force_download=force_download,
-            )
-        )
+    )
 
     return model_path
 
