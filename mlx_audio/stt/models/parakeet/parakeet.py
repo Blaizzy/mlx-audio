@@ -330,6 +330,7 @@ class Model(nn.Module):
         step_samples = chunk_samples - overlap_samples
 
         all_tokens = []
+        previous_text = ""
 
         for start in tqdm(
             range(0, total_samples, step_samples),
@@ -370,7 +371,11 @@ class Model(nn.Module):
 
             # Build current result
             current_result = sentences_to_result(tokens_to_sentences(all_tokens))
-            new_text = current_result.text
+            accumulated_text = current_result.text
+
+            # Calculate new text since last emission
+            new_text = accumulated_text[len(previous_text) :]
+            previous_text = accumulated_text
 
             # Calculate progress
             progress = end / total_samples

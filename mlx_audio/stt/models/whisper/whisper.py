@@ -669,6 +669,7 @@ class Model(nn.Module):
         audio: Union[str, np.ndarray, mx.array],
         *,
         verbose: Optional[bool] = None,
+        chunk_duration: float = 1.0,
         stream: bool = False,
         generation_stream: bool = False,
         temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
@@ -748,7 +749,9 @@ class Model(nn.Module):
         """
 
         if stream:
-            return self.generate_streaming(audio, **decode_options)
+            return self.generate_streaming(
+                audio, chunk_duration=chunk_duration, **decode_options
+            )
 
         decode_options.pop("max_tokens", None)
         decode_options.pop("generation_stream", None)

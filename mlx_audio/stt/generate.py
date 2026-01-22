@@ -258,7 +258,9 @@ def generate_transcription(
     kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
 
     if kwargs.get("stream", False):
-        results = []
+        all_segments = []
+        accumulated_text = ""
+        language = "en"
         for result in model.generate(audio, verbose=verbose, **kwargs):
             segment_dict = {
                 "text": result.text,
@@ -266,18 +268,27 @@ def generate_transcription(
                 "end": result.end_time,
                 "is_final": result.is_final,
             }
-
-            results.append(
-                STTOutput(
-                    text=result.text, segments=[segment_dict], language=result.language
-                )
+            print(
+                f"[{segment_dict['start']:.2f}s - {segment_dict['end']:.2f}s] {segment_dict['text']}"
+                if result.is_final
+                else f"[{result.progress:.1%}] [{segment_dict['start']:.2f}s - {segment_dict['end']:.2f}s] {segment_dict['text']}"
             )
-        segments = mx.concatenate([result.segments for result in results], axis=0)
+            all_segments.append(segment_dict)
+            # Accumulate text (handles both incremental and cumulative streaming)
+            accumulated_text += result.text
+            language = result.language
+
+        segments = STTOutput(
+            text=accumulated_text.strip(),
+            segments=all_segments,
+            language=language,
+        )
     else:
 
         segments = model.generate(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
+
     end_time = time.time()
 
     if verbose:
