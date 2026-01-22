@@ -208,6 +208,7 @@ def generate_audio(
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
     voice: str = "af_heart",
+    instruct: Optional[str] = None,
     speed: float = 1.0,
     lang_code: str = "en",
     cfg_scale: Optional[float] = None,
@@ -233,7 +234,8 @@ def generate_audio(
     Parameters:
     - text (str): The input text to be converted to speech.
     - model (str): The TTS model to use.
-    - voice (str): The voice style to use.
+    - voice (str): The voice style to use (also used as speaker for Qwen3-TTS models).
+    - instruct (str): Instruction for emotion/style (CustomVoice) or voice description (VoiceDesign).
     - temperature (float): The temperature for the model.
     - speed (float): Playback speed multiplier.
     - lang_code (str): The language code.
@@ -297,6 +299,9 @@ def generate_audio(
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
+
+        if instruct is not None:
+            print(f"\033[94mInstruct:\033[0m {instruct}")
 
         print(
             f"\033[94mText:\033[0m {text}\n"
@@ -407,7 +412,18 @@ def parse_args():
         default=None,
         help="Text to generate (leave blank to input via stdin)",
     )
-    parser.add_argument("--voice", type=str, default=None, help="Voice name")
+    parser.add_argument(
+        "--voice",
+        type=str,
+        default=None,
+        help="Voice/speaker name (e.g., Chelsie, Ethan, Vivian for Qwen3-TTS)",
+    )
+    parser.add_argument(
+        "--instruct",
+        type=str,
+        default=None,
+        help="Instruction for CustomVoice (emotion/style) or VoiceDesign (voice description)",
+    )
     parser.add_argument(
         "--exaggeration",
         type=float,

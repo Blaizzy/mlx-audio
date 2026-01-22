@@ -449,6 +449,7 @@ class Model(nn.Module):
         self,
         text: str,
         voice: Optional[str] = None,
+        instruct: Optional[str] = None,
         temperature: float = 0.9,
         speed: float = 1.0,
         lang_code: str = "auto",
@@ -466,9 +467,15 @@ class Model(nn.Module):
     ) -> Generator[GenerationResult, None, None]:
         """Generate audio from text.
 
+        Automatically routes to the appropriate generation method based on model type:
+        - voice_design: Uses generate_voice_design() with instruct as voice description
+        - custom_voice: Uses generate_custom_voice() with voice as speaker and optional instruct
+        - base: Uses standard generation with voice as speaker
+
         Args:
             text: Input text to synthesize
-            voice: Speaker name (for multi-speaker models)
+            voice: Speaker name (for multi-speaker models, e.g., 'Chelsie', 'Ethan')
+            instruct: Instruction for emotion/style (CustomVoice) or voice description (VoiceDesign)
             temperature: Sampling temperature
             speed: Speech speed factor (not directly supported yet)
             lang_code: Language code (auto, chinese, english, etc.)
@@ -486,6 +493,49 @@ class Model(nn.Module):
         Yields:
             GenerationResult objects with generated audio
         """
+        # Route to appropriate method based on model type
+        tts_model_type = getattr(self.config, "tts_model_type", "base")
+
+        if tts_model_type == "voice_design":
+            if not instruct:
+                raise ValueError(
+                    "VoiceDesign model requires 'instruct' to describe the voice "
+                    "(e.g., 'A cheerful young female voice with high pitch')"
+                )
+            yield from self.generate_voice_design(
+                text=text,
+                instruct=instruct,
+                language=lang_code,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                verbose=verbose,
+            )
+            return
+
+        if tts_model_type == "custom_voice":
+            if not voice:
+                raise ValueError(
+                    "CustomVoice model requires 'voice' (speaker name) "
+                    "(e.g., 'Chelsie', 'Ethan', 'Vivian')"
+                )
+            yield from self.generate_custom_voice(
+                text=text,
+                speaker=voice,
+                language=lang_code,
+                instruct=instruct,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                verbose=verbose,
+            )
+            return
+
+        # Base model generation
         if self.speech_tokenizer is None:
             raise ValueError("Speech tokenizer not loaded")
 
