@@ -1044,14 +1044,15 @@ class Model(nn.Module):
         # Load weights - use PyTorch as intermediate for bfloat16 support
         weights = {}
         weight_files = list(path.glob("*.safetensors"))
-        for wf in weight_files:
+        if len(weight_files) == 0:
+            raise FileNotFoundError(f"No safetensors found in {path}")
 
-            with safe_open(str(wf), framework="mlx") as f:
-                for k in f.keys():
-                    weights[k] = f.get_tensor(k)
+        for wf in weight_files:
+            weights.update(mx.load(str(wf)))
 
         # Sanitize and load
         weights = model.sanitize(weights)
+
         model.load_weights(list(weights.items()))
 
         # Call post_load_hook to initialize tokenizer and speech tokenizer
