@@ -329,13 +329,14 @@ class Model(nn.Module):
             if new_key.startswith("language_model.layers."):
                 new_key = "language_model.model." + new_key[len("language_model.") :]
             elif new_key.startswith("language_model.embed_tokens"):
-                new_key = "language_model.model.embed_tokens" + new_key[
-                    len("language_model.embed_tokens") :
-                ]
+                new_key = (
+                    "language_model.model.embed_tokens"
+                    + new_key[len("language_model.embed_tokens") :]
+                )
             elif new_key.startswith("language_model.norm"):
-                new_key = "language_model.model.norm" + new_key[
-                    len("language_model.norm") :
-                ]
+                new_key = (
+                    "language_model.model.norm" + new_key[len("language_model.norm") :]
+                )
 
             # Map lm_head to language_model.lm_head
             if new_key.startswith("lm_head."):
@@ -392,9 +393,7 @@ class Model(nn.Module):
         # <|object_ref_start|> = speech_start
         # <|object_ref_end|> = speech_end
         # <|box_start|> = speech_pad (placeholder for audio features)
-        model._speech_start_id = tokenizer.convert_tokens_to_ids(
-            "<|object_ref_start|>"
-        )
+        model._speech_start_id = tokenizer.convert_tokens_to_ids("<|object_ref_start|>")
         model._speech_end_id = tokenizer.convert_tokens_to_ids("<|object_ref_end|>")
         model._speech_pad_id = tokenizer.convert_tokens_to_ids("<|box_start|>")
 

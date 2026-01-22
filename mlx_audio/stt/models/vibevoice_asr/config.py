@@ -132,9 +132,7 @@ class Qwen2Config:
     tie_word_embeddings: bool = False
 
     # Layer types (all full attention for ASR model)
-    layer_types: List[str] = field(
-        default_factory=lambda: ["full_attention"] * 28
-    )
+    layer_types: List[str] = field(default_factory=lambda: ["full_attention"] * 28)
 
     # Sliding window (not used in ASR)
     sliding_window: Optional[int] = None
