@@ -7,9 +7,11 @@ from typing import Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import soundfile as sf
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import resample
+
+from mlx_audio.audio_io import read as audio_read
+from mlx_audio.audio_io import write as audio_write
 
 from .audio_player import AudioPlayer
 from .utils import load_model
@@ -22,7 +24,7 @@ def load_audio(
     volume_normalize: bool = False,
     segment_duration: int = None,
 ) -> mx.array:
-    samples, orig_sample_rate = sf.read(audio_path)
+    samples, orig_sample_rate = audio_read(audio_path)
     shape = samples.shape
 
     # Collapse multi channel as mono
@@ -332,7 +334,12 @@ def generate_audio(
                 audio_list.append(result.audio)
             elif not stream:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
-                sf.write(file_name, result.audio, result.sample_rate)
+                audio_write(
+                    file_name,
+                    np.array(result.audio),
+                    result.sample_rate,
+                    format=audio_format,
+                )
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 
             if verbose:
@@ -356,7 +363,7 @@ def generate_audio(
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(
+            audio_write(
                 f"{file_prefix}.{audio_format}",
                 audio,
                 model.sample_rate,

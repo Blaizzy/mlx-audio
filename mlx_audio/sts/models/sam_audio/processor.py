@@ -36,15 +36,15 @@ def load_audio(audio_path: str, target_sr: int = 48000) -> Tuple[np.ndarray, int
     audio = None
     sr = None
 
-    # Try soundfile first
+    # Try miniaudio first
     try:
-        import soundfile as sf
+        from mlx_audio.audio_io import read as audio_read
 
-        audio, sr = sf.read(audio_path)
+        audio, sr = audio_read(audio_path)
     except ImportError:
         pass
     except Exception as e:
-        # soundfile failed, try librosa
+        # miniaudio failed, try librosa
         pass
 
     # Fallback to librosa
@@ -55,8 +55,8 @@ def load_audio(audio_path: str, target_sr: int = 48000) -> Tuple[np.ndarray, int
             audio, sr = librosa.load(audio_path, sr=None)
         except ImportError:
             raise ImportError(
-                "Please install soundfile or librosa for audio loading: "
-                "pip install soundfile librosa"
+                "Please install miniaudio or librosa for audio loading: "
+                "pip install miniaudio librosa"
             )
         except Exception as e:
             raise RuntimeError(f"Failed to load audio file {audio_path}: {e}")
@@ -416,9 +416,9 @@ def save_audio(
         audio = audio.squeeze()
 
     try:
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
-        sf.write(path, audio, sample_rate)
+        audio_write(path, audio, sample_rate)
     except ImportError:
         try:
             from scipy.io import wavfile
@@ -428,6 +428,6 @@ def save_audio(
             wavfile.write(path, sample_rate, audio_int)
         except ImportError:
             raise ImportError(
-                "Please install soundfile or scipy for audio saving: "
-                "pip install soundfile scipy"
+                "Please install miniaudio or scipy for audio saving: "
+                "pip install miniaudio scipy"
             )

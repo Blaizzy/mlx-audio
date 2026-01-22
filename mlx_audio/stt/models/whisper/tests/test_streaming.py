@@ -287,11 +287,11 @@ class TestGenerateStreaming:
     @pytest.fixture
     def sample_audio_file(self, tmp_path):
         """Create a sample audio file."""
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
         audio = np.zeros(32000, dtype=np.float32)  # 2 seconds
         path = tmp_path / "test.wav"
-        sf.write(str(path), audio, 16000)
+        audio_write(str(path), audio, 16000)
         return str(path)
 
     def test_generate_streaming_is_generator(self, whisper_model, sample_audio_file):
@@ -337,7 +337,7 @@ class TestStreamingIntegration:
     @pytest.fixture
     def speech_audio(self, tmp_path):
         """Create audio with speech-like characteristics."""
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
         # Generate 3 seconds of audio with varying amplitude (simulates speech)
         t = np.linspace(0, 3, 48000)
@@ -346,7 +346,7 @@ class TestStreamingIntegration:
         audio = audio.astype(np.float32)
 
         path = tmp_path / "speech.wav"
-        sf.write(str(path), audio, 16000)
+        audio_write(str(path), audio, 16000)
         return str(path)
 
     def test_streaming_produces_results(self, whisper_model, speech_audio):
@@ -413,11 +413,11 @@ class TestSharedHelpers:
 
     def test_prepare_audio_from_path(self, whisper_model, tmp_path):
         """_prepare_audio loads audio from file path."""
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
         audio = np.zeros(16000, dtype=np.float32)
         path = tmp_path / "test.wav"
-        sf.write(str(path), audio, 16000)
+        audio_write(str(path), audio, 16000)
 
         mel, content_frames = whisper_model._prepare_audio(str(path))
 

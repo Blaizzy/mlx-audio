@@ -85,6 +85,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit)
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 
 ## Model Examples
@@ -238,6 +239,16 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 
 ## Quantization
 
+- MLX
+- Python 3.8+
+- Apple Silicon Mac (for optimal performance)
+- For the web interface and API:
+  - FastAPI
+  - Uvicorn
+
+## Swift
+
+Looking for Swift/iOS support? Check out [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift) for on-device TTS using MLX on macOS and iOS.
 Reduce model size and improve performance with quantization using the convert script:
 
 ```bash
@@ -268,50 +279,27 @@ python -m mlx_audio.convert \
 | `--dtype` | Weight dtype: `float16`, `bfloat16`, `float32` |
 | `--upload-repo` | Upload converted model to HF Hub |
 
-**Pre-quantized models available:**
-- [mlx-community/Kokoro-82M-4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit)
-- [mlx-community/Kokoro-82M-6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit)
-- [mlx-community/Kokoro-82M-8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit)
-- [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16)
-
-## Swift Integration
-
-Native Swift package for iOS and macOS apps.
-
-### Installation
-
-Add to your `Package.swift`:
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/Blaizzy/mlx-audio.git", from: "0.2.5")
-]
-```
-
-### Usage
-
-```swift
-import MLXAudio
-
-// Create session (auto-downloads model)
-let session = try await MarvisSession(voice: .conversationalA)
-
-// Generate speech (auto-plays)
-let result = try await session.generate(for: "Hello from Swift!")
-
-// Streaming generation
-for try await chunk in session.stream(text: "Streaming audio...") {
-    print("Chunk: \(chunk.sampleCount) samples")
-}
-```
-
-**Supported Platforms:** macOS 14.0+, iOS 16.0+
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
+- **ffmpeg** (required for MP3/FLAC audio encoding)
+
+### Installing ffmpeg
+
+ffmpeg is required for saving audio in MP3 or FLAC format. Install it using:
+
+```bash
+# macOS (using Homebrew)
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt install ffmpeg
+```
+
+WAV format works without ffmpeg.
 
 ## License
 

@@ -13,13 +13,16 @@ from misaki import en, espeak
 from .voice import load_voice_tensor
 
 ALIASES = {
+    "en": "a",
     "en-us": "a",
     "en-gb": "b",
     "es": "e",
     "fr-fr": "f",
+    "fr": "f",
     "hi": "h",
     "it": "i",
     "pt-br": "p",
+    "pt": "p",
     "ja": "j",
     "zh": "z",
 }

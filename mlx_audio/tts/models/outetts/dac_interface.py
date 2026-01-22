@@ -4,8 +4,8 @@ import mlx.core as mx
 import numpy as np
 import pyloudnorm as pyln
 import scipy.signal
-import soundfile as sf
 
+from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec import DAC
 
 
@@ -93,7 +93,7 @@ class DacInterface:
         return self.convert_audio(audio, sr, self.sr, 1)
 
     def load_audio(self, path):
-        audio_np, sr = sf.read(path)
+        audio_np, sr = audio_read(path)
         audio = mx.array(audio_np)
         if len(audio.shape) == 1:
             audio = audio.reshape(1, -1)

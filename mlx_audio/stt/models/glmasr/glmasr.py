@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+from tqdm import tqdm
 
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
@@ -476,6 +477,7 @@ class Model(nn.Module):
         max_tokens: int = 128,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
         generation_stream: bool = False,
+        verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         """Stream generate tokens from input.
 
@@ -504,12 +506,17 @@ class Model(nn.Module):
 
         with wired_limit(self, [generation_stream]):
             prompt = input_ids[0] if input_ids.ndim > 1 else input_ids
-            for token, logprobs in generate_step(
-                prompt=prompt,
-                input_embeddings=input_embeddings,
-                model=self.language_model,
-                max_tokens=max_tokens,
-                sampler=sampler,
+            for token, logprobs in tqdm(
+                generate_step(
+                    prompt=prompt,
+                    input_embeddings=input_embeddings,
+                    model=self.language_model,
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                ),
+                total=max_tokens,
+                disable=not verbose,
+                desc="Streaming",
             ):
                 if token in self.config.lm_config.eos_token_id:
                     break
@@ -593,10 +600,9 @@ class Model(nn.Module):
             max_tokens=max_tokens,
             sampler=sampler,
             generation_stream=generation_stream,
+            verbose=verbose,
         ):
             generated_tokens.append(token)
-            if verbose:
-                print(self._tokenizer.decode([token]), end="", flush=True)
 
         end_time = time.time()
 

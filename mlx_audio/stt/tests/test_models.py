@@ -55,10 +55,12 @@ class TestWhisperModel(unittest.TestCase):
     @patch("mlx_audio.stt.models.whisper.whisper.snapshot_download")
     @patch("mlx_audio.stt.models.whisper.whisper.mx.load")
     @patch("mlx_audio.stt.models.whisper.whisper.json.loads")
+    @patch("glob.glob")
     @patch("builtins.open", new_callable=MagicMock)
     def test_from_pretrained(
         self,
         mock_open,
+        mock_glob,
         mock_json_loads_in_whisper,
         mock_mx_load,
         mock_snapshot_download,
@@ -66,6 +68,7 @@ class TestWhisperModel(unittest.TestCase):
     ):
 
         mock_snapshot_download.return_value = "dummy_path"
+        mock_glob.return_value = ["dummy_path/weights.safetensors"]
 
         mock_paths_registry = {}
 
