@@ -9,6 +9,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.models.base import GenerationResult
 
 from .config import (
@@ -36,77 +37,42 @@ def mel_spectrogram(
     if audio.ndim == 1:
         audio = audio[None, :]
 
-    batch_size, audio_len = audio.shape
+    batch_size, _ = audio.shape
 
-    # Pad audio
-    pad_size = (n_fft - hop_size) // 2
-    audio = mx.pad(audio, [(0, 0), (pad_size, pad_size)], mode="reflect")
+    # Get mel filterbank from shared DSP module (cached)
+    mel_basis = mel_filters(
+        sample_rate=sample_rate,
+        n_fft=n_fft,
+        n_mels=num_mels,
+        f_min=fmin,
+        f_max=fmax,
+        mel_scale="htk",
+    )
 
-    # Create mel filterbank
-    mel_basis = _create_mel_filterbank(sample_rate, n_fft, num_mels, fmin, fmax)
+    # Compute STFT for each sample in batch
+    mels = []
+    for i in range(batch_size):
+        # Use shared STFT function
+        spec = stft(
+            audio[i],
+            n_fft=n_fft,
+            hop_length=hop_size,
+            win_length=win_size,
+            window="hann",
+            center=True,
+            pad_mode="reflect",
+        )
+        # Get magnitude spectrum
+        spec_mag = mx.abs(spec)
 
-    # Compute STFT frames
-    n_frames = (audio.shape[1] - n_fft) // hop_size + 1
+        # Apply mel filterbank: spec_mag is [frames, n_fft//2+1], mel_basis is [n_mels, n_fft//2+1]
+        mel = mx.matmul(spec_mag, mel_basis.T)
 
-    # Hann window
-    window = 0.5 - 0.5 * mx.cos(2 * mx.pi * mx.arange(win_size) / win_size)
+        # Log scale
+        mel = mx.log(mx.clip(mel, 1e-5, None))
+        mels.append(mel)
 
-    # Extract frames and compute FFT
-    frames = []
-    for i in range(n_frames):
-        start = i * hop_size
-        frame = audio[:, start : start + n_fft] * window
-        frames.append(frame)
-
-    frames = mx.stack(frames, axis=1)  # [batch, frames, n_fft]
-
-    # FFT
-    spec = mx.fft.rfft(frames, axis=-1)
-    spec = mx.abs(spec)
-
-    # Apply mel filterbank
-    mel = mx.matmul(spec, mel_basis.T)
-
-    # Log scale
-    mel = mx.log(mx.clip(mel, 1e-5, None))
-
-    return mel
-
-
-def _create_mel_filterbank(
-    sample_rate: int,
-    n_fft: int,
-    num_mels: int,
-    fmin: float,
-    fmax: float,
-) -> mx.array:
-    """Create mel filterbank matrix."""
-
-    def hz_to_mel(hz):
-        return 2595 * np.log10(1 + hz / 700)
-
-    def mel_to_hz(mel):
-        return 700 * (10 ** (mel / 2595) - 1)
-
-    mel_min = hz_to_mel(fmin)
-    mel_max = hz_to_mel(fmax)
-
-    mels = np.linspace(mel_min, mel_max, num_mels + 2)
-    hz_points = mel_to_hz(mels)
-
-    bin_points = np.floor((n_fft + 1) * hz_points / sample_rate).astype(int)
-
-    filterbank = np.zeros((num_mels, n_fft // 2 + 1))
-
-    for i in range(num_mels):
-        for j in range(bin_points[i], bin_points[i + 1]):
-            filterbank[i, j] = (j - bin_points[i]) / (bin_points[i + 1] - bin_points[i])
-        for j in range(bin_points[i + 1], bin_points[i + 2]):
-            filterbank[i, j] = (bin_points[i + 2] - j) / (
-                bin_points[i + 2] - bin_points[i + 1]
-            )
-
-    return mx.array(filterbank)
+    return mx.stack(mels, axis=0)  # [batch, frames, n_mels]
 
 
 def check_array_shape_qwen3(arr: mx.array) -> bool:
@@ -121,11 +87,6 @@ def check_array_shape_qwen3(arr: mx.array) -> bool:
 
     out_channels, dim2, dim3 = shape
 
-    # Special case: when one dimension is 1
-    # We need to distinguish:
-    #   MLX kernel=1: (out, 1, in) vs PyTorch depthwise: (out, 1, kernel)
-    #   MLX depthwise: (out, kernel, 1) vs PyTorch kernel=1: (out, in, 1)
-    # Heuristic: if the non-1 dimension is large (>64), it's likely in_channels
     if dim2 == 1:
         # Pattern: (out, 1, dim3)
         if dim3 > 64:
