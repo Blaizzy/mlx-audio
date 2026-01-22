@@ -287,6 +287,8 @@ class Qwen3TTSSpeakerEncoder(nn.Module):
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Sanitize weights from PyTorch to MLX format."""
+        from .qwen3 import check_array_shape_qwen3
+
         sanitized = {}
         for k, v in weights.items():
             if not k.startswith("speaker_encoder."):
@@ -297,9 +299,9 @@ class Qwen3TTSSpeakerEncoder(nn.Module):
 
             # Handle Conv1d weights: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
             if "conv.weight" in new_key and len(v.shape) == 3:
-                v = mx.transpose(v, (0, 2, 1))
+                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
             elif "fc.weight" in new_key and len(v.shape) == 3:
-                v = mx.transpose(v, (0, 2, 1))
+                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
 
             sanitized[new_key] = v
 

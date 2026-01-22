@@ -109,6 +109,48 @@ def _create_mel_filterbank(
     return mx.array(filterbank)
 
 
+def check_array_shape_qwen3(arr: mx.array) -> bool:
+    """Check if Conv1d weights are already in MLX format.
+
+    MLX format: (out_channels, kernel_size, in_channels)
+    PyTorch format: (out_channels, in_channels, kernel_size)
+    """
+    shape = arr.shape
+    if len(shape) != 3:
+        return False
+
+    out_channels, dim2, dim3 = shape
+
+    # Special case: when one dimension is 1
+    # We need to distinguish:
+    #   MLX kernel=1: (out, 1, in) vs PyTorch depthwise: (out, 1, kernel)
+    #   MLX depthwise: (out, kernel, 1) vs PyTorch kernel=1: (out, in, 1)
+    # Heuristic: if the non-1 dimension is large (>64), it's likely in_channels
+    if dim2 == 1:
+        # Pattern: (out, 1, dim3)
+        if dim3 > 64:
+            # dim3 is large, likely in_channels -> MLX format (out, kernel=1, in)
+            return True
+        else:
+            # dim3 is small, likely kernel -> PyTorch format (out, in=1, kernel)
+            return False
+    elif dim3 == 1:
+        # Pattern: (out, dim2, 1)
+        if dim2 > 64:
+            # dim2 is large, likely in_channels -> PyTorch format (out, in, kernel=1)
+            return False
+        else:
+            # dim2 is small, likely kernel -> MLX format (out, kernel, in=1)
+            return True
+
+    # General heuristic: kernel_size < in_channels is more common
+    # So if middle dimension is smaller, it's likely already MLX format
+    if dim2 < dim3:
+        return True
+    else:
+        return False
+
+
 def format_duration(seconds: float) -> str:
     """Format duration as HH:MM:SS.mmm."""
     hours = int(seconds // 3600)
@@ -223,8 +265,17 @@ class Model(nn.Module):
         speaker: Optional[str] = None,
         ref_audio: Optional[mx.array] = None,
         ref_text: Optional[str] = None,
+        instruct: Optional[str] = None,
     ) -> Tuple[mx.array, mx.array, mx.array]:
         """Prepare inputs for generation.
+
+        Args:
+            text: Text to synthesize
+            language: Language code
+            speaker: Speaker name (for CustomVoice/Base models)
+            ref_audio: Reference audio for voice cloning
+            ref_text: Reference text for voice cloning
+            instruct: Instruction text for voice style (for VoiceDesign/CustomVoice models)
 
         Returns:
             input_embeds: Input embeddings for the talker
@@ -320,6 +371,15 @@ class Model(nn.Module):
         else:
             codec_embed = mx.concatenate([codec_embed, codec_embed_suffix], axis=1)
 
+        # Instruct embedding (for VoiceDesign/CustomVoice models)
+        instruct_embed = None
+        if instruct:
+            instruct_text = f"<|im_start|>user\n{instruct}<|im_end|>\n"
+            instruct_ids = mx.array(self.tokenizer.encode(instruct_text))[None, :]
+            instruct_embed = self.talker.text_projection(
+                self.talker.get_text_embeddings()(instruct_ids)
+            )
+
         # Role embedding (first 3 tokens: <|im_start|>assistant\n)
         role_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(input_ids[:, :3])
@@ -335,7 +395,13 @@ class Model(nn.Module):
         combined_embed = combined_embed + codec_embed[:, :-1, :]
 
         # Full input embedding
-        input_embeds = mx.concatenate([role_embed, combined_embed], axis=1)
+        # If instruct is provided, prepend it
+        if instruct_embed is not None:
+            input_embeds = mx.concatenate(
+                [instruct_embed, role_embed, combined_embed], axis=1
+            )
+        else:
+            input_embeds = mx.concatenate([role_embed, combined_embed], axis=1)
 
         # Add first text token
         first_text_embed = (
@@ -374,7 +440,7 @@ class Model(nn.Module):
         # Apply repetition penalty (simple numpy-like approach)
         if generated_tokens and repetition_penalty != 1.0:
             # Convert to numpy for in-place modification, then back to MLX
-            logits_np = np.array(logits)
+            logits_np = np.array(logits.astype(mx.float32))
             for token in set(generated_tokens):
                 if token < logits_np.shape[-1]:
                     logits_np[:, token] = logits_np[:, token] / repetition_penalty
@@ -620,12 +686,6 @@ class Model(nn.Module):
             duration_seconds = samples / self.sample_rate
             rtf = duration_seconds / elapsed_time if elapsed_time > 0 else 0
 
-            if verbose:
-                print(
-                    f"  Generated {samples} samples ({format_duration(duration_seconds)}) "
-                    f"in {elapsed_time:.2f}s (RTF: {rtf:.2f}x)"
-                )
-
             yield GenerationResult(
                 audio=audio,
                 samples=samples,
@@ -653,6 +713,297 @@ class Model(nn.Module):
             # Clear cache between segments
 
             mx.clear_cache()
+
+    def generate_custom_voice(
+        self,
+        text: str,
+        speaker: str,
+        language: str = "auto",
+        instruct: Optional[str] = None,
+        temperature: float = 0.9,
+        max_tokens: int = 4096,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.05,
+        verbose: bool = False,
+    ) -> Generator[GenerationResult, None, None]:
+        """Generate speech with the CustomVoice model using a predefined speaker.
+
+        This method is for CustomVoice model variants (e.g., Qwen3-TTS-12Hz-*-CustomVoice).
+        It uses predefined speaker voices with optional emotion/style instructions.
+
+        Args:
+            text: Text to synthesize
+            speaker: Speaker name (e.g., 'Vivian', 'Ryan'). Use get_supported_speakers() to list available.
+            language: Language code ('auto', 'chinese', 'english', etc.)
+            instruct: Optional instruction for emotion/style (e.g., '用特别愤怒的语气说', 'Very happy.')
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            top_k: Top-k sampling
+            top_p: Top-p (nucleus) sampling
+            repetition_penalty: Repetition penalty
+            verbose: Print verbose output
+
+        Yields:
+            GenerationResult objects with generated audio
+
+        Example:
+            >>> results = list(model.generate_custom_voice(
+            ...     text="Hello, how are you?",
+            ...     speaker="Vivian",
+            ...     language="English",
+            ...     instruct="Very happy and excited."
+            ... ))
+        """
+        if self.config.tts_model_type != "custom_voice":
+            raise ValueError(
+                f"Model type '{self.config.tts_model_type}' does not support generate_custom_voice. "
+                "Please use a CustomVoice model (e.g., Qwen/Qwen3-TTS-12Hz-*-CustomVoice)."
+            )
+
+        # Validate speaker
+        if speaker.lower() not in [s.lower() for s in self.supported_speakers]:
+            raise ValueError(
+                f"Speaker '{speaker}' not supported. Available: {self.supported_speakers}"
+            )
+
+        # For 0.6B models, instruct is not supported
+        if self.config.tts_model_size == "0b6":
+            instruct = None
+
+        yield from self._generate_with_instruct(
+            text=text,
+            speaker=speaker,
+            language=language,
+            instruct=instruct,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            verbose=verbose,
+        )
+
+    def generate_voice_design(
+        self,
+        text: str,
+        instruct: str,
+        language: str = "auto",
+        temperature: float = 0.9,
+        max_tokens: int = 4096,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.05,
+        verbose: bool = False,
+    ) -> Generator[GenerationResult, None, None]:
+        """Generate speech with the VoiceDesign model using natural language voice description.
+
+        This method is for VoiceDesign model variants (e.g., Qwen3-TTS-12Hz-*-VoiceDesign).
+        The voice characteristics are entirely defined by the instruction text.
+
+        Args:
+            text: Text to synthesize
+            instruct: Voice description (e.g., '体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显')
+            language: Language code ('auto', 'chinese', 'english', etc.)
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            top_k: Top-k sampling
+            top_p: Top-p (nucleus) sampling
+            repetition_penalty: Repetition penalty
+            verbose: Print verbose output
+
+        Yields:
+            GenerationResult objects with generated audio
+
+        Example:
+            >>> results = list(model.generate_voice_design(
+            ...     text="哥哥，你回来啦！",
+            ...     instruct="体现撒娇稚嫩的萝莉女声，音调偏高且起伏明显，营造出黏人、卖萌的听觉效果。",
+            ...     language="Chinese"
+            ... ))
+        """
+        if self.config.tts_model_type != "voice_design":
+            raise ValueError(
+                f"Model type '{self.config.tts_model_type}' does not support generate_voice_design. "
+                "Please use a VoiceDesign model (e.g., Qwen/Qwen3-TTS-12Hz-*-VoiceDesign)."
+            )
+
+        yield from self._generate_with_instruct(
+            text=text,
+            speaker=None,  # No speaker for VoiceDesign
+            language=language,
+            instruct=instruct,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            top_k=top_k,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            verbose=verbose,
+        )
+
+    def _generate_with_instruct(
+        self,
+        text: str,
+        speaker: Optional[str],
+        language: str,
+        instruct: Optional[str],
+        temperature: float,
+        max_tokens: int,
+        top_k: int,
+        top_p: float,
+        repetition_penalty: float,
+        verbose: bool,
+    ) -> Generator[GenerationResult, None, None]:
+        """Internal method for generation with instruct support."""
+        if self.speech_tokenizer is None:
+            raise ValueError("Speech tokenizer not loaded")
+
+        start_time = time.time()
+
+        if verbose:
+            print(f"Generating: {text[:50]}...")
+            if instruct:
+                print(f"  Instruct: {instruct[:50]}...")
+
+        # Prepare inputs with instruct
+        input_embeds, trailing_text_hidden, tts_pad_embed = (
+            self._prepare_generation_inputs(
+                text=text,
+                language=language,
+                speaker=speaker,
+                instruct=instruct,
+            )
+        )
+
+        # Initialize cache
+        cache = self.talker.make_cache()
+        generated_codes = []
+        config = self.config.talker_config
+        eos_token_id = config.codec_eos_token_id
+        trailing_idx = 0
+
+        for step in range(max_tokens):
+            # Forward pass through talker
+            logits, hidden = self.talker(input_embeds, cache=cache)
+
+            # Sample first codebook token
+            next_token = self._sample_token(
+                logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                generated_tokens=(
+                    [int(c[0, 0]) for c in generated_codes] if generated_codes else None
+                ),
+            )
+
+            # Check for EOS
+            if int(next_token[0, 0]) == eos_token_id:
+                break
+
+            # Generate remaining codebook tokens with code predictor
+            code_tokens = [next_token]
+            code_hidden = hidden[:, -1:, :]
+            code_cache = self.talker.code_predictor.make_cache()
+
+            for code_idx in range(config.num_code_groups - 1):
+                if code_idx == 0:
+                    code_0_embed = self.talker.get_input_embeddings()(next_token)
+                    code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+                else:
+                    code_embed = self.talker.code_predictor.codec_embedding[
+                        code_idx - 1
+                    ](code_tokens[-1])
+                    code_input = code_embed
+
+                code_logits, code_cache, _ = self.talker.code_predictor(
+                    code_input,
+                    cache=code_cache,
+                    generation_step=code_idx,
+                )
+
+                next_code = self._sample_token(
+                    code_logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                )
+                code_tokens.append(next_code)
+
+            # Stack all codebook tokens
+            all_codes = mx.concatenate(code_tokens, axis=1)
+            generated_codes.append(all_codes)
+
+            # Prepare next input
+            if trailing_idx < trailing_text_hidden.shape[1]:
+                text_embed = trailing_text_hidden[:, trailing_idx : trailing_idx + 1, :]
+                trailing_idx += 1
+            else:
+                text_embed = tts_pad_embed
+
+            codec_embed = self.talker.get_input_embeddings()(next_token)
+            for i, code in enumerate(code_tokens[1:]):
+                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
+                    i
+                ](code)
+
+            input_embeds = text_embed + codec_embed
+            mx.eval(input_embeds)
+
+            if verbose and step % 100 == 0:
+                print(f"  Step {step}, generated {len(generated_codes)} tokens")
+
+        if not generated_codes:
+            if verbose:
+                print("  No codes generated")
+            return
+
+        # Stack all generated codes
+        codes = mx.stack(generated_codes, axis=1)
+
+        if verbose:
+            print(f"  Decoding {codes.shape[1]} tokens to audio...")
+
+        # Decode to audio
+        audio, audio_lengths = self.speech_tokenizer.decode(codes)
+        audio = audio[0]
+
+        # Trim to valid length
+        valid_len = int(audio_lengths[0])
+        if valid_len > 0 and valid_len < audio.shape[0]:
+            audio = audio[:valid_len]
+
+        mx.eval(audio)
+
+        elapsed_time = time.time() - start_time
+        samples = audio.shape[0]
+        token_count = len(generated_codes)
+
+        duration_seconds = samples / self.sample_rate
+        rtf = duration_seconds / elapsed_time if elapsed_time > 0 else 0
+
+        yield GenerationResult(
+            audio=audio,
+            samples=samples,
+            sample_rate=self.sample_rate,
+            segment_idx=0,
+            token_count=token_count,
+            audio_duration=format_duration(duration_seconds),
+            real_time_factor=rtf,
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": token_count / elapsed_time if elapsed_time > 0 else 0,
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": samples / elapsed_time if elapsed_time > 0 else 0,
+            },
+            processing_time_seconds=elapsed_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
+
+        mx.clear_cache()
 
     @classmethod
     def from_pretrained(cls, path: Union[str, Path]) -> "Model":
@@ -694,19 +1045,10 @@ class Model(nn.Module):
         weights = {}
         weight_files = list(path.glob("*.safetensors"))
         for wf in weight_files:
-            try:
-                # Try MLX directly first
-                with safe_open(str(wf), framework="mlx") as f:
-                    for k in f.keys():
-                        weights[k] = f.get_tensor(k)
-            except TypeError:
-                # Fall back to PyTorch for bfloat16
-                import torch
 
-                with safe_open(str(wf), framework="pt") as f:
-                    for k in f.keys():
-                        tensor = f.get_tensor(k)
-                        weights[k] = mx.array(tensor.float().numpy())
+            with safe_open(str(wf), framework="mlx") as f:
+                for k in f.keys():
+                    weights[k] = f.get_tensor(k)
 
         # Sanitize and load
         weights = model.sanitize(weights)
@@ -828,8 +1170,7 @@ class Model(nn.Module):
                 "conv" in k or "speaker_encoder.fc" in k
             ) and "weight" in k
             if is_conv_weight and len(v.shape) == 3:
-                v = mx.transpose(v, (0, 2, 1))
-
+                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
             sanitized[new_key] = v
 
         return sanitized
