@@ -130,10 +130,10 @@ for result in model.generate(
 Alibaba's state-of-the-art multilingual TTS with three model variants:
 
 ```python
-from mlx_audio.tts.models.qwen3 import Model
+from mlx_audio.tts.utils import load_model
 
 # Base model with predefined voices
-model = Model.from_pretrained("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
 results = list(model.generate(
     text="Hello, welcome to MLX-Audio!",
     voice="Chelsie",
@@ -141,7 +141,7 @@ results = list(model.generate(
 ))
 
 # CustomVoice model - predefined voices with emotion control
-model = Model.from_pretrained("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
 results = list(model.generate_custom_voice(
     text="I'm so excited to meet you!",
     speaker="Vivian",
@@ -150,7 +150,7 @@ results = list(model.generate_custom_voice(
 ))
 
 # VoiceDesign model - create any voice from text description
-model = Model.from_pretrained("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
 results = list(model.generate_voice_design(
     text="Big brother, you're back!",
     language="English",
