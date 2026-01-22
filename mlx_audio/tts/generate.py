@@ -217,6 +217,7 @@ def generate_audio(
     stt_model: Optional[
         Union[str, nn.Module]
     ] = "mlx-community/whisper-large-v3-turbo-asr-fp16",
+    output_path: Optional[str] = None,
     file_prefix: str = "audio",
     audio_format: str = "wav",
     join_audio: bool = False,
@@ -240,6 +241,7 @@ def generate_audio(
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
     - ref_text (str): Caption for reference audio.
     - stt_model_path (str): A mlx whisper model to use to transcribe.
+    - output_path (str): Directory path where audio files will be saved.
     - file_prefix (str): The output file path without extension.
     - audio_format (str): Output audio format (e.g., "wav", "flac").
     - join_audio (bool): Whether to join multiple audio files into one.
@@ -297,6 +299,11 @@ def generate_audio(
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
+
+        # Handle output path
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+            file_prefix = os.path.join(output_path, file_prefix)
 
         print(
             f"\033[94mText:\033[0m {text}\n"
@@ -434,8 +441,12 @@ def parse_args():
     parser.add_argument("--pitch", type=float, default=1.0, help="Pitch of the voice")
     parser.add_argument("--lang_code", type=str, default="en", help="Language code")
     parser.add_argument(
+        "--output_path", type=str, default=None, help="Directory path for output files"
+    )
+    parser.add_argument(
         "--file_prefix", type=str, default="audio", help="Output file name prefix"
     )
+
     parser.add_argument("--verbose", action="store_true", help="Print verbose output")
     parser.add_argument(
         "--join_audio", action="store_true", help="Join all audio files into one"
