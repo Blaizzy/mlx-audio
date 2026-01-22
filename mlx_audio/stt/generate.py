@@ -268,11 +268,7 @@ def generate_transcription(
                 "end": result.end_time,
                 "is_final": result.is_final,
             }
-            print(
-                f"[{segment_dict['start']:.2f}s - {segment_dict['end']:.2f}s] {segment_dict['text']}"
-                if result.is_final
-                else f"[{result.progress:.1%}] [{segment_dict['start']:.2f}s - {segment_dict['end']:.2f}s] {segment_dict['text']}"
-            )
+
             all_segments.append(segment_dict)
             # Accumulate text (handles both incremental and cumulative streaming)
             accumulated_text += result.text
