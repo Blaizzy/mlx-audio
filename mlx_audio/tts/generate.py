@@ -301,7 +301,7 @@ def generate_audio(
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
-        
+
         # Handle output path
         if output_path:
             os.makedirs(output_path, exist_ok=True)
@@ -331,6 +331,7 @@ def generate_audio(
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
+            instruct=instruct,
             **kwargs,
         )
 
