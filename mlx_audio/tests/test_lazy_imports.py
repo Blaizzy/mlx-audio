@@ -1,7 +1,7 @@
 """Test that lazy imports work correctly for modular installation.
 
 Uses subprocess isolation because pytest imports all test files during collection,
-which pollutes sys.modules before tests run (e.g., test_server.py imports soundfile).
+which pollutes sys.modules before tests run (e.g., test_server.py imports miniaudio).
 """
 
 import subprocess
@@ -9,11 +9,11 @@ import sys
 
 
 def test_stt_utils_no_eager_imports():
-    """Importing stt.utils should not import soundfile or scipy."""
+    """Importing stt.utils should not import miniaudio or scipy."""
     code = """
 import sys
 import mlx_audio.stt.utils
-assert "soundfile" not in sys.modules, f"soundfile was eagerly imported"
+assert "miniaudio" not in sys.modules, f"miniaudio was eagerly imported"
 assert "scipy" not in sys.modules, f"scipy was eagerly imported"
 print("OK")
 """
@@ -43,11 +43,11 @@ print("OK")
 
 
 def test_codec_no_eager_imports():
-    """Importing codec should not import soundfile."""
+    """Importing codec should not import miniaudio."""
     code = """
 import sys
 import mlx_audio.codec
-assert "soundfile" not in sys.modules, f"soundfile was eagerly imported"
+assert "miniaudio" not in sys.modules, f"miniaudio was eagerly imported"
 print("OK")
 """
     result = subprocess.run(

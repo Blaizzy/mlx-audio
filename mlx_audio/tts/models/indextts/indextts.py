@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
 
-import dacite
 import huggingface_hub
 import mlx.core as mx
 import mlx.nn as nn
@@ -24,6 +23,7 @@ from mlx_audio.tts.models.indextts.conformer import Conformer, ConformerArgs
 from mlx_audio.tts.models.indextts.gpt2 import GPT2Model
 from mlx_audio.tts.models.indextts.mel import log_mel_spectrogram
 from mlx_audio.tts.models.indextts.perceiver import PerceiverResampler
+from mlx_audio.utils import from_dict
 
 
 @dataclass
@@ -64,7 +64,7 @@ class Model(nn.Module):
         super().__init__()
 
         if isinstance(args, dict):
-            args = dacite.from_dict(ModelArgs, args)
+            args = from_dict(ModelArgs, args)
 
         if not args.gpt.use_mel_codes_as_input:
             raise NotImplementedError(

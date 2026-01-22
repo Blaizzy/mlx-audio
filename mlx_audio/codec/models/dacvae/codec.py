@@ -1191,11 +1191,13 @@ class DACVAE(nn.Module):
                 if is_last:
                     break
 
-            # Or write directly to disk with soundfile
-            import soundfile as sf
-            with sf.SoundFile('output.wav', 'w', samplerate=48000, channels=1) as f:
-                for chunk, is_last in codec.decode_streaming(features):
-                    f.write(chunk[0, :, 0].tolist())  # Write batch 0
+            # Or write directly to disk with audio_io
+            from mlx_audio.audio_io import write as audio_write
+            import numpy as np
+            all_chunks = []
+            for chunk, is_last in codec.decode_streaming(features):
+                all_chunks.append(chunk[0, :, 0])
+            audio_write('output.wav', np.concatenate(all_chunks), 48000)
             ```
         """
         _, _, total_frames = encoded_frames.shape
@@ -1325,17 +1327,19 @@ class DACVAE(nn.Module):
 
         Example:
             ```python
-            import soundfile as sf
+            from mlx_audio.audio_io import write as audio_write
+            import numpy as np
 
-            # Create output file
-            with sf.SoundFile('output.wav', 'w', samplerate=48000, channels=1) as f:
-                def write_chunk(chunk, idx, is_last):
-                    # Write chunk to file (batch=0, squeeze channel dim)
-                    audio_np = np.array(chunk[0, :, 0])
-                    f.write(audio_np)
+            # Collect chunks and write to file
+            all_chunks = []
+            def collect_chunk(chunk, idx, is_last):
+                # Collect chunk (batch=0, squeeze channel dim)
+                audio_np = np.array(chunk[0, :, 0])
+                all_chunks.append(audio_np)
 
-                total_samples = codec.decode_stream(features, write_chunk)
-                print(f"Wrote {total_samples} samples")
+            total_samples = codec.decode_stream(features, collect_chunk)
+            audio_write('output.wav', np.concatenate(all_chunks), 48000)
+            print(f"Wrote {total_samples} samples")
             ```
         """
         total_samples = 0
@@ -1381,11 +1385,13 @@ class DACVAE(nn.Module):
                 if is_last:
                     break
 
-            # Or write directly to disk with soundfile
-            import soundfile as sf
-            with sf.SoundFile('output.wav', 'w', samplerate=48000, channels=1) as f:
-                for chunk, is_last in codec.decode_streaming(features):
-                    f.write(chunk[0, :, 0].tolist())  # Write batch 0
+            # Or write directly to disk with audio_io
+            from mlx_audio.audio_io import write as audio_write
+            import numpy as np
+            all_chunks = []
+            for chunk, is_last in codec.decode_streaming(features):
+                all_chunks.append(chunk[0, :, 0])
+            audio_write('output.wav', np.concatenate(all_chunks), 48000)
             ```
         """
         _, _, total_frames = encoded_frames.shape
@@ -1515,17 +1521,19 @@ class DACVAE(nn.Module):
 
         Example:
             ```python
-            import soundfile as sf
+            from mlx_audio.audio_io import write as audio_write
+            import numpy as np
 
-            # Create output file
-            with sf.SoundFile('output.wav', 'w', samplerate=48000, channels=1) as f:
-                def write_chunk(chunk, idx, is_last):
-                    # Write chunk to file (batch=0, squeeze channel dim)
-                    audio_np = np.array(chunk[0, :, 0])
-                    f.write(audio_np)
+            # Collect chunks and write to file
+            all_chunks = []
+            def collect_chunk(chunk, idx, is_last):
+                # Collect chunk (batch=0, squeeze channel dim)
+                audio_np = np.array(chunk[0, :, 0])
+                all_chunks.append(audio_np)
 
-                total_samples = codec.decode_stream(features, write_chunk)
-                print(f"Wrote {total_samples} samples")
+            total_samples = codec.decode_stream(features, collect_chunk)
+            audio_write('output.wav', np.concatenate(all_chunks), 48000)
+            print(f"Wrote {total_samples} samples")
             ```
         """
         total_samples = 0

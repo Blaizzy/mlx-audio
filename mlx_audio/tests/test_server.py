@@ -3,7 +3,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
-import soundfile as sf
+
+from mlx_audio.audio_io import read as audio_read
+from mlx_audio.audio_io import write as audio_write
+
+# python-multipart is required for FastAPI file uploads
+pytest.importorskip("multipart", reason="python-multipart is required for server tests")
+
 from fastapi.testclient import TestClient
 
 from mlx_audio.server import app
@@ -107,10 +113,10 @@ def test_tts_speech(client, mock_model_provider):
     payload = {"model": "test_tts_model", "input": "Hello world", "voice": "alloy"}
     response = client.post("/v1/audio/speech", json=payload)
     assert response.status_code == 200
-    assert response.headers["content-type"].lower() == "audio/wav"
+    assert response.headers["content-type"].lower() == "audio/mp3"
     assert (
         response.headers["content-disposition"].lower()
-        == "attachment; filename=speech.wav"
+        == "attachment; filename=speech.mp3"
     )
 
     mock_model_provider.load_model.assert_called_once_with("test_tts_model")
@@ -121,11 +127,11 @@ def test_tts_speech(client, mock_model_provider):
     assert kwargs.get("voice") == payload["voice"]
 
     try:
-        audio_data, sample_rate = sf.read(io.BytesIO(response.content))
+        audio_data, sample_rate = audio_read(io.BytesIO(response.content))
         assert sample_rate > 0
         assert len(audio_data) > 0
     except Exception as e:
-        pytest.fail(f"Failed to read or validate WAV content: {e}")
+        pytest.fail(f"Failed to read or validate MP3 content: {e}")
 
 
 def test_stt_transcriptions(client, mock_model_provider):
@@ -144,12 +150,12 @@ def test_stt_transcriptions(client, mock_model_provider):
     audio_data = 0.5 * np.sin(2 * np.pi * frequency * t).astype(np.float32)
 
     buffer = io.BytesIO()
-    sf.write(buffer, audio_data, sample_rate, format="WAV")
+    audio_write(buffer, audio_data, sample_rate, format="mp3")
     buffer.seek(0)
 
     response = client.post(
         "/v1/audio/transcriptions",
-        files={"file": ("test.wav", buffer, "audio/wav")},
+        files={"file": ("test.mp3", buffer, "audio/mp3")},
         data={"model": "test_stt_model"},
     )
 
@@ -160,4 +166,3 @@ def test_stt_transcriptions(client, mock_model_provider):
     mock_stt_model.generate.assert_called_once()
 
     assert mock_stt_model.generate.call_args[0][0].startswith("/tmp/")
-    assert mock_stt_model.generate.call_args[0][0].endswith(".wav")

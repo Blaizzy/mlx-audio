@@ -7,9 +7,11 @@ from typing import Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import soundfile as sf
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.signal import resample
+
+from mlx_audio.audio_io import read as audio_read
+from mlx_audio.audio_io import write as audio_write
 
 from .audio_player import AudioPlayer
 from .utils import load_model
@@ -22,7 +24,7 @@ def load_audio(
     volume_normalize: bool = False,
     segment_duration: int = None,
 ) -> mx.array:
-    samples, orig_sample_rate = sf.read(audio_path)
+    samples, orig_sample_rate = audio_read(audio_path)
     shape = samples.shape
 
     # Collapse multi channel as mono
@@ -212,7 +214,9 @@ def generate_audio(
     ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
-    stt_model: Optional[Union[str, nn.Module]] = "mlx-community/whisper-large-v3-turbo",
+    stt_model: Optional[
+        Union[str, nn.Module]
+    ] = "mlx-community/whisper-large-v3-turbo-asr-fp16",
     file_prefix: str = "audio",
     audio_format: str = "wav",
     join_audio: bool = False,
@@ -267,7 +271,7 @@ def generate_audio(
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
 
             normalize = False
-            if hasattr(model, "model_type") and model.model_type() == "spark":
+            if hasattr(model, "model_type") and model.model_type == "spark":
                 normalize = True
 
             ref_audio = load_audio(
@@ -330,7 +334,12 @@ def generate_audio(
                 audio_list.append(result.audio)
             elif not stream:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
-                sf.write(file_name, result.audio, result.sample_rate)
+                audio_write(
+                    file_name,
+                    np.array(result.audio),
+                    result.sample_rate,
+                    format=audio_format,
+                )
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 
             if verbose:
@@ -354,7 +363,7 @@ def generate_audio(
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
             audio = mx.concatenate(audio_list, axis=0)
-            sf.write(
+            audio_write(
                 f"{file_prefix}.{audio_format}",
                 audio,
                 model.sample_rate,
@@ -444,7 +453,7 @@ def parse_args():
     parser.add_argument(
         "--stt_model",
         type=str,
-        default="mlx-community/whisper-large-v3-turbo",
+        default="mlx-community/whisper-large-v3-turbo-asr-fp16",
         help="STT model to use to transcribe reference audio",
     )
     parser.add_argument(

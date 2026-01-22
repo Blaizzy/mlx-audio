@@ -105,6 +105,7 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, params):
+        params = params.copy()
         # Handle nested configs
         if "audio_config" in params and isinstance(params["audio_config"], dict):
             params["audio_config"] = AudioConfig.from_dict(params["audio_config"])

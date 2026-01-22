@@ -1,1 +1,1 @@
-from .parakeet import Model
+from .parakeet import Model, ModelConfig

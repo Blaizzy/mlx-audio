@@ -6,7 +6,6 @@ from typing import Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from einops.array_api import rearrange
 
 SUPPORTED_VERSIONS = ["1.0.0"]
 
@@ -128,9 +127,9 @@ class CodecMixin:
         normalize_db: float = -16,
         n_quantizers: int = None,
     ) -> DACFile:
-        import soundfile as sf
+        from mlx_audio.audio_io import read as audio_read
 
-        audio_signal, original_sr = sf.read(audio_path)
+        audio_signal, original_sr = audio_read(audio_path)
         signal_duration = audio_signal.shape[-1] / original_sr
 
         original_padding = self.padding
@@ -147,9 +146,11 @@ class CodecMixin:
         if normalize_db is not None:
             audio_data = audio_data * mx.power(10, (normalize_db - input_db) / 20)
 
-        audio_data = rearrange(audio_data, "n -> 1 1 n")
+        # rearrange "n -> 1 1 n"
+        audio_data = audio_data[None, None, :]
         nb, nac, nt = audio_data.shape
-        audio_data = rearrange(audio_data, "nb nac nt -> (nb nac) 1 nt")
+        # rearrange "nb nac nt -> (nb nac) 1 nt"
+        audio_data = audio_data.reshape(nb * nac, 1, nt)
 
         win_duration = signal_duration if win_duration is None else win_duration
 
@@ -217,7 +218,8 @@ class CodecMixin:
             recons.append(r)
 
         recons = mx.concatenate(recons, axis=1)
-        recons = rearrange(recons, "1 n 1 -> 1 n")
+        # rearrange "1 n 1 -> 1 n" (squeeze last dim)
+        recons = recons.squeeze(-1)
 
         target_db = obj.input_db
         normalize_db = -16

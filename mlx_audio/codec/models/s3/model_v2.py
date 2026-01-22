@@ -5,7 +5,6 @@ from typing import Dict, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-from einops.array_api import rearrange
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 
@@ -77,8 +76,8 @@ class FSQCodebook(nn.Module):
         self.embed = None
 
     def preprocess(self, x: mx.array) -> mx.array:
-        x = rearrange(x, "... d -> (...) d")
-        return x
+        # rearrange "... d -> (...) d" - flatten all dims except last
+        return x.reshape(-1, x.shape[-1])
 
     def encode(self, x: mx.array) -> mx.array:
         x_shape = x.shape
@@ -122,7 +121,8 @@ class FSQVectorQuantization(nn.Module):
 
     def decode(self, embed_ind: mx.array) -> mx.array:
         quantize = self.fsq_codebook.decode(embed_ind)
-        quantize = rearrange(quantize, "b n d -> b d n")
+        # rearrange "b n d -> b d n"
+        quantize = quantize.transpose(0, 2, 1)
         return quantize
 
 

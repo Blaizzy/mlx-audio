@@ -1,12 +1,5 @@
-# Copyright © 2023-2024 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
+# Copyright © 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+import os
 
-def __getattr__(name):
-    if name == "convert":
-        from mlx_audio.convert import convert
-
-        return convert
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-__all__ = ["convert"]
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"

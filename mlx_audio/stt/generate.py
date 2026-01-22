@@ -1,12 +1,14 @@
 import argparse
 import contextlib
+import inspect
 import json
 import os
 import time
+from operator import rshift
 from typing import List, Optional, Union
 
 import mlx.core as mx
-import torch.nn as nn
+import mlx.nn as nn
 from mlx.utils import tree_reduce
 
 from mlx_audio.stt.utils import load_model
@@ -26,7 +28,7 @@ def parse_args():
         "--audio", type=str, required=True, help="Path to the audio file"
     )
     parser.add_argument(
-        "--output", type=str, required=True, help="Path to save the output"
+        "--output-path", type=str, required=True, help="Path to save the output"
     )
     parser.add_argument(
         "--format",
@@ -37,10 +39,33 @@ def parse_args():
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument(
-        "--max_tokens",
+        "--max-tokens",
         type=int,
         default=128,
         help="Maximum number of new tokens to generate",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="en",
+        help="Language code (e.g. en, es, fr, de, etc.)",
+    )
+    parser.add_argument(
+        "--chunk-duration",
+        type=float,
+        default=30.0,
+        help="Chunk duration in seconds (default: 30.0)",
+    )
+    parser.add_argument(
+        "--frame-threshold",
+        type=int,
+        default=25,
+        help="Frame threshold (default: 25)",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream the transcription as it is generated (default: False)",
     )
     return parser.parse_args()
 
@@ -65,12 +90,22 @@ def save_as_txt(segments, output_path: str):
 
 def save_as_srt(segments, output_path: str):
     with open(f"{output_path}.srt", "w", encoding="utf-8") as f:
-        for i, sentence in enumerate(segments.sentences, 1):
-            f.write(f"{i}\n")
-            f.write(
-                f"{format_timestamp(sentence.start)} --> {format_timestamp(sentence.end)}\n"
-            )
-            f.write(f"{sentence.text}\n\n")
+        if hasattr(segments, "sentences"):
+            # Parakeet model (AlignedResult)
+            for i, sentence in enumerate(segments.sentences, 1):
+                f.write(f"{i}\n")
+                f.write(
+                    f"{format_timestamp(sentence.start)} --> {format_timestamp(sentence.end)}\n"
+                )
+                f.write(f"{sentence.text}\n\n")
+        else:
+            # Whisper model
+            for i, segment in enumerate(segments.segments, 1):
+                f.write(f"{i}\n")
+                f.write(
+                    f"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\n"
+                )
+                f.write(f"{segment['text']}\n\n")
 
 
 def save_as_vtt(segments, output_path: str):
@@ -182,10 +217,10 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
-    audio_path: str = "",
+    audio: Union[str, mx.array] = None,
     output_path: str = "",
     format: str = "txt",
-    verbose: bool = True,
+    verbose: bool = False,
     **kwargs,
 ):
     """Generate transcriptions from audio files.
@@ -211,20 +246,50 @@ def generate_transcription(
         model = load_model(model)
 
     print("=" * 10)
-    print(f"\033[94mAudio path:\033[0m {audio_path}")
+    print(f"\033[94mAudio path:\033[0m {audio}")
     print(f"\033[94mOutput path:\033[0m {output_path}")
     print(f"\033[94mFormat:\033[0m {format}")
     mx.reset_peak_memory()
     start_time = time.time()
     if verbose:
         print("\033[94mTranscription:\033[0m")
-    segments = model.generate(
-        audio_path, verbose=verbose, generation_stream=generation_stream, **kwargs
-    )
+
+    signature = inspect.signature(model.generate)
+    kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
+
+    if kwargs.get("stream", False):
+        all_segments = []
+        accumulated_text = ""
+        language = "en"
+        for result in model.generate(audio, verbose=verbose, **kwargs):
+            segment_dict = {
+                "text": result.text,
+                "start": result.start_time,
+                "end": result.end_time,
+                "is_final": result.is_final,
+            }
+
+            all_segments.append(segment_dict)
+            # Accumulate text (handles both incremental and cumulative streaming)
+            accumulated_text += result.text
+            language = result.language
+
+        segments = STTOutput(
+            text=accumulated_text.strip(),
+            segments=all_segments,
+            language=language,
+        )
+    else:
+
+        segments = model.generate(
+            audio, verbose=verbose, generation_stream=generation_stream, **kwargs
+        )
+
     end_time = time.time()
 
     if verbose:
         print("\n" + "=" * 10)
+        print(f"\033[94mSaving file to:\033[0m ./{output_path}.{format}")
         print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
         if isinstance(segments, STTOutput):
             print(
@@ -240,8 +305,12 @@ def generate_transcription(
     # Create output directory if it doesn't exist
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
 
-    if format == "txt" or segments.segments is None:
-        if segments.segments is None:
+    # Check for segments (Whisper) or sentences (Parakeet)
+    has_segments = hasattr(segments, "segments") and segments.segments is not None
+    has_sentences = hasattr(segments, "sentences") and segments.sentences is not None
+
+    if format == "txt" or (not has_segments and not has_sentences):
+        if not has_segments and not has_sentences:
             print("[WARNING] No segments found, saving as plain text.")
         save_as_txt(segments, output_path)
     elif format == "srt":
@@ -256,14 +325,7 @@ def generate_transcription(
 
 def main():
     args = parse_args()
-    generate_transcription(
-        args.model,
-        args.audio,
-        args.output,
-        args.format,
-        args.verbose,
-        max_tokens=args.max_tokens,
-    )
+    generate_transcription(**vars(args))
 
 
 if __name__ == "__main__":

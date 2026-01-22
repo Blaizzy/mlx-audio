@@ -24,9 +24,10 @@ from typing import Tuple
 
 import mlx.core as mx
 import numpy as np
-import soundfile
 import soxr
 from numpy.lib.stride_tricks import sliding_window_view
+
+from mlx_audio.audio_io import read as audio_read
 
 
 def audio_volume_normalize(audio: np.ndarray, coeff: float = 0.2) -> np.ndarray:
@@ -93,7 +94,7 @@ def load_audio(
         audio (np.ndarray): audio
     """
 
-    audio, sr = soundfile.read(adfile)
+    audio, sr = audio_read(adfile)
     if len(audio.shape) > 1:
         audio = audio[:, 0]
 

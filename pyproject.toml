@@ -23,13 +23,13 @@ dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
     "huggingface_hub>=0.27.0",
-    "transformers>=4.49.0,<5.0.0",
-    "hf_transfer",
-    "mlx-lm>=0.18.0,<0.30.0",
+    "transformers==5.0.0rc1",
+    "mlx-lm==0.30.2",
     "tqdm>=4.67.1",
-    "sounddevice>=0.5.1",
-    "soundfile>=0.13.1",
-    "pyloudnorm>=0.1.1",
+    "sounddevice==0.5.3",
+    "miniaudio>=1.61",
+    "pyloudnorm>=0.2.0",
+    "librosa==0.11.0",
 ]
 
 [project.optional-dependencies]
@@ -41,17 +41,12 @@ stt = [
 
 # TTS dependencies
 tts = [
-    "misaki[en]>=0.8.2",
-    "loguru>=0.7.3",
+    "misaki>=0.9.4",
     "num2words>=0.5.14",
     "spacy>=3.8.4",
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
     "sentencepiece>=0.2.0",
-    "einops>=0.8.1",
-    "omegaconf==2.3.0",
-    "einx==0.3.0",
-    "dacite>=1.9.2",
 ]
 
 # Server dependencies
@@ -63,8 +58,6 @@ server = [
 # STS (Speech-to-Speech) requires both STT and TTS + additional deps
 sts = [
     "mlx-audio[stt,tts]",
-    "mlx-vlm>=0.1.27",
-    "fastrtc[vad,stt]",
     "webrtcvad>=2.0.10",
 ]
 
@@ -106,5 +99,4 @@ mlx_audio = [
     "tts/*.css",
     "tts/**/*.json",
     "tts/static/**/*",
-    "stt/**/*.tiktoken",
 ]

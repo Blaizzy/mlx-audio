@@ -9,7 +9,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-import soundfile as sf
 from huggingface_hub import hf_hub_download
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.models.llama import LlamaModel
@@ -20,6 +19,7 @@ from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
+from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
 
 from ..base import GenerationResult
@@ -547,7 +547,7 @@ class Model(nn.Module):
     def prepare_prompt(
         self, text: str, speaker: int, audio_path: str, sample_rate: int
     ) -> Segment:
-        audio, sr = sf.read(audio_path)
+        audio, sr = audio_read(audio_path)
         if sr != sample_rate:
             audio = resample_audio(audio, sr, sample_rate)
         return Segment(text=text, speaker=speaker, audio=mx.array(audio))
