@@ -53,8 +53,8 @@ def parse_args():
     parser.add_argument(
         "--chunk-duration",
         type=float,
-        default=1.0,
-        help="Chunk duration in seconds (default: 1.0)",
+        default=30.0,
+        help="Chunk duration in seconds (default: 30.0)",
     )
     parser.add_argument(
         "--frame-threshold",
@@ -220,7 +220,7 @@ def generate_transcription(
     audio: Union[str, mx.array] = None,
     output_path: str = "",
     format: str = "txt",
-    verbose: bool = True,
+    verbose: bool = False,
     **kwargs,
 ):
     """Generate transcriptions from audio files.
@@ -259,18 +259,14 @@ def generate_transcription(
 
     if kwargs.get("stream", False):
         results = []
-        for result in model.generate(audio, **kwargs):
+        for result in model.generate(audio, verbose=verbose, **kwargs):
             segment_dict = {
                 "text": result.text,
                 "start": result.start_time,
                 "end": result.end_time,
                 "is_final": result.is_final,
             }
-            print(
-                f"[{segment_dict['start']:.2f}s - {segment_dict['end']:.2f}s] {segment_dict['text']}"
-                if result.is_final
-                else f"[{result.progress:.2f}] [{segment_dict['start']:.2f}s - {segment_dict['end']:.2f}s] {segment_dict['text']}"
-            )
+
             results.append(
                 STTOutput(
                     text=result.text, segments=[segment_dict], language=result.language
@@ -286,6 +282,7 @@ def generate_transcription(
 
     if verbose:
         print("\n" + "=" * 10)
+        print(f"\033[94mSaving file to:\033[0m ./{output_path}.{format}")
         print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
         if isinstance(segments, STTOutput):
             print(

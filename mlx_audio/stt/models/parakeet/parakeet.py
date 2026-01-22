@@ -2,7 +2,7 @@ import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Generator, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -106,6 +106,33 @@ class ParakeetTDTCTCArgs(ParakeetTDTArgs):
     aux_ctc: AuxCTCArgs
 
 
+@dataclass
+class StreamingResult:
+    """Result from streaming transcription.
+
+    Attributes:
+        text: Decoded text for this emission.
+        tokens: Token IDs that were decoded.
+        is_final: True if this is a final (committed) result, False if partial.
+        start_time: Start timestamp in seconds.
+        end_time: End timestamp in seconds.
+        progress: Progress from 0.0 to 1.0 (percentage of audio processed).
+        audio_position: Current position in audio (seconds).
+        audio_duration: Total audio duration (seconds).
+        language: Language code (e.g., "en").
+    """
+
+    text: str
+    tokens: List[int]
+    is_final: bool
+    start_time: float
+    end_time: float
+    progress: float = 0.0
+    audio_position: float = 0.0
+    audio_duration: float = 0.0
+    language: str = "en"
+
+
 class ModelConfig:
     """Config wrapper for Parakeet models."""
 
@@ -158,8 +185,9 @@ class Model(nn.Module):
         chunk_duration: Optional[float] = None,
         overlap_duration: float = 15.0,
         chunk_callback: Optional[Callable] = None,
+        stream: bool = False,
         **kwargs,
-    ) -> AlignedResult:
+    ) -> AlignedResult | Generator[StreamingResult, None, None]:
         """
         Transcribe an audio file, with optional chunking for long files.
 
@@ -169,14 +197,25 @@ class Model(nn.Module):
             chunk_duration: If provided, splits audio into chunks of this length for processing
             overlap_duration: Overlap between chunks (only used when chunking)
             chunk_callback: A function to call back when chunk is processed, called with (current_position, total_position)
+            stream: If True, yields streaming results instead of returning final result
 
         Returns:
-            Transcription result with aligned tokens and sentences
+            Transcription result with aligned tokens and sentences, or a generator of StreamingResult if stream=True
         """
 
         kwargs.pop("max_tokens", None)
         kwargs.pop("generation_stream", None)
         verbose = kwargs.pop("verbose", False)
+
+        if stream:
+            return self.stream_generate(
+                path,
+                dtype=dtype,
+                chunk_duration=chunk_duration,
+                overlap_duration=overlap_duration,
+                verbose=verbose,
+                **kwargs,
+            )
 
         audio_path = Path(path)
         audio_data = load_audio(
@@ -248,6 +287,119 @@ class Model(nn.Module):
                 print(result)
 
         return result
+
+    def stream_generate(
+        self,
+        path: Path | str,
+        *,
+        dtype: mx.Dtype = mx.bfloat16,
+        chunk_duration: float = 5.0,
+        overlap_duration: float = 1.0,
+        verbose: bool = False,
+        **kwargs,
+    ) -> Generator[StreamingResult, None, None]:
+        """
+        Transcribe an audio file with streaming output, yielding results as chunks are processed.
+
+        Args:
+            path: Path to the audio file
+            dtype: Data type for processing
+            chunk_duration: Duration of each chunk in seconds (default 5.0)
+            overlap_duration: Overlap between chunks in seconds (default 1.0)
+            verbose: Show progress bar
+
+        Yields:
+            StreamingResult objects with partial/final transcriptions.
+
+        Example:
+            >>> for result in model.stream_generate("audio.wav"):
+            ...     print(f"[{'FINAL' if result.is_final else 'partial'}] {result.text}")
+        """
+
+        audio_path = Path(path)
+        audio_data = load_audio(
+            audio_path, self.preprocessor_config.sample_rate, dtype=dtype
+        )
+
+        sample_rate = self.preprocessor_config.sample_rate
+        total_samples = len(audio_data)
+        audio_duration = total_samples / sample_rate
+
+        chunk_samples = int(chunk_duration * sample_rate)
+        overlap_samples = int(overlap_duration * sample_rate)
+        step_samples = chunk_samples - overlap_samples
+
+        all_tokens = []
+
+        for start in tqdm(
+            range(0, total_samples, step_samples),
+            disable=not verbose,
+            desc="Streaming",
+        ):
+            end = min(start + chunk_samples, total_samples)
+            is_last = end >= total_samples
+
+            chunk_audio = audio_data[start:end]
+            chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
+
+            chunk_result = self.decode(chunk_mel)[0]
+
+            # Adjust timestamps for chunk offset
+            chunk_offset = start / sample_rate
+            for sentence in chunk_result.sentences:
+                for token in sentence.tokens:
+                    token.start += chunk_offset
+                    token.end = token.start + token.duration
+
+            chunk_tokens = []
+            for sentence in chunk_result.sentences:
+                chunk_tokens.extend(sentence.tokens)
+
+            # Merge with previous tokens
+            if all_tokens:
+                try:
+                    all_tokens = merge_longest_contiguous(
+                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                    )
+                except RuntimeError:
+                    all_tokens = merge_longest_common_subsequence(
+                        all_tokens, chunk_tokens, overlap_duration=overlap_duration
+                    )
+            else:
+                all_tokens = chunk_tokens
+
+            # Build current result
+            current_result = sentences_to_result(tokens_to_sentences(all_tokens))
+            new_text = current_result.text
+
+            # Calculate progress
+            progress = end / total_samples
+            audio_position = end / sample_rate
+
+            # Get start and end times from tokens
+            start_time = all_tokens[0].start if all_tokens else 0.0
+            end_time = all_tokens[-1].end if all_tokens else audio_position
+
+            # Get token IDs
+            token_ids = [t.id for t in all_tokens]
+
+            yield StreamingResult(
+                text=new_text,
+                tokens=token_ids,
+                is_final=is_last,
+                start_time=start_time,
+                end_time=end_time,
+                progress=progress,
+                audio_position=audio_position,
+                audio_duration=audio_duration,
+                language="en",
+            )
+
+            # Clear cache after each chunk
+            mx.clear_cache()
+
+            if is_last:
+                break
 
     @classmethod
     def from_config(cls, config: dict):

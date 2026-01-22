@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from tqdm import tqdm
 
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
@@ -345,6 +346,7 @@ class Model(nn.Module):
         max_tokens: int = 128,
         sampler: Optional[Callable[mx.array, mx.array]] = None,
         generation_stream: bool = False,
+        verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
 
         from mlx_lm.generate import generate_step
@@ -355,14 +357,19 @@ class Model(nn.Module):
         )[0]
 
         with wired_limit(self, [generation_stream]):
-            for n, (token, logprobs) in enumerate(
-                generate_step(
-                    prompt=mx.array([]),
-                    input_embeddings=input_embeddings,
-                    model=self.language_model,
-                    max_tokens=max_tokens,
-                    sampler=sampler,
-                )
+            for n, (token, logprobs) in tqdm(
+                enumerate(
+                    generate_step(
+                        prompt=mx.array([]),
+                        input_embeddings=input_embeddings,
+                        model=self.language_model,
+                        max_tokens=max_tokens,
+                        sampler=sampler,
+                    )
+                ),
+                total=max_tokens,
+                disable=not verbose,
+                desc="Streaming",
             ):
                 if token in self._processor.tokenizer.eos_token_ids:
                     break
@@ -426,10 +433,9 @@ class Model(nn.Module):
             max_tokens=max_tokens,
             sampler=sampler,
             generation_stream=generation_stream,
+            verbose=verbose,
         ):
             generated.append(token)
-            if verbose:
-                print(self._processor.decode([token]), end="", flush=True)
 
         end_time = time.time()
 
