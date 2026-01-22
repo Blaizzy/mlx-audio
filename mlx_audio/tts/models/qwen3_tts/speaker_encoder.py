@@ -287,7 +287,7 @@ class Qwen3TTSSpeakerEncoder(nn.Module):
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Sanitize weights from PyTorch to MLX format."""
-        from .qwen3 import check_array_shape_qwen3
+        from .qwen3_tts import check_array_shape_qwen3
 
         sanitized = {}
         for k, v in weights.items():
