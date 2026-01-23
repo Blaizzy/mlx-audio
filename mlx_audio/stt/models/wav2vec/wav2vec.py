@@ -8,6 +8,7 @@ from typing import Any, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from huggingface_hub import snapshot_download
 
 
@@ -634,6 +635,7 @@ class Wav2Vec2Model(nn.Module):
         self.config = config
         self.feature_extractor = Wav2Vec2FeatureEncoder(config)
         self.feature_projection = Wav2Vec2FeatureProjection(config)
+        self.lm_head = nn.Linear(config.hidden_size, config.vocab_size)
 
         if config.do_stable_layer_norm:
             self.encoder = Wav2Vec2EncoderStableLayerNorm(config)
@@ -708,8 +710,7 @@ class Wav2Vec2Model(nn.Module):
                 k = k.replace(".parametrizations.weight.original1", ".weight_v")
                 v = v.swapaxes(1, 2)
             if (
-                "lm_head." in k
-                or k.startswith("quantizer.")
+                k.startswith("quantizer.")
                 or k.startswith("project_")
                 or k == "masked_spec_embed"
             ):
@@ -717,6 +718,128 @@ class Wav2Vec2Model(nn.Module):
 
             sanitized_weights[k] = v
         return sanitized_weights
+
+    def load_audio(
+        self,
+        audio,
+        sample_rate: Optional[int] = None,
+        dtype: mx.Dtype = mx.float32,
+    ) -> mx.array:
+        """Load and preprocess audio for this model.
+
+        Args:
+            audio: File path (str/Path), numpy array (float32, mono or stereo),
+                   or mx.array waveform.
+            sample_rate: Source sample rate. Required when passing an in-memory
+                         array that is not already at the model's target rate (16 kHz).
+            dtype: Output dtype for the mx.array.
+
+        Returns:
+            mx.array: Mono waveform at 16 kHz.
+        """
+        from mlx_audio.stt.utils import load_audio as _load_audio
+        from mlx_audio.stt.utils import resample_audio
+
+        _TARGET_SR = 16000
+
+        if isinstance(audio, (str, Path)):
+            return _load_audio(str(audio), sr=_TARGET_SR, dtype=dtype)
+
+        if isinstance(audio, np.ndarray):
+            if audio.dtype != np.float32:
+                raise ValueError(
+                    f"Expected np.float32 audio, got {audio.dtype}. "
+                    "Convert with: audio.astype(np.float32)"
+                )
+            if audio.ndim == 2:
+                audio = audio.mean(axis=-1)
+            if sample_rate is not None and sample_rate != _TARGET_SR:
+                audio = resample_audio(audio, sample_rate, _TARGET_SR)
+            return mx.array(audio, dtype=dtype)
+
+        if isinstance(audio, mx.array):
+            return audio
+
+        raise TypeError(
+            f"audio must be str, Path, np.ndarray, or mx.array, got {type(audio)}"
+        )
+
+    def generate(
+        self,
+        audio,
+        *,
+        sample_rate: Optional[int] = None,
+        **kwargs,
+    ):
+        """Generate transcription from audio using CTC greedy decoding.
+
+        Args:
+            audio: Audio file path (str), or in-memory waveform (np.ndarray
+                   float32 or mx.array). Use load_audio() to preprocess if needed.
+            sample_rate: Source sample rate for in-memory arrays.
+
+        Returns:
+            STTOutput with transcription text.
+        """
+        from mlx_audio.stt.models.base import STTOutput
+
+        audio_data = self.load_audio(audio, sample_rate=sample_rate)
+
+        # Ensure batch dimension
+        if audio_data.ndim == 1:
+            audio_data = audio_data[None, :]
+
+        # Forward pass
+        outputs = self(audio_data)
+        hidden_states = outputs.last_hidden_state
+
+        # Project to vocabulary
+        logits = self.lm_head(hidden_states)
+
+        # CTC greedy decode: argmax → collapse repeated → remove blank (id=0)
+        pred_ids = mx.argmax(logits, axis=-1)[0]
+        pred_ids = np.array(pred_ids)
+
+        # Collapse repeated tokens and remove blanks
+        decoded_ids = []
+        prev_id = -1
+        for token_id in pred_ids:
+            if token_id != prev_id and token_id != 0:
+                decoded_ids.append(int(token_id))
+            prev_id = token_id
+
+        # Load vocabulary for decoding
+        text = self._decode_ids(decoded_ids)
+
+        return STTOutput(text=text)
+
+    def _decode_ids(self, ids: list) -> str:
+        """Decode token IDs to text using the model's vocabulary."""
+        if not hasattr(self, "_vocab"):
+            self._vocab = None
+        if self._vocab is None:
+            return " ".join(str(i) for i in ids)
+
+        chars = [self._vocab.get(i, "") for i in ids]
+        text = "".join(chars)
+        # Wav2Vec2 uses "|" as word boundary
+        text = text.replace("|", " ").strip()
+        return text
+
+    @classmethod
+    def post_load_hook(
+        cls, model: "Wav2Vec2Model", model_path: Path
+    ) -> "Wav2Vec2Model":
+        """Load vocabulary after model weights are loaded."""
+        vocab_path = model_path / "vocab.json"
+        if vocab_path.exists():
+            with open(vocab_path, "r") as f:
+                vocab_dict = json.load(f)
+            # Invert: {char: id} → {id: char}
+            model._vocab = {v: k for k, v in vocab_dict.items()}
+        else:
+            model._vocab = None
+        return model
 
     @classmethod
     def from_pretrained(cls, repo_id: str, **kwargs):
@@ -765,3 +888,7 @@ def fetch_from_hub(model_path: str) -> Path:
             )
         )
     return Path(model_path)
+
+
+# Alias for the standard model loading interface
+Model = Wav2Vec2Model

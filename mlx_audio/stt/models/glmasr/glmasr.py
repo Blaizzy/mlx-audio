@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 from mlx_audio.stt.generate import wired_limit
@@ -424,16 +425,61 @@ class Model(nn.Module):
 
         return load(model_path)
 
-    def _preprocess_audio(self, audio) -> mx.array:
+    def load_audio(
+        self,
+        audio,
+        sample_rate: Optional[int] = None,
+        dtype: mx.Dtype = mx.float32,
+    ) -> mx.array:
+        """Load and preprocess audio for this model.
+
+        Args:
+            audio: File path (str/Path), numpy array (float32, mono or stereo),
+                   or mx.array waveform.
+            sample_rate: Source sample rate. Required when passing an in-memory
+                         array that is not already at the model's target rate (16 kHz).
+            dtype: Output dtype for the mx.array.
+
+        Returns:
+            mx.array: Mono waveform at 16 kHz.
+        """
+        from mlx_audio.stt.utils import load_audio as _load_audio
+        from mlx_audio.stt.utils import resample_audio
+
+        _TARGET_SR = 16000
+
+        if isinstance(audio, (str, Path)):
+            return _load_audio(str(audio), sr=_TARGET_SR, dtype=dtype)
+
+        if isinstance(audio, np.ndarray):
+            if audio.dtype != np.float32:
+                raise ValueError(
+                    f"Expected np.float32 audio, got {audio.dtype}. "
+                    "Convert with: audio.astype(np.float32)"
+                )
+            if audio.ndim == 2:
+                audio = audio.mean(axis=-1)
+            if sample_rate is not None and sample_rate != _TARGET_SR:
+                audio = resample_audio(audio, sample_rate, _TARGET_SR)
+            return mx.array(audio, dtype=dtype)
+
+        if isinstance(audio, mx.array):
+            return audio
+
+        raise TypeError(
+            f"audio must be str, Path, np.ndarray, or mx.array, got {type(audio)}"
+        )
+
+    def _preprocess_audio(self, audio, sample_rate: Optional[int] = None) -> mx.array:
         """Preprocess audio to mel spectrogram.
 
         Args:
             audio: Audio path (str), waveform (np.ndarray/mx.array), or mel spectrogram
+            sample_rate: Source sample rate for in-memory arrays.
 
         Returns:
             Mel spectrogram of shape (batch, seq_len, n_mels)
         """
-        from mlx_audio.stt.utils import load_audio
         from mlx_audio.utils import hanning, mel_filters, stft
 
         # Audio hyperparameters for GLM-ASR (128 mel bins)
@@ -442,11 +488,7 @@ class Model(nn.Module):
         HOP_LENGTH = 160
         N_MELS = self.config.whisper_config.num_mel_bins  # 128
 
-        # Load audio if path
-        if isinstance(audio, str):
-            audio = load_audio(audio, sr=SAMPLE_RATE)
-        elif not isinstance(audio, mx.array):
-            audio = mx.array(audio)
+        audio = self.load_audio(audio, sample_rate=sample_rate)
 
         # If already 3D (batch, seq, mels), assume it's mel spectrogram
         if audio.ndim == 3:
@@ -527,6 +569,7 @@ class Model(nn.Module):
         self,
         audio,
         *,
+        sample_rate: Optional[int] = None,
         max_tokens: int = 128,
         temperature: float = 0.0,
         top_p: float = 0.95,
@@ -540,7 +583,9 @@ class Model(nn.Module):
         """Generate transcription from audio.
 
         Args:
-            audio: Audio path (str), waveform (mx.array), or mel spectrogram
+            audio: Audio path (str), waveform (np.ndarray/mx.array), or mel spectrogram.
+                   Use load_audio() to preprocess if needed.
+            sample_rate: Source sample rate for in-memory arrays.
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             top_p: Top-p sampling parameter
@@ -559,7 +604,7 @@ class Model(nn.Module):
         start_time = time.time()
 
         # Preprocess audio to mel spectrogram
-        mel = self._preprocess_audio(audio)
+        mel = self._preprocess_audio(audio, sample_rate=sample_rate)
 
         # Encode audio once (avoid double encoding)
         audio_embeds, audio_len = self.audio_encoder(mel)

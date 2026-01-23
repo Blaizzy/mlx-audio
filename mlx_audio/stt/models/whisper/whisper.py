@@ -620,24 +620,66 @@ class Model(nn.Module):
                 task=task,
             )
 
+    def load_audio(
+        self,
+        audio: Union[str, Path, np.ndarray, mx.array],
+        sample_rate: Optional[int] = None,
+        dtype: mx.Dtype = mx.float32,
+    ) -> mx.array:
+        """Load and preprocess audio for this model.
+
+        Args:
+            audio: File path (str/Path), numpy array (float32, mono or stereo),
+                   or mx.array waveform.
+            sample_rate: Source sample rate. Required when passing an in-memory
+                         array that is not already at the model's target rate (16 kHz).
+            dtype: Output dtype for the mx.array.
+
+        Returns:
+            mx.array: Mono waveform at 16 kHz.
+        """
+        from mlx_audio.stt.utils import load_audio as _load_audio
+        from mlx_audio.stt.utils import resample_audio
+
+        if isinstance(audio, (str, Path)):
+            return _load_audio(str(audio), sr=SAMPLE_RATE, dtype=dtype)
+
+        if isinstance(audio, np.ndarray):
+            if audio.dtype != np.float32:
+                raise ValueError(
+                    f"Expected np.float32 audio, got {audio.dtype}. "
+                    "Convert with: audio.astype(np.float32)"
+                )
+            if audio.ndim == 2:
+                audio = audio.mean(axis=-1)
+            if sample_rate is not None and sample_rate != SAMPLE_RATE:
+                audio = resample_audio(audio, sample_rate, SAMPLE_RATE)
+            return mx.array(audio, dtype=dtype)
+
+        if isinstance(audio, mx.array):
+            return audio
+
+        raise TypeError(
+            f"audio must be str, Path, np.ndarray, or mx.array, got {type(audio)}"
+        )
+
     def _prepare_audio(
-        self, audio: Union[str, np.ndarray, mx.array], padding: int = N_SAMPLES
+        self,
+        audio: Union[str, Path, np.ndarray, mx.array],
+        padding: int = N_SAMPLES,
+        sample_rate: Optional[int] = None,
     ) -> Tuple[mx.array, int]:
         """Prepare audio for transcription.
 
         Args:
             audio: Path to audio file or audio waveform array.
             padding: Padding samples (default N_SAMPLES for 30s window).
+            sample_rate: Source sample rate for in-memory arrays.
 
         Returns:
             Tuple of (mel spectrogram, content_frames).
         """
-        if isinstance(audio, str):
-            from mlx_audio.stt.utils import load_audio
-
-            audio = load_audio(audio)
-        elif not isinstance(audio, mx.array):
-            audio = mx.array(audio)
+        audio = self.load_audio(audio, sample_rate=sample_rate)
 
         mel = log_mel_spectrogram(audio, n_mels=self.dims.n_mels, padding=padding)
         content_frames = mel.shape[-2] - N_FRAMES if padding else mel.shape[-2]
@@ -666,8 +708,9 @@ class Model(nn.Module):
 
     def generate(
         self,
-        audio: Union[str, np.ndarray, mx.array],
+        audio: Union[str, Path, np.ndarray, mx.array],
         *,
+        sample_rate: Optional[int] = None,
         verbose: Optional[bool] = None,
         chunk_duration: float = 1.0,
         stream: bool = False,
@@ -679,8 +722,8 @@ class Model(nn.Module):
         condition_on_previous_text: bool = True,
         initial_prompt: Optional[str] = None,
         word_timestamps: bool = False,
-        prepend_punctuations: str = "\"'“¿([{-",
-        append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
+        prepend_punctuations: str = "\"'\u201c\u00bf([{-",
+        append_punctuations: str = "\"'.\u3002,\uff0c!\uff01?\uff1f:\uff1a\u201d)]}\u3001",
         clip_timestamps: Union[str, List[float]] = "0",
         hallucination_silence_threshold: Optional[float] = None,
         **decode_options,
@@ -690,8 +733,12 @@ class Model(nn.Module):
 
         Parameters
         ----------
-        audio: Union[str, np.ndarray, mx.array]
+        audio: Union[str, Path, np.ndarray, mx.array]
             The path to the audio file to open, or the audio waveform
+
+        sample_rate: int
+            Source sample rate when audio is an in-memory array (required if
+            not already at 16 kHz)
 
         verbose: bool
             Whether to display the text being decoded to the console. If True, displays all the details,
@@ -750,13 +797,16 @@ class Model(nn.Module):
 
         if stream:
             return self.generate_streaming(
-                audio, chunk_duration=chunk_duration, **decode_options
+                audio,
+                sample_rate=sample_rate,
+                chunk_duration=chunk_duration,
+                **decode_options,
             )
 
         decode_options.pop("max_tokens", None)
         decode_options.pop("generation_stream", None)
         # Use shared audio preparation
-        mel, content_frames = self._prepare_audio(audio)
+        mel, content_frames = self._prepare_audio(audio, sample_rate=sample_rate)
         content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
 
         if verbose:
@@ -1170,6 +1220,7 @@ class Model(nn.Module):
         self,
         audio,
         *,
+        sample_rate: Optional[int] = None,
         chunk_duration: float = 1.0,
         language: str = None,
         task: str = "transcribe",
@@ -1181,7 +1232,9 @@ class Model(nn.Module):
         achieving ~1 second latency instead of waiting for full 30-second windows.
 
         Args:
-            audio: Path to audio file or audio waveform array.
+            audio: Path to audio file, or in-memory waveform (np.ndarray float32
+                   or mx.array). Use load_audio() to preprocess if needed.
+            sample_rate: Source sample rate for in-memory arrays.
             chunk_duration: Duration of each chunk in seconds (default 1.0).
             language: Language code (e.g., "en"). Auto-detected if None.
             task: "transcribe" or "translate" (to English).
@@ -1198,13 +1251,8 @@ class Model(nn.Module):
             StreamingConfig,
             StreamingDecoder,
         )
-        from mlx_audio.stt.utils import load_audio
 
-        # Load audio if path provided
-        if isinstance(audio, str):
-            audio = load_audio(audio)
-        elif not isinstance(audio, mx.array):
-            audio = mx.array(audio)
+        audio = self.load_audio(audio, sample_rate=sample_rate)
 
         # Auto-detect language if not specified
         if language is None:

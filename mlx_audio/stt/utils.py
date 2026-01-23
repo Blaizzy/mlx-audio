@@ -13,6 +13,7 @@ MODEL_REMAPPING = {
     "glm": "glmasr",
     "voxtral": "voxtral",
     "vibevoice": "vibevoice_asr",
+    "wav2vec2": "wav2vec",
 }
 
 

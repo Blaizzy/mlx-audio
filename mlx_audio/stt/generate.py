@@ -9,6 +9,7 @@ from typing import List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from mlx.utils import tree_reduce
 
 from mlx_audio.stt.utils import load_model
@@ -231,21 +232,23 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
-    audio: Union[str, mx.array] = None,
+    audio: Union[str, np.ndarray, mx.array] = None,
     output_path: str = "",
     format: str = "txt",
     verbose: bool = False,
     **kwargs,
 ):
-    """Generate transcriptions from audio files.
+    """Generate transcriptions from audio.
 
     Args:
         model: Path to the model or the model instance.
-        audio_path: Path to the audio file.
+        audio: Path to audio file, or in-memory waveform (np.ndarray float32
+               or mx.array). When passing an array, include sample_rate in kwargs.
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
-        **kwargs: Additional arguments for the model's generate method.
+        **kwargs: Additional arguments for the model's generate method
+                  (e.g., sample_rate, language, chunk_duration).
 
     Returns:
         segments: The generated transcription segments.
@@ -260,7 +263,11 @@ def generate_transcription(
         model = load_model(model)
 
     print("=" * 10)
-    print(f"\033[94mAudio path:\033[0m {audio}")
+    if isinstance(audio, str):
+        print(f"\033[94mAudio path:\033[0m {audio}")
+    else:
+        audio_desc = f"<{type(audio).__name__} shape={getattr(audio, 'shape', '?')}>"
+        print(f"\033[94mAudio:\033[0m {audio_desc}")
     print(f"\033[94mOutput path:\033[0m {output_path}")
     print(f"\033[94mFormat:\033[0m {format}")
     mx.reset_peak_memory()

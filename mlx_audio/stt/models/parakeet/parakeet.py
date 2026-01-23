@@ -2,10 +2,11 @@ import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Generator, List, Optional
+from typing import Callable, Generator, List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from huggingface_hub import hf_hub_download
 from mlx.utils import tree_flatten, tree_unflatten
 from tqdm import tqdm
@@ -32,7 +33,8 @@ from mlx_audio.stt.models.parakeet.rnnt import (
     PredictArgs,
     PredictNetwork,
 )
-from mlx_audio.stt.utils import load_audio
+from mlx_audio.stt.utils import load_audio as _load_audio_from_file
+from mlx_audio.stt.utils import resample_audio
 from mlx_audio.utils import from_dict
 
 
@@ -177,10 +179,53 @@ class Model(nn.Module):
             print(result.text)
         return result
 
+    def load_audio(
+        self,
+        audio: Union[str, Path, np.ndarray, mx.array],
+        sample_rate: Optional[int] = None,
+        dtype: mx.Dtype = mx.bfloat16,
+    ) -> mx.array:
+        """Load and preprocess audio for this model.
+
+        Args:
+            audio: File path (str/Path), numpy array (float32, mono or stereo),
+                   or mx.array waveform.
+            sample_rate: Source sample rate. Required when passing an in-memory
+                         array that is not already at the model's target rate.
+            dtype: Output dtype for the mx.array.
+
+        Returns:
+            mx.array: Mono waveform at the model's target sample rate.
+        """
+        target_sr = self.preprocessor_config.sample_rate
+
+        if isinstance(audio, (str, Path)):
+            return _load_audio_from_file(str(audio), sr=target_sr, dtype=dtype)
+
+        if isinstance(audio, np.ndarray):
+            if audio.dtype != np.float32:
+                raise ValueError(
+                    f"Expected np.float32 audio, got {audio.dtype}. "
+                    "Convert with: audio.astype(np.float32)"
+                )
+            if audio.ndim == 2:
+                audio = audio.mean(axis=-1)
+            if sample_rate is not None and sample_rate != target_sr:
+                audio = resample_audio(audio, sample_rate, target_sr)
+            return mx.array(audio, dtype=dtype)
+
+        if isinstance(audio, mx.array):
+            return audio
+
+        raise TypeError(
+            f"audio must be str, Path, np.ndarray, or mx.array, got {type(audio)}"
+        )
+
     def generate(
         self,
-        path: Path | str,
+        audio: Union[str, Path, np.ndarray, mx.array],
         *,
+        sample_rate: Optional[int] = None,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: Optional[float] = None,
         overlap_duration: float = 15.0,
@@ -189,10 +234,13 @@ class Model(nn.Module):
         **kwargs,
     ) -> AlignedResult | Generator[StreamingResult, None, None]:
         """
-        Transcribe an audio file, with optional chunking for long files.
+        Transcribe audio, with optional chunking for long files.
 
         Args:
-            path: Path to the audio file
+            audio: Path to audio file, or in-memory waveform (np.ndarray float32
+                   or mx.array). Use load_audio() to preprocess if needed.
+            sample_rate: Source sample rate. Required when audio is an in-memory
+                         array not already at the model's target rate.
             dtype: Data type for processing
             chunk_duration: If provided, splits audio into chunks of this length for processing
             overlap_duration: Overlap between chunks (only used when chunking)
@@ -209,7 +257,8 @@ class Model(nn.Module):
 
         if stream:
             return self.stream_generate(
-                path,
+                audio,
+                sample_rate=sample_rate,
                 dtype=dtype,
                 chunk_duration=chunk_duration,
                 overlap_duration=overlap_duration,
@@ -217,10 +266,7 @@ class Model(nn.Module):
                 **kwargs,
             )
 
-        audio_path = Path(path)
-        audio_data = load_audio(
-            audio_path, self.preprocessor_config.sample_rate, dtype=dtype
-        )
+        audio_data = self.load_audio(audio, sample_rate=sample_rate, dtype=dtype)
 
         if chunk_duration is None:
             return self.decode_chunk(audio_data, verbose)
@@ -290,8 +336,9 @@ class Model(nn.Module):
 
     def stream_generate(
         self,
-        path: Path | str,
+        audio: Union[str, Path, np.ndarray, mx.array],
         *,
+        sample_rate: Optional[int] = None,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: float = 5.0,
         overlap_duration: float = 1.0,
@@ -299,10 +346,13 @@ class Model(nn.Module):
         **kwargs,
     ) -> Generator[StreamingResult, None, None]:
         """
-        Transcribe an audio file with streaming output, yielding results as chunks are processed.
+        Transcribe audio with streaming output, yielding results as chunks are processed.
 
         Args:
-            path: Path to the audio file
+            audio: Path to audio file, or in-memory waveform (np.ndarray float32
+                   or mx.array). Use load_audio() to preprocess if needed.
+            sample_rate: Source sample rate. Required when audio is an in-memory
+                         array not already at the model's target rate.
             dtype: Data type for processing
             chunk_duration: Duration of each chunk in seconds (default 5.0)
             overlap_duration: Overlap between chunks in seconds (default 1.0)
@@ -316,10 +366,7 @@ class Model(nn.Module):
             ...     print(f"[{'FINAL' if result.is_final else 'partial'}] {result.text}")
         """
 
-        audio_path = Path(path)
-        audio_data = load_audio(
-            audio_path, self.preprocessor_config.sample_rate, dtype=dtype
-        )
+        audio_data = self.load_audio(audio, sample_rate=sample_rate, dtype=dtype)
 
         sample_rate = self.preprocessor_config.sample_rate
         total_samples = len(audio_data)

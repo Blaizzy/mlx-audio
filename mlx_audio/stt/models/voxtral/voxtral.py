@@ -376,10 +376,56 @@ class Model(nn.Module):
 
                 yield token, logprobs
 
+    def load_audio(
+        self,
+        audio,
+        sample_rate: Optional[int] = None,
+        dtype: mx.Dtype = mx.float32,
+    ) -> mx.array:
+        """Load and preprocess audio for this model.
+
+        Args:
+            audio: File path (str/Path), numpy array (float32, mono or stereo),
+                   or mx.array waveform.
+            sample_rate: Source sample rate. Required when passing an in-memory
+                         array that is not already at the model's target rate (16 kHz).
+            dtype: Output dtype for the mx.array.
+
+        Returns:
+            mx.array: Mono waveform at 16 kHz.
+        """
+        from mlx_audio.stt.utils import load_audio as _load_audio
+        from mlx_audio.stt.utils import resample_audio
+
+        _TARGET_SR = 16000
+
+        if isinstance(audio, (str, Path)):
+            return _load_audio(str(audio), sr=_TARGET_SR, dtype=dtype)
+
+        if isinstance(audio, np.ndarray):
+            if audio.dtype != np.float32:
+                raise ValueError(
+                    f"Expected np.float32 audio, got {audio.dtype}. "
+                    "Convert with: audio.astype(np.float32)"
+                )
+            if audio.ndim == 2:
+                audio = audio.mean(axis=-1)
+            if sample_rate is not None and sample_rate != _TARGET_SR:
+                audio = resample_audio(audio, sample_rate, _TARGET_SR)
+            return mx.array(audio, dtype=dtype)
+
+        if isinstance(audio, mx.array):
+            return audio
+
+        raise TypeError(
+            f"audio must be str, Path, np.ndarray, or mx.array, got {type(audio)}"
+        )
+
     def generate(
         self,
-        audio: List[mx.array],
+        audio,
         *,
+        sample_rate: Optional[int] = None,
         message: Optional[List[Dict[str, Any]]] = None,
         max_tokens: int = 128,
         temperature: float = 0.0,
@@ -390,9 +436,31 @@ class Model(nn.Module):
         language: str = "en",
         verbose: bool = False,
         generation_stream: bool = False,
-    ) -> mx.array:
+    ) -> STTOutput:
+        """Generate transcription from audio.
+
+        Args:
+            audio: Audio file path (str), in-memory waveform (np.ndarray float32
+                   or mx.array), or a list of audio arrays. Use load_audio() to
+                   preprocess if needed.
+            sample_rate: Source sample rate for in-memory arrays.
+            message: Optional message structure for the processor.
+            max_tokens: Maximum tokens to generate.
+            temperature: Sampling temperature (0 = greedy).
+            language: Language code (e.g., "en").
+
+        Returns:
+            STTOutput with transcription text.
+        """
 
         start_time = time.time()
+
+        # Handle in-memory arrays: convert to numpy for the processor
+        if isinstance(audio, (np.ndarray, mx.array)):
+            audio_data = self.load_audio(audio, sample_rate=sample_rate)
+            audio = [np.array(audio_data)]
+        elif isinstance(audio, (str, Path)):
+            audio = [str(audio)]
 
         if message is None:
             messages = [
