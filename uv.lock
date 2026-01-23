@@ -1029,7 +1029,7 @@ wheels = [
 
 [[package]]
 name = "mlx-audio"
-version = "0.3.0rc1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "huggingface-hub" },
@@ -1103,7 +1103,7 @@ requires-dist = [
     { name = "mlx", specifier = ">=0.25.2" },
     { name = "mlx-audio", extras = ["server", "sts", "stt", "tts"], marker = "extra == 'all'" },
     { name = "mlx-audio", extras = ["stt", "tts"], marker = "extra == 'sts'" },
-    { name = "mlx-lm", specifier = "==0.30.2" },
+    { name = "mlx-lm", specifier = ">=0.30.2" },
     { name = "num2words", marker = "extra == 'tts'", specifier = ">=0.5.14" },
     { name = "numba", specifier = ">=0.60.0" },
     { name = "numpy", specifier = ">=1.26.4" },
@@ -1116,7 +1116,7 @@ requires-dist = [
     { name = "spacy", marker = "extra == 'tts'", specifier = ">=3.8.4" },
     { name = "tiktoken", marker = "extra == 'stt'", specifier = ">=0.9.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
-    { name = "transformers", specifier = "==5.0.0rc1" },
+    { name = "transformers", specifier = ">=5.0.0rc1" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.22.0" },
     { name = "webrtcvad", marker = "extra == 'sts'", specifier = ">=2.0.10" },
 ]
