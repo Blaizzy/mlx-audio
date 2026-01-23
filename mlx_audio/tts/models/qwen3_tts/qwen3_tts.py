@@ -220,6 +220,11 @@ class Model(nn.Module):
         speaker_embedding = self.speaker_encoder(mels)
         return speaker_embedding
 
+    def model_quant_predicate(self, p, m):
+        if isinstance(m, nn.Embedding):
+            return {"group_size": 64, "bits": 8}
+        return True
+
     def _prepare_generation_inputs(
         self,
         text: str,
