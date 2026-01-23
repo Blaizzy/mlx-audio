@@ -41,6 +41,9 @@ mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --v
 
 # Play audio immediately
 mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play
+
+# Save to a specific directory
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --output_path ./my_audio
 ```
 
 ### Python API
@@ -64,6 +67,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
+| **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-bf16](https://huggingface.co/mlx-community/Dia-1.6B-bf16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-0.2-500M](https://huggingface.co/mlx-community/OuteTTS-0.2-500M) |
@@ -124,6 +128,53 @@ for result in model.generate(
 | `z` | Mandarin Chinese | Requires `pip install misaki[zh]` |
 | `e` | Spanish | |
 | `f` | French | |
+
+### Qwen3-TTS
+
+Alibaba's state-of-the-art multilingual TTS with three model variants:
+
+```python
+from mlx_audio.tts.utils import load_model
+
+# Base model with predefined voices
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
+results = list(model.generate(
+    text="Hello, welcome to MLX-Audio!",
+    voice="Chelsie",
+    language="English",
+))
+
+# CustomVoice model - predefined voices with emotion control
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
+results = list(model.generate_custom_voice(
+    text="I'm so excited to meet you!",
+    speaker="Vivian",
+    language="English",
+    instruct="Very happy and excited.",
+))
+
+# VoiceDesign model - create any voice from text description
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
+results = list(model.generate_voice_design(
+    text="Big brother, you're back!",
+    language="English",
+    instruct="A cheerful young female voice with high pitch and energetic tone.",
+))
+
+# Access generated audio
+audio = results[0].audio  # mx.array
+```
+
+**Available Models:**
+| Model | Method | Description |
+|-------|--------|-------------|
+| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast, predefined voices |
+| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher quality |
+| `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | `generate_custom_voice()` | Voices + emotion |
+| `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` | `generate_custom_voice()` | Better emotion control |
+| `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` | `generate_voice_design()` | Create any voice |
+
+**Speakers (Base/CustomVoice):** `Chelsie`, `Ethan`, `Serena`, `Vivian`, `Ryan`, `Aiden`, `Eric`, `Dylan`
 
 ### CSM (Voice Cloning)
 

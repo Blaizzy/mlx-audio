@@ -1833,5 +1833,289 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(audio.shape[0], 1)
 
 
+class TestQwen3TTSModel(unittest.TestCase):
+    """Tests for Qwen3-TTS model."""
+
+    def _default_talker_config(self):
+        # Minimal config for fast tests
+        return {
+            "vocab_size": 32,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 32,
+            "hidden_act": "silu",
+            "max_position_embeddings": 128,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "attention_bias": False,
+            "attention_dropout": 0.0,
+            "num_code_groups": 4,
+            "text_hidden_size": 64,
+            "text_vocab_size": 100,
+            "codec_eos_token_id": 30,
+            "codec_pad_id": 28,
+            "codec_bos_id": 29,
+            "codec_language_id": {"english": 20, "chinese": 21},
+            "spk_id": {"chelsie": 10, "ethan": 11},
+            "code_predictor_config": {
+                "vocab_size": 32,
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "hidden_act": "silu",
+                "max_position_embeddings": 128,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0,
+                "attention_bias": False,
+                "attention_dropout": 0.0,
+                "num_code_groups": 4,
+            },
+        }
+
+    def _default_config(self, tts_model_type="base"):
+        return {
+            "model_type": "qwen3_tts",
+            "tts_model_type": tts_model_type,
+            "tts_model_size": "0b6",
+            "talker_config": self._default_talker_config(),
+            "speaker_encoder_config": None,
+            "tokenizer_config": None,
+            "im_start_token_id": 151644,
+            "im_end_token_id": 151645,
+            "tts_pad_token_id": 151671,
+            "tts_bos_token_id": 151672,
+            "tts_eos_token_id": 151673,
+            "sample_rate": 24000,
+        }
+
+    def test_config_init(self):
+        """Test Qwen3TTS ModelConfig initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+
+        self.assertEqual(config.model_type, "qwen3_tts")
+        self.assertEqual(config.tts_model_type, "base")
+        self.assertEqual(config.sample_rate, 24000)
+        self.assertIsNotNone(config.talker_config)
+
+    def test_config_custom_voice(self):
+        """Test config with custom_voice model type."""
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("custom_voice"))
+
+        self.assertEqual(config.tts_model_type, "custom_voice")
+
+    def test_config_voice_design(self):
+        """Test config with voice_design model type."""
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("voice_design"))
+
+        self.assertEqual(config.tts_model_type, "voice_design")
+
+    def test_model_init(self):
+        """Test Qwen3TTS Model initialization."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+        model = Model(config)
+
+        self.assertIsInstance(model, Model)
+        self.assertEqual(model.model_type, "qwen3_tts")
+        self.assertEqual(model.sample_rate, 24000)
+
+    def test_model_supported_speakers(self):
+        """Test supported speakers list."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+        model = Model(config)
+
+        speakers = model.get_supported_speakers()
+        self.assertIn("chelsie", speakers)
+        self.assertIn("ethan", speakers)
+
+    def test_model_supported_languages(self):
+        """Test supported languages list."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+        model = Model(config)
+
+        languages = model.get_supported_languages()
+        self.assertIn("auto", languages)
+        self.assertIn("english", languages)
+        self.assertIn("chinese", languages)
+
+    def test_talker_init(self):
+        """Test Talker model initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTalkerConfig
+        from mlx_audio.tts.models.qwen3_tts.talker import (
+            Qwen3TTSTalkerForConditionalGeneration,
+        )
+
+        config = Qwen3TTSTalkerConfig(**self._default_talker_config())
+        talker = Qwen3TTSTalkerForConditionalGeneration(config)
+
+        self.assertIsNotNone(talker.model)
+        self.assertIsNotNone(talker.code_predictor)
+        self.assertEqual(config.vocab_size, 32)
+
+    def test_talker_forward(self):
+        """Test Talker forward pass."""
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTalkerConfig
+        from mlx_audio.tts.models.qwen3_tts.talker import (
+            Qwen3TTSTalkerForConditionalGeneration,
+        )
+
+        config = Qwen3TTSTalkerConfig(**self._default_talker_config())
+        talker = Qwen3TTSTalkerForConditionalGeneration(config)
+
+        # Test forward with inputs_embeds
+        batch_size, seq_len = 1, 10
+        hidden_size = config.hidden_size
+        inputs_embeds = mx.random.normal((batch_size, seq_len, hidden_size))
+
+        # Talker returns (logits, hidden_states)
+        logits, hidden_states = talker(inputs_embeds=inputs_embeds)
+
+        self.assertEqual(logits.shape[0], batch_size)
+        self.assertEqual(logits.shape[1], seq_len)
+        self.assertEqual(logits.shape[2], config.vocab_size)
+        self.assertEqual(hidden_states.shape, (batch_size, seq_len, hidden_size))
+
+    def test_code_predictor_init(self):
+        """Test CodePredictor initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import (
+            Qwen3TTSTalkerCodePredictorConfig,
+        )
+        from mlx_audio.tts.models.qwen3_tts.talker import Qwen3TTSTalkerCodePredictor
+
+        config = Qwen3TTSTalkerCodePredictorConfig(
+            vocab_size=32,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=32,
+            num_code_groups=4,
+        )
+        code_predictor = Qwen3TTSTalkerCodePredictor(config, talker_hidden_size=64)
+
+        self.assertEqual(len(code_predictor.codec_embedding), 3)  # num_code_groups - 1
+        self.assertIsNotNone(code_predictor.model)
+
+    def test_code_predictor_forward(self):
+        """Test CodePredictor forward pass."""
+        from mlx_audio.tts.models.qwen3_tts.config import (
+            Qwen3TTSTalkerCodePredictorConfig,
+        )
+        from mlx_audio.tts.models.qwen3_tts.talker import Qwen3TTSTalkerCodePredictor
+
+        config = Qwen3TTSTalkerCodePredictorConfig(
+            vocab_size=32,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=32,
+            num_code_groups=4,
+        )
+        code_predictor = Qwen3TTSTalkerCodePredictor(config, talker_hidden_size=64)
+
+        batch_size, seq_len = 1, 2
+        inputs_embeds = mx.random.normal((batch_size, seq_len, 64))
+
+        # CodePredictor returns (logits, cache, next_step)
+        logits, _, _ = code_predictor(inputs_embeds=inputs_embeds)
+
+        self.assertEqual(logits.shape[0], batch_size)
+        self.assertEqual(logits.shape[1], seq_len)
+        self.assertEqual(logits.shape[2], config.vocab_size)
+
+    def test_generate_routing_base(self):
+        """Test that generate routes correctly for base model."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("base"))
+        model = Model(config)
+
+        # Base model should not require instruct
+        self.assertEqual(config.tts_model_type, "base")
+
+    def test_generate_routing_custom_voice_requires_voice(self):
+        """Test that custom_voice model requires voice parameter."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("custom_voice"))
+        model = Model(config)
+
+        # Mock speech_tokenizer to avoid loading
+        model.speech_tokenizer = MagicMock()
+
+        with self.assertRaises(ValueError) as context:
+            list(model.generate(text="Hello", voice=None))
+
+        self.assertIn("voice", str(context.exception).lower())
+
+    def test_generate_routing_voice_design_requires_instruct(self):
+        """Test that voice_design model requires instruct parameter."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("voice_design"))
+        model = Model(config)
+
+        # Mock speech_tokenizer to avoid loading
+        model.speech_tokenizer = MagicMock()
+
+        with self.assertRaises(ValueError) as context:
+            list(model.generate(text="Hello", instruct=None))
+
+        self.assertIn("instruct", str(context.exception).lower())
+
+    def test_speaker_encoder_config(self):
+        """Test SpeakerEncoder config initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSSpeakerEncoderConfig
+
+        config = Qwen3TTSSpeakerEncoderConfig()
+
+        self.assertEqual(config.mel_dim, 128)
+        self.assertEqual(config.enc_dim, 1024)
+        self.assertEqual(config.sample_rate, 24000)
+        self.assertEqual(len(config.enc_channels), 5)
+
+    def test_mel_spectrogram(self):
+        """Test mel spectrogram computation."""
+        from mlx_audio.tts.models.qwen3_tts.qwen3_tts import mel_spectrogram
+
+        # Create a simple test audio
+        sample_rate = 24000
+        duration = 0.5  # 0.5 seconds
+        audio = mx.random.normal((int(sample_rate * duration),))
+
+        mel = mel_spectrogram(
+            audio,
+            n_fft=1024,
+            num_mels=128,
+            sample_rate=sample_rate,
+            hop_size=256,
+        )
+
+        # Check output shape
+        self.assertEqual(mel.ndim, 3)  # [batch, time, mels]
+        self.assertEqual(mel.shape[0], 1)  # batch size
+        self.assertEqual(mel.shape[2], 128)  # num_mels
+
+
 if __name__ == "__main__":
     unittest.main()
