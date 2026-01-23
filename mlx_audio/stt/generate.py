@@ -67,6 +67,12 @@ def parse_args():
         action="store_true",
         help="Stream the transcription as it is generated (default: False)",
     )
+    parser.add_argument(
+        "--context",
+        type=str,
+        default=None,
+        help="Context string with hotwords or metadata to guide transcription",
+    )
     return parser.parse_args()
 
 

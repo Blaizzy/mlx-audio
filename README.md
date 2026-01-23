@@ -186,6 +186,29 @@ result = model.generate(
 )
 ```
 
+**CLI usage:**
+
+```bash
+# Basic transcription
+python -m mlx_audio.stt.generate \
+    --model mlx-community/VibeVoice-ASR-bf16 \
+    --audio meeting.wav \
+    --output-path output \
+    --format json \
+    --max-tokens 8192 \
+    --verbose
+
+# With context/hotwords
+python -m mlx_audio.stt.generate \
+    --model mlx-community/VibeVoice-ASR-bf16 \
+    --audio technical_talk.wav \
+    --output-path output \
+    --format json \
+    --max-tokens 8192 \
+    --context "MLX, Apple Silicon, PyTorch, Transformer" \
+    --verbose
+```
+
 ### SAM-Audio (Source Separation)
 
 Separate specific sounds from audio using text prompts:
