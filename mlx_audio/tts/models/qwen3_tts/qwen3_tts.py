@@ -182,6 +182,30 @@ class Model(nn.Module):
         """Get list of supported language codes."""
         return self.supported_languages
 
+    def model_quant_predicate(self, path: str, module) -> bool:
+        """Determine which modules should be quantized.
+
+        Excludes embedding layers which don't work well with quantization
+        due to single-token lookup operations.
+
+        Args:
+            path: Module path (e.g., 'talker.codec_embedding')
+            module: The module instance
+
+        Returns:
+            True if the module should be quantized, False to skip
+        """
+        # Skip all embedding layers - they break with quantization
+        # because single-token lookups produce 1D tensors
+        skip_patterns = [
+            "codec_embedding",      # talker.codec_embedding
+            "text_embedding",       # talker.text_embedding
+            "embed_tokens",         # generic embedding name
+            "speech_tokenizer",     # speech tokenizer embeddings
+            "speaker_encoder",      # speaker encoder (uses embeddings internally)
+        ]
+        return not any(pattern in path for pattern in skip_patterns)
+
     def extract_speaker_embedding(
         self,
         audio: mx.array,
