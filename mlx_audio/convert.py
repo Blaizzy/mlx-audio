@@ -485,12 +485,13 @@ def copy_model_files(source: Path, dest: Path):
 
         # Copy from subdirectories
         for file in glob.glob(str(source / "**" / pattern), recursive=True):
-            name = Path(file).name
-            if name == "model.safetensors.index.json" or (
-                name.startswith("model") and name.endswith(".safetensors")
-            ):
-                continue
             rel_path = Path(file).relative_to(source)
+            # Skip root-level files (already handled above)
+            if len(rel_path.parts) <= 1:
+                continue
+            name = Path(file).name
+            if name == "model.safetensors.index.json":
+                continue
             dest_dir = dest / rel_path.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(file, dest_dir)
