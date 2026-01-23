@@ -128,9 +128,8 @@ class CausalTransposeConv1d(nn.Module):
         self.conv = nn.ConvTranspose1d(
             in_channels, out_channels, kernel_size, stride=stride, padding=0
         )
-        pad = kernel_size - stride
-        self.left_pad = math.ceil(pad)
-        self.right_pad = pad - self.left_pad
+        # Trim from the right for causal behavior (matches Encodec/DAC/Mimi)
+        self.trim_right = kernel_size - stride
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [batch, channels, time] (NCL format)
@@ -138,11 +137,9 @@ class CausalTransposeConv1d(nn.Module):
         x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
         x = self.conv(x)
         x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-        # Trim padding (on time dimension, which is now last)
-        if self.right_pad > 0:
-            x = x[..., self.left_pad : -self.right_pad]
-        else:
-            x = x[..., self.left_pad :]
+        # Trim from right for causal behavior
+        if self.trim_right > 0:
+            x = x[..., : -self.trim_right]
         return x
 
 
@@ -650,9 +647,8 @@ class DecoderBlockUpsample(nn.Module):
         self.conv = nn.ConvTranspose1d(
             in_dim, out_dim, kernel_size, stride=upsample_rate, padding=0
         )
-        pad = kernel_size - upsample_rate
-        self.left_pad = math.ceil(pad)
-        self.right_pad = pad - self.left_pad
+        # Trim from the right for causal behavior (matches Encodec/DAC/Mimi)
+        self.trim_right = kernel_size - upsample_rate
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [batch, channels, time] (NCL format)
@@ -660,11 +656,9 @@ class DecoderBlockUpsample(nn.Module):
         x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
         x = self.conv(x)
         x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-        # Trim for causal behavior (on time dimension, now last)
-        if self.right_pad > 0:
-            x = x[..., self.left_pad : -self.right_pad]
-        else:
-            x = x[..., self.left_pad :]
+        # Trim from right for causal behavior
+        if self.trim_right > 0:
+            x = x[..., : -self.trim_right]
         return x
 
 
