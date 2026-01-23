@@ -1,8 +1,5 @@
-"""
-CosyVoice3 HIFT (HiFi-GAN with ISTFT) Vocoder implementation in MLX.
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
-Based on: https://github.com/FunAudioLLM/CosyVoice
-"""
 
 import math
 from typing import List, Optional, Tuple

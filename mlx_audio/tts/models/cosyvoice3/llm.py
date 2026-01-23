@@ -1,8 +1,5 @@
-"""
-CosyVoice3 LLM module for speech token generation.
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
-Based on: https://github.com/FunAudioLLM/CosyVoice
-"""
 
 from typing import Generator, List, Optional, Tuple
 

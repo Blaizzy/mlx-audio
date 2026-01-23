@@ -1,20 +1,4 @@
-"""
-CosyVoice3 Text-to-Speech Model in MLX.
-
-Based on: https://github.com/FunAudioLLM/CosyVoice
-
-Usage:
-    # Load model
-    model = Model.from_pretrained("FunAudioLLM/Fun-CosyVoice3-0.5B-2512")
-
-    # Generate speech (zero-shot voice cloning)
-    for result in model.inference_zero_shot(
-        text="Hello, this is a test.",
-        prompt_text="This is the prompt text.",
-        prompt_wav="path/to/reference.wav",
-    ):
-        audio = result.audio
-"""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import time
 from dataclasses import dataclass, field

@@ -1,8 +1,4 @@
-"""
-CosyVoice3 Flow module for mel-spectrogram generation.
-
-Based on: https://github.com/FunAudioLLM/CosyVoice
-"""
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
 from typing import Optional, Tuple
