@@ -4,7 +4,6 @@ CosyVoice3 Frontend for text processing and speaker embedding.
 Based on: https://github.com/FunAudioLLM/CosyVoice
 """
 
-from pathlib import Path
 from typing import Optional, Tuple
 
 import mlx.core as mx
@@ -140,8 +139,8 @@ class CosyVoice3Frontend:
         )
         power = np.abs(Zxx) ** 2
 
-        # Create mel filterbank
-        mel_fb = self._mel_filterbank(sr, n_fft, n_mels, fmin, fmax)
+        # Create mel filterbank (HTK scale, no normalization for campplus)
+        mel_fb = self._mel_filterbank(sr, n_fft, n_mels, fmin, fmax, norm=None, htk=True)
 
         # Apply mel filterbank
         mel_spec = np.dot(mel_fb, power)
@@ -159,39 +158,96 @@ class CosyVoice3Frontend:
 
     def _mel_filterbank(
         self,
-        sr: int = 16000,
-        n_fft: int = 512,
-        n_mels: int = 80,
-        fmin: float = 20,
-        fmax: float = 7600,
+        sr: int,
+        n_fft: int,
+        n_mels: int,
+        fmin: float = 0.0,
+        fmax: Optional[float] = None,
+        norm: Optional[str] = "slaney",
+        htk: bool = False,
     ) -> np.ndarray:
-        """Create mel filterbank matrix."""
-        freqs = np.fft.rfftfreq(n_fft, 1 / sr)
+        """
+        Compute a mel filterbank matrix (matching librosa.filters.mel).
 
-        def hz_to_mel(hz):
-            return 2595 * np.log10(1 + hz / 700)
+        Args:
+            sr: Sample rate
+            n_fft: FFT size
+            n_mels: Number of mel bands
+            fmin: Minimum frequency
+            fmax: Maximum frequency (defaults to sr/2)
+            norm: Normalization type ('slaney' or None)
+            htk: Use HTK formula (True) or Slaney/Auditory (False)
 
-        def mel_to_hz(mel):
-            return 700 * (10 ** (mel / 2595) - 1)
+        Returns:
+            Mel filterbank (n_mels, n_fft//2 + 1)
+        """
+        if fmax is None:
+            fmax = sr / 2.0
 
+        n_freqs = n_fft // 2 + 1
+        all_freqs = np.linspace(0, sr / 2.0, n_freqs)
+
+        # Hz <-> Mel conversions
+        if htk:
+            def hz_to_mel(f):
+                return 2595.0 * np.log10(1.0 + np.asarray(f) / 700.0)
+
+            def mel_to_hz(m):
+                return 700.0 * (10.0 ** (np.asarray(m) / 2595.0) - 1.0)
+        else:
+            # Slaney's Auditory Toolbox formula
+            f_sp = 200.0 / 3.0
+            min_log_hz = 1000.0
+            min_log_mel = min_log_hz / f_sp
+            logstep = np.log(6.4) / 27.0
+
+            def hz_to_mel(f):
+                f = np.asarray(f, dtype=np.float64)
+                mel = np.where(
+                    f < min_log_hz,
+                    f / f_sp,
+                    min_log_mel + np.log(np.maximum(f, 1e-10) / min_log_hz) / logstep,
+                )
+                return mel
+
+            def mel_to_hz(m):
+                m = np.asarray(m, dtype=np.float64)
+                f = np.where(
+                    m < min_log_mel,
+                    m * f_sp,
+                    min_log_hz * np.exp(logstep * (m - min_log_mel)),
+                )
+                return f
+
+        # Compute mel band edges
         mel_min = hz_to_mel(fmin)
         mel_max = hz_to_mel(fmax)
         mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
         hz_points = mel_to_hz(mel_points)
 
-        filterbank = np.zeros((n_mels, len(freqs)))
+        # Build filterbank
+        filterbank = np.zeros((n_mels, n_freqs))
         for i in range(n_mels):
             lower = hz_points[i]
             center = hz_points[i + 1]
             upper = hz_points[i + 2]
 
-            for j, freq in enumerate(freqs):
-                if lower <= freq < center:
-                    filterbank[i, j] = (freq - lower) / (center - lower)
-                elif center <= freq < upper:
-                    filterbank[i, j] = (upper - freq) / (upper - center)
+            # Rising slope
+            up_mask = (all_freqs >= lower) & (all_freqs <= center)
+            if center > lower:
+                filterbank[i, up_mask] = (all_freqs[up_mask] - lower) / (center - lower)
 
-        return filterbank
+            # Falling slope
+            down_mask = (all_freqs >= center) & (all_freqs <= upper)
+            if upper > center:
+                filterbank[i, down_mask] = (upper - all_freqs[down_mask]) / (upper - center)
+
+        # Slaney normalization: normalize each band by its width
+        if norm == "slaney":
+            enorm = 2.0 / (hz_points[2:n_mels + 2] - hz_points[:n_mels])
+            filterbank *= enorm[:, np.newaxis]
+
+        return filterbank.astype(np.float32)
 
     def extract_speaker_embedding(
         self,
@@ -254,24 +310,22 @@ class CosyVoice3Frontend:
             )
         return audio, sr
 
-    def _load_flow_mel_filters(self) -> np.ndarray:
+    def _get_flow_mel_filters(self) -> np.ndarray:
         """
-        Load pre-computed mel filterbank for the flow model.
+        Get mel filterbank for the flow model (cached).
 
-        The filterbank matches librosa.filters.mel(sr=24000, n_fft=1920, n_mels=80, fmin=0, fmax=None)
-        which uses slaney normalization by default.
+        Equivalent to librosa.filters.mel(sr=24000, n_fft=1920, n_mels=80, fmin=0, fmax=None)
+        with slaney normalization.
 
         Returns:
             Mel filterbank matrix (n_mels, n_freq) = (80, 961)
         """
-        filters_path = Path(__file__).parent / "mel_filters.npz"
-        if not filters_path.exists():
-            raise RuntimeError(
-                f"Mel filters not found at {filters_path}. "
-                "Please ensure mel_filters.npz is in the cosyvoice3 model directory."
+        if not hasattr(self, "_flow_mel_fb"):
+            self._flow_mel_fb = self._mel_filterbank(
+                sr=24000, n_fft=1920, n_mels=80, fmin=0.0, fmax=None,
+                norm="slaney", htk=False
             )
-        with np.load(str(filters_path), allow_pickle=False) as f:
-            return f["mel_80_flow"]
+        return self._flow_mel_fb
 
     def extract_mel_features(
         self,
@@ -286,7 +340,7 @@ class CosyVoice3Frontend:
         - Reflect padding before STFT (center=False after padding)
         - Periodic Hann window (matching torch.hann_window)
         - Magnitude spectrum with epsilon: sqrt(|spec|^2 + 1e-9)
-        - Pre-computed librosa mel filterbank (slaney normalization)
+        - Slaney-normalized mel filterbank (matching librosa.filters.mel)
         - Dynamic range compression: log(clamp(x, min=1e-5))
 
         Args:
@@ -333,8 +387,8 @@ class CosyVoice3Frontend:
         # Magnitude with epsilon (matching PyTorch: sqrt(spec.pow(2).sum(-1) + 1e-9))
         magnitudes = np.sqrt(np.abs(stft_result) ** 2 + 1e-9)
 
-        # Apply pre-computed librosa mel filterbank (n_mels x n_freq)
-        mel_fb = self._load_flow_mel_filters()  # (80, 961)
+        # Apply mel filterbank (slaney-normalized, matching librosa)
+        mel_fb = self._get_flow_mel_filters()  # (80, 961)
         mel_spec = mel_fb @ magnitudes  # (80, T)
 
         # Dynamic range compression (matching PyTorch spectral_normalize_torch)
@@ -344,12 +398,12 @@ class CosyVoice3Frontend:
         # Add batch dimension: (80, T) -> (1, 80, T)
         return mx.array(log_mel[np.newaxis, :, :].astype(np.float32))
 
-    def _load_whisper_mel_filters(self, n_mels: int = 128) -> np.ndarray:
+    def _get_whisper_mel_filters(self, n_mels: int = 128) -> np.ndarray:
         """
-        Load the pre-computed whisper mel filterbank.
+        Get whisper-style mel filterbank (cached).
 
-        The filterbank is from librosa.filters.mel(sr=16000, n_fft=400, n_mels=128)
-        saved in whisper's assets format.
+        Equivalent to librosa.filters.mel(sr=16000, n_fft=400, n_mels=N)
+        with slaney normalization.
 
         Args:
             n_mels: Number of mel bins (80 or 128)
@@ -357,14 +411,14 @@ class CosyVoice3Frontend:
         Returns:
             Mel filterbank matrix (n_mels, n_fft//2 + 1)
         """
-        filters_path = Path(__file__).parent / "mel_filters.npz"
-        if not filters_path.exists():
-            raise RuntimeError(
-                f"Mel filters not found at {filters_path}. "
-                "Please ensure mel_filters.npz is in the cosyvoice3 model directory."
+        cache_attr = f"_whisper_mel_fb_{n_mels}"
+        if not hasattr(self, cache_attr):
+            fb = self._mel_filterbank(
+                sr=16000, n_fft=400, n_mels=n_mels, fmin=0.0, fmax=None,
+                norm="slaney", htk=False
             )
-        with np.load(str(filters_path), allow_pickle=False) as f:
-            return f[f"mel_{n_mels}"]
+            setattr(self, cache_attr, fb)
+        return getattr(self, cache_attr)
 
     def _whisper_log_mel_spectrogram(
         self, audio: np.ndarray, n_mels: int = 128
@@ -408,8 +462,8 @@ class CosyVoice3Frontend:
         # Drop last frame (matches whisper: stft[..., :-1])
         magnitudes = np.abs(stft_result[:, :-1]) ** 2
 
-        # Apply pre-computed mel filterbank
-        mel_fb = self._load_whisper_mel_filters(n_mels)
+        # Apply mel filterbank
+        mel_fb = self._get_whisper_mel_filters(n_mels)
         mel_spec = mel_fb @ magnitudes
 
         # Log with floor

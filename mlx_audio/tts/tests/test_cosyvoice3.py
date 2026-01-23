@@ -151,23 +151,36 @@ class TestCosyVoice3Components(unittest.TestCase):
         # Create MLX RoPE
         mlx_rope = RotaryEmbedding(dim=dim)
 
-        # Get embeddings
-        cos, sin = mlx_rope(seq_len)
-        mx.eval(cos)
-        mx.eval(sin)
+        # Get embeddings - returns (freqs, scale) tuple
+        freqs, scale = mlx_rope(seq_len)
+        mx.eval(freqs)
 
-        # Check shapes
-        self.assertEqual(cos.shape, (seq_len, dim // 2))
-        self.assertEqual(sin.shape, (seq_len, dim // 2))
+        # Check shapes - freqs is (1, T, dim) with interleaved frequencies
+        self.assertEqual(freqs.shape, (1, seq_len, dim))
+        self.assertEqual(scale, 1.0)
 
-        # Test apply_rotary_emb
+        # Test apply_rotary_emb on flattened (B, T, H*D) tensor
+        # This matches the actual usage in Attention: RoPE is applied before reshape
         batch_size = 2
-        heads = 8
-        x = mx.random.normal((batch_size, heads, seq_len, dim))
-        x_rot = apply_rotary_emb(x, cos, sin)
-        mx.eval(x_rot)
+        heads = 16
+        inner_dim = heads * dim  # 1024
+        x = mx.random.normal((batch_size, seq_len, inner_dim))
 
-        self.assertEqual(x_rot.shape, x.shape)
+        # Apply RoPE - only first rot_dim=64 dims should be rotated
+        x_out = apply_rotary_emb(x, freqs, scale)
+        mx.eval(x_out)
+
+        self.assertEqual(x_out.shape, x.shape)
+
+        # Verify only first 64 dims are changed
+        x_np = np.array(x)
+        x_out_np = np.array(x_out)
+        # First 64 dims should be different
+        self.assertFalse(np.allclose(x_np[..., :dim], x_out_np[..., :dim]))
+        # Remaining dims should be unchanged
+        np.testing.assert_allclose(
+            x_np[..., dim:], x_out_np[..., dim:], rtol=0, atol=0
+        )
 
     @skip_if_no_mlx
     def test_timestep_embedding(self):
