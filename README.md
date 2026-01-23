@@ -155,7 +155,20 @@ results = list(model.generate(
     voice="Chelsie",
     language="English",
 ))
+```
 
+Clone any voice using a reference audio sample. (You provide the wav file and the transcript.)
+
+```bash
+mlx_audio.tts.generate \
+    --model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16 \
+    --text "Hello from Sesame." \
+    --ref_audio sample_audio.wav \
+    --ref_text "This is what my voice sounds like." \
+    --play
+```
+
+```python
 # CustomVoice model - predefined voices with emotion control
 model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
 results = list(model.generate_custom_voice(
@@ -197,19 +210,6 @@ mlx_audio.tts.generate \
     --model mlx-community/csm-1b \
     --text "Hello from Sesame." \
     --ref_audio ./reference_voice.wav \
-    --play
-```
-
-### Voice Cloning with Qwen-TTS
-
-Clone any voice using a reference audio sample. (You provide the wav file and the transcript.)
-
-```bash
-mlx_audio.tts.generate \
-    --model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16 \
-    --text "Hello from Sesame." \
-    --ref_audio sample_audio.wav \
-    --ref_text "This is what my voice sounds like." \
     --play
 ```
 
