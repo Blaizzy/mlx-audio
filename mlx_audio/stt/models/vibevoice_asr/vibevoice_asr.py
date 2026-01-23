@@ -11,7 +11,6 @@ import mlx.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-
 from ..base import STTOutput
 from .audio_encoder import AcousticTokenizerEncoder, SemanticTokenizerEncoder
 from .config import ModelConfig
@@ -349,10 +348,14 @@ class Model(nn.Module):
             if new_key.startswith("lm_head."):
                 new_key = "language_model." + new_key
 
-            # Handle Conv1d weight transposition 
+            # Handle Conv1d weight transposition
             # PyTorch: [out_channels, in_channels/groups, kernel_size]
             # MLX: [out_channels, kernel_size, in_channels/groups]
-            if not already_converted and "conv" in new_key.lower() and "weight" in new_key:
+            if (
+                not already_converted
+                and "conv" in new_key.lower()
+                and "weight" in new_key
+            ):
                 if value.ndim == 3:
                     value = value.transpose(0, 2, 1)
 

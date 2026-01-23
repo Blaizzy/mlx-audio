@@ -5,12 +5,6 @@ import unittest
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_audio.stt.models.vibevoice_asr.config import (
-    AcousticTokenizerConfig,
-    ModelConfig,
-    Qwen2Config,
-    SemanticTokenizerConfig,
-)
 from mlx_audio.stt.models.vibevoice_asr.audio_encoder import (
     AcousticTokenizerEncoder,
     Block1D,
@@ -18,6 +12,12 @@ from mlx_audio.stt.models.vibevoice_asr.audio_encoder import (
     SConv1d,
     SemanticTokenizerEncoder,
     TokenizerEncoder,
+)
+from mlx_audio.stt.models.vibevoice_asr.config import (
+    AcousticTokenizerConfig,
+    ModelConfig,
+    Qwen2Config,
+    SemanticTokenizerConfig,
 )
 from mlx_audio.stt.models.vibevoice_asr.vibevoice_asr import (
     LanguageModel,
@@ -416,9 +416,7 @@ class TestModelSanitize(unittest.TestCase):
         sanitized = self.model.sanitize(weights)
 
         self.assertIn("acoustic_tokenizer.encoder.head.conv.weight", sanitized)
-        self.assertNotIn(
-            "model.acoustic_tokenizer.encoder.head.conv.weight", sanitized
-        )
+        self.assertNotIn("model.acoustic_tokenizer.encoder.head.conv.weight", sanitized)
 
     def test_skips_decoder_weights(self):
         weights = {
@@ -427,9 +425,7 @@ class TestModelSanitize(unittest.TestCase):
         }
         sanitized = self.model.sanitize(weights)
 
-        self.assertNotIn(
-            "acoustic_tokenizer.decoder.layers.0.weight", sanitized
-        )
+        self.assertNotIn("acoustic_tokenizer.decoder.layers.0.weight", sanitized)
         self.assertIn("acoustic_tokenizer.encoder.head.conv.weight", sanitized)
 
     def test_downsample_layers_remap(self):
@@ -639,9 +635,7 @@ class TestModel(unittest.TestCase):
         logits = self.model.language_model(input_ids)
         mx.eval(logits)
 
-        self.assertEqual(
-            logits.shape, (1, 5, self.config.decoder_config.vocab_size)
-        )
+        self.assertEqual(logits.shape, (1, 5, self.config.decoder_config.vocab_size))
 
     def test_merge_speech_text_embeddings(self):
         """Test embedding merging with speech features."""
@@ -652,7 +646,9 @@ class TestModel(unittest.TestCase):
         input_ids = mx.ones((1, seq_len), dtype=mx.int32)
         speech_features = mx.random.normal((1, speech_len, hidden))
         # Mask: positions 2-5 are speech
-        mask = mx.array([[False, False, True, True, True, True, False, False, False, False]])
+        mask = mx.array(
+            [[False, False, True, True, True, True, False, False, False, False]]
+        )
 
         embeddings = self.model._merge_speech_text_embeddings(
             input_ids, speech_features, mask
