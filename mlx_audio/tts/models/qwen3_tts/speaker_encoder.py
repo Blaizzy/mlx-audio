@@ -1,6 +1,6 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
-from typing import Dict, List
+from typing import Dict
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -8,8 +8,26 @@ import mlx.nn as nn
 from .config import Qwen3TTSSpeakerEncoderConfig
 
 
+def reflect_pad_1d(x: mx.array, pad: int) -> mx.array:
+    """Apply reflect padding to the time dimension (axis=1) in NLC format.
+
+    Args:
+        x: Input tensor [batch, time, channels]
+        pad: Number of samples to pad on each side.
+
+    Returns:
+        Padded tensor [batch, time + 2*pad, channels]
+    """
+    if pad <= 0:
+        return x
+    # Reflect: mirror without repeating the boundary element
+    left = x[:, 1 : pad + 1, :][:, ::-1, :]
+    right = x[:, -(pad + 1) : -1, :][:, ::-1, :]
+    return mx.concatenate([left, x, right], axis=1)
+
+
 class TimeDelayNetBlock(nn.Module):
-    """TDNN block with 1D convolution and ReLU activation."""
+    """TDNN block with 1D convolution, reflect padding, and ReLU activation."""
 
     def __init__(
         self,
@@ -19,26 +37,23 @@ class TimeDelayNetBlock(nn.Module):
         dilation: int,
     ):
         super().__init__()
+        # Compute "same" padding amount
+        self.pad = (kernel_size - 1) * dilation // 2
         self.conv = nn.Conv1d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
             stride=1,
-            padding=(kernel_size - 1) * dilation // 2,  # Same padding equivalent
+            padding=0,  # We apply reflect padding manually
+            dilation=dilation,
         )
-        self.dilation = dilation
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time]
-        # For dilated conv, we need to handle it manually since MLX doesn't support dilation
-        if self.dilation > 1:
-            # Dilate input by inserting zeros
-            batch, channels, time = x.shape
-            kernel_size = self.conv.weight.shape[1]
-            # Pad input appropriately for dilated convolution
-            pad_size = (kernel_size - 1) * self.dilation // 2
-            x = mx.pad(x, [(0, 0), (0, 0), (pad_size, pad_size)], mode="reflect")
+        # x: [batch, channels, time] (NCL format)
+        x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
+        x = reflect_pad_1d(x, self.pad)
         out = self.conv(x)
+        out = mx.transpose(out, (0, 2, 1))  # NLC -> NCL
         return nn.relu(out)
 
 
@@ -70,7 +85,6 @@ class Res2NetBlock(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [batch, channels, time]
-        # Split along channel dimension
         chunks = mx.split(x, self.scale, axis=1)
         outputs = []
 
@@ -108,11 +122,14 @@ class SqueezeExcitationBlock(nn.Module):
         )
 
     def __call__(self, x: mx.array) -> mx.array:
+        # x: [batch, channels, time] (NCL format)
         # Global average pooling
-        x_mean = mx.mean(x, axis=2, keepdims=True)
-        # SE path
-        se = nn.relu(self.conv1(x_mean))
+        x_mean = mx.mean(x, axis=2, keepdims=True)  # [batch, channels, 1]
+        # SE path - transpose for MLX Conv1d (NLC format)
+        se = mx.transpose(x_mean, (0, 2, 1))  # [batch, 1, channels]
+        se = nn.relu(self.conv1(se))
         se = mx.sigmoid(self.conv2(se))
+        se = mx.transpose(se, (0, 2, 1))  # [batch, channels, 1]
         return x * se
 
 
@@ -184,13 +201,16 @@ class AttentiveStatisticsPooling(nn.Module):
         # Apply attention
         attention = self.tdnn(attention)
         attention = mx.tanh(attention)
+        # Conv expects NLC format
+        attention = mx.transpose(attention, (0, 2, 1))  # NCL -> NLC
         attention = self.conv(attention)
+        attention = mx.transpose(attention, (0, 2, 1))  # NLC -> NCL
         attention = mx.softmax(attention, axis=2)
 
         # Compute weighted mean and std
         mean = mx.sum(attention * x, axis=2, keepdims=True)
         var = mx.sum(attention * (x - mean) ** 2, axis=2, keepdims=True)
-        std = mx.sqrt(var.clip(self.eps, None))
+        std = mx.sqrt(mx.clip(var, self.eps, None))
 
         # Concatenate mean and std
         pooled = mx.concatenate([mean, std], axis=1)
@@ -277,8 +297,10 @@ class Qwen3TTSSpeakerEncoder(nn.Module):
         # Attentive Statistical Pooling
         x = self.asp(x)
 
-        # Final linear transformation
+        # Final linear transformation - Conv expects NLC format
+        x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
         x = self.fc(x)
+        x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
 
         # Squeeze time dimension
         x = mx.squeeze(x, axis=-1)
@@ -290,6 +312,7 @@ class Qwen3TTSSpeakerEncoder(nn.Module):
         from .qwen3_tts import check_array_shape_qwen3
 
         sanitized = {}
+
         for k, v in weights.items():
             if not k.startswith("speaker_encoder."):
                 continue
@@ -297,10 +320,11 @@ class Qwen3TTSSpeakerEncoder(nn.Module):
             # Remove prefix
             new_key = k.replace("speaker_encoder.", "")
 
-            # Handle Conv1d weights: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
-            if "conv.weight" in new_key and len(v.shape) == 3:
-                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
-            elif "fc.weight" in new_key and len(v.shape) == 3:
+            # Handle all Conv1d weights: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
+            # Matches conv.weight, conv1.weight, conv2.weight, fc.weight, etc.
+            if new_key.endswith(".weight") and len(v.shape) == 3:
+                # PyTorch Conv1d: [out_channels, in_channels, kernel_size]
+                # MLX Conv1d: [out_channels, kernel_size, in_channels]
                 v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
 
             sanitized[new_key] = v

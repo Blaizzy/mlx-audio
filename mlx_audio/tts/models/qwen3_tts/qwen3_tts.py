@@ -46,13 +46,14 @@ def mel_spectrogram(
         n_mels=num_mels,
         f_min=fmin,
         f_max=fmax,
-        mel_scale="htk",
+        norm="slaney",
+        mel_scale="slaney",
     )
 
     # Compute STFT for each sample in batch
     mels = []
     for i in range(batch_size):
-        # Use shared STFT function
+
         spec = stft(
             audio[i],
             n_fft=n_fft,
