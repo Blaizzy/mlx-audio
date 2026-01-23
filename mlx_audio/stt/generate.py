@@ -67,6 +67,12 @@ def parse_args():
         action="store_true",
         help="Stream the transcription as it is generated (default: False)",
     )
+    parser.add_argument(
+        "--context",
+        type=str,
+        default=None,
+        help="Context string with hotwords or metadata to guide transcription",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +159,10 @@ def save_as_json(segments, output_path: str):
                 for s in segments.sentences
             ],
         }
+        # Add speaker_id only if it exists
+        for i, s in enumerate(segments.sentences):
+            if hasattr(s, "speaker_id"):
+                result["sentences"][i]["speaker_id"] = s.speaker_id
     else:
         result = {
             "text": segments.text,
@@ -166,6 +176,10 @@ def save_as_json(segments, output_path: str):
                 for s in segments.segments
             ],
         }
+        # Add speaker_id only if it exists
+        for i, s in enumerate(segments.segments):
+            if "speaker_id" in s:
+                result["segments"][i]["speaker_id"] = s["speaker_id"]
 
     with open(f"{output_path}.json", "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
