@@ -11,6 +11,7 @@ import mlx.nn as nn
 import numpy as np
 from tqdm import tqdm
 
+
 from ..base import STTOutput
 from .audio_encoder import AcousticTokenizerEncoder, SemanticTokenizerEncoder
 from .config import ModelConfig
@@ -127,6 +128,10 @@ class Model(nn.Module):
     def get_input_embeddings(self) -> nn.Embedding:
         """Get the input embeddings from the language model."""
         return self.language_model.embed_tokens
+
+    def model_quant_predicate(self, p, m):
+        """Only quantize language model layers."""
+        return p.startswith("language_model")
 
     def encode_speech(self, speech_tensors: mx.array) -> mx.array:
         """
@@ -280,6 +285,8 @@ class Model(nn.Module):
         """
         sanitized = {}
 
+        already_converted = not any(k.startswith("model.") for k in weights.keys())
+
         for key, value in weights.items():
             new_key = key
 
@@ -342,10 +349,10 @@ class Model(nn.Module):
             if new_key.startswith("lm_head."):
                 new_key = "language_model." + new_key
 
-            # Handle Conv1d weight transposition
+            # Handle Conv1d weight transposition 
             # PyTorch: [out_channels, in_channels/groups, kernel_size]
             # MLX: [out_channels, kernel_size, in_channels/groups]
-            if "conv" in new_key.lower() and "weight" in new_key:
+            if not already_converted and "conv" in new_key.lower() and "weight" in new_key:
                 if value.ndim == 3:
                     value = value.transpose(0, 2, 1)
 
@@ -387,7 +394,7 @@ class Model(nn.Module):
             "{% if add_generation_prompt %}{{ '<|im_start|>assistant\\n' }}{% endif %}"
         )
 
-        model._tokenizer = tokenizer
+        model.tokenizer = tokenizer
 
         # VibeVoice ASR repurposes existing Qwen2.5 special tokens for speech:
         # <|object_ref_start|> = speech_start
@@ -497,8 +504,8 @@ class Model(nn.Module):
         ):
             # Check for EOS tokens
             eos_token_ids = (
-                self._tokenizer.eos_token_id
-                if hasattr(self._tokenizer, "eos_token_id")
+                self.tokenizer.eos_token_id
+                if hasattr(self.tokenizer, "eos_token_id")
                 else [151643, 151645]
             )
             # Normalize to list if it's a single integer
@@ -591,10 +598,10 @@ class Model(nn.Module):
         mx.clear_cache()
 
         # Decode output
-        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
         # Parse structured output
-        segments = self._parse_transcription(text)
+        segments = self.parse_transcription(text)
 
         return STTOutput(
             text=text.strip(),
@@ -670,7 +677,7 @@ class Model(nn.Module):
             sampler=sampler,
             verbose=verbose,
         ):
-            text = self._tokenizer.decode([token])
+            text = self.tokenizer.decode([token])
             yield text
 
         mx.clear_cache()
@@ -724,10 +731,10 @@ class Model(nn.Module):
             },
         ]
 
-        prompt_text = self._tokenizer.apply_chat_template(
+        prompt_text = self.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        tokens = self._tokenizer.encode(prompt_text)
+        tokens = self.tokenizer.encode(prompt_text)
 
         input_ids = mx.array([tokens])
         acoustic_input_mask = mx.array(
@@ -736,7 +743,7 @@ class Model(nn.Module):
 
         return input_ids, acoustic_input_mask
 
-    def _parse_transcription(self, text: str) -> List[Dict[str, Any]]:
+    def parse_transcription(self, text: str) -> List[Dict[str, Any]]:
         """Parse structured JSON output from model."""
         import json
 
