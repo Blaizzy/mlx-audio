@@ -781,10 +781,10 @@ class Model(nn.Module):
             # Clean up keys
             segments = []
             key_mapping = {
-                "Start time": "start_time",
-                "Start": "start_time",
-                "End time": "end_time",
-                "End": "end_time",
+                "Start time": "start",
+                "Start": "start",
+                "End time": "end",
+                "End": "end",
                 "Speaker ID": "speaker_id",
                 "Speaker": "speaker_id",
                 "Content": "text",
