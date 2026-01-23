@@ -16,11 +16,23 @@ The best audio processing library built on Apple's MLX framework, providing fast
 
 ## Installation
 
+### Using pip
 ```bash
 pip install mlx-audio
 ```
 
-For development or web interface:
+### Using uv to install only the command line tools
+Latest release from pypi:
+```bash
+uv tool install --force mlx-audio --prerelease=allow
+```
+
+Latest code from github:
+```bash
+uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prerelease=allow
+```
+
+### For development or web interface:
 
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
@@ -185,6 +197,19 @@ mlx_audio.tts.generate \
     --model mlx-community/csm-1b \
     --text "Hello from Sesame." \
     --ref_audio ./reference_voice.wav \
+    --play
+```
+
+### Voice Cloning with Qwen-TTS
+
+Clone any voice using a reference audio sample. (You provide the wav file and the transcript.)
+
+```bash
+mlx_audio.tts.generate \
+    --model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16 \
+    --text "Hello from Sesame." \
+    --ref_audio sample_audio.wav \
+    --ref_text "This is what my voice sounds like." \
     --play
 ```
 
