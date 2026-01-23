@@ -143,63 +143,22 @@ for result in model.generate(
 
 ### Qwen3-TTS
 
-Alibaba's state-of-the-art multilingual TTS with three model variants:
+Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control, and voice design capabilities.
 
 ```python
 from mlx_audio.tts.utils import load_model
 
-# Base model with predefined voices
 model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
 results = list(model.generate(
     text="Hello, welcome to MLX-Audio!",
     voice="Chelsie",
     language="English",
 ))
-```
 
-Clone any voice using a reference audio sample. (You provide the wav file and the transcript.)
-
-```bash
-mlx_audio.tts.generate \
-    --model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16 \
-    --text "Hello from Sesame." \
-    --ref_audio sample_audio.wav \
-    --ref_text "This is what my voice sounds like." \
-    --play
-```
-
-```python
-# CustomVoice model - predefined voices with emotion control
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
-results = list(model.generate_custom_voice(
-    text="I'm so excited to meet you!",
-    speaker="Vivian",
-    language="English",
-    instruct="Very happy and excited.",
-))
-
-# VoiceDesign model - create any voice from text description
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
-results = list(model.generate_voice_design(
-    text="Big brother, you're back!",
-    language="English",
-    instruct="A cheerful young female voice with high pitch and energetic tone.",
-))
-
-# Access generated audio
 audio = results[0].audio  # mx.array
 ```
 
-**Available Models:**
-| Model | Method | Description |
-|-------|--------|-------------|
-| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast, predefined voices |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher quality |
-| `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | `generate_custom_voice()` | Voices + emotion |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` | `generate_custom_voice()` | Better emotion control |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` | `generate_voice_design()` | Create any voice |
-
-**Speakers (Base/CustomVoice):** `Chelsie`, `Ethan`, `Serena`, `Vivian`, `Ryan`, `Aiden`, `Eric`, `Dylan`
+See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
 
 ### CSM (Voice Cloning)
 
