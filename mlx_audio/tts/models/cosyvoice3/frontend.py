@@ -254,6 +254,25 @@ class CosyVoice3Frontend:
             )
         return audio, sr
 
+    def _load_flow_mel_filters(self) -> np.ndarray:
+        """
+        Load pre-computed mel filterbank for the flow model.
+
+        The filterbank matches librosa.filters.mel(sr=24000, n_fft=1920, n_mels=80, fmin=0, fmax=None)
+        which uses slaney normalization by default.
+
+        Returns:
+            Mel filterbank matrix (n_mels, n_freq) = (80, 961)
+        """
+        filters_path = Path(__file__).parent / "mel_filters.npz"
+        if not filters_path.exists():
+            raise RuntimeError(
+                f"Mel filters not found at {filters_path}. "
+                "Please ensure mel_filters.npz is in the cosyvoice3 model directory."
+            )
+        with np.load(str(filters_path), allow_pickle=False) as f:
+            return f["mel_80_flow"]
+
     def extract_mel_features(
         self,
         audio: np.ndarray,
@@ -264,8 +283,10 @@ class CosyVoice3Frontend:
 
         Matches PyTorch matcha.utils.audio.mel_spectrogram exactly:
         - n_fft=1920, hop_size=480, win_size=1920
-        - Reflect padding before STFT
-        - Magnitude spectrum (not power)
+        - Reflect padding before STFT (center=False after padding)
+        - Periodic Hann window (matching torch.hann_window)
+        - Magnitude spectrum with epsilon: sqrt(|spec|^2 + 1e-9)
+        - Pre-computed librosa mel filterbank (slaney normalization)
         - Dynamic range compression: log(clamp(x, min=1e-5))
 
         Args:
@@ -292,34 +313,29 @@ class CosyVoice3Frontend:
         n_fft = 1920
         hop_length = 480
         win_length = 1920
-        n_mels = 80
-        fmin = 0
-        fmax = None  # PyTorch uses None which defaults to sr/2
 
         # Reflect padding (matching PyTorch: pad with (n_fft - hop_size) / 2 on each side)
         pad_size = int((n_fft - hop_length) / 2)  # 720
-        audio_padded = np.pad(audio, (pad_size, pad_size), mode='reflect')
+        audio_padded = np.pad(audio, (pad_size, pad_size), mode="reflect")
 
-        # STFT with Hann window (matching PyTorch torch.stft with center=False)
-        window = np.hanning(win_length)
+        # Periodic Hann window (matching torch.hann_window)
+        window = np.hanning(win_length + 1)[:-1]
 
-        # Manual STFT to match PyTorch behavior exactly
+        # Manual STFT (matching PyTorch torch.stft with center=False)
         num_frames = 1 + (len(audio_padded) - n_fft) // hop_length
         stft_result = np.zeros((n_fft // 2 + 1, num_frames), dtype=np.complex64)
 
         for i in range(num_frames):
             start = i * hop_length
-            frame = audio_padded[start:start + n_fft] * window
+            frame = audio_padded[start : start + n_fft] * window
             stft_result[:, i] = np.fft.rfft(frame)
 
-        # Magnitude spectrum (not power) - matching PyTorch
-        magnitudes = np.abs(stft_result)
+        # Magnitude with epsilon (matching PyTorch: sqrt(spec.pow(2).sum(-1) + 1e-9))
+        magnitudes = np.sqrt(np.abs(stft_result) ** 2 + 1e-9)
 
-        # Mel filterbank (using librosa-compatible formula)
-        if fmax is None:
-            fmax = self.sample_rate / 2
-        mel_fb = self._mel_filterbank(self.sample_rate, n_fft, n_mels, fmin, fmax)
-        mel_spec = np.dot(mel_fb, magnitudes)
+        # Apply pre-computed librosa mel filterbank (n_mels x n_freq)
+        mel_fb = self._load_flow_mel_filters()  # (80, 961)
+        mel_spec = mel_fb @ magnitudes  # (80, T)
 
         # Dynamic range compression (matching PyTorch spectral_normalize_torch)
         # log(clamp(x, min=1e-5))
@@ -327,6 +343,85 @@ class CosyVoice3Frontend:
 
         # Add batch dimension: (80, T) -> (1, 80, T)
         return mx.array(log_mel[np.newaxis, :, :].astype(np.float32))
+
+    def _load_whisper_mel_filters(self, n_mels: int = 128) -> np.ndarray:
+        """
+        Load the pre-computed whisper mel filterbank.
+
+        The filterbank is from librosa.filters.mel(sr=16000, n_fft=400, n_mels=128)
+        saved in whisper's assets format.
+
+        Args:
+            n_mels: Number of mel bins (80 or 128)
+
+        Returns:
+            Mel filterbank matrix (n_mels, n_fft//2 + 1)
+        """
+        filters_path = Path(__file__).parent / "mel_filters.npz"
+        if not filters_path.exists():
+            raise RuntimeError(
+                f"Mel filters not found at {filters_path}. "
+                "Please ensure mel_filters.npz is in the cosyvoice3 model directory."
+            )
+        with np.load(str(filters_path), allow_pickle=False) as f:
+            return f[f"mel_{n_mels}"]
+
+    def _whisper_log_mel_spectrogram(
+        self, audio: np.ndarray, n_mels: int = 128
+    ) -> np.ndarray:
+        """
+        Compute whisper-style log mel spectrogram.
+
+        Matches whisper.audio.log_mel_spectrogram exactly:
+        - STFT with n_fft=400, hop_length=160, hann window, center=True (reflect pad)
+        - Power spectrum with last frame dropped
+        - Pre-computed librosa mel filterbank
+        - log10(clamp(x, 1e-10))
+        - Max normalization: max(x, x.max() - 8.0)
+        - Shift/scale: (x + 4.0) / 4.0
+
+        Args:
+            audio: Audio waveform at 16kHz (float32)
+            n_mels: Number of mel bins
+
+        Returns:
+            Log mel spectrogram (n_mels, T)
+        """
+        n_fft = 400
+        hop_length = 160
+
+        # Center padding (reflect) - matches torch.stft center=True
+        pad_size = n_fft // 2  # 200
+        audio_padded = np.pad(audio, (pad_size, pad_size), mode="reflect")
+
+        # Hann window
+        window = np.hanning(n_fft + 1)[:-1]  # Periodic hann (matches torch.hann_window)
+
+        # STFT (manual to match torch.stft exactly)
+        num_frames = 1 + (len(audio_padded) - n_fft) // hop_length
+        stft_result = np.zeros((n_fft // 2 + 1, num_frames), dtype=np.complex64)
+        for i in range(num_frames):
+            start = i * hop_length
+            frame = audio_padded[start : start + n_fft] * window
+            stft_result[:, i] = np.fft.rfft(frame)
+
+        # Drop last frame (matches whisper: stft[..., :-1])
+        magnitudes = np.abs(stft_result[:, :-1]) ** 2
+
+        # Apply pre-computed mel filterbank
+        mel_fb = self._load_whisper_mel_filters(n_mels)
+        mel_spec = mel_fb @ magnitudes
+
+        # Log with floor
+        log_spec = np.log10(np.maximum(mel_spec, 1e-10))
+
+        # Max normalization (whisper-specific)
+        log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
+
+        # Shift and scale
+        log_spec = (log_spec + 4.0) / 4.0
+
+        return log_spec.astype(np.float32)
 
     def extract_speech_tokens(
         self,
@@ -336,7 +431,8 @@ class CosyVoice3Frontend:
         """
         Extract speech tokens from audio using the speech tokenizer.
 
-        Uses whisper-style 128-bin log mel spectrogram.
+        Uses whisper-style 128-bin log mel spectrogram (matching the
+        training pipeline of the speech tokenizer ONNX model).
 
         Args:
             audio: Audio waveform (numpy array)
@@ -357,37 +453,19 @@ class CosyVoice3Frontend:
             num_samples = int(len(audio) * 16000 / sample_rate)
             audio = signal.resample(audio, num_samples)
 
+        # Ensure float32
+        audio = audio.astype(np.float32)
+
         # Limit to 30 seconds
         max_samples = 30 * 16000
         if len(audio) > max_samples:
             audio = audio[:max_samples]
 
-        # Compute 128-bin log mel spectrogram (whisper-style)
-        # whisper uses: n_fft=400, hop_length=160, n_mels=128
-        n_fft = 400
-        hop_length = 160
-        n_mels = 128
-        fmin = 0
-        fmax = 8000
-
-        # STFT
-        f, t, Zxx = signal.stft(
-            audio, fs=16000, nperseg=n_fft, noverlap=n_fft - hop_length
-        )
-        power = np.abs(Zxx) ** 2
-
-        # Mel filterbank
-        mel_fb = self._mel_filterbank(16000, n_fft, n_mels, fmin, fmax)
-        mel_spec = np.dot(mel_fb, power)
-
-        # Log mel (whisper uses log10 with floor)
-        log_mel = np.log10(np.maximum(mel_spec, 1e-10))
-
-        # Normalize (whisper normalizes to [-1, 1] range approximately)
-        log_mel = (log_mel + 4.0) / 4.0  # Approximate whisper normalization
+        # Compute whisper-style 128-bin log mel spectrogram
+        log_mel = self._whisper_log_mel_spectrogram(audio, n_mels=128)
 
         # Shape: (1, 128, T) for ONNX
-        feats = log_mel[np.newaxis, :, :].astype(np.float32)
+        feats = log_mel[np.newaxis, :, :]
         feats_length = np.array([feats.shape[2]], dtype=np.int32)
 
         # Run speech tokenizer

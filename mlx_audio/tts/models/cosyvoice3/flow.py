@@ -195,6 +195,10 @@ class CausalConditionalCFM(nn.Module):
         """
         Solve ODE using Euler method.
 
+        Matches PyTorch CausalConditionalCFM.solve_euler exactly:
+        - t and dt are tracked as running variables
+        - dt is recalculated each step (not pre-computed)
+
         Args:
             x: Initial noise (B, mel_dim, T)
             t_span: Time steps
@@ -207,18 +211,21 @@ class CausalConditionalCFM(nn.Module):
         Returns:
             Generated mel-spectrogram (B, mel_dim, T)
         """
-        n_steps = len(t_span) - 1
+        t = t_span[0]
+        dt = t_span[1] - t_span[0]
 
-        for i in range(n_steps):
-            t = t_span[i]
-            dt = t_span[i + 1] - t_span[i]
-
+        for step in range(1, len(t_span)):
             # Get velocity prediction with CFG
             dphi_dt = self.forward_estimator_cfg(x, mask, mu, t, spks, cond, streaming)
 
             # Euler step
             x = x + dt * dphi_dt
+            t = t + dt
             mx.eval(x)
+
+            # Recalculate dt for next step (matching PyTorch)
+            if step < len(t_span) - 1:
+                dt = t_span[step + 1] - t
 
         return x
 
@@ -235,11 +242,16 @@ class CausalConditionalCFM(nn.Module):
         """
         Forward pass with classifier-free guidance.
 
+        Matches PyTorch solve_euler CFG exactly:
+        - Creates doubled batch with zeros for unconditional
+        - mu, spks, cond second half are zeros
+        - x, mask, t second half are copies
+
         Args:
             x: Current state (B, mel_dim, T)
-            mask: Mask (B, T)
+            mask: Mask (B, T) or (B, 1, T)
             mu: Mean (B, mel_dim, T)
-            t: Current timestep
+            t: Current timestep (scalar)
             spks: Speaker embedding (B, spk_dim)
             cond: Condition (B, mel_dim, T)
             streaming: Whether to use streaming
@@ -250,19 +262,19 @@ class CausalConditionalCFM(nn.Module):
         cfg_rate = self.inference_cfg_rate
 
         if cfg_rate > 0:
-            # Duplicate inputs for CFG
-            B = x.shape[0]
-
+            # Duplicate inputs for CFG (matching PyTorch pre-allocated buffer pattern)
+            # x_in[:] = x (both halves are same x)
             x_double = mx.concatenate([x, x], axis=0)
+            # mask_in[:] = mask (both halves are same mask)
             mask_double = mx.concatenate([mask, mask], axis=0)
+            # mu_in[0] = mu, mu_in[1] = 0 (unconditional has zero mu)
             mu_double = mx.concatenate([mu, mx.zeros_like(mu)], axis=0)
-
-            if t.ndim == 0:
-                t_double = t
-            else:
-                t_double = mx.concatenate([t, t], axis=0)
-
+            # t_in[:] = t (both halves are same t)
+            # t is scalar, expand to batch of 2
+            t_double = mx.broadcast_to(t, (2,))
+            # spks_in[0] = spks, spks_in[1] = 0
             spks_double = mx.concatenate([spks, mx.zeros_like(spks)], axis=0)
+            # cond_in[0] = cond, cond_in[1] = 0
             cond_double = mx.concatenate([cond, mx.zeros_like(cond)], axis=0)
 
             # Forward through estimator
@@ -277,9 +289,10 @@ class CausalConditionalCFM(nn.Module):
             )
 
             # Split and apply CFG
-            # PyTorch formula: (1 + cfg_rate) * cond - cfg_rate * uncond
-            # = cond + cfg_rate * (cond - uncond)
-            out_cond, out_uncond = mx.split(out, 2, axis=0)
+            # PyTorch: dphi_dt = (1 + cfg_rate) * dphi_dt - cfg_rate * cfg_dphi_dt
+            B = x.shape[0]
+            out_cond = out[:B]
+            out_uncond = out[B:]
             out = (1.0 + cfg_rate) * out_cond - cfg_rate * out_uncond
 
             return out
@@ -399,10 +412,11 @@ class CausalMaskedDiffWithDiT(nn.Module):
         mu = self._upsample_repeat(token_embed, self.token_mel_ratio)  # (B, T_out, D)
         mu = mu.transpose(0, 2, 1)  # (B, D, T_out)
 
-        # Create mask for mel generation
+        # Create mask for mel generation (B, 1, T) matching PyTorch mask.unsqueeze(1)
         mel_len = total_token_len * self.token_mel_ratio
         max_len = T_out
         mask = mx.arange(max_len)[None, :] < mel_len[:, None]  # (B, T_out)
+        mask = mask[:, None, :]  # (B, 1, T_out) to match PyTorch
 
         # Condition mel (use prompt_feat padded to full length)
         # prompt_feat is expected as (B, T, mel_dim) format (matching PyTorch)

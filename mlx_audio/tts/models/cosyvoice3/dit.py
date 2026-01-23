@@ -237,23 +237,23 @@ class Attention(nn.Module):
     ) -> mx.array:
         B, T, _ = x.shape
 
-        # Project to q, k, v
+        # Project to q, k, v - shape (B, T, H*D)
         q = self.to_q(x)
         k = self.to_k(x)
         v = self.to_v(x)
 
-        # Apply rotary embeddings BEFORE reshaping to heads (partial rotary)
-        # This matches PyTorch x_transformers which only rotates first dim_head dimensions
+        # Apply rotary embeddings on FLATTENED (B, T, H*D) tensor BEFORE reshape
+        # This matches PyTorch AttnProcessor which calls apply_rotary_pos_emb
+        # on the (B, T, inner_dim) tensor before view/transpose.
+        # With freqs shape (1, T, rot_dim=64), only the first 64 of 1024 dims are rotated.
         if rope is not None:
-            # Unpack rope tuple (freqs, xpos_scale)
             freqs, xpos_scale = rope
-            # Apply scale to query (scale) and key (1/scale) as in x_transformers
             q_scale = xpos_scale if xpos_scale is not None else 1.0
             k_scale = (1.0 / xpos_scale) if xpos_scale is not None and xpos_scale != 1.0 else 1.0
             q = apply_rotary_emb(q, freqs, q_scale)
             k = apply_rotary_emb(k, freqs, k_scale)
 
-        # Reshape to (B, H, T, D)
+        # THEN reshape to (B, T, H, D) and transpose to (B, H, T, D)
         q = q.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
         k = k.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
         v = v.reshape(B, T, self.heads, self.dim_head).transpose(0, 2, 1, 3)
@@ -514,27 +514,34 @@ class DiT(nn.Module):
     def _create_chunk_mask(
         self, batch_size: int, seq_len: int, padding_mask: mx.array
     ) -> mx.array:
-        """Create chunk-based causal attention mask."""
-        # Create causal mask
-        causal = mx.tril(mx.ones((seq_len, seq_len), dtype=mx.bool_))
+        """Create chunk-based attention mask matching PyTorch subsequent_chunk_mask.
 
-        # Chunk-based attention
+        PyTorch implementation:
+            pos_idx = torch.arange(size)
+            block_value = (torch.div(pos_idx, chunk_size, rounding_mode='trunc') + 1) * chunk_size
+            ret = pos_idx.unsqueeze(0) < block_value.unsqueeze(1)
+
+        This means position i can attend to positions j where:
+            j < ((i // chunk_size) + 1) * chunk_size
+        i.e., all positions up to the end of the current chunk.
+        """
         chunk_size = self.static_chunk_size
-        if chunk_size > 0:
-            # Allow attending to current and previous chunks
-            chunk_mask = mx.zeros((seq_len, seq_len), dtype=mx.bool_)
-            for i in range(seq_len):
-                chunk_start = (i // chunk_size) * chunk_size
-                if self.num_decoding_left_chunks < 0:
-                    start = 0
-                else:
-                    start = max(
-                        0, chunk_start - self.num_decoding_left_chunks * chunk_size
-                    )
-                chunk_mask = chunk_mask.at[i, start : i + 1].set(True)
-            causal = causal & chunk_mask
+
+        pos_idx = mx.arange(seq_len)
+        # For each query position, compute the end of its chunk
+        block_value = ((pos_idx // chunk_size) + 1) * chunk_size
+        # Each query can attend to key positions < block_value
+        # pos_idx[None, :] is key positions, block_value[:, None] is per-query limit
+        chunk_mask = pos_idx[None, :] < block_value[:, None]  # (seq_len, seq_len)
 
         # Combine with padding mask
-        causal = mx.broadcast_to(causal[None, :, :], (batch_size, seq_len, seq_len))
+        # padding_mask: (B, T) or (B, 1, T)
+        if padding_mask.ndim == 3:
+            pad_mask = padding_mask  # (B, 1, T)
+        else:
+            pad_mask = padding_mask[:, None, :]  # (B, 1, T)
 
-        return causal
+        # Broadcast: chunk_mask (1, T, T) & pad_mask (B, 1, T) -> (B, T, T)
+        attn_mask = chunk_mask[None, :, :] & pad_mask.astype(mx.bool_)
+
+        return attn_mask

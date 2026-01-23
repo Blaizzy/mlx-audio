@@ -611,8 +611,17 @@ class Model(nn.Module):
         prompt_speech_tokens = inputs.get("prompt_speech_tokens")
         speech_tokens_list = []
 
-        # Estimate minimum tokens based on text length (roughly 2-4 tokens per character)
-        min_tokens = max(10, len(text) * 2)
+        # Calculate min/max tokens matching PyTorch:
+        # min_len = (text_len - prompt_text_len) * min_token_text_ratio (default 2)
+        # max_len = (text_len - prompt_text_len) * max_token_text_ratio (default 20)
+        target_text_len = text_tokens.shape[1]
+        min_tokens = int(target_text_len * 2)
+        max_tokens = int(target_text_len * 20)
+
+        # Silent/breath tokens (matching PyTorch CosyVoice3Model.silent_tokens)
+        silent_tokens = {1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323}
+        max_silent_token_num = 5
+        cur_silent_token_num = 0
 
         for token in self.llm.generate(
             text_tokens,
@@ -621,7 +630,19 @@ class Model(nn.Module):
             temperature=temperature,
             top_k=top_k,
             min_tokens=min_tokens,
+            max_tokens=max_tokens,
         ):
+            mx.eval(token)
+            token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
+
+            # Filter excessive consecutive silent tokens (matching PyTorch llm_job)
+            if token_val in silent_tokens:
+                cur_silent_token_num += 1
+                if cur_silent_token_num > max_silent_token_num:
+                    continue
+            else:
+                cur_silent_token_num = 0
+
             speech_tokens_list.append(token)
 
         if len(speech_tokens_list) == 0:
@@ -686,8 +707,10 @@ class Model(nn.Module):
             )
 
         # Generate speech tokens
-        # Estimate minimum tokens based on text length
-        min_tokens = max(10, len(text) * 2)
+        # Calculate min/max tokens matching PyTorch ratios
+        target_text_len = text_tokens.shape[1]
+        min_tokens = int(target_text_len * 2)
+        max_tokens = int(target_text_len * 20)
 
         speech_tokens_list = []
         for token in self.llm.generate(
@@ -695,6 +718,7 @@ class Model(nn.Module):
             temperature=temperature,
             top_k=top_k,
             min_tokens=min_tokens,
+            max_tokens=max_tokens,
         ):
             speech_tokens_list.append(token)
 
