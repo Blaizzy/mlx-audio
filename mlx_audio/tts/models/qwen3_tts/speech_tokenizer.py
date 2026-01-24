@@ -2,12 +2,24 @@
 
 
 import math
+import re
 from typing import Dict, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from mlx_lm.models.cache import KVCache
+
+from mlx_audio.codec.models.mimi.modules import (
+    ConvDownsample1d,
+    ProjectedTransformer,
+    SeanetConfig,
+    SeanetEncoder,
+)
+from mlx_audio.codec.models.mimi.modules import (
+    SplitResidualVectorQuantizer as MimiSplitRVQ,
+)
+from mlx_audio.codec.models.mimi.modules import TransformerConfig
 
 from .config import (
     Qwen3TTSTokenizerConfig,
@@ -873,6 +885,111 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
         return mx.concatenate(wavs, axis=-1)
 
 
+class Qwen3TTSSpeechTokenizerEncoder(nn.Module):
+    """Encoder for the speech tokenizer using Mimi components.
+
+    Architecture: SeanetEncoder -> ProjectedTransformer -> ConvDownsample1d -> SplitRVQ
+    """
+
+    def __init__(self, config: Qwen3TTSTokenizerEncoderConfig):
+        super().__init__()
+        self.config = config
+        self.valid_num_quantizers = 16  # Only first 16 quantizers are used for ICL
+
+        # Build SeanetConfig from encoder config
+        seanet_cfg = SeanetConfig(
+            dimension=config.hidden_size,
+            channels=config.audio_channels,
+            causal=config.use_causal_conv,
+            nfilters=config.num_filters,
+            nresidual_layers=config.num_residual_layers,
+            ratios=config.upsampling_ratios,
+            ksize=config.kernel_size,
+            residual_ksize=config.residual_kernel_size,
+            last_ksize=config.last_kernel_size,
+            dilation_base=config.dilation_growth_rate,
+            pad_mode="constant",
+            true_skip=not config.use_conv_shortcut,
+            compress=config.compress,
+        )
+        self.encoder = SeanetEncoder(seanet_cfg)
+
+        # Build TransformerConfig
+        transformer_cfg = TransformerConfig(
+            d_model=config.hidden_size,
+            num_heads=config.num_attention_heads,
+            num_layers=config.num_hidden_layers,
+            causal=config.use_causal_conv,
+            norm_first=True,
+            bias_ff=False,
+            bias_attn=False,
+            layer_scale=config.layer_scale_initial_scale,
+            positional_embedding="rope",
+            use_conv_block=False,
+            cross_attention=False,
+            conv_kernel_size=3,
+            use_conv_bias=True,
+            gating=False,
+            norm="layer_norm",
+            context=config.sliding_window,
+            max_period=int(config.rope_theta),
+            max_seq_len=config.max_position_embeddings,
+            kv_repeat=config.num_attention_heads // config.num_key_value_heads,
+            dim_feedforward=config.intermediate_size,
+            conv_layout=True,
+            rope_traditional=False,
+        )
+        self.encoder_transformer = ProjectedTransformer(
+            transformer_cfg,
+            input_dim=config.hidden_size,
+            output_dims=[config.hidden_size],
+        )
+
+        # ConvDownsample1d: stride = encoder_frame_rate / frame_rate
+        encoder_frame_rate = config.sampling_rate / math.prod(config.upsampling_ratios)
+        downsample_stride = int(encoder_frame_rate / config.frame_rate)
+        self.downsample = ConvDownsample1d(
+            stride=downsample_stride,
+            dim=config.hidden_size,
+            causal=config.use_causal_conv,
+        )
+
+        # SplitResidualVectorQuantizer
+        self.quantizer = MimiSplitRVQ(
+            dim=config.codebook_dim,
+            input_dim=config.hidden_size,
+            output_dim=config.hidden_size,
+            nq=config.num_quantizers,
+            bins=config.codebook_size,
+        )
+
+        # Caches for transformer
+        self.encoder_cache = self.encoder_transformer.make_cache()
+
+    def encode(self, audio: mx.array) -> mx.array:
+        """Encode audio waveform to codes.
+
+        Args:
+            audio: [batch, 1, samples] audio waveform
+
+        Returns:
+            codes: [batch, num_quantizers, time]
+        """
+        self.encoder.reset_state()
+        for c in self.encoder_cache:
+            c.reset()
+        xs = self.encoder(audio)
+        # Create causal attention mask (the model was trained with causal attention)
+        seq_len = xs.shape[-1]  # NCL format, time is last dim
+        mask = mx.full((seq_len, seq_len), -mx.inf)
+        mask = mx.triu(mask, k=1)  # Upper triangle = -inf, lower triangle + diag = 0
+        mask = mask[None, None, :, :]  # [1, 1, seq_len, seq_len]
+        xs = self.encoder_transformer(xs, cache=self.encoder_cache, mask=mask)[0]
+        xs = self.downsample(xs)
+        codes = self.quantizer.encode(xs)
+        return codes[:, : self.valid_num_quantizers, :]
+
+
 class Qwen3TTSSpeechTokenizer(nn.Module):
     """Full speech tokenizer model."""
 
@@ -885,8 +1002,31 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
         self.decode_upsample_rate = config.decode_upsample_rate
         self.encode_downsample_rate = config.encode_downsample_rate
 
-        # Only decoder for now (encoder uses MimiModel which would need separate port)
+        # Decoder
         self.decoder = Qwen3TTSSpeechTokenizerDecoder(config.decoder_config)
+
+        # Encoder (for ICL voice cloning)
+        if config.encoder_config is not None:
+            self.encoder_model = Qwen3TTSSpeechTokenizerEncoder(config.encoder_config)
+        else:
+            self.encoder_model = None
+
+    def encode(self, audio: mx.array) -> mx.array:
+        """Encode audio waveform to codes.
+
+        Args:
+            audio: [batch, 1, samples] audio waveform
+
+        Returns:
+            codes: [batch, num_quantizers, time]
+        """
+        if self.encoder_model is None:
+            raise ValueError("Encoder not available for this speech tokenizer")
+        return self.encoder_model.encode(audio)
+
+    @property
+    def has_encoder(self) -> bool:
+        return self.encoder_model is not None
 
     def decode(self, audio_codes: mx.array) -> mx.array:
         """
@@ -916,56 +1056,226 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
 
         sanitized = {}
 
-        # Collect codebook weights to compute embeddings
+        # Collect decoder codebook weights to compute embeddings
         codebook_data = {}
 
+        # Collect encoder transformer q/k/v for in_proj concatenation
+        encoder_transformer_qkv: Dict[int, Dict[str, mx.array]] = {}
+
+        # Collect encoder codebook data (cluster_usage + embedding_sum)
+        encoder_codebook_data: Dict[str, Dict[str, mx.array]] = {}
+
+        # SeanetEncoder layer mapping:
+        # N=0: init_conv, N=3,6,9,12: downsample, N=14: final_conv
+        # N=1,4,7,10: residual blocks (with .block.1 and .block.3 sub-keys)
+        seanet_conv_map = {
+            0: "encoder_model.encoder.init_conv1d",
+            3: "encoder_model.encoder.layers.0.downsample",
+            6: "encoder_model.encoder.layers.1.downsample",
+            9: "encoder_model.encoder.layers.2.downsample",
+            12: "encoder_model.encoder.layers.3.downsample",
+            14: "encoder_model.encoder.final_conv1d",
+        }
+        # Residual block layers: N -> encoder layer index
+        seanet_residual_map = {1: 0, 4: 1, 7: 2, 10: 3}
+        # Block index -> residual conv index
+        seanet_block_map = {1: 0, 3: 1}
+
         for k, v in weights.items():
-            # Skip encoder weights (we only implement decoder)
             if k.startswith("encoder."):
-                continue
+                # --- Handle encoder weights ---
 
-            # Collect codebook cluster_usage and embedding_sum for later processing
-            # PyTorch uses _codebook (with underscore), MLX uses codebook (without)
-            if "_codebook.cluster_usage" in k or "_codebook.embedding_sum" in k:
-                # Extract base path (everything before _codebook)
-                base_path = k.rsplit("._codebook.", 1)[0]
-                if base_path not in codebook_data:
-                    codebook_data[base_path] = {}
-                if "cluster_usage" in k:
-                    codebook_data[base_path]["cluster_usage"] = v
-                else:
-                    codebook_data[base_path]["embedding_sum"] = v
-                continue
+                # SeanetEncoder convolutions
+                if k.startswith("encoder.encoder.layers."):
+                    parts = k.split(".")
+                    n = int(parts[3])  # encoder.encoder.layers.{N}...
 
-            new_key = k
+                    if "block" in k:
+                        # Residual block: encoder.encoder.layers.{N}.block.{B}.conv.{w/b}
+                        if n not in seanet_residual_map:
+                            continue
+                        layer_idx = seanet_residual_map[n]
+                        block_idx = int(parts[5])  # .block.{B}
+                        if block_idx not in seanet_block_map:
+                            continue
+                        conv_idx = seanet_block_map[block_idx]
+                        base_path = f"encoder_model.encoder.layers.{layer_idx}.residuals.0.block.{conv_idx}"
+                        suffix = ".".join(parts[6:])  # conv.weight or conv.bias
+                    else:
+                        # Direct conv: encoder.encoder.layers.{N}.conv.{w/b}
+                        if n not in seanet_conv_map:
+                            continue
+                        base_path = seanet_conv_map[n]
+                        suffix = ".".join(parts[4:])  # conv.weight or conv.bias
 
-            # Identify ConvTranspose1d weights (for upsampling layers)
-            # decoder.upsample.X.0.conv and decoder.decoder.X.block.1.conv are transpose convs
-            is_transpose_conv = ("upsample" in k and ".0.conv.weight" in k) or (
-                "decoder.decoder" in k and "block.1.conv.weight" in k
-            )
+                    new_key = f"{base_path}.conv.{suffix}"
+                    # Transpose conv weights: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
+                    if "weight" in suffix and len(v.shape) == 3:
+                        v = v.swapaxes(-1, -2)
+                    sanitized[new_key] = v
 
-            if is_transpose_conv and len(v.shape) == 3:
-                # ConvTranspose1d: PyTorch [in, out, kernel] -> MLX [out, kernel, in]
-                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (1, 2, 0))
-            elif "conv.weight" in k and len(v.shape) == 3:
-                # Conv1d: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
-                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
-            elif "_proj.weight" in k and len(v.shape) == 3:
-                # Projection Conv1d: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
-                v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
+                # Encoder transformer layers
+                elif k.startswith("encoder.encoder_transformer.layers."):
+                    # encoder.encoder_transformer.layers.{i}.self_attn.q_proj.weight
+                    parts = k.split(".")
+                    layer_idx = int(
+                        parts[3]
+                    )  # encoder.encoder_transformer.layers.{i}...
+                    rest = ".".join(parts[4:])
 
-            sanitized[new_key] = v
+                    # Collect q/k/v for in_proj concatenation
+                    if "self_attn.q_proj.weight" in rest:
+                        if layer_idx not in encoder_transformer_qkv:
+                            encoder_transformer_qkv[layer_idx] = {}
+                        encoder_transformer_qkv[layer_idx]["q"] = v
+                    elif "self_attn.k_proj.weight" in rest:
+                        if layer_idx not in encoder_transformer_qkv:
+                            encoder_transformer_qkv[layer_idx] = {}
+                        encoder_transformer_qkv[layer_idx]["k"] = v
+                    elif "self_attn.v_proj.weight" in rest:
+                        if layer_idx not in encoder_transformer_qkv:
+                            encoder_transformer_qkv[layer_idx] = {}
+                        encoder_transformer_qkv[layer_idx]["v"] = v
+                    elif "self_attn.o_proj.weight" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.self_attn.out_proj.weight"
+                        sanitized[new_key] = v
+                    elif "mlp.fc1.weight" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.gating.linear1.weight"
+                        sanitized[new_key] = v
+                    elif "mlp.fc2.weight" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.gating.linear2.weight"
+                        sanitized[new_key] = v
+                    elif "input_layernorm.weight" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.norm1.weight"
+                        sanitized[new_key] = v
+                    elif "input_layernorm.bias" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.norm1.bias"
+                        sanitized[new_key] = v
+                    elif "post_attention_layernorm.weight" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.norm2.weight"
+                        sanitized[new_key] = v
+                    elif "post_attention_layernorm.bias" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.norm2.bias"
+                        sanitized[new_key] = v
+                    elif "self_attn_layer_scale.scale" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.layer_scale_1.scale"
+                        sanitized[new_key] = v
+                    elif "mlp_layer_scale.scale" in rest:
+                        new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.layer_scale_2.scale"
+                        sanitized[new_key] = v
 
-        # Compute embeddings from cluster_usage and embedding_sum
+                # Encoder downsample conv
+                elif k.startswith("encoder.downsample."):
+                    suffix = k.replace("encoder.downsample.", "")
+                    new_key = f"encoder_model.downsample.conv.conv.{suffix}"
+                    if "weight" in suffix and len(v.shape) == 3:
+                        v = v.swapaxes(-1, -2)
+                    sanitized[new_key] = v
+
+                # Encoder quantizer
+                elif k.startswith("encoder.quantizer."):
+                    rest = k.replace("encoder.quantizer.", "")
+
+                    # Codebook data (cluster_usage / embed_sum)
+                    # HF format: .layers.{i}.codebook.{cluster_usage,embed_sum,initialized}
+                    if (
+                        ".codebook.cluster_usage" in rest
+                        or ".codebook.embed_sum" in rest
+                    ):
+                        # Extract base path for grouping
+                        base = rest.rsplit(".codebook.", 1)[0]
+                        if base not in encoder_codebook_data:
+                            encoder_codebook_data[base] = {}
+                        if "cluster_usage" in rest:
+                            encoder_codebook_data[base]["cluster_usage"] = v
+                        elif "embed_sum" in rest:
+                            encoder_codebook_data[base]["embedding_sum"] = v
+                    elif ".codebook.initialized" in rest:
+                        pass  # Skip initialized flag
+                    # Input/output projections
+                    elif "input_proj.weight" in rest or "output_proj.weight" in rest:
+                        if "semantic_residual_vector_quantizer" in rest:
+                            proj_type = (
+                                "input_proj" if "input_proj" in rest else "output_proj"
+                            )
+                            new_key = (
+                                f"encoder_model.quantizer.rvq_first.{proj_type}.weight"
+                            )
+                        else:
+                            proj_type = (
+                                "input_proj" if "input_proj" in rest else "output_proj"
+                            )
+                            new_key = (
+                                f"encoder_model.quantizer.rvq_rest.{proj_type}.weight"
+                            )
+                        # Conv1d weight: PyTorch [out, in, kernel] -> MLX [out, kernel, in]
+                        if len(v.shape) == 3:
+                            v = v.swapaxes(-1, -2)
+                        sanitized[new_key] = v
+
+            else:
+                # --- Handle decoder weights (existing logic) ---
+
+                # Collect codebook cluster_usage and embedding_sum for later processing
+                if "_codebook.cluster_usage" in k or "_codebook.embedding_sum" in k:
+                    base_path = k.rsplit("._codebook.", 1)[0]
+                    if base_path not in codebook_data:
+                        codebook_data[base_path] = {}
+                    if "cluster_usage" in k:
+                        codebook_data[base_path]["cluster_usage"] = v
+                    else:
+                        codebook_data[base_path]["embedding_sum"] = v
+                    continue
+
+                new_key = k
+
+                # Identify ConvTranspose1d weights (for upsampling layers)
+                is_transpose_conv = ("upsample" in k and ".0.conv.weight" in k) or (
+                    "decoder.decoder" in k and "block.1.conv.weight" in k
+                )
+
+                if is_transpose_conv and len(v.shape) == 3:
+                    v = v if check_array_shape_qwen3(v) else mx.transpose(v, (1, 2, 0))
+                elif "conv.weight" in k and len(v.shape) == 3:
+                    v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
+                elif "_proj.weight" in k and len(v.shape) == 3:
+                    v = v if check_array_shape_qwen3(v) else mx.transpose(v, (0, 2, 1))
+
+                sanitized[new_key] = v
+
+        # Process encoder transformer q/k/v into combined in_proj weights
+        for layer_idx, qkv in encoder_transformer_qkv.items():
+            if "q" in qkv and "k" in qkv and "v" in qkv:
+                in_proj_weight = mx.concatenate([qkv["q"], qkv["k"], qkv["v"]], axis=0)
+                new_key = f"encoder_model.encoder_transformer.transformer.layers.{layer_idx}.self_attn.in_proj.weight"
+                sanitized[new_key] = in_proj_weight
+
+        # Process encoder codebook data into embedding_sum and cluster_usage
+        for base_path, data in encoder_codebook_data.items():
+            if "cluster_usage" in data and "embedding_sum" in data:
+                # Map HF quantizer paths to Mimi paths
+                if "semantic_residual_vector_quantizer" in base_path:
+                    m = re.search(r"layers\.(\d+)", base_path)
+                    if m:
+                        layer_idx = int(m.group(1))
+                        prefix = f"encoder_model.quantizer.rvq_first.vq.layers.{layer_idx}.codebook"
+                        sanitized[f"{prefix}.embedding_sum"] = data["embedding_sum"]
+                        sanitized[f"{prefix}.cluster_usage"] = data["cluster_usage"]
+                elif "acoustic_residual_vector_quantizer" in base_path:
+                    m = re.search(r"layers\.(\d+)", base_path)
+                    if m:
+                        layer_idx = int(m.group(1))
+                        prefix = f"encoder_model.quantizer.rvq_rest.vq.layers.{layer_idx}.codebook"
+                        sanitized[f"{prefix}.embedding_sum"] = data["embedding_sum"]
+                        sanitized[f"{prefix}.cluster_usage"] = data["cluster_usage"]
+
+        # Compute decoder embeddings from cluster_usage and embedding_sum
         eps = 1e-5
         for base_path, data in codebook_data.items():
             if "cluster_usage" in data and "embedding_sum" in data:
                 cluster_usage = data["cluster_usage"]
                 embedding_sum = data["embedding_sum"]
-                # Compute normalized embedding: embedding_sum / cluster_usage
                 embedding = embedding_sum / mx.clip(cluster_usage[:, None], eps, None)
-                # New key: base_path._codebook.embed.weight
                 new_key = f"{base_path}.codebook.embed.weight"
                 sanitized[new_key] = embedding
 

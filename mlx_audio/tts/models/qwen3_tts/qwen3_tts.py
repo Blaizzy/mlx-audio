@@ -52,19 +52,25 @@ def mel_spectrogram(
 
     # Compute STFT for each sample in batch
     mels = []
+    padding = (n_fft - hop_size) // 2
     for i in range(batch_size):
+        # Manual reflect padding to match PyTorch reference (center=False with manual pad)
+        sample = audio[i]
+        left_pad = sample[1 : padding + 1][::-1]
+        right_pad = sample[-(padding + 1) : -1][::-1]
+        sample = mx.concatenate([left_pad, sample, right_pad])
 
         spec = stft(
-            audio[i],
+            sample,
             n_fft=n_fft,
             hop_length=hop_size,
             win_length=win_size,
             window="hann",
-            center=True,
+            center=False,
             pad_mode="reflect",
         )
-        # Get magnitude spectrum
-        spec_mag = mx.abs(spec)
+        # Get magnitude spectrum (with epsilon for numerical stability)
+        spec_mag = mx.sqrt(mx.abs(spec) ** 2 + 1e-9)
 
         # Apply mel filterbank: spec_mag is [frames, n_fft//2+1], mel_basis is [n_mels, n_fft//2+1]
         mel = mx.matmul(spec_mag, mel_basis.T)
@@ -394,6 +400,192 @@ class Model(nn.Module):
 
         return input_embeds, trailing_text_hidden, tts_pad_embed
 
+    def _prepare_icl_generation_inputs(
+        self,
+        text: str,
+        ref_audio: mx.array,
+        ref_text: str,
+        language: str = "auto",
+    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
+        """Prepare inputs for ICL (In-Context Learning) voice cloning.
+
+        Matches the official Qwen3-TTS generate_icl_prompt structure:
+        1. text_embed = text_projection(text_embeddings(ref_text_tokens + target_text_tokens)) + eos
+        2. codec_embed = codec_bos + sum_of_all_codebook_embeddings(ref_codes)
+        3. Streaming overlay: text[:codec_len] + codec if text longer, else padded text + codec
+
+        Args:
+            text: Target text to synthesize
+            ref_audio: Reference audio waveform [samples]
+            ref_text: Transcript of the reference audio
+            language: Language code
+
+        Returns:
+            input_embeds: Input embeddings for prefill
+            trailing_text_hidden: Remaining text embeddings for generation
+            tts_pad_embed: Padding embedding
+            ref_codes: Reference codes [1, num_quantizers, ref_time]
+        """
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
+
+        config = self.config.talker_config
+
+        # 1. Encode reference audio -> ref_codes [1, 16, ref_time]
+        audio_for_spk = ref_audio  # Save original shape for speaker embedding
+        if ref_audio.ndim == 1:
+            ref_audio = ref_audio[None, None, :]  # [1, 1, samples]
+        elif ref_audio.ndim == 2:
+            ref_audio = ref_audio[None, :]  # [1, 1, samples]
+        ref_codes = self.speech_tokenizer.encode(ref_audio)  # [1, 16, ref_time]
+        mx.eval(ref_codes)
+        ref_time = ref_codes.shape[2]
+
+        # 2. Tokenize ref_text and target_text separately
+        # ref_text format: <|im_start|>assistant\n{ref_text}<|im_end|>\n
+        ref_chat = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
+        ref_ids = mx.array(self.tokenizer.encode(ref_chat))[None, :]
+        # Pure ref text tokens: skip first 3 (role) and last 2 (<|im_end|>\n)
+        ref_text_ids = ref_ids[:, 3:-2]
+
+        # target_text format: <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
+        target_chat = (
+            f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        )
+        target_ids = mx.array(self.tokenizer.encode(target_chat))[None, :]
+        # Pure target text tokens: skip first 3 (role) and last 5 (trailing template)
+        text_ids = target_ids[:, 3:-5]
+
+        # 3. TTS special tokens
+        tts_tokens = mx.array(
+            [
+                [
+                    self.config.tts_bos_token_id,
+                    self.config.tts_eos_token_id,
+                    self.config.tts_pad_token_id,
+                ]
+            ]
+        )
+        tts_embeds = self.talker.text_projection(
+            self.talker.get_text_embeddings()(tts_tokens)
+        )
+        tts_bos_embed = tts_embeds[:, 0:1, :]
+        tts_eos_embed = tts_embeds[:, 1:2, :]
+        tts_pad_embed = tts_embeds[:, 2:3, :]
+
+        # 4. Build text_embed: text_projection(text_embeddings(ref_tokens + target_tokens)) + eos
+        combined_text_ids = mx.concatenate([ref_text_ids, text_ids], axis=1)
+        text_embed = self.talker.text_projection(
+            self.talker.get_text_embeddings()(combined_text_ids)
+        )
+        text_embed = mx.concatenate([text_embed, tts_eos_embed], axis=1)
+        text_lens = text_embed.shape[1]
+
+        # 5. Build codec_embed: codec_bos + sum_of_all_codebook_embeddings(ref_codes)
+        # ref_codes shape: [1, 16, ref_time]
+        first_cb_codes = ref_codes[:, 0, :]  # [1, ref_time]
+        ref_codec_embed = self.talker.get_input_embeddings()(first_cb_codes)
+        for i in range(config.num_code_groups - 1):
+            cb_codes = ref_codes[:, i + 1, :]
+            ref_codec_embed = (
+                ref_codec_embed
+                + self.talker.code_predictor.codec_embedding[i](cb_codes)
+            )
+
+        # Prepend codec_bos
+        codec_bos_embed = self.talker.get_input_embeddings()(
+            mx.array([[config.codec_bos_id]])
+        )
+        codec_embed_icl = mx.concatenate(
+            [codec_bos_embed, ref_codec_embed], axis=1
+        )  # [1, ref_time+1, hidden]
+        codec_lens = codec_embed_icl.shape[1]
+
+        # 6. Non-streaming mode overlay (matching official Qwen3-TTS non_streaming_mode=True)
+        # All text first (overlaid with codec_pad), then all codec (overlaid with tts_pad).
+        # This preserves full text context in the prefill, which is critical when
+        # codec_lens > text_lens (long references).
+        codec_pad_embed = self.talker.get_input_embeddings()(
+            mx.array([[config.codec_pad_id]])
+        )
+        text_with_codec_pad = text_embed + mx.broadcast_to(
+            codec_pad_embed, (1, text_lens, codec_pad_embed.shape[-1])
+        )
+        codec_with_text_pad = codec_embed_icl + mx.broadcast_to(
+            tts_pad_embed, (1, codec_lens, tts_pad_embed.shape[-1])
+        )
+        icl_input_embed = mx.concatenate(
+            [text_with_codec_pad, codec_with_text_pad], axis=1
+        )
+        trailing_text_hidden = tts_pad_embed
+
+        # 7. Language ID
+        language_id = None
+        if language.lower() != "auto" and config.codec_language_id:
+            if language.lower() in config.codec_language_id:
+                language_id = config.codec_language_id[language.lower()]
+
+        # 8. Speaker embedding (ICL still uses x-vector)
+        speaker_embed = None
+        if self.speaker_encoder is not None:
+            speaker_embed = self.extract_speaker_embedding(audio_for_spk)
+
+        # 9. Build codec prefix (think/nothink + speaker + pad + bos)
+        if language_id is None:
+            codec_prefill = [
+                config.codec_nothink_id,
+                config.codec_think_bos_id,
+                config.codec_think_eos_id,
+            ]
+        else:
+            codec_prefill = [
+                config.codec_think_id,
+                config.codec_think_bos_id,
+                language_id,
+                config.codec_think_eos_id,
+            ]
+
+        codec_prefix_embed = self.talker.get_input_embeddings()(
+            mx.array([codec_prefill])
+        )
+        codec_prefix_suffix = self.talker.get_input_embeddings()(
+            mx.array([[config.codec_pad_id, config.codec_bos_id]])
+        )
+
+        if speaker_embed is not None:
+            codec_prefix_embed = mx.concatenate(
+                [
+                    codec_prefix_embed,
+                    speaker_embed.reshape(1, 1, -1),
+                    codec_prefix_suffix,
+                ],
+                axis=1,
+            )
+        else:
+            codec_prefix_embed = mx.concatenate(
+                [codec_prefix_embed, codec_prefix_suffix], axis=1
+            )
+
+        # 10. Role embedding (first 3 tokens: <|im_start|>assistant\n)
+        role_embed = self.talker.text_projection(
+            self.talker.get_text_embeddings()(target_ids[:, :3])
+        )
+
+        # 11. Build pad/bos prefix (text side overlaid with codec prefix[:-1])
+        pad_count = codec_prefix_embed.shape[1] - 2
+        pad_embeds = mx.broadcast_to(
+            tts_pad_embed, (1, pad_count, tts_pad_embed.shape[-1])
+        )
+        combined_prefix = mx.concatenate([pad_embeds, tts_bos_embed], axis=1)
+        combined_prefix = combined_prefix + codec_prefix_embed[:, :-1, :]
+
+        # 12. Full input_embeds: role + codec_prefix + icl_embed
+        input_embeds = mx.concatenate(
+            [role_embed, combined_prefix, icl_input_embed], axis=1
+        )
+
+        return input_embeds, trailing_text_hidden, tts_pad_embed, ref_codes
+
     def _sample_token(
         self,
         logits: mx.array,
@@ -402,17 +594,31 @@ class Model(nn.Module):
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
         generated_tokens: Optional[List[int]] = None,
+        suppress_tokens: Optional[List[int]] = None,
+        eos_token_id: Optional[int] = None,
     ) -> mx.array:
         """Sample next token from logits."""
         logits = logits[:, -1, :]  # Get last position
 
-        # Apply repetition penalty (simple numpy-like approach)
+        # Suppress invalid tokens (set to -inf)
+        if suppress_tokens:
+            logits_np = np.array(logits.astype(mx.float32))
+            logits_np[:, suppress_tokens] = float("-inf")
+            logits = mx.array(logits_np)
+
+        # Apply repetition penalty (matches HuggingFace RepetitionPenaltyLogitsProcessor)
         if generated_tokens and repetition_penalty != 1.0:
-            # Convert to numpy for in-place modification, then back to MLX
             logits_np = np.array(logits.astype(mx.float32))
             for token in set(generated_tokens):
                 if token < logits_np.shape[-1]:
-                    logits_np[:, token] = logits_np[:, token] / repetition_penalty
+                    score = logits_np[:, token]
+                    # Negative scores: multiply by penalty (more negative = less likely)
+                    # Positive scores: divide by penalty (smaller = less likely)
+                    logits_np[:, token] = np.where(
+                        score < 0,
+                        score * repetition_penalty,
+                        score / repetition_penalty,
+                    )
             logits = mx.array(logits_np)
 
         # Temperature scaling
@@ -420,6 +626,11 @@ class Model(nn.Module):
             logits = logits / temperature
         else:
             return mx.argmax(logits, axis=-1, keepdims=True)
+
+        # Save EOS logit before filtering (to preserve it as a valid candidate)
+        eos_logit = None
+        if eos_token_id is not None and eos_token_id < logits.shape[-1]:
+            eos_logit = logits[:, eos_token_id : eos_token_id + 1]
 
         # Top-k filtering
         if top_k > 0 and top_k < logits.shape[-1]:
@@ -449,9 +660,16 @@ class Model(nn.Module):
             )
             logits = mx.where(logits < threshold, float("-inf"), logits)
 
-        # Softmax and sample
-        probs = mx.softmax(logits, axis=-1)
-        return mx.random.categorical(mx.log(probs + 1e-10))[:, None]
+        # Restore EOS logit after filtering so it's always a valid candidate
+        if eos_logit is not None:
+            logits_np = np.array(logits.astype(mx.float32))
+            logits_np[:, eos_token_id] = np.array(
+                eos_logit.astype(mx.float32)
+            ).flatten()
+            logits = mx.array(logits_np)
+
+        # Sample from categorical distribution (takes logits directly)
+        return mx.random.categorical(logits)[:, None]
 
     def generate(
         self,
@@ -547,6 +765,31 @@ class Model(nn.Module):
         if self.speech_tokenizer is None:
             raise ValueError("Speech tokenizer not loaded")
 
+        # Check if we should use ICL mode
+        use_icl = (
+            ref_audio is not None
+            and ref_text is not None
+            and self.speech_tokenizer.has_encoder
+        )
+
+        if use_icl:
+            # ICL mode needs stronger repetition penalty to prevent code
+            # degeneration with long reference audio prefills
+            icl_rep_penalty = max(repetition_penalty, 1.5)
+            yield from self._generate_icl(
+                text=text,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                language=lang_code,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=icl_rep_penalty,
+                verbose=verbose,
+            )
+            return
+
         # Split text into segments
         if split_pattern:
             segments = [s.strip() for s in text.split(split_pattern) if s.strip()]
@@ -582,6 +825,13 @@ class Model(nn.Module):
             eos_token_id = config.codec_eos_token_id
             trailing_idx = 0
 
+            # Suppress special tokens [vocab_size-1024, vocab_size) except EOS
+            suppress_tokens = [
+                i
+                for i in range(config.vocab_size - 1024, config.vocab_size)
+                if i != eos_token_id
+            ]
+
             for step in range(max_tokens):
                 # Forward pass through talker
                 logits, hidden = self.talker(
@@ -589,7 +839,7 @@ class Model(nn.Module):
                     cache=cache,
                 )
 
-                # Sample first codebook token
+                # Sample first codebook token (with special token suppression)
                 next_token = self._sample_token(
                     logits,
                     temperature=temperature,
@@ -601,6 +851,8 @@ class Model(nn.Module):
                         if generated_codes
                         else None
                     ),
+                    suppress_tokens=suppress_tokens,
+                    eos_token_id=eos_token_id,
                 )
 
                 # Check for EOS
@@ -860,6 +1112,216 @@ class Model(nn.Module):
             verbose=verbose,
         )
 
+    def _generate_icl(
+        self,
+        text: str,
+        ref_audio: mx.array,
+        ref_text: str,
+        language: str = "auto",
+        temperature: float = 0.9,
+        max_tokens: int = 4096,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.5,
+        verbose: bool = False,
+    ) -> Generator[GenerationResult, None, None]:
+        """Generate speech using ICL (In-Context Learning) voice cloning.
+
+        Encodes reference audio through the speech tokenizer encoder, uses the
+        encoded codes as context for generation, then prepends them to the
+        generated codes for decoding.
+        """
+        start_time = time.time()
+
+        if verbose:
+            print(f"ICL generation: {text[:50]}...")
+            print(f"  Reference text: {ref_text[:50]}...")
+
+        # Prepare ICL inputs
+        input_embeds, trailing_text_hidden, tts_pad_embed, ref_codes = (
+            self._prepare_icl_generation_inputs(
+                text=text,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                language=language,
+            )
+        )
+
+        if verbose:
+            print(
+                f"  Encoded reference: {ref_codes.shape[2]} frames, "
+                f"input sequence: {input_embeds.shape[1]} tokens"
+            )
+
+        # Cap max_tokens based on target text length to prevent runaway generation
+        # when reference audio is long and EOS logit is suppressed by top-k.
+        # At 12.5 Hz codec rate, ~3-5 codec tokens per text token is typical speech.
+        # Factor of 6 gives ~50% margin for slow speech / pauses.
+        target_token_count = len(self.tokenizer.encode(text))
+        effective_max_tokens = min(max_tokens, max(75, target_token_count * 6))
+        if verbose and effective_max_tokens < max_tokens:
+            print(
+                f"  Effective max_tokens: {effective_max_tokens} "
+                f"(based on {target_token_count} text tokens)"
+            )
+
+        # Initialize cache
+        cache = self.talker.make_cache()
+        generated_codes = []
+        config = self.config.talker_config
+        eos_token_id = config.codec_eos_token_id
+        suppress_tokens = [
+            i
+            for i in range(config.vocab_size - 1024, config.vocab_size)
+            if i != eos_token_id
+        ]
+        trailing_idx = 0
+
+        for step in range(effective_max_tokens):
+            # Forward pass through talker
+            logits, hidden = self.talker(input_embeds, cache=cache)
+
+            # Sample first codebook token
+            next_token = self._sample_token(
+                logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                generated_tokens=(
+                    [int(c[0, 0]) for c in generated_codes] if generated_codes else None
+                ),
+                suppress_tokens=suppress_tokens,
+                eos_token_id=eos_token_id,
+            )
+
+            # Check for EOS
+            if int(next_token[0, 0]) == eos_token_id:
+                break
+
+            # Generate remaining codebook tokens with code predictor
+            code_tokens = [next_token]
+            code_hidden = hidden[:, -1:, :]
+            code_cache = self.talker.code_predictor.make_cache()
+
+            for code_idx in range(config.num_code_groups - 1):
+                if code_idx == 0:
+                    code_0_embed = self.talker.get_input_embeddings()(next_token)
+                    code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+                else:
+                    code_embed = self.talker.code_predictor.codec_embedding[
+                        code_idx - 1
+                    ](code_tokens[-1])
+                    code_input = code_embed
+
+                code_logits, code_cache, _ = self.talker.code_predictor(
+                    code_input,
+                    cache=code_cache,
+                    generation_step=code_idx,
+                )
+
+                next_code = self._sample_token(
+                    code_logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                )
+                code_tokens.append(next_code)
+
+            # Stack all codebook tokens
+            all_codes = mx.concatenate(code_tokens, axis=1)
+            generated_codes.append(all_codes)
+
+            # Prepare next input
+            if trailing_idx < trailing_text_hidden.shape[1]:
+                text_embed = trailing_text_hidden[:, trailing_idx : trailing_idx + 1, :]
+                trailing_idx += 1
+            else:
+                text_embed = tts_pad_embed
+
+            codec_embed = self.talker.get_input_embeddings()(next_token)
+            for i, code in enumerate(code_tokens[1:]):
+                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
+                    i
+                ](code)
+
+            input_embeds = text_embed + codec_embed
+            mx.eval(input_embeds)
+
+            if verbose and step % 100 == 0:
+                print(f"  Step {step}, generated {len(generated_codes)} tokens")
+
+        if not generated_codes:
+            if verbose:
+                print("  No codes generated")
+            return
+
+        # Stack generated codes
+        gen_codes = mx.stack(generated_codes, axis=1)  # [1, gen_len, num_code_groups]
+
+        # Prepend reference codes to generated codes for decoding
+        # ref_codes: [1, 16, ref_time] -> [1, ref_time, 16]
+        ref_codes_t = mx.transpose(ref_codes, (0, 2, 1))
+        # Combine: [1, ref_time + gen_len, 16]
+        full_codes = mx.concatenate([ref_codes_t, gen_codes], axis=1)
+
+        ref_len = ref_codes.shape[2]
+        total_len = full_codes.shape[1]
+
+        if verbose:
+            print(
+                f"  Decoding {total_len} tokens "
+                f"({ref_len} ref + {gen_codes.shape[1]} gen) to audio..."
+            )
+
+        # Decode full codes to audio
+        audio, audio_lengths = self.speech_tokenizer.decode(full_codes)
+        audio = audio[0]  # Remove batch dim
+
+        # Trim to valid length
+        valid_len = int(audio_lengths[0])
+        if valid_len > 0 and valid_len < audio.shape[0]:
+            audio = audio[:valid_len]
+
+        # Remove the reference audio portion using proportional trimming
+        # (matches official implementation)
+        cut = int(ref_len / max(total_len, 1) * audio.shape[0])
+        if cut > 0 and cut < audio.shape[0]:
+            audio = audio[cut:]
+
+        mx.eval(audio)
+
+        elapsed_time = time.time() - start_time
+        samples = audio.shape[0]
+        token_count = len(generated_codes)
+
+        duration_seconds = samples / self.sample_rate
+        rtf = duration_seconds / elapsed_time if elapsed_time > 0 else 0
+
+        yield GenerationResult(
+            audio=audio,
+            samples=samples,
+            sample_rate=self.sample_rate,
+            segment_idx=0,
+            token_count=token_count,
+            audio_duration=format_duration(duration_seconds),
+            real_time_factor=rtf,
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": (
+                    token_count / elapsed_time if elapsed_time > 0 else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": (samples / elapsed_time if elapsed_time > 0 else 0),
+            },
+            processing_time_seconds=elapsed_time,
+            peak_memory_usage=mx.get_peak_memory() / 1e9,
+        )
+
+        mx.clear_cache()
+
     def _generate_with_instruct(
         self,
         text: str,
@@ -899,6 +1361,11 @@ class Model(nn.Module):
         generated_codes = []
         config = self.config.talker_config
         eos_token_id = config.codec_eos_token_id
+        suppress_tokens = [
+            i
+            for i in range(config.vocab_size - 1024, config.vocab_size)
+            if i != eos_token_id
+        ]
         trailing_idx = 0
 
         for step in range(max_tokens):
@@ -915,6 +1382,8 @@ class Model(nn.Module):
                 generated_tokens=(
                     [int(c[0, 0]) for c in generated_codes] if generated_codes else None
                 ),
+                suppress_tokens=suppress_tokens,
+                eos_token_id=eos_token_id,
             )
 
             # Check for EOS
@@ -1151,7 +1620,18 @@ class Model(nn.Module):
                     tokenizer_weights = Qwen3TTSSpeechTokenizer.sanitize(
                         tokenizer_weights
                     )
-                    speech_tokenizer.load_weights(list(tokenizer_weights.items()))
+                    speech_tokenizer.load_weights(
+                        list(tokenizer_weights.items()), strict=False
+                    )
+
+                    # Initialize encoder codebooks (compute _embedding and _c2)
+                    if speech_tokenizer.encoder_model is not None:
+                        quantizer = speech_tokenizer.encoder_model.quantizer
+                        for layer in quantizer.rvq_first.vq.layers:
+                            layer.codebook.update_in_place()
+                        for layer in quantizer.rvq_rest.vq.layers:
+                            layer.codebook.update_in_place()
+                        print("  Initialized encoder codebooks")
 
                 model.load_speech_tokenizer(speech_tokenizer)
                 print(f"Loaded speech tokenizer from {speech_tokenizer_path}")

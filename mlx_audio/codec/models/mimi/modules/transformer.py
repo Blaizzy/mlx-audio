@@ -35,6 +35,7 @@ class TransformerConfig:
     kv_repeat: int
     dim_feedforward: int
     conv_layout: bool
+    rope_traditional: bool = True
 
     @property
     def head_dim(self) -> int:
@@ -71,7 +72,9 @@ class Attention(nn.Module):
         self.scale = cfg.head_dim ** (-0.5)
         self.rope = None
         if cfg.positional_embedding == "rope":
-            self.rope = nn.RoPE(cfg.head_dim, traditional=True, base=cfg.max_period)
+            self.rope = nn.RoPE(
+                cfg.head_dim, traditional=cfg.rope_traditional, base=cfg.max_period
+            )
 
     def __call__(
         self,
@@ -165,9 +168,10 @@ class TransformerLayer(nn.Module):
         self,
         xs: mx.array,
         cache: KVCache | RotatingKVCache,
+        mask: mx.array | None = None,
     ) -> mx.array:
         n1 = self.norm1(xs)
-        n1 = self.self_attn(n1, cache=cache)
+        n1 = self.self_attn(n1, cache=cache, mask=mask)
         xs = xs + self.layer_scale_1(n1)
         xs = xs + self.layer_scale_2(self.gating(self.norm2(xs)))
         return xs
@@ -184,9 +188,10 @@ class Transformer(nn.Module):
         self,
         xs: mx.array,
         cache: list[KVCache] | list[RotatingKVCache],
+        mask: mx.array | None = None,
     ) -> mx.array:
         for layer, c in zip(self.layers, cache):
-            xs = layer(xs, cache=c)
+            xs = layer(xs, cache=c, mask=mask)
         return xs
 
     def make_cache(self) -> list[KVCache]:
@@ -232,12 +237,13 @@ class ProjectedTransformer(nn.Module):
         self,
         xs: mx.array,
         cache: list[KVCache] | list[RotatingKVCache],
+        mask: mx.array | None = None,
     ) -> list[mx.array]:
         if self.conv_layout:
             xs = xs.swapaxes(1, 2)
         if self.input_proj is not None:
             xs = self.input_proj(xs)
-        xs = self.transformer(xs, cache=cache)
+        xs = self.transformer(xs, cache=cache, mask=mask)
         outs = []
         for output_proj in self.output_projs:
             if output_proj is None:
