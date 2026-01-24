@@ -235,6 +235,23 @@ async def remove_model(model_name: str):
 
 
 async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
+    # Load reference audio if provided
+    ref_audio = payload.ref_audio
+    if ref_audio and isinstance(ref_audio, str):
+        if not os.path.exists(ref_audio):
+            raise HTTPException(
+                status_code=400, detail=f"Reference audio file not found: {ref_audio}"
+            )
+        # Import load_audio from generate module
+        from mlx_audio.tts.generate import load_audio
+
+        # Determine if volume normalization is needed
+        normalize = hasattr(model, "model_type") and model.model_type == "spark"
+
+        ref_audio = load_audio(
+            ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
+        )
+
     for result in model.generate(
         payload.input,
         voice=payload.voice,
@@ -242,7 +259,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
         gender=payload.gender,
         pitch=payload.pitch,
         lang_code=payload.lang_code,
-        ref_audio=payload.ref_audio,
+        ref_audio=ref_audio,
         ref_text=payload.ref_text,
         temperature=payload.temperature,
         top_p=payload.top_p,
