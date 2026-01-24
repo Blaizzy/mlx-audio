@@ -151,10 +151,12 @@ class Model(nn.Module):
         # Encode through acoustic tokenizer (use mean directly, no sampling for inference)
         acoustic_tokens = self.acoustic_tokenizer.encode(speech_tensors)
         acoustic_features = self.acoustic_connector(acoustic_tokens)
+        mx.eval(acoustic_features)
 
         # Encode through semantic tokenizer
         semantic_tokens = self.semantic_tokenizer.encode(speech_tensors)
         semantic_features = self.semantic_connector(semantic_tokens)
+        mx.eval(semantic_features)
 
         # Combine features
         combined_features = acoustic_features + semantic_features
