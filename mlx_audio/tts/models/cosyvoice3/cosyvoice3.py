@@ -312,10 +312,6 @@ class Model(nn.Module):
 
         return new_weights
 
-    def model_quant_predicate(self, p, m):
-        if "campplus" in p or "hift" in p or "flow" in p or "llm" in p:
-            return False
-        return True
 
     @property
     def sample_rate(self) -> int:
@@ -883,17 +879,14 @@ class Model(nn.Module):
         """
         Cross-lingual / fine-grained control synthesis.
 
-        The text should include the system prompt and <|endofprompt|> separator,
-        followed by the target text with optional control tokens.
-
         Supported control tokens: [breath], [laughter], [noise], etc.
-        See cosyvoice/tokenizer/tokenizer.py for full list.
+        The system prompt is auto-prepended if not already present.
 
         Example:
-            text="You are a helpful assistant.<|endofprompt|>[breath]Hello world."
+            text="[breath]Hello world,[breath]this is a test."
 
         Args:
-            text: Full text with system prompt, <|endofprompt|>, and target
+            text: Target text with optional control tokens
             ref_audio: Path to reference audio file (for speaker identity)
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature

@@ -685,23 +685,27 @@ class CosyVoice3Frontend:
         """
         Prepare inputs for cross-lingual / fine-grained control inference.
 
-        The text should include the system prompt and <|endofprompt|> separator,
-        followed by the target text with optional control tokens like [breath].
+        The system prompt "You are a helpful assistant.<|endofprompt|>" is
+        auto-prepended if not already present.
 
         Key difference from zero-shot: the LLM receives NEITHER prompt_text
         NOR prompt_speech_tokens. The full text (including system prompt) is
         passed as text_tokens. Only the Flow uses prompt speech tokens.
 
         Example text:
-            "You are a helpful assistant.<|endofprompt|>[breath]Hello world.[breath]"
+            "[breath]Hello world,[breath]this is a test."
 
         Args:
-            text: Full text with system prompt, <|endofprompt|>, and target
+            text: Target text with optional control tokens ([breath], etc.)
             ref_audio: Path to reference audio file (for speaker identity)
 
         Returns:
             Dictionary with model inputs
         """
+        # Auto-prepend system prompt if not already present
+        if "<|endofprompt|>" not in text:
+            text = f"You are a helpful assistant.<|endofprompt|>{text}"
+
         # In cross-lingual mode, the ENTIRE text (including system prompt)
         # goes as text_tokens. No separate prompt_text for the LLM.
         text_tokens = self.tokenize(text)
