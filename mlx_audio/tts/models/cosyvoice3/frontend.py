@@ -62,6 +62,66 @@ class CosyVoice3Frontend:
         # Load tokenizer
         if tokenizer_path and TRANSFORMERS_AVAILABLE:
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+            # Add CosyVoice3 special tokens (matching PyTorch CosyVoice3Tokenizer).
+            # These tokens are used by the model but not in the base Qwen2 tokenizer.
+            # The order must match training to get correct token IDs.
+            self.tokenizer.add_special_tokens({
+                "eos_token": "<|endoftext|>",
+                "pad_token": "<|endoftext|>",
+                "additional_special_tokens": [
+                    "<|im_start|>", "<|im_end|>", "<|endofprompt|>",
+                    "[breath]", "<strong>", "</strong>", "[noise]",
+                    "[laughter]", "[cough]", "[clucking]", "[accent]",
+                    "[quick_breath]",
+                    "<laughter>", "</laughter>",
+                    "[hissing]", "[sigh]", "[vocalized-noise]",
+                    "[lipsmack]", "[mn]", "<|endofsystem|>",
+                    "[AA]", "[AA0]", "[AA1]", "[AA2]", "[AE]", "[AE0]", "[AE1]", "[AE2]",
+                    "[AH]", "[AH0]", "[AH1]", "[AH2]", "[AO]", "[AO0]", "[AO1]", "[AO2]",
+                    "[AW]", "[AW0]", "[AW1]", "[AW2]", "[AY]", "[AY0]", "[AY1]", "[AY2]",
+                    "[B]", "[CH]", "[D]", "[DH]", "[EH]", "[EH0]", "[EH1]", "[EH2]",
+                    "[ER]", "[ER0]", "[ER1]", "[ER2]", "[EY]", "[EY0]", "[EY1]", "[EY2]",
+                    "[F]", "[G]", "[HH]", "[IH]", "[IH0]", "[IH1]", "[IH2]",
+                    "[IY]", "[IY0]", "[IY1]", "[IY2]", "[JH]", "[K]", "[L]", "[M]",
+                    "[N]", "[NG]", "[OW]", "[OW0]", "[OW1]", "[OW2]", "[OY]", "[OY0]",
+                    "[OY1]", "[OY2]", "[P]", "[R]", "[S]", "[SH]", "[T]", "[TH]",
+                    "[UH]", "[UH0]", "[UH1]", "[UH2]", "[UW]", "[UW0]", "[UW1]", "[UW2]",
+                    "[V]", "[W]", "[Y]", "[Z]", "[ZH]",
+                    "[a]", "[ai]", "[an]", "[ang]", "[ao]", "[b]", "[c]", "[ch]",
+                    "[d]", "[e]", "[ei]", "[en]", "[eng]", "[f]", "[g]", "[h]",
+                    "[i]", "[ian]", "[in]", "[ing]", "[iu]",
+                    "[ià]", "[iàn]", "[iàng]", "[iào]", "[iá]", "[ián]", "[iáng]", "[iáo]",
+                    "[iè]", "[ié]", "[iòng]", "[ióng]", "[iù]", "[iú]",
+                    "[iā]", "[iān]", "[iāng]", "[iāo]", "[iē]", "[iě]", "[iōng]", "[iū]",
+                    "[iǎ]", "[iǎn]", "[iǎng]", "[iǎo]", "[iǒng]", "[iǔ]",
+                    "[j]", "[k]", "[l]", "[m]", "[n]", "[o]", "[ong]", "[ou]",
+                    "[p]", "[q]", "[r]", "[s]", "[sh]", "[t]",
+                    "[u]", "[uang]", "[ue]", "[un]", "[uo]",
+                    "[uà]", "[uài]", "[uàn]", "[uàng]", "[uá]", "[uái]", "[uán]", "[uáng]",
+                    "[uè]", "[ué]", "[uì]", "[uí]", "[uò]", "[uó]",
+                    "[uā]", "[uāi]", "[uān]", "[uāng]", "[uē]", "[uě]", "[uī]", "[uō]",
+                    "[uǎ]", "[uǎi]", "[uǎn]", "[uǎng]", "[uǐ]", "[uǒ]",
+                    "[vè]", "[w]", "[x]", "[y]", "[z]", "[zh]",
+                    "[à]", "[ài]", "[àn]", "[àng]", "[ào]",
+                    "[á]", "[ái]", "[án]", "[áng]", "[áo]",
+                    "[è]", "[èi]", "[èn]", "[èng]", "[èr]",
+                    "[é]", "[éi]", "[én]", "[éng]", "[ér]",
+                    "[ì]", "[ìn]", "[ìng]", "[í]", "[ín]", "[íng]",
+                    "[ò]", "[òng]", "[òu]", "[ó]", "[óng]", "[óu]",
+                    "[ù]", "[ùn]", "[ú]", "[ún]",
+                    "[ā]", "[āi]", "[ān]", "[āng]", "[āo]",
+                    "[ē]", "[ēi]", "[ēn]", "[ēng]",
+                    "[ě]", "[ěi]", "[ěn]", "[ěng]", "[ěr]",
+                    "[ī]", "[īn]", "[īng]",
+                    "[ō]", "[ōng]", "[ōu]",
+                    "[ū]", "[ūn]",
+                    "[ǎ]", "[ǎi]", "[ǎn]", "[ǎng]", "[ǎo]",
+                    "[ǐ]", "[ǐn]", "[ǐng]",
+                    "[ǒ]", "[ǒng]", "[ǒu]",
+                    "[ǔ]", "[ǔn]",
+                    "[ǘ]", "[ǚ]", "[ǜ]",
+                ],
+            })
 
         # Load CAMPPlus (pure MLX)
         if campplus_path:
@@ -567,47 +627,53 @@ class CosyVoice3Frontend:
         """
         Prepare inputs for instruct-mode inference.
 
-        Like zero-shot but uses instruct_text for style control instead of
-        a reference transcript.
+        The instruction replaces the default system prompt content:
+        Format: "You are a helpful assistant. {instruct_text}<|endofprompt|>"
+
+        Key difference from zero-shot: the LLM does NOT receive prompt speech
+        tokens. Only the Flow model uses them for mel conditioning.
 
         Args:
             text: Text to synthesize
             ref_audio: Path to reference audio file (for speaker identity)
-            instruct_text: Instruction for style (e.g., "speak slowly", "whisper")
+            instruct_text: Style/language instruction
+                (e.g., "Please speak as fast as possible.",
+                       "Please express in Cantonese.")
 
         Returns:
             Dictionary with model inputs
         """
         text_tokens = self.tokenize(text)
 
-        # Format instruct_text as the prompt text with endofprompt separator
-        instruct_formatted = (
-            f"{instruct_text}<|endofprompt|>"
+        # Instruct format (matching PyTorch exactly):
+        # 'You are a helpful assistant. {instruction}.<|endofprompt|>'
+        prompt_text_formatted = (
+            f"You are a helpful assistant. {instruct_text}.<|endofprompt|>"
         )
-        prompt_text_tokens = self.tokenize(instruct_formatted)
+        prompt_text_tokens = self.tokenize(prompt_text_formatted)
 
         # Load and process reference audio
         prompt_audio, prompt_sr = self.load_audio(ref_audio)
 
-        # Extract speaker embedding from reference audio
+        # Extract speaker embedding
         speaker_embedding = self.extract_speaker_embedding(prompt_audio, prompt_sr)
 
-        # Extract mel features for prompt (for Flow model conditioning)
+        # Extract mel features for Flow conditioning
         prompt_mel = self.extract_mel_features(prompt_audio, prompt_sr)
 
-        # Extract speech tokens from prompt audio (for LLM context)
-        prompt_speech_tokens = None
+        # Extract speech tokens (for Flow only, NOT for LLM)
+        flow_prompt_speech_tokens = None
         if self.speech_tokenizer_model is not None:
-            prompt_speech_tokens = self.extract_speech_tokens(prompt_audio, prompt_sr)
+            flow_prompt_speech_tokens = self.extract_speech_tokens(prompt_audio, prompt_sr)
 
         # Align mel and token lengths
-        if prompt_speech_tokens is not None and prompt_mel is not None:
+        if flow_prompt_speech_tokens is not None and prompt_mel is not None:
             mel_len = prompt_mel.shape[2]
-            token_len = prompt_speech_tokens.shape[1]
+            token_len = flow_prompt_speech_tokens.shape[1]
             aligned_token_len = min(mel_len // 2, token_len)
             aligned_mel_len = aligned_token_len * 2
             prompt_mel = prompt_mel[:, :, :aligned_mel_len]
-            prompt_speech_tokens = prompt_speech_tokens[:, :aligned_token_len]
+            flow_prompt_speech_tokens = flow_prompt_speech_tokens[:, :aligned_token_len]
 
         # Transpose mel to (B, T, mel_dim)
         if prompt_mel is not None:
@@ -618,7 +684,73 @@ class CosyVoice3Frontend:
             "prompt_text_tokens": prompt_text_tokens,
             "speaker_embedding": speaker_embedding,
             "prompt_mel": prompt_mel,
-            "prompt_speech_tokens": prompt_speech_tokens,
+            "prompt_speech_tokens": None,  # LLM gets NO speech tokens
+            "flow_prompt_speech_tokens": flow_prompt_speech_tokens,  # Flow only
+        }
+
+    def frontend_cross_lingual(
+        self,
+        text: str,
+        ref_audio: str,
+    ) -> dict:
+        """
+        Prepare inputs for cross-lingual / fine-grained control inference.
+
+        The text should include the system prompt and <|endofprompt|> separator,
+        followed by the target text with optional control tokens like [breath].
+
+        Key difference from zero-shot: the LLM receives NEITHER prompt_text
+        NOR prompt_speech_tokens. The full text (including system prompt) is
+        passed as text_tokens. Only the Flow uses prompt speech tokens.
+
+        Example text:
+            "You are a helpful assistant.<|endofprompt|>[breath]Hello world.[breath]"
+
+        Args:
+            text: Full text with system prompt, <|endofprompt|>, and target
+            ref_audio: Path to reference audio file (for speaker identity)
+
+        Returns:
+            Dictionary with model inputs
+        """
+        # In cross-lingual mode, the ENTIRE text (including system prompt)
+        # goes as text_tokens. No separate prompt_text for the LLM.
+        text_tokens = self.tokenize(text)
+
+        # Load and process reference audio
+        prompt_audio, prompt_sr = self.load_audio(ref_audio)
+
+        # Extract speaker embedding
+        speaker_embedding = self.extract_speaker_embedding(prompt_audio, prompt_sr)
+
+        # Extract mel features for Flow conditioning
+        prompt_mel = self.extract_mel_features(prompt_audio, prompt_sr)
+
+        # Extract speech tokens (for Flow only, NOT for LLM)
+        flow_prompt_speech_tokens = None
+        if self.speech_tokenizer_model is not None:
+            flow_prompt_speech_tokens = self.extract_speech_tokens(prompt_audio, prompt_sr)
+
+        # Align mel and token lengths
+        if flow_prompt_speech_tokens is not None and prompt_mel is not None:
+            mel_len = prompt_mel.shape[2]
+            token_len = flow_prompt_speech_tokens.shape[1]
+            aligned_token_len = min(mel_len // 2, token_len)
+            aligned_mel_len = aligned_token_len * 2
+            prompt_mel = prompt_mel[:, :, :aligned_mel_len]
+            flow_prompt_speech_tokens = flow_prompt_speech_tokens[:, :aligned_token_len]
+
+        # Transpose mel to (B, T, mel_dim)
+        if prompt_mel is not None:
+            prompt_mel = mx.transpose(prompt_mel, (0, 2, 1))
+
+        return {
+            "text_tokens": text_tokens,
+            "prompt_text_tokens": None,  # LLM gets NO prompt text
+            "speaker_embedding": speaker_embedding,
+            "prompt_mel": prompt_mel,
+            "prompt_speech_tokens": None,  # LLM gets NO speech tokens
+            "flow_prompt_speech_tokens": flow_prompt_speech_tokens,  # Flow only
         }
 
     def frontend_vc(

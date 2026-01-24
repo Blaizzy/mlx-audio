@@ -593,6 +593,7 @@ class Model(nn.Module):
         # Track token values for repetition detection
         token_values = []
         stopped_reason = "eos"
+        generated_total = 0
 
         for token in self.llm.generate(
             text_tokens,
@@ -604,6 +605,7 @@ class Model(nn.Module):
             max_tokens=max_tokens,
         ):
             mx.eval(token)
+            generated_total += 1
             token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
 
             # Filter excessive consecutive silent tokens (matching PyTorch llm_job)
@@ -617,11 +619,12 @@ class Model(nn.Module):
             speech_tokens_list.append(token)
             token_values.append(token_val)
 
-            # Repetition detection: check multiple window sizes.
-            # If any window of size W repeats consecutively, stop early.
+            # Repetition detection: check if a window of tokens repeats.
+            # Use larger windows (20, 25, 30) to avoid false triggers on
+            # sustained sounds or natural speech patterns.
             n = len(token_values)
-            if n >= 20:
-                for window in (10, 15, 20, 25):
+            if n >= 40:
+                for window in (20, 25, 30):
                     if n >= 2 * window:
                         recent = token_values[-window:]
                         prev = token_values[-2 * window : -window]
@@ -631,6 +634,10 @@ class Model(nn.Module):
                 else:
                     continue
                 break  # exit outer for loop
+
+        # Detect if we hit max_tokens
+        if stopped_reason == "eos" and generated_total >= max_tokens:
+            stopped_reason = "max_tokens"
 
         if len(speech_tokens_list) == 0:
             raise RuntimeError("LLM generated no speech tokens")
@@ -667,56 +674,51 @@ class Model(nn.Module):
                 result.real_time_factor = audio_duration / total_time
             yield result
 
-    def inference_instruct(
+    def _generate_from_inputs(
         self,
-        text: str,
-        ref_audio: str,
-        instruct_text: str,
+        inputs: dict,
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
+        label: str = "tts",
+        max_token_factor: int = 20,
     ) -> Generator[GenerationResult, None, None]:
         """
-        Instruct-mode synthesis with style control.
-
-        Uses ref_audio for speaker identity and instruct_text to control
-        speaking style (e.g., "speak slowly", "whisper", "speak with excitement").
+        Shared LLM generation + Flow synthesis logic.
 
         Args:
-            text: Text to synthesize
-            ref_audio: Path to reference audio file (for speaker identity)
-            instruct_text: Style instruction (e.g., "speak slowly")
+            inputs: Dictionary from frontend (text_tokens, prompt_text_tokens, etc.)
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature
             top_k: Top-k sampling for LLM
-
-        Yields:
-            GenerationResult with synthesized audio
+            label: Label for debug output
+            max_token_factor: Multiplier for max_tokens (higher = allow longer speech)
         """
-        if self.llm is None:
-            raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
-
-        if self.frontend is None:
-            raise RuntimeError(
-                "Frontend not initialized. Check tokenizer and campplus paths."
-            )
-
         time_start = time.time()
-
-        # Process inputs through frontend (instruct mode)
-        inputs = self.frontend.frontend_instruct(text, ref_audio, instruct_text)
 
         text_tokens = inputs["text_tokens"]
         prompt_text_tokens = inputs.get("prompt_text_tokens")
-        prompt_speech_tokens = inputs.get("prompt_speech_tokens")
+        # LLM prompt speech tokens (None for instruct/cross-lingual modes)
+        llm_prompt_speech_tokens = inputs.get("prompt_speech_tokens")
+        # Flow prompt speech tokens (uses flow-specific key if present, else same as LLM)
+        flow_prompt_speech_tokens = inputs.get(
+            "flow_prompt_speech_tokens", llm_prompt_speech_tokens
+        )
         speech_tokens_list = []
 
         target_text_len = text_tokens.shape[1]
         min_tokens = int(target_text_len * 2)
-        max_tokens = int(target_text_len * 20)
+        max_tokens = int(target_text_len * max_token_factor)
 
-        prompt_token_len = (
-            prompt_speech_tokens.shape[1] if prompt_speech_tokens is not None else 0
+        llm_prompt_len = (
+            llm_prompt_speech_tokens.shape[1]
+            if llm_prompt_speech_tokens is not None
+            else 0
+        )
+        flow_prompt_len = (
+            flow_prompt_speech_tokens.shape[1]
+            if flow_prompt_speech_tokens is not None
+            else 0
         )
 
         silent_tokens = {1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323}
@@ -725,17 +727,19 @@ class Model(nn.Module):
 
         token_values = []
         stopped_reason = "eos"
+        generated_total = 0  # Track total tokens from LLM (including filtered)
 
         for token in self.llm.generate(
             text_tokens,
             prompt_text_tokens=prompt_text_tokens,
-            prompt_speech_tokens=prompt_speech_tokens,
+            prompt_speech_tokens=llm_prompt_speech_tokens,
             temperature=temperature,
             top_k=top_k,
             min_tokens=min_tokens,
             max_tokens=max_tokens,
         ):
             mx.eval(token)
+            generated_total += 1
             token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
 
             if token_val in silent_tokens:
@@ -748,9 +752,12 @@ class Model(nn.Module):
             speech_tokens_list.append(token)
             token_values.append(token_val)
 
+            # Repetition detection: check if a window of tokens repeats.
+            # Use larger windows (20, 25, 30) to avoid false triggers on
+            # sustained sounds or slow speech patterns.
             n = len(token_values)
-            if n >= 20:
-                for window in (10, 15, 20, 25):
+            if n >= 40:
+                for window in (20, 25, 30):
                     if n >= 2 * window:
                         recent = token_values[-window:]
                         prev = token_values[-2 * window : -window]
@@ -761,6 +768,10 @@ class Model(nn.Module):
                     continue
                 break
 
+        # Detect if we hit max_tokens (LLM exhausted without EOS)
+        if stopped_reason == "eos" and generated_total >= max_tokens:
+            stopped_reason = "max_tokens"
+
         if len(speech_tokens_list) == 0:
             raise RuntimeError("LLM generated no speech tokens")
 
@@ -770,17 +781,19 @@ class Model(nn.Module):
         gen_len = speech_tokens.shape[1]
         expected_audio_dur = gen_len / self.config.token_frame_rate
         print(
-            f"  [instruct] target_text_tokens={target_text_len}, "
-            f"prompt_speech_tokens={prompt_token_len}, "
+            f"  [{label}] target_text_tokens={target_text_len}, "
+            f"llm_prompt_tokens={llm_prompt_len}, "
+            f"flow_prompt_tokens={flow_prompt_len}, "
             f"generated={gen_len} (min={min_tokens}, max={max_tokens}), "
             f"expected_dur={expected_audio_dur:.1f}s, "
             f"stop={stopped_reason}"
         )
 
+        # Flow uses flow_prompt_speech_tokens for mel conditioning
         for result in self.generate(
             speech_tokens=speech_tokens,
             speaker_embedding=inputs["speaker_embedding"],
-            prompt_speech_tokens=prompt_speech_tokens,
+            prompt_speech_tokens=flow_prompt_speech_tokens,
             prompt_mel=inputs.get("prompt_mel"),
             n_timesteps=n_timesteps,
         ):
@@ -790,6 +803,93 @@ class Model(nn.Module):
                 audio_duration = result.samples / self.config.sample_rate
                 result.real_time_factor = audio_duration / total_time
             yield result
+
+    def inference_instruct(
+        self,
+        text: str,
+        ref_audio: str,
+        instruct_text: str,
+        n_timesteps: int = 10,
+        temperature: float = 1.0,
+        top_k: int = 25,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Instruct-mode synthesis with style/language control.
+
+        Uses ref_audio for speaker identity and instruct_text to control
+        speaking style or language.
+
+        The prompt format: "You are a helpful assistant. {instruct_text}<|endofprompt|>"
+
+        Args:
+            text: Text to synthesize
+            ref_audio: Path to reference audio file (for speaker identity)
+            instruct_text: Instruction (e.g., "Please speak as fast as possible.",
+                           "Please express in Cantonese.")
+            n_timesteps: Number of flow ODE steps
+            temperature: LLM sampling temperature
+            top_k: Top-k sampling for LLM
+
+        Yields:
+            GenerationResult with synthesized audio
+        """
+        if self.llm is None:
+            raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
+        if self.frontend is None:
+            raise RuntimeError(
+                "Frontend not initialized. Check tokenizer and campplus paths."
+            )
+
+        inputs = self.frontend.frontend_instruct(text, ref_audio, instruct_text)
+        # Use higher max_token_factor for instruct mode since style instructions
+        # (e.g., "speak as slow as possible") can require significantly more
+        # speech tokens per text token than normal speech.
+        yield from self._generate_from_inputs(
+            inputs, n_timesteps, temperature, top_k,
+            label="instruct", max_token_factor=40,
+        )
+
+    def inference_cross_lingual(
+        self,
+        text: str,
+        ref_audio: str,
+        n_timesteps: int = 10,
+        temperature: float = 1.0,
+        top_k: int = 25,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Cross-lingual / fine-grained control synthesis.
+
+        The text should include the system prompt and <|endofprompt|> separator,
+        followed by the target text with optional control tokens.
+
+        Supported control tokens: [breath], [laughter], [noise], etc.
+        See cosyvoice/tokenizer/tokenizer.py for full list.
+
+        Example:
+            text="You are a helpful assistant.<|endofprompt|>[breath]Hello world."
+
+        Args:
+            text: Full text with system prompt, <|endofprompt|>, and target
+            ref_audio: Path to reference audio file (for speaker identity)
+            n_timesteps: Number of flow ODE steps
+            temperature: LLM sampling temperature
+            top_k: Top-k sampling for LLM
+
+        Yields:
+            GenerationResult with synthesized audio
+        """
+        if self.llm is None:
+            raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
+        if self.frontend is None:
+            raise RuntimeError(
+                "Frontend not initialized. Check tokenizer and campplus paths."
+            )
+
+        inputs = self.frontend.frontend_cross_lingual(text, ref_audio)
+        yield from self._generate_from_inputs(
+            inputs, n_timesteps, temperature, top_k, label="cross-lingual"
+        )
 
     def inference_vc(
         self,
