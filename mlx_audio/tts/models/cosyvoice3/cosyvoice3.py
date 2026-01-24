@@ -472,7 +472,6 @@ class Model(nn.Module):
         """
         import os
 
-        import torch
         from huggingface_hub import snapshot_download
 
         # Download or locate model files
@@ -489,46 +488,22 @@ class Model(nn.Module):
         config = ModelConfig(model_path=Path(model_dir))
         model = cls(config, load_llm=load_llm)
 
-        # Load weights
-        all_weights = {}
+        # Load weights from safetensors
+        safetensors_path = os.path.join(model_dir, "model.safetensors")
 
-        # Load Flow weights
-        flow_path = os.path.join(model_dir, "flow.pt")
-        if os.path.exists(flow_path):
-            flow_pt = torch.load(flow_path, map_location="cpu", weights_only=True)
-            for k, v in flow_pt.items():
-                new_key = f"flow.{k}"
-                if "weight" in k and v.ndim == 3:
-                    v = v.permute(0, 2, 1)
-                all_weights[new_key] = mx.array(v.numpy())
-            print(f"  Loaded flow.pt: {len(flow_pt)} keys")
+        if not os.path.exists(safetensors_path):
+            raise FileNotFoundError(
+                f"model.safetensors not found in {model_dir}.\n"
+                "To use CosyVoice3, either:\n"
+                "  1. Use the pre-converted model from mlx-community on HuggingFace\n"
+                "  2. Convert PyTorch weights first:\n"
+                "     python -m mlx_audio.tts.models.cosyvoice3.convert --model-dir /path/to/model"
+            )
 
-        # Load HIFT weights
-        hift_path = os.path.join(model_dir, "hift.pt")
-        if os.path.exists(hift_path):
-            hift_pt = torch.load(hift_path, map_location="cpu", weights_only=True)
-            for k, v in hift_pt.items():
-                new_key = f"hift.{k}"
-                if "weight" in k and v.ndim == 3 and "parametrizations" not in k:
-                    v = v.permute(0, 2, 1)
-                all_weights[new_key] = mx.array(v.numpy())
-            print(f"  Loaded hift.pt: {len(hift_pt)} keys")
-
-        # Load LLM weights
-        if load_llm:
-            llm_path = os.path.join(model_dir, "llm.pt")
-            if os.path.exists(llm_path):
-                llm_pt = torch.load(llm_path, map_location="cpu", weights_only=True)
-                for k, v in llm_pt.items():
-                    new_key = f"llm.{k}"
-                    all_weights[new_key] = mx.array(v.numpy())
-                print(f"  Loaded llm.pt: {len(llm_pt)} keys")
-
-        # Sanitize and load
-        sanitized = model.sanitize(all_weights)
-        model.load_weights(list(sanitized.items()), strict=False)
+        weights = mx.load(safetensors_path)
+        model.load_weights(list(weights.items()), strict=False)
         mx.eval(model.parameters())
-        print(f"  Total weights loaded: {len(sanitized)}")
+
 
         # Initialize frontend
         tokenizer_path = os.path.join(model_dir, "CosyVoice-BlankEN")
@@ -536,8 +511,6 @@ class Model(nn.Module):
         speech_tokenizer_path = os.path.join(
             model_dir, "speech_tokenizer_v3.safetensors"
         )
-
-        
 
         if os.path.exists(tokenizer_path) or os.path.exists(campplus_path):
             print(f"  Initializing frontend with tokenizer: {tokenizer_path}, campplus: {campplus_path}, speech_tokenizer: {speech_tokenizer_path}")

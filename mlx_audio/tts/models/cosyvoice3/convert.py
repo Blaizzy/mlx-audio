@@ -1,302 +1,286 @@
+# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 """
-Weight conversion script for CosyVoice3.
+Convert CosyVoice3 weights to MLX safetensors format.
 
-Converts PyTorch weights to MLX format.
+Converts:
+- PyTorch .pt files (flow.pt, hift.pt, llm.pt) -> model.safetensors
+- ONNX files (campplus.onnx, speech_tokenizer_v3.onnx) -> .safetensors
+
+Usage:
+    python -m mlx_audio.tts.models.cosyvoice3.convert --model-dir /path/to/model
 """
 
 import argparse
 from pathlib import Path
-from typing import Any, Dict
 
 import mlx.core as mx
 import numpy as np
-import torch
 
 
-def convert_weight_normalized_conv(
-    weights: Dict[str, torch.Tensor], prefix: str
-) -> Dict[str, mx.array]:
-    """
-    Convert weight-normalized conv weights.
-
-    PyTorch stores weight_g (scale) and weight_v (direction) separately.
-    We compute: weight = weight_g * weight_v / ||weight_v||
-    """
-    result = {}
-
-    if f"{prefix}.parametrizations.weight.original0" in weights:
-        # Weight normalized
-        weight_g = weights[f"{prefix}.parametrizations.weight.original0"]
-        weight_v = weights[f"{prefix}.parametrizations.weight.original1"]
-
-        # Compute normalized weight
-        norm = torch.norm(weight_v, dim=(1, 2), keepdim=True)
-        weight = weight_g * weight_v / (norm + 1e-8)
-
-        # Convert to MLX (transpose for Conv1d: PyTorch is [out, in, k], MLX is [out, k, in])
-        weight = weight.permute(0, 2, 1).numpy()
-        result["weight"] = mx.array(weight)
-    else:
-        # Regular weight
-        if f"{prefix}.weight" in weights:
-            weight = weights[f"{prefix}.weight"]
-            weight = weight.permute(0, 2, 1).numpy()
-            result["weight"] = mx.array(weight)
-
-    if f"{prefix}.bias" in weights:
-        result["bias"] = mx.array(weights[f"{prefix}.bias"].numpy())
-
-    return result
+# --- ONNX conversion helpers ---
 
 
-def convert_linear(
-    weights: Dict[str, torch.Tensor], prefix: str
-) -> Dict[str, mx.array]:
-    """Convert linear layer weights."""
-    result = {}
-    if f"{prefix}.weight" in weights:
-        result["weight"] = mx.array(weights[f"{prefix}.weight"].T.numpy())
-    if f"{prefix}.bias" in weights:
-        result["bias"] = mx.array(weights[f"{prefix}.bias"].numpy())
-    return result
+def extract_onnx_weights(onnx_path: str) -> dict:
+    """Extract weights from an ONNX model file, resolving onnx:: key names."""
+    try:
+        import onnx
+        from onnx import numpy_helper
+
+    except ImportError:
+        raise ImportError("onnx not installed, please install it with `pip install onnx`")
 
 
-def convert_embedding(
-    weights: Dict[str, torch.Tensor], prefix: str
-) -> Dict[str, mx.array]:
-    """Convert embedding weights."""
-    result = {}
-    if f"{prefix}.weight" in weights:
-        result["weight"] = mx.array(weights[f"{prefix}.weight"].numpy())
-    return result
+    model = onnx.load(onnx_path)
+    init_map = {init.name: init for init in model.graph.initializer}
 
-
-def convert_flow_weights(flow_pt: Dict[str, torch.Tensor]) -> Dict[str, mx.array]:
-    """Convert flow module weights."""
-    mlx_weights = {}
-
-    # Input embedding
-    if "input_embedding.weight" in flow_pt:
-        mlx_weights["flow.input_embedding.weight"] = mx.array(
-            flow_pt["input_embedding.weight"].numpy()
-        )
-
-    # Speaker embedding affine layer
-    for k in ["spk_embed_affine_layer.weight", "spk_embed_affine_layer.bias"]:
-        if k in flow_pt:
-            new_key = f"flow.{k}"
-            if "weight" in k:
-                mlx_weights[new_key] = mx.array(flow_pt[k].T.numpy())
-            else:
-                mlx_weights[new_key] = mx.array(flow_pt[k].numpy())
-
-    # Pre-lookahead layer
-    for k, v in flow_pt.items():
-        if k.startswith("pre_lookahead_layer."):
-            new_key = k.replace("pre_lookahead_layer.", "flow.pre_lookahead_layer.")
-            if "conv" in k and "weight" in k:
-                # Conv1d weight: [out, in, k] -> [out, k, in]
-                mlx_weights[new_key] = mx.array(v.permute(0, 2, 1).numpy())
-            elif "bias" in k:
-                mlx_weights[new_key] = mx.array(v.numpy())
-
-    # DiT estimator
-    for k, v in flow_pt.items():
-        if k.startswith("decoder.estimator."):
-            new_key = k.replace("decoder.estimator.", "flow.decoder.estimator.")
-
-            if "conv_pos_embed.conv" in k:
-                # Grouped conv weights
-                if "weight" in k:
-                    mlx_weights[new_key] = mx.array(v.permute(0, 2, 1).numpy())
-                else:
-                    mlx_weights[new_key] = mx.array(v.numpy())
-            elif (
-                "proj" in k
-                or "linear" in k
-                or "to_q" in k
-                or "to_k" in k
-                or "to_v" in k
-                or "to_out" in k
-            ):
-                # Linear layers
-                if "weight" in k:
-                    mlx_weights[new_key] = mx.array(v.T.numpy())
-                else:
-                    mlx_weights[new_key] = mx.array(v.numpy())
-            elif "time_mlp" in k:
-                # Time embedding MLP
-                if "weight" in k:
-                    mlx_weights[new_key] = mx.array(v.T.numpy())
-                else:
-                    mlx_weights[new_key] = mx.array(v.numpy())
-            elif "ff.ff" in k:
-                # Feed-forward
-                if "weight" in k:
-                    mlx_weights[new_key] = mx.array(v.T.numpy())
-                else:
-                    mlx_weights[new_key] = mx.array(v.numpy())
-            elif "rotary_embed" in k:
-                mlx_weights[new_key] = mx.array(v.numpy())
-            else:
-                mlx_weights[new_key] = mx.array(v.numpy())
-
-    return mlx_weights
-
-
-def convert_hift_weights(hift_pt: Dict[str, torch.Tensor]) -> Dict[str, mx.array]:
-    """Convert HIFT vocoder weights."""
-    mlx_weights = {}
-
-    for k, v in hift_pt.items():
-        new_key = f"hift.{k}"
-
-        # Handle weight normalization
-        if ".parametrizations.weight.original0" in k:
-            # Weight norm scale
-            base_key = k.replace(".parametrizations.weight.original0", "")
-            weight_g = v
-            weight_v_key = k.replace("original0", "original1")
-            weight_v = hift_pt[weight_v_key]
-
-            # Compute normalized weight
-            norm = torch.norm(weight_v, dim=(1, 2), keepdim=True)
-            weight = weight_g * weight_v / (norm + 1e-8)
-
-            # Convert for Conv1d
-            new_key = f"hift.{base_key}.weight"
-            mlx_weights[new_key] = mx.array(weight.permute(0, 2, 1).numpy())
-        elif ".parametrizations.weight.original1" in k:
-            # Skip, handled above
+    # Build mapping from onnx:: keys to proper names using graph nodes
+    onnx_to_name = {}
+    matmul_weights = set()
+    for node in model.graph.node:
+        onnx_inputs = [inp for inp in node.input if inp.startswith("onnx::")]
+        if not onnx_inputs:
             continue
-        elif "alpha" in k:
-            # Snake activation alpha
-            mlx_weights[new_key] = mx.array(v.numpy())
-        elif "classifier.weight" in k or "l_linear.weight" in k:
-            # Linear layers
-            mlx_weights[new_key] = mx.array(v.T.numpy())
-        elif ".bias" in k:
-            mlx_weights[new_key] = mx.array(v.numpy())
-        elif ".weight" in k:
-            # Regular conv weights
-            if len(v.shape) == 3:
-                mlx_weights[new_key] = mx.array(v.permute(0, 2, 1).numpy())
+
+        name_parts = node.name.strip("/").split("/")
+
+        if node.op_type == "Conv":
+            if name_parts[-1] == "Conv":
+                name_parts = name_parts[:-1]
+            pytorch_path = ".".join(name_parts)
+            for idx, inp in enumerate(onnx_inputs):
+                param_name = "weight" if idx == 0 else "bias"
+                onnx_to_name[inp] = f"{pytorch_path}.{param_name}"
+
+        elif node.op_type == "MatMul":
+            if name_parts[-1] == "MatMul":
+                name_parts = name_parts[:-1]
+            pytorch_path = ".".join(name_parts)
+            for inp in onnx_inputs:
+                onnx_to_name[inp] = f"{pytorch_path}.weight"
+                matmul_weights.add(inp)
+
+        elif node.op_type == "Add":
+            if name_parts[-1].startswith("Add"):
+                name_parts = name_parts[:-1]
+            pytorch_path = ".".join(name_parts)
+            for inp in onnx_inputs:
+                if inp in init_map:
+                    arr = numpy_helper.to_array(init_map[inp])
+                    if arr.ndim >= 1 and arr.size > 1:
+                        onnx_to_name[inp] = f"{pytorch_path}.bias"
+
+        elif node.op_type == "Mul":
+            if name_parts[-1].startswith("Mul"):
+                name_parts = name_parts[:-1]
+            pytorch_path = ".".join(name_parts)
+            for inp in onnx_inputs:
+                if inp in init_map:
+                    arr = numpy_helper.to_array(init_map[inp])
+                    if arr.ndim >= 1 and arr.size > 1:
+                        onnx_to_name[inp] = f"{pytorch_path}.weight"
+
+    # Extract all weights with proper names
+    weights = {}
+    for init in model.graph.initializer:
+        orig_name = init.name
+        name = orig_name
+        if name.startswith("onnx::"):
+            if name in onnx_to_name:
+                name = onnx_to_name[name]
             else:
-                mlx_weights[new_key] = mx.array(v.numpy())
+                continue
+        arr = numpy_helper.to_array(init)
+        if orig_name in matmul_weights and arr.ndim == 2:
+            arr = arr.T
+        weights[name] = mx.array(arr)
 
-    return mlx_weights
-
-
-def convert_llm_weights(llm_pt: Dict[str, torch.Tensor]) -> Dict[str, mx.array]:
-    """Convert LLM weights."""
-    mlx_weights = {}
-
-    for k, v in llm_pt.items():
-        # Map to new structure
-        if k.startswith("llm.model."):
-            # Qwen2 model weights
-            new_key = k.replace("llm.model.", "")
-
-            if "weight" in k and "norm" not in k and "embed" not in k:
-                # Linear layers need transposing
-                mlx_weights[new_key] = mx.array(v.T.numpy())
-            else:
-                mlx_weights[new_key] = mx.array(v.numpy())
-        elif k == "speech_embedding.weight":
-            mlx_weights[k] = mx.array(v.numpy())
-        elif k == "llm_decoder.weight":
-            mlx_weights[k] = mx.array(v.T.numpy())
-
-    return mlx_weights
+    return weights
 
 
-def convert_all_weights(
-    flow_path: str,
-    hift_path: str,
-    llm_path: str = None,
-    output_dir: str = "converted_weights",
-) -> Dict[str, mx.array]:
-    """
-    Convert all CosyVoice3 weights to MLX format.
+def convert_campplus(onnx_path: str, output_path: str):
+    """Convert CAMPPlus ONNX to safetensors."""
+    from mlx.utils import tree_flatten
 
-    Args:
-        flow_path: Path to flow.pt
-        hift_path: Path to hift.pt
-        llm_path: Path to llm.pt (optional)
-        output_dir: Output directory for converted weights
+    from mlx_audio.tts.models.cosyvoice3.campplus import CAMPPlus
 
-    Returns:
-        Dictionary of converted weights
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Converting CAMPPlus: {onnx_path}")
+    raw_weights = extract_onnx_weights(onnx_path)
+    print(f"    Extracted {len(raw_weights)} weights")
+
+    model = CAMPPlus(feat_dim=80, embedding_size=192)
+    sanitized = model.sanitize(raw_weights)
+    print(f"    Sanitized to {len(sanitized)} MLX weights")
+
+    expected = dict(tree_flatten(model.parameters()))
+    missing = [k for k in expected if k not in sanitized]
+    if missing:
+        print(f"    Warning: {len(missing)} missing parameters")
+
+    mx.save_safetensors(output_path, sanitized)
+    model.load_weights(list(sanitized.items()), strict=False)
+    mx.eval(model.parameters())
+    print(f"    Saved to {output_path}")
+
+
+def convert_speech_tokenizer(onnx_path: str, output_path: str):
+    """Convert S3 speech tokenizer ONNX to safetensors."""
+    from mlx.utils import tree_flatten
+
+    from mlx_audio.codec.models.s3.model_v2 import S3TokenizerV2
+
+    print(f"  Converting Speech Tokenizer: {onnx_path}")
+    raw_weights = extract_onnx_weights(onnx_path)
+    print(f"    Extracted {len(raw_weights)} weights")
+
+    # Fix naming: add encoder prefix and flatten nested mlp.mlp -> mlp
+    prefixed = {}
+    for k, v in raw_weights.items():
+        new_k = k.replace(".mlp.mlp.", ".mlp.")
+        if new_k.startswith("blocks.") or new_k.startswith("conv1.") or new_k.startswith("conv2."):
+            new_k = f"encoder.{new_k}"
+        prefixed[new_k] = v
+
+    model = S3TokenizerV2("speech_tokenizer_v3")
+    sanitized = model.sanitize(prefixed)
+    print(f"    Sanitized to {len(sanitized)} MLX weights")
+
+    expected = dict(tree_flatten(model.parameters()))
+    missing = [k for k in expected if k not in sanitized]
+    if missing:
+        print(f"    Warning: {len(missing)} missing parameters")
+
+    mx.save_safetensors(output_path, sanitized)
+    model.load_weights(list(sanitized.items()), strict=False)
+    mx.eval(model.parameters())
+    print(f"    Saved to {output_path}")
+
+
+# --- PyTorch .pt conversion ---
+
+
+def convert_model_weights(model_dir: Path, output_path: str):
+    """Convert flow.pt, hift.pt, llm.pt to a single model.safetensors."""
+    import torch
+
+    from .cosyvoice3 import Model, ModelConfig
+
+    config = ModelConfig(model_path=model_dir)
+    model = Model(config, load_llm=True)
 
     all_weights = {}
 
-    # Convert Flow weights
-    print("Converting Flow weights...")
-    flow_pt = torch.load(flow_path, map_location="cpu", weights_only=True)
-    flow_weights = convert_flow_weights(flow_pt)
-    all_weights.update(flow_weights)
-    print(f"  Converted {len(flow_weights)} flow weight tensors")
+    # Flow weights
+    flow_path = model_dir / "flow.pt"
+    if flow_path.exists():
+        flow_pt = torch.load(str(flow_path), map_location="cpu", weights_only=True)
+        for k, v in flow_pt.items():
+            new_key = f"flow.{k}"
+            if "weight" in k and v.ndim == 3:
+                v = v.permute(0, 2, 1)
+            all_weights[new_key] = mx.array(v.numpy())
+        print(f"    Loaded flow.pt: {len(flow_pt)} keys")
+    else:
+        print(f"    WARNING: flow.pt not found")
 
-    # Convert HIFT weights
-    print("Converting HIFT weights...")
-    hift_pt = torch.load(hift_path, map_location="cpu", weights_only=True)
-    hift_weights = convert_hift_weights(hift_pt)
-    all_weights.update(hift_weights)
-    print(f"  Converted {len(hift_weights)} hift weight tensors")
+    # HIFT weights
+    hift_path = model_dir / "hift.pt"
+    if hift_path.exists():
+        hift_pt = torch.load(str(hift_path), map_location="cpu", weights_only=True)
+        for k, v in hift_pt.items():
+            new_key = f"hift.{k}"
+            if "weight" in k and v.ndim == 3 and "parametrizations" not in k:
+                v = v.permute(0, 2, 1)
+            all_weights[new_key] = mx.array(v.numpy())
+        print(f"    Loaded hift.pt: {len(hift_pt)} keys")
+    else:
+        print(f"    WARNING: hift.pt not found")
 
-    # Convert LLM weights if provided
-    if llm_path:
-        print("Converting LLM weights...")
-        llm_pt = torch.load(llm_path, map_location="cpu", weights_only=True)
-        llm_weights = convert_llm_weights(llm_pt)
-        all_weights.update(llm_weights)
-        print(f"  Converted {len(llm_weights)} llm weight tensors")
+    # LLM weights
+    llm_path = model_dir / "llm.pt"
+    if llm_path.exists():
+        llm_pt = torch.load(str(llm_path), map_location="cpu", weights_only=True)
+        for k, v in llm_pt.items():
+            new_key = f"llm.{k}"
+            all_weights[new_key] = mx.array(v.numpy())
+        print(f"    Loaded llm.pt: {len(llm_pt)} keys")
+    else:
+        print(f"    WARNING: llm.pt not found")
 
-    # Save weights
-    output_path = output_dir / "weights.safetensors"
-    mx.save_safetensors(str(output_path), all_weights)
-    print(f"Saved converted weights to {output_path}")
+    # Sanitize and save
+    sanitized = model.sanitize(all_weights)
+    print(f"    Sanitized: {len(all_weights)} -> {len(sanitized)} keys")
 
-    return all_weights
+    mx.save_safetensors(output_path, sanitized)
+    print(f"    Saved to {output_path}")
+
+
+# --- Main ---
+
+
+def convert(model_dir: str, output_dir: str = None):
+    """
+    Convert all CosyVoice3 weights to safetensors format.
+
+    Converts PyTorch .pt files and ONNX models in one pass.
+
+    Args:
+        model_dir: Directory containing the original model files
+        output_dir: Output directory (defaults to model_dir)
+    """
+    model_dir = Path(model_dir)
+    output_dir = Path(output_dir) if output_dir else model_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"Converting CosyVoice3 from {model_dir}")
+
+    # 1. Convert PyTorch model weights -> model.safetensors
+    has_pt = (model_dir / "flow.pt").exists() or (model_dir / "hift.pt").exists()
+    if has_pt:
+        print("\n[1/3] Converting PyTorch weights (flow.pt, hift.pt, llm.pt)...")
+        convert_model_weights(model_dir, str(output_dir / "model.safetensors"))
+    else:
+        print("\n[1/3] No .pt files found, skipping model weight conversion")
+
+    # 2. Convert CAMPPlus ONNX -> campplus.safetensors
+    campplus_onnx = model_dir / "campplus.onnx"
+    if campplus_onnx.exists():
+        print("\n[2/3] Converting CAMPPlus ONNX...")
+        convert_campplus(str(campplus_onnx), str(output_dir / "campplus.safetensors"))
+    else:
+        print("\n[2/3] campplus.onnx not found, skipping")
+
+    # 3. Convert Speech Tokenizer ONNX -> speech_tokenizer_v3.safetensors
+    tokenizer_onnx = model_dir / "speech_tokenizer_v3.onnx"
+    if tokenizer_onnx.exists():
+        print("\n[3/3] Converting Speech Tokenizer ONNX...")
+        convert_speech_tokenizer(
+            str(tokenizer_onnx), str(output_dir / "speech_tokenizer_v3.safetensors")
+        )
+    else:
+        print("\n[3/3] speech_tokenizer_v3.onnx not found, skipping")
+
+    print("\nDone!")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert CosyVoice3 weights to MLX")
-    parser.add_argument(
-        "--flow-path",
-        type=str,
-        default="cosyvoice3_weights/flow.pt",
-        help="Path to flow.pt",
+    parser = argparse.ArgumentParser(
+        description="Convert CosyVoice3 weights (PyTorch + ONNX) to MLX safetensors"
     )
     parser.add_argument(
-        "--hift-path",
+        "--model-dir",
         type=str,
-        default="cosyvoice3_weights/hift.pt",
-        help="Path to hift.pt",
-    )
-    parser.add_argument(
-        "--llm-path",
-        type=str,
-        default=None,
-        help="Path to llm.pt (optional)",
+        required=True,
+        help="Directory containing flow.pt, hift.pt, llm.pt, campplus.onnx, speech_tokenizer_v3.onnx",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="converted_weights",
-        help="Output directory",
+        default=None,
+        help="Output directory (defaults to model-dir)",
     )
     args = parser.parse_args()
 
-    convert_all_weights(
-        args.flow_path,
-        args.hift_path,
-        args.llm_path,
-        args.output_dir,
-    )
+    convert(args.model_dir, args.output_dir)
 
 
 if __name__ == "__main__":
