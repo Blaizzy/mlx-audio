@@ -85,13 +85,30 @@ class SConv1d(nn.Module):
         )
         return int(ideal_length - length)
 
-    def _depthwise_conv(self, x: mx.array) -> mx.array:
+    # Max output elements before chunking along time.
+    _MAX_DEPTHWISE_ELEMENTS = 64 * 1024 * 1024  # ~256 MB in float32
+
+    def _depthwise_conv_chunk(self, x: mx.array, T_out: int) -> mx.array:
+        """Compute depthwise conv for a (small) padded input chunk."""
+        K, S, D = self.kernel_size, self.stride, self.dilation
+        w = self.conv.weight[:, :, 0]  # [C, K]
+        out = x[:, 0 : T_out * S : S, :] * w[:, 0]
+        for k in range(1, K):
+            out = out + x[:, k * D : k * D + T_out * S : S, :] * w[:, k]
+        return out
+
+    def _depthwise_conv(
+        self, x: mx.array, padding_left: int, padding_right: int
+    ) -> mx.array:
         """
         Manual depthwise conv1d via accumulation over kernel positions.
         TODO: Fix this metal kernel upstream in MLX core.
 
+
         Args:
-            x: Padded input [B, T_padded, C]
+            x: Unpadded input [B, T, C]
+            padding_left: Left padding amount
+            padding_right: Right padding amount
 
         Returns:
             Output [B, T_out, C]
@@ -99,16 +116,49 @@ class SConv1d(nn.Module):
         K = self.kernel_size
         S = self.stride
         D = self.dilation
+        C = x.shape[2]
+        T = x.shape[1]
         effective_K = (K - 1) * D + 1
-        T_out = (x.shape[1] - effective_K) // S + 1
+        T_padded = T + padding_left + padding_right
+        T_out = (T_padded - effective_K) // S + 1
 
-        # weight shape: [C, K, 1] (MLX Conv1d format for depthwise)
-        w = self.conv.weight[:, :, 0]  # [C, K]
+        # For small inputs, pad and compute directly
+        if T_out * C <= self._MAX_DEPTHWISE_ELEMENTS:
+            if padding_left > 0 or padding_right > 0:
+                x = mx.pad(x, [(0, 0), (padding_left, padding_right), (0, 0)])
+            out = self._depthwise_conv_chunk(x, T_out)
+        else:
+            # Chunk along the output time dimension.
+            # Each output position j needs padded input [j*S, j*S + effective_K).
+            # We work in padded coordinates, slicing from the unpadded x with
+            # offset adjustments for the left padding region.
+            chunk_size = max(1, self._MAX_DEPTHWISE_ELEMENTS // C)
+            outputs = []
+            for start in range(0, T_out, chunk_size):
+                end = min(start + chunk_size, T_out)
+                # Padded-space input range for this output chunk
+                pad_start = start * S
+                pad_end = (end - 1) * S + effective_K
 
-        # Accumulate over kernel positions to avoid large intermediate tensor
-        out = x[:, 0 : T_out * S : S, :] * w[:, 0]  # k=0: [B, T_out, C]
-        for k in range(1, K):
-            out = out + x[:, k * D : k * D + T_out * S : S, :] * w[:, k]
+                # Map padded coordinates to unpadded x coordinates
+                x_start = max(0, pad_start - padding_left)
+                x_end = min(T, pad_end - padding_left)
+
+                # How much zero-padding is needed on each side of this chunk
+                left_pad = max(0, padding_left - pad_start)
+                right_pad = max(0, pad_end - (T + padding_left))
+
+                # Extract the relevant slice from x
+                x_slice = x[:, x_start:x_end, :]
+
+                # Pad this chunk locally
+                if left_pad > 0 or right_pad > 0:
+                    x_slice = mx.pad(x_slice, [(0, 0), (left_pad, right_pad), (0, 0)])
+
+                chunk_out = self._depthwise_conv_chunk(x_slice, end - start)
+                mx.eval(chunk_out)
+                outputs.append(chunk_out)
+            out = mx.concatenate(outputs, axis=1)
 
         # Add bias if present
         if hasattr(self.conv, "bias") and self.conv.bias is not None:
@@ -141,29 +191,92 @@ class SConv1d(nn.Module):
             padding_left = self.padding_total - padding_right
             padding_right += extra_padding
 
+        # Use manual depthwise conv with integrated chunked padding
+        # to avoid both Metal kernel issues and large padded intermediates
+        if self.groups > 1 and self.groups == self.in_channels:
+            return self._depthwise_conv(x, padding_left, padding_right)
+
+        # For standard convolutions, chunk along time if output is large
+        T_padded = T + padding_left + padding_right
+        effective_K = (self.kernel_size - 1) * self.dilation + 1
+        T_out = (T_padded - effective_K) // self.stride + 1
+
+        if T_out * self.out_channels > self._MAX_DEPTHWISE_ELEMENTS:
+            return self._chunked_standard_conv(x, padding_left, padding_right, T_out)
+
         # Apply padding
         if padding_left > 0 or padding_right > 0:
-            # MLX pad format: list of (before, after) tuples for each dimension
-            # x is [B, T, C], we pad the T dimension
             x = mx.pad(x, [(0, 0), (padding_left, padding_right), (0, 0)])
-
-        # Use manual depthwise conv to avoid Metal kernel compatibility issues
-        if self.groups > 1 and self.groups == self.in_channels:
-            return self._depthwise_conv(x)
 
         # Apply convolution
         return self.conv(x)
+
+    def _chunked_standard_conv(
+        self,
+        x: mx.array,
+        padding_left: int,
+        padding_right: int,
+        T_out: int,
+    ) -> mx.array:
+        """Chunk a standard (groups=1) conv along the output time dimension."""
+        T = x.shape[1]
+        S = self.stride
+        D = self.dilation
+        effective_K = (self.kernel_size - 1) * D + 1
+        chunk_size = max(1, self._MAX_DEPTHWISE_ELEMENTS // self.out_channels)
+        outputs = []
+
+        for start in range(0, T_out, chunk_size):
+            end = min(start + chunk_size, T_out)
+            # Padded-space input range for this output chunk
+            pad_start = start * S
+            pad_end = (end - 1) * S + effective_K
+
+            # Map to unpadded coordinates
+            x_start = max(0, pad_start - padding_left)
+            x_end = min(T, pad_end - padding_left)
+            left_pad = max(0, padding_left - pad_start)
+            right_pad = max(0, pad_end - (T + padding_left))
+
+            x_slice = x[:, x_start:x_end, :]
+            if left_pad > 0 or right_pad > 0:
+                x_slice = mx.pad(x_slice, [(0, 0), (left_pad, right_pad), (0, 0)])
+
+            chunk_out = self.conv(x_slice)
+            mx.eval(chunk_out)
+            outputs.append(chunk_out)
+
+        return mx.concatenate(outputs, axis=1)
 
 
 class FFN(nn.Module):
     """Feed-forward network with GELU activation."""
 
+    # Max FFN intermediate elements before chunking along time dim (~256 MB in float32).
+
+    _MAX_INTERMEDIATE_ELEMENTS = 64 * 1024 * 1024
+
     def __init__(self, embed_dim: int, ffn_dim: int, bias: bool = False):
         super().__init__()
+        self.ffn_dim = ffn_dim
         self.linear1 = nn.Linear(embed_dim, ffn_dim, bias=bias)
         self.linear2 = nn.Linear(ffn_dim, embed_dim, bias=bias)
 
     def __call__(self, x: mx.array) -> mx.array:
+        T = x.shape[1]
+
+        if T * self.ffn_dim > self._MAX_INTERMEDIATE_ELEMENTS:
+            chunk_size = max(1, self._MAX_INTERMEDIATE_ELEMENTS // self.ffn_dim)
+            outputs = []
+            for start in range(0, T, chunk_size):
+                chunk = x[:, start : start + chunk_size, :]
+                chunk = self.linear1(chunk)
+                chunk = nn.gelu(chunk)
+                chunk = self.linear2(chunk)
+                mx.eval(chunk)
+                outputs.append(chunk)
+            return mx.concatenate(outputs, axis=1)
+
         x = self.linear1(x)
         x = nn.gelu(x)
         x = self.linear2(x)
@@ -220,10 +333,9 @@ class Block1D(nn.Module):
     ):
         super().__init__()
 
-        # Normalization layers
         if layernorm == "RMSNorm":
-            self.norm = ConvRMSNorm(dim, eps=eps)
-            self.ffn_norm = ConvRMSNorm(dim, eps=eps)
+            self.norm = nn.RMSNorm(dim, eps=eps)
+            self.ffn_norm = nn.RMSNorm(dim, eps=eps)
         else:
             self.norm = nn.LayerNorm(dim, eps=eps)
             self.ffn_norm = nn.LayerNorm(dim, eps=eps)
@@ -262,23 +374,14 @@ class Block1D(nn.Module):
             self.gamma = None
             self.ffn_gamma = None
 
-    def __call__(self, x: mx.array) -> mx.array:
-        """
-        Forward pass.
+    # Max elements before chunking the block along time.
+    _MAX_BLOCK_ELEMENTS = 64 * 1024 * 1024
 
-        Args:
-            x: Input tensor [B, T, C]
-
-        Returns:
-            Output tensor [B, T, C]
-        """
-        # Mixer path (with conv, needs channel-last to channel-first conversion)
+    def _forward_block(self, x: mx.array) -> mx.array:
+        """Process a single (small) chunk through the block."""
+        # Mixer path
         residual = x
-        # Transpose to [B, C, T] for ConvRMSNorm
-        x_transposed = x.transpose(0, 2, 1)
-        x_normed = self.norm(x_transposed)
-        # Transpose back for conv (which expects [B, T, C])
-        x_normed = x_normed.transpose(0, 2, 1)
+        x_normed = self.norm(x)
         x_mixed = self.mixer(x_normed)
         if self.gamma is not None:
             x_mixed = x_mixed * self.gamma
@@ -286,15 +389,54 @@ class Block1D(nn.Module):
 
         # FFN path
         residual = x
-        x_transposed = x.transpose(0, 2, 1)
-        x_normed = self.ffn_norm(x_transposed)
-        x_normed = x_normed.transpose(0, 2, 1)
+        x_normed = self.ffn_norm(x)
         x_ffn = self.ffn(x_normed)
         if self.ffn_gamma is not None:
             x_ffn = x_ffn * self.ffn_gamma
         x = residual + x_ffn
 
         return x
+
+    def __call__(self, x: mx.array) -> mx.array:
+        """
+        Forward pass. Chunks along time for large inputs to bound memory.
+
+        The block output at position t depends on input[t-K+1:t+1] due to the
+        causal depthwise conv (kernel_size K). So chunks need K-1 left context.
+
+        Args:
+            x: Input tensor [B, T, C]
+
+        Returns:
+            Output tensor [B, T, C]
+        """
+        T, C = x.shape[1], x.shape[2]
+
+        # For small inputs, process directly
+        if T * C <= self._MAX_BLOCK_ELEMENTS:
+            return self._forward_block(x)
+
+        # Chunk along time with causal context overlap
+        context = self.mixer.conv.kernel_size - 1  # K-1 = 6 for K=7
+        chunk_size = max(context + 1, self._MAX_BLOCK_ELEMENTS // C)
+        outputs = []
+
+        for start in range(0, T, chunk_size):
+            end = min(start + chunk_size, T)
+            ctx_start = max(0, start - context)
+            trim_left = start - ctx_start
+
+            x_chunk = x[:, ctx_start:end, :]
+            out_chunk = self._forward_block(x_chunk)
+
+            # Trim context positions from output
+            if trim_left > 0:
+                out_chunk = out_chunk[:, trim_left:, :]
+
+            mx.eval(out_chunk)
+            outputs.append(out_chunk)
+
+        return mx.concatenate(outputs, axis=1)
 
 
 class TokenizerEncoder(nn.Module):
@@ -436,14 +578,12 @@ class TokenizerEncoder(nn.Module):
             # Input is [B, 1, T], transpose to [B, T, 1]
             x = x.transpose(0, 2, 1)
 
-        # Process through downsample + stage pairs
-        # Evaluate after each stage to free large intermediate buffers,
-        # especially important for early stages with long temporal dimensions.
         for i in range(self.n_stages):
             x = self.downsample_layers[i](x)
+            mx.eval(x)
             for block in self.stages[i]:
                 x = block(x)
-            mx.eval(x)
+                mx.eval(x)
 
         # Final norm
         if self.norm is not None:
