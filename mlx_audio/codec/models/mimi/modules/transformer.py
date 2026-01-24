@@ -94,15 +94,16 @@ class Attention(nn.Module):
             k = self.rope(k, offset=offset)
 
         k, v = cache.update_and_fetch(k, v)
-        k_len = k.shape[2]
-        pos_k = mx.arange(k_len, dtype=mx.int32) + (cache.offset - k_len)
-        pos_q = mx.arange(t, dtype=mx.int32) + offset
-        delta = pos_q[:, None] - pos_k[None, :]
-        allowed = (pos_k[None, :] >= 0) & (delta >= 0)
-        if self.cfg.context:
-            allowed = allowed & (delta < self.cfg.context)
-        mask = mx.where(allowed, 0.0, -1e9).astype(xs.dtype)
-        mask = mask[None, None, :, :]
+        if mask is None:
+            k_len = k.shape[2]
+            pos_k = mx.arange(k_len, dtype=mx.int32) + (cache.offset - k_len)
+            pos_q = mx.arange(t, dtype=mx.int32) + offset
+            delta = pos_q[:, None] - pos_k[None, :]
+            allowed = (pos_k[None, :] >= 0) & (delta >= 0)
+            if self.cfg.context:
+                allowed = allowed & (delta < self.cfg.context)
+            mask = mx.where(allowed, 0.0, -1e9).astype(xs.dtype)
+            mask = mask[None, None, :, :]
 
         xs = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         xs = xs.transpose(0, 2, 1, 3).reshape(b, t, hd)
