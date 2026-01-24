@@ -59,6 +59,15 @@ class ModelConfig(BaseModelArgs):
     upsample_rates: List[int] = field(default_factory=lambda: [8, 5, 3])
 
 
+class LLM(nn.Module):
+    """Speech token embedding and decoder projections."""
+
+    def __init__(self, speech_token_size: int, llm_input_size: int, llm_output_size: int):
+        super().__init__()
+        self.speech_embedding = nn.Embedding(speech_token_size, llm_input_size)
+        self.llm_decoder = nn.Linear(llm_output_size, speech_token_size, bias=False)
+
+
 class Model(nn.Module):
     """
     CosyVoice3 for text-to-speech generation.
@@ -89,31 +98,26 @@ class Model(nn.Module):
             feat_dim=80, embedding_size=config.spk_embed_dim
         )
 
-        # Build LLM components (optional - can be skipped for token-to-wav only)
+        # Build LLM (optional - can be skipped for token-to-wav only)
         if load_llm:
-            # Speech token embedding (includes special tokens)
-            self.speech_embedding = nn.Embedding(
-                config.speech_token_size, config.llm_input_size
+            self.llm = LLM(
+                speech_token_size=config.speech_token_size,
+                llm_input_size=config.llm_input_size,
+                llm_output_size=config.llm_output_size,
             )
-
-            # LLM decoder for speech tokens
-            self.llm_decoder = nn.Linear(
-                config.llm_output_size, config.speech_token_size, bias=False
+            self.qwen2 = Qwen2Model(
+                Qwen2Config(
+                    model_type="qwen2",
+                    hidden_size=config.llm_input_size,
+                    intermediate_size=4864,
+                    num_hidden_layers=24,
+                    num_attention_heads=14,
+                    num_key_value_heads=2,
+                    rms_norm_eps=1e-6,
+                    rope_theta=1000000.0,
+                    vocab_size=config.text_vocab_size,
+                )
             )
-
-            # Qwen2 backbone
-            qwen2_config = Qwen2Config(
-                model_type="qwen2",
-                hidden_size=config.llm_input_size,
-                intermediate_size=4864,
-                num_hidden_layers=24,
-                num_attention_heads=14,
-                num_key_value_heads=2,
-                rms_norm_eps=1e-6,
-                rope_theta=1000000.0,
-                vocab_size=config.text_vocab_size,
-            )
-            self.llm = Qwen2Model(qwen2_config)
 
         # Build DiT
         dit = DiT(
@@ -317,19 +321,13 @@ class Model(nn.Module):
 
             # === LLM mappings ===
 
-            # Flatten CosyVoice3LM wrapper: bring sub-modules up to Model level
-            # llm.speech_embedding. -> speech_embedding.
-            if new_key.startswith("llm.speech_embedding."):
-                new_key = new_key[len("llm."):]
-            # llm.llm_decoder. -> llm_decoder.
-            elif new_key.startswith("llm.llm_decoder."):
-                new_key = new_key[len("llm."):]
-            # Raw weights: llm.llm.model.model.X -> llm.model.X
-            elif "llm.llm.model.model." in new_key:
-                new_key = new_key.replace("llm.llm.model.model.", "llm.model.")
-            # Already-converted weights: llm.llm.model.X -> llm.model.X
+            # Qwen2 backbone: remap to top-level qwen2 module
+            # Raw weights: llm.llm.model.model.X -> qwen2.model.X
+            if "llm.llm.model.model." in new_key:
+                new_key = new_key.replace("llm.llm.model.model.", "qwen2.model.")
+            # Already-converted weights: llm.llm.model.X -> qwen2.model.X
             elif new_key.startswith("llm.llm.model."):
-                new_key = new_key.replace("llm.llm.model.", "llm.model.")
+                new_key = new_key.replace("llm.llm.model.", "qwen2.model.")
 
             new_weights[new_key] = value
 
@@ -355,11 +353,11 @@ class Model(nn.Module):
 
     def encode_text(self, input_ids: mx.array) -> mx.array:
         """Encode text tokens using Qwen2 embeddings."""
-        return self.llm.model.embed_tokens(input_ids)
+        return self.qwen2.model.embed_tokens(input_ids)
 
     def encode_speech(self, speech_tokens: mx.array) -> mx.array:
         """Embed speech tokens."""
-        return self.speech_embedding(speech_tokens)
+        return self.llm.speech_embedding(speech_tokens)
 
     def llm_forward(
         self,
@@ -379,19 +377,19 @@ class Model(nn.Module):
         h = embeddings
 
         if cache is None:
-            cache = [None] * len(self.llm.model.layers)
+            cache = [None] * len(self.qwen2.model.layers)
 
         mask = create_attention_mask(h, cache[0] if cache else None)
 
-        for layer, c in zip(self.llm.model.layers, cache):
+        for layer, c in zip(self.qwen2.model.layers, cache):
             h = layer(h, mask=mask, cache=c)
 
-        h = self.llm.model.norm(h)
+        h = self.qwen2.model.norm(h)
         return h, cache
 
     def decode_to_speech(self, hidden_states: mx.array) -> mx.array:
         """Decode hidden states to speech token logits."""
-        return self.llm_decoder(hidden_states)
+        return self.llm.llm_decoder(hidden_states)
 
     def nucleus_sampling(
         self,
@@ -592,7 +590,7 @@ class Model(nn.Module):
         """
         B = text_tokens.shape[0]
 
-        cache = make_prompt_cache(self.llm)
+        cache = make_prompt_cache(self.qwen2)
 
         # Build input: [SOS, prompt_text + text, TASK_ID, prompt_speech]
         if prompt_text_tokens is not None and prompt_text_tokens.shape[1] > 0:
