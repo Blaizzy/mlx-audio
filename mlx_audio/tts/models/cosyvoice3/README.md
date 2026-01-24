@@ -91,15 +91,32 @@ for result in model.inference_instruct(
 Use control tokens like `[breath]` for natural speech patterns:
 
 ```python
+# Breath control
 for result in model.inference_cross_lingual(
     text="[breath]Because their generation[breath]is more accustomed to living in the countryside,[breath]the neighbors are all very friendly.",
     ref_audio="path/to/reference.wav",
     n_timesteps=10,
 ):
     audio = result.audio
+
+# Cough
+for result in model.inference_cross_lingual(
+    text="[cough]Sorry about that,[cough]I was saying we should meet tomorrow.",
+    ref_audio="path/to/reference.wav",
+    n_timesteps=10,
+):
+    audio = result.audio
+
+# Laughter
+for result in model.inference_cross_lingual(
+    text="[laughter]That is so funny,[laughter]I cannot believe you said that.",
+    ref_audio="path/to/reference.wav",
+    n_timesteps=10,
+):
+    audio = result.audio
 ```
 
-Supported control tokens: `[breath]`, `[laughter]`, `[noise]`
+Supported control tokens: `[breath]`, `[laughter]`, `[cough]`, `[noise]`
 
 ### Voice Conversion
 

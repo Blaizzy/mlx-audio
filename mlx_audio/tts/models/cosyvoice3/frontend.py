@@ -5,27 +5,9 @@ from typing import Optional, Tuple
 
 import mlx.core as mx
 import numpy as np
+from transformers import AutoTokenizer
 
-try:
-    from transformers import AutoTokenizer
-
-    TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    TRANSFORMERS_AVAILABLE = False
-
-try:
-    import soundfile as sf
-
-    SOUNDFILE_AVAILABLE = True
-except ImportError:
-    SOUNDFILE_AVAILABLE = False
-
-try:
-    import librosa
-
-    LIBROSA_AVAILABLE = True
-except ImportError:
-    LIBROSA_AVAILABLE = False
+from mlx_audio.audio_io import read as audio_read
 
 
 class CosyVoice3Frontend:
@@ -60,7 +42,7 @@ class CosyVoice3Frontend:
         self.speech_tokenizer_model = None
 
         # Load tokenizer
-        if tokenizer_path and TRANSFORMERS_AVAILABLE:
+        if tokenizer_path:
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
             # Add CosyVoice3 special tokens (matching PyTorch CosyVoice3Tokenizer).
             # These tokens are used by the model but not in the base Qwen2 tokenizer.
@@ -298,19 +280,10 @@ class CosyVoice3Frontend:
         Returns:
             Tuple of (audio_waveform, sample_rate)
         """
-        # Try soundfile first (faster and no numba dependency)
-        if SOUNDFILE_AVAILABLE:
-            audio, sr = sf.read(audio_path)
-            # Convert stereo to mono if needed
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
-            audio = audio.astype(np.float32)
-        elif LIBROSA_AVAILABLE:
-            audio, sr = librosa.load(audio_path, sr=None)
-        else:
-            raise RuntimeError(
-                "Either soundfile or librosa required. Install with: pip install soundfile"
-            )
+        audio, sr = audio_read(audio_path, dtype="float32")
+        # Convert stereo to mono if needed
+        if audio.ndim > 1:
+            audio = audio.mean(axis=1)
         return audio, sr
 
     def _get_flow_mel_filters(self) -> np.ndarray:
