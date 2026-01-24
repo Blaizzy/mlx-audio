@@ -41,7 +41,7 @@ class CosyVoice3Frontend:
     def __init__(
         self,
         tokenizer_path: Optional[str] = None,
-        campplus_path: Optional[str] = None,
+        campplus_model=None,
         speech_tokenizer_path: Optional[str] = None,
         sample_rate: int = 24000,
     ):
@@ -50,13 +50,13 @@ class CosyVoice3Frontend:
 
         Args:
             tokenizer_path: Path to tokenizer (HuggingFace format)
-            campplus_path: Path to CAMPPlus safetensors model
+            campplus_model: CAMPPlus model instance (owned by parent Model)
             speech_tokenizer_path: Path to speech tokenizer safetensors model
             sample_rate: Audio sample rate
         """
         self.sample_rate = sample_rate
         self.tokenizer = None
-        self.campplus_model = None
+        self.campplus_model = campplus_model
         self.speech_tokenizer_model = None
 
         # Load tokenizer
@@ -122,17 +122,6 @@ class CosyVoice3Frontend:
                     "[ǘ]", "[ǚ]", "[ǜ]",
                 ],
             })
-
-        # Load CAMPPlus (pure MLX)
-        if campplus_path:
-            from mlx_audio.tts.models.cosyvoice3.campplus import CAMPPlus
-
-            self.campplus_model = CAMPPlus(feat_dim=80, embedding_size=192)
-            weights = mx.load(campplus_path, format="safetensors")
-            sanitized = self.campplus_model.sanitize(weights)
-            self.campplus_model.load_weights(list(sanitized.items()), strict=False)
-            mx.eval(self.campplus_model.parameters())
-            self.campplus_model.eval()
 
         # Load speech tokenizer (pure MLX)
         if speech_tokenizer_path:
@@ -274,7 +263,7 @@ class CosyVoice3Frontend:
             Speaker embedding as mx.array (1, 192)
         """
         if self.campplus_model is None:
-            raise RuntimeError("CAMPPlus not loaded. Please provide campplus_path.")
+            raise RuntimeError("CAMPPlus model not provided.")
 
         from mlx_audio.tts.models.cosyvoice3.campplus import kaldi_fbank
 

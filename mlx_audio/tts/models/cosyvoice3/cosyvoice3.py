@@ -10,6 +10,7 @@ import mlx.nn as nn
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 
+from .campplus import CAMPPlus
 from .dit import DiT
 from .flow import CausalConditionalCFM, CausalMaskedDiffWithDiT, PreLookaheadLayer
 from .frontend import CosyVoice3Frontend
@@ -69,6 +70,11 @@ class Model(nn.Module):
         super().__init__()
         self.config = config
         self.frontend = None  # Initialized in from_pretrained
+
+        # Build CAMPPlus speaker embedding model
+        self.campplus = CAMPPlus(
+            feat_dim=80, embedding_size=config.spk_embed_dim
+        )
 
         # Build LLM (optional - can be skipped for token-to-wav only)
         if load_llm:
@@ -289,7 +295,27 @@ class Model(nn.Module):
 
             new_weights[new_key] = value
 
+        # Handle campplus weights: separate, sanitize with CAMPPlus.sanitize, re-prefix
+        campplus_raw = {}
+        other_weights = {}
+        for key, value in new_weights.items():
+            if key.startswith("campplus."):
+                campplus_raw[key[len("campplus."):]] = value
+            else:
+                other_weights[key] = value
+
+        if campplus_raw:
+            campplus_sanitized = self.campplus.sanitize(campplus_raw)
+            for key, value in campplus_sanitized.items():
+                other_weights[f"campplus.{key}"] = value
+            return other_weights
+
         return new_weights
+
+    def model_quant_predicate(self, p, m):
+        if "campplus" in p or "hift" in p or "flow" in p or "llm" in p:
+            return False
+        return True
 
     @property
     def sample_rate(self) -> int:
@@ -503,22 +529,19 @@ class Model(nn.Module):
         weights = mx.load(safetensors_path)
         model.load_weights(list(weights.items()), strict=False)
         mx.eval(model.parameters())
-
+        model.campplus.eval()
 
         # Initialize frontend
         tokenizer_path = os.path.join(model_dir, "CosyVoice-BlankEN")
-        campplus_path = os.path.join(model_dir, "campplus.safetensors")
         speech_tokenizer_path = os.path.join(
             model_dir, "speech_tokenizer_v3.safetensors"
         )
 
-        if os.path.exists(tokenizer_path) or os.path.exists(campplus_path):
-            print(f"  Initializing frontend with tokenizer: {tokenizer_path}, campplus: {campplus_path}, speech_tokenizer: {speech_tokenizer_path}")
+        if os.path.exists(tokenizer_path):
+            print(f"  Initializing frontend with tokenizer: {tokenizer_path}, speech_tokenizer: {speech_tokenizer_path}")
             model.frontend = CosyVoice3Frontend(
-                tokenizer_path=(
-                    tokenizer_path if os.path.exists(tokenizer_path) else None
-                ),
-                campplus_path=campplus_path if os.path.exists(campplus_path) else None,
+                tokenizer_path=tokenizer_path,
+                campplus_model=model.campplus,
                 speech_tokenizer_path=(
                     speech_tokenizer_path
                     if os.path.exists(speech_tokenizer_path)
@@ -558,7 +581,7 @@ class Model(nn.Module):
 
         if self.frontend is None:
             raise RuntimeError(
-                "Frontend not initialized. Check tokenizer and campplus paths."
+                "Frontend not initialized. Use from_pretrained() to load the model."
             )
 
         time_start = time.time()
@@ -837,7 +860,7 @@ class Model(nn.Module):
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
         if self.frontend is None:
             raise RuntimeError(
-                "Frontend not initialized. Check tokenizer and campplus paths."
+                "Frontend not initialized. Use from_pretrained() to load the model."
             )
 
         inputs = self.frontend.frontend_instruct(text, ref_audio, instruct_text)
@@ -883,7 +906,7 @@ class Model(nn.Module):
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
         if self.frontend is None:
             raise RuntimeError(
-                "Frontend not initialized. Check tokenizer and campplus paths."
+                "Frontend not initialized. Use from_pretrained() to load the model."
             )
 
         inputs = self.frontend.frontend_cross_lingual(text, ref_audio)
@@ -913,7 +936,7 @@ class Model(nn.Module):
         """
         if self.frontend is None:
             raise RuntimeError(
-                "Frontend not initialized. Check tokenizer and campplus paths."
+                "Frontend not initialized. Use from_pretrained() to load the model."
             )
 
         time_start = time.time()

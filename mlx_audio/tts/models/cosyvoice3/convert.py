@@ -3,8 +3,8 @@
 Convert CosyVoice3 weights to MLX safetensors format.
 
 Converts:
-- PyTorch .pt files (flow.pt, hift.pt, llm.pt) -> model.safetensors
-- ONNX files (campplus.onnx, speech_tokenizer_v3.onnx) -> .safetensors
+- PyTorch .pt files (flow.pt, hift.pt, llm.pt) + campplus.onnx -> model.safetensors
+- ONNX file (speech_tokenizer_v3.onnx) -> speech_tokenizer_v3.safetensors
 
 Usage:
     python -m mlx_audio.tts.models.cosyvoice3.convert --model-dir /path/to/model
@@ -159,7 +159,7 @@ def convert_speech_tokenizer(onnx_path: str, output_path: str):
 
 
 def convert_model_weights(model_dir: Path, output_path: str):
-    """Convert flow.pt, hift.pt, llm.pt to a single model.safetensors."""
+    """Convert flow.pt, hift.pt, llm.pt, and campplus.onnx to a single model.safetensors."""
     try:
         import torch
     except ImportError:
@@ -209,6 +209,16 @@ def convert_model_weights(model_dir: Path, output_path: str):
     else:
         print(f"    WARNING: llm.pt not found")
 
+    # CAMPPlus weights (from ONNX)
+    campplus_onnx = model_dir / "campplus.onnx"
+    if campplus_onnx.exists():
+        raw_weights = extract_onnx_weights(str(campplus_onnx))
+        for k, v in raw_weights.items():
+            all_weights[f"campplus.{k}"] = v
+        print(f"    Loaded campplus.onnx: {len(raw_weights)} keys")
+    else:
+        print(f"    WARNING: campplus.onnx not found")
+
     # Sanitize and save
     sanitized = model.sanitize(all_weights)
     print(f"    Sanitized: {len(all_weights)} -> {len(sanitized)} keys")
@@ -236,31 +246,23 @@ def convert(model_dir: str, output_dir: str = None):
 
     print(f"Converting CosyVoice3 from {model_dir}")
 
-    # 1. Convert PyTorch model weights -> model.safetensors
+    # 1. Convert model weights (flow.pt, hift.pt, llm.pt, campplus.onnx) -> model.safetensors
     has_pt = (model_dir / "flow.pt").exists() or (model_dir / "hift.pt").exists()
     if has_pt:
-        print("\n[1/3] Converting PyTorch weights (flow.pt, hift.pt, llm.pt)...")
+        print("\n[1/2] Converting model weights (flow.pt, hift.pt, llm.pt, campplus.onnx)...")
         convert_model_weights(model_dir, str(output_dir / "model.safetensors"))
     else:
-        print("\n[1/3] No .pt files found, skipping model weight conversion")
+        print("\n[1/2] No .pt files found, skipping model weight conversion")
 
-    # 2. Convert CAMPPlus ONNX -> campplus.safetensors
-    campplus_onnx = model_dir / "campplus.onnx"
-    if campplus_onnx.exists():
-        print("\n[2/3] Converting CAMPPlus ONNX...")
-        convert_campplus(str(campplus_onnx), str(output_dir / "campplus.safetensors"))
-    else:
-        print("\n[2/3] campplus.onnx not found, skipping")
-
-    # 3. Convert Speech Tokenizer ONNX -> speech_tokenizer_v3.safetensors
+    # 2. Convert Speech Tokenizer ONNX -> speech_tokenizer_v3.safetensors
     tokenizer_onnx = model_dir / "speech_tokenizer_v3.onnx"
     if tokenizer_onnx.exists():
-        print("\n[3/3] Converting Speech Tokenizer ONNX...")
+        print("\n[2/2] Converting Speech Tokenizer ONNX...")
         convert_speech_tokenizer(
             str(tokenizer_onnx), str(output_dir / "speech_tokenizer_v3.safetensors")
         )
     else:
-        print("\n[3/3] speech_tokenizer_v3.onnx not found, skipping")
+        print("\n[2/2] speech_tokenizer_v3.onnx not found, skipping")
 
     print("\nDone!")
 
