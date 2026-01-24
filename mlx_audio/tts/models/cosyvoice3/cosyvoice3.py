@@ -537,7 +537,10 @@ class Model(nn.Module):
             model_dir, "speech_tokenizer_v3.safetensors"
         )
 
+        
+
         if os.path.exists(tokenizer_path) or os.path.exists(campplus_path):
+            print(f"  Initializing frontend with tokenizer: {tokenizer_path}, campplus: {campplus_path}, speech_tokenizer: {speech_tokenizer_path}")
             model.frontend = CosyVoice3Frontend(
                 tokenizer_path=(
                     tokenizer_path if os.path.exists(tokenizer_path) else None
@@ -557,8 +560,8 @@ class Model(nn.Module):
     def inference_zero_shot(
         self,
         text: str,
-        prompt_text: str,
-        prompt_wav: str,
+        ref_text: str,
+        ref_audio: str,
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
@@ -568,8 +571,8 @@ class Model(nn.Module):
 
         Args:
             text: Text to synthesize
-            prompt_text: Transcript of the prompt audio
-            prompt_wav: Path to the prompt audio file
+            ref_text: Transcript of the reference audio
+            ref_audio: Path to the reference audio file
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature
             top_k: Top-k sampling for LLM
@@ -588,7 +591,7 @@ class Model(nn.Module):
         time_start = time.time()
 
         # Process inputs through frontend
-        inputs = self.frontend.frontend_zero_shot(text, prompt_text, prompt_wav)
+        inputs = self.frontend.frontend_zero_shot(text, ref_text, ref_audio)
 
         # Generate speech tokens from text using LLM
         # With prompt_speech_tokens, the LLM generates continuation tokens (target only).

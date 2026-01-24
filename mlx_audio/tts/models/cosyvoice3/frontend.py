@@ -485,37 +485,37 @@ class CosyVoice3Frontend:
     def frontend_zero_shot(
         self,
         text: str,
-        prompt_text: str,
-        prompt_audio_path: str,
+        ref_text: str,
+        ref_audio: str,
     ) -> dict:
         """
         Prepare inputs for zero-shot inference.
 
         Args:
             text: Text to synthesize
-            prompt_text: Transcript of the prompt audio
-            prompt_audio_path: Path to the prompt audio file
+            ref_text: Transcript of the reference audio
+            ref_audio: Path to the reference audio file
 
         Returns:
             Dictionary with model inputs
         """
         # Tokenize text
-        # CosyVoice3 expects prompt_text in the format:
-        #   "system instruction<|endofprompt|>transcript of prompt audio"
+        # CosyVoice3 expects ref_text in the format:
+        #   "system instruction<|endofprompt|>transcript of reference audio"
         # The <|endofprompt|> separator tells the model where the instruction
-        # ends and the prompt transcript begins. Without it, the model
+        # ends and the reference transcript begins. Without it, the model
         # generates speech for the full combined text instead of just the target.
         text_tokens = self.tokenize(text)
-        if "<|endofprompt|>" not in prompt_text:
+        if "<|endofprompt|>" not in ref_text:
             prompt_text_formatted = (
-                f"You are a helpful assistant.<|endofprompt|>{prompt_text}"
+                f"You are a helpful assistant.<|endofprompt|>{ref_text}"
             )
         else:
-            prompt_text_formatted = prompt_text
+            prompt_text_formatted = ref_text
         prompt_text_tokens = self.tokenize(prompt_text_formatted)
 
-        # Load and process prompt audio
-        prompt_audio, prompt_sr = self.load_audio(prompt_audio_path)
+        # Load and process reference audio
+        prompt_audio, prompt_sr = self.load_audio(ref_audio)
 
         # Extract speaker embedding
         speaker_embedding = self.extract_speaker_embedding(prompt_audio, prompt_sr)
