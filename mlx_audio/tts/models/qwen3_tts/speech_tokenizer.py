@@ -963,6 +963,8 @@ class Qwen3TTSSpeechTokenizerEncoder(nn.Module):
             bins=config.codebook_size,
         )
 
+        self.encoder_cache = self.encoder_transformer.make_cache()
+
     def encode(self, audio: mx.array) -> mx.array:
         """Encode audio waveform to codes.
 
@@ -973,7 +975,6 @@ class Qwen3TTSSpeechTokenizerEncoder(nn.Module):
             codes: [batch, num_quantizers, time]
         """
         self.encoder.reset_state()
-        self.encoder_cache = self.encoder_transformer.make_cache()
         xs = self.encoder(audio)
         # Create causal attention mask (the model was trained with causal attention)
         seq_len = xs.shape[-1]  # NCL format, time is last dim
