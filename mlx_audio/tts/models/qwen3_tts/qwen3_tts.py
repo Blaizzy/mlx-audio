@@ -227,6 +227,9 @@ class Model(nn.Module):
         return speaker_embedding
 
     def model_quant_predicate(self, p, m):
+
+        if "encoder_model" in p:
+            return False
         if isinstance(m, nn.Embedding):
             return {"group_size": 64, "bits": 8}
         return True

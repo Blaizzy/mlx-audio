@@ -981,7 +981,7 @@ class Qwen3TTSSpeechTokenizerEncoder(nn.Module):
         xs = self.encoder(audio)
         # Create causal attention mask (the model was trained with causal attention)
         seq_len = xs.shape[-1]  # NCL format, time is last dim
-        mask = mx.full((seq_len, seq_len), -mx.inf)
+        mask = mx.full((seq_len, seq_len), -mx.inf, dtype=xs.dtype)
         mask = mx.triu(mask, k=1)  # Upper triangle = -inf, lower triangle + diag = 0
         mask = mask[None, None, :, :]  # [1, 1, seq_len, seq_len]
         xs = self.encoder_transformer(xs, cache=self.encoder_cache, mask=mask)[0]
