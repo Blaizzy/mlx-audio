@@ -10,6 +10,7 @@ import mlx.nn as nn
 import numpy as np
 from mlx_lm.models.cache import KVCache
 
+from mlx_audio.codec.models.mimi.mimi import _reset_kv_cache
 from mlx_audio.codec.models.mimi.modules import (
     ConvDownsample1d,
     ProjectedTransformer,
@@ -975,6 +976,8 @@ class Qwen3TTSSpeechTokenizerEncoder(nn.Module):
             codes: [batch, num_quantizers, time]
         """
         self.encoder.reset_state()
+        for c in self.encoder_cache:
+            _reset_kv_cache(c)
         xs = self.encoder(audio)
         # Create causal attention mask (the model was trained with causal attention)
         seq_len = xs.shape[-1]  # NCL format, time is last dim
