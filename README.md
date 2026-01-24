@@ -34,16 +34,16 @@ pip install -e ".[dev]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello, world!"
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello, world!" --lang_code a
 
 # With voice selection and speed adjustment
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --voice af_heart --speed 1.2
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --voice af_heart --speed 1.2 --lang_code a
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play  --lang_code a
 
 # Save to a specific directory
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --output_path ./my_audio
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --output_path ./my_audio  --lang_code a
 ```
 
 ### Python API

@@ -8,8 +8,7 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 import mlx.nn as nn
-
-from .kv_cache import KVCache, RotatingKVCache
+from mlx_lm.models.cache import KVCache, RotatingKVCache
 
 
 @dataclass
@@ -85,20 +84,25 @@ class Attention(nn.Module):
         assert self.cfg.kv_repeat == 1, "only kv_repeat==1 is supported"
 
         b, t, hd = xs.shape
+        offset = 0 if cache is None else cache.offset
         qkv = self.in_proj(xs).reshape(b, t, 3, self.cfg.num_heads, self.cfg.head_dim)
         q = qkv[:, :, 0].transpose(0, 2, 1, 3)
         k = qkv[:, :, 1].transpose(0, 2, 1, 3)
         v = qkv[:, :, 2].transpose(0, 2, 1, 3)
         if self.rope is not None:
-            q = self.rope(q, offset=cache.offset)
-            k = self.rope(k, offset=cache.offset)
+            q = self.rope(q, offset=offset)
+            k = self.rope(k, offset=offset)
 
         k, v = cache.update_and_fetch(k, v)
         k_len = k.shape[2]
-        k_target_len = t + min(self.cfg.context, k_len - t)
-        if k_target_len < k_len:
-            k = k[:, :, k_len - k_target_len :]
-            v = v[:, :, k_len - k_target_len :]
+        pos_k = mx.arange(k_len, dtype=mx.int32) + (cache.offset - k_len)
+        pos_q = mx.arange(t, dtype=mx.int32) + offset
+        delta = pos_q[:, None] - pos_k[None, :]
+        allowed = (pos_k[None, :] >= 0) & (delta >= 0)
+        if self.cfg.context:
+            allowed = allowed & (delta < self.cfg.context)
+        mask = mx.where(allowed, 0.0, -1e9).astype(xs.dtype)
+        mask = mask[None, None, :, :]
 
         xs = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         xs = xs.transpose(0, 2, 1, 3).reshape(b, t, hd)
@@ -195,19 +199,12 @@ class Transformer(nn.Module):
         return xs
 
     def make_cache(self) -> list[KVCache]:
-        num_kv_heads = self.cfg.num_heads // self.cfg.kv_repeat
-        return [
-            KVCache(head_dim=self.cfg.head_dim, n_kv_heads=num_kv_heads)
-            for _ in self.layers
-        ]
+        return [KVCache() for _ in self.layers]
 
     def make_rot_cache(self) -> list[RotatingKVCache]:
-        num_kv_heads = self.cfg.num_heads // self.cfg.kv_repeat
         return [
             RotatingKVCache(
-                head_dim=self.cfg.head_dim,
-                n_kv_heads=num_kv_heads,
-                max_size=self.cfg.max_seq_len,
+                self.cfg.max_seq_len,
             )
             for _ in self.layers
         ]

@@ -3,14 +3,22 @@ import math
 import mlx.core as mx
 import mlx.nn as nn
 
-from .codec.mimi.modules.conv import (
+from mlx_audio.codec.models.mimi.modules.conv import (
     Conv1d,
     ConvDownsample1d,
     ConvTrUpsample1d,
     get_extra_padding_for_conv1d,
 )
-from .codec.mimi.modules.seanet import SeanetConfig, SeanetDecoder, SeanetEncoder
-from .codec.mimi.modules.transformer import ProjectedTransformer, TransformerConfig
+from mlx_audio.codec.models.mimi.modules.seanet import (
+    SeanetConfig,
+    SeanetDecoder,
+    SeanetEncoder,
+)
+from mlx_audio.codec.models.mimi.modules.transformer import (
+    ProjectedTransformer,
+    TransformerConfig,
+)
+
 from .config import MimiConfig
 
 
