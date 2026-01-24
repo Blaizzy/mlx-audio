@@ -5,8 +5,9 @@ from typing import Optional, Tuple
 
 import mlx.core as mx
 import numpy as np
+from pathlib import Path
 from transformers import AutoTokenizer
-
+from mlx_audio.codec.models.s3.model_v2 import S3TokenizerV2
 from mlx_audio.audio_io import read as audio_read
 
 
@@ -22,9 +23,8 @@ class CosyVoice3Frontend:
 
     def __init__(
         self,
-        tokenizer_path: Optional[str] = None,
+        model_path: str,
         campplus_model=None,
-        speech_tokenizer_path: Optional[str] = None,
         sample_rate: int = 24000,
     ):
         """
@@ -42,8 +42,8 @@ class CosyVoice3Frontend:
         self.speech_tokenizer_model = None
 
         # Load tokenizer
-        if tokenizer_path:
-            self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+        if model_path:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_path)
             # Add CosyVoice3 special tokens (matching PyTorch CosyVoice3Tokenizer).
             # These tokens are used by the model but not in the base Qwen2 tokenizer.
             # The order must match training to get correct token IDs.
@@ -105,18 +105,8 @@ class CosyVoice3Frontend:
                 ],
             })
 
-        # Load speech tokenizer (pure MLX)
-        if speech_tokenizer_path:
-            from mlx_audio.codec.models.s3.model_v2 import S3TokenizerV2
 
-            self.speech_tokenizer_model = S3TokenizerV2("speech_tokenizer_v3")
-            weights = mx.load(speech_tokenizer_path, format="safetensors")
-            sanitized = self.speech_tokenizer_model.sanitize(weights)
-            self.speech_tokenizer_model.load_weights(
-                list(sanitized.items()), strict=False
-            )
-            mx.eval(self.speech_tokenizer_model.parameters())
-            self.speech_tokenizer_model.eval()
+        self.speech_tokenizer_model = S3TokenizerV2.from_pretrained("speech_tokenizer_v3", local_path=str(Path(model_path) / "speech_tokenizer_v3.safetensors"))
 
     def tokenize(self, text: str) -> mx.array:
         """

@@ -526,26 +526,13 @@ class Model(nn.Module):
         model.load_weights(list(weights.items()), strict=False)
         mx.eval(model.parameters())
         model.campplus.eval()
-
-        # Initialize frontend
-        tokenizer_path = os.path.join(model_dir, "CosyVoice-BlankEN")
-        speech_tokenizer_path = os.path.join(
-            model_dir, "speech_tokenizer_v3.safetensors"
+      
+        model.frontend = CosyVoice3Frontend(
+            model_path=model_dir,
+            campplus_model=model.campplus,
+            sample_rate=config.sample_rate,
         )
-
-        if os.path.exists(tokenizer_path):
-            print(f"  Initializing frontend with tokenizer: {tokenizer_path}, speech_tokenizer: {speech_tokenizer_path}")
-            model.frontend = CosyVoice3Frontend(
-                tokenizer_path=tokenizer_path,
-                campplus_model=model.campplus,
-                speech_tokenizer_path=(
-                    speech_tokenizer_path
-                    if os.path.exists(speech_tokenizer_path)
-                    else None
-                ),
-                sample_rate=config.sample_rate,
-            )
-            print(f"  Frontend initialized")
+        print(f"  Frontend initialized")
 
         return model
 
