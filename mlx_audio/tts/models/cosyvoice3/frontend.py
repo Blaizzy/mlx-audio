@@ -557,3 +557,124 @@ class CosyVoice3Frontend:
             "prompt_mel": prompt_mel,
             "prompt_speech_tokens": prompt_speech_tokens,
         }
+
+    def frontend_instruct(
+        self,
+        text: str,
+        ref_audio: str,
+        instruct_text: str,
+    ) -> dict:
+        """
+        Prepare inputs for instruct-mode inference.
+
+        Like zero-shot but uses instruct_text for style control instead of
+        a reference transcript.
+
+        Args:
+            text: Text to synthesize
+            ref_audio: Path to reference audio file (for speaker identity)
+            instruct_text: Instruction for style (e.g., "speak slowly", "whisper")
+
+        Returns:
+            Dictionary with model inputs
+        """
+        text_tokens = self.tokenize(text)
+
+        # Format instruct_text as the prompt text with endofprompt separator
+        instruct_formatted = (
+            f"{instruct_text}<|endofprompt|>"
+        )
+        prompt_text_tokens = self.tokenize(instruct_formatted)
+
+        # Load and process reference audio
+        prompt_audio, prompt_sr = self.load_audio(ref_audio)
+
+        # Extract speaker embedding from reference audio
+        speaker_embedding = self.extract_speaker_embedding(prompt_audio, prompt_sr)
+
+        # Extract mel features for prompt (for Flow model conditioning)
+        prompt_mel = self.extract_mel_features(prompt_audio, prompt_sr)
+
+        # Extract speech tokens from prompt audio (for LLM context)
+        prompt_speech_tokens = None
+        if self.speech_tokenizer_model is not None:
+            prompt_speech_tokens = self.extract_speech_tokens(prompt_audio, prompt_sr)
+
+        # Align mel and token lengths
+        if prompt_speech_tokens is not None and prompt_mel is not None:
+            mel_len = prompt_mel.shape[2]
+            token_len = prompt_speech_tokens.shape[1]
+            aligned_token_len = min(mel_len // 2, token_len)
+            aligned_mel_len = aligned_token_len * 2
+            prompt_mel = prompt_mel[:, :, :aligned_mel_len]
+            prompt_speech_tokens = prompt_speech_tokens[:, :aligned_token_len]
+
+        # Transpose mel to (B, T, mel_dim)
+        if prompt_mel is not None:
+            prompt_mel = mx.transpose(prompt_mel, (0, 2, 1))
+
+        return {
+            "text_tokens": text_tokens,
+            "prompt_text_tokens": prompt_text_tokens,
+            "speaker_embedding": speaker_embedding,
+            "prompt_mel": prompt_mel,
+            "prompt_speech_tokens": prompt_speech_tokens,
+        }
+
+    def frontend_vc(
+        self,
+        source_audio: str,
+        ref_audio: str,
+    ) -> dict:
+        """
+        Prepare inputs for voice conversion.
+
+        Extracts speech tokens from source audio and speaker characteristics
+        from reference audio. No LLM step is needed.
+
+        Args:
+            source_audio: Path to source audio file (content to convert)
+            ref_audio: Path to reference audio file (target voice)
+
+        Returns:
+            Dictionary with model inputs
+        """
+        # Load source audio and extract speech tokens
+        source_wav, source_sr = self.load_audio(source_audio)
+        if self.speech_tokenizer_model is None:
+            raise RuntimeError(
+                "Speech tokenizer not loaded. Cannot perform voice conversion."
+            )
+        source_speech_tokens = self.extract_speech_tokens(source_wav, source_sr)
+
+        # Load reference audio
+        ref_wav, ref_sr = self.load_audio(ref_audio)
+
+        # Extract speaker embedding from reference
+        speaker_embedding = self.extract_speaker_embedding(ref_wav, ref_sr)
+
+        # Extract mel features from reference (for Flow conditioning)
+        prompt_mel = self.extract_mel_features(ref_wav, ref_sr)
+
+        # Extract speech tokens from reference (for Flow prompt)
+        prompt_speech_tokens = self.extract_speech_tokens(ref_wav, ref_sr)
+
+        # Align mel and token lengths for reference
+        if prompt_speech_tokens is not None and prompt_mel is not None:
+            mel_len = prompt_mel.shape[2]
+            token_len = prompt_speech_tokens.shape[1]
+            aligned_token_len = min(mel_len // 2, token_len)
+            aligned_mel_len = aligned_token_len * 2
+            prompt_mel = prompt_mel[:, :, :aligned_mel_len]
+            prompt_speech_tokens = prompt_speech_tokens[:, :aligned_token_len]
+
+        # Transpose mel to (B, T, mel_dim)
+        if prompt_mel is not None:
+            prompt_mel = mx.transpose(prompt_mel, (0, 2, 1))
+
+        return {
+            "source_speech_tokens": source_speech_tokens,
+            "speaker_embedding": speaker_embedding,
+            "prompt_mel": prompt_mel,
+            "prompt_speech_tokens": prompt_speech_tokens,
+        }

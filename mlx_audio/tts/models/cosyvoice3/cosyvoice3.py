@@ -667,6 +667,189 @@ class Model(nn.Module):
                 result.real_time_factor = audio_duration / total_time
             yield result
 
+    def inference_instruct(
+        self,
+        text: str,
+        ref_audio: str,
+        instruct_text: str,
+        n_timesteps: int = 10,
+        temperature: float = 1.0,
+        top_k: int = 25,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Instruct-mode synthesis with style control.
+
+        Uses ref_audio for speaker identity and instruct_text to control
+        speaking style (e.g., "speak slowly", "whisper", "speak with excitement").
+
+        Args:
+            text: Text to synthesize
+            ref_audio: Path to reference audio file (for speaker identity)
+            instruct_text: Style instruction (e.g., "speak slowly")
+            n_timesteps: Number of flow ODE steps
+            temperature: LLM sampling temperature
+            top_k: Top-k sampling for LLM
+
+        Yields:
+            GenerationResult with synthesized audio
+        """
+        if self.llm is None:
+            raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
+
+        if self.frontend is None:
+            raise RuntimeError(
+                "Frontend not initialized. Check tokenizer and campplus paths."
+            )
+
+        time_start = time.time()
+
+        # Process inputs through frontend (instruct mode)
+        inputs = self.frontend.frontend_instruct(text, ref_audio, instruct_text)
+
+        text_tokens = inputs["text_tokens"]
+        prompt_text_tokens = inputs.get("prompt_text_tokens")
+        prompt_speech_tokens = inputs.get("prompt_speech_tokens")
+        speech_tokens_list = []
+
+        target_text_len = text_tokens.shape[1]
+        min_tokens = int(target_text_len * 2)
+        max_tokens = int(target_text_len * 20)
+
+        prompt_token_len = (
+            prompt_speech_tokens.shape[1] if prompt_speech_tokens is not None else 0
+        )
+
+        silent_tokens = {1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323}
+        max_silent_token_num = 5
+        cur_silent_token_num = 0
+
+        token_values = []
+        stopped_reason = "eos"
+
+        for token in self.llm.generate(
+            text_tokens,
+            prompt_text_tokens=prompt_text_tokens,
+            prompt_speech_tokens=prompt_speech_tokens,
+            temperature=temperature,
+            top_k=top_k,
+            min_tokens=min_tokens,
+            max_tokens=max_tokens,
+        ):
+            mx.eval(token)
+            token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
+
+            if token_val in silent_tokens:
+                cur_silent_token_num += 1
+                if cur_silent_token_num > max_silent_token_num:
+                    continue
+            else:
+                cur_silent_token_num = 0
+
+            speech_tokens_list.append(token)
+            token_values.append(token_val)
+
+            n = len(token_values)
+            if n >= 20:
+                for window in (10, 15, 20, 25):
+                    if n >= 2 * window:
+                        recent = token_values[-window:]
+                        prev = token_values[-2 * window : -window]
+                        if recent == prev:
+                            stopped_reason = f"repetition(w={window})"
+                            break
+                else:
+                    continue
+                break
+
+        if len(speech_tokens_list) == 0:
+            raise RuntimeError("LLM generated no speech tokens")
+
+        speech_tokens = mx.concatenate(speech_tokens_list, axis=1)
+        mx.eval(speech_tokens)
+
+        gen_len = speech_tokens.shape[1]
+        expected_audio_dur = gen_len / self.config.token_frame_rate
+        print(
+            f"  [instruct] target_text_tokens={target_text_len}, "
+            f"prompt_speech_tokens={prompt_token_len}, "
+            f"generated={gen_len} (min={min_tokens}, max={max_tokens}), "
+            f"expected_dur={expected_audio_dur:.1f}s, "
+            f"stop={stopped_reason}"
+        )
+
+        for result in self.generate(
+            speech_tokens=speech_tokens,
+            speaker_embedding=inputs["speaker_embedding"],
+            prompt_speech_tokens=prompt_speech_tokens,
+            prompt_mel=inputs.get("prompt_mel"),
+            n_timesteps=n_timesteps,
+        ):
+            total_time = time.time() - time_start
+            result.processing_time_seconds = total_time
+            if total_time > 0:
+                audio_duration = result.samples / self.config.sample_rate
+                result.real_time_factor = audio_duration / total_time
+            yield result
+
+    def inference_vc(
+        self,
+        source_audio: str,
+        ref_audio: str,
+        n_timesteps: int = 10,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Voice conversion: convert source audio to the target speaker's voice.
+
+        Extracts speech tokens from source_audio and uses ref_audio for
+        speaker identity. Skips the LLM step entirely.
+
+        Args:
+            source_audio: Path to source audio (content to convert)
+            ref_audio: Path to reference audio (target voice)
+            n_timesteps: Number of flow ODE steps
+
+        Yields:
+            GenerationResult with converted audio
+        """
+        if self.frontend is None:
+            raise RuntimeError(
+                "Frontend not initialized. Check tokenizer and campplus paths."
+            )
+
+        time_start = time.time()
+
+        # Process inputs through frontend (VC mode)
+        inputs = self.frontend.frontend_vc(source_audio, ref_audio)
+
+        source_speech_tokens = inputs["source_speech_tokens"]
+        prompt_speech_tokens = inputs.get("prompt_speech_tokens")
+
+        gen_len = source_speech_tokens.shape[1]
+        prompt_token_len = (
+            prompt_speech_tokens.shape[1] if prompt_speech_tokens is not None else 0
+        )
+        expected_audio_dur = gen_len / self.config.token_frame_rate
+        print(
+            f"  [vc] source_tokens={gen_len}, "
+            f"prompt_speech_tokens={prompt_token_len}, "
+            f"expected_dur={expected_audio_dur:.1f}s"
+        )
+
+        # Voice conversion: use source tokens directly (no LLM)
+        for result in self.generate(
+            speech_tokens=source_speech_tokens,
+            speaker_embedding=inputs["speaker_embedding"],
+            prompt_speech_tokens=prompt_speech_tokens,
+            prompt_mel=inputs.get("prompt_mel"),
+            n_timesteps=n_timesteps,
+        ):
+            total_time = time.time() - time_start
+            result.processing_time_seconds = total_time
+            if total_time > 0:
+                audio_duration = result.samples / self.config.sample_rate
+                result.real_time_factor = audio_duration / total_time
+            yield result
+
     def text_to_speech(
         self,
         text: str,
