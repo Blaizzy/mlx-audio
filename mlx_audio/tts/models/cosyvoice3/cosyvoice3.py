@@ -532,8 +532,10 @@ class Model(nn.Module):
 
         # Initialize frontend
         tokenizer_path = os.path.join(model_dir, "CosyVoice-BlankEN")
-        campplus_path = os.path.join(model_dir, "campplus.onnx")
-        speech_tokenizer_path = os.path.join(model_dir, "speech_tokenizer_v3.onnx")
+        campplus_path = os.path.join(model_dir, "campplus.safetensors")
+        speech_tokenizer_path = os.path.join(
+            model_dir, "speech_tokenizer_v3.safetensors"
+        )
 
         if os.path.exists(tokenizer_path) or os.path.exists(campplus_path):
             model.frontend = CosyVoice3Frontend(
@@ -589,23 +591,32 @@ class Model(nn.Module):
         inputs = self.frontend.frontend_zero_shot(text, prompt_text, prompt_wav)
 
         # Generate speech tokens from text using LLM
-        # Pass prompt text and speech tokens for context (voice cloning)
+        # With prompt_speech_tokens, the LLM generates continuation tokens (target only).
+        # The flow prepends prompt_speech_tokens for the full sequence, then strips
+        # the prompt portion from the output mel.
         text_tokens = inputs["text_tokens"]
         prompt_text_tokens = inputs.get("prompt_text_tokens")
         prompt_speech_tokens = inputs.get("prompt_speech_tokens")
         speech_tokens_list = []
 
-        # Calculate min/max tokens matching PyTorch:
-        # min_len = (text_len - prompt_text_len) * min_token_text_ratio (default 2)
-        # max_len = (text_len - prompt_text_len) * max_token_text_ratio (default 20)
+        # Calculate min/max tokens for the target text
+        # PyTorch uses: min = (text_len - prompt_text_len) * 2, max = ... * 20
         target_text_len = text_tokens.shape[1]
         min_tokens = int(target_text_len * 2)
         max_tokens = int(target_text_len * 20)
+
+        prompt_token_len = (
+            prompt_speech_tokens.shape[1] if prompt_speech_tokens is not None else 0
+        )
 
         # Silent/breath tokens (matching PyTorch CosyVoice3Model.silent_tokens)
         silent_tokens = {1, 2, 28, 29, 55, 248, 494, 2241, 2242, 2322, 2323}
         max_silent_token_num = 5
         cur_silent_token_num = 0
+
+        # Track token values for repetition detection
+        token_values = []
+        stopped_reason = "eos"
 
         for token in self.llm.generate(
             text_tokens,
@@ -628,6 +639,22 @@ class Model(nn.Module):
                 cur_silent_token_num = 0
 
             speech_tokens_list.append(token)
+            token_values.append(token_val)
+
+            # Repetition detection: check multiple window sizes.
+            # If any window of size W repeats consecutively, stop early.
+            n = len(token_values)
+            if n >= 20:
+                for window in (10, 15, 20, 25):
+                    if n >= 2 * window:
+                        recent = token_values[-window:]
+                        prev = token_values[-2 * window : -window]
+                        if recent == prev:
+                            stopped_reason = f"repetition(w={window})"
+                            break
+                else:
+                    continue
+                break  # exit outer for loop
 
         if len(speech_tokens_list) == 0:
             raise RuntimeError("LLM generated no speech tokens")
@@ -635,8 +662,20 @@ class Model(nn.Module):
         speech_tokens = mx.concatenate(speech_tokens_list, axis=1)
         mx.eval(speech_tokens)
 
+        gen_len = speech_tokens.shape[1]
+        expected_audio_dur = gen_len / self.config.token_frame_rate
+        print(
+            f"  [zero-shot] target_text_tokens={target_text_len}, "
+            f"prompt_speech_tokens={prompt_token_len}, "
+            f"generated={gen_len} (min={min_tokens}, max={max_tokens}), "
+            f"expected_dur={expected_audio_dur:.1f}s, "
+            f"stop={stopped_reason}"
+        )
+
         # Convert speech tokens to audio
-        # Pass prompt_speech_tokens for flow token embedding (required for voice cloning)
+        # Pass prompt_speech_tokens to flow so the full token sequence
+        # [prompt_tokens, continuation_tokens] provides correct mel generation.
+        # The flow strips the prompt mel portion, leaving only target text audio.
         for result in self.generate(
             speech_tokens=speech_tokens,
             speaker_embedding=inputs["speaker_embedding"],

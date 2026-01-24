@@ -7,13 +7,6 @@ import mlx.core as mx
 import numpy as np
 
 try:
-    import onnxruntime as ort
-
-    ONNX_AVAILABLE = True
-except ImportError:
-    ONNX_AVAILABLE = False
-
-try:
     from transformers import AutoTokenizer
 
     TRANSFORMERS_AVAILABLE = True
@@ -57,38 +50,42 @@ class CosyVoice3Frontend:
 
         Args:
             tokenizer_path: Path to tokenizer (HuggingFace format)
-            campplus_path: Path to CAMPPlus ONNX model
-            speech_tokenizer_path: Path to speech tokenizer ONNX model
+            campplus_path: Path to CAMPPlus safetensors model
+            speech_tokenizer_path: Path to speech tokenizer safetensors model
             sample_rate: Audio sample rate
         """
         self.sample_rate = sample_rate
         self.tokenizer = None
-        self.campplus_session = None
-        self.speech_tokenizer_session = None
+        self.campplus_model = None
+        self.speech_tokenizer_model = None
 
         # Load tokenizer
         if tokenizer_path and TRANSFORMERS_AVAILABLE:
             self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
 
-        # Load CAMPPlus for speaker embedding
-        if campplus_path and ONNX_AVAILABLE:
-            sess_options = ort.SessionOptions()
-            sess_options.graph_optimization_level = (
-                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-            )
-            self.campplus_session = ort.InferenceSession(
-                campplus_path, sess_options, providers=["CPUExecutionProvider"]
-            )
+        # Load CAMPPlus (pure MLX)
+        if campplus_path:
+            from mlx_audio.tts.models.cosyvoice3.campplus import CAMPPlus
 
-        # Load speech tokenizer
-        if speech_tokenizer_path and ONNX_AVAILABLE:
-            sess_options = ort.SessionOptions()
-            sess_options.graph_optimization_level = (
-                ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            self.campplus_model = CAMPPlus(feat_dim=80, embedding_size=192)
+            weights = mx.load(campplus_path, format="safetensors")
+            sanitized = self.campplus_model.sanitize(weights)
+            self.campplus_model.load_weights(list(sanitized.items()), strict=False)
+            mx.eval(self.campplus_model.parameters())
+            self.campplus_model.eval()
+
+        # Load speech tokenizer (pure MLX)
+        if speech_tokenizer_path:
+            from mlx_audio.codec.models.s3.model_v2 import S3TokenizerV2
+
+            self.speech_tokenizer_model = S3TokenizerV2("speech_tokenizer_v3")
+            weights = mx.load(speech_tokenizer_path, format="safetensors")
+            sanitized = self.speech_tokenizer_model.sanitize(weights)
+            self.speech_tokenizer_model.load_weights(
+                list(sanitized.items()), strict=False
             )
-            self.speech_tokenizer_session = ort.InferenceSession(
-                speech_tokenizer_path, sess_options, providers=["CPUExecutionProvider"]
-            )
+            mx.eval(self.speech_tokenizer_model.parameters())
+            self.speech_tokenizer_model.eval()
 
     def tokenize(self, text: str) -> mx.array:
         """
@@ -103,55 +100,10 @@ class CosyVoice3Frontend:
         if self.tokenizer is None:
             raise RuntimeError("Tokenizer not loaded. Please provide tokenizer_path.")
 
-        # CosyVoice uses special tokens
-        tokens = self.tokenizer.encode(text, add_special_tokens=True)
+        # CosyVoice tokenizer encodes raw text without special tokens.
+        # The LLM handles its own structure (SOS, TASK_ID) separately.
+        tokens = self.tokenizer.encode(text, add_special_tokens=False)
         return mx.array([tokens], dtype=mx.int32)
-
-    def _extract_mel_for_campplus(
-        self, audio: np.ndarray, sr: int = 16000
-    ) -> np.ndarray:
-        """
-        Extract mel spectrogram features for CAMPPlus (without librosa).
-
-        Uses scipy for STFT and custom mel filterbank.
-
-        Args:
-            audio: Audio waveform
-            sr: Sample rate (should be 16000)
-
-        Returns:
-            Mel features (1, T, 80)
-        """
-        from scipy import signal
-
-        n_fft = 512
-        hop_length = 160
-        n_mels = 80
-        fmin = 20
-        fmax = 7600
-
-        # Compute STFT
-        f, t, Zxx = signal.stft(
-            audio, fs=sr, nperseg=n_fft, noverlap=n_fft - hop_length
-        )
-        power = np.abs(Zxx) ** 2
-
-        # Create mel filterbank (HTK scale, no normalization for campplus)
-        mel_fb = self._mel_filterbank(sr, n_fft, n_mels, fmin, fmax, norm=None, htk=True)
-
-        # Apply mel filterbank
-        mel_spec = np.dot(mel_fb, power)
-
-        # Log mel
-        log_mel = np.log(np.maximum(mel_spec, 1e-6))
-
-        # Normalize (remove mean)
-        log_mel = log_mel - np.mean(log_mel, axis=0, keepdims=True)
-
-        # Transpose to (T, 80) and add batch dimension
-        features = log_mel.T[np.newaxis, :, :].astype(np.float32)
-
-        return features
 
     def _mel_filterbank(
         self,
@@ -252,7 +204,7 @@ class CosyVoice3Frontend:
         sample_rate: int = 16000,
     ) -> mx.array:
         """
-        Extract speaker embedding from audio using CAMPPlus.
+        Extract speaker embedding from audio using CAMPPlus (pure MLX).
 
         Args:
             audio: Audio waveform (numpy array)
@@ -261,26 +213,31 @@ class CosyVoice3Frontend:
         Returns:
             Speaker embedding as mx.array (1, 192)
         """
-        if self.campplus_session is None:
+        if self.campplus_model is None:
             raise RuntimeError("CAMPPlus not loaded. Please provide campplus_path.")
 
-        # Resample to 16kHz if needed (using scipy)
+        from mlx_audio.tts.models.cosyvoice3.campplus import kaldi_fbank
+
+        # Resample to 16kHz if needed
         if sample_rate != 16000:
             from scipy import signal
 
             num_samples = int(len(audio) * 16000 / sample_rate)
             audio = signal.resample(audio, num_samples)
 
-        # Compute mel filterbank features (80 bins, like Kaldi)
-        # Using scipy-based implementation to avoid librosa/numba dependency
-        features = self._extract_mel_for_campplus(audio, sr=16000)
+        # Extract Kaldi-style fbank features
+        audio_mx = mx.array(audio.astype(np.float32))
+        features = kaldi_fbank(audio_mx, sample_rate=16000, num_mel_bins=80)
+        mx.eval(features)
+
+        # Add batch dimension: (T, 80) -> (1, T, 80)
+        features = mx.expand_dims(features, 0)
 
         # Run CAMPPlus
-        input_name = self.campplus_session.get_inputs()[0].name
-        outputs = self.campplus_session.run(None, {input_name: features})
-        embedding = outputs[0].flatten()
+        embedding = self.campplus_model(features)
+        mx.eval(embedding)
 
-        return mx.array(embedding[np.newaxis, :])
+        return embedding
 
     def load_audio(self, audio_path: str) -> Tuple[np.ndarray, int]:
         """
@@ -480,10 +437,10 @@ class CosyVoice3Frontend:
         sample_rate: int,
     ) -> mx.array:
         """
-        Extract speech tokens from audio using the speech tokenizer.
+        Extract speech tokens from audio using the speech tokenizer (pure MLX).
 
         Uses whisper-style 128-bin log mel spectrogram (matching the
-        training pipeline of the speech tokenizer ONNX model).
+        training pipeline of the speech tokenizer model).
 
         Args:
             audio: Audio waveform (numpy array)
@@ -494,7 +451,7 @@ class CosyVoice3Frontend:
         """
         from scipy import signal
 
-        if self.speech_tokenizer_session is None:
+        if self.speech_tokenizer_model is None:
             raise RuntimeError(
                 "Speech tokenizer not loaded. Please provide speech_tokenizer_path."
             )
@@ -515,17 +472,15 @@ class CosyVoice3Frontend:
         # Compute whisper-style 128-bin log mel spectrogram
         log_mel = self._whisper_log_mel_spectrogram(audio, n_mels=128)
 
-        # Shape: (1, 128, T) for ONNX
-        feats = log_mel[np.newaxis, :, :]
-        feats_length = np.array([feats.shape[2]], dtype=np.int32)
+        # Shape: (1, 128, T) for MLX model
+        feats = mx.array(log_mel[np.newaxis, :, :])
+        feats_length = mx.array([log_mel.shape[1]], dtype=mx.int32)
 
         # Run speech tokenizer
-        outputs = self.speech_tokenizer_session.run(
-            None, {"feats": feats, "feats_length": feats_length}
-        )
-        tokens = outputs[0].flatten()
+        tokens, _ = self.speech_tokenizer_model.quantize(feats, feats_length)
+        mx.eval(tokens)
 
-        return mx.array(tokens[np.newaxis, :], dtype=mx.int32)
+        return tokens.astype(mx.int32)
 
     def frontend_zero_shot(
         self,
@@ -545,8 +500,19 @@ class CosyVoice3Frontend:
             Dictionary with model inputs
         """
         # Tokenize text
+        # CosyVoice3 expects prompt_text in the format:
+        #   "system instruction<|endofprompt|>transcript of prompt audio"
+        # The <|endofprompt|> separator tells the model where the instruction
+        # ends and the prompt transcript begins. Without it, the model
+        # generates speech for the full combined text instead of just the target.
         text_tokens = self.tokenize(text)
-        prompt_text_tokens = self.tokenize(prompt_text)
+        if "<|endofprompt|>" not in prompt_text:
+            prompt_text_formatted = (
+                f"You are a helpful assistant.<|endofprompt|>{prompt_text}"
+            )
+        else:
+            prompt_text_formatted = prompt_text
+        prompt_text_tokens = self.tokenize(prompt_text_formatted)
 
         # Load and process prompt audio
         prompt_audio, prompt_sr = self.load_audio(prompt_audio_path)
@@ -560,7 +526,7 @@ class CosyVoice3Frontend:
 
         # Extract speech tokens from prompt audio (for LLM context)
         prompt_speech_tokens = None
-        if self.speech_tokenizer_session is not None:
+        if self.speech_tokenizer_model is not None:
             prompt_speech_tokens = self.extract_speech_tokens(prompt_audio, prompt_sr)
 
         # Align mel and token lengths (matching PyTorch CosyVoice3)

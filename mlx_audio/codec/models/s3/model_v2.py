@@ -330,8 +330,10 @@ class S3TokenizerV2(nn.Module):
     def __init__(self, name: str, config: ModelConfig = ModelConfig()):
         super().__init__()
         if "v1" not in name:
-            assert "v2" in name
+            assert "v2" in name or "v3" in name
             config.n_codebook_size = 3**8
+            if "v3" in name:
+                config.n_audio_layer = 12
         self.config = config
         self.encoder = AudioEncoderV2(
             self.config.n_mels,
@@ -559,27 +561,24 @@ class S3TokenizerV2(nn.Module):
             # Quantizer key mappings:
             # - quantizer._codebook -> quantizer.fsq_codebook (PyTorch private attr)
             # - quantizer.codebook -> quantizer.fsq_codebook (alternative naming)
+            # - quantizer.project_in -> quantizer.fsq_codebook.project_down (ONNX naming)
             new_key = new_key.replace("quantizer._codebook.", "quantizer.fsq_codebook.")
             new_key = new_key.replace("quantizer.codebook.", "quantizer.fsq_codebook.")
+            new_key = new_key.replace(
+                "quantizer.project_in.", "quantizer.fsq_codebook.project_down."
+            )
 
             # PyTorch Sequential uses mlp.0, mlp.2; MLX uses mlp.layers.0, mlp.layers.2
             new_key = re.sub(r"\.mlp\.(\d+)\.", r".mlp.layers.\1.", new_key)
 
-            # Conv1d weights need transposition (idempotent)
-            # Only transpose if shape doesn't match expected MLX format
-            if (
-                ".conv1." in new_key
-                or ".conv2." in new_key
-                or ".fsmn_block." in new_key
-            ):
-                if "weight" in new_key and value.ndim == 3:
-                    # PyTorch Conv1d: (out_channels, in_channels, kernel_size)
-                    # MLX Conv1d: (out_channels, kernel_size, in_channels)
-                    if (
-                        new_key in curr_weights
-                        and value.shape != curr_weights[new_key].shape
-                    ):
-                        value = value.swapaxes(1, 2)
+            # Weight transposition (idempotent - only if shape mismatch)
+            if "weight" in new_key and new_key in curr_weights:
+                if value.ndim == 3 and value.shape != curr_weights[new_key].shape:
+                    # Conv1d: PyTorch (O, I, K) -> MLX (O, K, I)
+                    value = value.swapaxes(1, 2)
+                elif value.ndim == 2 and value.shape != curr_weights[new_key].shape:
+                    # Linear: ONNX MatMul (I, O) -> MLX (O, I)
+                    value = value.T
 
             new_weights[new_key] = value
 
@@ -590,15 +589,21 @@ class S3TokenizerV2(nn.Module):
         cls,
         name: str,
         repo_id: str = "mlx-community/CosyVoice2-0.5B-S3Tokenizer",
+        local_path: Optional[str] = None,
     ) -> "S3TokenizerV2":
-        path = fetch_from_hub(repo_id)
-        if path is None:
-            raise ValueError(f"Could not find model {path}")
-
         model = S3TokenizerV2(name)
-        model_path = path / f"{name}.safetensors"
+
+        if local_path and Path(local_path).exists():
+            model_path = Path(local_path)
+        else:
+            path = fetch_from_hub(repo_id)
+            if path is None:
+                raise ValueError(f"Could not find model at {repo_id}")
+            model_path = path / f"{name}.safetensors"
+
         weights = mx.load(model_path.as_posix(), format="safetensors")
-        model.load_weights(list(weights.items()))
+        sanitized = model.sanitize(weights)
+        model.load_weights(list(sanitized.items()))
         mx.eval(model.parameters())
 
         return model
