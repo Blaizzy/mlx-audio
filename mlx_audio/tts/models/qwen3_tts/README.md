@@ -11,7 +11,7 @@ from mlx_audio.tts.utils import load_model
 model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
 results = list(model.generate(
     text="Hello, welcome to MLX-Audio!",
-    voice="Chelsie",
+    voice="Aiden",
     language="English",
 ))
 
@@ -83,4 +83,6 @@ audio = results[0].audio  # mx.array
 
 ## Speakers (Base/CustomVoice)
 
-`Chelsie`, `Ethan`, `Serena`, `Vivian`, `Ryan`, `Aiden`, `Eric`, `Dylan`
+**Chinese:** `Vivian`, `Serena`, `Uncle_Fu`, `Dylan` (Beijing Dialect), `Eric` (Sichuan Dialect)
+
+**English:** `Ryan`, `Aiden`
