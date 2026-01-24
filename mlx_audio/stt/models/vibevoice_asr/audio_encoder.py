@@ -85,6 +85,37 @@ class SConv1d(nn.Module):
         )
         return int(ideal_length - length)
 
+    def _depthwise_conv(self, x: mx.array) -> mx.array:
+        """
+        Manual depthwise conv1d via accumulation over kernel positions.
+        TODO: Fix this metal kernel upstream in MLX core.
+
+        Args:
+            x: Padded input [B, T_padded, C]
+
+        Returns:
+            Output [B, T_out, C]
+        """
+        K = self.kernel_size
+        S = self.stride
+        D = self.dilation
+        effective_K = (K - 1) * D + 1
+        T_out = (x.shape[1] - effective_K) // S + 1
+
+        # weight shape: [C, K, 1] (MLX Conv1d format for depthwise)
+        w = self.conv.weight[:, :, 0]  # [C, K]
+
+        # Accumulate over kernel positions to avoid large intermediate tensor
+        out = x[:, 0 : T_out * S : S, :] * w[:, 0]  # k=0: [B, T_out, C]
+        for k in range(1, K):
+            out = out + x[:, k * D : k * D + T_out * S : S, :] * w[:, k]
+
+        # Add bias if present
+        if hasattr(self.conv, "bias") and self.conv.bias is not None:
+            out = out + self.conv.bias
+
+        return out
+
     def __call__(self, x: mx.array) -> mx.array:
         """
         Forward pass with causal padding.
@@ -115,6 +146,10 @@ class SConv1d(nn.Module):
             # MLX pad format: list of (before, after) tuples for each dimension
             # x is [B, T, C], we pad the T dimension
             x = mx.pad(x, [(0, 0), (padding_left, padding_right), (0, 0)])
+
+        # Use manual depthwise conv to avoid Metal kernel compatibility issues
+        if self.groups > 1 and self.groups == self.in_channels:
+            return self._depthwise_conv(x)
 
         # Apply convolution
         return self.conv(x)
@@ -402,10 +437,13 @@ class TokenizerEncoder(nn.Module):
             x = x.transpose(0, 2, 1)
 
         # Process through downsample + stage pairs
+        # Evaluate after each stage to free large intermediate buffers,
+        # especially important for early stages with long temporal dimensions.
         for i in range(self.n_stages):
             x = self.downsample_layers[i](x)
             for block in self.stages[i]:
                 x = block(x)
+            mx.eval(x)
 
         # Final norm
         if self.norm is not None:
