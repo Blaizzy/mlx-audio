@@ -160,7 +160,10 @@ def convert_speech_tokenizer(onnx_path: str, output_path: str):
 
 def convert_model_weights(model_dir: Path, output_path: str):
     """Convert flow.pt, hift.pt, llm.pt to a single model.safetensors."""
-    import torch
+    try:
+        import torch
+    except ImportError:
+        raise ImportError("torch not installed, please install it with `pip install torch`")
 
     from .cosyvoice3 import Model, ModelConfig
 
