@@ -3,10 +3,14 @@
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Generator, List, Optional
+from typing import Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_lm.models.cache import make_prompt_cache
+from mlx_lm.models.qwen2 import Model as Qwen2Model
+from mlx_lm.models.qwen2 import ModelArgs as Qwen2Config
+from mlx_lm.models.qwen2 import create_attention_mask
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 
@@ -15,7 +19,6 @@ from .dit import DiT
 from .flow import CausalConditionalCFM, CausalMaskedDiffWithDiT, PreLookaheadLayer
 from .frontend import CosyVoice3Frontend
 from .hift import CausalHiFTGenerator
-from .llm import CosyVoice3LM
 
 
 @dataclass
@@ -66,26 +69,51 @@ class Model(nn.Module):
     Pipeline: Text -> LLM -> Speech Tokens -> Flow -> Mel -> HIFT -> Audio
     """
 
+    # Base speech token vocabulary (actual speech codes)
+    SPEECH_TOKEN_SIZE = 6561
+
+    # Special tokens (offset from SPEECH_TOKEN_SIZE)
+    SOS_TOKEN = 6561  # Start of sequence = speech_token_size + 0
+    EOS_TOKEN = 6562  # End of sequence = speech_token_size + 1
+    TASK_ID_TOKEN = 6563  # Task identifier = speech_token_size + 2
+    FILL_TOKEN = 6564  # Fill token = speech_token_size + 3
+
     def __init__(self, config: ModelConfig, load_llm: bool = True):
         super().__init__()
         self.config = config
         self.frontend = None  # Initialized in from_pretrained
+        self._llm_loaded = load_llm
 
         # Build CAMPPlus speaker embedding model
         self.campplus = CAMPPlus(
             feat_dim=80, embedding_size=config.spk_embed_dim
         )
 
-        # Build LLM (optional - can be skipped for token-to-wav only)
+        # Build LLM components (optional - can be skipped for token-to-wav only)
         if load_llm:
-            self.llm = CosyVoice3LM(
-                llm_input_size=config.llm_input_size,
-                llm_output_size=config.llm_output_size,
-                speech_token_size=config.speech_token_size,
-                text_vocab_size=config.text_vocab_size,
+            # Speech token embedding (includes special tokens)
+            self.speech_embedding = nn.Embedding(
+                config.speech_token_size, config.llm_input_size
             )
-        else:
-            self.llm = None
+
+            # LLM decoder for speech tokens
+            self.llm_decoder = nn.Linear(
+                config.llm_output_size, config.speech_token_size, bias=False
+            )
+
+            # Qwen2 backbone
+            qwen2_config = Qwen2Config(
+                model_type="qwen2",
+                hidden_size=config.llm_input_size,
+                intermediate_size=4864,
+                num_hidden_layers=24,
+                num_attention_heads=14,
+                num_key_value_heads=2,
+                rms_norm_eps=1e-6,
+                rope_theta=1000000.0,
+                vocab_size=config.text_vocab_size,
+            )
+            self.llm = Qwen2Model(qwen2_config)
 
         # Build DiT
         dit = DiT(
@@ -289,9 +317,19 @@ class Model(nn.Module):
 
             # === LLM mappings ===
 
-            # Original has extra wrapper: llm.llm.model.model.X -> llm.llm.model.X
-            # (Original: CosyVoiceLLM.llm.model.model, Ours: CosyVoice3LM.llm.model)
-            new_key = new_key.replace("llm.llm.model.model.", "llm.llm.model.")
+            # Flatten CosyVoice3LM wrapper: bring sub-modules up to Model level
+            # llm.speech_embedding. -> speech_embedding.
+            if new_key.startswith("llm.speech_embedding."):
+                new_key = new_key[len("llm."):]
+            # llm.llm_decoder. -> llm_decoder.
+            elif new_key.startswith("llm.llm_decoder."):
+                new_key = new_key[len("llm."):]
+            # Raw weights: llm.llm.model.model.X -> llm.model.X
+            elif "llm.llm.model.model." in new_key:
+                new_key = new_key.replace("llm.llm.model.model.", "llm.model.")
+            # Already-converted weights: llm.llm.model.X -> llm.model.X
+            elif new_key.startswith("llm.llm.model."):
+                new_key = new_key.replace("llm.llm.model.", "llm.model.")
 
             new_weights[new_key] = value
 
@@ -312,6 +350,297 @@ class Model(nn.Module):
 
         return new_weights
 
+
+    # --- LLM methods ---
+
+    def encode_text(self, input_ids: mx.array) -> mx.array:
+        """Encode text tokens using Qwen2 embeddings."""
+        return self.llm.model.embed_tokens(input_ids)
+
+    def encode_speech(self, speech_tokens: mx.array) -> mx.array:
+        """Embed speech tokens."""
+        return self.speech_embedding(speech_tokens)
+
+    def llm_forward(
+        self,
+        embeddings: mx.array,
+        cache: Optional[List] = None,
+    ) -> Tuple[mx.array, List]:
+        """
+        Forward pass through the LLM.
+
+        Args:
+            embeddings: Input embeddings (B, T, D)
+            cache: KV cache list (objects are modified in-place)
+
+        Returns:
+            Tuple of (hidden_states, cache)
+        """
+        h = embeddings
+
+        if cache is None:
+            cache = [None] * len(self.llm.model.layers)
+
+        mask = create_attention_mask(h, cache[0] if cache else None)
+
+        for layer, c in zip(self.llm.model.layers, cache):
+            h = layer(h, mask=mask, cache=c)
+
+        h = self.llm.model.norm(h)
+        return h, cache
+
+    def decode_to_speech(self, hidden_states: mx.array) -> mx.array:
+        """Decode hidden states to speech token logits."""
+        return self.llm_decoder(hidden_states)
+
+    def nucleus_sampling(
+        self,
+        logits: mx.array,
+        top_p: float = 0.8,
+        top_k: int = 25,
+    ) -> mx.array:
+        """
+        Nucleus (top-p) sampling combined with top-k.
+
+        Args:
+            logits: Token logits (V,) - single position
+            top_p: Cumulative probability threshold
+            top_k: Maximum number of tokens to consider
+
+        Returns:
+            Sampled token ID (scalar)
+        """
+        probs = mx.softmax(logits, axis=-1)
+
+        sorted_indices = mx.argsort(-probs)
+        sorted_probs = probs[sorted_indices]
+
+        mx.eval(sorted_probs, sorted_indices)
+        sorted_probs_np = sorted_probs.tolist()
+        sorted_indices_np = sorted_indices.tolist()
+
+        valid_probs = []
+        valid_indices = []
+        cum_prob = 0.0
+
+        for i in range(len(sorted_probs_np)):
+            if cum_prob < top_p and len(valid_probs) < top_k:
+                cum_prob += sorted_probs_np[i]
+                valid_probs.append(sorted_probs_np[i])
+                valid_indices.append(sorted_indices_np[i])
+            else:
+                break
+
+        if len(valid_probs) == 0:
+            return mx.argmax(logits)
+
+        valid_probs = mx.array(valid_probs)
+        valid_indices = mx.array(valid_indices, dtype=mx.int32)
+        valid_probs = valid_probs / mx.sum(valid_probs)
+        sampled_idx = mx.random.categorical(mx.log(valid_probs)[None, :])[0]
+        return valid_indices[sampled_idx]
+
+    def ras_sampling(
+        self,
+        logits: mx.array,
+        decoded_tokens: list,
+        top_p: float = 0.8,
+        top_k: int = 25,
+        win_size: int = 10,
+        tau_r: float = 0.1,
+    ) -> mx.array:
+        """
+        Repetition Aware Sampling (RAS).
+
+        If a token appears too frequently in recent history, falls back to random sampling.
+
+        Args:
+            logits: Token logits (V,) - single position
+            decoded_tokens: List of previously decoded token IDs
+            top_p: Nucleus sampling threshold
+            top_k: Top-k sampling limit
+            win_size: Window size for repetition detection
+            tau_r: Repetition threshold ratio
+
+        Returns:
+            Sampled token ID (scalar)
+        """
+        top_id = self.nucleus_sampling(logits, top_p=top_p, top_k=top_k)
+        mx.eval(top_id)
+
+        recent_tokens = decoded_tokens[-win_size:] if len(decoded_tokens) > 0 else []
+        if len(recent_tokens) > 0:
+            top_id_val = int(top_id.item())
+            rep_count = sum(1 for t in recent_tokens if t == top_id_val)
+
+            if rep_count >= win_size * tau_r:
+                top_id = mx.random.categorical(logits[None, :])[0]
+
+        return top_id
+
+    def sample_next_token(
+        self,
+        logits: mx.array,
+        temperature: float = 1.0,
+        top_k: int = 25,
+        top_p: float = 0.8,
+        decoded_tokens: list = None,
+        use_ras: bool = True,
+    ) -> mx.array:
+        """
+        Sample next token from logits using RAS (Repetition Aware Sampling).
+
+        Args:
+            logits: Token logits (B, 1, V) or (B, V)
+            temperature: Sampling temperature
+            top_k: Top-k sampling
+            top_p: Nucleus sampling threshold
+            decoded_tokens: List of previously decoded tokens (for RAS)
+            use_ras: Whether to use Repetition Aware Sampling
+
+        Returns:
+            Sampled token IDs (B, 1)
+        """
+        if logits.ndim == 3:
+            logits = logits.squeeze(1)
+
+        B = logits.shape[0]
+
+        if temperature > 0:
+            logits = logits / temperature
+        else:
+            return mx.argmax(logits, axis=-1, keepdims=True)
+
+        if B == 1 and use_ras:
+            if decoded_tokens is None:
+                decoded_tokens = []
+            token = self.ras_sampling(
+                logits[0], decoded_tokens, top_p=top_p, top_k=top_k
+            )
+            return token[None, None] if token.ndim == 0 else token[None, :]
+
+        if top_k > 0:
+            top_k_indices = mx.argpartition(-logits, kth=top_k - 1, axis=-1)[
+                :, :top_k
+            ]
+            top_k_logits = mx.take_along_axis(logits, top_k_indices, axis=-1)
+            sampled_idx = mx.random.categorical(top_k_logits)
+            next_token = mx.take_along_axis(
+                top_k_indices, sampled_idx[:, None], axis=-1
+            )
+        else:
+            next_token = mx.random.categorical(logits)
+            next_token = next_token[:, None]
+
+        return next_token
+
+    def _is_stop_token(self, token_val: int) -> bool:
+        """Check if a token is a stop/special token (>= SPEECH_TOKEN_SIZE)."""
+        return token_val >= self.SPEECH_TOKEN_SIZE
+
+    def _sample_valid_token(
+        self,
+        logits: mx.array,
+        decoded_tokens: list,
+        top_k: int = 25,
+        top_p: float = 0.8,
+        ignore_eos: bool = True,
+        max_trials: int = 100,
+    ) -> mx.array:
+        """Sample a token, retrying if stop tokens are generated before min_len."""
+        for _ in range(max_trials):
+            token = self.sample_next_token(
+                logits, temperature=1.0, top_k=top_k, top_p=top_p,
+                decoded_tokens=decoded_tokens
+            )
+            mx.eval(token)
+            token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
+
+            if not ignore_eos or token_val < self.SPEECH_TOKEN_SIZE:
+                return token
+
+        return token
+
+    def generate_speech_tokens(
+        self,
+        text_tokens: mx.array,
+        prompt_text_tokens: Optional[mx.array] = None,
+        prompt_speech_tokens: Optional[mx.array] = None,
+        max_tokens: int = 2048,
+        temperature: float = 1.0,
+        top_k: int = 25,
+        top_p: float = 0.8,
+        min_tokens: int = 0,
+    ) -> Generator[mx.array, None, None]:
+        """
+        Generate speech tokens autoregressively from text tokens.
+
+        Input sequence: [SOS, prompt_text + text, TASK_ID, prompt_speech_tokens]
+
+        Args:
+            text_tokens: Text token IDs (B, T)
+            prompt_text_tokens: Optional prompt text tokens (B, T_prompt_text)
+            prompt_speech_tokens: Optional prompt speech tokens for voice cloning (B, T_prompt)
+            max_tokens: Maximum number of tokens to generate
+            temperature: Sampling temperature
+            top_k: Top-k sampling
+            top_p: Nucleus sampling probability
+            min_tokens: Minimum tokens to generate before allowing stop
+
+        Yields:
+            Generated speech token IDs (B, 1)
+        """
+        B = text_tokens.shape[0]
+
+        cache = make_prompt_cache(self.llm)
+
+        # Build input: [SOS, prompt_text + text, TASK_ID, prompt_speech]
+        if prompt_text_tokens is not None and prompt_text_tokens.shape[1] > 0:
+            combined_text = mx.concatenate([prompt_text_tokens, text_tokens], axis=1)
+        else:
+            combined_text = text_tokens
+
+        sos_token = mx.full((B, 1), self.SOS_TOKEN, dtype=mx.int32)
+        sos_emb = self.encode_speech(sos_token)
+        text_emb = self.encode_text(combined_text)
+        task_id_token = mx.full((B, 1), self.TASK_ID_TOKEN, dtype=mx.int32)
+        task_id_emb = self.encode_speech(task_id_token)
+
+        if prompt_speech_tokens is not None and prompt_speech_tokens.shape[1] > 0:
+            prompt_emb = self.encode_speech(prompt_speech_tokens)
+            embeddings = mx.concatenate(
+                [sos_emb, text_emb, task_id_emb, prompt_emb], axis=1
+            )
+        else:
+            embeddings = mx.concatenate([sos_emb, text_emb, task_id_emb], axis=1)
+
+        # Initial forward pass (prompt processing)
+        hidden, cache = self.llm_forward(embeddings, cache)
+        logits = self.decode_to_speech(hidden[:, -1:, :])
+
+        decoded_tokens: List[int] = []
+        generated_count = 0
+
+        while generated_count < max_tokens:
+            ignore_eos = generated_count < min_tokens
+            current_token = self._sample_valid_token(
+                logits, decoded_tokens, top_k=top_k, top_p=top_p,
+                ignore_eos=ignore_eos
+            )
+
+            current_token_val = int(current_token.item()) if current_token.size == 1 else int(current_token[0, 0].item())
+
+            if self._is_stop_token(current_token_val):
+                break
+
+            yield current_token
+
+            decoded_tokens.append(current_token_val)
+            generated_count += 1
+
+            speech_emb = self.encode_speech(current_token)
+            hidden, cache = self.llm_forward(speech_emb, cache)
+            logits = self.decode_to_speech(hidden[:, -1:, :])
 
     @property
     def sample_rate(self) -> int:
@@ -523,6 +852,7 @@ class Model(nn.Module):
             )
 
         weights = mx.load(safetensors_path)
+        weights = model.sanitize(dict(weights))
         model.load_weights(list(weights.items()), strict=False)
         mx.eval(model.parameters())
         model.campplus.eval()
@@ -559,7 +889,7 @@ class Model(nn.Module):
         Yields:
             GenerationResult with synthesized audio
         """
-        if self.llm is None:
+        if not self._llm_loaded:
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
 
         if self.frontend is None:
@@ -601,7 +931,7 @@ class Model(nn.Module):
         stopped_reason = "eos"
         generated_total = 0
 
-        for token in self.llm.generate(
+        for token in self.generate_speech_tokens(
             text_tokens,
             prompt_text_tokens=prompt_text_tokens,
             prompt_speech_tokens=prompt_speech_tokens,
@@ -735,7 +1065,7 @@ class Model(nn.Module):
         stopped_reason = "eos"
         generated_total = 0  # Track total tokens from LLM (including filtered)
 
-        for token in self.llm.generate(
+        for token in self.generate_speech_tokens(
             text_tokens,
             prompt_text_tokens=prompt_text_tokens,
             prompt_speech_tokens=llm_prompt_speech_tokens,
@@ -839,7 +1169,7 @@ class Model(nn.Module):
         Yields:
             GenerationResult with synthesized audio
         """
-        if self.llm is None:
+        if not self._llm_loaded:
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
         if self.frontend is None:
             raise RuntimeError(
@@ -882,7 +1212,7 @@ class Model(nn.Module):
         Yields:
             GenerationResult with synthesized audio
         """
-        if self.llm is None:
+        if not self._llm_loaded:
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
         if self.frontend is None:
             raise RuntimeError(
@@ -974,7 +1304,7 @@ class Model(nn.Module):
         Yields:
             GenerationResult with synthesized audio
         """
-        if self.llm is None:
+        if not self._llm_loaded:
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
 
         if self.frontend is None or self.frontend.tokenizer is None:
@@ -998,7 +1328,7 @@ class Model(nn.Module):
         max_tokens = int(target_text_len * 20)
 
         speech_tokens_list = []
-        for token in self.llm.generate(
+        for token in self.generate_speech_tokens(
             text_tokens,
             temperature=temperature,
             top_k=top_k,
