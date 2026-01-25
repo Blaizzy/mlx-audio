@@ -232,7 +232,7 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
     audio: Union[str, mx.array] = None,
-    output_path: str = "",
+    output_path: str = "transcript",
     format: str = "txt",
     verbose: bool = False,
     **kwargs,
