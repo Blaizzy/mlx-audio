@@ -241,7 +241,7 @@ def generate_transcription(
 
     Args:
         model: Path to the model or the model instance.
-        audio_path: Path to the audio file.
+        audio: Path to the audio file (str), or audio waveform (mx.array).
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
