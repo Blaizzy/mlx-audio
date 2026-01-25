@@ -189,26 +189,12 @@ class Model(nn.Module):
         return self.supported_languages
 
     def model_quant_predicate(self, path: str, module) -> bool:
-        """Determine which modules should be quantized.
 
-        Excludes embedding layers which don't work well with quantization
-        due to single-token lookup operations.
-
-        Args:
-            path: Module path (e.g., 'talker.codec_embedding')
-            module: The module instance
-
-        Returns:
-            True if the module should be quantized, False to skip
-        """
-        # Skip all embedding layers - they break with quantization
-        # because single-token lookups produce 1D tensors
         skip_patterns = [
-            "codec_embedding",      # talker.codec_embedding
-            "text_embedding",       # talker.text_embedding
-            "embed_tokens",         # generic embedding name
-            "speech_tokenizer",     # speech tokenizer embeddings
-            "speaker_encoder",      # speaker encoder (uses embeddings internally)
+            "codec_embedding",
+            "text_embedding",
+            "speech_tokenizer",
+            "speaker_encoder",
         ]
         return not any(pattern in path for pattern in skip_patterns)
 
@@ -1618,22 +1604,10 @@ class Model(nn.Module):
                 speech_tokenizer = Qwen3TTSSpeechTokenizer(tokenizer_config)
 
                 # Load speech tokenizer weights
-                from safetensors import safe_open
 
                 tokenizer_weights = {}
                 for wf in speech_tokenizer_path.glob("*.safetensors"):
-                    try:
-                        with safe_open(str(wf), framework="mlx") as f:
-                            for k in f.keys():
-                                tokenizer_weights[k] = f.get_tensor(k)
-                    except TypeError:
-                        # Fall back to PyTorch for bfloat16
-                        import torch
-
-                        with safe_open(str(wf), framework="pt") as f:
-                            for k in f.keys():
-                                tensor = f.get_tensor(k)
-                                tokenizer_weights[k] = mx.array(tensor.float().numpy())
+                    tokenizer_weights.update(mx.load(str(wf)))
 
                 if tokenizer_weights:
                     tokenizer_weights = Qwen3TTSSpeechTokenizer.sanitize(
@@ -1642,6 +1616,8 @@ class Model(nn.Module):
                     speech_tokenizer.load_weights(
                         list(tokenizer_weights.items()), strict=False
                     )
+                    mx.eval(speech_tokenizer.parameters())
+                    speech_tokenizer.eval()
 
                     # Initialize encoder codebooks (compute _embedding and _c2)
                     if speech_tokenizer.encoder_model is not None:
