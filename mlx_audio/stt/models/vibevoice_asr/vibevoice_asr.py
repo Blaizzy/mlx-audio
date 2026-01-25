@@ -441,6 +441,7 @@ class Model(nn.Module):
         from mlx_audio.stt.utils import load_audio
 
         SAMPLE_RATE = 24000
+        MAX_DURATION_SECONDS = 59 * 60  # 59 minutes max
 
         if isinstance(audio, str):
             audio = load_audio(audio, sr=SAMPLE_RATE)
@@ -452,6 +453,17 @@ class Model(nn.Module):
             audio = audio.squeeze()
         if audio.ndim == 1:
             audio = audio[None, :]  # Add batch dim
+
+        # Check duration and trim if necessary
+        max_samples = MAX_DURATION_SECONDS * SAMPLE_RATE
+        if audio.shape[-1] > max_samples:
+            duration_minutes = audio.shape[-1] / SAMPLE_RATE / 60
+            print(
+                f"\033[93m[WARNING]\033[0m Audio duration ({duration_minutes:.1f} min) exceeds "
+                f"maximum supported duration (59 min). Trimming to 59 minutes. "
+                f"For longer audio, consider splitting into smaller segments."
+            )
+            audio = audio[..., :max_samples]
 
         return audio
 
