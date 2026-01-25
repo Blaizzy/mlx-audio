@@ -8,6 +8,7 @@ from typing import Any, Iterable, Optional
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_audio.codec.models.mimi.modules.conv import ConvTranspose1d
 from mlx_audio.tts.generate import load_audio
 from mlx_audio.tts.models.base import GenerationResult
 
@@ -62,7 +63,15 @@ class Model(nn.Module):
         return self.config.model_type
 
     def load_weights(self, weights, strict: bool = True):
-        return super().load_weights(weights, strict=strict)
+        m = super().load_weights(weights, strict=strict)
+
+        def _filter_fn(module, name, _):
+            if isinstance(module, ConvTranspose1d) and name == "weight":
+                module.update_in_place()
+            return True
+
+        m.filter_and_map(_filter_fn)
+        return m
 
     def load_from_config(self, strict: bool = True):
         if self.config.weights_path:

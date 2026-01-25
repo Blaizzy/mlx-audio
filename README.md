@@ -16,11 +16,23 @@ The best audio processing library built on Apple's MLX framework, providing fast
 
 ## Installation
 
+### Using pip
 ```bash
 pip install mlx-audio
 ```
 
-For development or web interface:
+### Using uv to install only the command line tools
+Latest release from pypi:
+```bash
+uv tool install --force mlx-audio --prerelease=allow
+```
+
+Latest code from github:
+```bash
+uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prerelease=allow
+```
+
+### For development or web interface:
 
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
@@ -34,16 +46,16 @@ pip install -e ".[dev]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello, world!"
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello, world!" --lang_code a
 
 # With voice selection and speed adjustment
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --voice af_heart --speed 1.2
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --voice af_heart --speed 1.2 --lang_code a
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play  --lang_code a
 
 # Save to a specific directory
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --output_path ./my_audio
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --output_path ./my_audio  --lang_code a
 ```
 
 ### Python API
@@ -82,6 +94,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
+| **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
 
 ### Speech-to-Speech (STS)
 
@@ -130,12 +143,11 @@ for result in model.generate(
 
 ### Qwen3-TTS
 
-Alibaba's state-of-the-art multilingual TTS with three model variants:
+Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control, and voice design capabilities.
 
 ```python
 from mlx_audio.tts.utils import load_model
 
-# Base model with predefined voices
 model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
 results = list(model.generate(
     text="Hello, welcome to MLX-Audio!",
@@ -143,37 +155,10 @@ results = list(model.generate(
     language="English",
 ))
 
-# CustomVoice model - predefined voices with emotion control
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16")
-results = list(model.generate_custom_voice(
-    text="I'm so excited to meet you!",
-    speaker="Vivian",
-    language="English",
-    instruct="Very happy and excited.",
-))
-
-# VoiceDesign model - create any voice from text description
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16")
-results = list(model.generate_voice_design(
-    text="Big brother, you're back!",
-    language="English",
-    instruct="A cheerful young female voice with high pitch and energetic tone.",
-))
-
-# Access generated audio
 audio = results[0].audio  # mx.array
 ```
 
-**Available Models:**
-| Model | Method | Description |
-|-------|--------|-------------|
-| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast, predefined voices |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher quality |
-| `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | `generate_custom_voice()` | Voices + emotion |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` | `generate_custom_voice()` | Better emotion control |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` | `generate_voice_design()` | Create any voice |
-
-**Speakers (Base/CustomVoice):** `Chelsie`, `Ethan`, `Serena`, `Vivian`, `Ryan`, `Aiden`, `Eric`, `Dylan`
+See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
 
 ### CSM (Voice Cloning)
 
@@ -195,6 +180,68 @@ from mlx_audio.stt.utils import load_model, transcribe
 model = load_model("mlx-community/whisper-large-v3-turbo-asr-fp16")
 result = transcribe("audio.wav", model=model)
 print(result["text"])
+```
+
+### VibeVoice-ASR
+
+Microsoft's 9B parameter speech-to-text model with speaker diarization and timestamps. Supports long-form audio (up to 60 minutes) and outputs structured JSON.
+
+```python
+from mlx_audio.stt.utils import load
+
+model = load("mlx-community/VibeVoice-ASR-bf16")
+
+# Basic transcription
+result = model.generate(audio="meeting.wav", max_tokens=8192, temperature=0.0)
+print(result.text)
+# [{"Start":0,"End":5.2,"Speaker":0,"Content":"Hello everyone, let's begin."},
+#  {"Start":5.5,"End":9.8,"Speaker":1,"Content":"Thanks for joining today."}]
+
+# Access parsed segments
+for seg in result.segments:
+    print(f"[{seg['start_time']:.1f}-{seg['end_time']:.1f}] Speaker {seg['speaker_id']}: {seg['text']}")
+```
+
+**Streaming transcription:**
+
+```python
+# Stream tokens as they are generated
+for text in model.stream_transcribe(audio="speech.wav", max_tokens=4096):
+    print(text, end="", flush=True)
+```
+
+**With context (hotwords/metadata):**
+
+```python
+result = model.generate(
+    audio="technical_talk.wav",
+    context="MLX, Apple Silicon, PyTorch, Transformer",
+    max_tokens=8192,
+    temperature=0.0,
+)
+```
+
+**CLI usage:**
+
+```bash
+# Basic transcription
+python -m mlx_audio.stt.generate \
+    --model mlx-community/VibeVoice-ASR-bf16 \
+    --audio meeting.wav \
+    --output-path output \
+    --format json \
+    --max-tokens 8192 \
+    --verbose
+
+# With context/hotwords
+python -m mlx_audio.stt.generate \
+    --model mlx-community/VibeVoice-ASR-bf16 \
+    --audio technical_talk.wav \
+    --output-path output \
+    --format json \
+    --max-tokens 8192 \
+    --context "MLX, Apple Silicon, PyTorch, Transformer" \
+    --verbose
 ```
 
 ### SAM-Audio (Source Separation)
