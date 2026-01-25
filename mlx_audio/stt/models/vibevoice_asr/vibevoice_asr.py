@@ -132,12 +132,15 @@ class Model(nn.Module):
         """Only quantize language model layers."""
         return p.startswith("language_model")
 
-    def encode_speech(self, speech_tensors: mx.array) -> mx.array:
+    def encode_speech(
+        self, speech_tensors: mx.array, verbose: bool = False
+    ) -> mx.array:
         """
         Encode speech input to features for the language model.
 
         Args:
             speech_tensors: Audio waveform [B, T] at 24kHz
+            verbose: Show progress bar
 
         Returns:
             Combined acoustic + semantic features [B, T', hidden_size]
@@ -148,15 +151,29 @@ class Model(nn.Module):
         if speech_tensors.ndim == 2:
             speech_tensors = speech_tensors[:, None, :]  # [B, 1, T]
 
-        # Encode through acoustic tokenizer (use mean directly, no sampling for inference)
+        pbar = tqdm(total=4, disable=not verbose, desc="Encoding audio")
+
+        # Encode through acoustic tokenizer
         acoustic_tokens = self.acoustic_tokenizer.encode(speech_tensors)
+        mx.eval(acoustic_tokens)
+        pbar.update(1)
+
+        # Project acoustic features
         acoustic_features = self.acoustic_connector(acoustic_tokens)
         mx.eval(acoustic_features)
+        pbar.update(1)
 
         # Encode through semantic tokenizer
         semantic_tokens = self.semantic_tokenizer.encode(speech_tensors)
+        mx.eval(semantic_tokens)
+        pbar.update(1)
+
+        # Project semantic features
         semantic_features = self.semantic_connector(semantic_tokens)
         mx.eval(semantic_features)
+        pbar.update(1)
+
+        pbar.close()
 
         # Combine features
         combined_features = acoustic_features + semantic_features
@@ -476,6 +493,7 @@ class Model(nn.Module):
         max_tokens: int = 8192,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
         logits_processors: Optional[List[Callable]] = None,
+        prefill_step_size: int = 2048,
         generation_stream: bool = False,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
@@ -489,6 +507,7 @@ class Model(nn.Module):
             max_tokens: Maximum tokens to generate
             sampler: Sampling function
             logits_processors: List of logits processors (e.g., repetition penalty)
+            prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             generation_stream: Enable streaming generation
             verbose: Print progress
 
@@ -515,24 +534,50 @@ class Model(nn.Module):
             if self.tokenizer.eos_token_id not in eos_token_ids:
                 eos_token_ids.append(self.tokenizer.eos_token_id)
 
-        for token, logprobs in tqdm(
-            generate_step(
-                prompt=prompt,
-                input_embeddings=input_embeddings,
-                model=self.language_model,
-                max_tokens=max_tokens,
-                sampler=sampler,
-                logits_processors=logits_processors,
-            ),
-            total=max_tokens,
-            disable=not verbose,
-            desc="Generating",
+        # Create prefill progress bar
+        prefill_pbar = None
+        gen_pbar = None
+
+        if verbose:
+            prefill_pbar = tqdm(total=1, desc="Prefilling", unit="tok")
+
+        def prefill_progress(processed: int, total: int):
+            nonlocal gen_pbar
+            if prefill_pbar is not None:
+                if prefill_pbar.total != total:
+                    prefill_pbar.total = total
+                    prefill_pbar.refresh()
+                prefill_pbar.n = processed
+                prefill_pbar.refresh()
+                if processed >= total:
+                    prefill_pbar.close()
+                    # Start generating progress bar after prefill completes
+                    if gen_pbar is None and verbose:
+                        gen_pbar = tqdm(total=max_tokens, desc="Generating", unit="tok")
+
+        token_count = 0
+        for token, logprobs in generate_step(
+            prompt=prompt,
+            input_embeddings=input_embeddings,
+            model=self.language_model,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
+            prompt_progress_callback=prefill_progress if verbose else None,
         ):
+            token_count += 1
+            if gen_pbar is not None:
+                gen_pbar.update(1)
+
             # Check for EOS tokens
             if token in eos_token_ids:
                 break
 
             yield token, logprobs
+
+        if gen_pbar is not None:
+            gen_pbar.close()
 
     def generate(
         self,
@@ -547,6 +592,7 @@ class Model(nn.Module):
         min_tokens_to_keep: int = 1,
         repetition_penalty: Optional[float] = 1.2,
         repetition_context_size: int = 100,
+        prefill_step_size: int = 2048,
         generation_stream: bool = False,
         verbose: bool = False,
         **kwargs,
@@ -565,6 +611,7 @@ class Model(nn.Module):
             min_tokens_to_keep: Min tokens for sampling
             repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
             repetition_context_size: Number of recent tokens to check for repetition
+            prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             generation_stream: Enable streaming
             verbose: Print progress
 
@@ -579,8 +626,7 @@ class Model(nn.Module):
         audio_tensor = self._preprocess_audio(audio)
 
         # Encode speech
-        speech_features = self.encode_speech(audio_tensor)
-        mx.eval(speech_features)
+        speech_features = self.encode_speech(audio_tensor, verbose=verbose)
 
         # Build prompt
         audio_duration = audio_tensor.shape[1] / 24000
@@ -613,6 +659,7 @@ class Model(nn.Module):
             max_tokens=max_tokens,
             sampler=sampler,
             logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
             generation_stream=generation_stream,
             verbose=verbose,
         ):
@@ -656,6 +703,7 @@ class Model(nn.Module):
         min_tokens_to_keep: int = 1,
         repetition_penalty: Optional[float] = 1.2,
         repetition_context_size: int = 100,
+        prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[str, None, None]:
         """
@@ -672,6 +720,7 @@ class Model(nn.Module):
             min_tokens_to_keep: Min tokens for sampling
             repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
             repetition_context_size: Number of recent tokens to check for repetition
+            prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             verbose: Print progress
 
         Yields:
@@ -683,8 +732,7 @@ class Model(nn.Module):
         audio_tensor = self._preprocess_audio(audio)
 
         # Encode speech
-        speech_features = self.encode_speech(audio_tensor)
-        mx.eval(speech_features)
+        speech_features = self.encode_speech(audio_tensor, verbose=verbose)
 
         # Build prompt (same as generate)
         audio_duration = audio_tensor.shape[1] / 24000
@@ -715,6 +763,7 @@ class Model(nn.Module):
             max_tokens=max_tokens,
             sampler=sampler,
             logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
             verbose=verbose,
         ):
             text = self.tokenizer.decode([token])
