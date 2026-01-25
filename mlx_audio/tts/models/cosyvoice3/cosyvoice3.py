@@ -865,7 +865,18 @@ class Model(nn.Module):
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
-
+        # Load pre-generated random noise for reproducibility with PyTorch
+        noise_path = model_path / "random_noise" / "noise.safetensors"
+        if noise_path.exists():
+            noise = mx.load(str(noise_path))
+            # Assign to flow CFM
+            if "flow_rand_noise" in noise:
+                model.flow.decoder._rand_noise = noise["flow_rand_noise"]
+            # Assign to hift source module
+            if "sine_waves_noise" in noise:
+                model.hift.m_source._sine_waves_noise = noise["sine_waves_noise"]
+            if "fixed_noise" in noise:
+                model.hift.m_source._fixed_noise = noise["fixed_noise"]
 
         model.frontend = CosyVoice3Frontend(
             model_path=str(model_path),

@@ -7,7 +7,11 @@ Converts:
 - ONNX file (speech_tokenizer_v3.onnx) -> speech_tokenizer_v3.safetensors
 
 Usage:
+    # Convert to float32 (default)
     python -m mlx_audio.tts.models.cosyvoice3.convert --model-dir /path/to/model
+
+    # Convert to float16 (HiFT stays in fp32 for numerical stability)
+    python -m mlx_audio.tts.models.cosyvoice3.convert --model-dir /path/to/model --dtype float16
 """
 
 import argparse
@@ -158,7 +162,45 @@ def convert_speech_tokenizer(onnx_path: str, output_path: str):
 # --- PyTorch .pt conversion ---
 
 
-def convert_model_weights(model_dir: Path, output_path: str):
+def cast_weights(weights: dict, dtype: str) -> dict:
+    """
+    Cast model weights to the specified dtype.
+
+    HiFT weights are kept in fp32 for numerical stability (vocoder needs precision
+    for upsampling/ResBlocks which accumulate large values that overflow in fp16).
+
+    Args:
+        weights: Dictionary of model weights
+        dtype: Target dtype ("float16" or "bfloat16")
+
+    Returns:
+        Dictionary of casted weights
+    """
+    dtype_map = {"float16": mx.float16, "bfloat16": mx.bfloat16, "float32": mx.float32}
+    target_dtype = dtype_map[dtype]
+
+    casted = {}
+    casted_count = 0
+    kept_count = 0
+
+    for name, weight in weights.items():
+        # Keep HiFT in fp32 for numerical stability
+        # The vocoder's upsampling and ResBlocks accumulate values that overflow in fp16
+        if name.startswith("hift."):
+            casted[name] = weight
+            kept_count += 1
+        elif weight.dtype in (mx.float32, mx.float16, mx.bfloat16):
+            casted[name] = weight.astype(target_dtype)
+            casted_count += 1
+        else:
+            casted[name] = weight
+            kept_count += 1
+
+    print(f"    Casted {casted_count} weights to {dtype}, kept {kept_count} unchanged")
+    return casted
+
+
+def convert_model_weights(model_dir: Path, output_path: str, dtype: str = "float32"):
     """Convert flow.pt, hift.pt, llm.pt, and campplus.onnx to a single model.safetensors."""
     try:
         import torch
@@ -219,9 +261,13 @@ def convert_model_weights(model_dir: Path, output_path: str):
     else:
         print(f"    WARNING: campplus.onnx not found")
 
-    # Sanitize and save
+    # Sanitize
     sanitized = model.sanitize(all_weights)
     print(f"    Sanitized: {len(all_weights)} -> {len(sanitized)} keys")
+
+    # Cast dtype if needed
+    if dtype != "float32":
+        sanitized = cast_weights(sanitized, dtype)
 
     mx.save_safetensors(output_path, sanitized)
     print(f"    Saved to {output_path}")
@@ -230,41 +276,157 @@ def convert_model_weights(model_dir: Path, output_path: str):
 # --- Main ---
 
 
-def convert(model_dir: str, output_dir: str = None):
+def convert(model_dir: str, output_dir: str = None, dtype: str = "float32"):
     """
     Convert all CosyVoice3 weights to safetensors format.
 
     Converts PyTorch .pt files and ONNX models in one pass.
 
     Args:
-        model_dir: Directory containing the original model files
+        model_dir: Directory containing the original model files, or HuggingFace model ID
         output_dir: Output directory (defaults to model_dir)
+        dtype: Target dtype ("float32", "float16", or "bfloat16")
     """
-    model_dir = Path(model_dir)
+    # Handle HuggingFace model IDs
+    model_path = Path(model_dir)
+
+    # Check if this looks like a HuggingFace model ID (contains /) and doesn't have model files
+    is_hf_id = "/" in model_dir and not (
+        (model_path / "model.safetensors").exists()
+        or (model_path / "flow.pt").exists()
+    )
+
+    if is_hf_id or not model_path.exists():
+        # Try to download from HuggingFace
+        try:
+            from huggingface_hub import snapshot_download
+
+            print(f"Downloading {model_dir} from HuggingFace...")
+            model_dir = snapshot_download(model_dir)
+            model_path = Path(model_dir)
+            print(f"Downloaded to {model_dir}")
+        except Exception as e:
+            raise FileNotFoundError(f"Model directory not found: {model_dir}. Error: {e}")
+
+    model_dir = model_path
     output_dir = Path(output_dir) if output_dir else model_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Converting CosyVoice3 from {model_dir}")
+    if dtype != "float32":
+        print(f"Target dtype: {dtype} (HiFT stays in fp32 for numerical stability)")
 
     # 1. Convert model weights (flow.pt, hift.pt, llm.pt, campplus.onnx) -> model.safetensors
     has_pt = (model_dir / "flow.pt").exists() or (model_dir / "hift.pt").exists()
-    if has_pt:
-        print("\n[1/2] Converting model weights (flow.pt, hift.pt, llm.pt, campplus.onnx)...")
-        convert_model_weights(model_dir, str(output_dir / "model.safetensors"))
-    else:
-        print("\n[1/2] No .pt files found, skipping model weight conversion")
 
-    # 2. Convert Speech Tokenizer ONNX -> speech_tokenizer_v3.safetensors
+    if has_pt:
+        print("\n[1/4] Converting model weights (flow.pt, hift.pt, llm.pt, campplus.onnx)...")
+        convert_model_weights(model_dir, str(output_dir / "model.safetensors"), dtype)
+    else:
+        print("\n[1/4] No .pt files found, skipping model weight conversion")
+
+    # 2. Convert Speech Tokenizer ONNX -> speech_tokenizer/speech_tokenizer_v3.safetensors
     tokenizer_onnx = model_dir / "speech_tokenizer_v3.onnx"
-    if tokenizer_onnx.exists():
-        print("\n[2/2] Converting Speech Tokenizer ONNX...")
+    tokenizer_safetensors = model_dir / "speech_tokenizer_v3.safetensors"
+    speech_tokenizer_dir = output_dir / "speech_tokenizer"
+
+    if tokenizer_safetensors.exists():
+        # Copy existing safetensors
+        print("\n[2/4] Found existing speech_tokenizer_v3.safetensors, copying...")
+        speech_tokenizer_dir.mkdir(parents=True, exist_ok=True)
+        import shutil
+
+        shutil.copy(tokenizer_safetensors, speech_tokenizer_dir / "speech_tokenizer_v3.safetensors")
+        print(f"    Copied to {speech_tokenizer_dir / 'speech_tokenizer_v3.safetensors'}")
+    elif tokenizer_onnx.exists():
+        print("\n[2/4] Converting Speech Tokenizer ONNX...")
+        speech_tokenizer_dir.mkdir(parents=True, exist_ok=True)
         convert_speech_tokenizer(
-            str(tokenizer_onnx), str(output_dir / "speech_tokenizer_v3.safetensors")
+            str(tokenizer_onnx), str(speech_tokenizer_dir / "speech_tokenizer_v3.safetensors")
         )
     else:
-        print("\n[2/2] speech_tokenizer_v3.onnx not found, skipping")
+        print("\n[2/4] speech_tokenizer_v3.onnx not found, skipping")
+
+    # 3. Copy tokenizer and config files
+    print("\n[3/4] Copying tokenizer and config files...")
+    import shutil
+
+    files_to_copy = [
+        "config.json",
+        "generation_config.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "tokenizer.json",
+        "cosyvoice3.yaml",
+    ]
+
+    # Check for tokenizer files in subdirectories (e.g., CosyVoice-BlankEN/)
+    tokenizer_dirs = [".", "CosyVoice-BlankEN"]
+    for fname in files_to_copy:
+        for subdir in tokenizer_dirs:
+            src = model_dir / subdir / fname
+            if src.exists():
+                shutil.copy(src, output_dir / fname)
+                print(f"    Copied {fname}" + (f" (from {subdir}/)" if subdir != "." else ""))
+                break
+
+    # Create config.json if it doesn't exist
+    config_path = output_dir / "config.json"
+    if not config_path.exists():
+        import json
+
+        config = {
+            "model_type": "cosyvoice3",
+            "sample_rate": 24000,
+        }
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+        print("    Created config.json")
+
+    # 4. Generate random noise matching PyTorch exactly
+    print("\n[4/4] Generating random noise (matching PyTorch seeds)...")
+    generate_random_noise(output_dir)
 
     print("\nDone!")
+
+
+def generate_random_noise(output_dir: Path):
+    """Generate random noise matching PyTorch's RNG for reproducibility."""
+    try:
+        import torch
+    except ImportError:
+        print("    WARNING: torch not installed, skipping random noise generation")
+        print("    Install torch to generate noise matching PyTorch exactly")
+        return
+
+    random_noise_dir = output_dir / "random_noise"
+    random_noise_dir.mkdir(parents=True, exist_ok=True)
+
+    noise_tensors = {}
+
+    # Flow CFM noise: torch.manual_seed(0); torch.randn([1, 80, 50*300])
+    torch.manual_seed(0)
+    flow_rand_noise = torch.randn([1, 80, 50 * 300])
+    noise_tensors["flow_rand_noise"] = mx.array(flow_rand_noise.numpy())
+    print(f"    Generated flow_rand_noise: {flow_rand_noise.shape}")
+
+    # HiFT sine_waves_noise: torch.manual_seed(2); torch.rand([1, 300*24000, 9])
+    torch.manual_seed(2)
+    sine_waves_noise = torch.rand([1, 300 * 24000, 9])
+    noise_tensors["sine_waves_noise"] = mx.array(sine_waves_noise.numpy())
+    print(f"    Generated sine_waves_noise: {sine_waves_noise.shape}")
+
+    # HiFT fixed_noise: torch.manual_seed(3); torch.rand([1, 300*24000, 1])
+    torch.manual_seed(3)
+    fixed_noise = torch.rand([1, 300 * 24000, 1])
+    noise_tensors["fixed_noise"] = mx.array(fixed_noise.numpy())
+    print(f"    Generated fixed_noise: {fixed_noise.shape}")
+
+    # Save as safetensors
+    output_path = random_noise_dir / "noise.safetensors"
+    mx.save_safetensors(str(output_path), noise_tensors)
+    print(f"    Saved to {output_path}")
 
 
 def main():
@@ -275,7 +437,7 @@ def main():
         "--model-dir",
         type=str,
         required=True,
-        help="Directory containing flow.pt, hift.pt, llm.pt, campplus.onnx, speech_tokenizer_v3.onnx",
+        help="Directory containing model files (PyTorch .pt files)",
     )
     parser.add_argument(
         "--output-dir",
@@ -283,9 +445,16 @@ def main():
         default=None,
         help="Output directory (defaults to model-dir)",
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float32",
+        choices=["float32", "float16", "bfloat16"],
+        help="Target dtype for weights (default: float32). HiFT stays in fp32 for stability.",
+    )
     args = parser.parse_args()
 
-    convert(args.model_dir, args.output_dir)
+    convert(args.model_dir, args.output_dir, args.dtype)
 
 
 if __name__ == "__main__":

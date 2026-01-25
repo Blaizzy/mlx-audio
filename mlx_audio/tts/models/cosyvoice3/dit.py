@@ -256,6 +256,7 @@ class Attention(nn.Module):
 
         # Attention
         attn = (q @ k.transpose(0, 1, 3, 2)) * self.scale
+        input_dtype = attn.dtype
 
         if mask is not None:
             # mask: (B, 1, T, T) or (B, T, T)
@@ -263,7 +264,8 @@ class Attention(nn.Module):
                 mask = mask[:, None, :, :]
             attn = mx.where(mask, attn, mx.array(float("-inf")))
 
-        attn = mx.softmax(attn, axis=-1)
+        # Upcast to fp32 for softmax to avoid overflow (fp16 exp overflows at ~11)
+        attn = mx.softmax(attn.astype(mx.float32), axis=-1).astype(input_dtype)
         attn = self.dropout(attn)
 
         # Apply attention to values

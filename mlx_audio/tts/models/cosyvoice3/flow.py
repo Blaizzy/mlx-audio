@@ -100,6 +100,38 @@ class CausalConditionalCFM(nn.Module):
         # The DiT estimator
         self.estimator = estimator
 
+        # Fixed random noise for reproducibility (matching PyTorch)
+        # PyTorch: set_all_random_seed(0); self.rand_noise = torch.randn([1, 80, 50 * 300])
+        # We need to use the exact same random noise as PyTorch
+        # This is generated once with torch.manual_seed(0); torch.randn([1, 80, 50*300])
+        self._rand_noise = None  # Will be initialized lazily or loaded
+
+    def _init_rand_noise(self):
+        """Initialize random noise matching PyTorch's rand_noise."""
+        import numpy as np
+        import os
+
+        # Try to load from cached file first
+        cache_path = "/tmp/pt_rand_noise_full.npy"
+        if os.path.exists(cache_path):
+            rand_noise_np = np.load(cache_path)
+            self._rand_noise = mx.array(rand_noise_np)
+            return
+
+        # Otherwise, generate using torch if available (for exact match)
+        try:
+            import torch
+
+            torch.manual_seed(0)
+            rand_noise = torch.randn([1, 80, 50 * 300])
+            self._rand_noise = mx.array(rand_noise.numpy())
+            # Save for future use
+            np.save(cache_path, rand_noise.numpy())
+        except ImportError:
+            # Fallback to MLX random (won't match PyTorch exactly)
+            mx.random.seed(0)
+            self._rand_noise = mx.random.normal((1, 80, 50 * 300))
+
     def __call__(
         self,
         mu: mx.array,
@@ -127,8 +159,16 @@ class CausalConditionalCFM(nn.Module):
         """
         B, D, T = mu.shape
 
-        # Generate random noise for flow matching
-        z = mx.random.normal((B, D, T)) * temperature
+        # Initialize random noise lazily if not already done
+        if self._rand_noise is None:
+            self._init_rand_noise()
+
+        # Use fixed random noise (matching PyTorch CausalConditionalCFM)
+        # This ensures reproducible outputs
+        z = self._rand_noise[:, :, :T]
+        if B > 1:
+            z = mx.broadcast_to(z, (B, D, T))
+        z = z * temperature
 
         # Time schedule
         if self.t_scheduler == "cosine":
@@ -333,8 +373,11 @@ class CausalMaskedDiffWithDiT(nn.Module):
             Generated mel-spectrogram (B, mel_dim, T * ratio)
         """
         # Normalize speaker embedding (matching PyTorch F.normalize)
-        embedding_norm = mx.sqrt(mx.sum(embedding ** 2, axis=1, keepdims=True) + 1e-12)
-        embedding = embedding / embedding_norm
+        # Upcast to fp32 for precision (1e-12 underflows in fp16)
+        input_dtype = embedding.dtype
+        embedding_fp32 = embedding.astype(mx.float32)
+        embedding_norm = mx.sqrt(mx.sum(embedding_fp32 ** 2, axis=1, keepdims=True) + 1e-12)
+        embedding = (embedding_fp32 / embedding_norm).astype(input_dtype)
 
         # Speaker embedding projection
         spks = self.spk_embed_affine_layer(embedding)  # (B, output_size)

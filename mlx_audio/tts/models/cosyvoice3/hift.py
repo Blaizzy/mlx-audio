@@ -254,6 +254,19 @@ class SourceModuleHnNSF(nn.Module):
         # Linear layer to combine harmonics
         self.l_linear = nn.Linear(nb_harmonics + 1, 1)
 
+        # Fixed random initialization for causal inference (matching PyTorch)
+        # This ensures deterministic output for the same input
+        # rand_ini has shape (1, dim) with first element = 0
+        self._rand_ini = None
+
+        # Fixed noise for sine waves in causal inference (matching PyTorch SineGen2)
+        # PyTorch: self.sine_waves = torch.rand(1, 300 * 24000, 9)
+        self._sine_waves_noise = None
+
+        # Fixed noise for causal inference (matching PyTorch SourceModuleHnNSF)
+        # PyTorch: self.uv = torch.rand(1, 300 * 24000, 1)
+        self._fixed_noise = None
+
     def __call__(
         self, x: mx.array, upsample_ratio: int
     ) -> Tuple[mx.array, mx.array, mx.array]:
@@ -293,18 +306,34 @@ class SourceModuleHnNSF(nn.Module):
 
         # Add random initial phase ONLY at first timestep (t=0)
         # Fundamental component (index 0) always gets 0 phase
-        rand_ini = mx.random.uniform(shape=(B, self.dim))
-        rand_ini = mx.concatenate([mx.zeros((B, 1)), rand_ini[:, 1:]], axis=1)  # First element = 0
+        # Use fixed random initialization for deterministic inference (matching PyTorch causal=True)
+        if self._rand_ini is None:
+            import numpy as np
+            # Initialize with fixed seed for deterministic inference
+            # Uses numpy random with fixed seed to ensure reproducibility
+            np.random.seed(1)
+            rand_init = np.random.rand(1, self.dim).astype(np.float32)
+            rand_init[0, 0] = 0  # Fundamental component has 0 phase
+            self._rand_ini = mx.array(rand_init)
+
+        # Broadcast to batch size and add to first timestep
+        rand_ini = mx.broadcast_to(self._rand_ini, (B, self.dim))
+        # Add to first timestep only: rad_values[:, 0, :] += rand_ini
         first_timestep = rad_values[:, 0:1, :] + rand_ini[:, None, :]
         rad_values = mx.concatenate([first_timestep, rad_values[:, 1:, :]], axis=1)
 
         # --- Key SineGen2 optimization: interpolation-based cumsum ---
         # This avoids numerical precision issues at high sample rates
 
+        input_dtype = rad_values.dtype
+
         # 1. Downsample rad_values to lower rate using linear interpolation
         # PyTorch: interpolate(rad_values.transpose(1,2), scale_factor=1/upsample_scale, mode="linear")
         T_down = T_out // self.upsample_scale
         rad_values_down = self._interpolate_1d(rad_values, T_down, mode="linear")
+
+        # Upcast to fp32 for phase computation (cumsum and sin need precision)
+        rad_values_down = rad_values_down.astype(mx.float32)
 
         # 2. Cumsum at lower rate, multiply by 2*pi
         phase_down = mx.cumsum(rad_values_down, axis=1) * 2 * math.pi
@@ -314,8 +343,8 @@ class SourceModuleHnNSF(nn.Module):
         phase_scaled = phase_down * self.upsample_scale
         phase = self._interpolate_1d(phase_scaled, T_out, mode="nearest")
 
-        # Generate sine waves
-        sine_waves = self.sine_amp * mx.sin(phase)  # (B, T_out, dim)
+        # Generate sine waves and downcast back to original dtype
+        sine_waves = (self.sine_amp * mx.sin(phase)).astype(input_dtype)  # (B, T_out, dim)
 
         # UV mask: (B, T_out, 1)
         uv_t = uv.transpose(0, 2, 1)
@@ -323,9 +352,18 @@ class SourceModuleHnNSF(nn.Module):
         # Noise amplitude: voiced uses noise_std, unvoiced uses sine_amp/3
         noise_amp = uv_t * self.noise_std + (1 - uv_t) * self.sine_amp / 3
 
-        # Generate noise for sine waves
-        sine_waves_noise = mx.random.uniform(shape=(B, T_out, self.dim))
-        noise = noise_amp * sine_waves_noise
+        # Use fixed noise for causal inference (matching PyTorch SineGen2)
+        # PyTorch: self.sine_waves = torch.rand(1, 300 * 24000, 9)
+        if self._sine_waves_noise is None:
+            import numpy as np
+            # Initialize with fixed seed for deterministic inference
+            np.random.seed(2)  # Different seed from rand_ini
+            # Shape: (1, max_length, dim) matching PyTorch self.sine_waves
+            sine_waves_noise = np.random.rand(1, 300 * 24000, self.dim).astype(np.float32)
+            self._sine_waves_noise = mx.array(sine_waves_noise)
+
+        # Use fixed noise slice instead of random noise
+        noise = noise_amp * self._sine_waves_noise[:, :T_out, :]
 
         # Apply UV mask and add noise (unvoiced regions get noise only)
         sine_waves = sine_waves * uv_t + noise
@@ -340,8 +378,18 @@ class SourceModuleHnNSF(nn.Module):
         # Transpose to (B, 1, T_out)
         source = source.transpose(0, 2, 1)
 
-        # Noise for noise branch
-        output_noise = mx.random.uniform(shape=(B, T_out, 1)).transpose(0, 2, 1) * self.sine_amp / 3
+        # Noise for noise branch (same shape as uv)
+        # For causal inference, use FIXED noise (matching PyTorch SourceModuleHnNSF)
+        # This prevents trembling/jitter in the output
+        if self._fixed_noise is None:
+            import numpy as np
+            # Initialize fixed noise matching PyTorch structure: torch.rand(1, 300 * 24000, 1)
+            np.random.seed(3)  # Different seed from rand_ini and sine_waves_noise
+            fixed_noise = np.random.rand(1, 300 * 24000, 1).astype(np.float32)
+            self._fixed_noise = mx.array(fixed_noise)
+
+        # Use fixed noise scaled by sine_amp / 3
+        output_noise = self._fixed_noise[:, :T_out, :].transpose(0, 2, 1) * self.sine_amp / 3
 
         return source, uv, output_noise
 
@@ -607,6 +655,9 @@ class CausalHiFTGenerator(nn.Module):
         Returns:
             Audio waveform (B, T * upsample_factor)
         """
+        # Upcast mel to fp32 for numerical stability in the vocoder
+        mel = mel.astype(mx.float32)
+
         # Transpose mel from (B, mel_dim, T) to (B, T, mel_dim) for MLX Conv1d
         mel = mel.transpose(0, 2, 1)
 
@@ -746,18 +797,20 @@ class CausalHiFTGenerator(nn.Module):
         """Generate harmonic signals from F0 for source processing."""
         B, _, T = f0.shape
         T_out = T * upsample_ratio
+        input_dtype = f0.dtype
 
         # Upsample F0
         indices = mx.floor(mx.linspace(0, T - 1, T_out)).astype(mx.int32)
         f0_up = f0[:, :, indices]  # (B, 1, T_out)
 
         # Generate harmonics - use source_harmonics for source processing
-        omega = f0_up / self.sampling_rate
+        # Upcast to fp32 for phase computation (cumsum and sin need precision)
+        omega = (f0_up / self.sampling_rate).astype(mx.float32)
 
         harmonics = []
         for n in range(1, self.source_harmonics + 2):
             phase = mx.cumsum(omega * n * 2 * math.pi, axis=-1)
-            harmonic = mx.sin(phase)
+            harmonic = mx.sin(phase).astype(input_dtype)
             harmonics.append(harmonic)
 
         return mx.concatenate(harmonics, axis=1)  # (B, source_harmonics+1, T_out)
@@ -766,6 +819,7 @@ class CausalHiFTGenerator(nn.Module):
         """Generate harmonic signals from F0 at specified rate."""
         B, _, T = f0.shape
         T_out = T * rate
+        input_dtype = f0.dtype
 
         if rate > 1:
             indices = mx.floor(mx.linspace(0, T - 1, T_out)).astype(mx.int32)
@@ -773,12 +827,13 @@ class CausalHiFTGenerator(nn.Module):
         else:
             f0_up = f0
 
-        omega = f0_up / self.sampling_rate
+        # Upcast to fp32 for phase computation (cumsum and sin need precision)
+        omega = (f0_up / self.sampling_rate).astype(mx.float32)
 
         harmonics = []
         for n in range(1, self.source_harmonics + 2):
             phase = mx.cumsum(omega * n * 2 * math.pi, axis=-1)
-            harmonic = mx.sin(phase)
+            harmonic = mx.sin(phase).astype(input_dtype)
             harmonics.append(harmonic)
 
         return mx.concatenate(harmonics, axis=1)  # (B, source_harmonics+1, T_out)
@@ -821,10 +876,15 @@ class CausalHiFTGenerator(nn.Module):
         """
         B, C, T = x.shape
         n_freq = self.n_fft // 2 + 1  # 9 for n_fft=16
+        input_dtype = x.dtype
 
         # Split into magnitude and phase (matching original CosyVoice implementation)
         log_mag = x[:, :n_freq, :]  # (B, n_freq, T)
         phase_input = x[:, n_freq:, :]  # (B, n_freq, T)
+
+ 
+        log_mag = log_mag.astype(mx.float32)
+        phase_input = phase_input.astype(mx.float32)
 
         # Magnitude: exp of first half channels, clipped to prevent overflow
         magnitude = mx.exp(log_mag)
