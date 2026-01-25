@@ -259,13 +259,13 @@ def generate_transcription(
         # Load model
         model = load_model(model)
 
-    print("=" * 10)
-    print(f"\033[94mAudio path:\033[0m {audio}")
-    print(f"\033[94mOutput path:\033[0m {output_path}")
-    print(f"\033[94mFormat:\033[0m {format}")
     mx.reset_peak_memory()
     start_time = time.time()
     if verbose:
+        print("=" * 10)
+        print(f"\033[94mAudio path:\033[0m {audio}")
+        print(f"\033[94mOutput path:\033[0m {output_path}")
+        print(f"\033[94mFormat:\033[0m {format}")
         print("\033[94mTranscription:\033[0m")
 
     signature = inspect.signature(model.generate)
@@ -294,7 +294,6 @@ def generate_transcription(
             language=language,
         )
     else:
-
         segments = model.generate(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
