@@ -215,6 +215,7 @@ def generate_audio(
     ddpm_steps: Optional[int] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
+    source_audio: Optional[str] = None,
     stt_model: Optional[
         Union[str, nn.Module]
     ] = "mlx-community/whisper-large-v3-turbo-asr-fp16",
@@ -242,6 +243,7 @@ def generate_audio(
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
     - ref_text (str): Caption for reference audio.
+    - source_audio (str): Source audio for voice conversion (skips transcription of ref_audio).
     - stt_model_path (str): A mlx whisper model to use to transcribe.
     - output_path (str): Directory path where audio files will be saved.
     - file_prefix (str): The output file path without extension.
@@ -281,7 +283,8 @@ def generate_audio(
             ref_audio = load_audio(
                 ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
             )
-            if not ref_text:
+            # Skip transcription if source_audio is provided (voice conversion mode)
+            if not ref_text and source_audio is None:
                 import inspect
 
                 if "ref_text" in inspect.signature(model.generate).parameters:
@@ -298,6 +301,14 @@ def generate_audio(
                     del stt_model
                     mx.clear_cache()
                     print(f"\033[94mRef_text:\033[0m {ref_text}")
+
+        # Load source audio for voice conversion if specified
+        if source_audio:
+            if not os.path.exists(source_audio):
+                raise FileNotFoundError(f"Source audio file not found: {source_audio}")
+            source_audio = load_audio(
+                source_audio, sample_rate=model.sample_rate, volume_normalize=False
+            )
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
@@ -324,6 +335,7 @@ def generate_audio(
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
+            source_audio=source_audio,
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             temperature=temperature,
@@ -479,6 +491,12 @@ def parse_args():
         "--ref_text", type=str, default=None, help="Caption for reference audio"
     )
     parser.add_argument(
+        "--source_audio",
+        type=str,
+        default=None,
+        help="Path to source audio for voice conversion (skips transcription of ref_audio)",
+    )
+    parser.add_argument(
         "--stt_model",
         type=str,
         default="mlx-community/whisper-large-v3-turbo-asr-fp16",
@@ -509,7 +527,7 @@ def parse_args():
 
     args = parser.parse_args()
 
-    if args.text is None:
+    if args.text is None and args.source_audio is None:
         if not sys.stdin.isatty():
             args.text = sys.stdin.read().strip()
         else:

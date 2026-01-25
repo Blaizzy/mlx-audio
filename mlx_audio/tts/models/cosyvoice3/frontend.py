@@ -1,7 +1,7 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -265,17 +265,27 @@ class CosyVoice3Frontend:
 
         return embedding
 
-    def load_audio(self, audio_path: str) -> Tuple[np.ndarray, int]:
+    def load_audio(
+        self, audio: Union[str, mx.array, np.ndarray]
+    ) -> Tuple[np.ndarray, int]:
         """
-        Load audio from file.
+        Load audio from file or convert from array.
 
         Args:
-            audio_path: Path to audio file
+            audio: Path to audio file, or audio waveform as mx.array/np.ndarray
 
         Returns:
             Tuple of (audio_waveform, sample_rate)
         """
-        audio, sr = audio_read(audio_path, dtype="float32")
+        # If already an array, convert to numpy and use default sample rate
+        if isinstance(audio, mx.array):
+            audio = np.array(audio)
+            return audio, self.sample_rate
+        elif isinstance(audio, np.ndarray):
+            return audio, self.sample_rate
+
+        # Otherwise load from file path
+        audio, sr = audio_read(audio, dtype="float32")
         # Convert stereo to mono if needed
         if audio.ndim > 1:
             audio = audio.mean(axis=1)

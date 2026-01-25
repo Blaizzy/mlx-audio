@@ -3,7 +3,7 @@
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -878,7 +878,7 @@ class Model(nn.Module):
         self,
         text: str,
         ref_text: str,
-        ref_audio: str,
+        ref_audio: Union[str, mx.array],
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
@@ -1151,7 +1151,7 @@ class Model(nn.Module):
     def inference_instruct(
         self,
         text: str,
-        ref_audio: str,
+        ref_audio: Union[str, mx.array],
         instruct: str,
         n_timesteps: int = 10,
         temperature: float = 1.0,
@@ -1196,7 +1196,7 @@ class Model(nn.Module):
     def inference_cross_lingual(
         self,
         text: str,
-        ref_audio: str,
+        ref_audio: Union[str, mx.array],
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
@@ -1234,8 +1234,8 @@ class Model(nn.Module):
 
     def inference_vc(
         self,
-        source_audio: str,
-        ref_audio: str,
+        source_audio: Union[str, mx.array],
+        ref_audio: Union[str, mx.array],
         n_timesteps: int = 10,
     ) -> Generator[GenerationResult, None, None]:
         """
@@ -1362,10 +1362,10 @@ class Model(nn.Module):
     def generate(
         self,
         text: Optional[str] = None,
-        ref_audio: Optional[str] = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
         instruct: Optional[str] = None,
-        source_audio: Optional[str] = None,
+        source_audio: Optional[Union[str, mx.array]] = None,
         speaker_embedding: Optional[mx.array] = None,
         n_timesteps: int = 10,
         temperature: float = 1.0,
