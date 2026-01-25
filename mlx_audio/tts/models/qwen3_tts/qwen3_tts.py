@@ -8,6 +8,7 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from tqdm import tqdm
 
 from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.models.base import GenerationResult
@@ -810,10 +811,14 @@ class Model(nn.Module):
         for segment_idx, segment_text in enumerate(segments):
             start_time = time.time()
 
-            if verbose:
-                print(
-                    f"Processing segment {segment_idx + 1}/{len(segments)}: {segment_text[:50]}..."
-                )
+            # Create progress bar for token generation
+            pbar = tqdm(
+                total=max_tokens,
+                desc=f"Segment {segment_idx + 1}/{len(segments)}",
+                unit="tokens",
+                disable=not verbose,
+                leave=False,
+            )
 
             # Prepare inputs
             input_embeds, trailing_text_hidden, tts_pad_embed = (
@@ -937,12 +942,12 @@ class Model(nn.Module):
                 if step > 0 and step % 50 == 0:
                     mx.clear_cache()
 
-                if verbose and step % 100 == 0:
-                    print(f"  Step {step}, generated {len(generated_codes)} tokens")
+                # Update progress bar
+                pbar.update(1)
+
+            pbar.close()
 
             if not generated_codes:
-                if verbose:
-                    print(f"  No codes generated for segment {segment_idx}")
                 continue
 
             # Stack all generated codes
@@ -952,13 +957,24 @@ class Model(nn.Module):
             mx.eval(codes)
             mx.clear_cache()
 
-            if verbose:
-                print(f"  Decoding {codes.shape[1]} tokens to audio...")
-
             # Decode to audio using streaming decode for lower peak memory
+            num_tokens = codes.shape[1]
+            chunk_size = 25  # matches streaming_decode default
+            total_chunks = (num_tokens + chunk_size - 1) // chunk_size
+
             audio_chunks = []
-            for chunk in self.speech_tokenizer.streaming_decode(codes):
+            decode_pbar = tqdm(
+                self.speech_tokenizer.streaming_decode(codes),
+                total=total_chunks,
+                desc="Decoding",
+                unit="chunks",
+                disable=not verbose,
+                leave=False,
+            )
+            for chunk in decode_pbar:
                 audio_chunks.append(chunk)
+            decode_pbar.close()
+
             audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
 
             # Calculate valid length and trim
@@ -1158,7 +1174,6 @@ class Model(nn.Module):
 
         if verbose:
             print(f"ICL generation: {text[:50]}...")
-            print(f"  Reference text: {ref_text[:50]}...")
 
         # Prepare ICL inputs
         input_embeds, trailing_text_hidden, tts_pad_embed, ref_codes = (
@@ -1170,23 +1185,12 @@ class Model(nn.Module):
             )
         )
 
-        if verbose:
-            print(
-                f"  Encoded reference: {ref_codes.shape[2]} frames, "
-                f"input sequence: {input_embeds.shape[1]} tokens"
-            )
-
         # Cap max_tokens based on target text length to prevent runaway generation
         # when reference audio is long and EOS logit is suppressed by top-k.
         # At 12.5 Hz codec rate, ~3-5 codec tokens per text token is typical speech.
         # Factor of 6 gives ~50% margin for slow speech / pauses.
         target_token_count = len(self.tokenizer.encode(text))
         effective_max_tokens = min(max_tokens, max(75, target_token_count * 6))
-        if verbose and effective_max_tokens < max_tokens:
-            print(
-                f"  Effective max_tokens: {effective_max_tokens} "
-                f"(based on {target_token_count} text tokens)"
-            )
 
         # Initialize cache
         cache = self.talker.make_cache()
@@ -1199,6 +1203,15 @@ class Model(nn.Module):
             if i != eos_token_id
         ]
         trailing_idx = 0
+
+        # Create progress bar for token generation
+        pbar = tqdm(
+            total=effective_max_tokens,
+            desc="ICL Generation",
+            unit="tokens",
+            disable=not verbose,
+            leave=False,
+        )
 
         for step in range(effective_max_tokens):
             # Forward pass through talker
@@ -1271,12 +1284,11 @@ class Model(nn.Module):
             input_embeds = text_embed + codec_embed
             mx.eval(input_embeds)
 
-            if verbose and step % 100 == 0:
-                print(f"  Step {step}, generated {len(generated_codes)} tokens")
+            pbar.update(1)
+
+        pbar.close()
 
         if not generated_codes:
-            if verbose:
-                print("  No codes generated")
             return
 
         # Stack generated codes
@@ -1291,16 +1303,23 @@ class Model(nn.Module):
         ref_len = ref_codes.shape[2]
         total_len = full_codes.shape[1]
 
-        if verbose:
-            print(
-                f"  Decoding {total_len} tokens "
-                f"({ref_len} ref + {gen_codes.shape[1]} gen) to audio..."
-            )
+        # Decode full codes to audio using streaming decode for lower peak memory
+        chunk_size = 25
+        total_chunks = (total_len + chunk_size - 1) // chunk_size
 
-        # Decode full codes to audio
         audio_chunks = []
-        for chunk in self.speech_tokenizer.streaming_decode(full_codes):
+        decode_pbar = tqdm(
+            self.speech_tokenizer.streaming_decode(full_codes),
+            total=total_chunks,
+            desc="Decoding",
+            unit="chunks",
+            disable=not verbose,
+            leave=False,
+        )
+        for chunk in decode_pbar:
             audio_chunks.append(chunk)
+        decode_pbar.close()
+
         audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
 
         # Calculate valid length and trim
@@ -1368,11 +1387,6 @@ class Model(nn.Module):
 
         start_time = time.time()
 
-        if verbose:
-            print(f"Generating: {text[:50]}...")
-            if instruct:
-                print(f"  Instruct: {instruct[:50]}...")
-
         # Prepare inputs with instruct
         input_embeds, trailing_text_hidden, tts_pad_embed = (
             self._prepare_generation_inputs(
@@ -1394,6 +1408,15 @@ class Model(nn.Module):
             if i != eos_token_id
         ]
         trailing_idx = 0
+
+        # Create progress bar for token generation
+        pbar = tqdm(
+            total=max_tokens,
+            desc="Generating",
+            unit="tokens",
+            disable=not verbose,
+            leave=False,
+        )
 
         for step in range(max_tokens):
             # Forward pass through talker
@@ -1466,24 +1489,34 @@ class Model(nn.Module):
             input_embeds = text_embed + codec_embed
             mx.eval(input_embeds)
 
-            if verbose and step % 100 == 0:
-                print(f"  Step {step}, generated {len(generated_codes)} tokens")
+            pbar.update(1)
+
+        pbar.close()
 
         if not generated_codes:
-            if verbose:
-                print("  No codes generated")
             return
 
         # Stack all generated codes
         codes = mx.stack(generated_codes, axis=1)
 
-        if verbose:
-            print(f"  Decoding {codes.shape[1]} tokens to audio...")
+        # Decode to audio using streaming decode for lower peak memory
+        num_tokens = codes.shape[1]
+        chunk_size = 25
+        total_chunks = (num_tokens + chunk_size - 1) // chunk_size
 
-        # Decode to audio
         audio_chunks = []
-        for chunk in self.speech_tokenizer.streaming_decode(codes):
+        decode_pbar = tqdm(
+            self.speech_tokenizer.streaming_decode(codes),
+            total=total_chunks,
+            desc="Decoding",
+            unit="chunks",
+            disable=not verbose,
+            leave=False,
+        )
+        for chunk in decode_pbar:
             audio_chunks.append(chunk)
+        decode_pbar.close()
+
         audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
 
         # Calculate valid length and trim
