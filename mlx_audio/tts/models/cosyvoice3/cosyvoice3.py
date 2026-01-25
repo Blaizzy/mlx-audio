@@ -116,6 +116,7 @@ class Model(nn.Module):
                     rms_norm_eps=1e-6,
                     rope_theta=1000000.0,
                     vocab_size=config.text_vocab_size,
+                    tie_word_embeddings=False,
                 )
             )
 
@@ -322,9 +323,14 @@ class Model(nn.Module):
             # === LLM mappings ===
 
             # Qwen2 backbone: remap to top-level qwen2 module
-            # Raw weights: llm.llm.model.model.X -> qwen2.model.X
+            # Raw weights: llm.llm.model.model.X -> qwen2.model.X (inner TextModel)
             if "llm.llm.model.model." in new_key:
                 new_key = new_key.replace("llm.llm.model.model.", "qwen2.model.")
+            # lm_head lives at Qwen2Model level, not inside .model
+            elif new_key.startswith("llm.llm.model.lm_head."):
+                new_key = new_key.replace("llm.llm.model.", "qwen2.")
+            elif new_key.startswith("llm.llm.lm_head."):
+                new_key = new_key.replace("llm.llm.", "qwen2.")
             # Already-converted weights: llm.llm.model.X -> qwen2.model.X
             elif new_key.startswith("llm.llm.model."):
                 new_key = new_key.replace("llm.llm.model.", "qwen2.model.")
@@ -853,15 +859,19 @@ class Model(nn.Module):
         weights = model.sanitize(dict(weights))
         model.load_weights(list(weights.items()), strict=False)
         mx.eval(model.parameters())
-        model.campplus.eval()
-      
-        model.frontend = CosyVoice3Frontend(
-            model_path=model_dir,
-            campplus_model=model.campplus,
-            sample_rate=config.sample_rate,
-        )
-        print(f"  Frontend initialized")
+        
+        model = cls.post_load_hook(model, Path(model_dir))
+        return model
 
+    @classmethod
+    def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+
+
+        model.frontend = CosyVoice3Frontend(
+            model_path=str(model_path),
+            campplus_model=model.campplus,
+            sample_rate=model.config.sample_rate,
+        )
         return model
 
     def inference_zero_shot(

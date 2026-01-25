@@ -106,7 +106,12 @@ class CosyVoice3Frontend:
             })
 
 
-        self.speech_tokenizer_model = S3TokenizerV2.from_pretrained("speech_tokenizer_v3", local_path=str(Path(model_path) / "speech_tokenizer_v3.safetensors"))
+        tokenizer_path = Path(model_path) / "speech_tokenizer" / "speech_tokenizer_v3.safetensors"
+        if tokenizer_path.exists():
+            self.speech_tokenizer_model = S3TokenizerV2.from_pretrained("speech_tokenizer_v3", local_path=str(tokenizer_path))
+        else: 
+            self.speech_tokenizer_model = S3TokenizerV2.from_pretrained("speech_tokenizer_v3", repo_id="mlx-community/CosyVoice3-S3Tokenizer")
+            
 
     def tokenize(self, text: str) -> mx.array:
         """

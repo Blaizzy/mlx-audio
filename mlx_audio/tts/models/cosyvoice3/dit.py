@@ -288,7 +288,7 @@ class FeedForward(nn.Module):
         inner_dim = dim * mult
         self.ff = nn.Sequential(
             nn.Linear(dim, inner_dim),
-            nn.GELU(approx="tanh"),  # Match PyTorch's approximate="tanh"
+            nn.GELU(approx="tanh"),  
             nn.Dropout(dropout),
             nn.Linear(inner_dim, dim),
         )

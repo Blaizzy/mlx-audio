@@ -210,8 +210,7 @@ model-dir/
 
 | File | Component |
 |------|-----------|
-| `cosyvoice3.py` | Main model class with `from_pretrained` and `inference_zero_shot` |
-| `llm.py` | Qwen2-based LLM for speech token generation |
+| `cosyvoice3.py` | Main model class with LLM, flow, vocoder, and all inference modes |
 | `flow.py` | Causal Conditional Flow Matching with DiT |
 | `dit.py` | Diffusion Transformer (estimator for flow) |
 | `hift.py` | Causal HiFi-GAN vocoder |
