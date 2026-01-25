@@ -84,7 +84,7 @@ class ModelConfig: # To keep consistent naming with other mlx-audio models, alth
     ctc_zero_infinity: bool = True
     pad_token_id: int = 0
     initializer_range: float = 0.02
-    model_type: str = "lasr_ctc"
+    model_type: str = "lasr"
 
     def __post_init__(self):
         if self.encoder_config is None:
