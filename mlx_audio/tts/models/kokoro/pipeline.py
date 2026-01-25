@@ -115,13 +115,20 @@ class KokoroPipeline:
                 raise
         elif lang_code == "z":
             try:
-                from misaki import zh
+                from pypinyin import Style, pinyin
 
-                self.g2p = zh.ZHG2P()
+                self.pinyin = pinyin
+                self.pinyin_style = Style
+                # Also initialize English G2P for mixed Chinese/English text
+                try:
+                    self.en_g2p = en.G2P(trf=False, fallback=None, unk="")
+                except Exception as e:
+                    logging.warning(f"English G2P not available for mixed text: {e}")
+                    self.en_g2p = None
+                # Use a simple wrapper as g2p for compatibility
+                self.g2p = lambda text: (self._chinese_to_bopomofo(text), None)
             except ImportError:
-                logging.error(
-                    "You need to `pip install misaki[zh]` to use lang_code='z'"
-                )
+                logging.error("You need to `pip install pypinyin` to use lang_code='z'")
                 raise
         else:
             language = LANG_CODES[lang_code]
@@ -189,6 +196,156 @@ class KokoroPipeline:
             return packs[0]
         self.voices[voice] = mx.mean(mx.stack(packs), axis=0)
         return self.voices[voice]
+
+    def _number_to_chinese(self, num_str: str) -> str:
+        """Convert Arabic numerals to Chinese characters.
+
+        Examples:
+            "23" -> "二十三"
+            "100" -> "一百"
+            "1000" -> "一千"
+        """
+        digits = "零一二三四五六七八九"
+        units = ["", "十", "百", "千"]
+        big_units = ["", "万", "亿"]
+
+        if not num_str:
+            return ""
+
+        # Handle decimal numbers
+        if "." in num_str:
+            integer_part, decimal_part = num_str.split(".", 1)
+            integer_chinese = (
+                self._number_to_chinese(integer_part) if integer_part else ""
+            )
+            decimal_chinese = "".join(digits[int(d)] for d in decimal_part)
+            return f"{integer_chinese}点{decimal_chinese}"
+
+        num = int(num_str)
+        if num == 0:
+            return "零"
+
+        if num < 0:
+            return "负" + self._number_to_chinese(str(-num))
+
+        result = ""
+        unit_index = 0
+
+        while num > 0:
+            section = num % 10000
+            if section > 0:
+                section_str = ""
+                for i, unit in enumerate(units):
+                    digit = section % 10
+                    section = section // 10
+                    if digit > 0:
+                        section_str = digits[digit] + unit + section_str
+                    elif section_str and not section_str.startswith("零"):
+                        section_str = "零" + section_str
+                    if section == 0:
+                        break
+                result = section_str + big_units[unit_index] + result
+            num = num // 10000
+            unit_index += 1
+
+        # Special case: 10-19 don't need leading "一"
+        if result.startswith("一十"):
+            result = result[1:]
+
+        return result
+
+    def _chinese_to_bopomofo(self, text: str) -> str:
+        """Convert Chinese text to Bopomofo with numeric tones.
+
+        The Kokoro ZH model expects Bopomofo symbols with numeric tones (1-5).
+        """
+        # Tone mark to number mapping
+        tone_map = {
+            "\u02ca": "2",  # ˊ tone 2
+            "\u02c7": "3",  # ˇ tone 3
+            "\u02cb": "4",  # ˋ tone 4
+            "\u02d9": "5",  # ˙ neutral tone
+        }
+
+        # First, convert numbers to Chinese characters
+        # Match sequences of digits (including decimals)
+        text = re.sub(
+            r"(\d+\.?\d*)",
+            lambda m: self._number_to_chinese(m.group(1)),
+            text,
+        )
+
+        result = []
+        for char in text:
+            # Chinese character range
+            if "\u4e00" <= char <= "\u9fff":
+                bpmf = self.pinyin(char, style=self.pinyin_style.BOPOMOFO)[0][0]
+
+                # Extract tone mark and convert to number
+                tone = "1"  # default tone 1
+                clean_bpmf = ""
+                for c in bpmf:
+                    if c in tone_map:
+                        tone = tone_map[c]
+                    else:
+                        clean_bpmf += c
+
+                result.append(clean_bpmf + tone)
+            elif char.isascii() and char.isalpha():
+                # English letters - will be processed separately
+                result.append(char)
+            else:
+                # Punctuation and other characters
+                result.append(char)
+
+        return " ".join(result)
+
+    def _process_mixed_zh_en(self, text: str) -> str:
+        """Process mixed Chinese/English text by using appropriate G2P for each part.
+
+        Args:
+            text: Input text containing Chinese and/or English
+
+        Returns:
+            Combined phoneme string with proper phonemes for both languages
+        """
+        # Pattern to match English sequences (letters, spaces, and common punctuation)
+        pattern = r"([a-zA-Z][a-zA-Z\s,.'\"!\?\-]*)"
+
+        parts = re.split(pattern, text)
+        phonemes = []
+
+        for part in parts:
+            if not part.strip():
+                continue
+
+            # Check if this part starts with English letter
+            if re.match(r"^[a-zA-Z]", part):
+                # Process as English
+                if self.en_g2p:
+                    try:
+                        _, tokens = self.en_g2p(part)
+                        ps = "".join(
+                            t.phonemes + (" " if t.whitespace else "")
+                            for t in tokens
+                            if t.phonemes
+                        )
+                        if ps.strip():
+                            phonemes.append(ps.strip())
+                    except Exception as e:
+                        logging.warning(f"English G2P failed for '{part}': {e}")
+                        # Keep English as-is if G2P fails
+                        phonemes.append(part.strip())
+                else:
+                    # No English G2P available, keep as-is
+                    phonemes.append(part.strip())
+            else:
+                # Process as Chinese using Bopomofo
+                ps = self._chinese_to_bopomofo(part)
+                if ps.strip():
+                    phonemes.append(ps.strip())
+
+        return " ".join(phonemes)
 
     @classmethod
     def tokens_to_ps(cls, tokens: List[en.MToken]) -> str:
@@ -470,7 +627,16 @@ class KokoroPipeline:
                     if not chunk.strip():
                         continue
 
-                    ps, _ = self.g2p(chunk)
+                    # For Chinese, use mixed language processing if English G2P is available
+                    if (
+                        self.lang_code == "z"
+                        and hasattr(self, "en_g2p")
+                        and self.en_g2p
+                    ):
+                        ps = self._process_mixed_zh_en(chunk)
+                    else:
+                        ps, _ = self.g2p(chunk)
+
                     if not ps:
                         continue
                     elif len(ps) > 510:
