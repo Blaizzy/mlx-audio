@@ -231,9 +231,12 @@ class Model(nn.Module):
             fmin=0,
             fmax=12000,
         )  # [batch, time, mels]
+        mx.eval(mels)
 
         # Extract embedding
         speaker_embedding = self.speaker_encoder(mels)
+        mx.eval(speaker_embedding)
+
         return speaker_embedding
 
     def _prepare_generation_inputs(
@@ -905,6 +908,9 @@ class Model(nn.Module):
                 all_codes = mx.concatenate(code_tokens, axis=1)  # [1, num_code_groups]
                 generated_codes.append(all_codes)
 
+                del code_cache
+                mx.clear_cache()
+
                 # Prepare next input
                 # Add trailing text if available
                 if trailing_idx < trailing_text_hidden.shape[1]:
@@ -941,12 +947,16 @@ class Model(nn.Module):
             if verbose:
                 print(f"  Decoding {codes.shape[1]} tokens to audio...")
 
-            # Decode to audio
-            audio, audio_lengths = self.speech_tokenizer.decode(codes)
-            audio = audio[0]  # Remove batch dim
+            # Decode to audio using streaming decode for lower peak memory
+            audio_chunks = []
+            for chunk in self.speech_tokenizer.streaming_decode(codes):
+                audio_chunks.append(chunk)
+            audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
 
-            # Trim to valid length
-            valid_len = int(audio_lengths[0])
+            # Calculate valid length and trim
+            valid_len = int(
+                (codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
+            )
             if valid_len > 0 and valid_len < audio.shape[0]:
                 audio = audio[:valid_len]
 
@@ -1280,11 +1290,15 @@ class Model(nn.Module):
             )
 
         # Decode full codes to audio
-        audio, audio_lengths = self.speech_tokenizer.decode(full_codes)
-        audio = audio[0]  # Remove batch dim
+        audio_chunks = []
+        for chunk in self.speech_tokenizer.streaming_decode(full_codes):
+            audio_chunks.append(chunk)
+        audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
 
-        # Trim to valid length
-        valid_len = int(audio_lengths[0])
+        # Calculate valid length and trim
+        valid_len = int(
+            (full_codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
+        )
         if valid_len > 0 and valid_len < audio.shape[0]:
             audio = audio[:valid_len]
 
@@ -1459,11 +1473,15 @@ class Model(nn.Module):
             print(f"  Decoding {codes.shape[1]} tokens to audio...")
 
         # Decode to audio
-        audio, audio_lengths = self.speech_tokenizer.decode(codes)
-        audio = audio[0]
+        audio_chunks = []
+        for chunk in self.speech_tokenizer.streaming_decode(codes):
+            audio_chunks.append(chunk)
+        audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
 
-        # Trim to valid length
-        valid_len = int(audio_lengths[0])
+        # Calculate valid length and trim
+        valid_len = int(
+            (codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
+        )
         if valid_len > 0 and valid_len < audio.shape[0]:
             audio = audio[:valid_len]
 
