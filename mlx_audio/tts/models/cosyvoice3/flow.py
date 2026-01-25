@@ -100,38 +100,6 @@ class CausalConditionalCFM(nn.Module):
         # The DiT estimator
         self.estimator = estimator
 
-        # Fixed random noise for reproducibility (matching PyTorch)
-        # PyTorch: set_all_random_seed(0); self.rand_noise = torch.randn([1, 80, 50 * 300])
-        # We need to use the exact same random noise as PyTorch
-        # This is generated once with torch.manual_seed(0); torch.randn([1, 80, 50*300])
-        self._rand_noise = None  # Will be initialized lazily or loaded
-
-    def _init_rand_noise(self):
-        """Initialize random noise matching PyTorch's rand_noise."""
-        import numpy as np
-        import os
-
-        # Try to load from cached file first
-        cache_path = "/tmp/pt_rand_noise_full.npy"
-        if os.path.exists(cache_path):
-            rand_noise_np = np.load(cache_path)
-            self._rand_noise = mx.array(rand_noise_np)
-            return
-
-        # Otherwise, generate using torch if available (for exact match)
-        try:
-            import torch
-
-            torch.manual_seed(0)
-            rand_noise = torch.randn([1, 80, 50 * 300])
-            self._rand_noise = mx.array(rand_noise.numpy())
-            # Save for future use
-            np.save(cache_path, rand_noise.numpy())
-        except ImportError:
-            # Fallback to MLX random (won't match PyTorch exactly)
-            mx.random.seed(0)
-            self._rand_noise = mx.random.normal((1, 80, 50 * 300))
-
     def __call__(
         self,
         mu: mx.array,
@@ -159,16 +127,8 @@ class CausalConditionalCFM(nn.Module):
         """
         B, D, T = mu.shape
 
-        # Initialize random noise lazily if not already done
-        if self._rand_noise is None:
-            self._init_rand_noise()
-
-        # Use fixed random noise (matching PyTorch CausalConditionalCFM)
-        # This ensures reproducible outputs
-        z = self._rand_noise[:, :, :T]
-        if B > 1:
-            z = mx.broadcast_to(z, (B, D, T))
-        z = z * temperature
+        # Generate random noise for flow matching
+        z = mx.random.normal((B, D, T)) * temperature
 
         # Time schedule
         if self.t_scheduler == "cosine":

@@ -254,19 +254,6 @@ class SourceModuleHnNSF(nn.Module):
         # Linear layer to combine harmonics
         self.l_linear = nn.Linear(nb_harmonics + 1, 1)
 
-        # Fixed random initialization for causal inference (matching PyTorch)
-        # This ensures deterministic output for the same input
-        # rand_ini has shape (1, dim) with first element = 0
-        self._rand_ini = None
-
-        # Fixed noise for sine waves in causal inference (matching PyTorch SineGen2)
-        # PyTorch: self.sine_waves = torch.rand(1, 300 * 24000, 9)
-        self._sine_waves_noise = None
-
-        # Fixed noise for causal inference (matching PyTorch SourceModuleHnNSF)
-        # PyTorch: self.uv = torch.rand(1, 300 * 24000, 1)
-        self._fixed_noise = None
-
     def __call__(
         self, x: mx.array, upsample_ratio: int
     ) -> Tuple[mx.array, mx.array, mx.array]:
@@ -306,13 +293,8 @@ class SourceModuleHnNSF(nn.Module):
 
         # Add random initial phase ONLY at first timestep (t=0)
         # Fundamental component (index 0) always gets 0 phase
-        # Use fixed random initialization for deterministic inference (matching PyTorch causal=True)
-        if self._rand_ini is None:
-            self._rand_ini = self._get_torch_rand(1, (1, self.dim), zero_first=True)
-
-        # Broadcast to batch size and add to first timestep
-        rand_ini = mx.broadcast_to(self._rand_ini, (B, self.dim))
-        # Add to first timestep only: rad_values[:, 0, :] += rand_ini
+        rand_ini = mx.random.uniform(shape=(B, self.dim))
+        rand_ini = mx.concatenate([mx.zeros((B, 1)), rand_ini[:, 1:]], axis=1)  # First element = 0
         first_timestep = rad_values[:, 0:1, :] + rand_ini[:, None, :]
         rad_values = mx.concatenate([first_timestep, rad_values[:, 1:, :]], axis=1)
 
@@ -341,13 +323,9 @@ class SourceModuleHnNSF(nn.Module):
         # Noise amplitude: voiced uses noise_std, unvoiced uses sine_amp/3
         noise_amp = uv_t * self.noise_std + (1 - uv_t) * self.sine_amp / 3
 
-        # Use fixed noise for causal inference (matching PyTorch SineGen2)
-        # PyTorch: self.sine_waves = torch.rand(1, 300 * 24000, 9)
-        if self._sine_waves_noise is None:
-            self._sine_waves_noise = self._get_torch_rand(2, (1, 300 * 24000, self.dim))
-
-        # Use fixed noise slice instead of random noise
-        noise = noise_amp * self._sine_waves_noise[:, :T_out, :]
+        # Generate noise for sine waves
+        sine_waves_noise = mx.random.uniform(shape=(B, T_out, self.dim))
+        noise = noise_amp * sine_waves_noise
 
         # Apply UV mask and add noise (unvoiced regions get noise only)
         sine_waves = sine_waves * uv_t + noise
@@ -362,65 +340,10 @@ class SourceModuleHnNSF(nn.Module):
         # Transpose to (B, 1, T_out)
         source = source.transpose(0, 2, 1)
 
-        # Noise for noise branch (same shape as uv)
-        # For causal inference, use FIXED noise (matching PyTorch SourceModuleHnNSF)
-        # This prevents trembling/jitter in the output
-        if self._fixed_noise is None:
-            self._fixed_noise = self._get_torch_rand(3, (1, 300 * 24000, 1))
-
-        # Use fixed noise scaled by sine_amp / 3
-        output_noise = self._fixed_noise[:, :T_out, :].transpose(0, 2, 1) * self.sine_amp / 3
+        # Noise for noise branch
+        output_noise = mx.random.uniform(shape=(B, T_out, 1)).transpose(0, 2, 1) * self.sine_amp / 3
 
         return source, uv, output_noise
-
-    def _get_torch_rand(
-        self, seed: int, shape: tuple, zero_first: bool = False
-    ) -> mx.array:
-        """
-        Generate random noise matching PyTorch's torch.rand() with given seed.
-
-        Uses torch if available for exact match, otherwise falls back to numpy
-        which produces different values (will be cached on first run with torch).
-
-        Args:
-            seed: Random seed
-            shape: Shape of the output tensor
-            zero_first: If True, set first element to 0 (for phase initialization)
-
-        Returns:
-            Random array matching PyTorch's torch.rand() output
-        """
-        import os
-        import numpy as np
-
-        # Cache path for torch-generated noise
-        cache_dir = os.path.expanduser("~/.cache/mlx_audio/cosyvoice3")
-        cache_file = os.path.join(cache_dir, f"torch_rand_seed{seed}_{'x'.join(map(str, shape))}.npy")
-
-        # Try to load from cache first
-        if os.path.exists(cache_file):
-            noise = np.load(cache_file)
-            if zero_first and len(shape) >= 2:
-                noise[0, 0] = 0
-            return mx.array(noise)
-
-        # Generate with torch if available (for exact match)
-        try:
-            import torch
-            torch.manual_seed(seed)
-            noise = torch.rand(*shape).numpy().astype(np.float32)
-            # Save to cache for future use
-            os.makedirs(cache_dir, exist_ok=True)
-            np.save(cache_file, noise)
-        except ImportError:
-            # Fallback to numpy (won't match PyTorch exactly but is reproducible)
-            np.random.seed(seed)
-            noise = np.random.rand(*shape).astype(np.float32)
-
-        if zero_first and len(shape) >= 2:
-            noise[0, 0] = 0
-
-        return mx.array(noise)
 
     def _upsample_nearest(self, x: mx.array, target_len: int) -> mx.array:
         """Nearest neighbor upsampling matching PyTorch F.interpolate mode='nearest'.
