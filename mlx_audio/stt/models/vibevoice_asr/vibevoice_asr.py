@@ -463,6 +463,7 @@ class Model(nn.Module):
         acoustic_input_mask: Optional[mx.array] = None,
         max_tokens: int = 8192,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
+        logits_processors: Optional[List[Callable]] = None,
         generation_stream: bool = False,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
@@ -475,6 +476,7 @@ class Model(nn.Module):
             acoustic_input_mask: Mask for speech token positions
             max_tokens: Maximum tokens to generate
             sampler: Sampling function
+            logits_processors: List of logits processors (e.g., repetition penalty)
             generation_stream: Enable streaming generation
             verbose: Print progress
 
@@ -492,8 +494,14 @@ class Model(nn.Module):
             0
         ]  # Remove batch dim
 
-        # with wired_limit(self, [generation_stream]):
         prompt = input_ids[0] if input_ids.ndim > 1 else input_ids
+
+        # Build EOS token list: include both <|endoftext|> and <|im_end|>
+        # The model uses <|im_end|> (151645) to end assistant turns in chat format
+        eos_token_ids = [151643, 151645]  # <|endoftext|>, <|im_end|>
+        if hasattr(self.tokenizer, "eos_token_id") and self.tokenizer.eos_token_id:
+            if self.tokenizer.eos_token_id not in eos_token_ids:
+                eos_token_ids.append(self.tokenizer.eos_token_id)
 
         for token, logprobs in tqdm(
             generate_step(
@@ -502,20 +510,13 @@ class Model(nn.Module):
                 model=self.language_model,
                 max_tokens=max_tokens,
                 sampler=sampler,
+                logits_processors=logits_processors,
             ),
             total=max_tokens,
             disable=not verbose,
             desc="Generating",
         ):
             # Check for EOS tokens
-            eos_token_ids = (
-                self.tokenizer.eos_token_id
-                if hasattr(self.tokenizer, "eos_token_id")
-                else [151643, 151645]
-            )
-            # Normalize to list if it's a single integer
-            if isinstance(eos_token_ids, int):
-                eos_token_ids = [eos_token_ids]
             if token in eos_token_ids:
                 break
 
@@ -529,9 +530,11 @@ class Model(nn.Module):
         max_tokens: int = 8192,
         temperature: float = 0.0,
         top_p: float = 0.95,
-        top_k: int = 0,
-        min_p: float = 0.0,
+        top_k: int = 25,
+        min_p: float = 0.02,
         min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = 1.2,
+        repetition_context_size: int = 100,
         generation_stream: bool = False,
         verbose: bool = False,
         **kwargs,
@@ -548,13 +551,15 @@ class Model(nn.Module):
             top_k: Top-k sampling
             min_p: Min-p sampling
             min_tokens_to_keep: Min tokens for sampling
+            repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
+            repetition_context_size: Number of recent tokens to check for repetition
             generation_stream: Enable streaming
             verbose: Print progress
 
         Returns:
             STTOutput with transcription text and segments
         """
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         start_time = time.time()
 
@@ -580,6 +585,12 @@ class Model(nn.Module):
             top_k=top_k,
         )
 
+        # Create logits processors with repetition penalty
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
+        )
+
         # Generate tokens
         generated_tokens = []
 
@@ -589,6 +600,7 @@ class Model(nn.Module):
             acoustic_input_mask=acoustic_input_mask,
             max_tokens=max_tokens,
             sampler=sampler,
+            logits_processors=logits_processors,
             generation_stream=generation_stream,
             verbose=verbose,
         ):
@@ -630,6 +642,8 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = 1.2,
+        repetition_context_size: int = 100,
         verbose: bool = False,
     ) -> Generator[str, None, None]:
         """
@@ -644,12 +658,14 @@ class Model(nn.Module):
             top_k: Top-k sampling
             min_p: Min-p sampling
             min_tokens_to_keep: Min tokens for sampling
+            repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
+            repetition_context_size: Number of recent tokens to check for repetition
             verbose: Print progress
 
         Yields:
             Decoded text chunks as they are generated.
         """
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         # Preprocess audio
         audio_tensor = self._preprocess_audio(audio)
@@ -673,6 +689,12 @@ class Model(nn.Module):
             top_k=top_k,
         )
 
+        # Create logits processors with repetition penalty
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
+        )
+
         # Stream tokens
         for token, _ in self.stream_generate(
             input_ids=input_ids,
@@ -680,6 +702,7 @@ class Model(nn.Module):
             acoustic_input_mask=acoustic_input_mask,
             max_tokens=max_tokens,
             sampler=sampler,
+            logits_processors=logits_processors,
             verbose=verbose,
         ):
             text = self.tokenizer.decode([token])
