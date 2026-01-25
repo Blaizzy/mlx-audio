@@ -74,23 +74,7 @@ class LasrEncoderSubsampling(nn.Module):
 
     def __call__(self, input_features: mx.array) -> mx.array:
         hidden_states = self.act_fn(self.dense_0(input_features))
-        # No transpose needed as MLX Conv1d expects (N, L, C) if we confirm MLX conventions
-        # Wait, MLX Conv1d expects input (N, L, C) and weights (out_channels, kernel_size, in_channels)
-        # Transformers Conv1d expects (N, C, L). The loaded weights will be (out, in, kernel)
-        
-        # The transformers implementation does:
-        # dense_0(input_features) -> (B, L, H)
-        # transpose(1, 2) -> (B, H, L)
-        # conv_0 -> (B, H, L)
-        # conv_1 -> (B, C, L)
-        # transpose(1, 2) -> (B, L, C)
-        # dense_1 -> (B, L, H)
-        
-        # In MLX, we can keep (B, L, C) if we handle weights correctly or transpose if needed.
-        # But MLX Conv1d expects (N, L, Input_Channels).
-        # So we don't need to transpose to (N, C, L) like PyTorch.
-        # We just need to make sure kernel size and striding works on length dimension.
-        
+
         hidden_states = self.act_fn(self.conv_0(hidden_states))
         hidden_states = self.act_fn(self.conv_1(hidden_states))
         return self.dense_1(hidden_states)
