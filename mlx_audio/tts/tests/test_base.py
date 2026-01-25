@@ -40,26 +40,49 @@ class TestBaseModel(unittest.TestCase):
         self.assertIsNone(args.param3)
 
     def test_check_array_shape(self):
-        """Test check_array_shape function."""
-        # Valid shape: out_channels >= kH == kW
-        valid_array = mx.array(np.zeros((64, 3, 3)))
-        self.assertTrue(check_array_shape(valid_array))
+        """Test check_array_shape function.
 
-        # Invalid shape: kH != kW
-        invalid_array1 = mx.array(np.zeros((64, 3, 4)))
-        self.assertFalse(check_array_shape(invalid_array1))
+        MLX conv1d format: (out_channels, kernel_size, in_channels)
+        PyTorch conv1d format: (out_channels, in_channels, kernel_size)
 
-        # Invalid shape: out_channels < kH
-        invalid_array2 = mx.array(np.zeros((2, 3, 3)))
-        self.assertFalse(check_array_shape(invalid_array2))
+        Returns True if array is in MLX format (no transpose needed).
+        Returns False if array is in PyTorch format (needs transpose).
+        """
+        # MLX format: kernel_size (small) in middle, in_channels (large) at end
+        mlx_format_1 = mx.array(np.zeros((512, 3, 512)))  # (out, kernel=3, in)
+        self.assertTrue(check_array_shape(mlx_format_1))
 
-        # Invalid shape: wrong number of dimensions
-        invalid_array3 = mx.array(np.zeros((64, 3)))
-        self.assertFalse(check_array_shape(invalid_array3))
+        mlx_format_2 = mx.array(np.zeros((64, 7, 128)))  # (out, kernel=7, in)
+        self.assertTrue(check_array_shape(mlx_format_2))
 
-        # Invalid shape: wrong number of dimensions
-        invalid_array4 = mx.array(np.zeros((64, 3, 3, 3)))
-        self.assertFalse(check_array_shape(invalid_array4))
+        # PyTorch format: in_channels (large) in middle, kernel_size (small) at end
+        pytorch_format_1 = mx.array(np.zeros((512, 512, 3)))  # (out, in, kernel=3)
+        self.assertFalse(check_array_shape(pytorch_format_1))
+
+        pytorch_format_2 = mx.array(np.zeros((64, 128, 7)))  # (out, in, kernel=7)
+        self.assertFalse(check_array_shape(pytorch_format_2))
+
+        # Ambiguous case: small equal dimensions (both kernel-like)
+        # When dim1 <= dim2, assume MLX format
+        ambiguous_equal = mx.array(np.zeros((64, 3, 3)))
+        self.assertTrue(check_array_shape(ambiguous_equal))
+
+        # Edge case: dim1=1 (likely in_channels) with larger dim2 (likely kernel)
+        # Should be detected as PyTorch format
+        edge_case_pytorch = mx.array(np.zeros((512, 1, 3)))  # (out, in=1, kernel=3)
+        self.assertFalse(check_array_shape(edge_case_pytorch))
+
+        # Edge case: dim2=1 (likely in_channels) with larger dim1 (likely kernel)
+        # Should be detected as MLX format
+        edge_case_mlx = mx.array(np.zeros((512, 3, 1)))  # (out, kernel=3, in=1)
+        self.assertTrue(check_array_shape(edge_case_mlx))
+
+        # Wrong number of dimensions
+        wrong_dims_2d = mx.array(np.zeros((64, 3)))
+        self.assertFalse(check_array_shape(wrong_dims_2d))
+
+        wrong_dims_4d = mx.array(np.zeros((64, 3, 3, 3)))
+        self.assertFalse(check_array_shape(wrong_dims_4d))
 
 
 if __name__ == "__main__":
