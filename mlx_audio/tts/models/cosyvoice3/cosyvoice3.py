@@ -703,7 +703,7 @@ class Model(nn.Module):
 
         return audio
 
-    def generate(
+    def _generate_from_tokens(
         self,
         speech_tokens: mx.array,
         speaker_embedding: mx.array,
@@ -1003,7 +1003,7 @@ class Model(nn.Module):
         # Pass prompt_speech_tokens to flow so the full token sequence
         # [prompt_tokens, continuation_tokens] provides correct mel generation.
         # The flow strips the prompt mel portion, leaving only target text audio.
-        for result in self.generate(
+        for result in self._generate_from_tokens(
             speech_tokens=speech_tokens,
             speaker_embedding=inputs["speaker_embedding"],
             prompt_speech_tokens=prompt_speech_tokens,
@@ -1134,7 +1134,7 @@ class Model(nn.Module):
         )
 
         # Flow uses flow_prompt_speech_tokens for mel conditioning
-        for result in self.generate(
+        for result in self._generate_from_tokens(
             speech_tokens=speech_tokens,
             speaker_embedding=inputs["speaker_embedding"],
             prompt_speech_tokens=flow_prompt_speech_tokens,
@@ -1152,7 +1152,7 @@ class Model(nn.Module):
         self,
         text: str,
         ref_audio: str,
-        instruct_text: str,
+        instruct: str,
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
@@ -1160,15 +1160,15 @@ class Model(nn.Module):
         """
         Instruct-mode synthesis with style/language control.
 
-        Uses ref_audio for speaker identity and instruct_text to control
+        Uses ref_audio for speaker identity and instruct to control
         speaking style or language.
 
-        The prompt format: "You are a helpful assistant. {instruct_text}<|endofprompt|>"
+        The prompt format: "You are a helpful assistant. {instruct}<|endofprompt|>"
 
         Args:
             text: Text to synthesize
             ref_audio: Path to reference audio file (for speaker identity)
-            instruct_text: Instruction (e.g., "Please speak as fast as possible.",
+            instruct: Instruction (e.g., "Please speak as fast as possible.",
                            "Please express in Cantonese.")
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature
@@ -1184,7 +1184,7 @@ class Model(nn.Module):
                 "Frontend not initialized. Use from_pretrained() to load the model."
             )
 
-        inputs = self.frontend.frontend_instruct(text, ref_audio, instruct_text)
+        inputs = self.frontend.frontend_instruct(text, ref_audio, instruct)
         # Use higher max_token_factor for instruct mode since style instructions
         # (e.g., "speak as slow as possible") can require significantly more
         # speech tokens per text token than normal speech.
@@ -1277,7 +1277,7 @@ class Model(nn.Module):
         )
 
         # Voice conversion: use source tokens directly (no LLM)
-        for result in self.generate(
+        for result in self._generate_from_tokens(
             speech_tokens=source_speech_tokens,
             speaker_embedding=inputs["speaker_embedding"],
             prompt_speech_tokens=prompt_speech_tokens,
@@ -1352,9 +1352,172 @@ class Model(nn.Module):
         mx.eval(speech_tokens)
 
         # Convert to audio
-        for result in self.generate(
+        for result in self._generate_from_tokens(
             speech_tokens=speech_tokens,
             speaker_embedding=speaker_embedding,
             n_timesteps=n_timesteps,
         ):
             yield result
+
+    def generate(
+        self,
+        text: Optional[str] = None,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
+        instruct: Optional[str] = None,
+        source_audio: Optional[str] = None,
+        speaker_embedding: Optional[mx.array] = None,
+        n_timesteps: int = 10,
+        temperature: float = 1.0,
+        top_k: int = 25,
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Unified entry point for speech generation.
+
+        Routes to the appropriate generation method based on provided arguments:
+
+        - Voice Conversion: `source_audio` + `ref_audio` (no text)
+        - Zero-shot Voice Cloning: `text` + `ref_text` + `ref_audio`
+        - Instruction Mode: `text` + `ref_audio` + `instruct`
+        - Cross-lingual: `text` + `ref_audio` (no ref_text, no instruct)
+        - Simple TTS: `text` only (optional `speaker_embedding`)
+
+        Args:
+            text: Text to synthesize (required for TTS modes)
+            ref_audio: Path to reference audio for voice cloning
+            ref_text: Transcript of reference audio (for zero-shot mode)
+            instruct: Style/language instruction (for instruct mode)
+            source_audio: Source audio for voice conversion
+            speaker_embedding: Optional speaker embedding (for simple TTS)
+            n_timesteps: Number of flow ODE steps (default: 10)
+            temperature: LLM sampling temperature (default: 1.0)
+            top_k: Top-k sampling for LLM (default: 25)
+            **kwargs: Additional arguments passed to underlying methods
+
+        Yields:
+            GenerationResult with synthesized audio
+
+        Examples:
+            # Voice Conversion
+            model.generate(source_audio="source.wav", ref_audio="target_voice.wav")
+
+            # Zero-shot Voice Cloning
+            model.generate(text="Hello", ref_text="Reference text", ref_audio="ref.wav")
+
+            # Instruction Mode
+            model.generate(text="Hello", ref_audio="ref.wav", instruct="Speak slowly")
+
+            # Cross-lingual (with control tokens)
+            model.generate(text="[breath]Hello world", ref_audio="ref.wav")
+
+            # Simple TTS
+            model.generate(text="Hello world")
+        """
+        # Voice Conversion: source_audio + ref_audio (no text)
+        if source_audio is not None and ref_audio is not None:
+            yield from self.inference_vc(
+                source_audio=source_audio,
+                ref_audio=ref_audio,
+                n_timesteps=n_timesteps,
+            )
+            return
+
+        # All other modes require text
+        if text is None:
+            raise ValueError(
+                "Either 'text' (for TTS) or 'source_audio' + 'ref_audio' (for VC) must be provided"
+            )
+
+        # Zero-shot Voice Cloning: text + ref_text + ref_audio
+        if ref_text is not None and ref_audio is not None:
+            yield from self.inference_zero_shot(
+                text=text,
+                ref_text=ref_text,
+                ref_audio=ref_audio,
+                n_timesteps=n_timesteps,
+                temperature=temperature,
+                top_k=top_k,
+            )
+            return
+
+        # Instruction Mode: text + ref_audio + instruct
+        if instruct is not None and ref_audio is not None:
+            yield from self.inference_instruct(
+                text=text,
+                ref_audio=ref_audio,
+                instruct=instruct,
+                n_timesteps=n_timesteps,
+                temperature=temperature,
+                top_k=top_k,
+            )
+            return
+
+        # Cross-lingual: text + ref_audio (no ref_text, no instruct)
+        if ref_audio is not None:
+            yield from self.inference_cross_lingual(
+                text=text,
+                ref_audio=ref_audio,
+                n_timesteps=n_timesteps,
+                temperature=temperature,
+                top_k=top_k,
+            )
+            return
+
+        # Simple TTS: text only (optional speaker_embedding)
+        yield from self.text_to_speech(
+            text=text,
+            speaker_embedding=speaker_embedding,
+            n_timesteps=n_timesteps,
+            temperature=temperature,
+            top_k=top_k,
+        )
+
+    def stream_generate(
+        self,
+        text: Optional[str] = None,
+        ref_audio: Optional[str] = None,
+        ref_text: Optional[str] = None,
+        instruct: Optional[str] = None,
+        source_audio: Optional[str] = None,
+        speaker_embedding: Optional[mx.array] = None,
+        n_timesteps: int = 10,
+        temperature: float = 1.0,
+        top_k: int = 25,
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Streaming generation entry point.
+
+        This is an alias for `generate()` since all generation methods already
+        yield results incrementally. Use this for explicit streaming intent.
+
+        See `generate()` for full documentation of arguments and routing logic.
+
+        Args:
+            text: Text to synthesize
+            ref_audio: Reference audio for voice cloning
+            ref_text: Transcript of reference audio (zero-shot mode)
+            instruct: Style instruction (instruct mode)
+            source_audio: Source audio for voice conversion
+            speaker_embedding: Optional speaker embedding
+            n_timesteps: Number of flow ODE steps
+            temperature: LLM sampling temperature
+            top_k: Top-k sampling for LLM
+            **kwargs: Additional arguments
+
+        Yields:
+            GenerationResult with synthesized audio
+        """
+        yield from self.generate(
+            text=text,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            instruct=instruct,
+            source_audio=source_audio,
+            speaker_embedding=speaker_embedding,
+            n_timesteps=n_timesteps,
+            temperature=temperature,
+            top_k=top_k,
+            **kwargs,
+        )
