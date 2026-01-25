@@ -132,12 +132,15 @@ class Model(nn.Module):
         """Only quantize language model layers."""
         return p.startswith("language_model")
 
-    def encode_speech(self, speech_tensors: mx.array) -> mx.array:
+    def encode_speech(
+        self, speech_tensors: mx.array, verbose: bool = False
+    ) -> mx.array:
         """
         Encode speech input to features for the language model.
 
         Args:
             speech_tensors: Audio waveform [B, T] at 24kHz
+            verbose: Show progress bar
 
         Returns:
             Combined acoustic + semantic features [B, T', hidden_size]
@@ -148,13 +151,29 @@ class Model(nn.Module):
         if speech_tensors.ndim == 2:
             speech_tensors = speech_tensors[:, None, :]  # [B, 1, T]
 
-        # Encode through acoustic tokenizer (use mean directly, no sampling for inference)
+        pbar = tqdm(total=4, disable=not verbose, desc="Encoding audio")
+
+        # Encode through acoustic tokenizer
         acoustic_tokens = self.acoustic_tokenizer.encode(speech_tensors)
+        mx.eval(acoustic_tokens)
+        pbar.update(1)
+
+        # Project acoustic features
         acoustic_features = self.acoustic_connector(acoustic_tokens)
+        mx.eval(acoustic_features)
+        pbar.update(1)
 
         # Encode through semantic tokenizer
         semantic_tokens = self.semantic_tokenizer.encode(speech_tensors)
+        mx.eval(semantic_tokens)
+        pbar.update(1)
+
+        # Project semantic features
         semantic_features = self.semantic_connector(semantic_tokens)
+        mx.eval(semantic_features)
+        pbar.update(1)
+
+        pbar.close()
 
         # Combine features
         combined_features = acoustic_features + semantic_features
@@ -439,6 +458,7 @@ class Model(nn.Module):
         from mlx_audio.stt.utils import load_audio
 
         SAMPLE_RATE = 24000
+        MAX_DURATION_SECONDS = 59 * 60  # 59 minutes max
 
         if isinstance(audio, str):
             audio = load_audio(audio, sr=SAMPLE_RATE)
@@ -451,6 +471,17 @@ class Model(nn.Module):
         if audio.ndim == 1:
             audio = audio[None, :]  # Add batch dim
 
+        # Check duration and trim if necessary
+        max_samples = MAX_DURATION_SECONDS * SAMPLE_RATE
+        if audio.shape[-1] > max_samples:
+            duration_minutes = audio.shape[-1] / SAMPLE_RATE / 60
+            print(
+                f"\033[93m[WARNING]\033[0m Audio duration ({duration_minutes:.1f} min) exceeds "
+                f"maximum supported duration (59 min). Trimming to 59 minutes. "
+                f"For longer audio, consider splitting into smaller segments."
+            )
+            audio = audio[..., :max_samples]
+
         return audio
 
     def stream_generate(
@@ -461,6 +492,8 @@ class Model(nn.Module):
         acoustic_input_mask: Optional[mx.array] = None,
         max_tokens: int = 8192,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
+        logits_processors: Optional[List[Callable]] = None,
+        prefill_step_size: int = 2048,
         generation_stream: bool = False,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
@@ -473,6 +506,8 @@ class Model(nn.Module):
             acoustic_input_mask: Mask for speech token positions
             max_tokens: Maximum tokens to generate
             sampler: Sampling function
+            logits_processors: List of logits processors (e.g., repetition penalty)
+            prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             generation_stream: Enable streaming generation
             verbose: Print progress
 
@@ -490,34 +525,59 @@ class Model(nn.Module):
             0
         ]  # Remove batch dim
 
-        # with wired_limit(self, [generation_stream]):
         prompt = input_ids[0] if input_ids.ndim > 1 else input_ids
 
-        for token, logprobs in tqdm(
-            generate_step(
-                prompt=prompt,
-                input_embeddings=input_embeddings,
-                model=self.language_model,
-                max_tokens=max_tokens,
-                sampler=sampler,
-            ),
-            total=max_tokens,
-            disable=not verbose,
-            desc="Generating",
+        # Build EOS token list: include both <|endoftext|> and <|im_end|>
+        # The model uses <|im_end|> (151645) to end assistant turns in chat format
+        eos_token_ids = [151643, 151645]  # <|endoftext|>, <|im_end|>
+        if hasattr(self.tokenizer, "eos_token_id") and self.tokenizer.eos_token_id:
+            if self.tokenizer.eos_token_id not in eos_token_ids:
+                eos_token_ids.append(self.tokenizer.eos_token_id)
+
+        # Create prefill progress bar
+        prefill_pbar = None
+        gen_pbar = None
+
+        if verbose:
+            prefill_pbar = tqdm(total=1, desc="Prefilling", unit="tok")
+
+        def prefill_progress(processed: int, total: int):
+            nonlocal gen_pbar
+            if prefill_pbar is not None:
+                if prefill_pbar.total != total:
+                    prefill_pbar.total = total
+                    prefill_pbar.refresh()
+                prefill_pbar.n = processed
+                prefill_pbar.refresh()
+                if processed >= total:
+                    prefill_pbar.close()
+                    # Start generating progress bar after prefill completes
+                    if gen_pbar is None and verbose:
+                        gen_pbar = tqdm(total=max_tokens, desc="Generating", unit="tok")
+
+        token_count = 0
+        for token, logprobs in generate_step(
+            prompt=prompt,
+            input_embeddings=input_embeddings,
+            model=self.language_model,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
+            prompt_progress_callback=prefill_progress if verbose else None,
         ):
+            token_count += 1
+            if gen_pbar is not None:
+                gen_pbar.update(1)
+
             # Check for EOS tokens
-            eos_token_ids = (
-                self.tokenizer.eos_token_id
-                if hasattr(self.tokenizer, "eos_token_id")
-                else [151643, 151645]
-            )
-            # Normalize to list if it's a single integer
-            if isinstance(eos_token_ids, int):
-                eos_token_ids = [eos_token_ids]
             if token in eos_token_ids:
                 break
 
             yield token, logprobs
+
+        if gen_pbar is not None:
+            gen_pbar.close()
 
     def generate(
         self,
@@ -527,9 +587,12 @@ class Model(nn.Module):
         max_tokens: int = 8192,
         temperature: float = 0.0,
         top_p: float = 0.95,
-        top_k: int = 0,
-        min_p: float = 0.0,
+        top_k: int = 25,
+        min_p: float = 0.02,
         min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = 1.2,
+        repetition_context_size: int = 100,
+        prefill_step_size: int = 2048,
         generation_stream: bool = False,
         verbose: bool = False,
         **kwargs,
@@ -546,13 +609,16 @@ class Model(nn.Module):
             top_k: Top-k sampling
             min_p: Min-p sampling
             min_tokens_to_keep: Min tokens for sampling
+            repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
+            repetition_context_size: Number of recent tokens to check for repetition
+            prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             generation_stream: Enable streaming
             verbose: Print progress
 
         Returns:
             STTOutput with transcription text and segments
         """
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         start_time = time.time()
 
@@ -560,8 +626,7 @@ class Model(nn.Module):
         audio_tensor = self._preprocess_audio(audio)
 
         # Encode speech
-        speech_features = self.encode_speech(audio_tensor)
-        mx.eval(speech_features)
+        speech_features = self.encode_speech(audio_tensor, verbose=verbose)
 
         # Build prompt
         audio_duration = audio_tensor.shape[1] / 24000
@@ -578,6 +643,12 @@ class Model(nn.Module):
             top_k=top_k,
         )
 
+        # Create logits processors with repetition penalty
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
+        )
+
         # Generate tokens
         generated_tokens = []
 
@@ -587,6 +658,8 @@ class Model(nn.Module):
             acoustic_input_mask=acoustic_input_mask,
             max_tokens=max_tokens,
             sampler=sampler,
+            logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
             generation_stream=generation_stream,
             verbose=verbose,
         ):
@@ -628,6 +701,9 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = 1.2,
+        repetition_context_size: int = 100,
+        prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[str, None, None]:
         """
@@ -642,19 +718,21 @@ class Model(nn.Module):
             top_k: Top-k sampling
             min_p: Min-p sampling
             min_tokens_to_keep: Min tokens for sampling
+            repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
+            repetition_context_size: Number of recent tokens to check for repetition
+            prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             verbose: Print progress
 
         Yields:
             Decoded text chunks as they are generated.
         """
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         # Preprocess audio
         audio_tensor = self._preprocess_audio(audio)
 
         # Encode speech
-        speech_features = self.encode_speech(audio_tensor)
-        mx.eval(speech_features)
+        speech_features = self.encode_speech(audio_tensor, verbose=verbose)
 
         # Build prompt (same as generate)
         audio_duration = audio_tensor.shape[1] / 24000
@@ -671,6 +749,12 @@ class Model(nn.Module):
             top_k=top_k,
         )
 
+        # Create logits processors with repetition penalty
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
+        )
+
         # Stream tokens
         for token, _ in self.stream_generate(
             input_ids=input_ids,
@@ -678,6 +762,8 @@ class Model(nn.Module):
             acoustic_input_mask=acoustic_input_mask,
             max_tokens=max_tokens,
             sampler=sampler,
+            logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
             verbose=verbose,
         ):
             text = self.tokenizer.decode([token])
