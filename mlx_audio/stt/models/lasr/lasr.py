@@ -70,12 +70,27 @@ class LasrEncoderSubsampling(nn.Module):
             stride=config.subsampling_conv_stride,
         )
         self.dense_1 = nn.Linear(config.subsampling_conv_channels, config.hidden_size)
-        # Assuming ReLU as activation based on transformers implementation
         self.act_fn = nn.ReLU() 
 
     def __call__(self, input_features: mx.array) -> mx.array:
         hidden_states = self.act_fn(self.dense_0(input_features))
-
+        # No transpose needed as MLX Conv1d expects (N, L, C) if we confirm MLX conventions
+        # Wait, MLX Conv1d expects input (N, L, C) and weights (out_channels, kernel_size, in_channels)
+        # Transformers Conv1d expects (N, C, L). The loaded weights will be (out, in, kernel)
+        
+        # The transformers implementation does:
+        # dense_0(input_features) -> (B, L, H)
+        # transpose(1, 2) -> (B, H, L)
+        # conv_0 -> (B, H, L)
+        # conv_1 -> (B, C, L)
+        # transpose(1, 2) -> (B, L, C)
+        # dense_1 -> (B, L, H)
+        
+        # In MLX, we can keep (B, L, C) if we handle weights correctly or transpose if needed.
+        # But MLX Conv1d expects (N, L, Input_Channels).
+        # So we don't need to transpose to (N, C, L) like PyTorch.
+        # We just need to make sure kernel size and striding works on length dimension.
+        
         hidden_states = self.act_fn(self.conv_0(hidden_states))
         hidden_states = self.act_fn(self.conv_1(hidden_states))
         return self.dense_1(hidden_states)
@@ -161,15 +176,13 @@ class LasrEncoderConvolutionModule(nn.Module):
             channels, 2 * channels, kernel_size=1, stride=1, padding=0, bias=config.convolution_bias
         )
         
-        # Depthwise conv in MLX: separate implementation or use Conv1d with grouping if supported perfectly.
-        # Standard MLX Conv1d does not support groups!=1 efficiently in all versions/backends yet similar to torch?
-        # But checking MLX docs, it does support groups.
+        # Depthwise conv
         self.depthwise_conv = nn.Conv1d(
             channels,
             channels,
             kernel_size,
             stride=1,
-            padding=0, # Manual padding in __call__
+            padding=0, 
             groups=channels,
             bias=config.convolution_bias,
         )
@@ -317,7 +330,4 @@ class LasrForCTC(nn.Module):
         tokens = mx.argmax(logprobs, axis=-1)
         
         # Decode tokens to text (Requires tokenizer)
-        # This is strictly model implementation; decoding happens outside or via utility
-        # Returning raw tokens or implementing minimal decoding if we have tokenizer access
-        
-        return STTOutput(text="", tokens=tokens) # Placeholder
+        return STTOutput(text="", tokens=tokens)
