@@ -933,6 +933,10 @@ class Model(nn.Module):
 
                 mx.eval(input_embeds)
 
+                # Periodically clear cache to prevent memory buildup during long generation
+                if step > 0 and step % 50 == 0:
+                    mx.clear_cache()
+
                 if verbose and step % 100 == 0:
                     print(f"  Step {step}, generated {len(generated_codes)} tokens")
 
@@ -943,6 +947,10 @@ class Model(nn.Module):
 
             # Stack all generated codes
             codes = mx.stack(generated_codes, axis=1)  # [1, seq_len, num_code_groups]
+
+            # Clear cache before decode to free generation memory
+            mx.eval(codes)
+            mx.clear_cache()
 
             if verbose:
                 print(f"  Decoding {codes.shape[1]} tokens to audio...")
@@ -1600,12 +1608,6 @@ class Model(nn.Module):
                         tokenizer_config_dict["decoder_config"],
                     )
                     decoder_config = Qwen3TTSTokenizerDecoderConfig(**filtered)
-                if "encoder_config" in tokenizer_config_dict:
-                    filtered = filter_dict_for_dataclass(
-                        Qwen3TTSTokenizerEncoderConfig,
-                        tokenizer_config_dict["encoder_config"],
-                    )
-                    encoder_config = Qwen3TTSTokenizerEncoderConfig(**filtered)
 
                 tokenizer_config = Qwen3TTSTokenizerConfig(
                     encoder_config=encoder_config,

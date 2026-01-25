@@ -871,7 +871,7 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
 
         Args:
             codes: Input codes [batch, num_quantizers, time]
-            chunk_size: Number of tokens per chunk (reduced from 300 to 150 for lower memory)
+            chunk_size: Number of tokens per chunk (reduced for lower memory)
             left_context_size: Context from previous chunk for continuity
 
         Returns:
@@ -1067,7 +1067,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
 
         return wav, audio_lengths
 
-    def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 50):
+    def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 25):
         """
         Decode audio codes to waveform in a streaming fashion.
 
