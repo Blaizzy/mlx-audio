@@ -1187,7 +1187,10 @@ class Model(nn.Module):
             )
 
         # For 0.6B models, instruct is not supported
-        if self.config.tts_model_size == "0b6":
+        if (
+            self.config.tts_model_size == "0b6"
+            and self.config.tts_model_type != "custom_voice"
+        ):
             instruct = None
 
         yield from self._generate_with_instruct(
