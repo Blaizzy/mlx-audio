@@ -9,7 +9,6 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from tqdm import tqdm
 
 from mlx_audio.dsp import mel_filters, stft
