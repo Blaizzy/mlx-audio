@@ -3,14 +3,14 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_audio.codec.models.mimi.modules.conv import ConvTranspose1d
-from mlx_audio.tts.generate import load_audio
 from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.utils import load_audio
 
 from .conditioners import TokenizedText
 from .config import ModelConfig
@@ -233,22 +233,16 @@ class Model(nn.Module):
         self,
         text: str,
         voice: Optional[str] = None,
-        speed: float = 1.0,
-        lang_code: str = "en",
-        ref_audio: Optional[mx.array] = None,
-        ref_text: Optional[str] = None,
-        cfg_scale: Optional[float] = None,
-        ddpm_steps: Optional[int] = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         temperature: Optional[float] = None,
-        max_tokens: int = 1200,
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
         frames_after_eos: Optional[int] = None,
         **kwargs,
     ) -> Iterable[GenerationResult]:
-        del lang_code, ref_text, cfg_scale, ddpm_steps, max_tokens, speed
-
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
         prompt = self._resolve_audio_prompt(voice, ref_audio, verbose)
         model_state = self.get_state_for_audio_prompt(prompt)
         token_count = len(text.split())

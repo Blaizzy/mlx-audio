@@ -4,7 +4,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -21,6 +21,7 @@ from transformers import AutoTokenizer
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
+from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult
 from .attention import Attention
@@ -677,13 +678,17 @@ class Model(nn.Module):
         split_pattern: Optional[str] = r"\n+",
         sampler: Callable[..., mx.array] = None,
         max_audio_length_ms: float = 90_000,
-        ref_audio: mx.array = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: str = None,
         stream: bool = False,
         streaming_interval: float = 0.5,
         voice_match: bool = True,
         **kwargs,
     ):
+        # Load reference audio if provided (handles file paths and mx.array)
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
         # if reference audio is provided, use it as the first segment
         if len(context) == 0 and ref_audio is not None and ref_text is not None:
             context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
