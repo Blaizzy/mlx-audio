@@ -867,16 +867,7 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
         chunk_size: int = 300,
         left_context_size: int = 25,
     ) -> mx.array:
-        """Decode in chunks to handle long sequences with reduced memory usage.
-
-        Args:
-            codes: Input codes [batch, num_quantizers, time]
-            chunk_size: Number of tokens per chunk (reduced for lower memory)
-            left_context_size: Context from previous chunk for continuity
-
-        Returns:
-            Decoded audio waveform
-        """
+        """Decode in chunks to handle long sequences."""
         wavs = []
         start_index = 0
 
@@ -889,15 +880,7 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
             )
             codes_chunk = codes[..., start_index - context_size : end_index]
             wav_chunk = self(codes_chunk)
-            wav_chunk = wav_chunk[..., context_size * self.total_upsample :]
-
-            # Evaluate and store chunk immediately to free intermediate tensors
-            mx.eval(wav_chunk)
-            wavs.append(wav_chunk)
-
-            # Clear cache after each chunk to reduce peak memory
-            mx.clear_cache()
-
+            wavs.append(wav_chunk[..., context_size * self.total_upsample :])
             start_index = end_index
 
         return mx.concatenate(wavs, axis=-1)
@@ -1054,7 +1037,6 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
 
         Returns:
             audio: [batch, samples]
-            audio_lengths: [batch] valid sample lengths
         """
         # Transpose to [batch, num_quantizers, time]
         codes = mx.transpose(audio_codes, (0, 2, 1))

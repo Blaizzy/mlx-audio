@@ -1051,34 +1051,12 @@ class Model(nn.Module):
             # Stack all generated codes
             codes = mx.stack(generated_codes, axis=1)  # [1, seq_len, num_code_groups]
 
-            # Clear cache before decode to free generation memory
-            mx.eval(codes)
-            mx.clear_cache()
-
             # Non-streaming: decode all at once
-            num_tokens = codes.shape[1]
-            chunk_size = 25  # matches streaming_decode default
-            total_chunks = (num_tokens + chunk_size - 1) // chunk_size
+            audio, audio_lengths = self.speech_tokenizer.decode(codes)
+            audio = audio[0]  # Remove batch dim
 
-            audio_chunks = []
-            decode_pbar = tqdm(
-                self.speech_tokenizer.streaming_decode(codes),
-                total=total_chunks,
-                desc="Decoding",
-                unit="chunks",
-                disable=not verbose,
-                leave=False,
-            )
-            for chunk in decode_pbar:
-                audio_chunks.append(chunk)
-            decode_pbar.close()
-
-            audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
-
-            # Calculate valid length and trim
-            valid_len = int(
-                (codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
-            )
+            # Trim to valid length
+            valid_len = int(audio_lengths[0])
             if valid_len > 0 and valid_len < audio.shape[0]:
                 audio = audio[:valid_len]
 
@@ -1412,29 +1390,12 @@ class Model(nn.Module):
         ref_len = ref_codes.shape[2]
         total_len = full_codes.shape[1]
 
-        # Decode full codes to audio using streaming decode for lower peak memory
-        chunk_size = 25
-        total_chunks = (total_len + chunk_size - 1) // chunk_size
+        # Decode full codes to audio
+        audio, audio_lengths = self.speech_tokenizer.decode(full_codes)
+        audio = audio[0]  # Remove batch dim
 
-        audio_chunks = []
-        decode_pbar = tqdm(
-            self.speech_tokenizer.streaming_decode(full_codes),
-            total=total_chunks,
-            desc="Decoding",
-            unit="chunks",
-            disable=not verbose,
-            leave=False,
-        )
-        for chunk in decode_pbar:
-            audio_chunks.append(chunk)
-        decode_pbar.close()
-
-        audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
-
-        # Calculate valid length and trim
-        valid_len = int(
-            (full_codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
-        )
+        # Trim to valid length
+        valid_len = int(audio_lengths[0])
         if valid_len > 0 and valid_len < audio.shape[0]:
             audio = audio[:valid_len]
 
@@ -1711,34 +1672,12 @@ class Model(nn.Module):
         # Stack all generated codes
         codes = mx.stack(generated_codes, axis=1)
 
-        # Clear cache before decode to free generation memory
-        mx.eval(codes)
-        mx.clear_cache()
+        # Non-streaming: decode all at once
+        audio, audio_lengths = self.speech_tokenizer.decode(codes)
+        audio = audio[0]  # Remove batch dim
 
-        # Decode to audio using streaming decode for lower peak memory
-        num_tokens = codes.shape[1]
-        chunk_size = 25
-        total_chunks = (num_tokens + chunk_size - 1) // chunk_size
-
-        audio_chunks = []
-        decode_pbar = tqdm(
-            self.speech_tokenizer.streaming_decode(codes),
-            total=total_chunks,
-            desc="Decoding",
-            unit="chunks",
-            disable=not verbose,
-            leave=False,
-        )
-        for chunk in decode_pbar:
-            audio_chunks.append(chunk)
-        decode_pbar.close()
-
-        audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
-
-        # Calculate valid length and trim
-        valid_len = int(
-            (codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
-        )
+        # Trim to valid length
+        valid_len = int(audio_lengths[0])
         if valid_len > 0 and valid_len < audio.shape[0]:
             audio = audio[:valid_len]
 
