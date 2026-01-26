@@ -82,3 +82,5 @@ class GenerationResult:
     audio_samples: dict
     processing_time_seconds: float
     peak_memory_usage: float
+    is_streaming_chunk: bool = False
+    is_final_chunk: bool = False
