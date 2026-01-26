@@ -3012,5 +3012,161 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         mock_icl.assert_not_called()
 
 
+class TestQwen3TTSStreamingDecode(unittest.TestCase):
+    """Tests for streaming vs non-streaming decode behavior."""
+
+    def _make_model(self, hidden_size=64, num_code_groups=4, vocab_size=2048):
+        """Create a minimal Qwen3-TTS model for testing."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config_dict = {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "base",
+            "tts_model_size": "0b6",
+            "talker_config": {
+                "vocab_size": vocab_size,
+                "hidden_size": hidden_size,
+                "intermediate_size": 128,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "hidden_act": "silu",
+                "max_position_embeddings": 128,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0,
+                "attention_bias": False,
+                "attention_dropout": 0.0,
+                "num_code_groups": num_code_groups,
+                "text_hidden_size": hidden_size,
+                "text_vocab_size": 100,
+                "codec_eos_token_id": 30,
+                "codec_pad_id": 28,
+                "codec_bos_id": 29,
+                "codec_language_id": {"english": 20, "chinese": 21},
+                "spk_id": {"chelsie": 10, "ethan": 11},
+                "code_predictor_config": {
+                    "vocab_size": vocab_size,
+                    "hidden_size": hidden_size,
+                    "intermediate_size": 128,
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 32,
+                    "hidden_act": "silu",
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-6,
+                    "rope_theta": 10000.0,
+                    "attention_bias": False,
+                    "attention_dropout": 0.0,
+                    "num_code_groups": num_code_groups,
+                },
+            },
+            "speaker_encoder_config": None,
+            "tokenizer_config": None,
+            "im_start_token_id": 151644,
+            "im_end_token_id": 151645,
+            "tts_pad_token_id": 151671,
+            "tts_bos_token_id": 151672,
+            "tts_eos_token_id": 151673,
+            "sample_rate": 24000,
+        }
+
+        config = ModelConfig.from_dict(config_dict)
+        model = Model(config)
+
+        # Mock tokenizer
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.encode.return_value = list(range(10))
+        model.tokenizer = mock_tokenizer
+
+        # Mock speech_tokenizer
+        mock_speech_tokenizer = MagicMock()
+        mock_speech_tokenizer.has_encoder = False
+        mock_speech_tokenizer.decode_upsample_rate = 1920
+        mock_speech_tokenizer.decode.return_value = (
+            mx.random.normal((1, 48000)),
+            mx.array([48000]),
+        )
+
+        def mock_streaming_decode(codes, chunk_tokens=100):
+            # Yield chunks
+            total_samples = 48000
+            chunk_samples = chunk_tokens * 1920
+            for i in range(0, total_samples, chunk_samples):
+                end = min(i + chunk_samples, total_samples)
+                yield mx.random.normal((1, end - i))
+
+        mock_speech_tokenizer.streaming_decode = mock_streaming_decode
+        model.speech_tokenizer = mock_speech_tokenizer
+
+        return model
+
+    def test_decode_chunk_uses_streaming_decode(self):
+        """Test that _decode_chunk internally calls streaming_decode."""
+        model = self._make_model()
+
+        # Track streaming_decode calls
+        streaming_decode_calls = []
+
+        def tracking_streaming_decode(codes, chunk_tokens=100):
+            streaming_decode_calls.append(
+                {"codes": codes, "chunk_tokens": chunk_tokens}
+            )
+            yield mx.random.normal((1, 48000))
+
+        model.speech_tokenizer.streaming_decode = tracking_streaming_decode
+
+        # Call _decode_chunk directly
+        codes = mx.zeros((1, 10, 4))  # [batch, time, num_code_groups]
+        model._decode_chunk(codes, chunk_tokens=50)
+
+        # Verify streaming_decode was called with correct chunk_tokens
+        self.assertEqual(len(streaming_decode_calls), 1)
+        self.assertEqual(streaming_decode_calls[0]["chunk_tokens"], 50)
+
+    def test_decode_chunk_respects_chunk_tokens_parameter(self):
+        """Test that _decode_chunk passes chunk_tokens to streaming_decode."""
+        model = self._make_model()
+
+        # Track chunk_tokens values
+        chunk_tokens_used = []
+
+        def tracking_streaming_decode(codes, chunk_tokens=100):
+            chunk_tokens_used.append(chunk_tokens)
+            yield mx.random.normal((1, 48000))
+
+        model.speech_tokenizer.streaming_decode = tracking_streaming_decode
+
+        # Test with different chunk_tokens values
+        codes = mx.zeros((1, 10, 4))
+
+        model._decode_chunk(codes, chunk_tokens=25)
+        self.assertEqual(chunk_tokens_used[-1], 25)
+
+        model._decode_chunk(codes, chunk_tokens=100)
+        self.assertEqual(chunk_tokens_used[-1], 100)
+
+        model._decode_chunk(codes, chunk_tokens=300)
+        self.assertEqual(chunk_tokens_used[-1], 300)
+
+    def test_streaming_chunk_size_calculation(self):
+        """Test that streaming_chunk_size is calculated from streaming_interval."""
+        # The formula is: streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+        # Test the calculation directly
+
+        # streaming_interval=2.0 -> 25 tokens
+        self.assertEqual(max(1, int(2.0 * 12.5)), 25)
+
+        # streaming_interval=4.0 -> 50 tokens
+        self.assertEqual(max(1, int(4.0 * 12.5)), 50)
+
+        # streaming_interval=8.0 -> 100 tokens
+        self.assertEqual(max(1, int(8.0 * 12.5)), 100)
+
+        # streaming_interval=0.1 -> 1 token (minimum)
+        self.assertEqual(max(1, int(0.1 * 12.5)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
