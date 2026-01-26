@@ -298,9 +298,6 @@ def get_model_class(
         module_path = (f"mlx_audio.{category}.models.{model_type}")
         arch = importlib.import_module(module_path)
     except ImportError as e:
-        # If the module failure is caused by a missing dependency (e.g., 'misaki')
-        # rather than the availability of a model, 
-        # we re-raise the error to clarify that a required package is missing.
         if e.name != module_path:
             print("\n", flush=True)
             
