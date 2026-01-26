@@ -597,6 +597,7 @@ class Model(nn.Module):
     ) -> mx.array:
         """Sample next token from logits."""
         logits = logits[:, -1, :]  # Get last position
+        mx.eval(logits)
 
         # Suppress invalid tokens (set to -inf)
         if suppress_tokens:
