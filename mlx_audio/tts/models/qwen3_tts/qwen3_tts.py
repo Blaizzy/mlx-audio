@@ -1,61 +1,22 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import json
-import math
 import time
-from functools import partial
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+from mlx_lm.sample_utils import (
+    apply_min_p,
+    apply_top_k,
+    apply_top_p,
+    categorical_sampling,
+)
 from tqdm import tqdm
 
 from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.models.base import GenerationResult
-
-
-# Compiled sampling functions using pure MLX operations (inspired by mlx-lm)
-@partial(mx.compile, inputs=mx.random.state, outputs=mx.random.state)
-def _compiled_categorical(logits: mx.array, temp: float) -> mx.array:
-    """Compiled categorical sampling with temperature."""
-    return mx.random.categorical(logits * (1.0 / temp))
-
-
-@partial(mx.compile)
-def _apply_top_k(logits: mx.array, top_k: int) -> mx.array:
-    """Apply top-k filtering using pure MLX operations."""
-    # Get indices of tokens NOT in top-k
-    mask_idx = mx.argpartition(-logits, kth=top_k - 1, axis=-1)[..., top_k:]
-    # Set those to -inf
-    return mx.put_along_axis(
-        logits, mask_idx, mx.array(float("-inf"), logits.dtype), axis=-1
-    )
-
-
-@partial(mx.compile)
-def _apply_top_p(logits: mx.array, top_p: float) -> mx.array:
-    """Apply top-p (nucleus) filtering using pure MLX operations."""
-    # Sort in ascending order
-    sorted_indices = mx.argsort(logits, axis=-1)
-    sorted_logits = mx.take_along_axis(logits, sorted_indices, axis=-1)
-
-    # Compute cumulative probabilities
-    sorted_probs = mx.softmax(sorted_logits, axis=-1)
-    cumulative_probs = mx.cumsum(sorted_probs, axis=-1)
-
-    # Rearrange cumulative probs back to original order
-    inverse_indices = mx.put_along_axis(
-        mx.zeros_like(sorted_indices),
-        sorted_indices,
-        mx.arange(sorted_indices.shape[-1], dtype=sorted_indices.dtype),
-        axis=-1,
-    )
-    cumulative_probs = mx.take_along_axis(cumulative_probs, inverse_indices, axis=-1)
-
-    # Keep tokens with cumulative probs above (1 - top_p)
-    return mx.where(cumulative_probs > (1.0 - top_p), logits, float("-inf"))
-
 
 from .config import (
     ModelConfig,
@@ -680,24 +641,19 @@ class Model(nn.Module):
             eos_logit = logits[:, eos_token_id : eos_token_id + 1]
 
         if top_k > 0 and top_k < logits.shape[-1]:
-            logits = _apply_top_k(logits, top_k)
+            logits = apply_top_k(logits, top_k)
 
         if 0.0 < top_p < 1.0:
-            logits = _apply_top_p(logits, top_p)
+            logits = apply_top_p(logits, top_p)
 
         if min_p > 0.0:
-            # Get max logit (top token)
-            max_logit = mx.max(logits, axis=-1, keepdims=True)
-            # Compute threshold: tokens must have logit within log(min_p) of max
-            threshold = max_logit + math.log(min_p)
-            logits = mx.where(logits < threshold, float("-inf"), logits)
+            logits = apply_min_p(logits, min_p)
 
         if eos_logit is not None:
-
             eos_idx = mx.array([[eos_token_id]], dtype=mx.int32)
             logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
-        token = _compiled_categorical(logits, temperature)
+        token = categorical_sampling(logits, temperature)
         return token[:, None]
 
     def _decode_chunk(self, codes: mx.array) -> mx.array:
