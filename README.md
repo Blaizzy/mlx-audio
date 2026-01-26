@@ -78,7 +78,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
-| **MedASR** | Google's Medical Speech-to-Text | EN | [google/medasr](https://huggingface.co/google/medasr) |
+
 
 ### Speech-to-Speech (STS)
 
