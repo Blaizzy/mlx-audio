@@ -53,7 +53,8 @@ def mel_spectrogram(
 
     # Compute STFT for each sample in batch
     mels = []
-    padding = n_fft // 2
+    # Match PyTorch padding: (n_fft - hop_size) // 2 on each side
+    padding = (n_fft - hop_size) // 2
     for i in range(batch_size):
         # Manual reflect padding to match PyTorch reference (center=False with manual pad)
         sample = audio[i]
