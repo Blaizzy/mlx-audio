@@ -34,7 +34,7 @@ class TestLasrModel(unittest.TestCase):
         self.model_config = ModelConfig(
             vocab_size=1000,
             encoder_config=self.encoder_config,
-            model_type="lasr_ctc"
+            model_type="lasr"
         )
 
     def test_config_from_dict(self):
