@@ -187,9 +187,8 @@ class Qwen3TTSTokenizerConfig:
     encode_downsample_rate: int = 1920
 
     def __post_init__(self):
-        if self.encoder_config is None:
-            self.encoder_config = Qwen3TTSTokenizerEncoderConfig()
-        elif isinstance(self.encoder_config, dict):
+        # Encoder is only needed for voice cloning (ICL)
+        if isinstance(self.encoder_config, dict):
             filtered = filter_dict_for_dataclass(
                 Qwen3TTSTokenizerEncoderConfig, self.encoder_config
             )

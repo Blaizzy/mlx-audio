@@ -867,7 +867,16 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
         chunk_size: int = 300,
         left_context_size: int = 25,
     ) -> mx.array:
-        """Decode in chunks to handle long sequences."""
+        """Decode in chunks to handle long sequences with reduced memory usage.
+
+        Args:
+            codes: Input codes [batch, num_quantizers, time]
+            chunk_size: Number of tokens per chunk (reduced for lower memory)
+            left_context_size: Context from previous chunk for continuity
+
+        Returns:
+            Decoded audio waveform
+        """
         wavs = []
         start_index = 0
 
@@ -880,7 +889,15 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
             )
             codes_chunk = codes[..., start_index - context_size : end_index]
             wav_chunk = self(codes_chunk)
-            wavs.append(wav_chunk[..., context_size * self.total_upsample :])
+            wav_chunk = wav_chunk[..., context_size * self.total_upsample :]
+
+            # Evaluate and store chunk immediately to free intermediate tensors
+            mx.eval(wav_chunk)
+            wavs.append(wav_chunk)
+
+            # Clear cache after each chunk to reduce peak memory
+            mx.clear_cache()
+
             start_index = end_index
 
         return mx.concatenate(wavs, axis=-1)
@@ -1037,6 +1054,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
 
         Returns:
             audio: [batch, samples]
+            audio_lengths: [batch] valid sample lengths
         """
         # Transpose to [batch, num_quantizers, time]
         codes = mx.transpose(audio_codes, (0, 2, 1))
@@ -1048,6 +1066,47 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
         ) * self.decode_upsample_rate
 
         return wav, audio_lengths
+
+    def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 25):
+        """
+        Decode audio codes to waveform in a streaming fashion.
+
+        Yields audio chunks as they're decoded, reducing peak memory usage.
+
+        Args:
+            audio_codes: [batch, time, num_quantizers]
+            chunk_tokens: Number of tokens to decode per chunk
+
+        Yields:
+            audio_chunk: [batch, samples] decoded audio for each chunk
+        """
+        # Transpose to [batch, num_quantizers, time]
+        codes = mx.transpose(audio_codes, (0, 2, 1))
+        total_tokens = codes.shape[-1]
+        left_context_size = 25
+
+        start_index = 0
+        while start_index < total_tokens:
+            end_index = min(start_index + chunk_tokens, total_tokens)
+            context_size = (
+                left_context_size
+                if start_index - left_context_size > 0
+                else start_index
+            )
+            codes_chunk = codes[..., start_index - context_size : end_index]
+            wav_chunk = self.decoder(codes_chunk)
+            wav_chunk = wav_chunk[..., context_size * self.decoder.total_upsample :]
+            wav_chunk = wav_chunk.squeeze(1)
+
+            # Evaluate immediately to free computation graph
+            mx.eval(wav_chunk)
+
+            yield wav_chunk
+
+            # Clear cache after each chunk
+            mx.clear_cache()
+
+            start_index = end_index
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:

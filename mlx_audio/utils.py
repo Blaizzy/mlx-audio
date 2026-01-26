@@ -295,8 +295,17 @@ def get_model_class(
         model_type = model_type_mapped
 
     try:
-        arch = importlib.import_module(f"mlx_audio.{category}.models.{model_type}")
-    except ImportError:
+        module_path = (f"mlx_audio.{category}.models.{model_type}")
+        arch = importlib.import_module(module_path)
+    except ImportError as e:
+        if e.name != module_path:
+            print("\n", flush=True)
+            
+            raise ImportError(
+                f"\nMissing dependency while loading {model_type}: {e}\n"
+                f"Please install it using: pip install {e.name}"
+            ) from e
+
         msg = f"Model type {model_type} not supported for {category}."
         logging.error(msg)
         raise ValueError(msg)
