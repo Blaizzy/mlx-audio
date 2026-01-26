@@ -511,12 +511,60 @@ def parse_args():
 
     if args.text is None:
         if not sys.stdin.isatty():
-            args.text = sys.stdin.read().strip()
+            # Sanitize stdin input as well
+            args.text = sanitize_text_input(sys.stdin.read().strip())
         else:
             print("Please enter the text to generate:")
-            args.text = input("> ").strip()
+            # Use sanitization function to prevent command injection
+            args.text = sanitize_text_input(input("> ").strip())
 
     return args
+
+
+def sanitize_text_input(text: str) -> str:
+    """
+    Sanitize user input to prevent command injection attacks.
+    
+    Args:
+        text: Raw user input text
+        
+    Returns:
+        Sanitized text safe for processing
+
+    Raises:
+        ValueError: If input contains dangerous patterns or exceeds length limit
+    """
+    import re
+    
+    # Remove null bytes which can bypass filters
+    text = text.replace('\0', '')
+    
+    # Enforce reasonable length limit to prevent DoS
+    if len(text) > 10000:
+        raise ValueError("Input text too long (max 10000 characters)")
+    
+    # Block shell metacharacters and command injection patterns
+    # This prevents command injection even if text is later used in shell contexts
+    dangerous_patterns = [
+        r'`',           # Command substitution
+        r'\$\(',        # Command substitution
+        r'\$\{',        # Variable expansion
+        r'&&',          # Command chaining
+        r'\|\|',        # Command chaining
+        r';',           # Command separator
+        r'\|',          # Pipe operator
+        r'>\s*&',       # Redirection
+        r'<\s*&',       # Redirection
+    ]
+    
+    for pattern in dangerous_patterns:
+        if re.search(pattern, text):
+            raise ValueError(
+                f"Input rejected: contains potentially dangerous pattern '{pattern}'. "
+                "Please enter plain text only."
+            )
+    
+    return text
 
 
 def main():
