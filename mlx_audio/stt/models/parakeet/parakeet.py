@@ -2,7 +2,7 @@ import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Generator, List, Optional
+from typing import Callable, Generator, List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -179,7 +179,7 @@ class Model(nn.Module):
 
     def generate(
         self,
-        path: Path | str,
+        audio: Union[str, Path, mx.array],
         *,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: Optional[float] = None,
@@ -189,10 +189,10 @@ class Model(nn.Module):
         **kwargs,
     ) -> AlignedResult | Generator[StreamingResult, None, None]:
         """
-        Transcribe an audio file, with optional chunking for long files.
+        Transcribe audio, with optional chunking for long files.
 
         Args:
-            path: Path to the audio file
+            audio: Path to audio file (str/Path), or audio waveform (mx.array)
             dtype: Data type for processing
             chunk_duration: If provided, splits audio into chunks of this length for processing
             overlap_duration: Overlap between chunks (only used when chunking)
@@ -209,7 +209,7 @@ class Model(nn.Module):
 
         if stream:
             return self.stream_generate(
-                path,
+                audio,
                 dtype=dtype,
                 chunk_duration=chunk_duration,
                 overlap_duration=overlap_duration,
@@ -217,10 +217,14 @@ class Model(nn.Module):
                 **kwargs,
             )
 
-        audio_path = Path(path)
-        audio_data = load_audio(
-            audio_path, self.preprocessor_config.sample_rate, dtype=dtype
-        )
+        # Handle different audio input types
+        if isinstance(audio, (str, Path)):
+            audio_data = load_audio(
+                audio, self.preprocessor_config.sample_rate, dtype=dtype
+            )
+        else:
+            # mx.array input
+            audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
 
         if chunk_duration is None:
             return self.decode_chunk(audio_data, verbose)
@@ -290,7 +294,7 @@ class Model(nn.Module):
 
     def stream_generate(
         self,
-        path: Path | str,
+        audio: Union[str, Path, mx.array],
         *,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: float = 5.0,
@@ -299,10 +303,10 @@ class Model(nn.Module):
         **kwargs,
     ) -> Generator[StreamingResult, None, None]:
         """
-        Transcribe an audio file with streaming output, yielding results as chunks are processed.
+        Transcribe audio with streaming output, yielding results as chunks are processed.
 
         Args:
-            path: Path to the audio file
+            audio: Path to audio file (str/Path), or audio waveform (mx.array)
             dtype: Data type for processing
             chunk_duration: Duration of each chunk in seconds (default 5.0)
             overlap_duration: Overlap between chunks in seconds (default 1.0)
@@ -316,10 +320,14 @@ class Model(nn.Module):
             ...     print(f"[{'FINAL' if result.is_final else 'partial'}] {result.text}")
         """
 
-        audio_path = Path(path)
-        audio_data = load_audio(
-            audio_path, self.preprocessor_config.sample_rate, dtype=dtype
-        )
+        # Handle different audio input types
+        if isinstance(audio, (str, Path)):
+            audio_data = load_audio(
+                audio, self.preprocessor_config.sample_rate, dtype=dtype
+            )
+        else:
+            # mx.array input
+            audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
 
         sample_rate = self.preprocessor_config.sample_rate
         total_samples = len(audio_data)

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel", "setuptools-scm>=8.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,13 +7,12 @@ name = "mlx-audio"
 dynamic = ["version"]
 description = "MLX-Audio is a package for inference of text-to-speech (TTS) and speech-to-speech (STS) models locally on your Mac using MLX"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Prince Canuma", email = "prince.gdt@gmail.com"}
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
 ]
 requires-python = ">=3.10"
@@ -23,12 +22,13 @@ dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
     "huggingface_hub>=0.27.0",
-    "transformers==5.0.0rc1",
-    "mlx-lm==0.30.2",
+    "transformers==5.0.0rc3",
+    "mlx-lm==0.30.5",
     "tqdm>=4.67.1",
     "sounddevice==0.5.3",
     "miniaudio>=1.61",
     "pyloudnorm>=0.2.0",
+    "numba>=0.60.0", # Required by librosa
     "librosa==0.11.0",
 ]
 

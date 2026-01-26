@@ -44,3 +44,4 @@ output/
 # uv
 .build
 claude.md
+.claude/

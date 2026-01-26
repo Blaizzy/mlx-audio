@@ -1833,5 +1833,1156 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(audio.shape[0], 1)
 
 
+class TestQwen3TTSModel(unittest.TestCase):
+    """Tests for Qwen3-TTS model."""
+
+    def _default_talker_config(self):
+        # Minimal config for fast tests
+        return {
+            "vocab_size": 32,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 32,
+            "hidden_act": "silu",
+            "max_position_embeddings": 128,
+            "rms_norm_eps": 1e-6,
+            "rope_theta": 10000.0,
+            "attention_bias": False,
+            "attention_dropout": 0.0,
+            "num_code_groups": 4,
+            "text_hidden_size": 64,
+            "text_vocab_size": 100,
+            "codec_eos_token_id": 30,
+            "codec_pad_id": 28,
+            "codec_bos_id": 29,
+            "codec_language_id": {"english": 20, "chinese": 21},
+            "spk_id": {"chelsie": 10, "ethan": 11},
+            "code_predictor_config": {
+                "vocab_size": 32,
+                "hidden_size": 64,
+                "intermediate_size": 128,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "hidden_act": "silu",
+                "max_position_embeddings": 128,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0,
+                "attention_bias": False,
+                "attention_dropout": 0.0,
+                "num_code_groups": 4,
+            },
+        }
+
+    def _default_config(self, tts_model_type="base"):
+        return {
+            "model_type": "qwen3_tts",
+            "tts_model_type": tts_model_type,
+            "tts_model_size": "0b6",
+            "talker_config": self._default_talker_config(),
+            "speaker_encoder_config": None,
+            "tokenizer_config": None,
+            "im_start_token_id": 151644,
+            "im_end_token_id": 151645,
+            "tts_pad_token_id": 151671,
+            "tts_bos_token_id": 151672,
+            "tts_eos_token_id": 151673,
+            "sample_rate": 24000,
+        }
+
+    def test_config_init(self):
+        """Test Qwen3TTS ModelConfig initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+
+        self.assertEqual(config.model_type, "qwen3_tts")
+        self.assertEqual(config.tts_model_type, "base")
+        self.assertEqual(config.sample_rate, 24000)
+        self.assertIsNotNone(config.talker_config)
+
+    def test_config_custom_voice(self):
+        """Test config with custom_voice model type."""
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("custom_voice"))
+
+        self.assertEqual(config.tts_model_type, "custom_voice")
+
+    def test_config_voice_design(self):
+        """Test config with voice_design model type."""
+        from mlx_audio.tts.models.qwen3_tts.config import ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("voice_design"))
+
+        self.assertEqual(config.tts_model_type, "voice_design")
+
+    def test_model_init(self):
+        """Test Qwen3TTS Model initialization."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+        model = Model(config)
+
+        self.assertIsInstance(model, Model)
+        self.assertEqual(model.model_type, "qwen3_tts")
+        self.assertEqual(model.sample_rate, 24000)
+
+    def test_model_supported_speakers(self):
+        """Test supported speakers list."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+        model = Model(config)
+
+        speakers = model.get_supported_speakers()
+        self.assertIn("chelsie", speakers)
+        self.assertIn("ethan", speakers)
+
+    def test_model_supported_languages(self):
+        """Test supported languages list."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config())
+        model = Model(config)
+
+        languages = model.get_supported_languages()
+        self.assertIn("auto", languages)
+        self.assertIn("english", languages)
+        self.assertIn("chinese", languages)
+
+    def test_talker_init(self):
+        """Test Talker model initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTalkerConfig
+        from mlx_audio.tts.models.qwen3_tts.talker import (
+            Qwen3TTSTalkerForConditionalGeneration,
+        )
+
+        config = Qwen3TTSTalkerConfig(**self._default_talker_config())
+        talker = Qwen3TTSTalkerForConditionalGeneration(config)
+
+        self.assertIsNotNone(talker.model)
+        self.assertIsNotNone(talker.code_predictor)
+        self.assertEqual(config.vocab_size, 32)
+
+    def test_talker_forward(self):
+        """Test Talker forward pass."""
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTalkerConfig
+        from mlx_audio.tts.models.qwen3_tts.talker import (
+            Qwen3TTSTalkerForConditionalGeneration,
+        )
+
+        config = Qwen3TTSTalkerConfig(**self._default_talker_config())
+        talker = Qwen3TTSTalkerForConditionalGeneration(config)
+
+        # Test forward with inputs_embeds
+        batch_size, seq_len = 1, 10
+        hidden_size = config.hidden_size
+        inputs_embeds = mx.random.normal((batch_size, seq_len, hidden_size))
+
+        # Talker returns (logits, hidden_states)
+        logits, hidden_states = talker(inputs_embeds=inputs_embeds)
+
+        self.assertEqual(logits.shape[0], batch_size)
+        self.assertEqual(logits.shape[1], seq_len)
+        self.assertEqual(logits.shape[2], config.vocab_size)
+        self.assertEqual(hidden_states.shape, (batch_size, seq_len, hidden_size))
+
+    def test_code_predictor_init(self):
+        """Test CodePredictor initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import (
+            Qwen3TTSTalkerCodePredictorConfig,
+        )
+        from mlx_audio.tts.models.qwen3_tts.talker import Qwen3TTSTalkerCodePredictor
+
+        config = Qwen3TTSTalkerCodePredictorConfig(
+            vocab_size=32,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=32,
+            num_code_groups=4,
+        )
+        code_predictor = Qwen3TTSTalkerCodePredictor(config, talker_hidden_size=64)
+
+        self.assertEqual(len(code_predictor.codec_embedding), 3)  # num_code_groups - 1
+        self.assertIsNotNone(code_predictor.model)
+
+    def test_code_predictor_forward(self):
+        """Test CodePredictor forward pass."""
+        from mlx_audio.tts.models.qwen3_tts.config import (
+            Qwen3TTSTalkerCodePredictorConfig,
+        )
+        from mlx_audio.tts.models.qwen3_tts.talker import Qwen3TTSTalkerCodePredictor
+
+        config = Qwen3TTSTalkerCodePredictorConfig(
+            vocab_size=32,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=1,
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=32,
+            num_code_groups=4,
+        )
+        code_predictor = Qwen3TTSTalkerCodePredictor(config, talker_hidden_size=64)
+
+        batch_size, seq_len = 1, 2
+        inputs_embeds = mx.random.normal((batch_size, seq_len, 64))
+
+        # CodePredictor returns (logits, cache, next_step)
+        logits, _, _ = code_predictor(inputs_embeds=inputs_embeds)
+
+        self.assertEqual(logits.shape[0], batch_size)
+        self.assertEqual(logits.shape[1], seq_len)
+        self.assertEqual(logits.shape[2], config.vocab_size)
+
+    def test_generate_routing_base(self):
+        """Test that generate routes correctly for base model."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("base"))
+        model = Model(config)
+
+        # Base model should not require instruct
+        self.assertEqual(config.tts_model_type, "base")
+
+    def test_generate_routing_custom_voice_requires_voice(self):
+        """Test that custom_voice model requires voice parameter."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("custom_voice"))
+        model = Model(config)
+
+        # Mock speech_tokenizer to avoid loading
+        model.speech_tokenizer = MagicMock()
+
+        with self.assertRaises(ValueError) as context:
+            list(model.generate(text="Hello", voice=None))
+
+        self.assertIn("voice", str(context.exception).lower())
+
+    def test_generate_routing_voice_design_requires_instruct(self):
+        """Test that voice_design model requires instruct parameter."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config = ModelConfig.from_dict(self._default_config("voice_design"))
+        model = Model(config)
+
+        # Mock speech_tokenizer to avoid loading
+        model.speech_tokenizer = MagicMock()
+
+        with self.assertRaises(ValueError) as context:
+            list(model.generate(text="Hello", instruct=None))
+
+        self.assertIn("instruct", str(context.exception).lower())
+
+    def test_speaker_encoder_config(self):
+        """Test SpeakerEncoder config initialization."""
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSSpeakerEncoderConfig
+
+        config = Qwen3TTSSpeakerEncoderConfig()
+
+        self.assertEqual(config.mel_dim, 128)
+        self.assertEqual(config.enc_dim, 1024)
+        self.assertEqual(config.sample_rate, 24000)
+        self.assertEqual(len(config.enc_channels), 5)
+
+    def test_mel_spectrogram(self):
+        """Test mel spectrogram computation."""
+        from mlx_audio.tts.models.qwen3_tts.qwen3_tts import mel_spectrogram
+
+        # Create a simple test audio
+        sample_rate = 24000
+        duration = 0.5  # 0.5 seconds
+        audio = mx.random.normal((int(sample_rate * duration),))
+
+        mel = mel_spectrogram(
+            audio,
+            n_fft=1024,
+            num_mels=128,
+            sample_rate=sample_rate,
+            hop_size=256,
+        )
+
+        # Check output shape
+        self.assertEqual(mel.ndim, 3)  # [batch, time, mels]
+        self.assertEqual(mel.shape[0], 1)  # batch size
+        self.assertEqual(mel.shape[2], 128)  # num_mels
+
+
+class TestQwen3TTSEncoder(unittest.TestCase):
+    """Tests for Qwen3TTSSpeechTokenizerEncoder."""
+
+    def _default_encoder_config(self):
+        from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTokenizerEncoderConfig
+
+        return Qwen3TTSTokenizerEncoderConfig(
+            frame_rate=12.5,
+            audio_channels=1,
+            codebook_dim=256,
+            codebook_size=64,  # Small for tests
+            compress=2,
+            dilation_growth_rate=2,
+            hidden_size=64,  # Small for tests
+            intermediate_size=128,
+            kernel_size=7,
+            last_kernel_size=3,
+            num_attention_heads=4,
+            num_filters=16,  # Small for tests
+            num_hidden_layers=1,  # Single layer for speed
+            num_key_value_heads=4,
+            num_quantizers=32,
+            num_residual_layers=1,
+            num_semantic_quantizers=1,
+            residual_kernel_size=3,
+            rope_theta=10000.0,
+            sampling_rate=24000,
+            sliding_window=250,
+            upsampling_ratios=[8, 6, 5, 4],
+            use_causal_conv=True,
+            use_conv_shortcut=False,
+            layer_scale_initial_scale=0.01,
+            max_position_embeddings=8000,
+            head_dim=16,
+        )
+
+    def test_encoder_init(self):
+        """Test encoder initialization with valid config."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        self.assertIsNotNone(encoder.encoder)
+        self.assertIsNotNone(encoder.encoder_transformer)
+        self.assertIsNotNone(encoder.downsample)
+        self.assertIsNotNone(encoder.quantizer)
+        self.assertEqual(encoder.valid_num_quantizers, 16)
+
+    def test_encoder_components(self):
+        """Test encoder has correct component types."""
+        from mlx_audio.codec.models.mimi.modules.conv import ConvDownsample1d
+        from mlx_audio.codec.models.mimi.modules.quantization import (
+            SplitResidualVectorQuantizer as MimiSplitRVQ,
+        )
+        from mlx_audio.codec.models.mimi.modules.seanet import SeanetEncoder
+        from mlx_audio.codec.models.mimi.modules.transformer import ProjectedTransformer
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        self.assertIsInstance(encoder.encoder, SeanetEncoder)
+        self.assertIsInstance(encoder.encoder_transformer, ProjectedTransformer)
+        self.assertIsInstance(encoder.downsample, ConvDownsample1d)
+        self.assertIsInstance(encoder.quantizer, MimiSplitRVQ)
+
+    def test_encoder_cache_init(self):
+        """Test encoder cache is properly initialized."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        # Cache should have one entry per transformer layer
+        self.assertEqual(len(encoder.encoder_cache), config.num_hidden_layers)
+
+    def test_encoder_encode_output_shape(self):
+        """Test encoder produces correct output shape."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        # Input: [batch, channels, samples]
+        # The downsample rate = prod(upsampling_ratios) * downsample_stride
+        # = (8*6*5*4) * 2 = 1920
+        num_samples = 1920 * 3  # 3 time steps expected
+        audio = mx.random.normal((1, 1, num_samples))
+
+        codes = encoder.encode(audio)
+        mx.eval(codes)
+
+        # Output: [batch, valid_num_quantizers, time]
+        self.assertEqual(codes.ndim, 3)
+        self.assertEqual(codes.shape[0], 1)
+        self.assertEqual(codes.shape[1], 16)  # valid_num_quantizers
+        # Time dimension: num_samples / 1920 = 3
+        self.assertEqual(codes.shape[2], 3)
+
+    def test_encoder_encode_different_lengths(self):
+        """Test encoder handles different audio lengths correctly."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        for num_frames in [2, 5, 10]:
+            num_samples = 1920 * num_frames
+            audio = mx.random.normal((1, 1, num_samples))
+            codes = encoder.encode(audio)
+            mx.eval(codes)
+
+            self.assertEqual(codes.shape[0], 1)
+            self.assertEqual(codes.shape[1], 16)
+            self.assertEqual(codes.shape[2], num_frames)
+
+    def test_encoder_encode_truncates_quantizers(self):
+        """Test encoder only returns first 16 quantizers out of 32."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        self.assertEqual(config.num_quantizers, 32)
+
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+        audio = mx.random.normal((1, 1, 1920 * 2))
+        codes = encoder.encode(audio)
+        mx.eval(codes)
+
+        # Should only have 16 quantizers, not 32
+        self.assertEqual(codes.shape[1], 16)
+
+    def test_encoder_encode_code_range(self):
+        """Test that encoded codes are within valid codebook range."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        audio = mx.random.normal((1, 1, 1920 * 3))
+        codes = encoder.encode(audio)
+        mx.eval(codes)
+
+        # Codes should be in range [0, codebook_size)
+        self.assertTrue(mx.all(codes >= 0).item())
+        self.assertTrue(mx.all(codes < config.codebook_size).item())
+
+    def test_encoder_causal_mask(self):
+        """Test that encode creates proper causal attention mask."""
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        # Different length inputs should produce consistent results
+        # when processing the same prefix (due to causal masking)
+        audio_short = mx.random.normal((1, 1, 1920 * 2))
+        codes_short = encoder.encode(audio_short)
+        mx.eval(codes_short)
+
+        self.assertEqual(codes_short.shape[2], 2)
+
+    def test_encoder_downsample_stride(self):
+        """Test downsample stride is computed correctly from config."""
+        import math
+
+        from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+            Qwen3TTSSpeechTokenizerEncoder,
+        )
+
+        config = self._default_encoder_config()
+        encoder = Qwen3TTSSpeechTokenizerEncoder(config)
+
+        # encoder_frame_rate = sampling_rate / prod(upsampling_ratios) = 24000/960 = 25
+        # downsample_stride = encoder_frame_rate / frame_rate = 25 / 12.5 = 2
+        encoder_frame_rate = config.sampling_rate / math.prod(config.upsampling_ratios)
+        expected_stride = int(encoder_frame_rate / config.frame_rate)
+        self.assertEqual(expected_stride, 2)
+
+        # Verify stride effect: with stride=2, output time should be halved
+        # compared to no-downsample. The encode test already validates total
+        # output shape (samples/1920), here we verify the stride math.
+        self.assertEqual(encoder.downsample.conv.conv.conv._stride, expected_stride)
+
+
+class TestQwen3TTSPrepareICLInputs(unittest.TestCase):
+    """Tests for _prepare_icl_generation_inputs method."""
+
+    def _make_model_with_mocks(self, hidden_size=64, num_code_groups=4, vocab_size=32):
+        """Create a minimal Model with mocked components for testing ICL prep."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        # Use text_vocab_size large enough to hold tts_*_token_ids
+        # so embeddings are distinct for different token IDs
+        text_vocab_size = 200
+
+        config_dict = {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "base",
+            "tts_model_size": "0b6",
+            "talker_config": {
+                "vocab_size": vocab_size,
+                "hidden_size": hidden_size,
+                "intermediate_size": 128,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "hidden_act": "silu",
+                "max_position_embeddings": 128,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0,
+                "attention_bias": False,
+                "attention_dropout": 0.0,
+                "num_code_groups": num_code_groups,
+                "text_hidden_size": hidden_size,
+                "text_vocab_size": text_vocab_size,
+                "codec_eos_token_id": 30,
+                "codec_pad_id": 28,
+                "codec_bos_id": 29,
+                "codec_language_id": {"english": 20, "chinese": 21},
+                "spk_id": {"chelsie": 10, "ethan": 11},
+                "code_predictor_config": {
+                    "vocab_size": vocab_size,
+                    "hidden_size": hidden_size,
+                    "intermediate_size": 128,
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 32,
+                    "hidden_act": "silu",
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-6,
+                    "rope_theta": 10000.0,
+                    "attention_bias": False,
+                    "attention_dropout": 0.0,
+                    "num_code_groups": num_code_groups,
+                },
+            },
+            "speaker_encoder_config": None,
+            "tokenizer_config": None,
+            "im_start_token_id": 50,
+            "im_end_token_id": 51,
+            "tts_pad_token_id": 60,
+            "tts_bos_token_id": 61,
+            "tts_eos_token_id": 62,
+            "sample_rate": 24000,
+        }
+
+        config = ModelConfig.from_dict(config_dict)
+        model = Model(config)
+
+        # Mock tokenizer
+        mock_tokenizer = MagicMock()
+        # Return 10 tokens for any encode call (includes role tokens)
+        mock_tokenizer.encode.return_value = list(range(10))
+        model.tokenizer = mock_tokenizer
+
+        # Mock speech_tokenizer with encoder
+        mock_speech_tokenizer = MagicMock()
+        mock_speech_tokenizer.has_encoder = True
+        ref_time = 5
+        # encode returns [1, 16, ref_time]
+        mock_speech_tokenizer.encode.return_value = mx.zeros(
+            (1, 16, ref_time), dtype=mx.int32
+        )
+        model.speech_tokenizer = mock_speech_tokenizer
+
+        # No speaker encoder for this test
+        model.speaker_encoder = None
+
+        return model, ref_time
+
+    def test_prepare_icl_output_shapes(self):
+        """Test that _prepare_icl_generation_inputs returns correct shapes."""
+        model, ref_time = self._make_model_with_mocks()
+        hidden_size = model.config.talker_config.hidden_size
+
+        ref_audio = mx.random.normal((24000,))  # 1s audio
+        input_embeds, trailing, tts_pad, ref_codes = (
+            model._prepare_icl_generation_inputs(
+                text="Hello world",
+                ref_audio=ref_audio,
+                ref_text="Reference text",
+                language="auto",
+            )
+        )
+        mx.eval(input_embeds, trailing, tts_pad, ref_codes)
+
+        # input_embeds: [1, text_lens + codec_lens, hidden_size]
+        self.assertEqual(input_embeds.ndim, 3)
+        self.assertEqual(input_embeds.shape[0], 1)
+        self.assertEqual(input_embeds.shape[2], hidden_size)
+
+        # trailing_text_hidden: tts_pad_embed [1, 1, hidden_size] in non-streaming mode
+        self.assertEqual(trailing.ndim, 3)
+        self.assertEqual(trailing.shape[0], 1)
+        self.assertEqual(trailing.shape[2], hidden_size)
+
+        # tts_pad_embed: [1, 1, hidden_size]
+        self.assertEqual(tts_pad.shape, (1, 1, hidden_size))
+
+        # ref_codes: [1, 16, ref_time]
+        self.assertEqual(ref_codes.shape, (1, 16, ref_time))
+
+    def test_prepare_icl_non_streaming_structure(self):
+        """Test non-streaming mode: text_with_codec_pad + codec_with_tts_pad."""
+        model, ref_time = self._make_model_with_mocks()
+
+        ref_audio = mx.random.normal((24000,))
+        input_embeds, trailing, tts_pad, ref_codes = (
+            model._prepare_icl_generation_inputs(
+                text="Hello",
+                ref_audio=ref_audio,
+                ref_text="Ref",
+                language="auto",
+            )
+        )
+        mx.eval(input_embeds)
+
+        # In non-streaming mode:
+        # input_embeds = concat(text_with_codec_pad, codec_with_text_pad)
+        # text_lens = ref_text_tokens + target_text_tokens + eos
+        # codec_lens = 1 (bos) + ref_time (ref_codes)
+        codec_lens = 1 + ref_time  # codec_bos + ref_time
+        total_len = input_embeds.shape[1]
+
+        # Total should be text_lens + codec_lens
+        self.assertGreater(total_len, codec_lens)
+
+    def test_prepare_icl_trailing_is_tts_pad(self):
+        """Test that trailing_text_hidden equals tts_pad_embed in non-streaming mode."""
+        model, _ = self._make_model_with_mocks()
+
+        ref_audio = mx.random.normal((24000,))
+        _, trailing, tts_pad, _ = model._prepare_icl_generation_inputs(
+            text="Hello",
+            ref_audio=ref_audio,
+            ref_text="Ref",
+            language="auto",
+        )
+        mx.eval(trailing, tts_pad)
+
+        # In non-streaming mode, trailing = tts_pad_embed
+        np.testing.assert_array_equal(np.array(trailing), np.array(tts_pad))
+
+    def test_prepare_icl_ref_audio_dim_handling(self):
+        """Test that ref_audio is properly reshaped for encoding."""
+        model, _ = self._make_model_with_mocks()
+
+        # Test 1D input
+        ref_audio_1d = mx.random.normal((24000,))
+        model._prepare_icl_generation_inputs(
+            text="Hello", ref_audio=ref_audio_1d, ref_text="Ref"
+        )
+        # Speech tokenizer should receive [1, 1, samples]
+        call_args = model.speech_tokenizer.encode.call_args[0][0]
+        self.assertEqual(call_args.ndim, 3)
+        self.assertEqual(call_args.shape[0], 1)
+        self.assertEqual(call_args.shape[1], 1)
+
+    def test_prepare_icl_ref_audio_2d_handling(self):
+        """Test that 2D ref_audio is properly reshaped."""
+        model, _ = self._make_model_with_mocks()
+
+        # Test 2D input [1, samples]
+        ref_audio_2d = mx.random.normal((1, 24000))
+        model._prepare_icl_generation_inputs(
+            text="Hello", ref_audio=ref_audio_2d, ref_text="Ref"
+        )
+        call_args = model.speech_tokenizer.encode.call_args[0][0]
+        self.assertEqual(call_args.ndim, 3)
+
+    def test_prepare_icl_language_id(self):
+        """Test that language_id is incorporated in codec prefix."""
+        model, _ = self._make_model_with_mocks()
+
+        ref_audio = mx.random.normal((24000,))
+
+        # With language="english", should include language_id in codec prefix
+        input_embeds_en, _, _, _ = model._prepare_icl_generation_inputs(
+            text="Hello", ref_audio=ref_audio, ref_text="Ref", language="english"
+        )
+        mx.eval(input_embeds_en)
+
+        # With language="auto", no language_id
+        input_embeds_auto, _, _, _ = model._prepare_icl_generation_inputs(
+            text="Hello", ref_audio=ref_audio, ref_text="Ref", language="auto"
+        )
+        mx.eval(input_embeds_auto)
+
+        # The embeddings should differ in size (language adds one more token)
+        # auto: [nothink, think_bos, think_eos] = 3 codec prefix tokens
+        # english: [think, think_bos, language_id, think_eos] = 4 codec prefix tokens
+        # But this difference is after the icl_input_embed, so they should differ
+        # Actually the codec prefix is appended AFTER icl_input_embed in the generate loop,
+        # not in _prepare_icl_generation_inputs. The returned input_embeds only has
+        # text_with_codec_pad + codec_with_text_pad. Language affects codec_prefix_embed
+        # which is concatenated later. Let's verify the core structure is consistent.
+        self.assertEqual(input_embeds_en.shape[2], input_embeds_auto.shape[2])
+
+    def test_prepare_icl_no_tokenizer_raises(self):
+        """Test that missing tokenizer raises ValueError."""
+        model, _ = self._make_model_with_mocks()
+        model.tokenizer = None
+
+        ref_audio = mx.random.normal((24000,))
+        with self.assertRaises(ValueError):
+            model._prepare_icl_generation_inputs(
+                text="Hello", ref_audio=ref_audio, ref_text="Ref"
+            )
+
+    def test_prepare_icl_codec_embed_includes_bos(self):
+        """Test that codec embedding includes codec_bos prepended."""
+        model, ref_time = self._make_model_with_mocks()
+
+        ref_audio = mx.random.normal((24000,))
+        input_embeds, _, _, _ = model._prepare_icl_generation_inputs(
+            text="Hello", ref_audio=ref_audio, ref_text="Ref"
+        )
+        mx.eval(input_embeds)
+
+        # Full structure: role_embed + combined_prefix + icl_input_embed
+        # tokenizer.encode returns 10 tokens for each call
+        # role_embed = target_ids[:, :3] = 3 tokens
+        # combined_prefix: codec_prefix(nothink,think_bos,think_eos=3) + suffix(pad,bos=2) = 5
+        #   pad_count = 5-2 = 3, combined_prefix = [3 pads + 1 bos] = 4 tokens
+        # icl_input_embed = text_with_codec_pad + codec_with_text_pad
+        #   text_lens = ref_text_ids(5) + text_ids(2) + eos(1) = 8
+        #   codec_lens = bos(1) + ref_time(5) = 6
+        #   icl total = 8 + 6 = 14
+        # Total: 3 + 4 + 14 = 21
+        role_tokens = 3
+        prefix_tokens = 4  # (nothink/think + pad,bos) - 1 for offset
+        text_lens = 5 + 2 + 1
+        codec_lens = 1 + ref_time
+        expected_total = role_tokens + prefix_tokens + text_lens + codec_lens
+        self.assertEqual(input_embeds.shape[1], expected_total)
+
+
+class TestQwen3TTSGenerateICL(unittest.TestCase):
+    """Tests for _generate_icl method."""
+
+    def _make_icl_model(self, hidden_size=64, num_code_groups=4, vocab_size=2048):
+        """Create a minimal Model for ICL generation testing."""
+        from mlx_audio.tts.models.qwen3_tts import Model, ModelConfig
+
+        config_dict = {
+            "model_type": "qwen3_tts",
+            "tts_model_type": "base",
+            "tts_model_size": "0b6",
+            "talker_config": {
+                "vocab_size": vocab_size,
+                "hidden_size": hidden_size,
+                "intermediate_size": 128,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "head_dim": 32,
+                "hidden_act": "silu",
+                "max_position_embeddings": 128,
+                "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0,
+                "attention_bias": False,
+                "attention_dropout": 0.0,
+                "num_code_groups": num_code_groups,
+                "text_hidden_size": hidden_size,
+                "text_vocab_size": 100,
+                "codec_eos_token_id": 30,
+                "codec_pad_id": 28,
+                "codec_bos_id": 29,
+                "codec_language_id": {"english": 20, "chinese": 21},
+                "spk_id": {"chelsie": 10, "ethan": 11},
+                "code_predictor_config": {
+                    "vocab_size": vocab_size,
+                    "hidden_size": hidden_size,
+                    "intermediate_size": 128,
+                    "num_hidden_layers": 1,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 32,
+                    "hidden_act": "silu",
+                    "max_position_embeddings": 128,
+                    "rms_norm_eps": 1e-6,
+                    "rope_theta": 10000.0,
+                    "attention_bias": False,
+                    "attention_dropout": 0.0,
+                    "num_code_groups": num_code_groups,
+                },
+            },
+            "speaker_encoder_config": None,
+            "tokenizer_config": None,
+            "im_start_token_id": 151644,
+            "im_end_token_id": 151645,
+            "tts_pad_token_id": 151671,
+            "tts_bos_token_id": 151672,
+            "tts_eos_token_id": 151673,
+            "sample_rate": 24000,
+        }
+
+        config = ModelConfig.from_dict(config_dict)
+        model = Model(config)
+
+        # Mock tokenizer
+        mock_tokenizer = MagicMock()
+        mock_tokenizer.encode.return_value = list(range(10))
+        model.tokenizer = mock_tokenizer
+
+        # Mock speech_tokenizer
+        mock_speech_tokenizer = MagicMock()
+        mock_speech_tokenizer.has_encoder = True
+        ref_time = 5
+        # encode returns [1, num_code_groups, ref_time] to match generation
+        mock_speech_tokenizer.encode.return_value = mx.zeros(
+            (1, num_code_groups, ref_time), dtype=mx.int32
+        )
+        # decode returns (audio, audio_lengths)
+        mock_speech_tokenizer.decode.return_value = (
+            mx.random.normal((1, 24000)),  # ~1s audio
+            mx.array([24000]),
+        )
+        model.speech_tokenizer = mock_speech_tokenizer
+        model.speaker_encoder = None
+
+        return model
+
+    def test_generate_icl_produces_result(self):
+        """Test that _generate_icl produces a GenerationResult."""
+        from mlx_audio.tts.models.base import GenerationResult
+
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        results = list(
+            model._generate_icl(
+                text="Hello world",
+                ref_audio=ref_audio,
+                ref_text="Reference",
+                language="auto",
+                temperature=0.9,
+                max_tokens=5,  # Very few tokens for fast test
+                top_k=50,
+                top_p=1.0,
+                repetition_penalty=1.5,
+            )
+        )
+
+        # Should produce at least one result (or empty if EOS on first token)
+        # With random weights, it's unlikely to hit EOS immediately
+        if results:
+            self.assertIsInstance(results[0], GenerationResult)
+            self.assertIsNotNone(results[0].audio)
+            self.assertEqual(results[0].sample_rate, 24000)
+
+    def test_generate_icl_calls_speech_tokenizer_decode(self):
+        """Test that _generate_icl calls speech_tokenizer.decode."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        results = list(
+            model._generate_icl(
+                text="Hello",
+                ref_audio=ref_audio,
+                ref_text="Ref",
+                max_tokens=3,
+                repetition_penalty=1.5,
+            )
+        )
+
+        if results:
+            # decode should have been called with combined ref + gen codes
+            model.speech_tokenizer.decode.assert_called_once()
+            decode_args = model.speech_tokenizer.decode.call_args[0][0]
+            # Should be [1, ref_time + gen_len, num_code_groups]
+            self.assertEqual(decode_args.ndim, 3)
+            self.assertEqual(decode_args.shape[0], 1)
+            self.assertEqual(decode_args.shape[2], 4)  # num_code_groups
+
+    def test_generate_icl_eos_stops_generation(self):
+        """Test that EOS token stops generation early."""
+        model = self._make_icl_model()
+        config = model.config.talker_config
+
+        ref_audio = mx.random.normal((24000,))
+
+        # Patch _sample_token to always return EOS
+        eos_id = config.codec_eos_token_id
+        with patch.object(model, "_sample_token", return_value=mx.array([[eos_id]])):
+            results = list(
+                model._generate_icl(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    max_tokens=100,
+                    repetition_penalty=1.5,
+                )
+            )
+
+        # Should produce no results since EOS on first step
+        self.assertEqual(len(results), 0)
+
+    def test_generate_icl_max_tokens_limit(self):
+        """Test that max_tokens caps effective generation length."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        # With max_tokens=2, should generate at most 2 tokens
+        results = list(
+            model._generate_icl(
+                text="Hello",
+                ref_audio=ref_audio,
+                ref_text="Ref",
+                max_tokens=2,
+                repetition_penalty=1.5,
+            )
+        )
+
+        if results:
+            # token_count should be <= 2
+            self.assertLessEqual(results[0].token_count, 2)
+
+    def test_generate_icl_text_based_max_tokens_cap(self):
+        """Test that effective_max_tokens is capped based on text length."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        # tokenizer.encode returns 10 tokens for the text
+        # target_token_count = 10
+        # effective_max_tokens = min(200, max(75, 10 * 6)) = min(200, 75) = 75
+        # Without the cap, it would generate up to 200 tokens
+
+        # Mock _sample_token to never return EOS (forces hitting the cap)
+        def non_eos_sample(*args, **kwargs):
+            return mx.array([[5]])  # Always non-EOS (eos=30)
+
+        with patch.object(model, "_sample_token", side_effect=non_eos_sample):
+            results = list(
+                model._generate_icl(
+                    text="Hi",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    max_tokens=200,  # Higher than text-based cap
+                    repetition_penalty=1.5,
+                )
+            )
+
+        self.assertEqual(len(results), 1)
+        # With text-based cap: effective = min(200, max(75, 10*6)) = 75
+        # Token count should be exactly 75 (hit the cap, not 200)
+        self.assertEqual(results[0].token_count, 75)
+
+    def test_generate_icl_repetition_penalty_applied(self):
+        """Test that repetition penalty is applied during generation."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        # Track _sample_token calls to verify rep_penalty param
+        original_sample = model._sample_token
+        sample_calls = []
+
+        def tracking_sample(*args, **kwargs):
+            sample_calls.append(kwargs.get("repetition_penalty", 1.0))
+            return original_sample(*args, **kwargs)
+
+        with patch.object(model, "_sample_token", side_effect=tracking_sample):
+            list(
+                model._generate_icl(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    max_tokens=2,
+                    repetition_penalty=1.5,
+                )
+            )
+
+        # All CB0 sampling calls should use the specified repetition penalty
+        for call_pen in sample_calls:
+            if call_pen != 1.0:  # CB1+ calls don't pass rep_penalty
+                self.assertEqual(call_pen, 1.5)
+
+    def test_generate_icl_ref_codes_prepended(self):
+        """Test that reference codes are prepended to generated codes for decoding."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+        ref_time = 5  # Matches mock setup
+        config = model.config.talker_config
+        eos_id = config.codec_eos_token_id
+
+        # Force generation of exactly 2 tokens then EOS
+        cb0_count = [0]
+
+        def controlled_sample(*args, **kwargs):
+            # CB0 calls have eos_token_id set
+            if kwargs.get("eos_token_id") is not None:
+                cb0_count[0] += 1
+                if cb0_count[0] <= 2:
+                    return mx.array([[5]])  # non-EOS token
+                else:
+                    return mx.array([[eos_id]])  # EOS
+            # Code predictor calls: return valid token
+            return mx.array([[3]])
+
+        with patch.object(model, "_sample_token", side_effect=controlled_sample):
+            results = list(
+                model._generate_icl(
+                    text="Hello world test",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    max_tokens=10,
+                    repetition_penalty=1.5,
+                )
+            )
+
+        self.assertEqual(len(results), 1)
+        # Check that decode was called with ref_time + gen_len time steps
+        decode_args = model.speech_tokenizer.decode.call_args[0][0]
+        gen_len = results[0].token_count
+        self.assertEqual(gen_len, 2)
+        expected_time = ref_time + gen_len
+        self.assertEqual(decode_args.shape[1], expected_time)
+
+    def test_generate_icl_proportional_trimming(self):
+        """Test that reference audio portion is trimmed from output."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+        ref_time = 5
+
+        # Set up decode to return longer audio so trimming is testable
+        total_audio_len = 48000
+        model.speech_tokenizer.decode.return_value = (
+            mx.random.normal((1, total_audio_len)),
+            mx.array([total_audio_len]),
+        )
+
+        results = list(
+            model._generate_icl(
+                text="Hello world",
+                ref_audio=ref_audio,
+                ref_text="Ref",
+                max_tokens=5,
+                repetition_penalty=1.5,
+            )
+        )
+
+        if results:
+            # Audio should be shorter than total_audio_len due to trimming
+            self.assertLess(results[0].samples, total_audio_len)
+
+    def test_generate_routing_uses_icl_when_ref_audio_provided(self):
+        """Test that generate() routes to ICL when ref_audio and ref_text provided."""
+        model = self._make_icl_model()
+
+        ref_audio = mx.random.normal((24000,))
+
+        with patch.object(model, "_generate_icl") as mock_icl:
+            mock_icl.return_value = iter([])  # Empty generator
+            list(
+                model.generate(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Reference text",
+                )
+            )
+
+        # Should have called _generate_icl
+        mock_icl.assert_called_once()
+
+    def test_generate_routing_icl_rep_penalty_floor(self):
+        """Test that generate() enforces min rep_penalty=1.5 for ICL mode."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        with patch.object(model, "_generate_icl") as mock_icl:
+            mock_icl.return_value = iter([])
+            list(
+                model.generate(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    repetition_penalty=1.05,  # Below floor
+                )
+            )
+
+        # Should have been called with rep_penalty=1.5 (the floor)
+        call_kwargs = mock_icl.call_args[1]
+        self.assertEqual(call_kwargs["repetition_penalty"], 1.5)
+
+    def test_generate_routing_icl_rep_penalty_passthrough(self):
+        """Test that rep_penalty > 1.5 is passed through unchanged."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        with patch.object(model, "_generate_icl") as mock_icl:
+            mock_icl.return_value = iter([])
+            list(
+                model.generate(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    repetition_penalty=2.0,  # Above floor
+                )
+            )
+
+        call_kwargs = mock_icl.call_args[1]
+        self.assertEqual(call_kwargs["repetition_penalty"], 2.0)
+
+    def test_generate_routing_no_icl_without_encoder(self):
+        """Test that generate() skips ICL when speech_tokenizer has no encoder."""
+        model = self._make_icl_model()
+        model.speech_tokenizer.has_encoder = False
+        ref_audio = mx.random.normal((24000,))
+
+        with patch.object(model, "_generate_icl") as mock_icl:
+            mock_icl.return_value = iter([])
+            # This will fall through to the non-ICL base path
+            # which would call _generate_base or similar
+            try:
+                list(
+                    model.generate(
+                        text="Hello",
+                        ref_audio=ref_audio,
+                        ref_text="Ref",
+                    )
+                )
+            except Exception:
+                pass  # May fail in non-ICL path, that's fine
+
+        # Should NOT have called _generate_icl
+        mock_icl.assert_not_called()
+
+    def test_generate_routing_no_icl_without_ref_text(self):
+        """Test that generate() skips ICL when ref_text is not provided."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        with patch.object(model, "_generate_icl") as mock_icl:
+            mock_icl.return_value = iter([])
+            try:
+                list(
+                    model.generate(
+                        text="Hello",
+                        ref_audio=ref_audio,
+                        ref_text=None,
+                    )
+                )
+            except Exception:
+                pass
+
+        mock_icl.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

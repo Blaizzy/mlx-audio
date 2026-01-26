@@ -35,8 +35,12 @@ class EuclideanCodebook(nn.Module):
     def encode(self, xs: mx.array) -> mx.array:
         target_shape = xs.shape[:-1]
         xs = xs.flatten(end_axis=-2)
-        dot_prod = xs @ self._embedding.swapaxes(-1, -2)
-        return (self._c2 - dot_prod).argmin(axis=-1).reshape(target_shape)
+
+        xs_f32 = xs.astype(mx.float32)
+        embed_f32 = self._embedding.astype(mx.float32)
+        c2_f32 = self._c2.astype(mx.float32)
+        dot_prod = xs_f32 @ embed_f32.swapaxes(-1, -2)
+        return (c2_f32 - dot_prod).argmin(axis=-1).reshape(target_shape)
 
     def decode(self, xs: mx.array) -> mx.array:
         target_shape = list(xs.shape) + [self._dim]
@@ -87,7 +91,10 @@ class ResidualVectorQuantization(nn.Module):
         for layer in self.layers:
             indices = layer.encode(residual)
             quantized = layer.decode(indices)
-            residual = residual - quantized
+
+            residual = (
+                residual.astype(mx.float32) - quantized.astype(mx.float32)
+            ).astype(xs.dtype)
             codes.append(indices)
         return mx.stack(codes, axis=0)
 

@@ -476,15 +476,22 @@ def copy_model_files(source: Path, dest: Path):
     for pattern in patterns:
         # Copy from root
         for file in glob.glob(str(source / pattern)):
-            if Path(file).name == "model.safetensors.index.json":
+            name = Path(file).name
+            if name == "model.safetensors.index.json" or (
+                name.startswith("model") and name.endswith(".safetensors")
+            ):
                 continue
             shutil.copy(file, dest)
 
         # Copy from subdirectories
         for file in glob.glob(str(source / "**" / pattern), recursive=True):
-            if Path(file).name == "model.safetensors.index.json":
-                continue
             rel_path = Path(file).relative_to(source)
+            # Skip root-level files (already handled above)
+            if len(rel_path.parts) <= 1:
+                continue
+            name = Path(file).name
+            if name == "model.safetensors.index.json":
+                continue
             dest_dir = dest / rel_path.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy(file, dest_dir)
@@ -603,40 +610,6 @@ def convert(
     mlx_path = Path(mlx_path)
     mlx_path.mkdir(parents=True, exist_ok=True)
     copy_model_files(model_path, mlx_path)
-
-    # Copy supporting files
-    for pattern in [
-        "*.py",
-        "*.json",
-        "*.yaml",
-        "*.tiktoken",
-        "*.model",
-        "*.txt",
-        "*.wav",
-        "*.pt",
-        "*.safetensors",
-    ]:
-        for file in glob.glob(str(model_path / pattern)):
-            if (
-                Path(file).name == "model.safetensors.index.json"
-                or Path(file).name.startswith("model")
-                and Path(file).name.endswith(".safetensors")
-            ):
-                continue
-            shutil.copy(file, mlx_path)
-
-        # Check subdirectories
-        for file in glob.glob(str(model_path / "**" / pattern), recursive=True):
-            if (
-                Path(file).name == "model.safetensors.index.json"
-                or Path(file).name.startswith("model")
-                and Path(file).name.endswith(".safetensors")
-            ):
-                continue
-            rel_path = Path(file).relative_to(model_path)
-            dest_dir = mlx_path / rel_path.parent
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy(file, dest_dir)
 
     # Save model weights and config
     save_model(mlx_path, model, donate_model=True)

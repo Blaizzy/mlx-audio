@@ -67,6 +67,12 @@ def parse_args():
         action="store_true",
         help="Stream the transcription as it is generated (default: False)",
     )
+    parser.add_argument(
+        "--context",
+        type=str,
+        default=None,
+        help="Context string with hotwords or metadata to guide transcription",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +159,10 @@ def save_as_json(segments, output_path: str):
                 for s in segments.sentences
             ],
         }
+        # Add speaker_id only if it exists
+        for i, s in enumerate(segments.sentences):
+            if hasattr(s, "speaker_id"):
+                result["sentences"][i]["speaker_id"] = s.speaker_id
     else:
         result = {
             "text": segments.text,
@@ -166,6 +176,10 @@ def save_as_json(segments, output_path: str):
                 for s in segments.segments
             ],
         }
+        # Add speaker_id only if it exists
+        for i, s in enumerate(segments.segments):
+            if "speaker_id" in s:
+                result["segments"][i]["speaker_id"] = s["speaker_id"]
 
     with open(f"{output_path}.json", "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
@@ -218,7 +232,7 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
     audio: Union[str, mx.array] = None,
-    output_path: str = "",
+    output_path: str = "transcript",
     format: str = "txt",
     verbose: bool = False,
     **kwargs,
@@ -227,7 +241,7 @@ def generate_transcription(
 
     Args:
         model: Path to the model or the model instance.
-        audio_path: Path to the audio file.
+        audio: Path to the audio file (str), or audio waveform (mx.array).
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
@@ -245,13 +259,13 @@ def generate_transcription(
         # Load model
         model = load_model(model)
 
-    print("=" * 10)
-    print(f"\033[94mAudio path:\033[0m {audio}")
-    print(f"\033[94mOutput path:\033[0m {output_path}")
-    print(f"\033[94mFormat:\033[0m {format}")
     mx.reset_peak_memory()
     start_time = time.time()
     if verbose:
+        print("=" * 10)
+        print(f"\033[94mAudio path:\033[0m {audio}")
+        print(f"\033[94mOutput path:\033[0m {output_path}")
+        print(f"\033[94mFormat:\033[0m {format}")
         print("\033[94mTranscription:\033[0m")
 
     signature = inspect.signature(model.generate)
@@ -280,7 +294,6 @@ def generate_transcription(
             language=language,
         )
     else:
-
         segments = model.generate(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
