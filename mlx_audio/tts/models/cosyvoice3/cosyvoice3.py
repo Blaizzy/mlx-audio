@@ -8,6 +8,7 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.models.cache import make_prompt_cache
+from tqdm import tqdm
 from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2Config
 from mlx_lm.models.qwen2 import create_attention_mask
@@ -703,6 +704,168 @@ class Model(nn.Module):
 
         return audio
 
+    def token2wav_streaming(
+        self,
+        token: mx.array,
+        token_len: mx.array,
+        prompt_token: mx.array,
+        prompt_token_len: mx.array,
+        prompt_feat: mx.array,
+        prompt_feat_len: mx.array,
+        embedding: mx.array,
+        n_timesteps: int = 10,
+        streaming: bool = False,
+        temperature: float = 1.0,
+        chunk_size: int = 50,
+        overlap_size: int = 10,
+        show_progress: bool = True,
+    ) -> Generator[mx.array, None, None]:
+        """
+        Convert speech tokens to waveform in streaming chunks with consistency.
+
+        Processes tokens in overlapping chunks to maintain speech consistency
+        across chunk boundaries. Uses the previous chunk's context (tokens + mel)
+        as conditioning for the next chunk, and cross-fades overlapping regions.
+
+        Args:
+            token: Speech tokens (B, T)
+            token_len: Token lengths (B,)
+            prompt_token: Prompt tokens (B, T_prompt)
+            prompt_token_len: Prompt token lengths (B,)
+            prompt_feat: Prompt mel features (B, T_prompt * ratio, mel_dim)
+            prompt_feat_len: Prompt feature lengths (B,)
+            embedding: Speaker embedding (B, spk_embed_dim)
+            n_timesteps: Number of flow ODE steps
+            streaming: Whether to use streaming mode for flow
+            temperature: Sampling temperature
+            chunk_size: Number of tokens per chunk (default 50 = ~2 seconds)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bar
+
+        Yields:
+            Audio waveform chunks (B, T_audio_chunk)
+        """
+        B = token.shape[0]
+        total_tokens = token.shape[1]
+
+        # Ensure overlap is smaller than chunk size
+        overlap_size = min(overlap_size, chunk_size // 2)
+
+        # Calculate step size (non-overlapping portion)
+        step_size = chunk_size - overlap_size
+
+        # Calculate number of chunks
+        num_chunks = max(1, (total_tokens - overlap_size + step_size - 1) // step_size)
+
+        # Create progress bar iterator
+        chunk_iter = range(num_chunks)
+        if show_progress:
+            chunk_iter = tqdm(
+                chunk_iter,
+                desc="Generating audio",
+                unit="chunk",
+                leave=False,
+            )
+
+        # Track previous chunk's context for consistency
+        prev_context_tokens = None
+        prev_context_mel = None
+        prev_audio_overlap = None
+
+        # Samples per token for audio overlap calculation
+        # token_mel_ratio * mel_hop_size = 2 * 480 = 960 samples per token
+        samples_per_token = self.config.token_mel_ratio * 480
+
+        for chunk_idx in chunk_iter:
+            # Calculate token indices for this chunk
+            start_idx = chunk_idx * step_size
+            end_idx = min(start_idx + chunk_size, total_tokens)
+
+            # Get chunk of tokens
+            chunk_tokens = token[:, start_idx:end_idx]
+            chunk_len = mx.array([chunk_tokens.shape[1]] * B)
+
+            # Determine context for this chunk
+            if chunk_idx == 0:
+                # First chunk: use original prompt
+                context_tokens = prompt_token
+                context_token_len = prompt_token_len
+                context_mel = prompt_feat
+                context_mel_len = prompt_feat_len
+            else:
+                # Subsequent chunks: use previous chunk's end as context
+                context_tokens = prev_context_tokens
+                context_token_len = mx.array([context_tokens.shape[1]] * B)
+                context_mel = prev_context_mel
+                context_mel_len = mx.array([context_mel.shape[1]] * B)
+
+            # Generate mel for this chunk
+            mel = self.flow.inference(
+                chunk_tokens,
+                chunk_len,
+                context_tokens,
+                context_token_len,
+                context_mel,
+                context_mel_len,
+                embedding,
+                n_timesteps,
+                streaming,
+                temperature,
+            )
+            mx.eval(mel)
+
+            # Generate audio from mel
+            audio_chunk = self.hift(mel)
+            mx.eval(audio_chunk)
+
+            # Store context for next chunk (last overlap_size tokens and their mel)
+            if end_idx < total_tokens:
+                # Save tokens for context
+                prev_context_tokens = chunk_tokens[:, -overlap_size:]
+
+                # Save corresponding mel (mel has token_mel_ratio frames per token)
+                mel_overlap_frames = overlap_size * self.config.token_mel_ratio
+                # mel is (B, mel_dim, T), need (B, T, mel_dim) for prompt_feat format
+                mel_for_context = mel[:, :, -mel_overlap_frames:].transpose(0, 2, 1)
+                prev_context_mel = mel_for_context
+
+            # Handle overlap cross-fade with previous chunk
+            if prev_audio_overlap is not None and overlap_size > 0:
+                overlap_samples = overlap_size * samples_per_token
+
+                # Create cross-fade weights
+                fade_out = mx.linspace(1, 0, overlap_samples)
+                fade_in = mx.linspace(0, 1, overlap_samples)
+
+                # Get overlapping regions
+                prev_overlap = prev_audio_overlap[:, -overlap_samples:]
+                curr_overlap = audio_chunk[:, :overlap_samples]
+
+                # Cross-fade
+                blended = prev_overlap * fade_out + curr_overlap * fade_in
+
+                # Combine: blended overlap + rest of current chunk
+                audio_to_yield = mx.concatenate([blended, audio_chunk[:, overlap_samples:]], axis=1)
+            else:
+                audio_to_yield = audio_chunk
+
+            # Save overlap region for next iteration
+            if end_idx < total_tokens and overlap_size > 0:
+                overlap_samples = overlap_size * samples_per_token
+                prev_audio_overlap = audio_chunk[:, -overlap_samples:]
+
+                # Only yield the non-overlapping portion (overlap will be blended with next chunk)
+                audio_to_yield = audio_to_yield[:, :-overlap_samples] if chunk_idx > 0 or prev_audio_overlap is None else audio_to_yield[:, :-overlap_samples]
+            else:
+                prev_audio_overlap = None
+
+            mx.eval(audio_to_yield)
+
+            # Clear cache to reduce memory pressure
+            mx.clear_cache()
+
+            yield audio_to_yield
+
     def _generate_from_tokens(
         self,
         speech_tokens: mx.array,
@@ -712,6 +875,9 @@ class Model(nn.Module):
         n_timesteps: int = 10,
         streaming: bool = False,
         temperature: float = 1.0,
+        chunk_size: int = 0,
+        overlap_size: int = 10,
+        show_progress: bool = True,
     ) -> Generator[GenerationResult, None, None]:
         """
         Generate audio from speech tokens.
@@ -724,9 +890,12 @@ class Model(nn.Module):
             n_timesteps: Number of flow ODE steps
             streaming: Whether to use streaming mode
             temperature: Sampling temperature
+            chunk_size: Number of tokens per chunk (0 = no chunking, process all at once)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bar
 
         Yields:
-            GenerationResult with generated audio
+            GenerationResult with generated audio (one per chunk if chunked)
         """
         time_start = time.time()
 
@@ -747,7 +916,67 @@ class Model(nn.Module):
         else:
             prompt_feat_len = mx.array([prompt_mel.shape[1]] * B)  # T is at index 1
 
-        # Generate audio
+        # Use streaming chunked generation if chunk_size > 0
+        if chunk_size > 0:
+            audio_chunks = []
+            segment_idx = 0
+
+            for audio_chunk in self.token2wav_streaming(
+                speech_tokens,
+                token_len,
+                prompt_speech_tokens,
+                prompt_token_len,
+                prompt_mel,
+                prompt_feat_len,
+                speaker_embedding,
+                n_timesteps,
+                streaming,
+                temperature,
+                chunk_size,
+                overlap_size,
+                show_progress,
+            ):
+                audio_chunks.append(audio_chunk)
+                chunk_time = time.time()
+
+                # Calculate metrics for this chunk
+                chunk_samples = audio_chunk.shape[-1]
+                chunk_duration = chunk_samples / self.config.sample_rate
+
+                yield GenerationResult(
+                    audio=audio_chunk.squeeze(),
+                    sample_rate=self.config.sample_rate,
+                    samples=chunk_samples,
+                    segment_idx=segment_idx,
+                    token_count=min(chunk_size, speech_tokens.shape[1] - segment_idx * chunk_size),
+                    audio_samples={
+                        "samples": chunk_samples,
+                        "samples-per-sec": (
+                            round(chunk_samples / chunk_duration, 2)
+                            if chunk_duration > 0
+                            else 0
+                        ),
+                    },
+                    audio_duration=f"{int(chunk_duration)}s",
+                    real_time_factor=(
+                        chunk_duration / (chunk_time - time_start)
+                        if (chunk_time - time_start) > 0
+                        else 0
+                    ),
+                    prompt={
+                        "tokens": speech_tokens.shape[1],
+                        "chunk": segment_idx,
+                    },
+                    processing_time_seconds=chunk_time - time_start,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                )
+                segment_idx += 1
+                time_start = time.time()  # Reset for next chunk timing
+
+            mx.clear_cache()
+            return
+
+        # Non-chunked generation (original behavior)
         audio = self.token2wav(
             speech_tokens,
             token_len,
@@ -893,6 +1122,9 @@ class Model(nn.Module):
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
+        chunk_size: int = 0,
+        overlap_size: int = 10,
+        show_progress: bool = True,
     ) -> Generator[GenerationResult, None, None]:
         """
         Zero-shot voice cloning synthesis.
@@ -904,9 +1136,12 @@ class Model(nn.Module):
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature
             top_k: Top-k sampling for LLM
+            chunk_size: Number of tokens per chunk for streaming (0 = no chunking)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bars
 
         Yields:
-            GenerationResult with synthesized audio
+            GenerationResult with synthesized audio (multiple if chunked)
         """
         if not self._llm_loaded:
             raise RuntimeError("LLM not loaded. Use load_llm=True in from_pretrained()")
@@ -950,7 +1185,8 @@ class Model(nn.Module):
         stopped_reason = "eos"
         generated_total = 0
 
-        for token in self.generate_speech_tokens(
+        # Create progress bar for token generation
+        token_generator = self.generate_speech_tokens(
             text_tokens,
             prompt_text_tokens=prompt_text_tokens,
             prompt_speech_tokens=prompt_speech_tokens,
@@ -958,37 +1194,57 @@ class Model(nn.Module):
             top_k=top_k,
             min_tokens=min_tokens,
             max_tokens=max_tokens,
-        ):
-            mx.eval(token)
-            generated_total += 1
-            token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
+        )
 
-            # Filter excessive consecutive silent tokens (matching PyTorch llm_job)
-            if token_val in silent_tokens:
-                cur_silent_token_num += 1
-                if cur_silent_token_num > max_silent_token_num:
-                    continue
-            else:
-                cur_silent_token_num = 0
+        if show_progress:
+            token_pbar = tqdm(
+                total=max_tokens,
+                desc="Generating tokens",
+                unit="tok",
+                leave=False,
+            )
+        else:
+            token_pbar = None
 
-            speech_tokens_list.append(token)
-            token_values.append(token_val)
+        try:
+            for token in token_generator:
+                mx.eval(token)
+                generated_total += 1
+                token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
 
-            # Repetition detection: check if a window of tokens repeats.
-            # Use larger windows (20, 25, 30) to avoid false triggers on
-            # sustained sounds or natural speech patterns.
-            n = len(token_values)
-            if n >= 40:
-                for window in (20, 25, 30):
-                    if n >= 2 * window:
-                        recent = token_values[-window:]
-                        prev = token_values[-2 * window : -window]
-                        if recent == prev:
-                            stopped_reason = f"repetition(w={window})"
-                            break
+                if token_pbar is not None:
+                    token_pbar.update(1)
+                    token_pbar.set_postfix({"tokens": len(speech_tokens_list)})
+
+                # Filter excessive consecutive silent tokens (matching PyTorch llm_job)
+                if token_val in silent_tokens:
+                    cur_silent_token_num += 1
+                    if cur_silent_token_num > max_silent_token_num:
+                        continue
                 else:
-                    continue
-                break  # exit outer for loop
+                    cur_silent_token_num = 0
+
+                speech_tokens_list.append(token)
+                token_values.append(token_val)
+
+                # Repetition detection: check if a window of tokens repeats.
+                # Use larger windows (20, 25, 30) to avoid false triggers on
+                # sustained sounds or natural speech patterns.
+                n = len(token_values)
+                if n >= 40:
+                    for window in (20, 25, 30):
+                        if n >= 2 * window:
+                            recent = token_values[-window:]
+                            prev = token_values[-2 * window : -window]
+                            if recent == prev:
+                                stopped_reason = f"repetition(w={window})"
+                                break
+                    else:
+                        continue
+                    break  # exit outer for loop
+        finally:
+            if token_pbar is not None:
+                token_pbar.close()
 
         # Detect if we hit max_tokens
         if stopped_reason == "eos" and generated_total >= max_tokens:
@@ -1020,6 +1276,9 @@ class Model(nn.Module):
             prompt_speech_tokens=prompt_speech_tokens,
             prompt_mel=inputs.get("prompt_mel"),
             n_timesteps=n_timesteps,
+            chunk_size=chunk_size,
+            overlap_size=overlap_size,
+            show_progress=show_progress,
         ):
             # Update timing
             total_time = time.time() - time_start
@@ -1037,6 +1296,9 @@ class Model(nn.Module):
         top_k: int = 25,
         label: str = "tts",
         max_token_factor: int = 20,
+        chunk_size: int = 0,
+        overlap_size: int = 10,
+        show_progress: bool = True,
     ) -> Generator[GenerationResult, None, None]:
         """
         Shared LLM generation + Flow synthesis logic.
@@ -1048,6 +1310,9 @@ class Model(nn.Module):
             top_k: Top-k sampling for LLM
             label: Label for debug output
             max_token_factor: Multiplier for max_tokens (higher = allow longer speech)
+            chunk_size: Number of tokens per chunk for streaming (0 = no chunking)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bars
         """
         time_start = time.time()
 
@@ -1084,7 +1349,8 @@ class Model(nn.Module):
         stopped_reason = "eos"
         generated_total = 0  # Track total tokens from LLM (including filtered)
 
-        for token in self.generate_speech_tokens(
+        # Create progress bar for token generation
+        token_generator = self.generate_speech_tokens(
             text_tokens,
             prompt_text_tokens=prompt_text_tokens,
             prompt_speech_tokens=llm_prompt_speech_tokens,
@@ -1092,36 +1358,56 @@ class Model(nn.Module):
             top_k=top_k,
             min_tokens=min_tokens,
             max_tokens=max_tokens,
-        ):
-            mx.eval(token)
-            generated_total += 1
-            token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
+        )
 
-            if token_val in silent_tokens:
-                cur_silent_token_num += 1
-                if cur_silent_token_num > max_silent_token_num:
-                    continue
-            else:
-                cur_silent_token_num = 0
+        if show_progress:
+            token_pbar = tqdm(
+                total=max_tokens,
+                desc="Generating tokens",
+                unit="tok",
+                leave=False,
+            )
+        else:
+            token_pbar = None
 
-            speech_tokens_list.append(token)
-            token_values.append(token_val)
+        try:
+            for token in token_generator:
+                mx.eval(token)
+                generated_total += 1
+                token_val = int(token.item()) if token.size == 1 else int(token[0, 0].item())
 
-            # Repetition detection: check if a window of tokens repeats.
-            # Use larger windows (20, 25, 30) to avoid false triggers on
-            # sustained sounds or slow speech patterns.
-            n = len(token_values)
-            if n >= 40:
-                for window in (20, 25, 30):
-                    if n >= 2 * window:
-                        recent = token_values[-window:]
-                        prev = token_values[-2 * window : -window]
-                        if recent == prev:
-                            stopped_reason = f"repetition(w={window})"
-                            break
+                if token_pbar is not None:
+                    token_pbar.update(1)
+                    token_pbar.set_postfix({"tokens": len(speech_tokens_list)})
+
+                if token_val in silent_tokens:
+                    cur_silent_token_num += 1
+                    if cur_silent_token_num > max_silent_token_num:
+                        continue
                 else:
-                    continue
-                break
+                    cur_silent_token_num = 0
+
+                speech_tokens_list.append(token)
+                token_values.append(token_val)
+
+                # Repetition detection: check if a window of tokens repeats.
+                # Use larger windows (20, 25, 30) to avoid false triggers on
+                # sustained sounds or slow speech patterns.
+                n = len(token_values)
+                if n >= 40:
+                    for window in (20, 25, 30):
+                        if n >= 2 * window:
+                            recent = token_values[-window:]
+                            prev = token_values[-2 * window : -window]
+                            if recent == prev:
+                                stopped_reason = f"repetition(w={window})"
+                                break
+                    else:
+                        continue
+                    break
+        finally:
+            if token_pbar is not None:
+                token_pbar.close()
 
         # Detect if we hit max_tokens (LLM exhausted without EOS)
         if stopped_reason == "eos" and generated_total >= max_tokens:
@@ -1151,6 +1437,9 @@ class Model(nn.Module):
             prompt_speech_tokens=flow_prompt_speech_tokens,
             prompt_mel=inputs.get("prompt_mel"),
             n_timesteps=n_timesteps,
+            chunk_size=chunk_size,
+            overlap_size=overlap_size,
+            show_progress=show_progress,
         ):
             total_time = time.time() - time_start
             result.processing_time_seconds = total_time
@@ -1167,6 +1456,9 @@ class Model(nn.Module):
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
+        chunk_size: int = 0,
+        overlap_size: int = 10,
+        show_progress: bool = True,
     ) -> Generator[GenerationResult, None, None]:
         """
         Instruct-mode synthesis with style/language control.
@@ -1184,6 +1476,9 @@ class Model(nn.Module):
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature
             top_k: Top-k sampling for LLM
+            chunk_size: Number of tokens per chunk for streaming (0 = no chunking)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bars
 
         Yields:
             GenerationResult with synthesized audio
@@ -1202,6 +1497,7 @@ class Model(nn.Module):
         yield from self._generate_from_inputs(
             inputs, n_timesteps, temperature, top_k,
             label="instruct", max_token_factor=40,
+            chunk_size=chunk_size, overlap_size=overlap_size, show_progress=show_progress,
         )
 
     def inference_cross_lingual(
@@ -1211,6 +1507,9 @@ class Model(nn.Module):
         n_timesteps: int = 10,
         temperature: float = 1.0,
         top_k: int = 25,
+        chunk_size: int = 0,
+        overlap_size: int = 10,
+        show_progress: bool = True,
     ) -> Generator[GenerationResult, None, None]:
         """
         Cross-lingual / fine-grained control synthesis.
@@ -1227,6 +1526,9 @@ class Model(nn.Module):
             n_timesteps: Number of flow ODE steps
             temperature: LLM sampling temperature
             top_k: Top-k sampling for LLM
+            chunk_size: Number of tokens per chunk for streaming (0 = no chunking)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bars
 
         Yields:
             GenerationResult with synthesized audio
@@ -1240,7 +1542,8 @@ class Model(nn.Module):
 
         inputs = self.frontend.frontend_cross_lingual(text, ref_audio)
         yield from self._generate_from_inputs(
-            inputs, n_timesteps, temperature, top_k, label="cross-lingual"
+            inputs, n_timesteps, temperature, top_k, label="cross-lingual",
+            chunk_size=chunk_size, overlap_size=overlap_size, show_progress=show_progress,
         )
 
     def inference_vc(
@@ -1248,6 +1551,9 @@ class Model(nn.Module):
         source_audio: Union[str, mx.array],
         ref_audio: Union[str, mx.array],
         n_timesteps: int = 10,
+        chunk_size: int = 0,
+        overlap_size: int = 10,
+        show_progress: bool = True,
     ) -> Generator[GenerationResult, None, None]:
         """
         Voice conversion: convert source audio to the target speaker's voice.
@@ -1259,6 +1565,9 @@ class Model(nn.Module):
             source_audio: Path to source audio (content to convert)
             ref_audio: Path to reference audio (target voice)
             n_timesteps: Number of flow ODE steps
+            chunk_size: Number of tokens per chunk for streaming (0 = no chunking)
+            overlap_size: Number of tokens to overlap between chunks for consistency
+            show_progress: Whether to show tqdm progress bars
 
         Yields:
             GenerationResult with converted audio
@@ -1294,6 +1603,9 @@ class Model(nn.Module):
             prompt_speech_tokens=prompt_speech_tokens,
             prompt_mel=inputs.get("prompt_mel"),
             n_timesteps=n_timesteps,
+            chunk_size=chunk_size,
+            overlap_size=overlap_size,
+            show_progress=show_progress,
         ):
             total_time = time.time() - time_start
             result.processing_time_seconds = total_time
