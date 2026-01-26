@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.utils import load_audio
 
 from .config import (
     ModelConfig,
@@ -688,7 +689,7 @@ class Model(nn.Module):
         temperature: float = 0.9,
         speed: float = 1.0,
         lang_code: str = "auto",
-        ref_audio: Optional[mx.array] = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
         split_pattern: str = "\n",
         max_tokens: int = 4096,
@@ -714,7 +715,7 @@ class Model(nn.Module):
             temperature: Sampling temperature
             speed: Speech speed factor (not directly supported yet)
             lang_code: Language code (auto, chinese, english, etc.)
-            ref_audio: Reference audio for voice cloning
+            ref_audio: Reference audio for voice cloning (file path or mx.array)
             ref_text: Reference text for voice cloning
             split_pattern: Pattern to split text into segments
             max_tokens: Maximum tokens per segment
@@ -728,6 +729,10 @@ class Model(nn.Module):
         Yields:
             GenerationResult objects with generated audio
         """
+        # Load reference audio if provided (handles file paths and mx.array)
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
         # Route to appropriate method based on model type
         tts_model_type = getattr(self.config, "tts_model_type", "base")
 
