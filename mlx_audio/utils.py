@@ -231,7 +231,10 @@ def apply_quantization(
             return False
         # Use model-specific predicate if available
         if model_quant_predicate is not None:
-            if not model_quant_predicate(p, m):
+            pred_result = model_quant_predicate(p, m)
+            if isinstance(pred_result, dict):
+                return pred_result
+            if not pred_result:
                 return False
         # Handle custom per layer quantizations
         if p in config["quantization"]:
@@ -282,17 +285,12 @@ def get_model_class(
                 available_models.append(item.name)
 
     if model_name is not None and model_type_mapped != model_type:
-        found_in_name = False
         for part in model_name:
             if part in available_models:
                 model_type = part
-                found_in_name = True
             if part in model_remapping:
                 model_type = model_remapping[part]
-                found_in_name = True
                 break
-        if not found_in_name and model_type_mapped is not None:
-            model_type = model_type_mapped
     elif model_type_mapped is not None:
         model_type = model_type_mapped
 
