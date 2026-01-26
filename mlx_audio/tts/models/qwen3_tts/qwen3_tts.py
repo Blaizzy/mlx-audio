@@ -656,17 +656,20 @@ class Model(nn.Module):
         token = categorical_sampling(logits, temperature)
         return token[:, None]
 
-    def _decode_chunk(self, codes: mx.array) -> mx.array:
+    def _decode_chunk(self, codes: mx.array, chunk_tokens: int = 100) -> mx.array:
         """Decode a chunk of codes to audio.
 
         Args:
             codes: [1, time, num_code_groups] codes to decode
+            chunk_tokens: Number of tokens per decode chunk (controls latency vs quality)
 
         Returns:
             audio: [samples] decoded audio waveform
         """
         audio_chunks = []
-        for chunk in self.speech_tokenizer.streaming_decode(codes):
+        for chunk in self.speech_tokenizer.streaming_decode(
+            codes, chunk_tokens=chunk_tokens
+        ):
             audio_chunks.append(chunk)
 
         audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
@@ -968,7 +971,9 @@ class Model(nn.Module):
                     codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
                     mx.eval(codes_chunk)
 
-                    audio_chunk = self._decode_chunk(codes_chunk)
+                    audio_chunk = self._decode_chunk(
+                        codes_chunk, chunk_tokens=streaming_chunk_size
+                    )
 
                     # Trim the context overlap from audio (only yield new audio)
                     if decoded_tokens > 0 and start_idx < decoded_tokens:
@@ -1011,7 +1016,9 @@ class Model(nn.Module):
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
                 mx.eval(codes_chunk)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
+                audio_chunk = self._decode_chunk(
+                    codes_chunk, chunk_tokens=streaming_chunk_size
+                )
 
                 # Trim the context overlap from audio (only yield new audio)
                 if decoded_tokens > 0 and start_idx < decoded_tokens:
@@ -1591,7 +1598,9 @@ class Model(nn.Module):
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
                 mx.eval(codes_chunk)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
+                audio_chunk = self._decode_chunk(
+                    codes_chunk, chunk_tokens=streaming_chunk_size
+                )
 
                 # Trim the context overlap from audio (only yield new audio)
                 if decoded_tokens > 0 and start_idx < decoded_tokens:
@@ -1634,7 +1643,9 @@ class Model(nn.Module):
             codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
             mx.eval(codes_chunk)
 
-            audio_chunk = self._decode_chunk(codes_chunk)
+            audio_chunk = self._decode_chunk(
+                codes_chunk, chunk_tokens=streaming_chunk_size
+            )
 
             # Trim the context overlap from audio (only yield new audio)
             if decoded_tokens > 0 and start_idx < decoded_tokens:

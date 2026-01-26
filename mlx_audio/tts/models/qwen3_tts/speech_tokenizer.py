@@ -1049,7 +1049,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
 
         return wav, audio_lengths
 
-    def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 25):
+    def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 100):
         """
         Decode audio codes to waveform in a streaming fashion.
 
