@@ -1,7 +1,9 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import json
+import math
 import time
+from functools import partial
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
@@ -12,6 +14,49 @@ from tqdm import tqdm
 
 from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.models.base import GenerationResult
+
+
+# Compiled sampling functions using pure MLX operations (inspired by mlx-lm)
+@partial(mx.compile, inputs=mx.random.state, outputs=mx.random.state)
+def _compiled_categorical(logits: mx.array, temp: float) -> mx.array:
+    """Compiled categorical sampling with temperature."""
+    return mx.random.categorical(logits * (1.0 / temp))
+
+
+@partial(mx.compile)
+def _apply_top_k(logits: mx.array, top_k: int) -> mx.array:
+    """Apply top-k filtering using pure MLX operations."""
+    # Get indices of tokens NOT in top-k
+    mask_idx = mx.argpartition(-logits, kth=top_k - 1, axis=-1)[..., top_k:]
+    # Set those to -inf
+    return mx.put_along_axis(
+        logits, mask_idx, mx.array(float("-inf"), logits.dtype), axis=-1
+    )
+
+
+@partial(mx.compile)
+def _apply_top_p(logits: mx.array, top_p: float) -> mx.array:
+    """Apply top-p (nucleus) filtering using pure MLX operations."""
+    # Sort in ascending order
+    sorted_indices = mx.argsort(logits, axis=-1)
+    sorted_logits = mx.take_along_axis(logits, sorted_indices, axis=-1)
+
+    # Compute cumulative probabilities
+    sorted_probs = mx.softmax(sorted_logits, axis=-1)
+    cumulative_probs = mx.cumsum(sorted_probs, axis=-1)
+
+    # Rearrange cumulative probs back to original order
+    inverse_indices = mx.put_along_axis(
+        mx.zeros_like(sorted_indices),
+        sorted_indices,
+        mx.arange(sorted_indices.shape[-1], dtype=sorted_indices.dtype),
+        axis=-1,
+    )
+    cumulative_probs = mx.take_along_axis(cumulative_probs, inverse_indices, axis=-1)
+
+    # Keep tokens with cumulative probs above (1 - top_p)
+    return mx.where(cumulative_probs > (1.0 - top_p), logits, float("-inf"))
+
 
 from .config import (
     ModelConfig,
@@ -594,81 +639,67 @@ class Model(nn.Module):
         generated_tokens: Optional[List[int]] = None,
         suppress_tokens: Optional[List[int]] = None,
         eos_token_id: Optional[int] = None,
+        min_p: float = 0.0,
     ) -> mx.array:
-        """Sample next token from logits."""
-        logits = logits[:, -1, :]  # Get last position
-        mx.eval(logits)
 
-        # Suppress invalid tokens (set to -inf)
+        logits = logits[:, -1, :]  # Get last position [1, vocab_size]
+
+        # Suppress invalid tokens (set to -inf) - pure MLX
         if suppress_tokens:
-            logits_np = np.array(logits.astype(mx.float32))
-            logits_np[:, suppress_tokens] = float("-inf")
-            logits = mx.array(logits_np)
+            suppress_idx = mx.array(suppress_tokens, dtype=mx.int32)
+            logits = mx.put_along_axis(
+                logits,
+                suppress_idx[None, :],
+                mx.array(float("-inf"), logits.dtype),
+                axis=-1,
+            )
 
-        # Apply repetition penalty (matches HuggingFace RepetitionPenaltyLogitsProcessor)
+        # Apply repetition penalty
         if generated_tokens and repetition_penalty != 1.0:
-            logits_np = np.array(logits.astype(mx.float32))
-            for token in set(generated_tokens):
-                if token < logits_np.shape[-1]:
-                    score = logits_np[:, token]
-                    # Negative scores: multiply by penalty (more negative = less likely)
-                    # Positive scores: divide by penalty (smaller = less likely)
-                    logits_np[:, token] = np.where(
-                        score < 0,
-                        score * repetition_penalty,
-                        score / repetition_penalty,
-                    )
-            logits = mx.array(logits_np)
+            unique_tokens = list(set(generated_tokens))
+            valid_tokens = [t for t in unique_tokens if t < logits.shape[-1]]
+            if valid_tokens:
+                token_ids = mx.array(valid_tokens, dtype=mx.int32)
 
-        # Temperature scaling
-        if temperature > 0:
-            logits = logits / temperature
-        else:
+                selected_logits = mx.take(logits, token_ids, axis=-1)
+                penalized = mx.where(
+                    selected_logits < 0,
+                    selected_logits * repetition_penalty,
+                    selected_logits / repetition_penalty,
+                )
+
+                logits = mx.put_along_axis(
+                    logits, token_ids[None, :], penalized, axis=-1
+                )
+
+        # Greedy decoding if temperature is 0
+        if temperature <= 0:
             return mx.argmax(logits, axis=-1, keepdims=True)
 
-        # Save EOS logit before filtering (to preserve it as a valid candidate)
         eos_logit = None
         if eos_token_id is not None and eos_token_id < logits.shape[-1]:
             eos_logit = logits[:, eos_token_id : eos_token_id + 1]
 
-        # Top-k filtering
         if top_k > 0 and top_k < logits.shape[-1]:
-            top_k_vals = mx.topk(logits, k=top_k, axis=-1)
-            threshold = top_k_vals[:, -1:]
+            logits = _apply_top_k(logits, top_k)
+
+        if 0.0 < top_p < 1.0:
+            logits = _apply_top_p(logits, top_p)
+
+        if min_p > 0.0:
+            # Get max logit (top token)
+            max_logit = mx.max(logits, axis=-1, keepdims=True)
+            # Compute threshold: tokens must have logit within log(min_p) of max
+            threshold = max_logit + math.log(min_p)
             logits = mx.where(logits < threshold, float("-inf"), logits)
 
-        # Top-p (nucleus) filtering
-        if top_p < 1.0:
-            sorted_logits = mx.sort(logits, axis=-1)[:, ::-1]
-            sorted_probs = mx.softmax(sorted_logits, axis=-1)
-            cumulative_probs = mx.cumsum(sorted_probs, axis=-1)
-            # Remove tokens with cumulative prob above threshold
-            sorted_mask = cumulative_probs > top_p
-            # Shift right to keep at least one token
-            sorted_mask = mx.concatenate(
-                [
-                    mx.zeros((sorted_mask.shape[0], 1), dtype=mx.bool_),
-                    sorted_mask[:, :-1],
-                ],
-                axis=-1,
-            )
-            threshold = mx.take_along_axis(
-                sorted_logits,
-                mx.argmax(sorted_mask.astype(mx.int32), axis=-1, keepdims=True),
-                axis=-1,
-            )
-            logits = mx.where(logits < threshold, float("-inf"), logits)
-
-        # Restore EOS logit after filtering so it's always a valid candidate
         if eos_logit is not None:
-            logits_np = np.array(logits.astype(mx.float32))
-            logits_np[:, eos_token_id] = np.array(
-                eos_logit.astype(mx.float32)
-            ).flatten()
-            logits = mx.array(logits_np)
 
-        # Sample from categorical distribution (takes logits directly)
-        return mx.random.categorical(logits)[:, None]
+            eos_idx = mx.array([[eos_token_id]], dtype=mx.int32)
+            logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
+
+        token = _compiled_categorical(logits, temperature)
+        return token[:, None]
 
     def _decode_chunk(self, codes: mx.array) -> mx.array:
         """Decode a chunk of codes to audio.
@@ -1518,6 +1549,13 @@ class Model(nn.Module):
             )
         )
 
+        # Cap max_tokens based on target text length to prevent runaway generation
+        # when EOS logit doesn't become dominant (seen especially with 0.6B model).
+        # At 12.5 Hz codec rate, ~3-5 codec tokens per text token is typical speech.
+        # Factor of 6 gives ~50% margin for slow speech / pauses.
+        target_token_count = len(self.tokenizer.encode(text))
+        effective_max_tokens = min(max_tokens, max(75, target_token_count * 6))
+
         # Initialize cache
         cache = self.talker.make_cache()
         generated_codes = []
@@ -1538,14 +1576,14 @@ class Model(nn.Module):
 
         # Create progress bar for token generation
         pbar = tqdm(
-            total=max_tokens,
+            total=effective_max_tokens,
             desc="Generating",
             unit="tokens",
             disable=not verbose,
             leave=False,
         )
 
-        for step in range(max_tokens):
+        for step in range(effective_max_tokens):
             # Forward pass through talker
             logits, hidden = self.talker(input_embeds, cache=cache)
 
