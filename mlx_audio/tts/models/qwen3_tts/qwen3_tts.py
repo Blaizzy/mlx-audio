@@ -1821,53 +1821,13 @@ class Model(nn.Module):
         Args:
             path: Local path or Hugging Face repo ID (e.g., 'Qwen/Qwen3-TTS-0.6B-Base')
         """
-        from huggingface_hub import snapshot_download
-        from safetensors import safe_open
 
-        path = Path(path)
+        from mlx_audio.tts.utils import load
 
-        # Download from Hugging Face if not a local path
-        if not path.exists():
-            print(f"Downloading model from Hugging Face: {path}...")
-            path = Path(
-                snapshot_download(
-                    repo_id=str(path),
-                    allow_patterns=[
-                        "*.safetensors",
-                        "*.json",
-                        "*.txt",
-                        "*.model",
-                        "speech_tokenizer/*",
-                    ],
-                )
-            )
-            print(f"Model downloaded to: {path}")
-
-        # Load config
-        with open(path / "config.json") as f:
-            config_dict = json.load(f)
-
-        config = ModelConfig.from_dict(config_dict)
-        model = cls(config)
-
-        # Load weights - use PyTorch as intermediate for bfloat16 support
-        weights = {}
-        weight_files = list(path.glob("*.safetensors"))
-        if len(weight_files) == 0:
-            raise FileNotFoundError(f"No safetensors found in {path}")
-
-        for wf in weight_files:
-            weights.update(mx.load(str(wf)))
-
-        # Sanitize and load
-        weights = model.sanitize(weights)
-
-        model.load_weights(list(weights.items()))
-
-        # Call post_load_hook to initialize tokenizer and speech tokenizer
-        model = cls.post_load_hook(model, path)
-
-        return model
+        print(
+            "WARNING: Loading model from pretrained weights is deprecated. Use mlx_audio.tts.utils.load instead."
+        )
+        return load(path)
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
