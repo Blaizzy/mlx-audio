@@ -231,10 +231,7 @@ def apply_quantization(
             return False
         # Use model-specific predicate if available
         if model_quant_predicate is not None:
-            pred_result = model_quant_predicate(p, m)
-            if isinstance(pred_result, dict):
-                return pred_result
-            if not pred_result:
+            if not model_quant_predicate(p, m):
                 return False
         # Handle custom per layer quantizations
         if p in config["quantization"]:
