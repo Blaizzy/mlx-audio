@@ -879,7 +879,7 @@ class Model(nn.Module):
             # At 12.5 Hz, 25 tokens ≈ 2 seconds of audio
             streaming_chunk_size = max(1, int(streaming_interval * 12.5))
             decoded_tokens = 0  # Track how many tokens we've decoded and yielded
-            context_size = 20  # Overlap tokens for smooth audio transitions
+            context_size = 25  # Overlap tokens for smooth audio transitions (25 gives ~0.04% error vs full decode)
 
             for step in range(max_tokens):
                 # Forward pass through talker
@@ -1542,7 +1542,7 @@ class Model(nn.Module):
         # At 12.5 Hz, 25 tokens ≈ 2 seconds of audio
         streaming_chunk_size = max(1, int(streaming_interval * 12.5))
         decoded_tokens = 0  # Track how many tokens we've decoded and yielded
-        context_size = 10  # Overlap tokens for smooth audio transitions
+        context_size = 25  # Overlap tokens for smooth audio transitions (25 gives ~0.04% error vs full decode)
 
         # Create progress bar for token generation
         pbar = tqdm(
