@@ -2644,6 +2644,7 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         # Mock speech_tokenizer
         mock_speech_tokenizer = MagicMock()
         mock_speech_tokenizer.has_encoder = True
+        mock_speech_tokenizer.decode_upsample_rate = 1920
         ref_time = 5
         # encode returns [1, num_code_groups, ref_time] to match generation
         mock_speech_tokenizer.encode.return_value = mx.zeros(
@@ -2654,6 +2655,12 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             mx.random.normal((1, 24000)),  # ~1s audio
             mx.array([24000]),
         )
+
+        # streaming_decode yields audio chunks
+        def mock_streaming_decode(codes):
+            yield mx.random.normal((1, 24000))  # ~1s audio chunk
+
+        mock_speech_tokenizer.streaming_decode = mock_streaming_decode
         model.speech_tokenizer = mock_speech_tokenizer
         model.speaker_encoder = None
 
@@ -2688,9 +2695,19 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             self.assertEqual(results[0].sample_rate, 24000)
 
     def test_generate_icl_calls_speech_tokenizer_decode(self):
-        """Test that _generate_icl calls speech_tokenizer.decode."""
+        """Test that _generate_icl calls speech_tokenizer.streaming_decode."""
         model = self._make_icl_model()
         ref_audio = mx.random.normal((24000,))
+
+        # Track streaming_decode calls
+        streaming_decode_calls = []
+        original_streaming_decode = model.speech_tokenizer.streaming_decode
+
+        def tracking_streaming_decode(codes):
+            streaming_decode_calls.append(codes)
+            return original_streaming_decode(codes)
+
+        model.speech_tokenizer.streaming_decode = tracking_streaming_decode
 
         results = list(
             model._generate_icl(
@@ -2703,9 +2720,9 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         )
 
         if results:
-            # decode should have been called with combined ref + gen codes
-            model.speech_tokenizer.decode.assert_called_once()
-            decode_args = model.speech_tokenizer.decode.call_args[0][0]
+            # streaming_decode should have been called with combined ref + gen codes
+            self.assertEqual(len(streaming_decode_calls), 1)
+            decode_args = streaming_decode_calls[0]
             # Should be [1, ref_time + gen_len, num_code_groups]
             self.assertEqual(decode_args.ndim, 3)
             self.assertEqual(decode_args.shape[0], 1)
@@ -2821,6 +2838,16 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         config = model.config.talker_config
         eos_id = config.codec_eos_token_id
 
+        # Track streaming_decode calls
+        streaming_decode_calls = []
+        original_streaming_decode = model.speech_tokenizer.streaming_decode
+
+        def tracking_streaming_decode(codes):
+            streaming_decode_calls.append(codes)
+            return original_streaming_decode(codes)
+
+        model.speech_tokenizer.streaming_decode = tracking_streaming_decode
+
         # Force generation of exactly 2 tokens then EOS
         cb0_count = [0]
 
@@ -2847,8 +2874,9 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             )
 
         self.assertEqual(len(results), 1)
-        # Check that decode was called with ref_time + gen_len time steps
-        decode_args = model.speech_tokenizer.decode.call_args[0][0]
+        # Check that streaming_decode was called with ref_time + gen_len time steps
+        self.assertEqual(len(streaming_decode_calls), 1)
+        decode_args = streaming_decode_calls[0]
         gen_len = results[0].token_count
         self.assertEqual(gen_len, 2)
         expected_time = ref_time + gen_len
