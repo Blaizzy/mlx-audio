@@ -274,7 +274,7 @@ class Model(nn.Module):
         chat_text = f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
         input_ids = mx.array(self.tokenizer.encode(chat_text))[None, :]
 
-        # Get text embeddings
+        # Get text embeddings (computed once, sliced later for efficiency)
         text_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(input_ids)
         )
@@ -366,9 +366,7 @@ class Model(nn.Module):
             )
 
         # Role embedding (first 3 tokens: <|im_start|>assistant\n)
-        role_embed = self.talker.text_projection(
-            self.talker.get_text_embeddings()(input_ids[:, :3])
-        )
+        role_embed = text_embed[:, :3, :]
 
         # Combine embeddings
         # tts_pad * (codec_len - 2) + tts_bos
@@ -388,23 +386,13 @@ class Model(nn.Module):
         else:
             input_embeds = mx.concatenate([role_embed, combined_embed], axis=1)
 
-        # Add first text token
-        first_text_embed = (
-            self.talker.text_projection(
-                self.talker.get_text_embeddings()(input_ids[:, 3:4])
-            )
-            + codec_embed[:, -1:, :]
-        )
+        # Add first text token (token index 3)
+        first_text_embed = text_embed[:, 3:4, :] + codec_embed[:, -1:, :]
         input_embeds = mx.concatenate([input_embeds, first_text_embed], axis=1)
 
-        # Trailing text (rest of the text)
+        # Trailing text (tokens 4 to -5, plus EOS)
         trailing_text_hidden = mx.concatenate(
-            [
-                self.talker.text_projection(
-                    self.talker.get_text_embeddings()(input_ids[:, 4:-5])
-                ),
-                tts_eos_embed,
-            ],
+            [text_embed[:, 4:-5, :], tts_eos_embed],
             axis=1,
         )
 
