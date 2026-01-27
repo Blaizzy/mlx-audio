@@ -8,11 +8,11 @@ class TestLasrModel(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from mlx_audio.stt.models.lasr.config import (
+        from mlx_audio.stt.models.lasr_ctc.config import (
             LasrEncoderConfig,
             ModelConfig
         )
-        from mlx_audio.stt.models.lasr.lasr import LasrForCTC, LasrEncoder
+        from mlx_audio.stt.models.lasr_ctc.lasr import LasrForCTC, LasrEncoder
 
         self.LasrEncoderConfig = LasrEncoderConfig
         self.ModelConfig = ModelConfig

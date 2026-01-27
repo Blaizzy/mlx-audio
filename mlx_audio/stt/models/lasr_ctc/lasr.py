@@ -315,3 +315,25 @@ class LasrForCTC(nn.Module):
         
         # Decode tokens to text (Requires tokenizer)
         return STTOutput(text="", tokens=tokens)
+
+    @staticmethod
+    def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        """
+        Sanitize weights from PyTorch/HF format to MLX format.
+        """
+        new_weights = {}
+        for k, v in weights.items():
+            if "rotary_emb.inv_freq" in k:
+                continue
+            
+            # Handle Conv1d weights: (out, in, kernel) -> (out, kernel, in)
+            if "conv" in k and "weight" in k and v.ndim == 3:
+                v = mx.transpose(v, (0, 2, 1))
+                
+            # Handle CTC head (Conv1d 1x1 in HF -> Linear in MLX)
+            if "ctc_head.weight" in k and v.ndim == 3:
+                v = mx.squeeze(v, axis=-1)
+                
+            new_weights[k] = v
+            
+        return new_weights
