@@ -148,6 +148,9 @@ default_origins = (
 # Setup CORS
 setup_cors(app, default_origins)
 
+# Import authentication dependencies
+from fastapi.security import APIKeyHeader
+from fastapi import Security, Depends
 
 # Request schemas for OpenAI-compatible endpoints
 class SpeechRequest(BaseModel):
@@ -171,15 +174,43 @@ class SpeechRequest(BaseModel):
 model_provider = ModelProvider()
 
 
+# API Key Authentication
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+# Get API key from environment variable
+EXPECTED_API_KEY = os.environ.get("MLX_AUDIO_API_KEY")
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    """
+    Verify the API key from the request header.
+    
+    If MLX_AUDIO_API_KEY environment variable is set, authentication is required.
+    If not set, all requests are allowed (backwards compatibility).
+    """
+    # If no API key is configured, allow all requests (backwards compatibility)
+    if EXPECTED_API_KEY is None:
+        return None
+    
+    # If API key is configured, verify it
+    if api_key is None or api_key != EXPECTED_API_KEY:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key. Please provide a valid API key in the X-API-Key header.",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    return api_key
+
+
 @app.get("/")
-async def root():
+async def root(api_key: str = Depends(verify_api_key)):
     return {
         "message": "Welcome to the MLX Audio API server! Visit https://localhost:3000 for the UI."
     }
 
 
 @app.get("/v1/models")
-async def list_models():
+async def list_models(api_key: str = Depends(verify_api_key)):
     """
     Get list of models - provided in OpenAI API compliant format.
     """
@@ -198,7 +229,7 @@ async def list_models():
 
 
 @app.post("/v1/models")
-async def add_model(model_name: str):
+async def add_model(model_name: str, api_key: str = Depends(verify_api_key)):
     """
     Add a new model to the API.
 
@@ -213,7 +244,7 @@ async def add_model(model_name: str):
 
 
 @app.delete("/v1/models")
-async def remove_model(model_name: str):
+async def remove_model(model_name: str, api_key: str = Depends(verify_api_key)):
     """
     Remove a model from the API.
 
@@ -275,7 +306,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
 
 
 @app.post("/v1/audio/speech")
-async def tts_speech(payload: SpeechRequest):
+async def tts_speech(payload: SpeechRequest, api_key: str = Depends(verify_api_key)):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
     return StreamingResponse(
@@ -292,6 +323,7 @@ async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
+    api_key: str = Depends(verify_api_key),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
     data = await file.read()
