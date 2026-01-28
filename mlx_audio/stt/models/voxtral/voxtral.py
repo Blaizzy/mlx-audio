@@ -284,9 +284,29 @@ class Model(nn.Module):
         Hook called after model weights are loaded.
         Used to initialize the processor which is required for audio/text input.
         """
-        from transformers import AutoProcessor
+        from transformers import AutoProcessor, tokenization_utils_base
 
-        processor = AutoProcessor.from_pretrained(str(model_path))
+        # Workaround: MistralCommonBackend tokenizer doesn't implement added_tokens_decoder,
+        # but transformers' logging calls repr() which triggers it. Patch temporarily.
+        original_fget = (
+            tokenization_utils_base.PreTrainedTokenizerBase.added_tokens_decoder.fget
+        )
+
+        def patched_fget(self):
+            try:
+                return original_fget(self)
+            except NotImplementedError:
+                return {}
+
+        tokenization_utils_base.PreTrainedTokenizerBase.added_tokens_decoder = property(
+            patched_fget
+        )
+        try:
+            processor = AutoProcessor.from_pretrained(str(model_path))
+        finally:
+            tokenization_utils_base.PreTrainedTokenizerBase.added_tokens_decoder = (
+                property(original_fget)
+            )
         model._processor = processor
         model._processor.tokenizer.eos_token_ids = getattr(
             model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
@@ -371,7 +391,13 @@ class Model(nn.Module):
                 disable=not verbose,
                 desc="Streaming",
             ):
-                if token in self._processor.tokenizer.eos_token_ids:
+                # Handle eos_token_ids being int or list
+                eos_ids = self._processor.tokenizer.eos_token_ids
+                if isinstance(eos_ids, int):
+                    is_eos = token == eos_ids
+                else:
+                    is_eos = token in eos_ids
+                if is_eos:
                     break
 
                 yield token, logprobs
@@ -417,14 +443,17 @@ class Model(nn.Module):
 
         from mlx_lm.sample_utils import make_sampler
 
+        # Handle eos_token_ids being int or list
+        eos_ids = self._processor.tokenizer.eos_token_ids
+        if isinstance(eos_ids, int):
+            eos_ids = [eos_ids]
         sampler = make_sampler(
             temperature,
             top_p,
             min_p,
             min_tokens_to_keep=min_tokens_to_keep,
             top_k=top_k,
-            xtc_special_tokens=self._processor.tokenizer.encode("\n")
-            + list(self._processor.tokenizer.eos_token_ids),
+            xtc_special_tokens=self._processor.tokenizer.encode("\n") + list(eos_ids),
         )
 
         for token, _ in self.stream_generate(
