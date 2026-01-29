@@ -57,13 +57,35 @@ server = [
 
 # STS (Speech-to-Speech) requires both STT and TTS + additional deps
 sts = [
-    "mlx-audio[stt,tts]",
+    "tiktoken>=0.9.0",
+    "mistral-common[audio]",
+
+    "misaki>=0.9.4",
+    "num2words>=0.5.14",
+    "spacy>=3.8.4",
+    "phonemizer-fork>=3.3.2",
+    "espeakng-loader>=0.2.4",
+    "sentencepiece>=0.2.0",
+    
     "webrtcvad>=2.0.10",
 ]
 
 # Full installation (all features)
 all = [
-    "mlx-audio[stt,tts,sts,server]",
+    "tiktoken>=0.9.0",
+    "mistral-common[audio]",
+
+    "misaki>=0.9.4",
+    "num2words>=0.5.14",
+    "spacy>=3.8.4",
+    "phonemizer-fork>=3.3.2",
+    "espeakng-loader>=0.2.4",
+    "sentencepiece>=0.2.0",
+
+    "fastapi>=0.95.0",
+    "uvicorn>=0.22.0",
+
+    "webrtcvad>=2.0.10",
 ]
 
 # Development dependencies
@@ -81,6 +103,9 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/Blaizzy/mlx-audio"
 Repository = "https://github.com/Blaizzy/mlx-audio"
+
+[tool.poetry]
+version = "0.0.0"
 
 [tool.setuptools.dynamic]
 version = {attr = "mlx_audio.version.__version__"}

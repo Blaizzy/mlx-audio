@@ -13,6 +13,7 @@ MODEL_REMAPPING = {
     "glm": "glmasr",
     "voxtral": "voxtral",
     "vibevoice": "vibevoice_asr",
+    "qwen3_asr": "qwen3_asr",
 }
 
 
