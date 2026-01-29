@@ -114,7 +114,9 @@ class ModelConfig:
 
         # Handle nested configs
         if "audio_config" in params and isinstance(params["audio_config"], dict):
-            params["audio_config"] = AudioEncoderConfig.from_dict(params["audio_config"])
+            params["audio_config"] = AudioEncoderConfig.from_dict(
+                params["audio_config"]
+            )
         elif "audio_config" not in params:
             params["audio_config"] = AudioEncoderConfig()
 

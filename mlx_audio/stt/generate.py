@@ -73,6 +73,12 @@ def parse_args():
         default=None,
         help="Context string with hotwords or metadata to guide transcription",
     )
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=2048,
+        help="Prefill step size (default: 2048)",
+    )
     return parser.parse_args()
 
 
@@ -300,7 +306,6 @@ def generate_transcription(
 
     if isinstance(segments, STTOutput) and hasattr(segments, "text"):
         print(f"{segments.text[:500]}...")
-
 
     end_time = time.time()
 
