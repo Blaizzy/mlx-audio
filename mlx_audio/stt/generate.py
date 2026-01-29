@@ -83,7 +83,7 @@ def parse_args():
         "--gen-kwargs",
         type=json.loads,
         default=None,
-        help='Additional generate kwargs as JSON (e.g. \'{"max_chunk_sec": 600, "min_chunk_sec": 1.0}\')',
+        help='Additional generate kwargs as JSON (e.g. \'{"min_chunk_duration": 1.0}\')',
     )
     parser.add_argument(
         "--text",

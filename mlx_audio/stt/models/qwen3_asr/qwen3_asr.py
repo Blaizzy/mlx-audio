@@ -38,8 +38,8 @@ class StreamingResult:
 def split_audio_into_chunks(
     wav: np.ndarray,
     sr: int,
-    max_chunk_sec: float = 1200.0,
-    min_chunk_sec: float = 1.0,
+    chunk_duration: float = 1200.0,
+    min_chunk_duration: float = 1.0,
     search_expand_sec: float = 5.0,
     min_window_ms: float = 100.0,
 ) -> List[Tuple[np.ndarray, float]]:
@@ -48,8 +48,8 @@ def split_audio_into_chunks(
     Args:
         wav: Audio waveform (1D numpy array).
         sr: Sample rate.
-        max_chunk_sec: Maximum chunk duration in seconds (default: 1200 = 20 min).
-        min_chunk_sec: Minimum chunk duration in seconds (default: 1.0).
+        chunk_duration: Maximum chunk duration in seconds (default: 1200 = 20 min).
+        min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
         search_expand_sec: Window to search for silence around cut point.
         min_window_ms: Minimum window size for energy calculation.
 
@@ -64,16 +64,16 @@ def split_audio_into_chunks(
     total_sec = total_samples / sr
 
     # If short enough, return as-is
-    if total_sec <= max_chunk_sec:
+    if total_sec <= chunk_duration:
         # Pad if too short
-        if total_sec < min_chunk_sec:
-            min_samples = int(min_chunk_sec * sr)
+        if total_sec < min_chunk_duration:
+            min_samples = int(min_chunk_duration * sr)
             wav = np.pad(wav, (0, min_samples - len(wav)))
         return [(wav, 0.0)]
 
     chunks = []
     start_sample = 0
-    max_chunk_samples = int(max_chunk_sec * sr)
+    max_chunk_samples = int(chunk_duration * sr)
     search_samples = int(search_expand_sec * sr)
     min_window_samples = int(min_window_ms * sr / 1000)
 
@@ -85,8 +85,8 @@ def split_audio_into_chunks(
             chunk = wav[start_sample:total_samples]
             offset_sec = start_sample / sr
             # Pad if too short
-            if len(chunk) < min_chunk_sec * sr:
-                min_samples = int(min_chunk_sec * sr)
+            if len(chunk) < min_chunk_duration * sr:
+                min_samples = int(min_chunk_duration * sr)
                 chunk = np.pad(chunk, (0, min_samples - len(chunk)))
             chunks.append((chunk, offset_sec))
             break
@@ -116,8 +116,8 @@ def split_audio_into_chunks(
         offset_sec = start_sample / sr
 
         # Pad if too short
-        if len(chunk) < min_chunk_sec * sr:
-            min_samples = int(min_chunk_sec * sr)
+        if len(chunk) < min_chunk_duration * sr:
+            min_samples = int(min_chunk_duration * sr)
             chunk = np.pad(chunk, (0, min_samples - len(chunk)))
 
         chunks.append((chunk, offset_sec))
@@ -1019,8 +1019,8 @@ class Qwen3ASRModel(nn.Module):
         repetition_context_size: int = 100,
         language: str = "English",
         prefill_step_size: int = 2048,
-        max_chunk_sec: float = 1200.0,
-        min_chunk_sec: float = 1.0,
+        chunk_duration: float = 1200.0,
+        min_chunk_duration: float = 1.0,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,
@@ -1030,8 +1030,8 @@ class Qwen3ASRModel(nn.Module):
         Automatically chunks long audio and processes sequentially.
 
         Args:
-            max_chunk_sec: Maximum chunk duration in seconds (default: 1200 = 20 min).
-            min_chunk_sec: Minimum chunk duration in seconds (default: 1.0).
+            chunk_duration: Maximum chunk duration in seconds (default: 1200 = 20 min).
+            min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
             stream: If True, return a generator that yields tokens as they are generated.
         """
         # If streaming requested, delegate to stream_transcribe
@@ -1048,8 +1048,8 @@ class Qwen3ASRModel(nn.Module):
                 repetition_context_size=repetition_context_size,
                 language=language,
                 prefill_step_size=prefill_step_size,
-                max_chunk_sec=max_chunk_sec,
-                min_chunk_sec=min_chunk_sec,
+                chunk_duration=chunk_duration,
+                min_chunk_duration=min_chunk_duration,
                 verbose=verbose,
             )
 
@@ -1078,8 +1078,8 @@ class Qwen3ASRModel(nn.Module):
         chunks = split_audio_into_chunks(
             audio_np,
             sr=self.sample_rate,
-            max_chunk_sec=max_chunk_sec,
-            min_chunk_sec=min_chunk_sec,
+            chunk_duration=chunk_duration,
+            min_chunk_duration=min_chunk_duration,
         )
 
         sampler = make_sampler(
@@ -1109,7 +1109,7 @@ class Qwen3ASRModel(nn.Module):
             chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1
         )
         for chunk_audio, offset_sec in chunk_iter:
-            chunk_duration = len(chunk_audio) / self.sample_rate
+            actual_chunk_duration = len(chunk_audio) / self.sample_rate
 
             text, prompt_toks, gen_toks = self._generate_single_chunk(
                 chunk_audio,
@@ -1130,7 +1130,7 @@ class Qwen3ASRModel(nn.Module):
                 {
                     "text": text,
                     "start": offset_sec,
-                    "end": offset_sec + chunk_duration,
+                    "end": offset_sec + actual_chunk_duration,
                 }
             )
 
@@ -1175,8 +1175,8 @@ class Qwen3ASRModel(nn.Module):
         repetition_context_size: int = 100,
         language: str = "English",
         prefill_step_size: int = 2048,
-        max_chunk_sec: float = 1200.0,
-        min_chunk_sec: float = 1.0,
+        chunk_duration: float = 1200.0,
+        min_chunk_duration: float = 1.0,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
         """Stream transcription token-by-token from audio.
@@ -1210,8 +1210,8 @@ class Qwen3ASRModel(nn.Module):
         chunks = split_audio_into_chunks(
             audio_np,
             sr=self.sample_rate,
-            max_chunk_sec=max_chunk_sec,
-            min_chunk_sec=min_chunk_sec,
+            chunk_duration=chunk_duration,
+            min_chunk_duration=min_chunk_duration,
         )
 
         sampler = make_sampler(
@@ -1242,7 +1242,7 @@ class Qwen3ASRModel(nn.Module):
             disable=not verbose or len(chunks) == 1,
         )
         for chunk_idx, (chunk_audio, offset_sec) in chunk_iter:
-            chunk_duration = len(chunk_audio) / self.sample_rate
+            actual_chunk_duration = len(chunk_audio) / self.sample_rate
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
 
@@ -1263,8 +1263,8 @@ class Qwen3ASRModel(nn.Module):
                 token_count += 1
                 curr_progress = min(token_count / max(max_tokens, 1), 1.0)
 
-                estimated_start = offset_sec + (chunk_duration * prev_progress)
-                estimated_end = offset_sec + (chunk_duration * curr_progress)
+                estimated_start = offset_sec + (actual_chunk_duration * prev_progress)
+                estimated_end = offset_sec + (actual_chunk_duration * curr_progress)
 
                 yield StreamingResult(
                     text=text,
@@ -1279,7 +1279,7 @@ class Qwen3ASRModel(nn.Module):
                 text="",
                 is_final=is_last_chunk,
                 start_time=offset_sec,
-                end_time=offset_sec + chunk_duration,
+                end_time=offset_sec + actual_chunk_duration,
                 language=lang_code,
             )
 

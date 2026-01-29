@@ -1115,7 +1115,7 @@ class TestQwen3ASRModel(unittest.TestCase):
     def test_split_audio_into_chunks_single(self):
         sr = 16000
         wav = np.zeros(sr * 10)  # 10 seconds
-        chunks = self.split_audio_into_chunks(wav, sr, max_chunk_sec=30.0)
+        chunks = self.split_audio_into_chunks(wav, sr, chunk_duration=30.0)
 
         self.assertEqual(len(chunks), 1)
         self.assertEqual(chunks[0][1], 0.0)  # offset
@@ -1123,7 +1123,7 @@ class TestQwen3ASRModel(unittest.TestCase):
     def test_split_audio_into_chunks_multiple(self):
         sr = 16000
         wav = np.zeros(sr * 100)  # 100 seconds
-        chunks = self.split_audio_into_chunks(wav, sr, max_chunk_sec=30.0)
+        chunks = self.split_audio_into_chunks(wav, sr, chunk_duration=30.0)
 
         self.assertGreater(len(chunks), 1)
 
