@@ -14,6 +14,100 @@ from mlx_audio.stt.models.base import STTOutput
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
+# Constants from reference implementation
+MAX_ASR_INPUT_SECONDS = 1200  # 20 minutes max per chunk
+MIN_ASR_INPUT_SECONDS = 1.0  # Minimum chunk duration
+SAMPLE_RATE = 16000
+
+
+def split_audio_into_chunks(
+    wav: np.ndarray,
+    sr: int = SAMPLE_RATE,
+    max_chunk_sec: float = MAX_ASR_INPUT_SECONDS,
+    search_expand_sec: float = 5.0,
+    min_window_ms: float = 100.0,
+) -> List[Tuple[np.ndarray, float]]:
+    """Split long audio into chunks at low-energy boundaries.
+
+    Args:
+        wav: Audio waveform (1D numpy array).
+        sr: Sample rate.
+        max_chunk_sec: Maximum chunk duration in seconds.
+        search_expand_sec: Window to search for silence around cut point.
+        min_window_ms: Minimum window size for energy calculation.
+
+    Returns:
+        List of (chunk_waveform, offset_seconds) tuples.
+    """
+    # Ensure mono
+    if wav.ndim > 1:
+        wav = wav.mean(axis=-1) if wav.shape[-1] <= 2 else wav.mean(axis=0)
+
+    total_samples = len(wav)
+    total_sec = total_samples / sr
+
+    # If short enough, return as-is
+    if total_sec <= max_chunk_sec:
+        # Pad if too short
+        if total_sec < MIN_ASR_INPUT_SECONDS:
+            min_samples = int(MIN_ASR_INPUT_SECONDS * sr)
+            wav = np.pad(wav, (0, min_samples - len(wav)))
+        return [(wav, 0.0)]
+
+    chunks = []
+    start_sample = 0
+    max_chunk_samples = int(max_chunk_sec * sr)
+    search_samples = int(search_expand_sec * sr)
+    min_window_samples = int(min_window_ms * sr / 1000)
+
+    while start_sample < total_samples:
+        end_sample = min(start_sample + max_chunk_samples, total_samples)
+
+        # If this is the last chunk, take the rest
+        if end_sample >= total_samples:
+            chunk = wav[start_sample:total_samples]
+            offset_sec = start_sample / sr
+            # Pad if too short
+            if len(chunk) < MIN_ASR_INPUT_SECONDS * sr:
+                min_samples = int(MIN_ASR_INPUT_SECONDS * sr)
+                chunk = np.pad(chunk, (0, min_samples - len(chunk)))
+            chunks.append((chunk, offset_sec))
+            break
+
+        # Search for low-energy point around the cut
+        search_start = max(start_sample, end_sample - search_samples)
+        search_end = min(total_samples, end_sample + search_samples)
+        search_region = wav[search_start:search_end]
+
+        # Calculate energy using sliding window
+        if len(search_region) > min_window_samples:
+            energy = np.convolve(
+                search_region**2,
+                np.ones(min_window_samples) / min_window_samples,
+                mode="valid",
+            )
+            # Find minimum energy point
+            min_idx = np.argmin(energy) + min_window_samples // 2
+            cut_sample = search_start + min_idx
+        else:
+            cut_sample = end_sample
+
+        # Ensure we make progress
+        cut_sample = max(cut_sample, start_sample + sr)  # At least 1 second
+
+        chunk = wav[start_sample:cut_sample]
+        offset_sec = start_sample / sr
+
+        # Pad if too short
+        if len(chunk) < MIN_ASR_INPUT_SECONDS * sr:
+            min_samples = int(MIN_ASR_INPUT_SECONDS * sr)
+            chunk = np.pad(chunk, (0, min_samples - len(chunk)))
+
+        chunks.append((chunk, offset_sec))
+        start_sample = cut_sample
+
+    return chunks
+
 
 def create_additive_causal_mask(N: int, offset: int = 0) -> mx.array:
     """Create an additive causal attention mask."""
@@ -580,11 +674,15 @@ class Model(nn.Module):
     def __call__(
         self,
         input_ids: mx.array,
+        input_embeddings: Optional[mx.array] = None,
         input_features: Optional[mx.array] = None,
         feature_attention_mask: Optional[mx.array] = None,
         cache: Optional[List[Any]] = None,
     ) -> mx.array:
-        inputs_embeds = self.model.embed_tokens(input_ids)
+        if input_embeddings is None:
+            inputs_embeds = self.model.embed_tokens(input_ids)
+        else:
+            inputs_embeds = input_embeddings
 
         if input_features is not None and (
             cache is None or cache[0] is None or cache[0].offset == 0
@@ -756,7 +854,9 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
-        """Stream generate tokens from audio."""
+        """Stream generate tokens from audio using mlx_lm generate_step."""
+        from mlx_lm.generate import generate_step
+
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
             raise RuntimeError(
                 "Tokenizer/FeatureExtractor not initialized. Call post_load_hook first."
@@ -766,13 +866,7 @@ class Model(nn.Module):
             self._preprocess_audio(audio)
         )
         input_ids = self._build_prompt(num_audio_tokens, language)
-        cache = self.make_cache()
         eos_token_ids = [151645, 151643]
-
-        if sampler is None:
-
-            def sampler(logits):
-                return mx.argmax(logits, axis=-1)
 
         # Step 1: Encode audio features
         with tqdm(total=1, desc="Encoding audio", disable=not verbose, leave=False) as pbar:
@@ -780,81 +874,107 @@ class Model(nn.Module):
             mx.eval(audio_features)
             pbar.update(1)
 
+        # Free input features
+        del input_features, feature_attention_mask
+        mx.clear_cache()
+
         # Step 2: Build input embeddings with audio merged
         with tqdm(total=1, desc="Building embeddings", disable=not verbose, leave=False) as pbar:
             inputs_embeds = self._build_inputs_embeds(input_ids, audio_features)
             mx.eval(inputs_embeds)
             pbar.update(1)
 
-        # Free audio features memory
-        del audio_features, input_features, feature_attention_mask
+        # Free audio features
+        del audio_features
+        mx.clear_cache()
 
-        # Step 3: Chunked prefill through decoder
-        prompt_len = inputs_embeds.shape[1]
-        prefill_pbar = tqdm(
-            total=prompt_len,
-            desc="Prefilling",
-            unit="tok",
-            disable=not verbose,
-            leave=False,
-        )
+        # Remove batch dim for generate_step
+        input_embeddings = inputs_embeds[0]
+        prompt = input_ids[0] if input_ids.ndim > 1 else input_ids
 
-        for i in range(0, prompt_len, prefill_step_size):
-            chunk_end = min(i + prefill_step_size, prompt_len)
-            chunk_embeds = inputs_embeds[:, i:chunk_end, :]
-            logits = self._forward_with_embeds(chunk_embeds, cache=cache)
-            mx.eval(logits)
-            prefill_pbar.update(chunk_end - i)
-
-        prefill_pbar.close()
-
-        # Free embeddings memory
+        # Free the batched version
         del inputs_embeds
+        mx.clear_cache()
 
-        # Generation progress bar
-        gen_pbar = tqdm(
-            total=max_tokens,
-            desc="Generating",
-            unit="tok",
-            disable=not verbose,
-            leave=False,
-        )
+        # Progress bars
+        prefill_pbar = None
+        gen_pbar = None
 
-        if logits_processors:
-            for processor in logits_processors:
-                logits = processor(input_ids, logits)
+        if verbose:
+            prefill_pbar = tqdm(total=1, desc="Prefilling", unit="tok", leave=False)
 
-        token = sampler(logits[:, -1, :])
-        logprobs = mx.log(mx.softmax(logits[:, -1, :], axis=-1))
-        mx.eval(token)
+        def prefill_progress(processed: int, total: int):
+            nonlocal gen_pbar
+            if prefill_pbar is not None:
+                if prefill_pbar.total != total:
+                    prefill_pbar.total = total
+                    prefill_pbar.refresh()
+                prefill_pbar.n = processed
+                prefill_pbar.refresh()
+                if processed >= total:
+                    prefill_pbar.close()
+                    if gen_pbar is None and verbose:
+                        gen_pbar = tqdm(total=max_tokens, desc="Generating", unit="tok", leave=False)
 
-        token_val = int(token.item())
-        if token_val in eos_token_ids:
-            gen_pbar.close()
-            return
+        # Use generate_step from mlx_lm (handles chunked prefill automatically)
+        for token, logprobs in generate_step(
+            prompt=prompt,
+            input_embeddings=input_embeddings,
+            model=self,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            logits_processors=logits_processors,
+            prefill_step_size=prefill_step_size,
+            prompt_progress_callback=prefill_progress if verbose else None,
+        ):
+            if gen_pbar is not None:
+                gen_pbar.update(1)
 
-        gen_pbar.update(1)
-        yield token, logprobs
-
-        for _ in range(max_tokens - 1):
-            logits = self(mx.array([[token_val]]), cache=cache)
-
-            if logits_processors:
-                for processor in logits_processors:
-                    logits = processor(input_ids, logits)
-
-            token = sampler(logits[:, -1, :])
-            logprobs = mx.log(mx.softmax(logits[:, -1, :], axis=-1))
-            mx.eval(token)
-
-            token_val = int(token.item())
-            if token_val in eos_token_ids:
+            if token in eos_token_ids:
                 break
 
-            gen_pbar.update(1)
             yield token, logprobs
 
-        gen_pbar.close()
+        if gen_pbar is not None:
+            gen_pbar.close()
+
+    def _generate_single_chunk(
+        self,
+        audio_chunk: np.ndarray,
+        *,
+        max_tokens: int = 8192,
+        sampler: Optional[Callable] = None,
+        logits_processors: Optional[List[Callable]] = None,
+        language: str = "English",
+        prefill_step_size: int = 2048,
+        verbose: bool = False,
+    ) -> Tuple[str, int, int]:
+        """Generate transcription for a single audio chunk.
+
+        Returns:
+            Tuple of (text, prompt_tokens, generation_tokens).
+        """
+        generated_tokens = []
+        prompt_tokens = 0
+
+        for token, _ in self.stream_generate(
+            audio_chunk,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            logits_processors=logits_processors,
+            language=language,
+            prefill_step_size=prefill_step_size,
+            verbose=verbose,
+        ):
+            if prompt_tokens == 0:
+                # Get prompt tokens from first iteration
+                _, _, num_audio_tokens = self._preprocess_audio(audio_chunk)
+                input_ids = self._build_prompt(num_audio_tokens, language)
+                prompt_tokens = input_ids.shape[1]
+            generated_tokens.append(int(token))
+
+        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return text, prompt_tokens, len(generated_tokens)
 
     def generate(
         self,
@@ -873,8 +993,12 @@ class Model(nn.Module):
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
-        """Generate transcription from audio."""
+        """Generate transcription from audio.
+
+        Automatically chunks long audio (>20 min) and processes sequentially.
+        """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.stt.utils import load_audio
 
         del kwargs
 
@@ -885,9 +1009,16 @@ class Model(nn.Module):
                 "Tokenizer/FeatureExtractor not initialized. Call post_load_hook first."
             )
 
-        _, _, num_audio_tokens = self._preprocess_audio(audio)
-        input_ids = self._build_prompt(num_audio_tokens, language)
-        prompt_tokens = input_ids.shape[1]
+        # Load audio
+        audio_input = audio[0] if isinstance(audio, list) else audio
+        if isinstance(audio_input, str):
+            audio_input = load_audio(audio_input)
+        audio_np = (
+            np.array(audio_input) if isinstance(audio_input, mx.array) else audio_input
+        )
+
+        # Split into chunks if needed
+        chunks = split_audio_into_chunks(audio_np, sr=SAMPLE_RATE)
 
         sampler = make_sampler(
             temperature,
@@ -906,34 +1037,45 @@ class Model(nn.Module):
             else None
         )
 
-        generated_tokens = []
-        for token, _ in self.stream_generate(
-            audio,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            language=language,
-            prefill_step_size=prefill_step_size,
-            verbose=verbose,
-        ):
-            generated_tokens.append(int(token.item()))
+        # Process chunks
+        all_texts = []
+        total_prompt_tokens = 0
+        total_generation_tokens = 0
+
+        chunk_iter = tqdm(chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1)
+        for chunk_audio, offset_sec in chunk_iter:
+            text, prompt_toks, gen_toks = self._generate_single_chunk(
+                chunk_audio,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                language=language,
+                prefill_step_size=prefill_step_size,
+                verbose=verbose and len(chunks) == 1,  # Only show inner progress for single chunk
+            )
+            all_texts.append(text)
+            total_prompt_tokens += prompt_toks
+            total_generation_tokens += gen_toks
+
+            # Clear cache between chunks
+            mx.clear_cache()
 
         end_time = time.time()
-        mx.clear_cache()
 
-        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Combine transcriptions
+        full_text = " ".join(all_texts)
 
         return STTOutput(
-            text=text,
-            prompt_tokens=prompt_tokens,
-            generation_tokens=len(generated_tokens),
-            total_tokens=prompt_tokens + len(generated_tokens),
+            text=full_text,
+            prompt_tokens=total_prompt_tokens,
+            generation_tokens=total_generation_tokens,
+            total_tokens=total_prompt_tokens + total_generation_tokens,
             total_time=end_time - start_time,
             prompt_tps=(
-                prompt_tokens / (end_time - start_time) if end_time > start_time else 0
+                total_prompt_tokens / (end_time - start_time) if end_time > start_time else 0
             ),
             generation_tps=(
-                len(generated_tokens) / (end_time - start_time)
+                total_generation_tokens / (end_time - start_time)
                 if end_time > start_time
                 else 0
             ),
