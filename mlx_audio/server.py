@@ -382,7 +382,6 @@ async def stt_transcriptions(
     signature = inspect.signature(stt_model.generate)
     gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
 
-
     return StreamingResponse(
         generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
         media_type="application/x-ndjson",

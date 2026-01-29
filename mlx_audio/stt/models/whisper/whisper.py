@@ -67,7 +67,9 @@ class HFTokenizerWrapper:
             tokens = tokens.tolist()
         # Filter out timestamp tokens for regular decode
         filtered = [t for t in tokens if t < self.timestamp_begin]
-        return self.hf_tokenizer.decode(filtered, skip_special_tokens=skip_special_tokens)
+        return self.hf_tokenizer.decode(
+            filtered, skip_special_tokens=skip_special_tokens
+        )
 
     def decode_with_timestamps(self, tokens, **kwargs) -> str:
         """Decode tokens including timestamp tokens."""
@@ -714,8 +716,9 @@ class Model(nn.Module):
                 task=task,
             )
         else:
-            raise ValueError("Processor not found. Make sure the model was loaded with a HuggingFace processor.")
-
+            raise ValueError(
+                "Processor not found. Make sure the model was loaded with a HuggingFace processor."
+            )
 
     def _prepare_audio(
         self, audio: Union[str, np.ndarray, mx.array], padding: int = N_SAMPLES
