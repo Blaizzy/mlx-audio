@@ -325,6 +325,19 @@ class ForcedAlignResult:
 
     items: List[ForcedAlignItem]
 
+    @property
+    def text(self) -> str:
+        """Full text from all aligned items."""
+        return " ".join(item.text for item in self.items)
+
+    @property
+    def segments(self) -> List[Dict[str, Any]]:
+        """Segments in STTOutput-compatible format."""
+        return [
+            {"text": item.text, "start": item.start_time, "end": item.end_time}
+            for item in self.items
+        ]
+
     def __iter__(self):
         return iter(self.items)
 
@@ -607,11 +620,12 @@ class ForcedAlignerModel(nn.Module):
 
         return input_features, feature_attention_mask, num_audio_tokens
 
-    def align(
+    def generate(
         self,
         audio: Union[str, mx.array, np.ndarray, List[Union[str, mx.array, np.ndarray]]],
         text: Union[str, List[str]],
         language: Union[str, List[str]] = "English",
+        **kwargs,
     ) -> Union[ForcedAlignResult, List[ForcedAlignResult]]:
         """Run forced alignment for audio and text.
 
@@ -619,6 +633,7 @@ class ForcedAlignerModel(nn.Module):
             audio: Audio input(s) - file path, array, or list of these.
             text: Transcript(s) for alignment.
             language: Language(s) for each sample (e.g., "Chinese", "English", "Japanese", "Korean").
+            **kwargs: Additional arguments (ignored, for API compatibility).
 
         Returns:
             ForcedAlignResult or list of results with word-level timestamps.
@@ -729,6 +744,7 @@ class ForcedAlignerModel(nn.Module):
             mx.clear_cache()
 
         return results[0] if single_input else results
+
 
     def get_supported_languages(self) -> Optional[List[str]]:
         """List supported language names for the current model.

@@ -84,6 +84,12 @@ def parse_args():
         default=None,
         help='Additional generate kwargs as JSON (e.g. \'{"max_chunk_sec": 600, "min_chunk_sec": 1.0}\')',
     )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default="",
+        help="Text to align (for forced alignment models)",
+    )
     return parser.parse_args()
 
 
@@ -246,6 +252,7 @@ def generate_transcription(
     output_path: str = "transcript",
     format: str = "txt",
     verbose: bool = False,
+    text: str = "",
     **kwargs,
 ):
     """Generate transcriptions from audio files.
@@ -256,6 +263,7 @@ def generate_transcription(
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
+        text: Text to align (for forced alignment models).
         **kwargs: Additional arguments for the model's generate method.
 
     Returns:
@@ -283,6 +291,10 @@ def generate_transcription(
     gen_kwargs = kwargs.pop("gen_kwargs", None)
     if gen_kwargs:
         kwargs.update(gen_kwargs)
+
+    # Add text to kwargs if provided (for forced alignment)
+    if text:
+        kwargs["text"] = text
 
     signature = inspect.signature(model.generate)
     kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
