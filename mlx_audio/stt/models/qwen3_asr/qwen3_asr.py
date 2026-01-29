@@ -415,16 +415,6 @@ class AudioEncoder(nn.Module):
         return hidden_states
 
 
-class RMSNorm(nn.Module):
-    """RMS Layer Normalization."""
-
-    def __init__(self, dims: int, eps: float = 1e-6):
-        super().__init__()
-        self.weight = mx.ones((dims,))
-        self.eps = eps
-
-    def __call__(self, x: mx.array) -> mx.array:
-        return mx.fast.rms_norm(x, self.weight, self.eps)
 
 
 class TextAttention(nn.Module):
@@ -453,8 +443,8 @@ class TextAttention(nn.Module):
             self.num_heads * self.head_dim, config.hidden_size, bias=False
         )
 
-        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
         self.rope = nn.RoPE(self.head_dim, traditional=False, base=config.rope_theta)
 
     def __call__(
@@ -533,8 +523,8 @@ class TextDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = TextAttention(config, layer_idx)
         self.mlp = TextMLP(config)
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(
+        self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
 
@@ -568,7 +558,7 @@ class TextModel(nn.Module):
         self.layers = [
             TextDecoderLayer(config, i) for i in range(config.num_hidden_layers)
         ]
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def __call__(
         self,
