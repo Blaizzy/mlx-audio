@@ -9,11 +9,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from .qwen3_asr import (
-    AudioEncoder,
-    TextModel,
-    _get_feat_extract_output_lengths,
-)
+from .qwen3_asr import AudioEncoder, TextModel, _get_feat_extract_output_lengths
 
 
 class ForceAlignProcessor:
@@ -412,14 +408,22 @@ class ForcedAlignerConfig:
                 params["classify_num"] = thinker["classify_num"]
 
         # Use top-level timestamp params if not set from thinker_config
-        if top_level_timestamp_token_id is not None and "timestamp_token_id" not in params:
+        if (
+            top_level_timestamp_token_id is not None
+            and "timestamp_token_id" not in params
+        ):
             params["timestamp_token_id"] = top_level_timestamp_token_id
-        if top_level_timestamp_segment_time is not None and "timestamp_segment_time" not in params:
+        if (
+            top_level_timestamp_segment_time is not None
+            and "timestamp_segment_time" not in params
+        ):
             params["timestamp_segment_time"] = top_level_timestamp_segment_time
 
         # Handle nested configs
         if "audio_config" in params and isinstance(params["audio_config"], dict):
-            params["audio_config"] = AudioEncoderConfig.from_dict(params["audio_config"])
+            params["audio_config"] = AudioEncoderConfig.from_dict(
+                params["audio_config"]
+            )
         elif "audio_config" not in params:
             params["audio_config"] = AudioEncoderConfig()
 
@@ -567,7 +571,9 @@ class ForcedAlignerModel(nn.Module):
         return not p.startswith("audio_tower")
 
     @classmethod
-    def post_load_hook(cls, model: "ForcedAlignerModel", model_path: Path) -> "ForcedAlignerModel":
+    def post_load_hook(
+        cls, model: "ForcedAlignerModel", model_path: Path
+    ) -> "ForcedAlignerModel":
         """Hook called after model weights are loaded."""
         from transformers import AutoTokenizer, WhisperFeatureExtractor
 
@@ -744,7 +750,6 @@ class ForcedAlignerModel(nn.Module):
             mx.clear_cache()
 
         return results[0] if single_input else results
-
 
     def get_supported_languages(self) -> Optional[List[str]]:
         """List supported language names for the current model.

@@ -415,8 +415,6 @@ class AudioEncoder(nn.Module):
         return hidden_states
 
 
-
-
 class TextAttention(nn.Module):
     """Multi-headed attention for text decoder with Q/K norms."""
 
@@ -759,7 +757,9 @@ class Qwen3ASRModel(nn.Module):
         return not p.startswith("audio_tower")
 
     @classmethod
-    def post_load_hook(cls, model: "Qwen3ASRModel", model_path: Path) -> "Qwen3ASRModel":
+    def post_load_hook(
+        cls, model: "Qwen3ASRModel", model_path: Path
+    ) -> "Qwen3ASRModel":
         """Hook called after model weights are loaded."""
         from transformers import AutoTokenizer, WhisperFeatureExtractor
 
@@ -861,8 +861,12 @@ class Qwen3ASRModel(nn.Module):
         eos_token_ids = [151645, 151643]
 
         # Step 1: Encode audio features
-        with tqdm(total=1, desc="Encoding audio", disable=not verbose, leave=False) as pbar:
-            audio_features = self.get_audio_features(input_features, feature_attention_mask)
+        with tqdm(
+            total=1, desc="Encoding audio", disable=not verbose, leave=False
+        ) as pbar:
+            audio_features = self.get_audio_features(
+                input_features, feature_attention_mask
+            )
             mx.eval(audio_features)
             pbar.update(1)
 
@@ -871,7 +875,9 @@ class Qwen3ASRModel(nn.Module):
         mx.clear_cache()
 
         # Step 2: Build input embeddings with audio merged
-        with tqdm(total=1, desc="Building embeddings", disable=not verbose, leave=False) as pbar:
+        with tqdm(
+            total=1, desc="Building embeddings", disable=not verbose, leave=False
+        ) as pbar:
             inputs_embeds = self._build_inputs_embeds(input_ids, audio_features)
             mx.eval(inputs_embeds)
             pbar.update(1)
@@ -906,7 +912,9 @@ class Qwen3ASRModel(nn.Module):
                 if processed >= total:
                     prefill_pbar.close()
                     if gen_pbar is None and verbose:
-                        gen_pbar = tqdm(total=max_tokens, desc="Generating", unit="tok", leave=False)
+                        gen_pbar = tqdm(
+                            total=max_tokens, desc="Generating", unit="tok", leave=False
+                        )
 
         # Use generate_step from mlx_lm (handles chunked prefill automatically)
         for token, logprobs in generate_step(
@@ -996,6 +1004,7 @@ class Qwen3ASRModel(nn.Module):
             min_chunk_sec: Minimum chunk duration in seconds (default: 1.0).
         """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
         from mlx_audio.stt.utils import load_audio
 
         del kwargs
@@ -1046,7 +1055,9 @@ class Qwen3ASRModel(nn.Module):
         total_prompt_tokens = 0
         total_generation_tokens = 0
 
-        chunk_iter = tqdm(chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1)
+        chunk_iter = tqdm(
+            chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1
+        )
         for chunk_audio, offset_sec in chunk_iter:
             chunk_duration = len(chunk_audio) / self.sample_rate
 
@@ -1057,18 +1068,21 @@ class Qwen3ASRModel(nn.Module):
                 logits_processors=logits_processors,
                 language=language,
                 prefill_step_size=prefill_step_size,
-                verbose=verbose and len(chunks) == 1,  # Only show inner progress for single chunk
+                verbose=verbose
+                and len(chunks) == 1,  # Only show inner progress for single chunk
             )
             all_texts.append(text)
             total_prompt_tokens += prompt_toks
             total_generation_tokens += gen_toks
 
             # Create segment for this chunk
-            segments.append({
-                "text": text,
-                "start": offset_sec,
-                "end": offset_sec + chunk_duration,
-            })
+            segments.append(
+                {
+                    "text": text,
+                    "start": offset_sec,
+                    "end": offset_sec + chunk_duration,
+                }
+            )
 
             # Clear cache between chunks
             mx.clear_cache()
@@ -1086,7 +1100,9 @@ class Qwen3ASRModel(nn.Module):
             total_tokens=total_prompt_tokens + total_generation_tokens,
             total_time=end_time - start_time,
             prompt_tps=(
-                total_prompt_tokens / (end_time - start_time) if end_time > start_time else 0
+                total_prompt_tokens / (end_time - start_time)
+                if end_time > start_time
+                else 0
             ),
             generation_tps=(
                 total_generation_tokens / (end_time - start_time)
@@ -1118,6 +1134,7 @@ class Qwen3ASRModel(nn.Module):
         Automatically chunks long audio and streams tokens from each chunk sequentially.
         """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
         from mlx_audio.stt.utils import load_audio
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
@@ -1188,11 +1205,14 @@ class Model:
     def __init__(self, config):
         from .qwen3_forced_aligner import ForcedAlignerConfig, ForcedAlignerModel
 
-        is_aligner = isinstance(config, ForcedAlignerConfig) or getattr(
-            config, "model_type", ""
-        ) == self._FORCED_ALIGNER_TYPE
+        is_aligner = (
+            isinstance(config, ForcedAlignerConfig)
+            or getattr(config, "model_type", "") == self._FORCED_ALIGNER_TYPE
+        )
 
-        self._model = ForcedAlignerModel(config) if is_aligner else Qwen3ASRModel(config)
+        self._model = (
+            ForcedAlignerModel(config) if is_aligner else Qwen3ASRModel(config)
+        )
         self.config = self._model.config
 
     def __getattr__(self, name):
@@ -1222,6 +1242,7 @@ class Model:
     def sanitize(cls, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         if cls._is_forced_aligner_weights(weights):
             from .qwen3_forced_aligner import ForcedAlignerModel
+
             return ForcedAlignerModel.sanitize(weights)
         return Qwen3ASRModel.sanitize(weights)
 

@@ -330,11 +330,10 @@ def generate_transcription(
         if hasattr(segments, "text"):
             print("\033[94mTranscription:\033[0m\n")
             print(f"{segments.text[:500]}...\n")
-            
+
         if hasattr(segments, "segments"):
             print("\033[94mSegments:\033[0m\n")
             pprint(segments.segments[:3] + ["..."])
- 
 
     end_time = time.time()
 
