@@ -153,6 +153,7 @@ setup_cors(app, default_origins)
 class SpeechRequest(BaseModel):
     model: str
     input: str
+    instruct: str | None = None
     voice: str | None = None
     speed: float | None = 1.0
     gender: str | None = "male"
@@ -165,6 +166,7 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    verbose: bool = False
 
 
 # Initialize the ModelProvider
@@ -234,7 +236,7 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
+async def generate_audio(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
     if ref_audio and isinstance(ref_audio, str):
@@ -258,6 +260,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
         speed=payload.speed,
         gender=payload.gender,
         pitch=payload.pitch,
+        instruct=payload.instruct,
         lang_code=payload.lang_code,
         ref_audio=ref_audio,
         ref_text=payload.ref_text,
@@ -265,6 +268,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        verbose=payload.verbose,
     ):
 
         sample_rate = result.sample_rate
