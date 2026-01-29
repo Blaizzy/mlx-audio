@@ -453,12 +453,18 @@ class TestSharedHelpers:
     def test_get_suppress_tokens_helper(self):
         """get_suppress_tokens returns consistent token set."""
         from mlx_audio.stt.models.whisper.decoding import get_suppress_tokens
-        from mlx_audio.stt.models.whisper.tokenizer import get_tokenizer
 
-        tokenizer = get_tokenizer(
-            True, num_languages=100, language="en", task="transcribe"
-        )
+        # Mock tokenizer with required properties for get_suppress_tokens
+        class MockTokenizer:
+            non_speech_tokens = (100, 101, 102)
+            transcribe = 50358
+            translate = 50357
+            sot = 50258
+            sot_prev = 50361
+            sot_lm = 50360
+            no_speech = 50362
 
+        tokenizer = MockTokenizer()
         tokens = get_suppress_tokens(tokenizer)
 
         assert isinstance(tokens, (list, tuple, set))

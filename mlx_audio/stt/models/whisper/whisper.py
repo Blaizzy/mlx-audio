@@ -30,24 +30,26 @@ from .decoding import DecodingOptions, DecodingResult
 from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .timing import add_word_timestamps
-from .tokenizer import LANGUAGES, TO_LANGUAGE_CODE, get_tokenizer
+from .tokenizer import LANGUAGES, TO_LANGUAGE_CODE
 
 
 class HFTokenizerWrapper:
     """
     Wrapper around HuggingFace WhisperTokenizer that provides a compatible interface
-    with the tiktoken-based Tokenizer class.
+    for Whisper decoding.
     """
 
     def __init__(
         self,
         hf_tokenizer,
         multilingual: bool = True,
+        num_languages: int = 99,
         language: str = None,
         task: str = "transcribe",
     ):
         self.hf_tokenizer = hf_tokenizer
         self.multilingual = multilingual
+        self.num_languages = num_languages
         self.language = language or "en"
         self.task = task or "transcribe"
 
@@ -63,7 +65,15 @@ class HFTokenizerWrapper:
         """Decode token ids to text."""
         if hasattr(tokens, "tolist"):
             tokens = tokens.tolist()
-        return self.hf_tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens)
+        # Filter out timestamp tokens for regular decode
+        filtered = [t for t in tokens if t < self.timestamp_begin]
+        return self.hf_tokenizer.decode(filtered, skip_special_tokens=skip_special_tokens)
+
+    def decode_with_timestamps(self, tokens, **kwargs) -> str:
+        """Decode tokens including timestamp tokens."""
+        if hasattr(tokens, "tolist"):
+            tokens = tokens.tolist()
+        return self.hf_tokenizer.decode(tokens, skip_special_tokens=False)
 
     @property
     def eot(self) -> int:
@@ -73,13 +83,17 @@ class HFTokenizerWrapper:
     @property
     def timestamp_begin(self) -> int:
         """First timestamp token id."""
-        # Whisper timestamp tokens start at <|0.00|>
         return self.hf_tokenizer.convert_tokens_to_ids("<|0.00|>")
 
     @property
     def sot(self) -> int:
         """Start of transcript token."""
         return self.hf_tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+
+    @property
+    def sot_lm(self) -> int:
+        """Start of language model token."""
+        return self.hf_tokenizer.convert_tokens_to_ids("<|startoflm|>")
 
     @property
     def no_timestamps(self) -> int:
@@ -119,11 +133,104 @@ class HFTokenizerWrapper:
         return (self.sot,)
 
     @property
+    def sot_sequence_including_notimestamps(self) -> Tuple[int, ...]:
+        """Start of transcript sequence including notimestamps token."""
+        return tuple(list(self.sot_sequence) + [self.no_timestamps])
+
+    @property
     def task_token(self) -> int:
         """Task token (transcribe or translate)."""
         if self.task == "translate":
             return self.translate
         return self.transcribe
+
+    @property
+    def all_language_tokens(self) -> Tuple[int, ...]:
+        """All language token ids."""
+        result = []
+        for lang in list(LANGUAGES.keys())[: self.num_languages]:
+            token_id = self.hf_tokenizer.convert_tokens_to_ids(f"<|{lang}|>")
+            if token_id != self.hf_tokenizer.unk_token_id:
+                result.append(token_id)
+        return tuple(result)
+
+    @property
+    def all_language_codes(self) -> Tuple[str, ...]:
+        """All language codes."""
+        return tuple(list(LANGUAGES.keys())[: self.num_languages])
+
+    @property
+    def non_speech_tokens(self) -> Tuple[int, ...]:
+        """Tokens to suppress to avoid non-speech annotations."""
+        import string
+
+        symbols = list('"#()*+/:;<=>@[\\]^_`{|}~「」『』')
+        symbols += (
+            "<< >> <<< >>> -- --- -( -[ (' (\" (( )) ((( ))) [[ ]] {{ }} ♪♪ ♪♪♪".split()
+        )
+
+        miscellaneous = set("♩♪♫♬♭♮♯")
+
+        result = {self.encode(" -")[0], self.encode(" '")[0]}
+        for symbol in symbols + list(miscellaneous):
+            for tokens in [self.encode(symbol), self.encode(" " + symbol)]:
+                if len(tokens) == 1 or symbol in miscellaneous:
+                    result.add(tokens[0])
+
+        return tuple(sorted(result))
+
+    def split_to_word_tokens(self, tokens: List[int]):
+        """Split tokens into words."""
+        if self.language in {"zh", "ja", "th", "lo", "my", "yue"}:
+            return self._split_tokens_on_unicode(tokens)
+        return self._split_tokens_on_spaces(tokens)
+
+    def _split_tokens_on_unicode(self, tokens: List[int]):
+        """Split tokens at unicode boundaries."""
+        decoded_full = self.decode_with_timestamps(tokens)
+        replacement_char = "\ufffd"
+
+        words = []
+        word_tokens = []
+        current_tokens = []
+        unicode_offset = 0
+
+        for token in tokens:
+            current_tokens.append(token)
+            decoded = self.decode_with_timestamps(current_tokens)
+
+            if (
+                replacement_char not in decoded
+                or decoded_full[unicode_offset + decoded.index(replacement_char)]
+                == replacement_char
+            ):
+                words.append(decoded)
+                word_tokens.append(current_tokens)
+                current_tokens = []
+                unicode_offset += len(decoded)
+
+        return words, word_tokens
+
+    def _split_tokens_on_spaces(self, tokens: List[int]):
+        """Split tokens at space boundaries."""
+        import string
+
+        subwords, subword_tokens_list = self._split_tokens_on_unicode(tokens)
+        words = []
+        word_tokens = []
+
+        for subword, subword_tokens in zip(subwords, subword_tokens_list):
+            special = subword_tokens[0] >= self.eot
+            with_space = subword.startswith(" ")
+            punctuation = subword.strip() in string.punctuation
+            if special or with_space or punctuation or len(words) == 0:
+                words.append(subword)
+                word_tokens.append(subword_tokens)
+            else:
+                words[-1] = words[-1] + subword
+                word_tokens[-1].extend(subword_tokens)
+
+        return words, word_tokens
 
 
 def _format_timestamp(seconds: float):
@@ -582,20 +689,14 @@ class Model(nn.Module):
             processor = WhisperProcessor.from_pretrained(str(model_path))
             model._processor = processor
         except Exception as e:
-            # Fallback: processor not available, will use tiktoken-based tokenizer
             model._processor = None
-            warnings.warn(
-                f"Could not load WhisperProcessor: {e}. Using tiktoken tokenizer."
-            )
+            warnings.warn(f"Could not load WhisperProcessor: {e}.")
 
         return model
 
     def get_tokenizer(self, language: str = None, task: str = "transcribe"):
         """
         Get a tokenizer for the current model configuration.
-
-        If a HuggingFace processor was loaded, wraps it to provide a compatible interface.
-        Otherwise falls back to the tiktoken-based tokenizer.
 
         Args:
             language: Language code (e.g., "en", "ja"). If None, uses "en" for multilingual.
@@ -608,17 +709,13 @@ class Model(nn.Module):
             return HFTokenizerWrapper(
                 self._processor.tokenizer,
                 multilingual=self.is_multilingual,
-                language=language,
-                task=task,
-            )
-        else:
-            # Fallback to tiktoken-based tokenizer
-            return get_tokenizer(
-                self.is_multilingual,
                 num_languages=self.num_languages,
                 language=language,
                 task=task,
             )
+        else:
+            raise ValueError("Processor not found. Make sure the model was loaded with a HuggingFace processor.")
+
 
     def _prepare_audio(
         self, audio: Union[str, np.ndarray, mx.array], padding: int = N_SAMPLES

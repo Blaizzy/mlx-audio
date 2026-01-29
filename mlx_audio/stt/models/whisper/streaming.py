@@ -130,17 +130,11 @@ class StreamingDecoder:
             SuppressTokens,
             get_suppress_tokens,
         )
-        from mlx_audio.stt.models.whisper.tokenizer import get_tokenizer
 
         self.model = model
         self.config = config or StreamingConfig()
         self.inference = Inference(model)
-        self.tokenizer = get_tokenizer(
-            model.is_multilingual,
-            num_languages=model.num_languages,
-            language=language or "en",
-            task=task,
-        )
+        self.tokenizer = model.get_tokenizer(language=language or "en", task=task)
         self._emitted_tokens = []
         self._pending_tokens = []
         self._accumulated_mel = None
