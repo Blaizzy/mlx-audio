@@ -18,13 +18,13 @@ MLX implementations of Qwen3 speech models for transcription and word-level alig
 
 ```bash
 # Basic transcription
-uv run mlx_audio.stt.generate --model mlx-community/Qwen3-ASR-0.6B-8bit --audio audio.wav
+uv run mlx_audio.stt.generate --model mlx-community/Qwen3-ASR-0.6B-8bit --audio audio.wav --output-path output
 
 # With language specification
-uv run mlx_audio.stt.generate --model mlx-community/Qwen3-ASR-1.7B-8bit --audio audio.wav --language English
+uv run mlx_audio.stt.generate --model mlx-community/Qwen3-ASR-1.7B-8bit --audio audio.wav --output-path output --language English
 
 # Streaming output
-uv run mlx_audio.stt.generate --model mlx-community/Qwen3-ASR-0.6B-8bit --audio audio.wav --stream
+uv run mlx_audio.stt.generate --model mlx-community/Qwen3-ASR-0.6B-8bit --audio audio.wav --output-path output --stream
 ```
 
 ### Forced Alignment
