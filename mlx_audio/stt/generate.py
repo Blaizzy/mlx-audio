@@ -4,6 +4,7 @@ import inspect
 import json
 import os
 import time
+from pprint import pprint
 from typing import List, Optional, Union
 
 import mlx.core as mx
@@ -285,7 +286,6 @@ def generate_transcription(
         print(f"\033[94mAudio path:\033[0m {audio}")
         print(f"\033[94mOutput path:\033[0m {output_path}")
         print(f"\033[94mFormat:\033[0m {format}")
-        print("\033[94mTranscription:\033[0m")
 
     # Handle gen_kwargs (additional generate parameters as JSON)
     gen_kwargs = kwargs.pop("gen_kwargs", None)
@@ -326,8 +326,15 @@ def generate_transcription(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
 
-    if isinstance(segments, STTOutput) and hasattr(segments, "text"):
-        print(f"{segments.text[:500]}...")
+    if verbose:
+        if hasattr(segments, "text"):
+            print("\033[94mTranscription:\033[0m\n")
+            print(f"{segments.text[:500]}...\n")
+            
+        if hasattr(segments, "segments"):
+            print("\033[94mSegments:\033[0m\n")
+            pprint(segments.segments[:3] + ["..."])
+ 
 
     end_time = time.time()
 
