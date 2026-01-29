@@ -1293,35 +1293,28 @@ class TestQwen3ASRModel(unittest.TestCase):
         self.assertEqual(logits.shape, (1, 5, self.text_config.vocab_size))
 
     def test_model_wrapper_is_forced_aligner_weights(self):
-        # Small lm_head output with thinker prefix = ForcedAligner
-        aligner_weights = {
+        # Small lm_head output (with thinker prefix) = ForcedAligner
+        self.assertTrue(self.Model._is_forced_aligner_weights({
             "thinker.lm_head.weight": mx.zeros((5000, 64)),
-        }
-        self.assertTrue(self.Model._is_forced_aligner_weights(aligner_weights))
+        }))
 
-        # Small lm_head output without prefix (converted models) = ForcedAligner
-        aligner_weights_no_prefix = {
+        # Small lm_head output (without prefix, converted models) = ForcedAligner
+        self.assertTrue(self.Model._is_forced_aligner_weights({
             "lm_head.weight": mx.zeros((5000, 64)),
-        }
-        self.assertTrue(self.Model._is_forced_aligner_weights(aligner_weights_no_prefix))
+        }))
 
         # Large lm_head output = ASR (vocab_size)
-        asr_weights = {
+        self.assertFalse(self.Model._is_forced_aligner_weights({
             "thinker.lm_head.weight": mx.zeros((151936, 64)),
-        }
-        self.assertFalse(self.Model._is_forced_aligner_weights(asr_weights))
-
-        # Large lm_head without prefix = ASR
-        asr_weights_no_prefix = {
+        }))
+        self.assertFalse(self.Model._is_forced_aligner_weights({
             "lm_head.weight": mx.zeros((151936, 64)),
-        }
-        self.assertFalse(self.Model._is_forced_aligner_weights(asr_weights_no_prefix))
+        }))
 
         # No lm_head = not aligner
-        no_lm_head = {
+        self.assertFalse(self.Model._is_forced_aligner_weights({
             "thinker.model.norm.weight": mx.zeros((64,)),
-        }
-        self.assertFalse(self.Model._is_forced_aligner_weights(no_lm_head))
+        }))
 
     def test_model_wrapper_sanitize_uses_correct_method(self):
         # For ASR weights (large lm_head)
