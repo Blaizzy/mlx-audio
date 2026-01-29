@@ -580,7 +580,7 @@ class TextModel(nn.Module):
         return self.norm(hidden_states)
 
 
-class Model(nn.Module):
+class Qwen3ASRModel(nn.Module):
     """Qwen3-ASR Model for speech recognition."""
 
     def __init__(self, config: ModelConfig):
@@ -759,7 +759,7 @@ class Model(nn.Module):
         return not p.startswith("audio_tower")
 
     @classmethod
-    def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+    def post_load_hook(cls, model: "Qwen3ASRModel", model_path: Path) -> "Qwen3ASRModel":
         """Hook called after model weights are loaded."""
         from transformers import AutoTokenizer, WhisperFeatureExtractor
 
@@ -1178,3 +1178,64 @@ class Model(nn.Module):
 
             # Clear cache between chunks
             mx.clear_cache()
+
+
+class Model:
+
+    def __init__(self, config):
+        # Check if this is a forced aligner config
+        from .qwen3_forced_aligner import ForcedAlignerConfig, ForcedAlignerModel
+
+        if isinstance(config, ForcedAlignerConfig) or getattr(
+            config, "model_type", ""
+        ) == "qwen3_forced_aligner":
+            self._model = ForcedAlignerModel(config)
+        else:
+            self._model = Qwen3ASRModel(config)
+
+        self.config = self._model.config
+
+    def __getattr__(self, name):
+        """Delegate attribute access to the internal model."""
+        return getattr(self._model, name)
+
+    def __call__(self, *args, **kwargs):
+        """Forward call to the internal model."""
+        return self._model(*args, **kwargs)
+
+    def parameters(self):
+        """Return model parameters for weight loading."""
+        return self._model.parameters()
+
+    def load_weights(self, weights, strict=False):
+        """Load weights into the internal model."""
+        return self._model.load_weights(weights, strict=strict)
+
+    def eval(self):
+        """Set the model to evaluation mode."""
+        return self._model.eval()
+
+    @staticmethod
+    def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        """Sanitize weights - delegates to appropriate model's sanitize."""
+        # Check if weights indicate forced aligner (has lm_head with small output dim)
+        lm_head_key = "thinker.lm_head.weight"
+        if lm_head_key in weights:
+            lm_head_shape = weights[lm_head_key].shape
+            # ForcedAligner has classify_num (5000) output, ASR has vocab_size (~150k)
+            if lm_head_shape[0] < 10000:
+                from .qwen3_forced_aligner import ForcedAlignerModel
+
+                return ForcedAlignerModel.sanitize(weights)
+
+        return Qwen3ASRModel.sanitize(weights)
+
+    @classmethod
+    def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+        """Call the internal model's post_load_hook."""
+        internal_model = model._model
+        internal_cls = type(internal_model)
+        if hasattr(internal_cls, "post_load_hook"):
+            model._model = internal_cls.post_load_hook(internal_model, model_path)
+            model.config = model._model.config
+        return model

@@ -95,7 +95,16 @@ class ModelConfig:
             self.text_config = TextConfig.from_dict(self.text_config)
 
     @classmethod
-    def from_dict(cls, params: Dict[str, Any]) -> "ModelConfig":
+    def from_dict(cls, params: Dict[str, Any]):
+        """Create config from dict, returning ForcedAlignerConfig if appropriate."""
+        # Check if this is a forced aligner config
+        if "thinker_config" in params:
+            thinker = params.get("thinker_config", {})
+            if thinker.get("model_type") == "qwen3_forced_aligner":
+                from .qwen3_forced_aligner import ForcedAlignerConfig
+
+                return ForcedAlignerConfig.from_dict(params)
+
         params = params.copy()
 
         # Handle nested thinker_config (from HF config)
