@@ -196,11 +196,14 @@ class TestWhisperModel(unittest.TestCase):
         real_model_for_test = self.Model(self.dims, dtype=mx.float32)
 
         # Patch the model's get_tokenizer method and decode method
-        with patch.object(
-            real_model_for_test, "get_tokenizer", return_value=mock_tokenizer_inst
-        ) as mock_get_tokenizer, patch.object(
-            real_model_for_test, "decode", return_value=mock_decoding_result
-        ) as mock_instance_decode:
+        with (
+            patch.object(
+                real_model_for_test, "get_tokenizer", return_value=mock_tokenizer_inst
+            ) as mock_get_tokenizer,
+            patch.object(
+                real_model_for_test, "decode", return_value=mock_decoding_result
+            ) as mock_instance_decode,
+        ):
             output = real_model_for_test.generate(
                 dummy_audio_input,
                 language="en",
