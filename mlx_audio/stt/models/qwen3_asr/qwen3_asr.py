@@ -1183,8 +1183,6 @@ class Qwen3ASRModel(nn.Module):
 class Model:
 
     _FORCED_ALIGNER_TYPE = "qwen3_forced_aligner"
-    _LM_HEAD_KEY = "thinker.lm_head.weight"
-    _LM_HEAD_KEY_NO_PREFIX = "lm_head.weight"
     _FORCED_ALIGNER_MAX_CLASSES = 10000
 
     def __init__(self, config):
@@ -1215,10 +1213,9 @@ class Model:
     @classmethod
     def _is_forced_aligner_weights(cls, weights: Dict[str, mx.array]) -> bool:
         """Check if weights are for ForcedAligner based on lm_head output size."""
-        # Check both with and without thinker. prefix (original vs converted models)
-        for key in [cls._LM_HEAD_KEY, cls._LM_HEAD_KEY_NO_PREFIX]:
-            if key in weights:
-                return weights[key].shape[0] < cls._FORCED_ALIGNER_MAX_CLASSES
+        for key, value in weights.items():
+            if "lm_head" in key and "weight" in key:
+                return value.shape[0] < cls._FORCED_ALIGNER_MAX_CLASSES
         return False
 
     @classmethod
