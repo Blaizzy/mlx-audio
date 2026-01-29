@@ -612,18 +612,29 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
 
     candidates = [model_type] + (model_name or [])
 
-    for category, remap in (
+    categories = [
         ("tts", tts_utils.MODEL_REMAPPING),
         ("stt", stt_utils.MODEL_REMAPPING),
-    ):
+    ]
+
+    # First pass: check for explicit remapping matches (higher priority)
+    for category, remap in categories:
         for hint in candidates:
-            arch = remap.get(hint, hint)
-            # Double-check that the architecture name is valid before trying to import
-            if not is_valid_module_name(arch):
-                continue
-            module_path = f"mlx_audio.{category}.models.{arch}"
-            if importlib.util.find_spec(module_path) is not None:
-                return category
+            if hint in remap:
+                arch = remap[hint]
+                if not is_valid_module_name(arch):
+                    continue
+                module_path = f"mlx_audio.{category}.models.{arch}"
+                if importlib.util.find_spec(module_path) is not None:
+                    return category
+
+    # Second pass: check for direct module matches (fallback)
+    for category, remap in categories:
+        for hint in candidates:
+            if hint not in remap and is_valid_module_name(hint):
+                module_path = f"mlx_audio.{category}.models.{hint}"
+                if importlib.util.find_spec(module_path) is not None:
+                    return category
 
     return None
 

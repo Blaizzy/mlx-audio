@@ -305,6 +305,38 @@ async def tts_speech(payload: SpeechRequest):
     )
 
 
+def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
+    """Generator that yields transcription chunks and cleans up temp file."""
+    try:
+        # Call generate with stream=True (models handle streaming internally)
+        result = stt_model.generate(tmp_path, **gen_kwargs)
+
+        # Check if result is a generator (streaming mode)
+        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+            accumulated_text = ""
+            for chunk in result:
+                # Handle different chunk types (string tokens vs structured chunks)
+                if isinstance(chunk, str):
+                    accumulated_text += chunk
+                    chunk_data = {"text": chunk, "accumulated": accumulated_text}
+                else:
+                    # Structured chunk (e.g., Whisper streaming)
+                    chunk_data = {
+                        "text": chunk.text,
+                        "start": getattr(chunk, "start_time", None),
+                        "end": getattr(chunk, "end_time", None),
+                        "is_final": getattr(chunk, "is_final", None),
+                        "language": getattr(chunk, "language", None),
+                    }
+                yield json.dumps(sanitize_for_json(chunk_data)) + "\n"
+        else:
+            # Not a generator, yield the full result
+            yield json.dumps(sanitize_for_json(result)) + "\n"
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
     file: UploadFile = File(...),
@@ -350,35 +382,11 @@ async def stt_transcriptions(
     signature = inspect.signature(stt_model.generate)
     gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
 
-    try:
-        result = stt_model.generate(tmp_path, **gen_kwargs)
 
-        # Handle streaming mode - accumulate results from generator
-        if payload.stream:
-            all_segments = []
-            accumulated_text = ""
-            detected_language = "en"
-            for chunk in result:
-                segment_dict = {
-                    "text": chunk.text,
-                    "start": chunk.start_time,
-                    "end": chunk.end_time,
-                    "is_final": chunk.is_final,
-                }
-                all_segments.append(segment_dict)
-                accumulated_text += chunk.text
-                detected_language = chunk.language
-
-            result = {
-                "text": accumulated_text.strip(),
-                "segments": all_segments,
-                "language": detected_language,
-            }
-    finally:
-        os.remove(tmp_path)
-
-    # Sanitize NaN values for JSON serialization
-    return sanitize_for_json(result)
+    return StreamingResponse(
+        generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
+        media_type="application/x-ndjson",
+    )
 
 
 @app.websocket("/v1/audio/transcriptions/realtime")

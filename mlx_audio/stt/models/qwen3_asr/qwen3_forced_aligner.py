@@ -575,14 +575,22 @@ class ForcedAlignerModel(nn.Module):
         cls, model: "ForcedAlignerModel", model_path: Path
     ) -> "ForcedAlignerModel":
         """Hook called after model weights are loaded."""
+        import transformers
         from transformers import AutoTokenizer, WhisperFeatureExtractor
 
-        model._tokenizer = AutoTokenizer.from_pretrained(
-            str(model_path), trust_remote_code=True
-        )
-        model._feature_extractor = WhisperFeatureExtractor.from_pretrained(
-            str(model_path)
-        )
+        # Suppress the harmless warning about model_type mismatch when loading
+        # tokenizer for custom model types not registered in transformers
+        prev_verbosity = transformers.logging.get_verbosity()
+        transformers.logging.set_verbosity_error()
+        try:
+            model._tokenizer = AutoTokenizer.from_pretrained(
+                str(model_path), trust_remote_code=True
+            )
+            model._feature_extractor = WhisperFeatureExtractor.from_pretrained(
+                str(model_path)
+            )
+        finally:
+            transformers.logging.set_verbosity(prev_verbosity)
 
         if not hasattr(model.config, "model_repo") or model.config.model_repo is None:
             try:
