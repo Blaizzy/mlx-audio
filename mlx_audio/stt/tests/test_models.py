@@ -131,12 +131,10 @@ class TestWhisperModel(unittest.TestCase):
 
     @patch("mlx_audio.stt.models.whisper.whisper.pad_or_trim")
     @patch("mlx_audio.stt.models.whisper.whisper.tqdm.tqdm")
-    @patch("mlx_audio.stt.models.whisper.whisper.get_tokenizer")
     @patch("mlx_audio.stt.models.whisper.whisper.log_mel_spectrogram")
     def test_generate_simple_case(
         self,
         mock_log_mel,
-        mock_get_tokenizer,
         mock_tqdm_tqdm,
         mock_pad_or_trim,
     ):
@@ -169,7 +167,6 @@ class TestWhisperModel(unittest.TestCase):
 
         mock_tokenizer_inst.decode.side_effect = actual_decode_side_effect
         mock_tokenizer_inst.encode.return_value = []
-        mock_get_tokenizer.return_value = mock_tokenizer_inst
 
         decoded_tokens_list = [100, 200, EOT_TOKEN_ID]
         mock_decoding_result = self.DecodingResult(
@@ -198,8 +195,10 @@ class TestWhisperModel(unittest.TestCase):
 
         real_model_for_test = self.Model(self.dims, dtype=mx.float32)
 
-        # Patch this specific instance's 'decode' method
+        # Patch the model's get_tokenizer method and decode method
         with patch.object(
+            real_model_for_test, "get_tokenizer", return_value=mock_tokenizer_inst
+        ) as mock_get_tokenizer, patch.object(
             real_model_for_test, "decode", return_value=mock_decoding_result
         ) as mock_instance_decode:
             output = real_model_for_test.generate(
@@ -218,6 +217,11 @@ class TestWhisperModel(unittest.TestCase):
             self.assertIsInstance(args_decode_call[1], self.DecodingOptions)
             self.assertEqual(args_decode_call[1].language, "en")
             self.assertEqual(args_decode_call[1].fp16, False)
+
+            mock_get_tokenizer.assert_called_once_with(
+                language="en",
+                task="transcribe",
+            )
 
         self.assertIsInstance(output, self.STTOutput)
         self.assertEqual(output.language, "en")
@@ -246,12 +250,6 @@ class TestWhisperModel(unittest.TestCase):
             ANY, n_mels=self.dims.n_mels, padding=self.N_SAMPLES
         )
         np.testing.assert_array_equal(mock_log_mel.call_args[0][0], dummy_audio_input)
-        mock_get_tokenizer.assert_called_once_with(
-            real_model_for_test.is_multilingual,  # Reads from the instance
-            num_languages=real_model_for_test.num_languages,  # Reads from the instance
-            language="en",
-            task="transcribe",
-        )
         mock_pad_or_trim.assert_called_once()
         args_pad_call, _ = mock_pad_or_trim.call_args
         self.assertEqual(args_pad_call[0].shape, (100, self.dims.n_mels))
