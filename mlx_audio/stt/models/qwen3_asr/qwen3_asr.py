@@ -1235,7 +1235,13 @@ class Qwen3ASRModel(nn.Module):
         lang_code = language[:2].lower() if language else "en"
 
         # Process each chunk and stream tokens
-        for chunk_idx, (chunk_audio, offset_sec) in enumerate(chunks):
+        chunk_iter = tqdm(
+            enumerate(chunks),
+            total=len(chunks),
+            desc="Processing chunks",
+            disable=not verbose or len(chunks) == 1,
+        )
+        for chunk_idx, (chunk_audio, offset_sec) in chunk_iter:
             chunk_duration = len(chunk_audio) / self.sample_rate
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
