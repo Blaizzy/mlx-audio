@@ -7,6 +7,7 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 
 import argparse
 import asyncio
+import inspect
 import io
 import json
 import os
@@ -169,6 +170,19 @@ class SpeechRequest(BaseModel):
     verbose: bool = False
 
 
+class TranscriptionRequest(BaseModel):
+    model: str
+    language: str | None = None
+    verbose: bool = False
+    max_tokens: int = 128
+    chunk_duration: float = 30.0
+    frame_threshold: int = 25
+    stream: bool = False
+    context: str | None = None
+    prefill_step_size: int = 2048
+    text: str | None = None
+
+
 # Initialize the ModelProvider
 model_provider = ModelProvider()
 
@@ -296,8 +310,30 @@ async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
+    verbose: bool = Form(False),
+    max_tokens: int = Form(128),
+    chunk_duration: float = Form(30.0),
+    frame_threshold: int = Form(25),
+    stream: bool = Form(False),
+    context: Optional[str] = Form(None),
+    prefill_step_size: int = Form(2048),
+    text: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
+    # Create TranscriptionRequest from form fields
+    payload = TranscriptionRequest(
+        model=model,
+        language=language,
+        verbose=verbose,
+        max_tokens=max_tokens,
+        chunk_duration=chunk_duration,
+        frame_threshold=frame_threshold,
+        stream=stream,
+        context=context,
+        prefill_step_size=prefill_step_size,
+        text=text,
+    )
+
     data = await file.read()
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
@@ -305,9 +341,42 @@ async def stt_transcriptions(
     tmp_path = f"/tmp/{time.time()}.mp3"
     audio_write(tmp_path, audio, sr)
 
-    stt_model = model_provider.load_model(model)
-    result = stt_model.generate(tmp_path)
-    os.remove(tmp_path)
+    stt_model = model_provider.load_model(payload.model)
+
+    # Build kwargs for generate, filtering None values
+    gen_kwargs = payload.model_dump(exclude={"model"}, exclude_none=True)
+
+    # Filter kwargs to only include parameters the model's generate method accepts
+    signature = inspect.signature(stt_model.generate)
+    gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
+
+    try:
+        result = stt_model.generate(tmp_path, **gen_kwargs)
+
+        # Handle streaming mode - accumulate results from generator
+        if payload.stream:
+            all_segments = []
+            accumulated_text = ""
+            detected_language = "en"
+            for chunk in result:
+                segment_dict = {
+                    "text": chunk.text,
+                    "start": chunk.start_time,
+                    "end": chunk.end_time,
+                    "is_final": chunk.is_final,
+                }
+                all_segments.append(segment_dict)
+                accumulated_text += chunk.text
+                detected_language = chunk.language
+
+            result = {
+                "text": accumulated_text.strip(),
+                "segments": all_segments,
+                "language": detected_language,
+            }
+    finally:
+        os.remove(tmp_path)
+
     # Sanitize NaN values for JSON serialization
     return sanitize_for_json(result)
 
