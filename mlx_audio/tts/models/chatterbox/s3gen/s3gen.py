@@ -427,8 +427,6 @@ class S3Token2Wav(S3Token2Mel):
             new_weights[new_key] = value
 
         # Filter out keys that don't exist in the model
-        # (e.g., attn.out_proj.bias from PyTorch when our model uses bias=False)
-        # But keep quantization keys (.scales, .biases) which are needed before quantization is applied
         def should_keep(k):
             if k in curr_weights:
                 return True
