@@ -4,7 +4,6 @@ import inspect
 import json
 import os
 import time
-from operator import rshift
 from typing import List, Optional, Union
 
 import mlx.core as mx
@@ -78,6 +77,12 @@ def parse_args():
         type=int,
         default=2048,
         help="Prefill step size (default: 2048)",
+    )
+    parser.add_argument(
+        "--gen-kwargs",
+        type=json.loads,
+        default=None,
+        help='Additional generate kwargs as JSON (e.g. \'{"max_chunk_sec": 600, "min_chunk_sec": 1.0}\')',
     )
     return parser.parse_args()
 
@@ -273,6 +278,11 @@ def generate_transcription(
         print(f"\033[94mOutput path:\033[0m {output_path}")
         print(f"\033[94mFormat:\033[0m {format}")
         print("\033[94mTranscription:\033[0m")
+
+    # Handle gen_kwargs (additional generate parameters as JSON)
+    gen_kwargs = kwargs.pop("gen_kwargs", None)
+    if gen_kwargs:
+        kwargs.update(gen_kwargs)
 
     signature = inspect.signature(model.generate)
     kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}

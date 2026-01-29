@@ -14,16 +14,12 @@ from mlx_audio.stt.models.base import STTOutput
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
-# Constants from reference implementation
-MAX_ASR_INPUT_SECONDS = 1200  # 20 minutes max per chunk
-MIN_ASR_INPUT_SECONDS = 1.0  # Minimum chunk duration
-SAMPLE_RATE = 16000
-
 
 def split_audio_into_chunks(
     wav: np.ndarray,
-    sr: int = SAMPLE_RATE,
-    max_chunk_sec: float = MAX_ASR_INPUT_SECONDS,
+    sr: int,
+    max_chunk_sec: float = 1200.0,
+    min_chunk_sec: float = 1.0,
     search_expand_sec: float = 5.0,
     min_window_ms: float = 100.0,
 ) -> List[Tuple[np.ndarray, float]]:
@@ -32,7 +28,8 @@ def split_audio_into_chunks(
     Args:
         wav: Audio waveform (1D numpy array).
         sr: Sample rate.
-        max_chunk_sec: Maximum chunk duration in seconds.
+        max_chunk_sec: Maximum chunk duration in seconds (default: 1200 = 20 min).
+        min_chunk_sec: Minimum chunk duration in seconds (default: 1.0).
         search_expand_sec: Window to search for silence around cut point.
         min_window_ms: Minimum window size for energy calculation.
 
@@ -49,8 +46,8 @@ def split_audio_into_chunks(
     # If short enough, return as-is
     if total_sec <= max_chunk_sec:
         # Pad if too short
-        if total_sec < MIN_ASR_INPUT_SECONDS:
-            min_samples = int(MIN_ASR_INPUT_SECONDS * sr)
+        if total_sec < min_chunk_sec:
+            min_samples = int(min_chunk_sec * sr)
             wav = np.pad(wav, (0, min_samples - len(wav)))
         return [(wav, 0.0)]
 
@@ -68,8 +65,8 @@ def split_audio_into_chunks(
             chunk = wav[start_sample:total_samples]
             offset_sec = start_sample / sr
             # Pad if too short
-            if len(chunk) < MIN_ASR_INPUT_SECONDS * sr:
-                min_samples = int(MIN_ASR_INPUT_SECONDS * sr)
+            if len(chunk) < min_chunk_sec * sr:
+                min_samples = int(min_chunk_sec * sr)
                 chunk = np.pad(chunk, (0, min_samples - len(chunk)))
             chunks.append((chunk, offset_sec))
             break
@@ -99,8 +96,8 @@ def split_audio_into_chunks(
         offset_sec = start_sample / sr
 
         # Pad if too short
-        if len(chunk) < MIN_ASR_INPUT_SECONDS * sr:
-            min_samples = int(MIN_ASR_INPUT_SECONDS * sr)
+        if len(chunk) < min_chunk_sec * sr:
+            min_samples = int(min_chunk_sec * sr)
             chunk = np.pad(chunk, (0, min_samples - len(chunk)))
 
         chunks.append((chunk, offset_sec))
@@ -731,6 +728,11 @@ class Model(nn.Module):
     def layers(self):
         return self.model.layers
 
+    @property
+    def sample_rate(self) -> int:
+        """Sample rate for audio input."""
+        return 16000
+
     def make_cache(self) -> List[Any]:
         """Create KV cache for generation."""
         from mlx_lm.models.cache import KVCache
@@ -990,12 +992,18 @@ class Model(nn.Module):
         repetition_context_size: int = 100,
         language: str = "English",
         prefill_step_size: int = 2048,
+        max_chunk_sec: float = 1200.0,
+        min_chunk_sec: float = 1.0,
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
         """Generate transcription from audio.
 
-        Automatically chunks long audio (>20 min) and processes sequentially.
+        Automatically chunks long audio and processes sequentially.
+
+        Args:
+            max_chunk_sec: Maximum chunk duration in seconds (default: 1200 = 20 min).
+            min_chunk_sec: Minimum chunk duration in seconds (default: 1.0).
         """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
@@ -1018,7 +1026,12 @@ class Model(nn.Module):
         )
 
         # Split into chunks if needed
-        chunks = split_audio_into_chunks(audio_np, sr=SAMPLE_RATE)
+        chunks = split_audio_into_chunks(
+            audio_np,
+            sr=self.sample_rate,
+            max_chunk_sec=max_chunk_sec,
+            min_chunk_sec=min_chunk_sec,
+        )
 
         sampler = make_sampler(
             temperature,
@@ -1039,11 +1052,14 @@ class Model(nn.Module):
 
         # Process chunks
         all_texts = []
+        segments = []
         total_prompt_tokens = 0
         total_generation_tokens = 0
 
         chunk_iter = tqdm(chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1)
         for chunk_audio, offset_sec in chunk_iter:
+            chunk_duration = len(chunk_audio) / self.sample_rate
+
             text, prompt_toks, gen_toks = self._generate_single_chunk(
                 chunk_audio,
                 max_tokens=max_tokens,
@@ -1057,6 +1073,13 @@ class Model(nn.Module):
             total_prompt_tokens += prompt_toks
             total_generation_tokens += gen_toks
 
+            # Create segment for this chunk
+            segments.append({
+                "text": text,
+                "start": offset_sec,
+                "end": offset_sec + chunk_duration,
+            })
+
             # Clear cache between chunks
             mx.clear_cache()
 
@@ -1067,6 +1090,7 @@ class Model(nn.Module):
 
         return STTOutput(
             text=full_text,
+            segments=segments,
             prompt_tokens=total_prompt_tokens,
             generation_tokens=total_generation_tokens,
             total_tokens=total_prompt_tokens + total_generation_tokens,
@@ -1095,15 +1119,37 @@ class Model(nn.Module):
         repetition_context_size: int = 100,
         language: str = "English",
         prefill_step_size: int = 2048,
+        max_chunk_sec: float = 1200.0,
+        min_chunk_sec: float = 1.0,
         verbose: bool = False,
     ) -> Generator[str, None, None]:
-        """Stream transcription token-by-token from audio."""
+        """Stream transcription token-by-token from audio.
+
+        Automatically chunks long audio and streams tokens from each chunk sequentially.
+        """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.stt.utils import load_audio
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
             raise RuntimeError(
                 "Tokenizer/FeatureExtractor not initialized. Call post_load_hook first."
             )
+
+        # Load audio
+        audio_input = audio[0] if isinstance(audio, list) else audio
+        if isinstance(audio_input, str):
+            audio_input = load_audio(audio_input)
+        audio_np = (
+            np.array(audio_input) if isinstance(audio_input, mx.array) else audio_input
+        )
+
+        # Split into chunks if needed
+        chunks = split_audio_into_chunks(
+            audio_np,
+            sr=self.sample_rate,
+            max_chunk_sec=max_chunk_sec,
+            min_chunk_sec=min_chunk_sec,
+        )
 
         sampler = make_sampler(
             temperature,
@@ -1122,16 +1168,23 @@ class Model(nn.Module):
             else None
         )
 
-        for token, _ in self.stream_generate(
-            audio,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            language=language,
-            prefill_step_size=prefill_step_size,
-            verbose=verbose,
-        ):
-            text = self._tokenizer.decode([int(token.item())])
-            yield text
+        # Process each chunk and stream tokens
+        for chunk_idx, (chunk_audio, _) in enumerate(chunks):
+            # Add space between chunks (except first)
+            if chunk_idx > 0:
+                yield " "
 
-        mx.clear_cache()
+            for token, _ in self.stream_generate(
+                chunk_audio,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                language=language,
+                prefill_step_size=prefill_step_size,
+                verbose=verbose and len(chunks) == 1,
+            ):
+                text = self._tokenizer.decode([int(token.item())])
+                yield text
+
+            # Clear cache between chunks
+            mx.clear_cache()
