@@ -298,6 +298,10 @@ def generate_transcription(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
 
+    if isinstance(segments, STTOutput) and hasattr(segments, "text"):
+        print(f"{segments.text[:500]}...")
+
+
     end_time = time.time()
 
     if verbose:
