@@ -16,6 +16,50 @@ from mlx_audio.stt.utils import get_model_path
 from ..base import STTOutput
 from .config import AudioConfig, ModelConfig
 
+# Common language name to ISO 639-1 alpha2 code mapping
+LANGUAGE_TO_ALPHA2 = {
+    "english": "en",
+    "french": "fr",
+    "german": "de",
+    "spanish": "es",
+    "italian": "it",
+    "portuguese": "pt",
+    "dutch": "nl",
+    "polish": "pl",
+    "russian": "ru",
+    "chinese": "zh",
+    "japanese": "ja",
+    "korean": "ko",
+    "arabic": "ar",
+    "hindi": "hi",
+    "turkish": "tr",
+    "vietnamese": "vi",
+    "thai": "th",
+    "indonesian": "id",
+    "swedish": "sv",
+    "danish": "da",
+    "norwegian": "no",
+    "finnish": "fi",
+    "czech": "cs",
+    "romanian": "ro",
+    "hungarian": "hu",
+    "greek": "el",
+    "hebrew": "he",
+    "ukrainian": "uk",
+}
+
+
+def _normalize_language(language: str) -> str:
+    """Convert language name to ISO 639-1 alpha2 code if needed."""
+    if language is None:
+        return None
+    lang_lower = language.lower().strip()
+    # If already alpha2, return as-is
+    if len(lang_lower) == 2:
+        return lang_lower
+    # Try to map from full name
+    return LANGUAGE_TO_ALPHA2.get(lang_lower, lang_lower)
+
 
 class Attention(nn.Module):
     def __init__(
@@ -278,6 +322,95 @@ class Model(nn.Module):
     def model_quant_predicate(self, p, m):
         return not p.startswith("audio_tower")
 
+    def _preprocess_audio(
+        self, audio: str, language: str, model_id: str
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Preprocess audio for Voxtral without PyTorch or mistral-common dependencies.
+
+        Args:
+            audio: Path to audio file
+            language: Language code (e.g., 'en')
+            model_id: Model identifier (unused, kept for API compatibility)
+
+        Returns:
+            Tuple of (input_ids, input_features) as numpy arrays
+        """
+        from mlx_audio.audio_io import read as audio_read
+
+        # Audio processing constants
+        sampling_rate = 16000
+        chunk_length_s = 30.0
+        hop_length = 160
+        audio_length_per_tok = 8
+
+        # Special token IDs for Voxtral
+        BOS = 1
+        BEGIN_INST = 3
+        END_INST = 4
+        BEGIN_AUDIO = 25
+        AUDIO = 24
+        TRANSCRIBE = 34
+
+   
+        audio_data, sr = audio_read(audio, dtype="float32")
+        if sr != sampling_rate:
+            import librosa
+
+            audio_data = librosa.resample(audio_data, orig_sr=sr, target_sr=sampling_rate)
+
+        # Convert to mono if stereo
+        if audio_data.ndim == 2:
+            audio_data = audio_data.mean(axis=1)
+
+        # Pad to next multiple of chunk_length_s (30 seconds)
+        chunk_samples = int(chunk_length_s * sampling_rate)
+        if len(audio_data) % chunk_samples != 0:
+            pad_length = chunk_samples - (len(audio_data) % chunk_samples)
+            audio_data = np.pad(audio_data, (0, pad_length))
+
+        # Calculate number of audio tokens
+        # signal_length = audio_samples / hop_length
+        # num_audio_tokens = ceil(signal_length / audio_length_per_tok)
+        signal_length = len(audio_data) // hop_length
+        num_audio_tokens = math.ceil(signal_length / audio_length_per_tok)
+
+        # Build token sequence: [BOS, BEGIN_INST, BEGIN_AUDIO, AUDIO*N, END_INST, lang:XX, TRANSCRIBE]
+        tokens = [BOS, BEGIN_INST, BEGIN_AUDIO] + [AUDIO] * num_audio_tokens + [END_INST]
+
+        # Add language tokens
+        if language:
+            lang_string = f"lang:{language}"
+            lang_tokens = self._processor.tokenizer.encode(lang_string, add_special_tokens=False)
+            tokens.extend(lang_tokens)
+
+        tokens.append(TRANSCRIBE)
+        input_ids = np.array([tokens])
+
+        # Compute mel spectrograms
+        fe = self._processor.feature_extractor
+        max_source_positions = 3000
+
+        # Extract features - use internal method to get numpy arrays directly
+        # Output shape is (batch, feature_size, n_frames) = (1, 80, 3000)
+        mel = fe._np_extract_fbank_features(audio_data[np.newaxis, :], device="cpu")
+        mel = mel[0]  # Remove batch dimension -> (feature_size, n_frames)
+
+        # Split into chunks of max_source_positions along time dimension
+        n_frames = mel.shape[1]
+        n_chunks = (n_frames + max_source_positions - 1) // max_source_positions
+
+        # Pad time dimension to be divisible by max_source_positions
+        pad_frames = n_chunks * max_source_positions - n_frames
+        if pad_frames > 0:
+            mel = np.pad(mel, ((0, 0), (0, pad_frames)))
+
+        # Reshape to (n_chunks, feature_size, max_source_positions)
+        mel_chunks = mel.reshape(fe.feature_size, n_chunks, max_source_positions)
+        input_features = mel_chunks.transpose(1, 0, 2)  # (n_chunks, feature_size, time)
+
+        return input_ids, input_features
+
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         """
@@ -285,8 +418,27 @@ class Model(nn.Module):
         Used to initialize the processor which is required for audio/text input.
         """
         from transformers import AutoProcessor
+        from transformers.processing_utils import ProcessorMixin
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
-        processor = AutoProcessor.from_pretrained(str(model_path))
+        # Temporarily patch __repr__ methods to avoid issues during logging
+        # The Voxtral tokenizer has special tokens that fail during deepcopy/repr
+        original_processor_repr = ProcessorMixin.__repr__
+        original_tokenizer_repr = PreTrainedTokenizerBase.__repr__
+
+        def safe_processor_repr(self):
+            return f"{self.__class__.__name__}(...)"
+
+        def safe_tokenizer_repr(self):
+            return f"{self.__class__.__name__}(...)"
+
+        ProcessorMixin.__repr__ = safe_processor_repr
+        PreTrainedTokenizerBase.__repr__ = safe_tokenizer_repr
+        try:
+            processor = AutoProcessor.from_pretrained(str(model_path))
+        finally:
+            ProcessorMixin.__repr__ = original_processor_repr
+            PreTrainedTokenizerBase.__repr__ = original_tokenizer_repr
         model._processor = processor
         model._processor.tokenizer.eos_token_ids = getattr(
             model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
@@ -371,7 +523,13 @@ class Model(nn.Module):
                 disable=not verbose,
                 desc="Streaming",
             ):
-                if token in self._processor.tokenizer.eos_token_ids:
+                # Check if token is an EOS token
+                eos_ids = self._processor.tokenizer.eos_token_ids
+                if isinstance(eos_ids, int):
+                    is_eos = token == eos_ids
+                else:
+                    is_eos = token in eos_ids
+                if is_eos:
                     break
 
                 yield token, logprobs
@@ -394,28 +552,28 @@ class Model(nn.Module):
 
         start_time = time.time()
 
-        if message is None:
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "audio",
-                            "path": audio,
-                        },
-                    ],
-                }
-            ]
+        # Normalize language to alpha2 code (e.g., "english" -> "en")
+        language = _normalize_language(language)
 
-        inputs = self._processor.apply_transcription_request(
-            language=language, audio=audio, model_id=self.config.model_repo
+        # Preprocess audio without PyTorch dependency
+        input_ids_np, input_features_np = self._preprocess_audio(
+            audio=audio,
+            language=language,
+            model_id=self.config.model_repo,
         )
-        input_ids = mx.array(inputs["input_ids"])
-        input_features = mx.array(inputs["input_features"]).transpose(0, 2, 1)
+        input_ids = mx.array(input_ids_np)
+        input_features = mx.array(input_features_np).transpose(0, 2, 1)
 
         generated = []
 
         from mlx_lm.sample_utils import make_sampler
+
+        # Handle eos_token_ids being either int or list
+        eos_ids = self._processor.tokenizer.eos_token_ids
+        if isinstance(eos_ids, int):
+            eos_ids = [eos_ids]
+        else:
+            eos_ids = list(eos_ids)
 
         sampler = make_sampler(
             temperature,
@@ -423,8 +581,7 @@ class Model(nn.Module):
             min_p,
             min_tokens_to_keep=min_tokens_to_keep,
             top_k=top_k,
-            xtc_special_tokens=self._processor.tokenizer.encode("\n")
-            + list(self._processor.tokenizer.eos_token_ids),
+            xtc_special_tokens=self._processor.tokenizer.encode("\n") + eos_ids,
         )
 
         for token, _ in self.stream_generate(

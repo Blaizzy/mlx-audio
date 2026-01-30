@@ -327,11 +327,12 @@ def generate_transcription(
         )
 
     if verbose:
-        if hasattr(segments, "text"):
+
+        if hasattr(segments, "text") and (segments.text is not None or segments.text != ""):
             print("\033[94mTranscription:\033[0m\n")
             print(f"{segments.text[:500]}...\n")
 
-        if hasattr(segments, "segments"):
+        if hasattr(segments, "segments") and segments.segments is not None:
             print("\033[94mSegments:\033[0m\n")
             pprint(segments.segments[:3] + ["..."])
 
