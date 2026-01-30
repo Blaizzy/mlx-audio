@@ -1767,6 +1767,12 @@ class Model(nn.Module):
                         tokenizer_config_dict["decoder_config"],
                     )
                     decoder_config = Qwen3TTSTokenizerDecoderConfig(**filtered)
+                if "encoder_config" in tokenizer_config_dict:
+                    filtered = filter_dict_for_dataclass(
+                        Qwen3TTSTokenizerEncoderConfig,
+                        tokenizer_config_dict["encoder_config"],
+                    )
+                    encoder_config = Qwen3TTSTokenizerEncoderConfig(**filtered)
 
                 tokenizer_config = Qwen3TTSTokenizerConfig(
                     encoder_config=encoder_config,
