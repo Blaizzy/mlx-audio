@@ -41,7 +41,10 @@ class AudioPlayer:
                 else:
                     self.audio_buffer[0] = buf[to_copy:]
 
-            if not self.audio_buffer and filled < frames:
+            if filled < frames:
+                outdata[filled:] = 0  # fill with silence
+
+            if not self.audio_buffer and filled == 0:
                 self.drain_event.set()
                 self.playing = False
                 raise sd.CallbackStop()
