@@ -316,6 +316,12 @@ MLX-Audio includes a modern web interface and OpenAI-compatible API.
 ### Starting the Server
 
 ```bash
+# One-command dev server + UI
+mlx_audio.dev
+
+# Or run via uvx (installs server + STS deps)
+uvx --from "mlx-audio[app]" mlx_audio.dev
+
 # Start API server
 mlx_audio.server --host 0.0.0.0 --port 8000
 
