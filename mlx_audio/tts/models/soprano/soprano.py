@@ -22,14 +22,20 @@ from .decoder import SopranoDecoder
 from .text import clean_text
 
 
+DETECTION_HINTS = {
+    "config_keys": ["decoder_config"],
+    "path_patterns": ["soprano"],
+}
+
+
 @dataclass
 class DecoderConfig(BaseModelArgs):
     """Configuration for Soprano decoder."""
 
     # Decoder config
     decoder_num_layers: int = 8
-    decoder_dim: int = 512
-    decoder_intermediate_dim: int = 1536
+    decoder_dim: int = 768
+    decoder_intermediate_dim: int = 2304
     hop_length: int = 512
     n_fft: int = 2048
     upscale: int = 4
@@ -43,6 +49,7 @@ class DecoderConfig(BaseModelArgs):
 class ModelConfig(Qwen3ModelConfig):
     sample_rate: int = 32000
     decoder_config: DecoderConfig = None
+    model_path: Optional[str] = None
 
     def __post_init__(self):
         if self.decoder_config is None:
@@ -171,22 +178,26 @@ class Model(nn.Module):
         return model
 
     def sanitize(self, weights: dict) -> dict:
-        sanitized = {}
-        for k, v in weights.items():
-            if "istft.window" in k:
-                continue
-            if k.startswith("decoder."):  # decoder weights are always fp32
-                if not v.dtype == mx.uint32:
-                    v = v.astype(mx.float32)
-                sanitized[k] = v
-            elif k.startswith("model."):
-                sanitized[k.replace("model.", "language_model.")] = v
-            elif k.startswith("lm_head."):
-                sanitized[f"language_model.{k}"] = v
-            else:
-                sanitized[k] = v
+        # 1. Load and merge decoder weights if model_path is provided
+        m_path = getattr(self.config, "model_path", None)
+        if m_path and (Path(m_path) / "decoder.pth").exists():
+            import torch
+            decoder_path = Path(m_path) / "decoder.pth"
+            print(f"[INFO] Loading decoder weights from {decoder_path}")
+            for k, v in torch.load(decoder_path, map_location="cpu").items():
+                if "window" in k: continue
+                v = mx.array(v.numpy().astype("float32"))
+                if "weight" in k and ("embed" in k or "dwconv" in k):
+                    v = v.transpose(0, 2, 1)
+                weights[f"decoder.{k}"] = v
 
-        return sanitized
+        # 2. Map all keys to MLX structure: 'model.' -> 'language_model.'
+        return {
+            (k.replace("model.", "language_model.") if k.startswith("model.") else
+             f"language_model.{k}" if k.startswith("lm_head.") else k):
+            (v.astype(mx.float32) if k.startswith("decoder.") and v.dtype != mx.uint32 else v)
+            for k, v in weights.items() if "window" not in k
+        }
 
     @property
     def sample_rate(self):
