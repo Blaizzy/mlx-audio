@@ -640,10 +640,13 @@ class SAMAudio(nn.Module):
         if total_samples <= chunk_samples:
             if verbose:
                 print(f"Audio is {total_duration:.1f}s, processing in single pass...")
-            sizes = mx.array([total_samples // self.audio_codec.config.hop_length])
+            feature_len = self.audio_codec.wav_idx_to_feature_idx(total_samples)
+            sizes = mx.array([feature_len])
+            noise_channels = 2 * self.audio_codec.config.codebook_dim
             noise = mx.random.normal(
-                (1, total_samples // self.audio_codec.config.hop_length, 256),
+                (1, feature_len, noise_channels),
                 key=mx.random.key(seed),
+                dtype=self.dtype,
             )
             return self.separate(
                 audios,
