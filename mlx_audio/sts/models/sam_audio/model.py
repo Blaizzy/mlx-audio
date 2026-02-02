@@ -9,11 +9,12 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from huggingface_hub import snapshot_download
+from huggingface_hub.utils import GatedRepoError
 from mlx.utils import tree_reduce
 from tqdm import tqdm
 
 from mlx_audio.codec.models.dacvae import DACVAE
+from mlx_audio.utils import get_model_path
 
 from .align import EmbedAnchors
 from .config import SAMAudioConfig
@@ -1079,43 +1080,51 @@ class SAMAudio(nn.Module):
             mx.clear_cache()
 
     @classmethod
-    def from_pretrained(cls, model_name_or_path: str) -> "SAMAudio":
+    def from_pretrained(
+        cls,
+        model_name_or_path: Union[str, Path],
+        revision: Optional[str] = None,
+        force_download: bool = False,
+    ) -> "SAMAudio":
         """
         Load a pretrained SAM-Audio model.
 
         Args:
             model_name_or_path: HuggingFace model ID or local path
+            revision: Optional HuggingFace revision (branch, tag, or commit)
+            force_download: Force re-download even if cached
 
         Returns:
             Loaded SAMAudio model
 
         Note:
-            The SAM-Audio models on HuggingFace are gated and require approval.
-            Visit https://huggingface.co/facebook/sam-audio-large to request access.
+            We default to downloading the mlx-community/sam-audio models from Hugginface
+            But the official SAM-Audio models are gated on HuggingFace and require approval to download
+            If you are downloading facebook/sam-audio models,
+            you must first request access at https://huggingface.co/facebook/sam-audio-large
         """
         import glob
         import warnings
 
         # Download or locate model
-        if Path(model_name_or_path).exists():
-            model_path = Path(model_name_or_path)
-        else:
-            try:
-                model_path = Path(
-                    snapshot_download(
-                        repo_id=model_name_or_path,
-                        allow_patterns=["*.safetensors", "*.json", "*.pt"],
-                    )
-                )
-            except Exception as e:
-                warnings.warn(
-                    f"Could not download model from {model_name_or_path}: {e}\n"
-                    "SAM-Audio models are gated on HuggingFace. "
-                    "Please request access at https://huggingface.co/facebook/sam-audio-large\n"
-                    "Creating model with default config instead."
-                )
-                # Return model with default config
-                return cls(SAMAudioConfig())
+        try:
+            model_path = get_model_path(
+                str(model_name_or_path),
+                revision=revision,
+                force_download=force_download,
+                allow_patterns=["*.safetensors", "*.json", "*.pt"],
+            )
+        except GatedRepoError as e:
+            warnings.warn(
+                f"Could not download model from {model_name_or_path}: {e}\n"
+                "Facebook's SAM-Audio models are gated on HuggingFace. "
+                "Please request access at https://huggingface.co/facebook/sam-audio-large\n"
+                "For running on Mac, we recommend using the default "
+                "mlx-community/sam-audio-large models that are not gated.\n"
+                "Creating model with default config instead."
+            )
+            # Return model with default config
+            return cls(SAMAudioConfig())
 
         # Load config
         config_path = model_path / "config.json"
@@ -1160,7 +1169,7 @@ class SAMAudio(nn.Module):
                 warnings.warn(f"Could not load weights: {e}")
         else:
             warnings.warn(
-                f"Weights not found at {model_path}. " "Model will have random weights."
+                f"Weights not found at {model_path}. Model will have random weights."
             )
 
         return model
