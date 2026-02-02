@@ -336,7 +336,7 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     if match and match[0] == domain:
         return match[1]
 
-    # Fallback: return first available modet_type or "unknown"
+    # Fallback: return first available model type or "unknown"
     model_types = get_model_types(domain)
     return next(iter(model_types), "unknown") if model_types else "unknown"
 
