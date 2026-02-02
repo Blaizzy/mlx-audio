@@ -98,6 +98,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
 
+
 ### Speech-to-Speech (STS)
 
 | Model | Description | Use Case | Repo |
@@ -267,6 +268,24 @@ python -m mlx_audio.stt.generate \
     --max-tokens 8192 \
     --context "MLX, Apple Silicon, PyTorch, Transformer" \
     --verbose
+```
+
+### MedASR (Medical Transcription)
+
+Specialized model for medical terms and dictation.
+
+```python
+from mlx_audio.stt.utils import load, transcribe
+
+model = load("mlx-community/medasr")
+result = transcribe("medical_dictation.wav", model=model)
+print(result["text"])
+```
+
+**Live Transcription Example:**
+```bash
+# Continuous live transcription with VAD
+python examples/medasr_live.py
 ```
 
 ### SAM-Audio (Source Separation)
