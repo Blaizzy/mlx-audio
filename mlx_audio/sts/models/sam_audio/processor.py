@@ -44,7 +44,7 @@ def load_audio(audio_path: str, target_sr: int = 48000) -> Tuple[np.ndarray, int
         audio, sr = audio_read(audio_path)
     except ImportError:
         pass
-    except Exception as e:
+    except Exception:
         # miniaudio failed, try librosa
         pass
 
@@ -223,15 +223,11 @@ class SAMAudioProcessor:
             Configured processor
         """
         # Download or locate model
-        if Path(model_name_or_path).exists():
-            model_path = Path(model_name_or_path)
-        else:
-            model_path = get_model_path(
-                str(model_name_or_path),
-                revision=revision,
-                force_download=force_download,
-                allow_patterns=["*.json"],
-            )
+        model_path = get_model_path(
+            str(model_name_or_path),
+            revision=revision,
+            force_download=force_download,
+        )
 
         # Load config
         config_path = model_path / "config.json"
