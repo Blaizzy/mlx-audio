@@ -47,6 +47,8 @@ class ModelConfig(Qwen3ModelConfig):
     def __post_init__(self):
         if self.decoder_config is None:
             self.decoder_config = DecoderConfig()
+        elif isinstance(self.decoder_config, dict):
+            self.decoder_config = DecoderConfig.from_dict(self.decoder_config)
 
 
 class SopranoModel(Qwen3Model):
@@ -171,11 +173,18 @@ class Model(nn.Module):
     def sanitize(self, weights: dict) -> dict:
         sanitized = {}
         for k, v in weights.items():
-            k = k.replace("model.", "") if k.startswith("model.") else k
+            if "istft.window" in k:
+                continue
             if k.startswith("decoder."):  # decoder weights are always fp32
                 if not v.dtype == mx.uint32:
                     v = v.astype(mx.float32)
-            sanitized[k] = v
+                sanitized[k] = v
+            elif k.startswith("model."):
+                sanitized[k.replace("model.", "language_model.")] = v
+            elif k.startswith("lm_head."):
+                sanitized[f"language_model.{k}"] = v
+            else:
+                sanitized[k] = v
 
         return sanitized
 

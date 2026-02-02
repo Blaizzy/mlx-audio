@@ -80,7 +80,7 @@ class SopranoDecoder(nn.Module):
             dim=self.dim,
             intermediate_dim=self.intermediate_dim,
             num_layers=self.num_layers,
-            input_kernel_size=dw_kernel,
+            input_kernel_size=1,
             dw_kernel_size=dw_kernel,
         )
         self.head = ISTFTHead(
