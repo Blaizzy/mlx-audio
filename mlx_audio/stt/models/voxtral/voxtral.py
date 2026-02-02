@@ -1,11 +1,14 @@
 import glob
 import math
 import time
+import warnings
+from pathlib import Path
 from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from tqdm import tqdm
 
 from mlx_audio.stt.generate import wired_limit
 from mlx_audio.stt.utils import get_model_path
@@ -272,6 +275,38 @@ class Model(nn.Module):
                 sanitized_weights[k] = v
         return sanitized_weights
 
+    def model_quant_predicate(self, p, m):
+        return not p.startswith("audio_tower")
+
+    @classmethod
+    def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
+        """
+        Hook called after model weights are loaded.
+        Used to initialize the processor which is required for audio/text input.
+        """
+        from transformers import AutoProcessor
+
+        processor = AutoProcessor.from_pretrained(str(model_path))
+        model._processor = processor
+        model._processor.tokenizer.eos_token_ids = getattr(
+            model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
+        )
+
+        # Store model_repo for transcription requests
+        if not hasattr(model.config, "model_repo") or model.config.model_repo is None:
+            # Try to extract from model_path
+            try:
+                index = model_path.parts.index("hub")
+                model.config.model_repo = (
+                    model_path.parts[index + 1]
+                    .replace("models--", "")
+                    .replace("--", "/")
+                )
+            except (ValueError, IndexError):
+                model.config.model_repo = str(model_path)
+
+        return model
+
     @classmethod
     def from_pretrained(
         cls,
@@ -279,42 +314,29 @@ class Model(nn.Module):
         config: Optional[ModelConfig] = None,
         **kwargs,
     ):
-        from transformers import AutoProcessor
+        """
+        Load a pretrained Voxtral model.
 
-        processor = AutoProcessor.from_pretrained(model_path)
-        model_repo = model_path
-        revision = kwargs.get("revision", None)
-        force_download = kwargs.get("force_download", False)
-        model_path = get_model_path(
-            model_path, revision=revision, force_download=force_download
+        .. deprecated::
+            Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
+
+        Args:
+            model_path: Path to the model or HuggingFace repo ID
+            config: Optional model configuration
+            **kwargs: Additional arguments (revision, force_download)
+
+        Returns:
+            Model: The loaded model
+        """
+        warnings.warn(
+            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
+            DeprecationWarning,
+            stacklevel=2,
         )
 
-        if config is None:
-            import json
+        from mlx_audio.stt.utils import load
 
-            with open(f"{model_path}/config.json", "r") as f:
-                config_dict = json.load(f)
-            config = ModelConfig.from_dict(config_dict)
-
-        model = cls(config)
-        model._processor = processor
-        model._processor.tokenizer.eos_token_ids = getattr(
-            model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
-        )
-        model.config.model_repo = model_repo
-
-        weights = {}
-        weight_files = glob.glob(str(model_path / "model-*.safetensors"))
-        for file in weight_files:
-            weights.update(mx.load(file))
-
-        weights = model.sanitize(weights)
-
-        model.load_weights(list(weights.items()))
-        mx.eval(model.parameters())
-        model.eval()
-
-        return model
+        return load(model_path, **kwargs)
 
     def stream_generate(
         self,
@@ -324,6 +346,7 @@ class Model(nn.Module):
         max_tokens: int = 128,
         sampler: Optional[Callable[mx.array, mx.array]] = None,
         generation_stream: bool = False,
+        verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
 
         from mlx_lm.generate import generate_step
@@ -334,14 +357,19 @@ class Model(nn.Module):
         )[0]
 
         with wired_limit(self, [generation_stream]):
-            for n, (token, logprobs) in enumerate(
-                generate_step(
-                    prompt=mx.array([]),
-                    input_embeddings=input_embeddings,
-                    model=self.language_model,
-                    max_tokens=max_tokens,
-                    sampler=sampler,
-                )
+            for n, (token, logprobs) in tqdm(
+                enumerate(
+                    generate_step(
+                        prompt=mx.array([]),
+                        input_embeddings=input_embeddings,
+                        model=self.language_model,
+                        max_tokens=max_tokens,
+                        sampler=sampler,
+                    )
+                ),
+                total=max_tokens,
+                disable=not verbose,
+                desc="Streaming",
             ):
                 if token in self._processor.tokenizer.eos_token_ids:
                     break
@@ -405,10 +433,9 @@ class Model(nn.Module):
             max_tokens=max_tokens,
             sampler=sampler,
             generation_stream=generation_stream,
+            verbose=verbose,
         ):
             generated.append(token)
-            if verbose:
-                print(self._processor.decode([token]), end="", flush=True)
 
         end_time = time.time()
 

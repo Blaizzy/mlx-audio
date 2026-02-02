@@ -127,9 +127,9 @@ class CodecMixin:
         normalize_db: float = -16,
         n_quantizers: int = None,
     ) -> DACFile:
-        import soundfile as sf
+        from mlx_audio.audio_io import read as audio_read
 
-        audio_signal, original_sr = sf.read(audio_path)
+        audio_signal, original_sr = audio_read(audio_path)
         signal_duration = audio_signal.shape[-1] / original_sr
 
         original_padding = self.padding

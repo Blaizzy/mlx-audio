@@ -639,10 +639,13 @@ class SAMAudio(nn.Module):
         if total_samples <= chunk_samples:
             if verbose:
                 print(f"Audio is {total_duration:.1f}s, processing in single pass...")
-            sizes = mx.array([total_samples // self.audio_codec.config.hop_length])
+            feature_len = self.audio_codec.wav_idx_to_feature_idx(total_samples)
+            sizes = mx.array([feature_len])
+            noise_channels = 2 * self.audio_codec.config.codebook_dim
             noise = mx.random.normal(
-                (1, total_samples // self.audio_codec.config.hop_length, 256),
+                (1, feature_len, noise_channels),
                 key=mx.random.key(seed),
+                dtype=self.dtype,
             )
             return self.separate(
                 audios,
@@ -819,24 +822,25 @@ class SAMAudio(nn.Module):
 
         Example (Generator mode):
             ```python
-            import soundfile as sf
+            from mlx_audio.audio_io import write as audio_write
             import numpy as np
 
-            with sf.SoundFile('target.wav', 'w', samplerate=48000, channels=1) as t_f, \\
-                 sf.SoundFile('residual.wav', 'w', samplerate=48000, channels=1) as r_f:
+            target_chunks = []
+            residual_chunks = []
 
-                for chunk in model.separate_streaming(
-                    audios, descriptions,
-                    chunk_seconds=10.0,
-                    verbose=True,
-                ):
-                    t_f.write(np.array(chunk.target[:, 0]))
-                    r_f.write(np.array(chunk.residual[:, 0]))
-                    t_f.flush()
-                    r_f.flush()
+            for chunk in model.separate_streaming(
+                audios, descriptions,
+                chunk_seconds=10.0,
+                verbose=True,
+            ):
+                target_chunks.append(np.array(chunk.target[:, 0]))
+                residual_chunks.append(np.array(chunk.residual[:, 0]))
 
-                    if chunk.is_last:
-                        print(f"Peak memory: {chunk.peak_memory:.2f} GB")
+                if chunk.is_last:
+                    print(f"Peak memory: {chunk.peak_memory:.2f} GB")
+
+            audio_write('target.wav', np.concatenate(target_chunks), 48000)
+            audio_write('residual.wav', np.concatenate(residual_chunks), 48000)
             ```
 
         Example (Callback mode):

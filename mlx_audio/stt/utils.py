@@ -1,23 +1,24 @@
-import importlib
-import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional, Union
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
-from huggingface_hub import snapshot_download
+
+from mlx_audio.utils import base_load_model, get_model_path, load_config
 
 SAMPLE_RATE = 16000
 
 MODEL_REMAPPING = {
     "glm": "glmasr",
+    "voxtral": "voxtral",
+    "vibevoice": "vibevoice_asr",
+    "qwen3_asr": "qwen3_asr",
 }
-MAX_FILE_SIZE_GB = 5
-MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    from scipy import signal  # Lazy import
+    from scipy import signal
 
     gcd = np.gcd(orig_sr, target_sr)
     up = target_sr // gcd
@@ -47,153 +48,62 @@ def load_audio(
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
-    import soundfile as sf  # Lazy import
+    from mlx_audio.audio_io import read as audio_read
 
-    audio, sample_rate = sf.read(file, always_2d=True)
+    audio, sample_rate = audio_read(file, always_2d=True)
     if sample_rate != sr:
         audio = resample_audio(audio, sample_rate, sr)
     return mx.array(audio, dtype=dtype).mean(axis=1)
 
 
-def get_model_path(
-    path_or_hf_repo: str, revision: Optional[str] = None, force_download: bool = False
-) -> Path:
+def load_model(
+    model_path: Union[str, Path], lazy: bool = False, strict: bool = False, **kwargs
+) -> nn.Module:
     """
-    Ensures the model is available locally. If the path does not exist locally,
-    it is downloaded from the Hugging Face Hub.
+    Load and initialize an STT model from a given path.
 
     Args:
-        path_or_hf_repo (str): The local path or Hugging Face repository ID of the model.
-        revision (str, optional): A revision id which can be a branch name, a tag, or a commit hash.
+        model_path: The path or HuggingFace repo to load the model from.
+        lazy: If False, evaluate model parameters immediately.
+        strict: If True, raise an error if any weights are missing.
+        **kwargs: Additional keyword arguments (revision, force_download).
 
     Returns:
-        Path: The path to the model.
+        nn.Module: The loaded and initialized model.
     """
-    model_path = Path(path_or_hf_repo)
-
-    if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jsonl",
-                    "*.yaml",
-                ],
-                force_download=force_download,
-            )
-        )
-
-    return model_path
+    return base_load_model(
+        model_path=model_path,
+        category="stt",
+        model_remapping=MODEL_REMAPPING,
+        lazy=lazy,
+        strict=strict,
+        **kwargs,
+    )
 
 
-# Get a list of all available model types from the models directory
-def get_available_models():
+def load(
+    model_path: Union[str, Path], lazy: bool = False, strict: bool = False, **kwargs
+) -> nn.Module:
     """
-    Get a list of all available TTS model types by scanning the models directory.
+    Load a speech-to-text model from a local path or HuggingFace repository.
 
-    Returns:
-        List[str]: A list of available model type names
-    """
-    models_dir = Path(__file__).parent / "models"
-    available_models = []
-
-    if models_dir.exists() and models_dir.is_dir():
-        for item in models_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("__"):
-                available_models.append(item.name)
-
-    return available_models
-
-
-def get_model_and_args(model_type: str, model_name: List[str]):
-    """
-    Retrieve the model architecture module based on the model type and name.
-
-    This function attempts to find the appropriate model architecture by:
-    1. Checking if the model_type is directly in the MODEL_REMAPPING dictionary
-    2. Looking for partial matches in segments of the model_name
+    This is the main entry point for loading STT models. It automatically
+    detects the model type and initializes the appropriate model class.
 
     Args:
-        model_type (str): The type of model to load (e.g., "outetts").
-        model_name (List[str]): List of model name components that might contain
-                               remapping information.
-
-    Returns:
-        Tuple[module, str]: A tuple containing:
-            - The imported architecture module
-            - The resolved model_type string after remapping
-
-    Raises:
-        ValueError: If the model type is not supported (module import fails).
-    """
-    # Stage 1: Check if the model type is in the remapping
-    model_type = MODEL_REMAPPING.get(model_type, model_type)
-
-    # Stage 2: Check for partial matches in segments of the model name
-    models = get_available_models()
-    if model_name is not None:
-        for part in model_name:
-            # First check if the part matches an available model directory name
-            if part in models:
-                model_type = part
-
-            # Then check if the part is in our custom remapping dictionary
-            if part in MODEL_REMAPPING:
-                model_type = MODEL_REMAPPING[part]
-                break
-
-    try:
-        arch = importlib.import_module(f"mlx_audio.stt.models.{model_type}")
-    except ImportError:
-        msg = f"Model type {model_type} not supported."
-        logging.error(msg)
-        raise ValueError(msg)
-
-    return arch, model_type
-
-
-def load_model(model_path: str, lazy: bool = False, strict: bool = True, **kwargs):
-    """
-    Load and initialize the model from a given path.
-
-    Args:
-        model_path (str): The path to load the model from.
-        lazy (bool): If False eval the model parameters to make sure they are
-            loaded in memory before returning, otherwise they will be loaded
-            when needed. Default: ``False``
+        model_path: The local path or HuggingFace repo ID to load from.
+        lazy: If False, evaluate model parameters immediately.
+        strict: If True, raise an error if any weights are missing.
+        **kwargs: Additional keyword arguments:
+            - revision (str): HuggingFace revision/branch to use
+            - force_download (bool): Force re-download of model files
 
     Returns:
         nn.Module: The loaded and initialized model.
 
-    Raises:
-        FileNotFoundError: If the weight files (.safetensors) are not found.
-        ValueError: If the model class or args class are not found or cannot be instantiated.
+    Example:
+        >>> from mlx_audio.stt import load
+        >>> model = load("mlx-community/whisper-tiny-asr-fp16")
+        >>> result = model.generate(audio)
     """
-
-    model_name = None
-    model_type = None
-
-    if isinstance(model_path, str):
-        model_name = model_path.lower().split("/")[-1].split("-")
-    elif isinstance(model_path, Path):
-        index = model_path.parts.index("hub")
-        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
-    else:
-        raise ValueError(f"Invalid model path type: {type(model_path)}")
-
-    model_class, model_type = get_model_and_args(
-        model_type=model_type, model_name=model_name
-    )
-    model = model_class.Model.from_pretrained(model_path)
-
-    if not lazy:
-        model.eval()
-
-    return model
+    return load_model(model_path, lazy=lazy, strict=strict, **kwargs)

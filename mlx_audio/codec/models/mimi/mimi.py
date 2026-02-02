@@ -23,6 +23,14 @@ from .modules import (
 )
 
 
+def _reset_kv_cache(cache) -> None:
+    cache.keys = None
+    cache.values = None
+    cache.offset = 0
+    if hasattr(cache, "_idx"):
+        cache._idx = 0
+
+
 @dataclass
 class MimiConfig:
     channels: int
@@ -131,14 +139,14 @@ class Mimi(nn.Module):
         self.encoder.reset_state()
         self.decoder.reset_state()
         for c in self.decoder_cache:
-            c.reset()
+            _reset_kv_cache(c)
         for c in self.encoder_cache:
-            c.reset()
+            _reset_kv_cache(c)
 
     def encode(self, xs: mx.array) -> mx.array:
         self.encoder.reset_state()
         for c in self.encoder_cache:
-            c.reset()
+            _reset_kv_cache(c)
         xs = self.encoder(xs)
         xs = self.encoder_transformer(xs, cache=self.encoder_cache)[0]
         xs = self.downsample(xs)
@@ -147,7 +155,7 @@ class Mimi(nn.Module):
     def decode(self, xs: mx.array) -> mx.array:
         self.decoder.reset_state()
         for c in self.decoder_cache:
-            c.reset()
+            _reset_kv_cache(c)
         xs = self.quantizer.decode(xs)
         xs = self.upsample(xs)
         xs = self.decoder_transformer(xs, cache=self.decoder_cache)[0]
@@ -232,9 +240,14 @@ class Mimi(nn.Module):
                 or k.endswith(".input_proj.weight")
             ):
                 v = v.swapaxes(-1, -2)
-            # PyTorch layout for conv-transposed weights is inC, outC, kSize, for MLX it's outC, kSize, inC
+            # PyTorch layout for conv-transposed weights is (inC, outC/groups, kSize).
+            # MLX expects (outC, kSize, inC/groups). Depthwise convtr needs a
+            # different transpose because outC/groups == 1.
             if k.endswith(".convtr.weight"):
-                v = v.transpose(1, 2, 0)
+                if v.ndim == 3 and v.shape[1] == 1:
+                    v = v.transpose(0, 2, 1)
+                else:
+                    v = v.transpose(1, 2, 0)
             weights.append((k, v))
         m = self.load_weights(weights, strict=strict)
 
@@ -277,7 +290,7 @@ class MimiStreamingDecoder:
         self._mimi.decoder.reset_state()
         self._mimi.upsample.reset_state()
         for c in self._mimi.decoder_cache:
-            c.reset()
+            _reset_kv_cache(c)
 
     def decode_frames(self, tokens: mx.array) -> mx.array:
         """Decode a sequence of audio tokens incrementally.

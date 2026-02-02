@@ -8,6 +8,7 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 import argparse
 import asyncio
 import base64
+import inspect
 import io
 import json
 import os
@@ -21,7 +22,6 @@ from urllib.parse import unquote
 
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
 import uvicorn
 import webrtcvad
 from fastapi import (
@@ -38,6 +38,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from mlx_audio.audio_io import read as audio_read
+from mlx_audio.audio_io import write as audio_write
 from mlx_audio.utils import load_model
 
 
@@ -153,6 +155,7 @@ setup_cors(app, default_origins)
 class SpeechRequest(BaseModel):
     model: str
     input: str
+    instruct: str | None = None
     voice: str | None = None
     speed: float | None = 1.0
     gender: str | None = "male"
@@ -165,6 +168,20 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    verbose: bool = False
+
+
+class TranscriptionRequest(BaseModel):
+    model: str
+    language: str | None = None
+    verbose: bool = False
+    max_tokens: int = 128
+    chunk_duration: float = 30.0
+    frame_threshold: int = 25
+    stream: bool = False
+    context: str | None = None
+    prefill_step_size: int = 2048
+    text: str | None = None
 
 
 class SeparationResponse(BaseModel):
@@ -240,25 +257,44 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
+async def generate_audio(model, payload: SpeechRequest):
+    # Load reference audio if provided
+    ref_audio = payload.ref_audio
+    if ref_audio and isinstance(ref_audio, str):
+        if not os.path.exists(ref_audio):
+            raise HTTPException(
+                status_code=400, detail=f"Reference audio file not found: {ref_audio}"
+            )
+        # Import load_audio from generate module
+        from mlx_audio.tts.generate import load_audio
+
+        # Determine if volume normalization is needed
+        normalize = hasattr(model, "model_type") and model.model_type == "spark"
+
+        ref_audio = load_audio(
+            ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
+        )
+
     for result in model.generate(
         payload.input,
         voice=payload.voice,
         speed=payload.speed,
         gender=payload.gender,
         pitch=payload.pitch,
+        instruct=payload.instruct,
         lang_code=payload.lang_code,
-        ref_audio=payload.ref_audio,
+        ref_audio=ref_audio,
         ref_text=payload.ref_text,
         temperature=payload.temperature,
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        verbose=payload.verbose,
     ):
 
         sample_rate = result.sample_rate
         buffer = io.BytesIO()
-        sf.write(buffer, result.audio, sample_rate, format=payload.response_format)
+        audio_write(buffer, result.audio, sample_rate, format=payload.response_format)
         buffer.seek(0)
         yield buffer.getvalue()
 
@@ -276,25 +312,87 @@ async def tts_speech(payload: SpeechRequest):
     )
 
 
+def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
+    """Generator that yields transcription chunks and cleans up temp file."""
+    try:
+        # Call generate with stream=True (models handle streaming internally)
+        result = stt_model.generate(tmp_path, **gen_kwargs)
+
+        # Check if result is a generator (streaming mode)
+        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+            accumulated_text = ""
+            for chunk in result:
+                # Handle different chunk types (string tokens vs structured chunks)
+                if isinstance(chunk, str):
+                    accumulated_text += chunk
+                    chunk_data = {"text": chunk, "accumulated": accumulated_text}
+                else:
+                    # Structured chunk (e.g., Whisper streaming)
+                    chunk_data = {
+                        "text": chunk.text,
+                        "start": getattr(chunk, "start_time", None),
+                        "end": getattr(chunk, "end_time", None),
+                        "is_final": getattr(chunk, "is_final", None),
+                        "language": getattr(chunk, "language", None),
+                    }
+                yield json.dumps(sanitize_for_json(chunk_data)) + "\n"
+        else:
+            # Not a generator, yield the full result
+            yield json.dumps(sanitize_for_json(result)) + "\n"
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
+    verbose: bool = Form(False),
+    max_tokens: int = Form(128),
+    chunk_duration: float = Form(30.0),
+    frame_threshold: int = Form(25),
+    stream: bool = Form(False),
+    context: Optional[str] = Form(None),
+    prefill_step_size: int = Form(2048),
+    text: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
+    # Create TranscriptionRequest from form fields
+    payload = TranscriptionRequest(
+        model=model,
+        language=language,
+        verbose=verbose,
+        max_tokens=max_tokens,
+        chunk_duration=chunk_duration,
+        frame_threshold=frame_threshold,
+        stream=stream,
+        context=context,
+        prefill_step_size=prefill_step_size,
+        text=text,
+    )
+
     data = await file.read()
     tmp = io.BytesIO(data)
-    audio, sr = sf.read(tmp, always_2d=False)
+    audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
     tmp_path = f"/tmp/{time.time()}.mp3"
-    sf.write(tmp_path, audio, sr)
+    audio_write(tmp_path, audio, sr)
 
-    stt_model = model_provider.load_model(model)
-    result = stt_model.generate(tmp_path)
-    os.remove(tmp_path)
-    # Sanitize NaN values for JSON serialization
-    return sanitize_for_json(result)
+    stt_model = model_provider.load_model(payload.model)
+
+    # Build kwargs for generate, filtering None values
+    gen_kwargs = payload.model_dump(exclude={"model"}, exclude_none=True)
+
+    # Filter kwargs to only include parameters the model's generate method accepts
+    signature = inspect.signature(stt_model.generate)
+    gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
+
+    return StreamingResponse(
+        generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
+        media_type="application/x-ndjson",
+    )
 
 
 SAM_MODEL = None
@@ -395,7 +493,9 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
     try:
         # Receive initial configuration
         config = await websocket.receive_json()
-        model_name = config.get("model", "mlx-community/whisper-large-v3-turbo")
+        model_name = config.get(
+            "model", "mlx-community/whisper-large-v3-turbo-asr-fp16"
+        )
         language = config.get("language", None)
         sample_rate = config.get("sample_rate", 16000)
 
@@ -544,7 +644,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
                     # Save to temporary file for processing
                     tmp_path = f"/tmp/realtime_initial_{time.time()}.mp3"
-                    sf.write(tmp_path, audio_array, sample_rate)
+                    audio_write(tmp_path, audio_array, sample_rate)
 
                     try:
                         # Generate transcription for initial chunk
@@ -599,7 +699,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
 
                     # Save to temporary file for processing
                     tmp_path = f"/tmp/realtime_{time.time()}.mp3"
-                    sf.write(tmp_path, audio_array, sample_rate)
+                    audio_write(tmp_path, audio_array, sample_rate)
 
                     try:
                         # Generate transcription

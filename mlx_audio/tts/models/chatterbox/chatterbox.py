@@ -453,6 +453,9 @@ class Model(nn.Module):
                 if path.startswith("t3."):
                     weight_path = path[3:]  # Remove "t3." prefix
                     return f"{weight_path}.scales" in t3_weights
+                elif path.startswith("s3gen."):
+                    weight_path = path[6:]  # Remove "s3gen." prefix
+                    return f"{weight_path}.scales" in s3gen_weights
                 return False
 
             nn.quantize(

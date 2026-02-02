@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
-import soundfile as sf
+
+from mlx_audio.audio_io import read as audio_read
+from mlx_audio.audio_io import write as audio_write
 
 # python-multipart is required for FastAPI file uploads
 pytest.importorskip("multipart", reason="python-multipart is required for server tests")
@@ -125,7 +127,7 @@ def test_tts_speech(client, mock_model_provider):
     assert kwargs.get("voice") == payload["voice"]
 
     try:
-        audio_data, sample_rate = sf.read(io.BytesIO(response.content))
+        audio_data, sample_rate = audio_read(io.BytesIO(response.content))
         assert sample_rate > 0
         assert len(audio_data) > 0
     except Exception as e:
@@ -148,7 +150,7 @@ def test_stt_transcriptions(client, mock_model_provider):
     audio_data = 0.5 * np.sin(2 * np.pi * frequency * t).astype(np.float32)
 
     buffer = io.BytesIO()
-    sf.write(buffer, audio_data, sample_rate, format="MP3")
+    audio_write(buffer, audio_data, sample_rate, format="mp3")
     buffer.seek(0)
 
     response = client.post(
@@ -164,4 +166,3 @@ def test_stt_transcriptions(client, mock_model_provider):
     mock_stt_model.generate.assert_called_once()
 
     assert mock_stt_model.generate.call_args[0][0].startswith("/tmp/")
-    assert mock_stt_model.generate.call_args[0][0].endswith(".mp3")

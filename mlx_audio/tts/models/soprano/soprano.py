@@ -173,7 +173,8 @@ class Model(nn.Module):
         for k, v in weights.items():
             k = k.replace("model.", "") if k.startswith("model.") else k
             if k.startswith("decoder."):  # decoder weights are always fp32
-                v = v.astype(mx.float32)
+                if not v.dtype == mx.uint32:
+                    v = v.astype(mx.float32)
             sanitized[k] = v
 
         return sanitized

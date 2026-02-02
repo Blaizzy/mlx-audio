@@ -63,12 +63,11 @@ class ConvTranspose1d(nn.Module):
         bias: bool = True,
     ):
         super().__init__()
-        nn.Conv1d
         scale = 1 / (in_channels * ksize)
         self.weight = mx.random.uniform(
             low=-scale,
             high=scale,
-            shape=(out_channels // groups, ksize, in_channels),
+            shape=(out_channels, ksize, in_channels // groups),
         )
         self.bias = None
         if bias:
@@ -79,43 +78,23 @@ class ConvTranspose1d(nn.Module):
         self._ksize = ksize
         self._in_channels = in_channels
         self._out_channels = out_channels
-        if groups == in_channels and groups == out_channels:
-            eye = (
-                mx.eye(out_channels)
-                .astype(self.weight.dtype)
-                .reshape((out_channels, 1, out_channels))
-            )
-            eye = mx.repeat(eye, repeats=ksize, axis=1)
-            self._expanded_weight = mx.repeat(self.weight, repeats=groups, axis=0) * eye
-            self._expanded_groups = 1
-        elif groups > 1:
-            raise ValueError("groups are not supported in ConvTranspose1d")
-        else:
-            self._expanded_weight = self.weight
-            self._expanded_groups = groups
+        self.update_in_place()
 
     def update_in_place(self):
+        weight = self.weight
         groups = self._groups
-        in_channels = self._in_channels
-        out_channels = self._out_channels
-        ksize = self._ksize
-        if groups == in_channels and groups == out_channels:
-            eye = (
-                mx.eye(out_channels)
-                .astype(self.weight.dtype)
-                .reshape((out_channels, 1, out_channels))
-            )
-            eye = mx.repeat(eye, repeats=ksize, axis=1)
-            self._expanded_weight = mx.repeat(self.weight, repeats=groups, axis=0) * eye
-            self._expanded_groups = 1
-        elif groups > 1:
-            raise ValueError("groups are not supported in ConvTranspose1d")
-        else:
-            self._expanded_weight = self.weight
-            self._expanded_groups = groups
+        if groups == self._in_channels and groups == self._out_channels:
+            if weight.shape == (1, self._ksize, self._in_channels):
+                # Legacy depthwise layout: (1, k, C) -> (C, k, 1)
+                weight = weight.transpose(2, 1, 0)
+            elif weight.shape == (self._out_channels, self._ksize, self._in_channels):
+                # Legacy expanded layout used with groups=1.
+                groups = 1
+        self._expanded_weight = weight
+        self._expanded_groups = groups
 
-    def update(self, parameters: dict) -> nn.Module:
-        super().update(parameters)
+    def update(self, parameters: dict, strict: bool = True) -> nn.Module:
+        super().update(parameters, strict=strict)
         self.update_in_place()
         return self
 

@@ -148,7 +148,22 @@ def istft(
     window="hann",
     center=True,
     length=None,
+    normalized=False,
 ):
+    """Inverse Short-Time Fourier Transform.
+
+    Args:
+        x: Complex STFT output of shape (n_fft // 2 + 1, num_frames)
+        hop_length: Hop length between frames (default: win_length // 4)
+        win_length: Window length (default: (n_fft - 1) * 2)
+        window: Window function name or array (default: "hann")
+        center: If True, remove center padding (default: True)
+        length: Target output length (default: None)
+        normalized: If True, use window squared (COLA) normalization. If False, use simple window normalization (default: True)
+
+    Returns:
+        Reconstructed time-domain signal
+    """
     if win_length is None:
         win_length = (x.shape[1] - 1) * 2
     if hop_length is None:
@@ -180,14 +195,18 @@ def istft(
     indices_flat = indices.flatten()
 
     updates_reconstructed = (frames_time * w).flatten()
-    updates_window = mx.tile(w, (num_frames,)).flatten()
+    # Use window squared for COLA normalization (matches PyTorch's istft) or just window
+    window_norm = (w * w) if normalized else w
+    updates_window = mx.tile(window_norm, (num_frames,)).flatten()
 
     # overlap-add the inverse transformed frame, scaled by the window
     reconstructed = reconstructed.at[indices_flat].add(updates_reconstructed)
     window_sum = window_sum.at[indices_flat].add(updates_window)
 
-    # normalize by the sum of the window values
-    reconstructed = mx.where(window_sum != 0, reconstructed / window_sum, reconstructed)
+    # normalize by the sum of (squared) window values
+    reconstructed = mx.where(
+        window_sum > 1e-10, reconstructed / window_sum, reconstructed
+    )
 
     if center and length is None:
         reconstructed = reconstructed[win_length // 2 : -win_length // 2]

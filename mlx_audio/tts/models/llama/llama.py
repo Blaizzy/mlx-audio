@@ -1,6 +1,6 @@
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import Generator, List, Optional, Union
 
 import mlx.core as mx
 from mlx_lm.generate import stream_generate
@@ -11,6 +11,7 @@ from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from mlx_audio.codec.models.snac import SNAC
+from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult
 
@@ -32,6 +33,7 @@ snac_model = SNAC.from_pretrained("mlx-community/snac_24khz").eval()
 
 
 def decode_audio_from_codes(code_list):
+    """Decode a flat code list to audio."""
     layer_1 = []
     layer_2 = []
     layer_3 = []
@@ -50,6 +52,57 @@ def decode_audio_from_codes(code_list):
     ]
     audio_hat = snac_model.decode(codes).squeeze(-1)
     return audio_hat
+
+
+def codes_to_layers(code_list):
+    """Convert flat code list to layered format for SNAC."""
+    layer_1 = []
+    layer_2 = []
+    layer_3 = []
+    for i in range((len(code_list) + 1) // 7):
+        layer_1.append(code_list[7 * i])
+        layer_2.append(code_list[7 * i + 1] - 4096)
+        layer_3.append(code_list[7 * i + 2] - (2 * 4096))
+        layer_3.append(code_list[7 * i + 3] - (3 * 4096))
+        layer_2.append(code_list[7 * i + 4] - (4 * 4096))
+        layer_3.append(code_list[7 * i + 5] - (5 * 4096))
+        layer_3.append(code_list[7 * i + 6] - (6 * 4096))
+    return [
+        mx.expand_dims(mx.array(layer_1), 0),
+        mx.expand_dims(mx.array(layer_2), 0),
+        mx.expand_dims(mx.array(layer_3), 0),
+    ]
+
+
+def decode_audio_stream(code_list, prev_codes=None, context_frames=8):
+    """Streaming decode with context for smooth transitions.
+
+    Args:
+        code_list: Flat list of NEW codes from the model (not cumulative)
+        prev_codes: Previous context codes (layered format) or None
+        context_frames: Number of context frames for smooth decoding
+
+    Returns:
+        Tuple of (audio, new_context_codes)
+    """
+    codes = codes_to_layers(code_list)
+    audio, new_context = snac_model.decode_stream(codes, prev_codes, context_frames)
+    return audio.squeeze(-1), new_context
+
+
+def get_new_codes(all_codes, prev_code_count):
+    """Extract only the new codes from the full code list.
+
+    Args:
+        all_codes: Full list of codes generated so far
+        prev_code_count: Number of codes already processed
+
+    Returns:
+        List of new codes (empty if none)
+    """
+    if len(all_codes) <= prev_code_count:
+        return []
+    return all_codes[prev_code_count:]
 
 
 def encode_audio_to_codes(audio):
@@ -313,12 +366,16 @@ class Model(LlamaModel):
         split_pattern: str = "\n",
         max_tokens: int = 1200,
         verbose: bool = False,
-        ref_audio: mx.array = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
         **kwargs,
     ):
+        # Load reference audio if provided (handles file paths and mx.array)
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
         prompt_text = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = [p for p in prompt_text.split(split_pattern) if p.strip()]
 
@@ -349,7 +406,10 @@ class Model(LlamaModel):
 
             generated_token_count = 0
             yielded_token_count = 0
-            yielded_frame_count = 0
+            prev_code_count = 0
+
+            # Streaming decode context
+            prev_context_codes = None
 
             # Generate tokens for this segment
             for i, response in enumerate(
@@ -378,17 +438,35 @@ class Model(LlamaModel):
                 if stream and generated_token_count % streaming_token_interval == 0:
                     code_lists = self.parse_output(input_ids)
                     if code_lists and len(code_lists[0]) > 0:
-                        audio = decode_audio_from_codes(code_lists[0])[0]
-                        if audio.shape[0] > yielded_frame_count:
-                            yield self.generate_result(
-                                audio=audio[yielded_frame_count:],
-                                start_time=time_start,
-                                token_count=generated_token_count - yielded_token_count,
-                                segment_idx=segment_idx,
+                        all_codes = code_lists[0]
+                        # Get only new codes since last decode
+                        new_codes = get_new_codes(all_codes, prev_code_count)
+
+                        # Need at least 7 codes for one frame
+                        if len(new_codes) >= 7:
+                            # Trim to complete frames (multiples of 7)
+                            num_frames = len(new_codes) // 7
+                            new_codes = new_codes[: num_frames * 7]
+
+                            # Use streaming decode with context
+                            audio, prev_context_codes = decode_audio_stream(
+                                new_codes,
+                                prev_context_codes,
+                                context_frames=8,
                             )
-                            yielded_token_count = generated_token_count
-                            yielded_frame_count = audio.shape[0]
-                            time_start = time.perf_counter()
+                            audio = audio[0]  # Remove batch dim
+
+                            if audio.shape[0] > 0:
+                                yield self.generate_result(
+                                    audio=audio,
+                                    start_time=time_start,
+                                    token_count=generated_token_count
+                                    - yielded_token_count,
+                                    segment_idx=segment_idx,
+                                )
+                                yielded_token_count = generated_token_count
+                                prev_code_count += len(new_codes)
+                                time_start = time.perf_counter()
 
                 if next_token == 128258:  # End of speech
                     break
@@ -399,15 +477,91 @@ class Model(LlamaModel):
             for code_list in code_lists:
                 if len(code_list) == 0:
                     continue
-                audio = decode_audio_from_codes(code_list)[0]
 
-                if audio.shape[0] > yielded_frame_count:
-                    yield self.generate_result(
-                        audio=audio[yielded_frame_count:],
-                        start_time=time_start,
-                        token_count=generated_token_count - yielded_token_count,
-                        segment_idx=segment_idx,
-                    )
+                if stream:
+                    # Get remaining codes not yet decoded
+                    remaining_codes = get_new_codes(code_list, prev_code_count)
+                    if len(remaining_codes) >= 7:
+                        # Trim to complete frames
+                        num_frames = len(remaining_codes) // 7
+                        remaining_codes = remaining_codes[: num_frames * 7]
+
+                        audio, _ = decode_audio_stream(
+                            remaining_codes,
+                            prev_context_codes,
+                            context_frames=8,
+                        )
+                        audio = audio[0]
+
+                        if audio.shape[0] > 0:
+                            yield self.generate_result(
+                                audio=audio,
+                                start_time=time_start,
+                                token_count=generated_token_count - yielded_token_count,
+                                segment_idx=segment_idx,
+                            )
+                else:
+                    # Non-streaming: decode all at once
+                    audio = decode_audio_from_codes(code_list)[0]
+
+                    if audio.shape[0] > 0:
+                        yield self.generate_result(
+                            audio=audio,
+                            start_time=time_start,
+                            token_count=generated_token_count - yielded_token_count,
+                            segment_idx=segment_idx,
+                        )
 
             # Clear cache after each segment to avoid memory buildup
             mx.clear_cache()
+
+    def stream_generate(
+        self,
+        text: str,
+        voice: str = None,
+        temperature: float = 0.6,
+        top_p: float = 0.8,
+        split_pattern: str = "\n",
+        max_tokens: int = 1200,
+        streaming_interval: float = 2.0,
+        ref_audio: Optional[Union[str, mx.array]] = None,
+        ref_text: Optional[str] = None,
+        verbose: bool = False,
+        **kwargs,
+    ) -> Generator[GenerationResult, None, None]:
+        """
+        Stream generate speech from text, yielding audio chunks as they're generated.
+
+        This method generates audio in a streaming fashion, yielding audio chunks
+        as soon as they're ready. This allows for lower latency audio playback.
+
+        Args:
+            text: Input text to synthesize
+            voice: Voice name to use (e.g., "zoe", "tara")
+            temperature: Sampling temperature (default: 0.6)
+            top_p: Nucleus sampling threshold (default: 0.8)
+            split_pattern: Pattern to split text into segments (default: "\\n")
+            max_tokens: Maximum tokens per segment (default: 1200)
+            streaming_interval: Time interval in seconds between audio chunk yields (default: 2.0)
+            ref_audio: Optional reference audio for voice cloning
+            ref_text: Optional caption for reference audio (for voice cloning)
+            verbose: Whether to show progress bar (default: False)
+            **kwargs: Additional arguments (top_k, logit_bias, repetition_penalty, etc.)
+
+        Yields:
+            GenerationResult with generated audio chunks and metrics
+        """
+        yield from self.generate(
+            text=text,
+            voice=voice,
+            temperature=temperature,
+            top_p=top_p,
+            split_pattern=split_pattern,
+            max_tokens=max_tokens,
+            verbose=verbose,
+            ref_audio=ref_audio,
+            ref_text=ref_text,
+            stream=True,
+            streaming_interval=streaming_interval,
+            **kwargs,
+        )

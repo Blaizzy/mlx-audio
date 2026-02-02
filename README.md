@@ -16,11 +16,23 @@ The best audio processing library built on Apple's MLX framework, providing fast
 
 ## Installation
 
+### Using pip
 ```bash
 pip install mlx-audio
 ```
 
-For development or web interface:
+### Using uv to install only the command line tools
+Latest release from pypi:
+```bash
+uv tool install --force mlx-audio --prerelease=allow
+```
+
+Latest code from github:
+```bash
+uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prerelease=allow
+```
+
+### For development or web interface:
 
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
@@ -34,13 +46,16 @@ pip install -e ".[dev]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello, world!"
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello, world!' --lang_code a
 
 # With voice selection and speed adjustment
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --voice af_heart --speed 1.2
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --voice af_heart --speed 1.2 --lang_code a
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text "Hello!" --play
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --play  --lang_code a
+
+# Save to a specific directory
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --output_path ./my_audio  --lang_code a
 ```
 
 ### Python API
@@ -64,6 +79,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
+| **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-bf16](https://huggingface.co/mlx-community/Dia-1.6B-bf16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-0.2-500M](https://huggingface.co/mlx-community/OuteTTS-0.2-500M) |
@@ -75,15 +91,20 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
-| **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-mlx](https://huggingface.co/mlx-community/whisper-large-v3-mlx) |
+| **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
+| **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
+| **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
+| **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
+
 
 ### Speech-to-Speech (STS)
 
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit)
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 
 ## Model Examples
@@ -123,6 +144,25 @@ for result in model.generate(
 | `e` | Spanish | |
 | `f` | French | |
 
+### Qwen3-TTS
+
+Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control, and voice design capabilities.
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
+results = list(model.generate(
+    text="Hello, welcome to MLX-Audio!",
+    voice="Chelsie",
+    language="English",
+))
+
+audio = results[0].audio  # mx.array
+```
+
+See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
+
 ### CSM (Voice Cloning)
 
 Clone any voice using a reference audio sample:
@@ -138,11 +178,114 @@ mlx_audio.tts.generate \
 ### Whisper STT
 
 ```python
-from mlx_audio.stt.utils import load_model, transcribe
+from mlx_audio.stt.generate import generate_transcription
 
-model = load_model("mlx-community/whisper-large-v3-mlx")
-result = transcribe("audio.wav", model=model)
+result = generate_transcription(
+    model="mlx-community/whisper-large-v3-turbo-asr-fp16",
+    audio="audio.wav",
+)
+print(result.text)
+```
+
+### Qwen3-ASR & ForcedAligner
+
+Alibaba's multilingual speech models for transcription and word-level alignment.
+
+```python
+from mlx_audio.stt import load
+
+# Speech recognition
+model = load("mlx-community/Qwen3-ASR-0.6B-8bit")
+result = model.generate("audio.wav", language="English")
+print(result.text)
+
+# Word-level forced alignment
+aligner = load("mlx-community/Qwen3-ForcedAligner-0.6B-8bit")
+result = aligner.generate("audio.wav", text="I have a dream", language="English")
+for item in result:
+    print(f"[{item.start_time:.2f}s - {item.end_time:.2f}s] {item.text}")
+```
+
+See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
+
+### VibeVoice-ASR
+
+Microsoft's 9B parameter speech-to-text model with speaker diarization and timestamps. Supports long-form audio (up to 60 minutes) and outputs structured JSON.
+
+```python
+from mlx_audio.stt.utils import load
+
+model = load("mlx-community/VibeVoice-ASR-bf16")
+
+# Basic transcription
+result = model.generate(audio="meeting.wav", max_tokens=8192, temperature=0.0)
+print(result.text)
+# [{"Start":0,"End":5.2,"Speaker":0,"Content":"Hello everyone, let's begin."},
+#  {"Start":5.5,"End":9.8,"Speaker":1,"Content":"Thanks for joining today."}]
+
+# Access parsed segments
+for seg in result.segments:
+    print(f"[{seg['start_time']:.1f}-{seg['end_time']:.1f}] Speaker {seg['speaker_id']}: {seg['text']}")
+```
+
+**Streaming transcription:**
+
+```python
+# Stream tokens as they are generated
+for text in model.stream_transcribe(audio="speech.wav", max_tokens=4096):
+    print(text, end="", flush=True)
+```
+
+**With context (hotwords/metadata):**
+
+```python
+result = model.generate(
+    audio="technical_talk.wav",
+    context="MLX, Apple Silicon, PyTorch, Transformer",
+    max_tokens=8192,
+    temperature=0.0,
+)
+```
+
+**CLI usage:**
+
+```bash
+# Basic transcription
+python -m mlx_audio.stt.generate \
+    --model mlx-community/VibeVoice-ASR-bf16 \
+    --audio meeting.wav \
+    --output-path output \
+    --format json \
+    --max-tokens 8192 \
+    --verbose
+
+# With context/hotwords
+python -m mlx_audio.stt.generate \
+    --model mlx-community/VibeVoice-ASR-bf16 \
+    --audio technical_talk.wav \
+    --output-path output \
+    --format json \
+    --max-tokens 8192 \
+    --context "MLX, Apple Silicon, PyTorch, Transformer" \
+    --verbose
+```
+
+### MedASR (Medical Transcription)
+
+Specialized model for medical terms and dictation.
+
+```python
+from mlx_audio.stt.utils import load, transcribe
+
+model = load("mlx-community/medasr")
+result = transcribe("medical_dictation.wav", model=model)
 print(result["text"])
+```
+
+**Live Transcription Example:**
+```bash
+# Continuous live transcription with VAD
+python examples/medasr_live.py
 ```
 
 ### SAM-Audio (Source Separation)
@@ -214,7 +357,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F "file=@audio.wav" \
-  -F "model=mlx-community/whisper-large-v3-mlx"
+  -F "model=mlx-community/whisper-large-v3-turbo-asr-fp16"
 ```
 
 ## Quantization
@@ -249,50 +392,30 @@ python -m mlx_audio.convert \
 | `--dtype` | Weight dtype: `float16`, `bfloat16`, `float32` |
 | `--upload-repo` | Upload converted model to HF Hub |
 
-**Pre-quantized models available:**
-- [mlx-community/Kokoro-82M-4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit)
-- [mlx-community/Kokoro-82M-6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit)
-- [mlx-community/Kokoro-82M-8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit)
-- [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16)
+## Swift
 
-## Swift Integration
-
-Native Swift package for iOS and macOS apps.
-
-### Installation
-
-Add to your `Package.swift`:
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/Blaizzy/mlx-audio.git", from: "0.2.5")
-]
-```
-
-### Usage
-
-```swift
-import MLXAudio
-
-// Create session (auto-downloads model)
-let session = try await MarvisSession(voice: .conversationalA)
-
-// Generate speech (auto-plays)
-let result = try await session.generate(for: "Hello from Swift!")
-
-// Streaming generation
-for try await chunk in session.stream(text: "Streaming audio...") {
-    print("Chunk: \(chunk.sampleCount) samples")
-}
-```
-
-**Supported Platforms:** macOS 14.0+, iOS 16.0+
+Looking for Swift/iOS support? Check out [mlx-audio-swift](https://github.com/Blaizzy/mlx-audio-swift) for on-device TTS using MLX on macOS and iOS.
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.10+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
+- **ffmpeg** (required for MP3/FLAC audio encoding)
+
+### Installing ffmpeg
+
+ffmpeg is required for saving audio in MP3 or FLAC format. Install it using:
+
+```bash
+# macOS (using Homebrew)
+brew install ffmpeg
+
+# Ubuntu/Debian
+sudo apt install ffmpeg
+```
+
+WAV format works without ffmpeg.
 
 ## License
 

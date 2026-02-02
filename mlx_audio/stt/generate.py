@@ -1,8 +1,10 @@
 import argparse
 import contextlib
+import inspect
 import json
 import os
 import time
+from pprint import pprint
 from typing import List, Optional, Union
 
 import mlx.core as mx
@@ -26,7 +28,7 @@ def parse_args():
         "--audio", type=str, required=True, help="Path to the audio file"
     )
     parser.add_argument(
-        "--output", type=str, required=True, help="Path to save the output"
+        "--output-path", type=str, required=True, help="Path to save the output"
     )
     parser.add_argument(
         "--format",
@@ -37,10 +39,57 @@ def parse_args():
     )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument(
-        "--max_tokens",
+        "--max-tokens",
         type=int,
         default=128,
         help="Maximum number of new tokens to generate",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default="en",
+        help="Language code (e.g. en, es, fr, de, etc.)",
+    )
+    parser.add_argument(
+        "--chunk-duration",
+        type=float,
+        default=30.0,
+        help="Chunk duration in seconds (default: 30.0)",
+    )
+    parser.add_argument(
+        "--frame-threshold",
+        type=int,
+        default=25,
+        help="Frame threshold (default: 25)",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream the transcription as it is generated (default: False)",
+    )
+    parser.add_argument(
+        "--context",
+        type=str,
+        default=None,
+        help="Context string with hotwords or metadata to guide transcription",
+    )
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=2048,
+        help="Prefill step size (default: 2048)",
+    )
+    parser.add_argument(
+        "--gen-kwargs",
+        type=json.loads,
+        default=None,
+        help="Additional generate kwargs as JSON (e.g. '{\"min_chunk_duration\": 1.0}')",
+    )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default="",
+        help="Text to align (for forced alignment models)",
     )
     return parser.parse_args()
 
@@ -128,6 +177,10 @@ def save_as_json(segments, output_path: str):
                 for s in segments.sentences
             ],
         }
+        # Add speaker_id only if it exists
+        for i, s in enumerate(segments.sentences):
+            if hasattr(s, "speaker_id"):
+                result["sentences"][i]["speaker_id"] = s.speaker_id
     else:
         result = {
             "text": segments.text,
@@ -141,6 +194,10 @@ def save_as_json(segments, output_path: str):
                 for s in segments.segments
             ],
         }
+        # Add speaker_id only if it exists
+        for i, s in enumerate(segments.segments):
+            if "speaker_id" in s:
+                result["segments"][i]["speaker_id"] = s["speaker_id"]
 
     with open(f"{output_path}.json", "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
@@ -192,20 +249,22 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
-    audio_path: str = "",
-    output_path: str = "",
+    audio: Union[str, mx.array] = None,
+    output_path: str = "transcript",
     format: str = "txt",
-    verbose: bool = True,
+    verbose: bool = False,
+    text: str = "",
     **kwargs,
 ):
     """Generate transcriptions from audio files.
 
     Args:
         model: Path to the model or the model instance.
-        audio_path: Path to the audio file.
+        audio: Path to the audio file (str), or audio waveform (mx.array).
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
+        text: Text to align (for forced alignment models).
         **kwargs: Additional arguments for the model's generate method.
 
     Returns:
@@ -220,21 +279,67 @@ def generate_transcription(
         # Load model
         model = load_model(model)
 
-    print("=" * 10)
-    print(f"\033[94mAudio path:\033[0m {audio_path}")
-    print(f"\033[94mOutput path:\033[0m {output_path}")
-    print(f"\033[94mFormat:\033[0m {format}")
     mx.reset_peak_memory()
     start_time = time.time()
     if verbose:
-        print("\033[94mTranscription:\033[0m")
-    segments = model.generate(
-        audio_path, verbose=verbose, generation_stream=generation_stream, **kwargs
-    )
+        print("=" * 10)
+        print(f"\033[94mAudio path:\033[0m {audio}")
+        print(f"\033[94mOutput path:\033[0m {output_path}")
+        print(f"\033[94mFormat:\033[0m {format}")
+
+    # Handle gen_kwargs (additional generate parameters as JSON)
+    gen_kwargs = kwargs.pop("gen_kwargs", None)
+    if gen_kwargs:
+        kwargs.update(gen_kwargs)
+
+    # Add text to kwargs if provided (for forced alignment)
+    if text:
+        kwargs["text"] = text
+
+    signature = inspect.signature(model.generate)
+    kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
+
+    if kwargs.get("stream", False):
+        all_segments = []
+        accumulated_text = ""
+        language = "en"
+        for result in model.generate(audio, verbose=verbose, **kwargs):
+            segment_dict = {
+                "text": result.text,
+                "start": result.start_time,
+                "end": result.end_time,
+                "is_final": result.is_final,
+            }
+
+            all_segments.append(segment_dict)
+            # Accumulate text (handles both incremental and cumulative streaming)
+            accumulated_text += result.text
+            language = result.language
+
+        segments = STTOutput(
+            text=accumulated_text.strip(),
+            segments=all_segments,
+            language=language,
+        )
+    else:
+        segments = model.generate(
+            audio, verbose=verbose, generation_stream=generation_stream, **kwargs
+        )
+
+    if verbose:
+        if hasattr(segments, "text"):
+            print("\033[94mTranscription:\033[0m\n")
+            print(f"{segments.text[:500]}...\n")
+
+        if hasattr(segments, "segments"):
+            print("\033[94mSegments:\033[0m\n")
+            pprint(segments.segments[:3] + ["..."])
+
     end_time = time.time()
 
     if verbose:
         print("\n" + "=" * 10)
+        print(f"\033[94mSaving file to:\033[0m ./{output_path}.{format}")
         print(f"\033[94mProcessing time:\033[0m {end_time - start_time:.2f} seconds")
         if isinstance(segments, STTOutput):
             print(
@@ -270,14 +375,7 @@ def generate_transcription(
 
 def main():
     args = parse_args()
-    generate_transcription(
-        args.model,
-        args.audio,
-        args.output,
-        args.format,
-        args.verbose,
-        max_tokens=args.max_tokens,
-    )
+    generate_transcription(**vars(args))
 
 
 if __name__ == "__main__":

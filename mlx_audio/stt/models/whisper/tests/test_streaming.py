@@ -189,7 +189,7 @@ class TestStreamingDecoder:
         from mlx_audio.stt.utils import load_model
 
         # Use tiny model for fast tests
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     def test_initialization(self, whisper_model):
         """StreamingDecoder initializes with model and config."""
@@ -226,7 +226,7 @@ class TestDecodeChunk:
         """Load a small Whisper model."""
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     @pytest.fixture
     def sample_audio(self):
@@ -282,16 +282,16 @@ class TestGenerateStreaming:
         """Load Whisper model."""
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     @pytest.fixture
     def sample_audio_file(self, tmp_path):
         """Create a sample audio file."""
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
         audio = np.zeros(32000, dtype=np.float32)  # 2 seconds
         path = tmp_path / "test.wav"
-        sf.write(str(path), audio, 16000)
+        audio_write(str(path), audio, 16000)
         return str(path)
 
     def test_generate_streaming_is_generator(self, whisper_model, sample_audio_file):
@@ -332,12 +332,12 @@ class TestStreamingIntegration:
         """Load Whisper model."""
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     @pytest.fixture
     def speech_audio(self, tmp_path):
         """Create audio with speech-like characteristics."""
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
         # Generate 3 seconds of audio with varying amplitude (simulates speech)
         t = np.linspace(0, 3, 48000)
@@ -346,7 +346,7 @@ class TestStreamingIntegration:
         audio = audio.astype(np.float32)
 
         path = tmp_path / "speech.wav"
-        sf.write(str(path), audio, 16000)
+        audio_write(str(path), audio, 16000)
         return str(path)
 
     def test_streaming_produces_results(self, whisper_model, speech_audio):
@@ -409,15 +409,15 @@ class TestSharedHelpers:
     def whisper_model(self):
         from mlx_audio.stt.utils import load_model
 
-        return load_model("mlx-community/whisper-tiny")
+        return load_model("mlx-community/whisper-tiny-asr-fp16")
 
     def test_prepare_audio_from_path(self, whisper_model, tmp_path):
         """_prepare_audio loads audio from file path."""
-        import soundfile as sf
+        from mlx_audio.audio_io import write as audio_write
 
         audio = np.zeros(16000, dtype=np.float32)
         path = tmp_path / "test.wav"
-        sf.write(str(path), audio, 16000)
+        audio_write(str(path), audio, 16000)
 
         mel, content_frames = whisper_model._prepare_audio(str(path))
 
@@ -453,12 +453,18 @@ class TestSharedHelpers:
     def test_get_suppress_tokens_helper(self):
         """get_suppress_tokens returns consistent token set."""
         from mlx_audio.stt.models.whisper.decoding import get_suppress_tokens
-        from mlx_audio.stt.models.whisper.tokenizer import get_tokenizer
 
-        tokenizer = get_tokenizer(
-            True, num_languages=100, language="en", task="transcribe"
-        )
+        # Mock tokenizer with required properties for get_suppress_tokens
+        class MockTokenizer:
+            non_speech_tokens = (100, 101, 102)
+            transcribe = 50358
+            translate = 50357
+            sot = 50258
+            sot_prev = 50361
+            sot_lm = 50360
+            no_speech = 50362
 
+        tokenizer = MockTokenizer()
         tokens = get_suppress_tokens(tokenizer)
 
         assert isinstance(tokens, (list, tuple, set))

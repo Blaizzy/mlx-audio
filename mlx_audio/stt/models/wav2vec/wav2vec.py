@@ -1,6 +1,7 @@
 import inspect
 import json
 import math
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Tuple, Union
@@ -719,6 +720,18 @@ class Wav2Vec2Model(nn.Module):
 
     @classmethod
     def from_pretrained(cls, repo_id: str, **kwargs):
+        """
+        Load a pretrained Wav2Vec model.
+
+        .. deprecated::
+            Use `mlx_audio.stt.load()` instead. This method will be removed in a future version.
+        """
+        warnings.warn(
+            "Model.from_pretrained() is deprecated. Use mlx_audio.stt.load() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
         path = fetch_from_hub(repo_id)
 
         if path is None:

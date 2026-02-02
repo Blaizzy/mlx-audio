@@ -1,6 +1,6 @@
 import re
 import time
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -10,6 +10,7 @@ from mlx_lm.sample_utils import make_sampler
 from tqdm import trange
 
 from mlx_audio.codec.models import DAC
+from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult
 from .audio import audio_to_codebook, codebook_to_audio
@@ -236,10 +237,14 @@ class Model(nn.Module):
         split_pattern: str = "\n",
         max_tokens: int | None = None,
         verbose: bool = False,
-        ref_audio: Optional[mx.array] = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
         **kwargs,
     ):
+        # Load reference audio if provided (handles file paths and mx.array)
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
         prompt = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = prompt.split(split_pattern)
 
@@ -317,7 +322,7 @@ class Model(nn.Module):
         top_p: float = 0.95,
         use_cfg_filter: bool = True,
         cfg_filter_top_k: int = 35,
-        ref_audio: Optional[mx.array] = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
     ) -> np.ndarray:
         """
