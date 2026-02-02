@@ -295,12 +295,12 @@ def get_model_class(
         model_type = model_type_mapped
 
     try:
-        module_path = (f"mlx_audio.{category}.models.{model_type}")
+        module_path = f"mlx_audio.{category}.models.{model_type}"
         arch = importlib.import_module(module_path)
     except ImportError as e:
         if e.name != module_path:
             print("\n", flush=True)
-            
+
             raise ImportError(
                 f"\nMissing dependency while loading {model_type}: {e}\n"
                 f"Please install it using: pip install {e.name}"
@@ -429,6 +429,144 @@ def _get_tts_utils():
     return _tts_utils
 
 
+def audio_volume_normalize(audio, coeff: float = 0.2):
+    """Normalize the volume of an audio signal.
+
+    Args:
+        audio: Input audio signal array (numpy array).
+        coeff: Target coefficient for normalization, default is 0.2.
+
+    Returns:
+        numpy array: The volume-normalized audio signal.
+    """
+    import numpy as np
+
+    # Sort the absolute values of the audio signal
+    temp = np.sort(np.abs(audio))
+
+    # If the maximum value is less than 0.1, scale the array to have a maximum of 0.1
+    if temp[-1] < 0.1:
+        scaling_factor = max(temp[-1], 1e-3)
+        audio = audio / scaling_factor * 0.1
+
+    # Filter out values less than 0.01 from temp
+    temp = temp[temp > 0.01]
+    L = temp.shape[0]
+
+    # If there are fewer than or equal to 10 significant values, return as-is
+    if L <= 10:
+        return audio
+
+    # Compute the average of the top 10% to 1% of values in temp
+    volume = np.mean(temp[int(0.9 * L) : int(0.99 * L)])
+
+    # Normalize the audio to the target coefficient level
+    audio = audio * np.clip(coeff / volume, a_min=0.1, a_max=10)
+
+    # Ensure the maximum absolute value does not exceed 1
+    max_value = np.max(np.abs(audio))
+    if max_value > 1:
+        audio = audio / max_value
+
+    return audio
+
+
+def random_select_audio_segment(audio, length: int):
+    """Get a random audio segment of given length.
+
+    Args:
+        audio: Input audio array (numpy array).
+        length: Desired segment length (sample_rate * duration).
+
+    Returns:
+        numpy array: Audio segment of specified length.
+    """
+    import random
+
+    import numpy as np
+
+    if audio.shape[0] < length:
+        audio = np.pad(audio, (0, int(length - audio.shape[0])))
+    start_index = random.randint(0, audio.shape[0] - length)
+    end_index = int(start_index + length)
+
+    return audio[start_index:end_index]
+
+
+def load_audio(
+    audio: Union[str, mx.array],
+    sample_rate: int = 24000,
+    length: Optional[int] = None,
+    volume_normalize: bool = False,
+    segment_duration: Optional[int] = None,
+) -> mx.array:
+    """Load audio from file path or return mx.array as-is.
+
+    Args:
+        audio: Audio input - can be:
+            - str: Path to audio file (will be loaded and resampled to sample_rate)
+            - mx.array: MLX array (returned as-is)
+        sample_rate: Target sample rate (default 24000)
+        length: Target length in samples (pad or truncate if specified)
+        volume_normalize: Whether to normalize audio volume
+        segment_duration: If specified, randomly select a segment of this duration (seconds)
+
+    Returns:
+        mx.array: Audio waveform at target sample rate
+
+    Raises:
+        FileNotFoundError: If audio file path does not exist
+        TypeError: If audio is not str or mx.array
+    """
+    if isinstance(audio, mx.array):
+        return audio
+
+    if not isinstance(audio, str):
+        raise TypeError(f"audio must be str or mx.array, got {type(audio)}")
+
+    import os
+
+    import numpy as np
+    from scipy.signal import resample
+
+    from mlx_audio.audio_io import read as audio_read
+
+    if not os.path.exists(audio):
+        raise FileNotFoundError(f"Audio file not found: {audio}")
+
+    samples, orig_sample_rate = audio_read(audio)
+    shape = samples.shape
+
+    # Collapse multi channel as mono
+    if len(shape) > 1:
+        samples = samples.sum(axis=1)
+        samples = samples / shape[1]
+
+    # Resample if needed
+    if sample_rate != orig_sample_rate:
+        duration = samples.shape[0] / orig_sample_rate
+        num_samples = int(duration * sample_rate)
+        samples = resample(samples, num_samples)
+
+    # Random segment selection
+    if segment_duration is not None:
+        seg_length = int(sample_rate * segment_duration)
+        samples = random_select_audio_segment(samples, seg_length)
+
+    # Volume normalization
+    if volume_normalize:
+        samples = audio_volume_normalize(samples)
+
+    # Length adjustment
+    if length is not None:
+        if samples.shape[0] > length:
+            samples = samples[:length]
+        else:
+            samples = np.pad(samples, (0, int(length - samples.shape[0])))
+
+    return mx.array(samples, dtype=mx.float32)
+
+
 __all__ = [
     # DSP functions (re-exported from dsp.py)
     "hanning",
@@ -439,6 +577,10 @@ __all__ = [
     "stft",
     "istft",
     "mel_filters",
+    # Audio utilities
+    "load_audio",
+    "audio_volume_normalize",
+    "random_select_audio_segment",
     # Model utilities
     "from_dict",
     "is_valid_module_name",
@@ -470,18 +612,29 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
 
     candidates = [model_type] + (model_name or [])
 
-    for category, remap in (
+    categories = [
         ("tts", tts_utils.MODEL_REMAPPING),
         ("stt", stt_utils.MODEL_REMAPPING),
-    ):
+    ]
+
+    # First pass: check for explicit remapping matches (higher priority)
+    for category, remap in categories:
         for hint in candidates:
-            arch = remap.get(hint, hint)
-            # Double-check that the architecture name is valid before trying to import
-            if not is_valid_module_name(arch):
-                continue
-            module_path = f"mlx_audio.{category}.models.{arch}"
-            if importlib.util.find_spec(module_path) is not None:
-                return category
+            if hint in remap:
+                arch = remap[hint]
+                if not is_valid_module_name(arch):
+                    continue
+                module_path = f"mlx_audio.{category}.models.{arch}"
+                if importlib.util.find_spec(module_path) is not None:
+                    return category
+
+    # Second pass: check for direct module matches (fallback)
+    for category, remap in categories:
+        for hint in candidates:
+            if hint not in remap and is_valid_module_name(hint):
+                module_path = f"mlx_audio.{category}.models.{hint}"
+                if importlib.util.find_spec(module_path) is not None:
+                    return category
 
     return None
 

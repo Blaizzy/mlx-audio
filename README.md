@@ -92,6 +92,8 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
+| **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
+| **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
@@ -184,6 +186,27 @@ result = generate_transcription(
 )
 print(result.text)
 ```
+
+### Qwen3-ASR & ForcedAligner
+
+Alibaba's multilingual speech models for transcription and word-level alignment.
+
+```python
+from mlx_audio.stt import load
+
+# Speech recognition
+model = load("mlx-community/Qwen3-ASR-0.6B-8bit")
+result = model.generate("audio.wav", language="English")
+print(result.text)
+
+# Word-level forced alignment
+aligner = load("mlx-community/Qwen3-ForcedAligner-0.6B-8bit")
+result = aligner.generate("audio.wav", text="I have a dream", language="English")
+for item in result:
+    print(f"[{item.start_time:.2f}s - {item.end_time:.2f}s] {item.text}")
+```
+
+See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
 
 ### VibeVoice-ASR
 

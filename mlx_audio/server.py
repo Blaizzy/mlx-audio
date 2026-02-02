@@ -7,6 +7,7 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 
 import argparse
 import asyncio
+import inspect
 import io
 import json
 import os
@@ -153,6 +154,7 @@ setup_cors(app, default_origins)
 class SpeechRequest(BaseModel):
     model: str
     input: str
+    instruct: str | None = None
     voice: str | None = None
     speed: float | None = 1.0
     gender: str | None = "male"
@@ -165,6 +167,20 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    verbose: bool = False
+
+
+class TranscriptionRequest(BaseModel):
+    model: str
+    language: str | None = None
+    verbose: bool = False
+    max_tokens: int = 128
+    chunk_duration: float = 30.0
+    frame_threshold: int = 25
+    stream: bool = False
+    context: str | None = None
+    prefill_step_size: int = 2048
+    text: str | None = None
 
 
 # Initialize the ModelProvider
@@ -234,7 +250,7 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
+async def generate_audio(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
     if ref_audio and isinstance(ref_audio, str):
@@ -258,6 +274,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
         speed=payload.speed,
         gender=payload.gender,
         pitch=payload.pitch,
+        instruct=payload.instruct,
         lang_code=payload.lang_code,
         ref_audio=ref_audio,
         ref_text=payload.ref_text,
@@ -265,6 +282,7 @@ async def generate_audio(model, payload: SpeechRequest, verbose: bool = False):
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        verbose=payload.verbose,
     ):
 
         sample_rate = result.sample_rate
@@ -287,13 +305,67 @@ async def tts_speech(payload: SpeechRequest):
     )
 
 
+def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
+    """Generator that yields transcription chunks and cleans up temp file."""
+    try:
+        # Call generate with stream=True (models handle streaming internally)
+        result = stt_model.generate(tmp_path, **gen_kwargs)
+
+        # Check if result is a generator (streaming mode)
+        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+            accumulated_text = ""
+            for chunk in result:
+                # Handle different chunk types (string tokens vs structured chunks)
+                if isinstance(chunk, str):
+                    accumulated_text += chunk
+                    chunk_data = {"text": chunk, "accumulated": accumulated_text}
+                else:
+                    # Structured chunk (e.g., Whisper streaming)
+                    chunk_data = {
+                        "text": chunk.text,
+                        "start": getattr(chunk, "start_time", None),
+                        "end": getattr(chunk, "end_time", None),
+                        "is_final": getattr(chunk, "is_final", None),
+                        "language": getattr(chunk, "language", None),
+                    }
+                yield json.dumps(sanitize_for_json(chunk_data)) + "\n"
+        else:
+            # Not a generator, yield the full result
+            yield json.dumps(sanitize_for_json(result)) + "\n"
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
     file: UploadFile = File(...),
     model: str = Form(...),
     language: Optional[str] = Form(None),
+    verbose: bool = Form(False),
+    max_tokens: int = Form(128),
+    chunk_duration: float = Form(30.0),
+    frame_threshold: int = Form(25),
+    stream: bool = Form(False),
+    context: Optional[str] = Form(None),
+    prefill_step_size: int = Form(2048),
+    text: Optional[str] = Form(None),
 ):
     """Transcribe audio using an STT model in OpenAI format."""
+    # Create TranscriptionRequest from form fields
+    payload = TranscriptionRequest(
+        model=model,
+        language=language,
+        verbose=verbose,
+        max_tokens=max_tokens,
+        chunk_duration=chunk_duration,
+        frame_threshold=frame_threshold,
+        stream=stream,
+        context=context,
+        prefill_step_size=prefill_step_size,
+        text=text,
+    )
+
     data = await file.read()
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
@@ -301,11 +373,19 @@ async def stt_transcriptions(
     tmp_path = f"/tmp/{time.time()}.mp3"
     audio_write(tmp_path, audio, sr)
 
-    stt_model = model_provider.load_model(model)
-    result = stt_model.generate(tmp_path)
-    os.remove(tmp_path)
-    # Sanitize NaN values for JSON serialization
-    return sanitize_for_json(result)
+    stt_model = model_provider.load_model(payload.model)
+
+    # Build kwargs for generate, filtering None values
+    gen_kwargs = payload.model_dump(exclude={"model"}, exclude_none=True)
+
+    # Filter kwargs to only include parameters the model's generate method accepts
+    signature = inspect.signature(stt_model.generate)
+    gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
+
+    return StreamingResponse(
+        generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
+        media_type="application/x-ndjson",
+    )
 
 
 @app.websocket("/v1/audio/transcriptions/realtime")

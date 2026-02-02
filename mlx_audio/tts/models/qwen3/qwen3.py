@@ -11,6 +11,7 @@ from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
 
 from mlx_audio.codec.models.snac import SNAC
+from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult
 
@@ -296,12 +297,16 @@ class Model(Qwen3Model):
         split_pattern: str = "\n",
         max_tokens: int = 1200,
         verbose: bool = False,
-        ref_audio: mx.array = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
         ref_text: Optional[str] = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
         **kwargs,
     ):
+        # Load reference audio if provided (handles file paths and mx.array)
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
         prompt_text = text.replace("\\n", "\n").replace("\\t", "\t")
         prompts = [p for p in prompt_text.split(split_pattern) if p.strip()]
 

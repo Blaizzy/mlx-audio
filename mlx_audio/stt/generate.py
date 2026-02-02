@@ -4,7 +4,7 @@ import inspect
 import json
 import os
 import time
-from operator import rshift
+from pprint import pprint
 from typing import List, Optional, Union
 
 import mlx.core as mx
@@ -72,6 +72,24 @@ def parse_args():
         type=str,
         default=None,
         help="Context string with hotwords or metadata to guide transcription",
+    )
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=2048,
+        help="Prefill step size (default: 2048)",
+    )
+    parser.add_argument(
+        "--gen-kwargs",
+        type=json.loads,
+        default=None,
+        help="Additional generate kwargs as JSON (e.g. '{\"min_chunk_duration\": 1.0}')",
+    )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default="",
+        help="Text to align (for forced alignment models)",
     )
     return parser.parse_args()
 
@@ -235,6 +253,7 @@ def generate_transcription(
     output_path: str = "transcript",
     format: str = "txt",
     verbose: bool = False,
+    text: str = "",
     **kwargs,
 ):
     """Generate transcriptions from audio files.
@@ -245,6 +264,7 @@ def generate_transcription(
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
+        text: Text to align (for forced alignment models).
         **kwargs: Additional arguments for the model's generate method.
 
     Returns:
@@ -266,7 +286,15 @@ def generate_transcription(
         print(f"\033[94mAudio path:\033[0m {audio}")
         print(f"\033[94mOutput path:\033[0m {output_path}")
         print(f"\033[94mFormat:\033[0m {format}")
-        print("\033[94mTranscription:\033[0m")
+
+    # Handle gen_kwargs (additional generate parameters as JSON)
+    gen_kwargs = kwargs.pop("gen_kwargs", None)
+    if gen_kwargs:
+        kwargs.update(gen_kwargs)
+
+    # Add text to kwargs if provided (for forced alignment)
+    if text:
+        kwargs["text"] = text
 
     signature = inspect.signature(model.generate)
     kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
@@ -297,6 +325,15 @@ def generate_transcription(
         segments = model.generate(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
+
+    if verbose:
+        if hasattr(segments, "text"):
+            print("\033[94mTranscription:\033[0m\n")
+            print(f"{segments.text[:500]}...\n")
+
+        if hasattr(segments, "segments"):
+            print("\033[94mSegments:\033[0m\n")
+            pprint(segments.segments[:3] + ["..."])
 
     end_time = time.time()
 

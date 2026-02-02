@@ -131,12 +131,10 @@ class TestWhisperModel(unittest.TestCase):
 
     @patch("mlx_audio.stt.models.whisper.whisper.pad_or_trim")
     @patch("mlx_audio.stt.models.whisper.whisper.tqdm.tqdm")
-    @patch("mlx_audio.stt.models.whisper.whisper.get_tokenizer")
     @patch("mlx_audio.stt.models.whisper.whisper.log_mel_spectrogram")
     def test_generate_simple_case(
         self,
         mock_log_mel,
-        mock_get_tokenizer,
         mock_tqdm_tqdm,
         mock_pad_or_trim,
     ):
@@ -169,7 +167,6 @@ class TestWhisperModel(unittest.TestCase):
 
         mock_tokenizer_inst.decode.side_effect = actual_decode_side_effect
         mock_tokenizer_inst.encode.return_value = []
-        mock_get_tokenizer.return_value = mock_tokenizer_inst
 
         decoded_tokens_list = [100, 200, EOT_TOKEN_ID]
         mock_decoding_result = self.DecodingResult(
@@ -198,10 +195,15 @@ class TestWhisperModel(unittest.TestCase):
 
         real_model_for_test = self.Model(self.dims, dtype=mx.float32)
 
-        # Patch this specific instance's 'decode' method
-        with patch.object(
-            real_model_for_test, "decode", return_value=mock_decoding_result
-        ) as mock_instance_decode:
+        # Patch the model's get_tokenizer method and decode method
+        with (
+            patch.object(
+                real_model_for_test, "get_tokenizer", return_value=mock_tokenizer_inst
+            ) as mock_get_tokenizer,
+            patch.object(
+                real_model_for_test, "decode", return_value=mock_decoding_result
+            ) as mock_instance_decode,
+        ):
             output = real_model_for_test.generate(
                 dummy_audio_input,
                 language="en",
@@ -218,6 +220,11 @@ class TestWhisperModel(unittest.TestCase):
             self.assertIsInstance(args_decode_call[1], self.DecodingOptions)
             self.assertEqual(args_decode_call[1].language, "en")
             self.assertEqual(args_decode_call[1].fp16, False)
+
+            mock_get_tokenizer.assert_called_once_with(
+                language="en",
+                task="transcribe",
+            )
 
         self.assertIsInstance(output, self.STTOutput)
         self.assertEqual(output.language, "en")
@@ -246,12 +253,6 @@ class TestWhisperModel(unittest.TestCase):
             ANY, n_mels=self.dims.n_mels, padding=self.N_SAMPLES
         )
         np.testing.assert_array_equal(mock_log_mel.call_args[0][0], dummy_audio_input)
-        mock_get_tokenizer.assert_called_once_with(
-            real_model_for_test.is_multilingual,  # Reads from the instance
-            num_languages=real_model_for_test.num_languages,  # Reads from the instance
-            language="en",
-            task="transcribe",
-        )
         mock_pad_or_trim.assert_called_once()
         args_pad_call, _ = mock_pad_or_trim.call_args
         self.assertEqual(args_pad_call[0].shape, (100, self.dims.n_mels))
@@ -706,6 +707,651 @@ class TestGLMASRModel(unittest.TestCase):
         self.assertEqual(model.config.whisper_config.d_model, 256)
         self.assertEqual(model.config.lm_config.vocab_size, 1000)
         self.assertEqual(model.config.merge_factor, 4)
+
+
+class TestQwen3ASRConfig(unittest.TestCase):
+    """Tests for Qwen3-ASR configuration classes."""
+
+    def setUp(self):
+        from mlx_audio.stt.models.qwen3_asr.config import (
+            AudioEncoderConfig,
+            ModelConfig,
+            TextConfig,
+        )
+        from mlx_audio.stt.models.qwen3_asr.qwen3_forced_aligner import (
+            ForcedAlignerConfig,
+        )
+
+        self.AudioEncoderConfig = AudioEncoderConfig
+        self.TextConfig = TextConfig
+        self.ModelConfig = ModelConfig
+        self.ForcedAlignerConfig = ForcedAlignerConfig
+
+    def test_audio_encoder_config_default_values(self):
+        config = self.AudioEncoderConfig()
+        self.assertEqual(config.num_mel_bins, 128)
+        self.assertEqual(config.encoder_layers, 24)
+        self.assertEqual(config.d_model, 1024)
+
+    def test_audio_encoder_config_from_dict(self):
+        config_dict = {
+            "num_mel_bins": 80,
+            "encoder_layers": 12,
+            "d_model": 512,
+            "unknown_key": "should_be_ignored",
+        }
+        config = self.AudioEncoderConfig.from_dict(config_dict)
+
+        self.assertEqual(config.num_mel_bins, 80)
+        self.assertEqual(config.encoder_layers, 12)
+        self.assertEqual(config.d_model, 512)
+
+    def test_text_config_default_values(self):
+        config = self.TextConfig()
+        self.assertEqual(config.vocab_size, 151936)
+        self.assertEqual(config.hidden_size, 2048)
+        self.assertEqual(config.num_hidden_layers, 28)
+
+    def test_text_config_from_dict(self):
+        config_dict = {
+            "vocab_size": 32000,
+            "hidden_size": 1024,
+            "num_hidden_layers": 12,
+            "extra_field": True,
+        }
+        config = self.TextConfig.from_dict(config_dict)
+
+        self.assertEqual(config.vocab_size, 32000)
+        self.assertEqual(config.hidden_size, 1024)
+        self.assertEqual(config.num_hidden_layers, 12)
+
+    def test_model_config_default_nested_configs(self):
+        config = self.ModelConfig()
+        self.assertIsInstance(config.audio_config, self.AudioEncoderConfig)
+        self.assertIsInstance(config.text_config, self.TextConfig)
+
+    def test_model_config_from_dict_with_nested(self):
+        config_dict = {
+            "model_type": "qwen3_asr",
+            "audio_config": {
+                "num_mel_bins": 80,
+                "encoder_layers": 6,
+            },
+            "text_config": {
+                "vocab_size": 50000,
+                "hidden_size": 512,
+            },
+            "audio_token_id": 12345,
+        }
+        config = self.ModelConfig.from_dict(config_dict)
+
+        self.assertEqual(config.model_type, "qwen3_asr")
+        self.assertEqual(config.audio_token_id, 12345)
+        self.assertIsInstance(config.audio_config, self.AudioEncoderConfig)
+        self.assertEqual(config.audio_config.num_mel_bins, 80)
+        self.assertIsInstance(config.text_config, self.TextConfig)
+        self.assertEqual(config.text_config.vocab_size, 50000)
+
+    def test_model_config_from_dict_with_thinker_config(self):
+        """Test parsing HuggingFace-style config with thinker_config."""
+        config_dict = {
+            "thinker_config": {
+                "model_type": "qwen3_asr",
+                "audio_config": {"num_mel_bins": 128},
+                "text_config": {"vocab_size": 151936},
+                "audio_token_id": 151676,
+            }
+        }
+        config = self.ModelConfig.from_dict(config_dict)
+
+        self.assertIsInstance(config.audio_config, self.AudioEncoderConfig)
+        self.assertEqual(config.audio_config.num_mel_bins, 128)
+        self.assertEqual(config.audio_token_id, 151676)
+
+    def test_model_config_from_dict_detects_forced_aligner(self):
+        """Test that from_dict returns ForcedAlignerConfig for aligner models."""
+        config_dict = {
+            "thinker_config": {
+                "model_type": "qwen3_forced_aligner",
+                "audio_config": {"num_mel_bins": 128},
+                "text_config": {"vocab_size": 151936},
+            }
+        }
+        config = self.ModelConfig.from_dict(config_dict)
+
+        self.assertIsInstance(config, self.ForcedAlignerConfig)
+        self.assertEqual(config.model_type, "qwen3_forced_aligner")
+
+    def test_forced_aligner_config_default_values(self):
+        config = self.ForcedAlignerConfig()
+        self.assertEqual(config.model_type, "qwen3_forced_aligner")
+        self.assertEqual(config.timestamp_token_id, 151705)
+        self.assertEqual(config.timestamp_segment_time, 80.0)
+        self.assertEqual(config.classify_num, 5000)
+
+    def test_forced_aligner_config_from_dict(self):
+        config_dict = {
+            "thinker_config": {
+                "model_type": "qwen3_forced_aligner",
+                "audio_config": {"num_mel_bins": 80},
+                "text_config": {"vocab_size": 50000},
+                "classify_num": 3000,
+            },
+            "timestamp_token_id": 12345,
+            "timestamp_segment_time": 100.0,
+        }
+        config = self.ForcedAlignerConfig.from_dict(config_dict)
+
+        self.assertEqual(config.model_type, "qwen3_forced_aligner")
+        self.assertEqual(config.timestamp_token_id, 12345)
+        self.assertEqual(config.timestamp_segment_time, 100.0)
+        self.assertEqual(config.classify_num, 3000)
+
+
+class TestQwen3ASRForceAlignProcessor(unittest.TestCase):
+    """Tests for ForceAlignProcessor."""
+
+    def setUp(self):
+        from mlx_audio.stt.models.qwen3_asr.qwen3_forced_aligner import (
+            ForceAlignProcessor,
+        )
+
+        self.processor = ForceAlignProcessor()
+
+    def test_is_kept_char(self):
+        self.assertTrue(self.processor.is_kept_char("a"))
+        self.assertTrue(self.processor.is_kept_char("Z"))
+        self.assertTrue(self.processor.is_kept_char("5"))
+        self.assertTrue(self.processor.is_kept_char("'"))
+        self.assertFalse(self.processor.is_kept_char(" "))
+        self.assertFalse(self.processor.is_kept_char(","))
+        self.assertFalse(self.processor.is_kept_char("."))
+
+    def test_clean_token(self):
+        self.assertEqual(self.processor.clean_token("hello"), "hello")
+        self.assertEqual(self.processor.clean_token("hello!"), "hello")
+        self.assertEqual(self.processor.clean_token("it's"), "it's")
+        self.assertEqual(self.processor.clean_token("..."), "")
+
+    def test_is_cjk_char(self):
+        self.assertTrue(self.processor.is_cjk_char("中"))
+        self.assertTrue(self.processor.is_cjk_char("日"))
+        self.assertFalse(self.processor.is_cjk_char("a"))
+        self.assertFalse(self.processor.is_cjk_char("5"))
+
+    def test_tokenize_chinese_mixed(self):
+        tokens = self.processor.tokenize_chinese_mixed("Hello中文World")
+        self.assertEqual(tokens, ["Hello", "中", "文", "World"])
+
+    def test_tokenize_space_lang(self):
+        tokens = self.processor.tokenize_space_lang("Hello, World!")
+        self.assertEqual(tokens, ["Hello", "World"])
+
+        tokens = self.processor.tokenize_space_lang("I have a dream")
+        self.assertEqual(tokens, ["I", "have", "a", "dream"])
+
+    def test_encode_timestamp_english(self):
+        word_list, input_text = self.processor.encode_timestamp(
+            "Hello world", "English"
+        )
+
+        self.assertEqual(word_list, ["Hello", "world"])
+        self.assertIn("<timestamp>", input_text)
+        self.assertIn("<|audio_start|>", input_text)
+        self.assertIn("<|audio_end|>", input_text)
+
+    def test_encode_timestamp_chinese(self):
+        word_list, input_text = self.processor.encode_timestamp("你好", "Chinese")
+
+        self.assertEqual(word_list, ["你", "好"])
+        self.assertIn("<timestamp>", input_text)
+
+    def test_fix_timestamp_monotonic(self):
+        """Test that already monotonic timestamps are unchanged."""
+        data = np.array([100, 200, 300, 400])
+        fixed = self.processor.fix_timestamp(data)
+        self.assertEqual(fixed, [100, 200, 300, 400])
+
+    def test_fix_timestamp_non_monotonic(self):
+        """Test fixing non-monotonic timestamps."""
+        data = np.array([100, 200, 150, 400])  # 150 breaks monotonicity
+        fixed = self.processor.fix_timestamp(data)
+        # Should fix the anomaly
+        self.assertLessEqual(fixed[0], fixed[1])
+        self.assertLessEqual(fixed[1], fixed[2])
+        self.assertLessEqual(fixed[2], fixed[3])
+
+    def test_fix_timestamp_empty(self):
+        data = np.array([])
+        fixed = self.processor.fix_timestamp(data)
+        self.assertEqual(fixed, [])
+
+    def test_parse_timestamp(self):
+        word_list = ["Hello", "world"]
+        # 4 timestamps: start1, end1, start2, end2
+        timestamp = np.array([0, 500, 500, 1000])
+
+        result = self.processor.parse_timestamp(word_list, timestamp)
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0]["text"], "Hello")
+        self.assertEqual(result[0]["start_time"], 0)
+        self.assertEqual(result[0]["end_time"], 500)
+        self.assertEqual(result[1]["text"], "world")
+        self.assertEqual(result[1]["start_time"], 500)
+        self.assertEqual(result[1]["end_time"], 1000)
+
+
+class TestQwen3ASRForcedAlignResult(unittest.TestCase):
+    """Tests for ForcedAlignResult and ForcedAlignItem."""
+
+    def setUp(self):
+        from mlx_audio.stt.models.qwen3_asr.qwen3_forced_aligner import (
+            ForcedAlignItem,
+            ForcedAlignResult,
+        )
+
+        self.ForcedAlignItem = ForcedAlignItem
+        self.ForcedAlignResult = ForcedAlignResult
+
+    def test_forced_align_item(self):
+        item = self.ForcedAlignItem(text="hello", start_time=0.5, end_time=1.0)
+        self.assertEqual(item.text, "hello")
+        self.assertEqual(item.start_time, 0.5)
+        self.assertEqual(item.end_time, 1.0)
+
+    def test_forced_align_result_text_property(self):
+        items = [
+            self.ForcedAlignItem(text="Hello", start_time=0.0, end_time=0.5),
+            self.ForcedAlignItem(text="world", start_time=0.5, end_time=1.0),
+        ]
+        result = self.ForcedAlignResult(items=items)
+
+        self.assertEqual(result.text, "Hello world")
+
+    def test_forced_align_result_segments_property(self):
+        items = [
+            self.ForcedAlignItem(text="Hello", start_time=0.0, end_time=0.5),
+            self.ForcedAlignItem(text="world", start_time=0.5, end_time=1.0),
+        ]
+        result = self.ForcedAlignResult(items=items)
+
+        segments = result.segments
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0]["text"], "Hello")
+        self.assertEqual(segments[0]["start"], 0.0)
+        self.assertEqual(segments[0]["end"], 0.5)
+
+    def test_forced_align_result_iteration(self):
+        items = [
+            self.ForcedAlignItem(text="a", start_time=0.0, end_time=0.1),
+            self.ForcedAlignItem(text="b", start_time=0.1, end_time=0.2),
+        ]
+        result = self.ForcedAlignResult(items=items)
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].text, "a")
+        self.assertEqual(result[1].text, "b")
+
+        texts = [item.text for item in result]
+        self.assertEqual(texts, ["a", "b"])
+
+
+class TestQwen3ASRModel(unittest.TestCase):
+    """Tests for Qwen3-ASR model components."""
+
+    def setUp(self):
+        from mlx_audio.stt.models.qwen3_asr.config import (
+            AudioEncoderConfig,
+            ModelConfig,
+            TextConfig,
+        )
+        from mlx_audio.stt.models.qwen3_asr.qwen3_asr import (
+            AudioAttention,
+            AudioEncoder,
+            AudioEncoderLayer,
+            Model,
+            Qwen3ASRModel,
+            SinusoidalPositionEmbedding,
+            TextModel,
+            _get_feat_extract_output_lengths,
+            create_additive_causal_mask,
+            split_audio_into_chunks,
+        )
+        from mlx_audio.stt.models.qwen3_asr.qwen3_forced_aligner import (
+            ForcedAlignerConfig,
+            ForcedAlignerModel,
+        )
+
+        self.AudioEncoderConfig = AudioEncoderConfig
+        self.TextConfig = TextConfig
+        self.ModelConfig = ModelConfig
+        self.ForcedAlignerConfig = ForcedAlignerConfig
+        self.AudioAttention = AudioAttention
+        self.AudioEncoderLayer = AudioEncoderLayer
+        self.AudioEncoder = AudioEncoder
+        self.TextModel = TextModel
+        self.SinusoidalPositionEmbedding = SinusoidalPositionEmbedding
+        self.create_additive_causal_mask = create_additive_causal_mask
+        self._get_feat_extract_output_lengths = _get_feat_extract_output_lengths
+        self.split_audio_into_chunks = split_audio_into_chunks
+        self.Qwen3ASRModel = Qwen3ASRModel
+        self.ForcedAlignerModel = ForcedAlignerModel
+        self.Model = Model
+
+        # Small configs for fast testing
+        self.audio_config = AudioEncoderConfig(
+            num_mel_bins=80,
+            encoder_layers=2,
+            encoder_attention_heads=4,
+            encoder_ffn_dim=256,
+            d_model=64,
+            max_source_positions=100,
+            n_window=10,
+            output_dim=128,
+            n_window_infer=80,
+            conv_chunksize=50,
+            downsample_hidden_size=32,
+        )
+        self.text_config = TextConfig(
+            vocab_size=1000,
+            hidden_size=64,
+            intermediate_size=128,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            head_dim=16,
+            rms_norm_eps=1e-6,
+            rope_theta=10000.0,
+        )
+        self.model_config = ModelConfig(
+            audio_config=self.audio_config,
+            text_config=self.text_config,
+            audio_token_id=151676,
+        )
+        self.aligner_config = ForcedAlignerConfig(
+            audio_config=self.audio_config,
+            text_config=self.text_config,
+            audio_token_id=151676,
+            timestamp_token_id=151705,
+            timestamp_segment_time=80.0,
+            classify_num=500,
+        )
+
+    def test_sinusoidal_position_embedding_output_shape(self):
+        emb = self.SinusoidalPositionEmbedding(length=100, channels=64)
+        output = emb(50)
+        mx.eval(output)
+
+        self.assertEqual(output.shape, (50, 64))
+
+    def test_sinusoidal_position_embedding_even_channels_required(self):
+        with self.assertRaises(ValueError):
+            self.SinusoidalPositionEmbedding(length=100, channels=63)
+
+    def test_create_additive_causal_mask_shape(self):
+        mask = self.create_additive_causal_mask(10)
+        mx.eval(mask)
+        self.assertEqual(mask.shape, (10, 10))
+
+    def test_create_additive_causal_mask_is_causal(self):
+        mask = self.create_additive_causal_mask(4)
+        mx.eval(mask)
+        mask_np = np.array(mask)
+
+        # Upper triangle should be large negative (masked)
+        # Diagonal and below should be 0 (not masked)
+        self.assertEqual(mask_np[0, 0], 0)
+        self.assertLess(mask_np[0, 1], -1e8)
+        self.assertEqual(mask_np[1, 1], 0)
+
+    def test_get_feat_extract_output_lengths(self):
+        input_lengths = mx.array([100, 200, 300])
+        output_lengths = self._get_feat_extract_output_lengths(input_lengths)
+        mx.eval(output_lengths)
+
+        # Output should be shorter than input due to conv downsampling
+        self.assertEqual(output_lengths.shape, (3,))
+        for i in range(3):
+            self.assertLess(int(output_lengths[i]), int(input_lengths[i]))
+
+    def test_split_audio_into_chunks_single(self):
+        sr = 16000
+        wav = np.zeros(sr * 10)  # 10 seconds
+        chunks = self.split_audio_into_chunks(wav, sr, chunk_duration=30.0)
+
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0][1], 0.0)  # offset
+
+    def test_split_audio_into_chunks_multiple(self):
+        sr = 16000
+        wav = np.zeros(sr * 100)  # 100 seconds
+        chunks = self.split_audio_into_chunks(wav, sr, chunk_duration=30.0)
+
+        self.assertGreater(len(chunks), 1)
+
+        # Verify offsets are increasing
+        offsets = [c[1] for c in chunks]
+        for i in range(1, len(offsets)):
+            self.assertGreater(offsets[i], offsets[i - 1])
+
+    def test_audio_attention_output_shape(self):
+        attn = self.AudioAttention(self.audio_config)
+
+        x = mx.random.normal((1, 20, self.audio_config.d_model))
+        output = attn(x)
+        mx.eval(output)
+
+        self.assertEqual(output.shape, x.shape)
+
+    def test_audio_encoder_layer_output_shape(self):
+        layer = self.AudioEncoderLayer(self.audio_config)
+
+        x = mx.random.normal((1, 20, self.audio_config.d_model))
+        output = layer(x)
+        mx.eval(output)
+
+        self.assertEqual(output.shape, x.shape)
+
+    def test_text_model_forward_with_input_ids(self):
+        model = self.TextModel(self.text_config)
+
+        input_ids = mx.array([[1, 2, 3, 4, 5]])
+        output = model(input_ids=input_ids)
+        mx.eval(output)
+
+        self.assertEqual(output.shape, (1, 5, self.text_config.hidden_size))
+
+    def test_text_model_forward_with_embeddings(self):
+        model = self.TextModel(self.text_config)
+
+        inputs_embeds = mx.random.normal((1, 5, self.text_config.hidden_size))
+        output = model(inputs_embeds=inputs_embeds)
+        mx.eval(output)
+
+        self.assertEqual(output.shape, (1, 5, self.text_config.hidden_size))
+
+    def test_qwen3_asr_model_init(self):
+        model = self.Qwen3ASRModel(self.model_config)
+
+        self.assertIsInstance(model.audio_tower, self.AudioEncoder)
+        self.assertIsInstance(model.model, self.TextModel)
+
+    def test_qwen3_asr_model_forward_logits_shape(self):
+        model = self.Qwen3ASRModel(self.model_config)
+
+        input_ids = mx.array([[1, 2, 3, 4, 5]])
+        logits = model(input_ids)
+        mx.eval(logits)
+
+        self.assertEqual(logits.shape, (1, 5, self.text_config.vocab_size))
+
+    def test_qwen3_asr_model_sample_rate(self):
+        model = self.Qwen3ASRModel(self.model_config)
+        self.assertEqual(model.sample_rate, 16000)
+
+    def test_qwen3_asr_model_sanitize_removes_thinker_prefix(self):
+        weights = {
+            "thinker.audio_tower.conv2d1.weight": mx.zeros((32, 3, 3, 1)),
+            "thinker.model.embed_tokens.weight": mx.zeros((1000, 64)),
+        }
+        sanitized = self.Qwen3ASRModel.sanitize(weights)
+
+        self.assertIn("audio_tower.conv2d1.weight", sanitized)
+        self.assertIn("model.embed_tokens.weight", sanitized)
+        self.assertNotIn("thinker.audio_tower.conv2d1.weight", sanitized)
+
+    def test_qwen3_asr_model_sanitize_transposes_conv_weights(self):
+        # PyTorch format: [out, in, h, w] -> MLX format: [out, h, w, in]
+        weights = {
+            "thinker.audio_tower.conv2d1.weight": mx.zeros((32, 1, 3, 3)),
+        }
+        sanitized = self.Qwen3ASRModel.sanitize(weights)
+
+        self.assertEqual(sanitized["audio_tower.conv2d1.weight"].shape, (32, 3, 3, 1))
+
+    def test_qwen3_asr_model_sanitize_skips_lm_head(self):
+        weights = {
+            "lm_head.weight": mx.zeros((1000, 64)),
+            "thinker.model.norm.weight": mx.zeros((64,)),
+        }
+        sanitized = self.Qwen3ASRModel.sanitize(weights)
+
+        self.assertNotIn("lm_head.weight", sanitized)
+        self.assertIn("model.norm.weight", sanitized)
+
+    def test_qwen3_asr_model_quant_predicate(self):
+        model = self.Qwen3ASRModel(self.model_config)
+
+        # Audio tower should not be quantized
+        self.assertFalse(model.model_quant_predicate("audio_tower.conv2d1", None))
+        # Text model should be quantized
+        self.assertTrue(model.model_quant_predicate("model.layers.0.self_attn", None))
+
+    def test_forced_aligner_model_init(self):
+        model = self.ForcedAlignerModel(self.aligner_config)
+
+        self.assertIsInstance(model.audio_tower, self.AudioEncoder)
+        self.assertIsInstance(model.model, self.TextModel)
+        self.assertIsNotNone(model.lm_head)
+
+    def test_forced_aligner_model_lm_head_output_size(self):
+        """Test that lm_head outputs classify_num, not vocab_size."""
+        model = self.ForcedAlignerModel(self.aligner_config)
+
+        # lm_head should output classify_num classes
+        self.assertEqual(
+            model.lm_head.weight.shape[0], self.aligner_config.classify_num
+        )
+
+    def test_forced_aligner_model_forward_logits_shape(self):
+        model = self.ForcedAlignerModel(self.aligner_config)
+
+        input_ids = mx.array([[1, 2, 3, 4, 5]])
+        logits = model(input_ids)
+        mx.eval(logits)
+
+        # Output should be [batch, seq_len, classify_num]
+        self.assertEqual(logits.shape, (1, 5, self.aligner_config.classify_num))
+
+    def test_forced_aligner_model_sanitize_keeps_lm_head(self):
+        """Test that ForcedAligner sanitize keeps lm_head (unlike ASR)."""
+        weights = {
+            "thinker.lm_head.weight": mx.zeros((500, 64)),
+            "thinker.model.norm.weight": mx.zeros((64,)),
+        }
+        sanitized = self.ForcedAlignerModel.sanitize(weights)
+
+        self.assertIn("lm_head.weight", sanitized)
+        self.assertIn("model.norm.weight", sanitized)
+
+    def test_model_wrapper_creates_asr_model_for_asr_config(self):
+        model = self.Model(self.model_config)
+
+        self.assertIsInstance(model._model, self.Qwen3ASRModel)
+
+    def test_model_wrapper_creates_aligner_model_for_aligner_config(self):
+        model = self.Model(self.aligner_config)
+
+        self.assertIsInstance(model._model, self.ForcedAlignerModel)
+
+    def test_model_wrapper_delegation(self):
+        model = self.Model(self.model_config)
+
+        # Test that attributes are delegated
+        self.assertEqual(model.sample_rate, 16000)
+        self.assertEqual(len(model.layers), self.text_config.num_hidden_layers)
+
+    def test_model_wrapper_call_delegation(self):
+        model = self.Model(self.model_config)
+
+        input_ids = mx.array([[1, 2, 3, 4, 5]])
+        logits = model(input_ids)
+        mx.eval(logits)
+
+        self.assertEqual(logits.shape, (1, 5, self.text_config.vocab_size))
+
+    def test_model_wrapper_is_forced_aligner_weights(self):
+        # Small lm_head output (with thinker prefix) = ForcedAligner
+        self.assertTrue(
+            self.Model._is_forced_aligner_weights(
+                {
+                    "thinker.lm_head.weight": mx.zeros((5000, 64)),
+                }
+            )
+        )
+
+        # Small lm_head output (without prefix, converted models) = ForcedAligner
+        self.assertTrue(
+            self.Model._is_forced_aligner_weights(
+                {
+                    "lm_head.weight": mx.zeros((5000, 64)),
+                }
+            )
+        )
+
+        # Large lm_head output = ASR (vocab_size)
+        self.assertFalse(
+            self.Model._is_forced_aligner_weights(
+                {
+                    "thinker.lm_head.weight": mx.zeros((151936, 64)),
+                }
+            )
+        )
+        self.assertFalse(
+            self.Model._is_forced_aligner_weights(
+                {
+                    "lm_head.weight": mx.zeros((151936, 64)),
+                }
+            )
+        )
+
+        # No lm_head = not aligner
+        self.assertFalse(
+            self.Model._is_forced_aligner_weights(
+                {
+                    "thinker.model.norm.weight": mx.zeros((64,)),
+                }
+            )
+        )
+
+    def test_model_wrapper_sanitize_uses_correct_method(self):
+        # For ASR weights (large lm_head)
+        asr_weights = {
+            "thinker.lm_head.weight": mx.zeros((151936, 64)),
+            "lm_head.weight": mx.zeros((151936, 64)),
+        }
+        sanitized = self.Model.sanitize(asr_weights)
+        # ASR sanitize should skip lm_head
+        self.assertNotIn("lm_head.weight", sanitized)
+
+        # For ForcedAligner weights (small lm_head)
+        aligner_weights = {
+            "thinker.lm_head.weight": mx.zeros((5000, 64)),
+        }
+        sanitized = self.Model.sanitize(aligner_weights)
+        # ForcedAligner sanitize should keep lm_head
+        self.assertIn("lm_head.weight", sanitized)
 
 
 if __name__ == "__main__":

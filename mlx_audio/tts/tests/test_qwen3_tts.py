@@ -166,22 +166,19 @@ class TestMelSpectrogram(unittest.TestCase):
         np.random.seed(42)
         return np.random.randn(12000).astype(np.float32)
 
-    def test_output_shape_with_center_padding(self):
-        """Test that center=True reflect padding produces 47 frames for 12000 samples.
-
-        Without center padding, shape would be (43, 128).
-        """
+    def test_output_shape_with_padding(self):
+        """Test that manual padding + center=False produces 46 frames for 12000 samples."""
         audio = mx.array(self._get_random_audio())
         mel = mel_spectrogram(audio)
 
-        # center=True: frames = 1 + 12000 // 256 = 47
-        # center=False: frames = 1 + (12000 - 1024) // 256 = 43
+        # manual 384 pad + center=False
+        # padded_len = 12000 + 2*384 = 12768
+        # frames = 1 + (12768 - 1024) // 256 = 46
         self.assertEqual(
             mel.shape,
-            (1, 47, 128),
-            "mel_spectrogram must use center=True with pad_mode='reflect' in stft(). "
-            f"Got shape {tuple(mel.shape)}, expected (1, 47, 128). "
-            "Shape (1, 43, 128) indicates center=False (no reflect padding).",
+            (1, 46, 128),
+            "mel_spectrogram must use manual padding without center padding"
+            f"Got shape {tuple(mel.shape)}, expected (1, 46, 128).",
         )
 
     def test_slaney_norm_values(self):
@@ -199,13 +196,13 @@ class TestMelSpectrogram(unittest.TestCase):
             mel_np.mean(),
             1.0,
             "mel_spectrogram must use norm='slaney' in mel_filters(). "
-            f"Got mean={mel_np.mean():.2f}, expected ~-0.38. "
+            f"Got mean={mel_np.mean():.2f}, expected ~-0.37. "
             "Values > 1.0 indicate norm=None is being used.",
         )
 
-        # Reference values from correct implementation (slaney norm + slaney scale)
+        # Reference values from official Qwen3-TTS (slaney norm + slaney scale)
         expected_frame0 = np.array(
-            [-0.1718094, 0.15733694, -0.13525493, -0.46217415, -0.6127054, -0.8648044]
+            [-0.21803714, 0.06630915, -0.31858957, -0.02480409, -0.4512914, -0.5911693]
         )
         actual_frame0 = mel_np[0, [0, 1, 2, 63, 126, 127]]
         np.testing.assert_allclose(
@@ -221,26 +218,26 @@ class TestMelSpectrogram(unittest.TestCase):
         """Test that slaney mel scale is used (not htk).
 
         HTK scale distributes mel bins differently, producing different values.
-        With slaney scale, frame 0 bin 0 ≈ -0.17. With htk, it's ≈ -0.53.
+        With slaney scale, frame 0 bin 0 ≈ -0.22. With htk, it's ≈ -0.53.
         """
         audio = mx.array(self._get_random_audio())
         mel = mel_spectrogram(audio)
         mel_np = np.array(mel)[0]
 
         # With htk scale, low-frequency bins shift significantly
-        # slaney: frame[0][0] ≈ -0.17, htk: frame[0][0] ≈ -0.53
+        # slaney: frame[0][0] ≈ -0.22, htk: frame[0][0] ≈ -0.53
         self.assertAlmostEqual(
             float(mel_np[0, 0]),
-            -0.1718094,
+            -0.21803714,
             places=2,
             msg="mel_spectrogram must use mel_scale='slaney' in mel_filters(). "
-            f"Got frame[0][bin 0]={mel_np[0, 0]:.4f}, expected ≈-0.17. "
+            f"Got frame[0][bin 0]={mel_np[0, 0]:.4f}, expected ≈-0.22. "
             "A value of ≈-0.53 indicates mel_scale='htk' is being used.",
         )
 
         # Frame 23, selected bins - these values are specific to slaney scale
         expected_frame23 = np.array(
-            [0.3720523, 0.5459519, 0.3408965, -1.2865363, -0.15842676, 0.08776959]
+            [0.08127937, 0.4368576, 0.43200976, -0.7714137, -0.24601418, 0.04274124]
         )
         actual_frame23 = mel_np[23, [0, 1, 2, 63, 126, 127]]
         np.testing.assert_allclose(
@@ -255,8 +252,8 @@ class TestMelSpectrogram(unittest.TestCase):
     def test_reflect_padding_values(self):
         """Test that reflect padding produces correct boundary frame values.
 
-        Without center padding (or with zero padding), the first and last frames
-        would have different values because the signal edges are handled differently.
+        Without reflect padding, the first and last frames would have different
+        values because the signal edges are handled differently.
         """
         audio = mx.array(self._get_random_audio())
         mel = mel_spectrogram(audio)
@@ -264,7 +261,7 @@ class TestMelSpectrogram(unittest.TestCase):
 
         # Last frame values - sensitive to padding mode
         expected_last = np.array(
-            [0.08294445, -0.2731757, -1.2056407, 0.02365615, -0.19006161, -0.22340798]
+            [-0.16861804, 0.0474052, -0.3970174, -0.01738772, -0.28846806, -0.10941511]
         )
         actual_last = mel_np[-1, [0, 1, 2, 63, 126, 127]]
         np.testing.assert_allclose(
@@ -272,7 +269,7 @@ class TestMelSpectrogram(unittest.TestCase):
             expected_last,
             rtol=1e-4,
             atol=1e-4,
-            err_msg="mel_spectrogram must use center=True with pad_mode='reflect' in stft(). "
+            err_msg="mel_spectrogram must use reflect padding. "
             "Boundary frames are sensitive to the padding mode used before STFT.",
         )
 
@@ -290,14 +287,14 @@ class TestMelSpectrogram(unittest.TestCase):
         # Frame 0 values for a 1kHz sine - specific to slaney scale + slaney norm
         expected = np.array(
             [
-                -1.1384244,
-                -1.1363567,
-                -1.132781,
-                -1.0499662,
-                -0.7695817,
-                -2.2247958,
-                -5.1744475,
-                -5.180426,
+                -1.2959518,
+                -1.2937515,
+                -1.2902284,
+                -1.2074544,
+                -0.9268621,
+                -2.3822036,
+                -5.331841,
+                -5.33782,
             ]
         )
         actual = mel_np[0, [0, 1, 2, 10, 20, 63, 126, 127]]
@@ -319,17 +316,16 @@ class TestMelSpectrogram(unittest.TestCase):
 
         np.testing.assert_allclose(
             mel_np.mean(),
-            -0.37611714,
+            -0.37329558,
             rtol=1e-3,
-            err_msg="mel_spectrogram output mean should be ~-0.38 with correct params "
-            "(norm='slaney', mel_scale='slaney', center=True, pad_mode='reflect'). "
+            err_msg="mel_spectrogram output mean should be ~-0.37 with correct params. "
             f"Got mean={mel_np.mean():.4f}. A positive mean (~2.5) indicates norm=None.",
         )
         np.testing.assert_allclose(
             mel_np.std(),
-            0.38009942,
+            0.37445435,
             rtol=1e-3,
-            err_msg="mel_spectrogram output std should be ~0.38 with correct params. "
+            err_msg="mel_spectrogram output std should be ~0.37 with correct params. "
             f"Got std={mel_np.std():.4f}.",
         )
 
