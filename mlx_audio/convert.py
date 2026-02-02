@@ -321,20 +321,34 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     model_type = config.get("model_type", "").lower()
     model_name = config.get("name", "").lower()
 
-    # Path pattern matching
-    match = _match_by_path(model_path)
-    if match and match[0] == domain:
-        return match[1]
-
     # Direct match via config (model_type takes precedence)
     for candidate in [model_type, model_name]:
         if candidate and candidate in get_model_types(domain):
             return candidate
 
-    # Try config key matching within domain 
-    match = _match_by_config_keys(config)
-    if match and match[0] == domain:
-        return match[1]
+    # Try config key matching within domain
+    hints = get_detection_hints(domain)
+    config_keys = set(config.keys())
+
+    best_match = None
+    best_score = 0
+
+    for mt, model_keys in hints.get("config_keys", {}).items():
+        if model_keys:
+            intersection = config_keys & model_keys
+            score = len(intersection) / len(model_keys)
+            if score > best_score:
+                best_score = score
+                best_match = mt
+
+    if best_match and best_score > 0.3:
+        return best_match
+
+    # Try path matching within domain
+    path_str = str(model_path).lower()
+    for mt, patterns in hints.get("path_patterns", {}).items():
+        if any(pattern in path_str for pattern in patterns):
+            return mt
 
     # Fallback: return first available model type or "unknown"
     model_types = get_model_types(domain)
@@ -456,7 +470,6 @@ def copy_model_files(source: Path, dest: Path):
         "*.txt",
         "*.wav",
         "*.pt",
-        "*.pth",
         "*.safetensors",
     ]
 

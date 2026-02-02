@@ -62,6 +62,7 @@ class SopranoDecoder(nn.Module):
         n_fft: int = 2048,
         upscale: int = 4,
         dw_kernel: int = 3,
+        input_kernel_size: int = 3,
     ):
         super().__init__()
         self.decoder_initial_channels = num_input_channels
@@ -80,7 +81,7 @@ class SopranoDecoder(nn.Module):
             dim=self.dim,
             intermediate_dim=self.intermediate_dim,
             num_layers=self.num_layers,
-            input_kernel_size=1,
+            input_kernel_size=input_kernel_size,
             dw_kernel_size=dw_kernel,
         )
         self.head = ISTFTHead(

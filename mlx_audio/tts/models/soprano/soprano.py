@@ -3,75 +3,51 @@
 
 import re
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Tuple
+from typing import Generator, List, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
 from mlx_lm.models.qwen3 import Qwen3Model
 from mlx_lm.sample_utils import make_sampler
 from transformers import AutoTokenizer
 
-from ..base import BaseModelArgs, GenerationResult
+from ..base import GenerationResult
+from .config import ModelConfig
 from .decoder import SopranoDecoder
 from .text import clean_text
 
 
-DETECTION_HINTS = {
-    "config_keys": ["decoder_config"],
-    "path_patterns": ["soprano"],
-}
-
-
-@dataclass
-class DecoderConfig(BaseModelArgs):
-    """Configuration for Soprano decoder."""
-
-    # Decoder config
-    decoder_num_layers: int = 8
-    decoder_dim: int = 768
-    decoder_intermediate_dim: int = 2304
-    hop_length: int = 512
-    n_fft: int = 2048
-    upscale: int = 4
-    dw_kernel: int = 3
-
-    token_size: int = 2048  # Samples per audio token
-    receptive_field: int = 4  # Decoder receptive fiel
-
-
-@dataclass
-class ModelConfig(Qwen3ModelConfig):
-    sample_rate: int = 32000
-    decoder_config: DecoderConfig = None
-    model_path: Optional[str] = None
-
-    def __post_init__(self):
-        if self.decoder_config is None:
-            self.decoder_config = DecoderConfig()
-        elif isinstance(self.decoder_config, dict):
-            self.decoder_config = DecoderConfig.from_dict(self.decoder_config)
-
-
-class SopranoModel(Qwen3Model):
+class SopranoModel(nn.Module):
     def __init__(self, config: ModelConfig):
-        super().__init__(config)
+        super().__init__()
         self.config = config
+        self.model = Qwen3Model(config)
         if not config.tie_word_embeddings:
             self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
 
     def __call__(self, input_ids: mx.array, cache=None) -> mx.array:
-        out = super().__call__(input_ids, cache)
+        out = self.model(input_ids, cache)
         if self.config.tie_word_embeddings:
-            out = self.embed_tokens.as_linear(out)
+            out = self.model.embed_tokens.as_linear(out)
         else:
             out = self.lm_head(out)
         return out
+
+    @property
+    def layers(self):
+        return self.model.layers
+
+    @property
+    def embed_tokens(self):
+        return self.model.embed_tokens
+
+    @property
+    def norm(self):
+        return self.model.norm
 
 
 class Model(nn.Module):
@@ -102,6 +78,7 @@ class Model(nn.Module):
             n_fft=self.config.decoder_config.n_fft,
             upscale=self.config.decoder_config.upscale,
             dw_kernel=self.config.decoder_config.dw_kernel,
+            input_kernel_size=self.config.decoder_config.input_kernel_size,
         )
 
     def post_load_hook(self, model_path: Path) -> "Model":
@@ -151,8 +128,6 @@ class Model(nn.Module):
                 )
             )
 
-        # Load tokenizer
-
         # Load config
         import json
 
@@ -178,26 +153,56 @@ class Model(nn.Module):
         return model
 
     def sanitize(self, weights: dict) -> dict:
-        # 1. Load and merge decoder weights if model_path is provided
         m_path = getattr(self.config, "model_path", None)
-        if m_path and (Path(m_path) / "decoder.pth").exists():
+        d_path = getattr(self.config.decoder_config, "decoder_path", "decoder.pth")
+
+        # Load auxiliary decoder weights if present
+        if m_path and (Path(m_path) / d_path).exists():
             import torch
-            decoder_path = Path(m_path) / "decoder.pth"
+
+            decoder_path = Path(m_path) / d_path
             print(f"[INFO] Loading decoder weights from {decoder_path}")
+
             for k, v in torch.load(decoder_path, map_location="cpu").items():
-                if "window" in k: continue
+                if "window" in k:
+                    continue
                 v = mx.array(v.numpy().astype("float32"))
+                # Align torch Conv1d (B, C, L) weights with MLX Conv1d (B, L, C)
                 if "weight" in k and ("embed" in k or "dwconv" in k):
                     v = v.transpose(0, 2, 1)
+
                 weights[f"decoder.{k}"] = v
 
-        # 2. Map all keys to MLX structure: 'model.' -> 'language_model.'
-        return {
-            (k.replace("model.", "language_model.") if k.startswith("model.") else
-             f"language_model.{k}" if k.startswith("lm_head.") else k):
-            (v.astype(mx.float32) if k.startswith("decoder.") and v.dtype != mx.uint32 else v)
-            for k, v in weights.items() if "window" not in k
-        }
+        sanitized = {}
+        for k, v in weights.items():
+            if "window" in k:
+                continue
+
+            # Map weights to unified structure: LLM under 'language_model' and Vocos under 'decoder'
+            if k.startswith("model."):
+                new_key = f"language_model.{k}"
+            elif k.startswith("lm_head."):
+                new_key = f"language_model.{k}"
+            elif k.startswith("decoder."):
+                new_key = k
+            elif k.startswith("language_model."):
+                new_key = k
+            elif any(x in k for x in ["embed_tokens", "layers.", "norm.", "lm_head"]):
+                # Handle weights saved without 'model.' prefix in some HF repos
+                if "lm_head" in k:
+                    new_key = f"language_model.{k}"
+                else:
+                    new_key = f"language_model.model.{k}"
+            else:
+                new_key = k
+
+            # Decoder weights must be float32 for DSP operations (ISTFT)
+            if new_key.startswith("decoder.") and v.dtype != mx.uint32:
+                v = v.astype(mx.float32)
+
+            sanitized[new_key] = v
+
+        return sanitized
 
     @property
     def sample_rate(self):
