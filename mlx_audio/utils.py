@@ -174,11 +174,12 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
         raise FileNotFoundError(f"Config not found at {model_path}")
 
 
-def load_weights(model_path: Path) -> dict:
+def load_weights(model_path: Path, weights_subdir: str = None) -> dict:
     """Load model weights from safetensors or npz files.
 
     Args:
         model_path: Path to the model directory
+        weights_subdir: Optional subdirectory containing weights
 
     Returns:
         dict: Dictionary of weight name -> array
@@ -186,11 +187,24 @@ def load_weights(model_path: Path) -> dict:
     Raises:
         FileNotFoundError: If no weight files found
     """
+    search_path = model_path / weights_subdir if weights_subdir else model_path
+
     # Try safetensors first, then npz
-    weight_files = glob.glob(str(model_path / "*.safetensors"))
+    weight_files = glob.glob(str(search_path / "*.safetensors"))
 
     if not weight_files:
-        weight_files = glob.glob(str(model_path / "*.npz"))
+        weight_files = glob.glob(str(search_path / "*.npz"))
+
+    # If no weights found, try common subdirectories
+    if not weight_files:
+        for subdir in ["model", "weights", "checkpoint"]:
+            subdir_path = model_path / subdir
+            if subdir_path.exists():
+                weight_files = glob.glob(str(subdir_path / "*.safetensors"))
+                if not weight_files:
+                    weight_files = glob.glob(str(subdir_path / "*.npz"))
+                if weight_files:
+                    break
 
     if not weight_files:
         raise FileNotFoundError(
@@ -275,24 +289,25 @@ def get_model_class(
     # Stage 1: Check if the model type is in the remapping
     model_type_mapped = model_remapping.get(model_type, None)
 
-    # Stage 2: Check for partial matches in segments of the model name
-    # Only do this if the initial mapping didn't find a match
-    models_dir = Path(__file__).parent / category / "models"
-    available_models = []
-    if models_dir.exists() and models_dir.is_dir():
-        for item in models_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("__"):
-                available_models.append(item.name)
+    # Stage 2: Apply remapping if found, otherwise check model_name for hints
+    if model_type_mapped is not None:
+        model_type = model_type_mapped
+    elif model_name is not None:
+        # Check for partial matches in segments of the model name
+        models_dir = Path(__file__).parent / category / "models"
+        available_models = []
+        if models_dir.exists() and models_dir.is_dir():
+            for item in models_dir.iterdir():
+                if item.is_dir() and not item.name.startswith("__"):
+                    available_models.append(item.name)
 
-    if model_name is not None and model_type_mapped != model_type:
         for part in model_name:
             if part in available_models:
                 model_type = part
+                break
             if part in model_remapping:
                 model_type = model_remapping[part]
                 break
-    elif model_type_mapped is not None:
-        model_type = model_type_mapped
 
     try:
         module_path = f"mlx_audio.{category}.models.{model_type}"
@@ -371,6 +386,11 @@ def base_load_model(
         model_remapping=model_remapping,
     )
 
+    # If the model class has a from_pretrained method, use it
+    # This handles models with non-standard directory structures
+    if hasattr(model_class.Model, "from_pretrained"):
+        return model_class.Model.from_pretrained(str(model_path))
+
     # Get model config from model class if it exists, otherwise use the config
     model_config = (
         model_class.ModelConfig.from_dict(config)
@@ -379,8 +399,9 @@ def base_load_model(
     )
     model = model_class.Model(model_config)
 
-    # Load weights
-    weights = load_weights(model_path)
+    # Load weights - check for weights_subdir in config
+    weights_subdir = config.get("weights_subdir", None)
+    weights = load_weights(model_path, weights_subdir)
 
     # Sanitize weights if the model has a sanitize method
     if hasattr(model, "sanitize"):
