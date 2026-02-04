@@ -1,7 +1,7 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -217,7 +217,108 @@ class ResidualUnit(nn.Module):
         y = self.conv1(y)
         y = self.snake2(y)
         y = self.conv2(y)
+        # Handle potential padding mismatch
+        padding = (x.shape[-1] - y.shape[-1]) // 2
+        if padding > 0:
+            x = x[..., padding:-padding]
         return x + y
+
+
+class EncoderBlock(nn.Module):
+    """Encoder block for Oobleck VAE."""
+
+    def __init__(self, in_channels: int, out_channels: int, stride: int):
+        super().__init__()
+        self.res_unit1 = ResidualUnit(in_channels, dilation=1)
+        self.res_unit2 = ResidualUnit(in_channels, dilation=3)
+        self.res_unit3 = ResidualUnit(in_channels, dilation=9)
+        self.snake1 = Snake1d(in_channels)
+        self.conv1 = WeightNormConv1d(
+            in_channels,
+            out_channels,
+            kernel_size=stride * 2,
+            stride=stride,
+            padding=math.ceil(stride / 2),
+        )
+
+    def __call__(self, x: mx.array) -> mx.array:
+        x = self.res_unit1(x)
+        x = self.res_unit2(x)
+        x = self.res_unit3(x)
+        x = self.snake1(x)
+        x = self.conv1(x)
+        return x
+
+
+class OobleckEncoder(nn.Module):
+    """Oobleck VAE Encoder for encoding audio to latents.
+
+    The encoder outputs 2*latent_dim channels representing mean and scale
+    of a diagonal Gaussian distribution.
+    """
+
+    def __init__(
+        self,
+        audio_channels: int = 2,
+        channels: int = 128,
+        latent_channels: int = 128,  # Output channels (mean + scale)
+        channel_multiples: List[int] = None,
+        downsampling_ratios: List[int] = None,
+    ):
+        super().__init__()
+
+        if channel_multiples is None:
+            channel_multiples = [1, 2, 4, 8, 16]
+        if downsampling_ratios is None:
+            downsampling_ratios = [2, 4, 4, 6, 10]
+
+        self.audio_channels = audio_channels
+        self.channels = channels
+        self.latent_channels = latent_channels
+
+        # Input convolution
+        self.conv1 = WeightNormConv1d(
+            audio_channels, channels, kernel_size=7, padding=3
+        )
+
+        # Encoder blocks
+        channel_multiples_with_1 = [1] + channel_multiples
+        self.block = []
+        for i, stride in enumerate(downsampling_ratios):
+            in_ch = channels * channel_multiples_with_1[i]
+            out_ch = channels * channel_multiples_with_1[i + 1]
+            self.block.append(EncoderBlock(in_ch, out_ch, stride))
+
+        # Output layers - output encoder_hidden_size channels (mean + scale)
+        d_model = channels * channel_multiples[-1]
+        self.snake1 = Snake1d(d_model)
+        self.conv2 = WeightNormConv1d(
+            d_model, latent_channels, kernel_size=3, padding=1
+        )
+
+    def __call__(self, x: mx.array) -> mx.array:
+        """Encode audio to latent parameters (mean and scale).
+
+        Args:
+            x: Audio tensor of shape [batch, channels, samples] or [batch, samples, channels]
+
+        Returns:
+            Latent parameters of shape [batch, latent_channels, time]
+            where latent_channels = 2 * latent_dim (mean + scale)
+        """
+        # Ensure channels-first format
+        if x.shape[-1] == self.audio_channels:
+            x = x.transpose(0, 2, 1)  # [batch, samples, ch] -> [batch, ch, samples]
+
+        x = self.conv1(x)
+
+        for block in self.block:
+            x = block(x)
+
+        x = self.snake1(x)
+        x = self.conv2(x)
+
+        return x
 
 
 class DecoderBlock(nn.Module):
@@ -343,8 +444,21 @@ class AutoencoderOobleck(nn.Module):
 
         self.sampling_rate = sampling_rate
         self.hop_length = math.prod(downsampling_ratios)
+        self.audio_channels = audio_channels
+        self.latent_channels = decoder_input_channels
+        self.encoder_hidden_size = encoder_hidden_size
 
-        # Only decoder for inference
+        # Encoder for audio-to-latent conversion
+        # Output encoder_hidden_size channels (mean + scale = 2 * latent_dim)
+        self.encoder = OobleckEncoder(
+            audio_channels=audio_channels,
+            channels=decoder_channels,  # Match decoder's internal channel width
+            latent_channels=encoder_hidden_size,  # 128 = 64 mean + 64 scale
+            channel_multiples=channel_multiples,
+            downsampling_ratios=downsampling_ratios,
+        )
+
+        # Decoder for latent-to-audio conversion
         self.decoder = OobleckDecoder(
             input_channels=decoder_input_channels,
             channels=decoder_channels,
@@ -353,8 +467,48 @@ class AutoencoderOobleck(nn.Module):
             downsampling_ratios=downsampling_ratios,
         )
 
-    def decode(self, latents: mx.array) -> mx.array:
+    def encode(self, audio: mx.array, sample: bool = True) -> mx.array:
+        """Encode audio to latent representation.
 
+        The encoder outputs a diagonal Gaussian distribution (mean + log_scale).
+        By default, this returns the mean (deterministic sampling).
+
+        Args:
+            audio: Audio tensor of shape [batch, channels, samples]
+                   or [batch, samples, channels]
+            sample: If True, return mean (deterministic). If False, return
+                    both mean and scale as a tuple.
+
+        Returns:
+            Latent tensor of shape [batch, time, latent_dim] (if sample=True)
+            or tuple of (mean, scale) tensors (if sample=False)
+        """
+        # Encode to latent parameters: [batch, encoder_hidden_size, time]
+        latent_params = self.encoder(audio)
+
+        # Split into mean and log_scale (each latent_channels/2 = 64 dimensions)
+        # Shape: [batch, 128, time] -> [batch, 64, time] + [batch, 64, time]
+        mean, log_scale = mx.split(latent_params, 2, axis=1)
+
+        if sample:
+            # Return mean (deterministic sampling, equivalent to mode)
+            # Transpose to [batch, time, latent_dim] for consistency
+            return mean.transpose(0, 2, 1)
+        else:
+            # Return distribution parameters
+            scale = mx.exp(log_scale)
+            return mean.transpose(0, 2, 1), scale.transpose(0, 2, 1)
+
+    def decode(self, latents: mx.array) -> mx.array:
+        """Decode latents to audio.
+
+        Args:
+            latents: Latent tensor of shape [batch, time, latent_dim]
+                     or [batch, latent_dim, time]
+
+        Returns:
+            Audio tensor of shape [batch, channels, samples]
+        """
         return self.decoder(latents)
 
     @staticmethod
@@ -385,8 +539,21 @@ class AutoencoderOobleck(nn.Module):
         """Load weights into the model."""
         from mlx.utils import tree_unflatten
 
-        # Filter to decoder-only weights
-        decoder_weights = {k: v for k, v in weights.items() if k.startswith("decoder.")}
-        decoder_weights = self.sanitize(decoder_weights)
-        nested = tree_unflatten(list(decoder_weights.items()))
-        self.update(nested)
+        # Sanitize all weights
+        sanitized_weights = self.sanitize(weights)
+
+        # Load decoder weights
+        decoder_weights = {
+            k: v for k, v in sanitized_weights.items() if k.startswith("decoder.")
+        }
+        if decoder_weights:
+            nested = tree_unflatten(list(decoder_weights.items()))
+            self.update(nested)
+
+        # Load encoder weights if available
+        encoder_weights = {
+            k: v for k, v in sanitized_weights.items() if k.startswith("encoder.")
+        }
+        if encoder_weights:
+            nested = tree_unflatten(list(encoder_weights.items()))
+            self.update(nested)
