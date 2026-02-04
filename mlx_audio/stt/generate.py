@@ -335,7 +335,9 @@ def generate_transcription(
             total_tokens=prompt_tokens + generation_tokens,
             total_time=stream_duration,
             prompt_tps=prompt_tokens / stream_duration if stream_duration > 0 else 0,
-            generation_tps=generation_tokens / stream_duration if stream_duration > 0 else 0,
+            generation_tps=(
+                generation_tokens / stream_duration if stream_duration > 0 else 0
+            ),
         )
     else:
         segments = model.generate(

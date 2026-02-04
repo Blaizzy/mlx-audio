@@ -576,7 +576,9 @@ class Model(nn.Module):
         freqs = stft(audio, window=window, n_fft=N_FFT, hop_length=HOP_LENGTH)
         magnitudes = freqs[:-1, :].abs().square()
 
-        filters = mel_filters(self.sample_rate, N_FFT, N_MELS, norm="slaney", mel_scale=None)
+        filters = mel_filters(
+            self.sample_rate, N_FFT, N_MELS, norm="slaney", mel_scale=None
+        )
         mel_spec = magnitudes @ filters.T
 
         log_spec = mx.maximum(mel_spec, 1e-10).log10()
@@ -622,7 +624,6 @@ class Model(nn.Module):
         )[
             0
         ]  # Remove batch dimension for generate_step
-
 
         streams = [generation_stream] if generation_stream is not None else None
         with wired_limit(self, streams):
@@ -973,9 +974,9 @@ class Model(nn.Module):
         Yields:
             StreamingResult objects with text, timing, and status information.
         """
-        from mlx_audio.stt.utils import load_audio
-
         from mlx_lm.sample_utils import make_sampler
+
+        from mlx_audio.stt.utils import load_audio
 
         # Load audio
         if isinstance(audio, str):
@@ -1036,7 +1037,6 @@ class Model(nn.Module):
 
                 yield result
 
-
             chunk_gen_tokens = total_generation_tokens - prev_gen_tokens
             remaining_tokens -= chunk_gen_tokens
 
@@ -1052,4 +1052,3 @@ class Model(nn.Module):
                     generation_tokens=total_generation_tokens,
                 )
                 break
-
