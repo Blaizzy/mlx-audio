@@ -55,7 +55,6 @@ class ModelConfig(Qwen3ModelConfig):
             self.decoder_config.decoder_dim = 512
             self.decoder_config.decoder_intermediate_dim = 1536
             self.decoder_config.input_kernel = 3
- 
 
 
 class SopranoModel(Qwen3Model):
@@ -184,7 +183,7 @@ class Model(nn.Module):
         for k, v in weights.items():
             k = k.replace("model.", "") if k.startswith("model.") else k
 
-            if k.startswith("decoder."): # Decoder weights are always fp32
+            if k.startswith("decoder."):  # Decoder weights are always fp32
                 if not v.dtype == mx.uint32:
                     v = v.astype(mx.float32)
             elif not k.startswith("language_model."):
