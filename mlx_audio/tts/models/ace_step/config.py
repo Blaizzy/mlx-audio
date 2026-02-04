@@ -2,9 +2,77 @@
 
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from mlx_audio.tts.models.base import BaseModelArgs
+
+# ==============================================================================
+# Task Type Constants
+# ==============================================================================
+
+TASK_TYPES = ["text2music", "repaint", "cover", "extract", "lego", "complete"]
+
+# Task types available for turbo models (subset)
+TASK_TYPES_TURBO = ["text2music", "repaint", "cover"]
+
+# Task types available for base models (full set)
+TASK_TYPES_BASE = ["text2music", "repaint", "cover", "extract", "lego", "complete"]
+
+
+# ==============================================================================
+# Instruction Constants
+# ==============================================================================
+
+DEFAULT_INSTRUCTION = "Fill the audio semantic mask based on the given conditions:"
+
+# Instruction templates for each task type
+# Note: Some instructions use placeholders like {TRACK_NAME} or {TRACK_CLASSES}
+TASK_INSTRUCTIONS: Dict[str, str] = {
+    "text2music": "Fill the audio semantic mask based on the given conditions:",
+    "repaint": "Repaint the mask area based on the given conditions:",
+    "cover": "Generate audio semantic tokens based on the given conditions:",
+    "extract": "Extract the {TRACK_NAME} track from the audio:",
+    "extract_default": "Extract the track from the audio:",
+    "lego": "Generate the {TRACK_NAME} track based on the audio context:",
+    "lego_default": "Generate the track based on the audio context:",
+    "complete": "Complete the input track with {TRACK_CLASSES}:",
+    "complete_default": "Complete the input track:",
+}
+
+
+# ==============================================================================
+# Track/Instrument Constants
+# ==============================================================================
+
+TRACK_NAMES = [
+    "woodwinds",
+    "brass",
+    "fx",
+    "synth",
+    "strings",
+    "percussion",
+    "keyboard",
+    "guitar",
+    "bass",
+    "drums",
+    "backing_vocals",
+    "vocals",
+]
+
+
+# ==============================================================================
+# SFT Prompt Template
+# ==============================================================================
+
+SFT_GEN_PROMPT = """# Instruction
+{}
+
+# Caption
+{}
+
+# Metas
+{}<|endoftext|>
+"""
 
 
 @dataclass

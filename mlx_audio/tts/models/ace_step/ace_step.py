@@ -12,7 +12,14 @@ import mlx.nn as nn
 
 from mlx_audio.tts.models.base import GenerationResult
 
-from .config import ModelConfig
+from .config import (
+    DEFAULT_INSTRUCTION,
+    SFT_GEN_PROMPT,
+    TASK_INSTRUCTIONS,
+    TASK_TYPES,
+    TRACK_NAMES,
+    ModelConfig,
+)
 from .dit import DiTModel
 from .encoders import AudioTokenDetokenizer, AudioTokenizer, ConditionEncoder
 from .lm import ACEStepLM, LMConfig
@@ -279,6 +286,121 @@ class Model(nn.Module):
 
         order_mask = mx.arange(batch_size, dtype=mx.int32)
         return timbre_hidden.astype(self.dtype), order_mask
+
+    def _encode_audio_to_latents(self, audio: mx.array) -> mx.array:
+        """Encode audio to latent representation using VAE encoder.
+
+        Args:
+            audio: Audio tensor of shape [channels, samples] or [batch, channels, samples]
+
+        Returns:
+            Latent tensor of shape [batch, time, latent_dim]
+        """
+        if self.vae is None:
+            raise RuntimeError("VAE not loaded. Cannot encode audio.")
+
+        # Ensure batch dimension
+        if audio.ndim == 2:
+            audio = audio[None, ...]  # [channels, samples] -> [1, channels, samples]
+
+        # Encode using VAE
+        latents = self.vae.encode(audio)
+        mx.eval(latents)
+
+        return latents.astype(self.dtype)
+
+    def _normalize_audio(
+        self,
+        audio: mx.array,
+        sample_rate: int,
+        target_sample_rate: int = 48000,
+    ) -> mx.array:
+        """Normalize audio to stereo at target sample rate.
+
+        Args:
+            audio: Audio tensor [channels, samples] or [samples]
+            sample_rate: Input sample rate
+            target_sample_rate: Target sample rate (default 48kHz)
+
+        Returns:
+            Normalized audio tensor [2, samples]
+        """
+        # Ensure 2D (channels, samples)
+        if audio.ndim == 1:
+            audio = audio[None, :]
+
+        # Convert to stereo if mono
+        if audio.shape[0] == 1:
+            audio = mx.concatenate([audio, audio], axis=0)
+
+        # Keep only first 2 channels
+        audio = audio[:2]
+
+        # Resample if needed (simple linear interpolation)
+        if sample_rate != target_sample_rate:
+            scale = target_sample_rate / sample_rate
+            new_length = int(audio.shape[-1] * scale)
+            # Simple resampling via interpolation
+            indices = mx.linspace(0, audio.shape[-1] - 1, new_length)
+            indices_floor = mx.floor(indices).astype(mx.int32)
+            indices_ceil = mx.minimum(indices_floor + 1, audio.shape[-1] - 1)
+            weights = indices - indices_floor.astype(mx.float32)
+            audio = (
+                audio[:, indices_floor] * (1 - weights)
+                + audio[:, indices_ceil] * weights
+            )
+
+        # Clamp to [-1, 1]
+        audio = mx.clip(audio, -1.0, 1.0)
+
+        return audio
+
+    def generate_instruction(
+        self,
+        task_type: str,
+        track_name: Optional[str] = None,
+        complete_track_classes: Optional[List[str]] = None,
+    ) -> str:
+        """Generate instruction text based on task type.
+
+        Args:
+            task_type: One of "text2music", "repaint", "cover", "extract", "lego", "complete"
+            track_name: Track name for extract/lego tasks
+            complete_track_classes: List of track classes for complete task
+
+        Returns:
+            Instruction string
+        """
+        if task_type == "text2music":
+            return TASK_INSTRUCTIONS["text2music"]
+        elif task_type == "repaint":
+            return TASK_INSTRUCTIONS["repaint"]
+        elif task_type == "cover":
+            return TASK_INSTRUCTIONS["cover"]
+        elif task_type == "extract":
+            if track_name and track_name.lower() in TRACK_NAMES:
+                return TASK_INSTRUCTIONS["extract"].format(
+                    TRACK_NAME=track_name.upper()
+                )
+            return TASK_INSTRUCTIONS["extract_default"]
+        elif task_type == "lego":
+            if track_name and track_name.lower() in TRACK_NAMES:
+                return TASK_INSTRUCTIONS["lego"].format(TRACK_NAME=track_name.upper())
+            return TASK_INSTRUCTIONS["lego_default"]
+        elif task_type == "complete":
+            if complete_track_classes and len(complete_track_classes) > 0:
+                # Filter valid track names and format
+                valid_tracks = [
+                    t.upper()
+                    for t in complete_track_classes
+                    if t.lower() in TRACK_NAMES
+                ]
+                if valid_tracks:
+                    track_str = " | ".join(valid_tracks)
+                    return TASK_INSTRUCTIONS["complete"].format(TRACK_CLASSES=track_str)
+            return TASK_INSTRUCTIONS["complete_default"]
+        else:
+            return TASK_INSTRUCTIONS["text2music"]
 
     def _get_or_load_lm(self, model_size: str = "0.6B") -> ACEStepLM:
         """Get or lazily load the 5Hz Language Model.
@@ -932,6 +1054,12 @@ class Model(nn.Module):
         cfg_type: str = "apg",
         vocal_language: str = "unknown",
         verbose: bool = True,
+        # Task parameters
+        task_type: str = "text2music",
+        source_audio: Optional[mx.array] = None,
+        source_audio_sample_rate: int = 48000,
+        track_name: Optional[str] = None,
+        complete_track_classes: Optional[List[str]] = None,
         # LM parameters
         use_lm: bool = False,
         lm_model_size: str = "0.6B",
@@ -956,6 +1084,11 @@ class Model(nn.Module):
             cfg_type: CFG type ('cfg' for standard, 'apg' for Adaptive Projected Gradient)
             vocal_language: Language code for vocals (e.g., "en", "zh")
             verbose: Whether to print progress
+            task_type: Task type - one of "text2music", "cover", "complete", "extract", "lego", "repaint"
+            source_audio: Source audio for audio-to-audio tasks (mx.array of shape [channels, samples])
+            source_audio_sample_rate: Sample rate of source audio (default 48000)
+            track_name: Track name for extract/lego tasks (e.g., "vocals", "drums")
+            complete_track_classes: List of tracks to complete with (e.g., ["drums", "bass"])
             use_lm: Whether to use the 5Hz LM for better quality
             lm_model_size: LM model size ("0.6B" or "4B"). 0.6B is fastest, 4B is highest quality
             lm_temperature: LM sampling temperature
@@ -971,18 +1104,35 @@ class Model(nn.Module):
                 "or use mlx_audio.tts.load() to load the full model."
             )
 
+        # Validate task type
+        if task_type not in TASK_TYPES:
+            raise ValueError(
+                f"Invalid task_type '{task_type}'. Must be one of {TASK_TYPES}"
+            )
+
+        # Generate instruction based on task type
+        instruction = self.generate_instruction(
+            task_type=task_type,
+            track_name=track_name,
+            complete_track_classes=complete_track_classes,
+        )
+
         start_time = time.time()
 
         if verbose:
             print(f"\n{'='*60}")
             print(f"ACE-Step Music Generation")
             print(f"{'='*60}")
+            print(f"Task: {task_type}")
+            print(f"Instruction: {instruction}")
             print(f"Prompt: {text[:100]}...")
             print(f"Duration: {duration}s")
             print(f"Steps: {num_steps}, Shift: {shift}")
             print(
                 f"CFG: {guidance_scale}, Type: {cfg_type}, Interval: {guidance_interval}"
             )
+            if source_audio is not None:
+                print(f"Source audio: {source_audio.shape}")
             if use_lm:
                 print(f"5Hz LM: {lm_model_size}")
             if seed is not None:
@@ -992,6 +1142,27 @@ class Model(nn.Module):
         # Set seed
         if seed is not None:
             mx.random.seed(seed)
+
+        # Process source audio if provided
+        source_latents = None
+        if source_audio is not None:
+            if verbose:
+                print("Encoding source audio to latents...")
+
+            # Normalize audio to stereo 48kHz
+            normalized_audio = self._normalize_audio(
+                source_audio, source_audio_sample_rate, self.sample_rate
+            )
+
+            # Encode to latents
+            source_latents = self._encode_audio_to_latents(normalized_audio)
+
+            # Duration comes from source audio for audio-to-audio tasks
+            source_duration = source_latents.shape[1] / 25.0  # 25Hz latent rate
+            if task_type in ["complete", "cover", "extract", "lego"]:
+                duration = source_duration
+                if verbose:
+                    print(f"Using source audio duration: {duration:.2f}s")
 
         # Calculate latent length (25Hz latent rate)
         latent_rate = 25
@@ -1005,39 +1176,70 @@ class Model(nn.Module):
         if verbose:
             print(f"Generating {latent_len} latent frames...")
 
-        # Prepare inputs
+        # Prepare text embeddings with task-specific instruction
+        # Format: SFT_GEN_PROMPT with instruction, caption, and metas
         text_hidden, text_mask = self._prepare_text_embeddings(text, duration=duration)
         lyric_hidden, lyric_mask = self._prepare_lyric_embeddings(
             lyrics, language=vocal_language
         )
         timbre_hidden, timbre_order = self._prepare_timbre()
 
-        # Prepare source latents from silence_latent
+        # Prepare source latents
         audio_dim = self.config.audio_acoustic_hidden_dim
-        src_latents = self.silence_latent[:, :latent_len, :].astype(self.dtype)
-        if src_latents.shape[1] < latent_len:
-            pad_len = latent_len - src_latents.shape[1]
-            padding = mx.broadcast_to(src_latents[:, -1:, :], (1, pad_len, audio_dim))
-            src_latents = mx.concatenate([src_latents, padding], axis=1)
+
+        # For audio-to-audio tasks, use encoded source latents
+        # For text-to-music, use silence latent
+        if source_latents is not None and task_type in [
+            "complete",
+            "cover",
+            "extract",
+            "lego",
+        ]:
+            # Adjust source latents length to match target
+            if source_latents.shape[1] < latent_len:
+                pad_len = latent_len - source_latents.shape[1]
+                padding = mx.broadcast_to(
+                    source_latents[:, -1:, :], (1, pad_len, audio_dim)
+                )
+                src_latents = mx.concatenate([source_latents, padding], axis=1)
+            elif source_latents.shape[1] > latent_len:
+                src_latents = source_latents[:, :latent_len, :]
+            else:
+                src_latents = source_latents
+            src_latents = src_latents.astype(self.dtype)
+        else:
+            # Use silence latent for text-to-music
+            src_latents = self.silence_latent[:, :latent_len, :].astype(self.dtype)
+            if src_latents.shape[1] < latent_len:
+                pad_len = latent_len - src_latents.shape[1]
+                padding = mx.broadcast_to(
+                    src_latents[:, -1:, :], (1, pad_len, audio_dim)
+                )
+                src_latents = mx.concatenate([src_latents, padding], axis=1)
 
         # Chunk masks (all ones for full generation)
         chunk_masks = mx.ones((1, latent_len, audio_dim), dtype=self.dtype)
 
-        # is_covers flag (False for text-to-music)
-        # Note: LM hints are designed for cover songs, not text-to-music enhancement
-        is_covers = mx.zeros((1,), dtype=self.dtype)
+        # Determine is_covers flag based on instruction content (matching PyTorch logic)
+        # is_cover = True only if instruction contains "generate audio semantic tokens"
+        # AND "based on the given conditions" - this matches only the COVER task instruction
+        instruction_lower = instruction.lower()
+        is_cover = (
+            "generate audio semantic tokens" in instruction_lower
+            and "based on the given conditions" in instruction_lower
+        )
+        is_covers = mx.array([1.0 if is_cover else 0.0], dtype=self.dtype)
 
-        # LM hints support (experimental - for cover song use cases)
+        # LM hints support - LM hints override is_covers to True
         lm_hints = None
         if lm_precomputed_hints is not None:
             lm_hints = lm_precomputed_hints.astype(self.dtype)
             is_covers = mx.ones((1,), dtype=self.dtype)
             if verbose:
-                print("Using pre-computed LM hints (cover mode)")
-        elif use_lm:
+                print("Using pre-computed LM hints")
+        elif use_lm and task_type == "cover":
             if verbose:
-                print("Note: 5Hz LM is designed for cover songs, not text-to-music.")
-                print("For best text-to-music quality, use_lm=False is recommended.")
+                print("5Hz LM enabled for cover task")
 
         if verbose:
             print("Running diffusion...")
