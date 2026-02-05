@@ -119,6 +119,7 @@ class StreamingResult:
         progress: Progress from 0.0 to 1.0 (percentage of audio processed).
         audio_position: Current position in audio (seconds).
         audio_duration: Total audio duration (seconds).
+        language: Language code (e.g., "en").
     """
 
     text: str
@@ -129,6 +130,7 @@ class StreamingResult:
     progress: float = 0.0
     audio_position: float = 0.0
     audio_duration: float = 0.0
+    language: str = "en"
 
 
 class ModelConfig:
@@ -403,6 +405,7 @@ class Model(nn.Module):
                 progress=progress,
                 audio_position=audio_position,
                 audio_duration=audio_duration,
+                language="en",
             )
 
             # Clear cache after each chunk
@@ -559,28 +562,9 @@ class ParakeetTDT(Model):
                 decision = mx.argmax(joint_output[0, 0, :, len(self.vocabulary) + 1 :])
 
                 if pred_token != len(self.vocabulary):
-                    token_id = int(pred_token)
-
-                    # Skip special tokens (like <|en|>, <|pnc|>, etc.)
-                    token_text = self.vocabulary[token_id]
-                    if token_text.startswith("<|") and token_text.endswith("|>"):
-                        last_token = token_id
-                        decoder_hidden = proposed_decoder_hidden
-                        time += self.durations[int(decision)]
-                        new_symbols += 1
-                        if self.durations[int(decision)] != 0:
-                            new_symbols = 0
-                        elif (
-                            self.max_symbols is not None
-                            and self.max_symbols <= new_symbols
-                        ):
-                            time += 1
-                            new_symbols = 0
-                        continue
-
                     hypothesis.append(
                         AlignedToken(
-                            token_id,
+                            int(pred_token),
                             start=time
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
@@ -589,10 +573,10 @@ class ParakeetTDT(Model):
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([token_id], self.vocabulary),
+                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
                         )
                     )
-                    last_token = token_id
+                    last_token = int(pred_token)
                     decoder_hidden = proposed_decoder_hidden
 
                 time += self.durations[int(decision)]
@@ -680,25 +664,9 @@ class ParakeetRNNT(Model):
                 pred_token = mx.argmax(joint_output)
 
                 if pred_token != len(self.vocabulary):
-                    token_id = int(pred_token)
-
-                    # Skip special tokens (like <|en|>, <|pnc|>, etc.)
-                    token_text = self.vocabulary[token_id]
-                    if token_text.startswith("<|") and token_text.endswith("|>"):
-                        last_token = token_id
-                        decoder_hidden = proposed_decoder_hidden
-                        new_symbols += 1
-                        if (
-                            self.max_symbols is not None
-                            and self.max_symbols <= new_symbols
-                        ):
-                            time += 1
-                            new_symbols = 0
-                        continue
-
                     hypothesis.append(
                         AlignedToken(
-                            token_id,
+                            int(pred_token),
                             start=time
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
@@ -707,10 +675,10 @@ class ParakeetRNNT(Model):
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([token_id], self.vocabulary),
+                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
                         )
                     )
-                    last_token = token_id
+                    last_token = int(pred_token)
                     decoder_hidden = proposed_decoder_hidden
 
                     new_symbols += 1
@@ -774,54 +742,7 @@ class ParakeetCTC(Model):
                 if token_idx == prev_token:
                     continue
 
-                # Skip special tokens (like <|en|>, <|pnc|>, etc.)
-                token_text = self.vocabulary[token_idx]
-                if token_text.startswith("<|") and token_text.endswith("|>"):
-                    prev_token = token_idx
-                    continue
-
-                if prev_token != -1 and token_boundaries:
-                    # Only add token if prev_token was not a special token
-                    prev_text = self.vocabulary[prev_token]
-                    if not (prev_text.startswith("<|") and prev_text.endswith("|>")):
-                        token_start_time = (
-                            token_boundaries[-1][0]
-                            * self.encoder_config.subsampling_factor
-                            / self.preprocessor_config.sample_rate
-                            * self.preprocessor_config.hop_length
-                        )
-
-                        token_end_time = (
-                            t
-                            * self.encoder_config.subsampling_factor
-                            / self.preprocessor_config.sample_rate
-                            * self.preprocessor_config.hop_length
-                        )
-
-                        token_duration = token_end_time - token_start_time
-
-                        hypothesis.append(
-                            AlignedToken(
-                                prev_token,
-                                start=token_start_time,
-                                duration=token_duration,
-                                text=tokenizer.decode([prev_token], self.vocabulary),
-                            )
-                        )
-
-                token_boundaries.append((t, None))
-                prev_token = token_idx
-
-            if prev_token != -1 and token_boundaries:
-                # Only add final token if it's not a special token
-                prev_text = self.vocabulary[prev_token]
-                if not (prev_text.startswith("<|") and prev_text.endswith("|>")):
-                    last_non_blank = features_len - 1
-                    for t in range(features_len - 1, token_boundaries[-1][0], -1):
-                        if int(best_tokens[t]) != len(self.vocabulary):
-                            last_non_blank = t
-                            break
-
+                if prev_token != -1:
                     token_start_time = (
                         token_boundaries[-1][0]
                         * self.encoder_config.subsampling_factor
@@ -830,7 +751,7 @@ class ParakeetCTC(Model):
                     )
 
                     token_end_time = (
-                        (last_non_blank + 1)
+                        t
                         * self.encoder_config.subsampling_factor
                         / self.preprocessor_config.sample_rate
                         * self.preprocessor_config.hop_length
@@ -846,6 +767,41 @@ class ParakeetCTC(Model):
                             text=tokenizer.decode([prev_token], self.vocabulary),
                         )
                     )
+
+                token_boundaries.append((t, None))
+                prev_token = token_idx
+
+            if prev_token != -1:
+                last_non_blank = features_len - 1
+                for t in range(features_len - 1, token_boundaries[-1][0], -1):
+                    if int(best_tokens[t]) != len(self.vocabulary):
+                        last_non_blank = t
+                        break
+
+                token_start_time = (
+                    token_boundaries[-1][0]
+                    * self.encoder_config.subsampling_factor
+                    / self.preprocessor_config.sample_rate
+                    * self.preprocessor_config.hop_length
+                )
+
+                token_end_time = (
+                    (last_non_blank + 1)
+                    * self.encoder_config.subsampling_factor
+                    / self.preprocessor_config.sample_rate
+                    * self.preprocessor_config.hop_length
+                )
+
+                token_duration = token_end_time - token_start_time
+
+                hypothesis.append(
+                    AlignedToken(
+                        prev_token,
+                        start=token_start_time,
+                        duration=token_duration,
+                        text=tokenizer.decode([prev_token], self.vocabulary),
+                    )
+                )
 
             result = sentences_to_result(tokens_to_sentences(hypothesis))
             results.append(result)
