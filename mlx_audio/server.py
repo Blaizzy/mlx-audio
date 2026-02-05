@@ -15,6 +15,7 @@ import os
 import subprocess
 import time
 import webbrowser
+from collections.abc import Iterator
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -387,6 +388,14 @@ async def stt_transcriptions(
 
     # Filter kwargs to only include parameters the model's generate method accepts
     signature = inspect.signature(stt_model.generate)
+    # Map OpenAI-style stream flag to generation_stream when needed
+    if (
+        "generation_stream" in signature.parameters
+        and "stream" in gen_kwargs
+        and "stream" not in signature.parameters
+    ):
+        gen_kwargs["generation_stream"] = bool(gen_kwargs["stream"])
+        gen_kwargs.pop("stream", None)
     gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
 
     return StreamingResponse(
