@@ -119,7 +119,6 @@ class StreamingResult:
         progress: Progress from 0.0 to 1.0 (percentage of audio processed).
         audio_position: Current position in audio (seconds).
         audio_duration: Total audio duration (seconds).
-        language: Language code (e.g., "en").
     """
 
     text: str
@@ -130,7 +129,6 @@ class StreamingResult:
     progress: float = 0.0
     audio_position: float = 0.0
     audio_duration: float = 0.0
-    language: str = "en"
 
 
 class ModelConfig:
