@@ -177,9 +177,6 @@ def save_as_json(segments, output_path: str):
                 for s in segments.sentences
             ],
         }
-        # Add language if available (Parakeet v3 multilingual)
-        if hasattr(segments, "language") and segments.language:
-            result["language"] = segments.language
         # Add speaker_id only if it exists
         for i, s in enumerate(segments.sentences):
             if hasattr(s, "speaker_id"):
@@ -197,9 +194,6 @@ def save_as_json(segments, output_path: str):
                 for s in segments.segments
             ],
         }
-        # Add language if available
-        if hasattr(segments, "language") and segments.language:
-            result["language"] = segments.language
         # Add speaker_id only if it exists
         for i, s in enumerate(segments.segments):
             if "speaker_id" in s:
@@ -351,10 +345,6 @@ def generate_transcription(
         )
 
     if verbose:
-        # Show detected language if available
-        if hasattr(segments, "language") and segments.language:
-            print(f"\033[94mDetected language:\033[0m {segments.language}\n")
-
         if hasattr(segments, "text"):
             print("\033[94mTranscription:\033[0m\n")
             print(f"{segments.text[:500]}...\n")

@@ -32,7 +32,6 @@ class AlignedSentence:
 class AlignedResult:
     text: str
     sentences: list[AlignedSentence]
-    language: str = None
 
     def __post_init__(self) -> None:
         self.text = self.text.strip()
@@ -71,12 +70,8 @@ def tokens_to_sentences(tokens: list[AlignedToken]) -> list[AlignedSentence]:
     return sentences
 
 
-def sentences_to_result(
-    sentences: list[AlignedSentence], language: str = None
-) -> AlignedResult:
-    return AlignedResult(
-        "".join(sentence.text for sentence in sentences), sentences, language
-    )
+def sentences_to_result(sentences: list[AlignedSentence]) -> AlignedResult:
+    return AlignedResult("".join(sentence.text for sentence in sentences), sentences)
 
 
 def merge_longest_contiguous(
