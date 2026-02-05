@@ -100,8 +100,11 @@ class Model(nn.Module):
         model = cls(config)
         model.dtype = dtype
 
-        # Load weights from the turbo subdirectory
+        # Load weights - try turbo subdirectory first, then root
         weights_path = model_path / "acestep-v15-turbo" / "model.safetensors"
+        if not weights_path.exists():
+            weights_path = model_path / "model.safetensors"
+
         if weights_path.exists():
             weights = mx.load(str(weights_path))
             model.load_weights(weights, strict=False)
@@ -158,8 +161,11 @@ class Model(nn.Module):
 
             model._sample_rate = vae_config.get("sampling_rate", 48000)
 
-        # Load silence latent
+        # Load silence latent - try turbo subdirectory first, then root
         silence_path = model_path / "acestep-v15-turbo" / "silence_latent.pt"
+        if not silence_path.exists():
+            silence_path = model_path / "silence_latent.pt"
+
         if silence_path.exists():
             import torch
 
@@ -1290,10 +1296,11 @@ class Model(nn.Module):
             print(f"Decode completed in {decode_time:.2f}s")
             print(f"Audio shape: {audio.shape}")
 
-        # Format output: [batch, channels, samples] -> [channels, samples]
+        # Format output: [batch, channels, samples] -> [samples, channels]
         audio = audio[0]
         audio = mx.clip(audio, -1.0, 1.0)
-        num_samples = audio.shape[-1]
+        audio = mx.transpose(audio)  # [channels, samples] -> [samples, channels]
+        num_samples = audio.shape[0]
         actual_duration = num_samples / self.sample_rate
 
         total_time = time.time() - start_time
@@ -1308,18 +1315,30 @@ class Model(nn.Module):
             print(f"  RTF: {rtf:.2f}x")
             print(f"{'='*60}\n")
 
+        samples_per_sec = num_samples / total_time if total_time > 0 else 0
+        tokens_per_sec = latent_len / total_time if total_time > 0 else 0
+
         yield GenerationResult(
             audio=audio,
             sample_rate=self.sample_rate,
             samples=num_samples,
             segment_idx=0,
             token_count=latent_len,
-            audio_samples=num_samples,
+            audio_samples={
+                "samples": num_samples,
+                "samples-per-sec": samples_per_sec,
+            },
             audio_duration=f"{int(actual_duration // 60):02d}:{int(actual_duration % 60):02d}.{int((actual_duration % 1) * 1000):03d}",
             real_time_factor=rtf,
-            prompt={"text": text, "lyrics": lyrics},
+            prompt={
+                "text": text,
+                "lyrics": lyrics,
+                "tokens-per-sec": tokens_per_sec,
+            },
             processing_time_seconds=total_time,
-            peak_memory_usage=0.0,
+            peak_memory_usage=(
+                mx.get_peak_memory() / 1e9 if hasattr(mx, "get_peak_memory") else 0.0
+            ),
             is_streaming_chunk=False,
             is_final_chunk=True,
         )
