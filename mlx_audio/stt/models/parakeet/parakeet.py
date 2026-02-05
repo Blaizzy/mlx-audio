@@ -19,6 +19,12 @@ from mlx_audio.stt.models.parakeet.alignment import (
     sentences_to_result,
     tokens_to_sentences,
 )
+from mlx_audio.stt.models.parakeet.languages import (
+    PARAKEET_V3_LANGUAGES,
+    build_language_token_map,
+    get_language_name,
+    is_supported_language,
+)
 from mlx_audio.stt.models.parakeet.audio import PreprocessArgs, log_mel_spectrogram
 from mlx_audio.stt.models.parakeet.conformer import Conformer, ConformerArgs
 from mlx_audio.stt.models.parakeet.ctc import (
@@ -159,6 +165,34 @@ class Model(nn.Module):
         super().__init__()
 
         self.preprocessor_config = preprocess_args
+        # Language detection support (populated for multilingual models)
+        self._lang_token_map: dict = None
+        self._is_multilingual: bool = False
+        self._detected_language: str = None
+
+    def _init_language_support(self, vocabulary: List[str]) -> None:
+        """Initialize language detection support for multilingual models.
+
+        Args:
+            vocabulary: The model's vocabulary list
+        """
+        self._lang_token_map = build_language_token_map(vocabulary)
+        # Model is multilingual if it has language tokens for supported languages
+        supported_langs = set(PARAKEET_V3_LANGUAGES.keys())
+        model_langs = set(self._lang_token_map.values())
+        self._is_multilingual = len(supported_langs & model_langs) >= 5
+
+    @property
+    def is_multilingual(self) -> bool:
+        """Check if this model supports multiple languages."""
+        return self._is_multilingual
+
+    @property
+    def supported_languages(self) -> List[str]:
+        """Get list of supported language codes for this model."""
+        if not self._is_multilingual:
+            return ["en"]
+        return list(PARAKEET_V3_LANGUAGES.keys())
 
     def decode(self, mel: mx.array) -> list[AlignedResult]:
         """
@@ -238,6 +272,7 @@ class Model(nn.Module):
         overlap_samples = int(overlap_duration * self.preprocessor_config.sample_rate)
 
         all_tokens = []
+        detected_language = None
 
         for start in tqdm(
             range(0, len(audio_data), chunk_samples - overlap_samples),
@@ -252,6 +287,10 @@ class Model(nn.Module):
             chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
 
             chunk_result = self.decode(chunk_mel)[0]
+
+            # Track detected language from first chunk that detects one
+            if detected_language is None and chunk_result.language:
+                detected_language = chunk_result.language
 
             chunk_offset = start / self.preprocessor_config.sample_rate
             for sentence in chunk_result.sentences:
@@ -275,7 +314,11 @@ class Model(nn.Module):
             else:
                 all_tokens = chunk_tokens
 
-        result = sentences_to_result(tokens_to_sentences(all_tokens))
+        # Default to English if no language detected
+        if detected_language is None:
+            detected_language = "en"
+
+        result = sentences_to_result(tokens_to_sentences(all_tokens), detected_language)
 
         # Clear cache after each segment to avoid memory leaks
         mx.clear_cache()
@@ -339,6 +382,7 @@ class Model(nn.Module):
 
         all_tokens = []
         previous_text = ""
+        detected_language = "en"  # Default to English
 
         for start in tqdm(
             range(0, total_samples, step_samples),
@@ -352,6 +396,12 @@ class Model(nn.Module):
             chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
 
             chunk_result = self.decode(chunk_mel)[0]
+
+            # Track detected language from first chunk that detects one
+            if chunk_result.language and chunk_result.language != "en":
+                detected_language = chunk_result.language
+            elif detected_language == "en" and chunk_result.language:
+                detected_language = chunk_result.language
 
             # Adjust timestamps for chunk offset
             chunk_offset = start / sample_rate
@@ -378,7 +428,9 @@ class Model(nn.Module):
                 all_tokens = chunk_tokens
 
             # Build current result
-            current_result = sentences_to_result(tokens_to_sentences(all_tokens))
+            current_result = sentences_to_result(
+                tokens_to_sentences(all_tokens), detected_language
+            )
             accumulated_text = current_result.text
 
             # Calculate new text since last emission
@@ -405,7 +457,7 @@ class Model(nn.Module):
                 progress=progress,
                 audio_position=audio_position,
                 audio_duration=audio_duration,
-                language="en",
+                language=detected_language,
             )
 
             # Clear cache after each chunk
@@ -508,10 +560,16 @@ class ParakeetTDT(Model):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
+        # Initialize language support
+        self._init_language_support(self.vocabulary)
+
     def decode(self, mel: mx.array) -> list[AlignedResult]:
         """
         Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+
+        For multilingual models (Parakeet v3), this also detects the language from
+        language tokens in the output sequence.
         """
         batch_size: int = mel.shape[0]
         if len(mel.shape) == 2:
@@ -530,6 +588,7 @@ class ParakeetTDT(Model):
                 self.vocabulary
             )  # In TDT, space token is always len(vocab)
             hypothesis = []
+            detected_language = None
 
             time = 0
             new_symbols = 0
@@ -562,9 +621,47 @@ class ParakeetTDT(Model):
                 decision = mx.argmax(joint_output[0, 0, :, len(self.vocabulary) + 1 :])
 
                 if pred_token != len(self.vocabulary):
+                    token_id = int(pred_token)
+
+                    # Check for language token (multilingual models)
+                    if self._lang_token_map and token_id in self._lang_token_map:
+                        if detected_language is None:
+                            detected_language = self._lang_token_map[token_id]
+                        # Skip adding language tokens to hypothesis
+                        last_token = token_id
+                        decoder_hidden = proposed_decoder_hidden
+                        time += self.durations[int(decision)]
+                        new_symbols += 1
+                        if self.durations[int(decision)] != 0:
+                            new_symbols = 0
+                        elif (
+                            self.max_symbols is not None
+                            and self.max_symbols <= new_symbols
+                        ):
+                            time += 1
+                            new_symbols = 0
+                        continue
+
+                    # Check for other special tokens (skip them too)
+                    token_text = self.vocabulary[token_id]
+                    if token_text.startswith("<|") and token_text.endswith("|>"):
+                        last_token = token_id
+                        decoder_hidden = proposed_decoder_hidden
+                        time += self.durations[int(decision)]
+                        new_symbols += 1
+                        if self.durations[int(decision)] != 0:
+                            new_symbols = 0
+                        elif (
+                            self.max_symbols is not None
+                            and self.max_symbols <= new_symbols
+                        ):
+                            time += 1
+                            new_symbols = 0
+                        continue
+
                     hypothesis.append(
                         AlignedToken(
-                            int(pred_token),
+                            token_id,
                             start=time
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
@@ -573,10 +670,10 @@ class ParakeetTDT(Model):
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
+                            text=tokenizer.decode([token_id], self.vocabulary),
                         )
                     )
-                    last_token = int(pred_token)
+                    last_token = token_id
                     decoder_hidden = proposed_decoder_hidden
 
                 time += self.durations[int(decision)]
@@ -589,7 +686,11 @@ class ParakeetTDT(Model):
                         time += 1
                         new_symbols = 0
 
-            result = sentences_to_result(tokens_to_sentences(hypothesis))
+            # Default to English for non-multilingual models or if no language detected
+            if detected_language is None:
+                detected_language = "en"
+
+            result = sentences_to_result(tokens_to_sentences(hypothesis), detected_language)
             results.append(result)
 
         return results
@@ -615,10 +716,16 @@ class ParakeetRNNT(Model):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
+        # Initialize language support
+        self._init_language_support(self.vocabulary)
+
     def decode(self, mel: mx.array) -> list[AlignedResult]:
         """
         Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+
+        For multilingual models, this also detects the language from
+        language tokens in the output sequence.
         """
         batch_size: int = mel.shape[0]
         if len(mel.shape) == 2:
@@ -635,6 +742,7 @@ class ParakeetRNNT(Model):
 
             last_token = len(self.vocabulary)
             hypothesis = []
+            detected_language = None
 
             time = 0
             new_symbols = 0
@@ -664,9 +772,40 @@ class ParakeetRNNT(Model):
                 pred_token = mx.argmax(joint_output)
 
                 if pred_token != len(self.vocabulary):
+                    token_id = int(pred_token)
+
+                    # Check for language token (multilingual models)
+                    if self._lang_token_map and token_id in self._lang_token_map:
+                        if detected_language is None:
+                            detected_language = self._lang_token_map[token_id]
+                        last_token = token_id
+                        decoder_hidden = proposed_decoder_hidden
+                        new_symbols += 1
+                        if (
+                            self.max_symbols is not None
+                            and self.max_symbols <= new_symbols
+                        ):
+                            time += 1
+                            new_symbols = 0
+                        continue
+
+                    # Check for other special tokens (skip them)
+                    token_text = self.vocabulary[token_id]
+                    if token_text.startswith("<|") and token_text.endswith("|>"):
+                        last_token = token_id
+                        decoder_hidden = proposed_decoder_hidden
+                        new_symbols += 1
+                        if (
+                            self.max_symbols is not None
+                            and self.max_symbols <= new_symbols
+                        ):
+                            time += 1
+                            new_symbols = 0
+                        continue
+
                     hypothesis.append(
                         AlignedToken(
-                            int(pred_token),
+                            token_id,
                             start=time
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
@@ -675,10 +814,10 @@ class ParakeetRNNT(Model):
                             * self.encoder_config.subsampling_factor
                             / self.preprocessor_config.sample_rate
                             * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
+                            text=tokenizer.decode([token_id], self.vocabulary),
                         )
                     )
-                    last_token = int(pred_token)
+                    last_token = token_id
                     decoder_hidden = proposed_decoder_hidden
 
                     new_symbols += 1
@@ -689,7 +828,11 @@ class ParakeetRNNT(Model):
                     time += 1
                     new_symbols = 0
 
-            result = sentences_to_result(tokens_to_sentences(hypothesis))
+            # Default to English for non-multilingual models or if no language detected
+            if detected_language is None:
+                detected_language = "en"
+
+            result = sentences_to_result(tokens_to_sentences(hypothesis), detected_language)
             results.append(result)
 
         return results
@@ -709,10 +852,16 @@ class ParakeetCTC(Model):
         self.encoder = Conformer(args.encoder)
         self.decoder = ConvASRDecoder(args.decoder)
 
+        # Initialize language support
+        self._init_language_support(self.vocabulary)
+
     def decode(self, mel: mx.array) -> list[AlignedResult]:
         """
         Generate with CTC decoding for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
+
+        For multilingual models, this also detects the language from
+        language tokens in the output sequence.
         """
         batch_size: int = mel.shape[0]
         if len(mel.shape) == 2:
@@ -732,6 +881,7 @@ class ParakeetCTC(Model):
             hypothesis = []
             token_boundaries = []
             prev_token = -1
+            detected_language = None
 
             for t, token_id in enumerate(best_tokens):
                 token_idx = int(token_id)
@@ -742,7 +892,61 @@ class ParakeetCTC(Model):
                 if token_idx == prev_token:
                     continue
 
-                if prev_token != -1:
+                # Check for language token (multilingual models)
+                if self._lang_token_map and token_idx in self._lang_token_map:
+                    if detected_language is None:
+                        detected_language = self._lang_token_map[token_idx]
+                    prev_token = token_idx
+                    continue
+
+                # Check for other special tokens (skip them)
+                token_text = self.vocabulary[token_idx]
+                if token_text.startswith("<|") and token_text.endswith("|>"):
+                    prev_token = token_idx
+                    continue
+
+                if prev_token != -1 and token_boundaries:
+                    # Only add token if prev_token was not a special token
+                    prev_text = self.vocabulary[prev_token]
+                    if not (prev_text.startswith("<|") and prev_text.endswith("|>")):
+                        token_start_time = (
+                            token_boundaries[-1][0]
+                            * self.encoder_config.subsampling_factor
+                            / self.preprocessor_config.sample_rate
+                            * self.preprocessor_config.hop_length
+                        )
+
+                        token_end_time = (
+                            t
+                            * self.encoder_config.subsampling_factor
+                            / self.preprocessor_config.sample_rate
+                            * self.preprocessor_config.hop_length
+                        )
+
+                        token_duration = token_end_time - token_start_time
+
+                        hypothesis.append(
+                            AlignedToken(
+                                prev_token,
+                                start=token_start_time,
+                                duration=token_duration,
+                                text=tokenizer.decode([prev_token], self.vocabulary),
+                            )
+                        )
+
+                token_boundaries.append((t, None))
+                prev_token = token_idx
+
+            if prev_token != -1 and token_boundaries:
+                # Only add final token if it's not a special token
+                prev_text = self.vocabulary[prev_token]
+                if not (prev_text.startswith("<|") and prev_text.endswith("|>")):
+                    last_non_blank = features_len - 1
+                    for t in range(features_len - 1, token_boundaries[-1][0], -1):
+                        if int(best_tokens[t]) != len(self.vocabulary):
+                            last_non_blank = t
+                            break
+
                     token_start_time = (
                         token_boundaries[-1][0]
                         * self.encoder_config.subsampling_factor
@@ -751,7 +955,7 @@ class ParakeetCTC(Model):
                     )
 
                     token_end_time = (
-                        t
+                        (last_non_blank + 1)
                         * self.encoder_config.subsampling_factor
                         / self.preprocessor_config.sample_rate
                         * self.preprocessor_config.hop_length
@@ -768,42 +972,11 @@ class ParakeetCTC(Model):
                         )
                     )
 
-                token_boundaries.append((t, None))
-                prev_token = token_idx
+            # Default to English for non-multilingual models or if no language detected
+            if detected_language is None:
+                detected_language = "en"
 
-            if prev_token != -1:
-                last_non_blank = features_len - 1
-                for t in range(features_len - 1, token_boundaries[-1][0], -1):
-                    if int(best_tokens[t]) != len(self.vocabulary):
-                        last_non_blank = t
-                        break
-
-                token_start_time = (
-                    token_boundaries[-1][0]
-                    * self.encoder_config.subsampling_factor
-                    / self.preprocessor_config.sample_rate
-                    * self.preprocessor_config.hop_length
-                )
-
-                token_end_time = (
-                    (last_non_blank + 1)
-                    * self.encoder_config.subsampling_factor
-                    / self.preprocessor_config.sample_rate
-                    * self.preprocessor_config.hop_length
-                )
-
-                token_duration = token_end_time - token_start_time
-
-                hypothesis.append(
-                    AlignedToken(
-                        prev_token,
-                        start=token_start_time,
-                        duration=token_duration,
-                        text=tokenizer.decode([prev_token], self.vocabulary),
-                    )
-                )
-
-            result = sentences_to_result(tokens_to_sentences(hypothesis))
+            result = sentences_to_result(tokens_to_sentences(hypothesis), detected_language)
             results.append(result)
 
         return results
