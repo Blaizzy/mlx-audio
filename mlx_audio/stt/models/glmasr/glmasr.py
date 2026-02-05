@@ -4,11 +4,13 @@ import glob
 import json
 import time
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from tqdm import tqdm
 
 from mlx_audio.stt.generate import wired_limit
@@ -16,6 +18,120 @@ from mlx_audio.stt.utils import get_model_path
 
 from ..base import STTOutput
 from .config import LlamaConfig, ModelConfig, WhisperConfig
+
+
+def split_audio_into_chunks(
+    wav: np.ndarray,
+    sr: int,
+    chunk_duration: float = 30.0,
+    min_chunk_duration: float = 1.0,
+    search_expand_sec: float = 2.0,
+    min_window_ms: float = 100.0,
+) -> List[Tuple[np.ndarray, float]]:
+    """Split long audio into chunks at low-energy boundaries.
+
+    Args:
+        wav: Audio waveform (1D numpy array).
+        sr: Sample rate.
+        chunk_duration: Maximum chunk duration in seconds (default: 30).
+        min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
+        search_expand_sec: Window to search for silence around cut point.
+        min_window_ms: Minimum window size for energy calculation.
+
+    Returns:
+        List of (chunk_waveform, offset_seconds) tuples.
+    """
+    # Ensure mono
+    if wav.ndim > 1:
+        wav = wav.mean(axis=-1) if wav.shape[-1] <= 2 else wav.mean(axis=0)
+
+    total_samples = len(wav)
+    total_sec = total_samples / sr
+
+    # If short enough, return as-is
+    if total_sec <= chunk_duration:
+        # Pad if too short
+        if total_sec < min_chunk_duration:
+            min_samples = int(min_chunk_duration * sr)
+            wav = np.pad(wav, (0, min_samples - len(wav)))
+        return [(wav, 0.0)]
+
+    chunks = []
+    start_sample = 0
+    max_chunk_samples = int(chunk_duration * sr)
+    search_samples = int(search_expand_sec * sr)
+    min_window_samples = int(min_window_ms * sr / 1000)
+
+    while start_sample < total_samples:
+        end_sample = min(start_sample + max_chunk_samples, total_samples)
+
+        # If this is the last chunk, take the rest
+        if end_sample >= total_samples:
+            chunk = wav[start_sample:total_samples]
+            offset_sec = start_sample / sr
+            # Pad if too short
+            if len(chunk) < min_chunk_duration * sr:
+                min_samples = int(min_chunk_duration * sr)
+                chunk = np.pad(chunk, (0, min_samples - len(chunk)))
+            chunks.append((chunk, offset_sec))
+            break
+
+        # Search for low-energy point around the cut
+        search_start = max(start_sample, end_sample - search_samples)
+        search_end = min(total_samples, end_sample + search_samples)
+        search_region = wav[search_start:search_end]
+
+        # Calculate energy using sliding window
+        if len(search_region) > min_window_samples:
+            energy = np.convolve(
+                search_region**2,
+                np.ones(min_window_samples) / min_window_samples,
+                mode="valid",
+            )
+            # Find minimum energy point
+            min_idx = np.argmin(energy) + min_window_samples // 2
+            cut_sample = search_start + min_idx
+        else:
+            cut_sample = end_sample
+
+        # Ensure we make progress
+        cut_sample = max(cut_sample, start_sample + sr)  # At least 1 second
+
+        chunk = wav[start_sample:cut_sample]
+        offset_sec = start_sample / sr
+
+        # Pad if too short
+        if len(chunk) < min_chunk_duration * sr:
+            min_samples = int(min_chunk_duration * sr)
+            chunk = np.pad(chunk, (0, min_samples - len(chunk)))
+
+        chunks.append((chunk, offset_sec))
+        start_sample = cut_sample
+
+    return chunks
+
+
+@dataclass
+class StreamingResult:
+    """Result object for streaming transcription.
+
+    Attributes:
+        text: Decoded text for this emission.
+        is_final: True if this is a final (committed) result, False if partial.
+        start_time: Start timestamp in seconds.
+        end_time: End timestamp in seconds.
+        language: Language of the transcription.
+        prompt_tokens: Total prompt tokens (only set on final result).
+        generation_tokens: Total generation tokens (only set on final result).
+    """
+
+    text: str
+    is_final: bool
+    start_time: float
+    end_time: float
+    language: str = "en"
+    prompt_tokens: int = 0
+    generation_tokens: int = 0
 
 
 class WhisperAttention(nn.Module):
@@ -294,6 +410,10 @@ class Model(nn.Module):
         """Get the input embeddings from the language model."""
         return self.language_model.embed_tokens
 
+    @property
+    def sample_rate(self) -> int:
+        return self.config.sample_rate
+
     def _merge_audio_text_embeddings(
         self,
         input_ids: mx.array,
@@ -437,14 +557,13 @@ class Model(nn.Module):
         from mlx_audio.utils import hanning, mel_filters, stft
 
         # Audio hyperparameters for GLM-ASR (128 mel bins)
-        SAMPLE_RATE = 16000
         N_FFT = 400
         HOP_LENGTH = 160
         N_MELS = self.config.whisper_config.num_mel_bins  # 128
 
         # Load audio if path
         if isinstance(audio, str):
-            audio = load_audio(audio, sr=SAMPLE_RATE)
+            audio = load_audio(audio, sr=self.sample_rate)
         elif not isinstance(audio, mx.array):
             audio = mx.array(audio)
 
@@ -457,7 +576,9 @@ class Model(nn.Module):
         freqs = stft(audio, window=window, n_fft=N_FFT, hop_length=HOP_LENGTH)
         magnitudes = freqs[:-1, :].abs().square()
 
-        filters = mel_filters(SAMPLE_RATE, N_FFT, N_MELS, norm="slaney", mel_scale=None)
+        filters = mel_filters(
+            self.sample_rate, N_FFT, N_MELS, norm="slaney", mel_scale=None
+        )
         mel_spec = magnitudes @ filters.T
 
         log_spec = mx.maximum(mel_spec, 1e-10).log10()
@@ -476,7 +597,7 @@ class Model(nn.Module):
         audio_length: Optional[List[List[int]]] = None,
         max_tokens: int = 128,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
-        generation_stream: bool = False,
+        generation_stream: Optional[mx.Stream] = None,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         """Stream generate tokens from input.
@@ -488,7 +609,7 @@ class Model(nn.Module):
             audio_length: Lengths of audio embeddings
             max_tokens: Maximum tokens to generate
             sampler: Sampler function for token selection
-            generation_stream: Whether to enable generation streaming
+            generation_stream: Optional mx.Stream for async generation
 
         Yields:
             Tuple of (token, logprobs)
@@ -504,7 +625,8 @@ class Model(nn.Module):
             0
         ]  # Remove batch dimension for generate_step
 
-        with wired_limit(self, [generation_stream]):
+        streams = [generation_stream] if generation_stream is not None else None
+        with wired_limit(self, streams):
             prompt = input_ids[0] if input_ids.ndim > 1 else input_ids
             for token, logprobs in tqdm(
                 generate_step(
@@ -523,45 +645,24 @@ class Model(nn.Module):
 
                 yield token, logprobs
 
-    def generate(
+    def _generate_single_chunk(
         self,
-        audio,
+        audio_chunk: np.ndarray,
         *,
         max_tokens: int = 128,
-        temperature: float = 0.0,
-        top_p: float = 0.95,
-        top_k: int = 0,
-        min_p: float = 0.0,
-        min_tokens_to_keep: int = 1,
-        generation_stream: bool = False,
+        sampler: Optional[Callable] = None,
+        generation_stream: Optional[mx.Stream] = None,
         verbose: bool = False,
-        **kwargs,
-    ) -> STTOutput:
-        """Generate transcription from audio.
-
-        Args:
-            audio: Audio path (str), waveform (mx.array), or mel spectrogram
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature (0 = greedy)
-            top_p: Top-p sampling parameter
-            top_k: Top-k sampling parameter
-            min_p: Minimum probability threshold
-            min_tokens_to_keep: Minimum tokens to keep in sampling
-            generation_stream: Whether to enable generation streaming
-            verbose: Print tokens during generation
-            **kwargs: Additional arguments (ignored for compatibility)
+    ) -> Tuple[str, int, int]:
+        """Generate transcription for a single audio chunk.
 
         Returns:
-            STTOutput with transcription text
+            Tuple of (text, prompt_tokens, generation_tokens).
         """
-        from mlx_lm.sample_utils import make_sampler
+        # Preprocess chunk to mel spectrogram
+        mel = self._preprocess_audio(audio_chunk)
 
-        start_time = time.time()
-
-        # Preprocess audio to mel spectrogram
-        mel = self._preprocess_audio(audio)
-
-        # Encode audio once (avoid double encoding)
+        # Encode audio
         audio_embeds, audio_len = self.audio_encoder(mel)
         mx.eval(audio_embeds)
 
@@ -582,14 +683,6 @@ class Model(nn.Module):
         audio_offsets = [[audio_start]]
         audio_length = [[audio_len]]
 
-        sampler = make_sampler(
-            temperature,
-            top_p,
-            min_p,
-            min_tokens_to_keep=min_tokens_to_keep,
-            top_k=top_k,
-        )
-
         generated_tokens = []
 
         for token, _ in self.stream_generate(
@@ -604,22 +697,358 @@ class Model(nn.Module):
         ):
             generated_tokens.append(token)
 
+        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        return text, input_ids.shape[1], len(generated_tokens)
+
+    def generate(
+        self,
+        audio,
+        *,
+        max_tokens: int = 128,
+        temperature: float = 0.0,
+        top_p: float = 0.95,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        min_tokens_to_keep: int = 1,
+        generation_stream: Optional[mx.Stream] = None,
+        verbose: bool = False,
+        stream: bool = False,
+        chunk_duration: float = 30.0,
+        min_chunk_duration: float = 1.0,
+        **kwargs,
+    ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
+        """Generate transcription from audio.
+
+        Automatically chunks long audio and processes sequentially.
+
+        Args:
+            audio: Audio path (str), waveform (mx.array), or mel spectrogram
+            max_tokens: Maximum tokens to generate per chunk
+            temperature: Sampling temperature (0 = greedy)
+            top_p: Top-p sampling parameter
+            top_k: Top-k sampling parameter
+            min_p: Minimum probability threshold
+            min_tokens_to_keep: Minimum tokens to keep in sampling
+            generation_stream: Optional mx.Stream for async generation
+            verbose: Print tokens during generation
+            stream: If True, return a generator that yields StreamingResult objects
+            chunk_duration: Maximum chunk duration in seconds (default: 30)
+            min_chunk_duration: Minimum chunk duration in seconds (default: 1.0)
+            **kwargs: Additional arguments (ignored for compatibility)
+
+        Returns:
+            STTOutput with transcription text, or Generator[StreamingResult] if stream=True
+        """
+        from mlx_audio.stt.utils import load_audio
+
+        if stream:
+            return self.stream_transcribe(
+                audio,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                chunk_duration=chunk_duration,
+                min_chunk_duration=min_chunk_duration,
+                verbose=verbose,
+            )
+
+        from mlx_lm.sample_utils import make_sampler
+
+        start_time = time.time()
+
+        if isinstance(audio, str):
+            audio = load_audio(audio, sr=self.sample_rate)
+        if isinstance(audio, mx.array):
+            audio = np.array(audio)
+
+        chunks = split_audio_into_chunks(
+            audio,
+            sr=self.sample_rate,
+            chunk_duration=chunk_duration,
+            min_chunk_duration=min_chunk_duration,
+        )
+
+        sampler = make_sampler(
+            temperature,
+            top_p,
+            min_p,
+            min_tokens_to_keep=min_tokens_to_keep,
+            top_k=top_k,
+        )
+
+        # Process chunks
+        all_texts = []
+        segments = []
+        total_prompt_tokens = 0
+        total_generation_tokens = 0
+        remaining_tokens = max_tokens
+
+        chunk_iter = tqdm(
+            chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1
+        )
+        for chunk_audio, offset_sec in chunk_iter:
+            # Stop if we've exhausted the token budget
+            if remaining_tokens <= 0:
+                break
+
+            actual_chunk_duration = len(chunk_audio) / self.sample_rate
+
+            text, prompt_toks, gen_toks = self._generate_single_chunk(
+                chunk_audio,
+                max_tokens=remaining_tokens,
+                sampler=sampler,
+                generation_stream=generation_stream,
+                verbose=verbose and len(chunks) == 1,
+            )
+            all_texts.append(text)
+            total_prompt_tokens += prompt_toks
+            total_generation_tokens += gen_toks
+            remaining_tokens -= gen_toks
+
+            # Create segment for this chunk
+            segments.append(
+                {
+                    "text": text,
+                    "start": offset_sec,
+                    "end": offset_sec + actual_chunk_duration,
+                }
+            )
+
+            # Clear cache between chunks
+            mx.clear_cache()
+
         end_time = time.time()
 
         if verbose:
             print()
 
-        # Clear cache after generation
-        mx.clear_cache()
-
-        text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # Combine transcriptions
+        full_text = " ".join(all_texts)
 
         return STTOutput(
-            text=text.strip(),
-            prompt_tokens=input_ids.shape[1],
-            generation_tokens=len(generated_tokens),
-            total_tokens=input_ids.shape[1] + len(generated_tokens),
+            text=full_text.strip(),
+            segments=segments,
+            prompt_tokens=total_prompt_tokens,
+            generation_tokens=total_generation_tokens,
+            total_tokens=total_prompt_tokens + total_generation_tokens,
             total_time=end_time - start_time,
-            prompt_tps=input_ids.shape[1] / (end_time - start_time),
-            generation_tps=len(generated_tokens) / (end_time - start_time),
+            prompt_tps=(
+                total_prompt_tokens / (end_time - start_time)
+                if end_time > start_time
+                else 0
+            ),
+            generation_tps=(
+                total_generation_tokens / (end_time - start_time)
+                if end_time > start_time
+                else 0
+            ),
         )
+
+    def _generate_chunk_stream(
+        self,
+        audio_chunk: np.ndarray,
+        offset_sec: float,
+        chunk_duration: float,
+        *,
+        remaining_tokens: int = 128,
+        sampler: Optional[Callable] = None,
+        verbose: bool = False,
+        is_last_chunk: bool = False,
+        total_prompt_tokens: int = 0,
+        total_generation_tokens: int = 0,
+    ) -> Generator[StreamingResult, None, None]:
+        """Generate streaming results for a single audio chunk.
+
+        Args:
+            remaining_tokens: How many tokens can still be generated (global budget).
+
+        Yields:
+            StreamingResult objects for this chunk. The chunk-final result
+            includes token counts (prompt_tokens, generation_tokens).
+        """
+        # Preprocess chunk to mel spectrogram
+        mel = self._preprocess_audio(audio_chunk)
+
+        # Encode audio
+        audio_embeds, audio_len = self.audio_encoder(mel)
+        mx.eval(audio_embeds)
+
+        prompt_text = "<|user|>\n<|begin_of_audio|>"
+        tokens = self._tokenizer.encode(prompt_text)
+
+        audio_placeholder_tokens = [0] * audio_len
+        tokens.extend(audio_placeholder_tokens)
+
+        end_prompt = (
+            "<|end_of_audio|>\nPlease transcribe this audio into text<|assistant|>\n"
+        )
+        tokens.extend(self._tokenizer.encode(end_prompt))
+
+        input_ids = mx.array([tokens])
+        chunk_prompt_tokens = input_ids.shape[1]
+
+        audio_start = len(self._tokenizer.encode("<|user|>\n<|begin_of_audio|>"))
+        audio_offsets = [[audio_start]]
+        audio_length = [[audio_len]]
+
+        token_count = 0
+
+        for token, _ in self.stream_generate(
+            input_ids=input_ids,
+            audio_embeds=audio_embeds,
+            audio_offsets=audio_offsets,
+            audio_length=audio_length,
+            max_tokens=remaining_tokens,
+            sampler=sampler,
+            verbose=verbose,
+        ):
+            text = self._tokenizer.decode([int(token)])
+
+            # Estimate timing based on token position within chunk
+            prev_progress = token_count / max(remaining_tokens, 1)
+            token_count += 1
+            curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
+
+            estimated_start = offset_sec + (chunk_duration * prev_progress)
+            estimated_end = offset_sec + (chunk_duration * curr_progress)
+
+            yield StreamingResult(
+                text=text,
+                is_final=False,
+                start_time=estimated_start,
+                end_time=estimated_end,
+                language="en",
+            )
+
+        # Update totals with this chunk's counts
+        total_prompt_tokens += chunk_prompt_tokens
+        total_generation_tokens += token_count
+
+        # Yield chunk-final result with token counts
+        yield StreamingResult(
+            text="",
+            is_final=is_last_chunk,
+            start_time=offset_sec,
+            end_time=offset_sec + chunk_duration,
+            language="en",
+            prompt_tokens=total_prompt_tokens,
+            generation_tokens=total_generation_tokens,
+        )
+
+        # Clear cache after chunk
+        mx.clear_cache()
+
+    def stream_transcribe(
+        self,
+        audio,
+        *,
+        max_tokens: int = 128,
+        temperature: float = 0.0,
+        top_p: float = 0.95,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        min_tokens_to_keep: int = 1,
+        chunk_duration: float = 30.0,
+        min_chunk_duration: float = 1.0,
+        verbose: bool = False,
+    ) -> Generator[StreamingResult, None, None]:
+        """Stream transcription token-by-token from audio.
+
+        Automatically chunks long audio and streams tokens from each chunk sequentially.
+
+        Args:
+            audio: Audio path (str), waveform (mx.array/np.ndarray), or mel spectrogram
+            max_tokens: Maximum tokens to generate per chunk
+            temperature: Sampling temperature (0 = greedy)
+            top_p: Top-p sampling parameter
+            top_k: Top-k sampling parameter
+            min_p: Minimum probability threshold
+            min_tokens_to_keep: Minimum tokens to keep in sampling
+            chunk_duration: Maximum chunk duration in seconds (default: 30)
+            min_chunk_duration: Minimum chunk duration in seconds (default: 1.0)
+            verbose: Print progress during generation
+
+        Yields:
+            StreamingResult objects with text, timing, and status information.
+        """
+        from mlx_lm.sample_utils import make_sampler
+
+        from mlx_audio.stt.utils import load_audio
+
+        # Load audio
+        if isinstance(audio, str):
+            audio = load_audio(audio, sr=self.sample_rate)
+        if isinstance(audio, mx.array):
+            audio = np.array(audio)
+
+        # Split into chunks
+        chunks = split_audio_into_chunks(
+            audio,
+            sr=self.sample_rate,
+            chunk_duration=chunk_duration,
+            min_chunk_duration=min_chunk_duration,
+        )
+
+        sampler = make_sampler(
+            temperature,
+            top_p,
+            min_p,
+            min_tokens_to_keep=min_tokens_to_keep,
+            top_k=top_k,
+        )
+
+        # Track token counts across chunks
+        total_prompt_tokens = 0
+        total_generation_tokens = 0
+        remaining_tokens = max_tokens
+
+        # Process each chunk
+        chunk_iter = tqdm(
+            enumerate(chunks),
+            total=len(chunks),
+            desc="Processing chunks",
+            disable=not verbose or len(chunks) == 1,
+        )
+
+        for chunk_idx, (chunk_audio, offset_sec) in chunk_iter:
+
+            actual_chunk_duration = len(chunk_audio) / self.sample_rate
+            is_last_chunk = chunk_idx == len(chunks) - 1
+            prev_gen_tokens = total_generation_tokens
+
+            for result in self._generate_chunk_stream(
+                chunk_audio,
+                offset_sec,
+                actual_chunk_duration,
+                remaining_tokens=remaining_tokens,
+                sampler=sampler,
+                verbose=verbose and len(chunks) == 1,
+                is_last_chunk=is_last_chunk,
+                total_prompt_tokens=total_prompt_tokens,
+                total_generation_tokens=total_generation_tokens,
+            ):
+                # Track cumulative token counts from chunk-final results
+                if result.prompt_tokens > 0 or result.generation_tokens > 0:
+                    total_prompt_tokens = result.prompt_tokens
+                    total_generation_tokens = result.generation_tokens
+
+                yield result
+
+            chunk_gen_tokens = total_generation_tokens - prev_gen_tokens
+            remaining_tokens -= chunk_gen_tokens
+
+            if remaining_tokens <= 0:
+                # Yield final result
+                yield StreamingResult(
+                    text="",
+                    is_final=True,
+                    start_time=offset_sec,
+                    end_time=offset_sec,
+                    language="en",
+                    prompt_tokens=total_prompt_tokens,
+                    generation_tokens=total_generation_tokens,
+                )
+                break
