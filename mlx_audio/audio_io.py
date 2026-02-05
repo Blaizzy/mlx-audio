@@ -430,7 +430,21 @@ def write(
     else:
         nchannels = data.shape[1]
 
-    if format == "wav":
+    if format == "pcm" or format == "raw":
+        # Flatten for miniaudio (interleaved)
+        if data.ndim == 1:
+            pcm_bytes = data.tobytes()
+        else:
+            pcm_bytes = data.flatten().tobytes()
+
+        if isinstance(file, io.BytesIO):
+            file.write(pcm_bytes)
+            file.seek(0)
+        else:
+            with open(file, "wb") as f:
+                f.write(pcm_bytes)
+
+    elif format == "wav":
         import array
 
         # Flatten for miniaudio (interleaved)
