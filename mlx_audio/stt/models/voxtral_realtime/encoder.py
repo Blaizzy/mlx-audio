@@ -7,6 +7,11 @@
 - SwiGLU FFN
 - Selective biases (wq/wv/wo yes, wk no; w2 only in FFN)
 - 4x downsample + adapter MLP
+
+Optimizations:
+- RoPE frequencies computed once and shared across all 32 layers
+- Attention mask computed once and shared across all 32 layers
+- Interleave via stack+reshape instead of indexed assignment
 """
 
 import math
@@ -32,10 +37,8 @@ def _interleaved_rope(x, cos, sin, n_heads, head_dim):
     sin = sin[:, None, :]
     o1 = x1 * cos - x2 * sin
     o2 = x2 * cos + x1 * sin
-    # Interleave back
-    out = mx.zeros_like(x)
-    out[..., ::2] = o1
-    out[..., 1::2] = o2
+    # Interleave back via stack (avoids indexed assignment on zeros)
+    out = mx.stack([o1, o2], axis=-1).reshape(seq_len, n_heads, head_dim)
     return out.reshape(seq_len, n_heads * head_dim)
 
 
@@ -88,29 +91,26 @@ class EncoderAttention(nn.Module):
         self.wv = nn.Linear(config.dim, attn_dim, bias=True)
         self.wo = nn.Linear(attn_dim, config.dim, bias=True)
 
-    def __call__(self, x, positions):
+    def __call__(self, x, rope_cos, rope_sin, mask):
+        """
+        Args:
+            x: [seq, dim]
+            rope_cos, rope_sin: precomputed [seq, head_dim // 2]
+            mask: precomputed [1, 1, seq, seq] additive mask
+        """
         seq_len = x.shape[0]
-        q = self.wq(x)  # [seq, n_heads * head_dim]
+        q = self.wq(x)
         k = self.wk(x)
         v = self.wv(x)
 
-        # RoPE
-        cos, sin = _compute_rope_freqs(positions, self.head_dim, self.rope_theta)
-        q = _interleaved_rope(q, cos, sin, self.n_heads, self.head_dim)
-        k = _interleaved_rope(k, cos, sin, self.n_heads, self.head_dim)
+        # RoPE (using pre-computed frequencies)
+        q = _interleaved_rope(q, rope_cos, rope_sin, self.n_heads, self.head_dim)
+        k = _interleaved_rope(k, rope_cos, rope_sin, self.n_heads, self.head_dim)
 
-        # Reshape for attention: [1, n_heads, seq, head_dim] (MLX expects B,H,T,D)
+        # Reshape for attention: [1, n_heads, seq, head_dim]
         q = q.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
-
-        # Build causal sliding window mask [1, 1, seq_q, seq_k]
-        # MLX scaled_dot_product_attention: additive mask (0 = attend, -inf = block)
-        qi = mx.arange(seq_len)[:, None]
-        ki = mx.arange(seq_len)[None, :]
-        causal = ki <= qi
-        window = ki >= (qi - self.sliding_window + 1)
-        mask = mx.where(causal & window, mx.array(0.0), mx.array(-1e9))
 
         scale = 1.0 / math.sqrt(self.head_dim)
         attn_out = mx.fast.scaled_dot_product_attention(
@@ -136,10 +136,10 @@ class EncoderLayer(nn.Module):
         self.feed_forward_w3 = nn.Linear(config.dim, config.hidden_dim, bias=False)
         self.feed_forward_w2 = nn.Linear(config.hidden_dim, config.dim, bias=True)
 
-    def __call__(self, x, positions):
+    def __call__(self, x, rope_cos, rope_sin, mask):
         # Attention
         h = self.attention_norm(x)
-        h = self.attention(h, positions)
+        h = self.attention(h, rope_cos, rope_sin, mask)
         x = x + h
 
         # SwiGLU FFN
@@ -166,10 +166,8 @@ class AudioEncoder(nn.Module):
         self.transformer_layers = [EncoderLayer(config) for _ in range(config.n_layers)]
         self.transformer_norm = nn.RMSNorm(config.dim, eps=config.norm_eps)
 
-        # Adapter MLP: Linear(dim*4 -> decoder_dim) -> GELU -> Linear(decoder_dim -> decoder_dim)
-        # Note: adapter weights are loaded separately via sanitize, dims set by weight shapes
+        # Adapter MLP
         adapter_input_dim = config.dim * config.downsample_factor  # 5120
-        # Decoder dim will be set from weights; default to 3072
         decoder_dim = 3072
         self.audio_language_projection_0 = nn.Linear(
             adapter_input_dim, decoder_dim, bias=False
@@ -203,10 +201,22 @@ class AudioEncoder(nn.Module):
             x = x[trunc:]
             seq_len = x.shape[0]
 
-        # Transformer layers
+        # Pre-compute RoPE frequencies once for all 32 layers
         positions = mx.arange(seq_len)
+        rope_cos, rope_sin = _compute_rope_freqs(
+            positions, self.config.head_dim, self.config.rope_theta
+        )
+
+        # Pre-compute causal sliding window mask once for all 32 layers
+        qi = mx.arange(seq_len)[:, None]
+        ki = mx.arange(seq_len)[None, :]
+        causal = ki <= qi
+        window = ki >= (qi - self.config.sliding_window + 1)
+        mask = mx.where(causal & window, mx.array(0.0), mx.array(-1e9))
+
+        # Transformer layers (reuse rope + mask)
         for layer in self.transformer_layers:
-            x = layer(x, positions)
+            x = layer(x, rope_cos, rope_sin, mask)
 
         # Final norm
         x = self.transformer_norm(x)

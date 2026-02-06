@@ -8,6 +8,10 @@ Inference pipeline:
 5. For each position: input = audio_embed + tok_embed(token_id)
 6. Prefill decoder, then autoregressive generation until EOS
 7. Decode tokens via Tekken tokenizer
+
+Optimizations:
+- Explicit mx.eval after prefill and periodically during decode to bound graph size
+- Sampling uses logits directly (skips softmax+log round-trip)
 """
 
 import math
@@ -102,7 +106,7 @@ class Model(nn.Module):
         return np.array(audio_input).flatten().astype(np.float32)
 
     def _encode_and_prefill(self, audio_np, verbose=False):
-        """Shared encoder + prefill logic. Returns (adapter_out, prompt_len, cache, start_time)."""
+        """Shared encoder + prefill logic. Returns (adapter_out, n_audio, prompt_len, logits, cache, start_time)."""
         start_time = time.time()
 
         n_delay = _num_delay_tokens(self.config.transcription_delay_ms)
@@ -129,12 +133,14 @@ class Model(nn.Module):
             print(f"Audio: {len(audio_np)} samples ({len(audio_np)/SAMPLE_RATE:.1f}s)")
             print(f"Padded: {len(padded)} samples, Mel: {mel.shape[1]} frames")
 
+        # Encoder: force materialization to get timing and free mel memory
         adapter_out = self.encoder(mel)
         mx.eval(adapter_out)
+        encoder_time = time.time() - start_time
 
         n_audio = adapter_out.shape[0]
         if verbose:
-            print(f"Adapter output: {n_audio} tokens")
+            print(f"Encoder: {n_audio} tokens in {encoder_time:.3f}s")
 
         prompt_len = 1 + n_left + n_delay
         prompt_ids = [self.config.bos_token_id] + [
@@ -148,6 +154,8 @@ class Model(nn.Module):
         if verbose:
             print(f"Prompt: {prompt_len} tokens, Audio span: {n_audio} tokens")
 
+        # Prefill: process all prompt tokens except last, then last separately
+        prefill_start = time.time()
         if prompt_len > 1:
             h, cache = self.decoder.forward(prefix_embeds[:-1], start_pos=0)
         else:
@@ -157,6 +165,14 @@ class Model(nn.Module):
             prefix_embeds[-1:], start_pos=prompt_len - 1, cache=cache
         )
         logits = self.decoder.logits(h.squeeze(0))
+        # Force materialization of prefill: logits for first token + all cache tensors
+        cache_arrays = [t for lc in cache for t in lc[:2]]
+        mx.eval(logits, *cache_arrays)
+
+        if verbose:
+            prefill_time = time.time() - prefill_start
+            print(f"Prefill: {prompt_len} tokens in {prefill_time:.3f}s "
+                  f"({prompt_len / prefill_time:.0f} tok/s)")
 
         return adapter_out, n_audio, prompt_len, logits, cache, start_time
 
@@ -182,6 +198,7 @@ class Model(nn.Module):
         token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
         generated = [token]
 
+        decode_start = time.time()
         for pos in range(prompt_len, n_audio):
             if token == self.config.eos_token_id:
                 break
@@ -199,6 +216,14 @@ class Model(nn.Module):
         text = self._tokenizer.decode(generated).strip()
         end_time = time.time()
         total_time = end_time - start_time
+        decode_time = end_time - decode_start
+
+        if verbose:
+            n_gen = len(generated)
+            print(f"Decode: {n_gen} tokens in {decode_time:.3f}s "
+                  f"({n_gen / decode_time:.0f} tok/s, "
+                  f"{decode_time / max(n_gen, 1) * 1000:.1f} ms/tok)")
+            print(f"Total: {total_time:.3f}s")
 
         mx.clear_cache()
 
@@ -209,7 +234,7 @@ class Model(nn.Module):
             total_tokens=prompt_len + len(generated),
             total_time=total_time,
             prompt_tps=prompt_len / total_time if total_time > 0 else 0,
-            generation_tps=len(generated) / total_time if total_time > 0 else 0,
+            generation_tps=len(generated) / decode_time if decode_time > 0 else 0,
         )
 
     def _generate_stream(self, audio_np, max_tokens, temperature, verbose):
@@ -236,7 +261,7 @@ class Model(nn.Module):
             token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
             generated.append(token)
 
-            # Yield text delta
+            # Yield text delta (filter EOS from partial decode)
             text_so_far = self._tokenizer.decode(
                 [t for t in generated if t != self.config.eos_token_id]
             )
@@ -250,8 +275,8 @@ class Model(nn.Module):
         mx.clear_cache()
 
     def _sample(self, logits, temperature):
-        probs = mx.softmax(logits / temperature, axis=-1)
-        return int(mx.random.categorical(mx.log(probs)).item())
+        # categorical accepts unnormalized logits directly — no softmax+log needed
+        return int(mx.random.categorical(logits * (1.0 / temperature)).item())
 
     def sanitize(self, weights):
         """Map weight names from consolidated.safetensors to our module structure."""
