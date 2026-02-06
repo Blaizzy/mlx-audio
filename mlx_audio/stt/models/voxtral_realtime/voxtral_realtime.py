@@ -13,7 +13,7 @@ Inference pipeline:
 import math
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -85,9 +85,25 @@ class Model(nn.Module):
             self._mel_filters = mx.array(filters_np, dtype=mx.float32)
         return self._mel_filters
 
+    def _load_audio(self, audio_input: Union[str, Path, List[mx.array], mx.array, np.ndarray]) -> np.ndarray:
+        """Load and resample audio from file path or array to 16kHz float32 numpy."""
+        if isinstance(audio_input, (str, Path)):
+            import soundfile as sf
+            audio_np, sr = sf.read(str(audio_input), dtype="float32")
+            audio_np = audio_np.flatten()
+            if sr != SAMPLE_RATE:
+                # Resample to 16kHz
+                from scipy.signal import resample
+                n_samples = int(len(audio_np) * SAMPLE_RATE / sr)
+                audio_np = resample(audio_np, n_samples).astype(np.float32)
+            return audio_np
+        if isinstance(audio_input, list):
+            audio_input = audio_input[0]
+        return np.array(audio_input).flatten().astype(np.float32)
+
     def generate(
         self,
-        audio: List[mx.array],
+        audio: Union[str, Path, List[mx.array], mx.array],
         *,
         max_tokens: int = 4096,
         temperature: float = 0.0,
@@ -96,11 +112,7 @@ class Model(nn.Module):
     ) -> STTOutput:
         start_time = time.time()
 
-        # Handle list input (mlx-audio convention)
-        if isinstance(audio, list):
-            audio = audio[0] if len(audio) == 1 else audio[0]
-
-        audio_np = np.array(audio).flatten().astype(np.float32)
+        audio_np = self._load_audio(audio)
 
         # Compute streaming parameters
         n_delay = _num_delay_tokens(self.config.transcription_delay_ms)
