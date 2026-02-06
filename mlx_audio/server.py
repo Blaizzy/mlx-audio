@@ -311,13 +311,16 @@ async def generate_audio(model, payload: SpeechRequest):
             if sample_rate is None:
                 sample_rate = result.sample_rate
 
-    if not payload.stream and audio_chunks:
-        concatenated_audio = np.concatenate(audio_chunks)
-        buffer = io.BytesIO()
-        audio_write(
-            buffer, concatenated_audio, sample_rate, format=payload.response_format
-        )
-        yield buffer.getvalue()
+    if payload.stream:
+        return
+
+    if not audio_chunks:
+        raise HTTPException(status_code=400, detail="No audio generated")
+
+    concatenated_audio = np.concatenate(audio_chunks)
+    buffer = io.BytesIO()
+    audio_write(buffer, concatenated_audio, sample_rate, format=payload.response_format)
+    yield buffer.getvalue()
 
 
 @app.post("/v1/audio/speech")
