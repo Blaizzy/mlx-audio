@@ -22,6 +22,7 @@ from urllib.parse import unquote
 
 import mlx.core as mx
 import numpy as np
+import soxr
 import uvicorn
 import webrtcvad
 from fastapi import (
@@ -170,6 +171,7 @@ class SpeechRequest(BaseModel):
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
+    target_sample_rate: int = 24000
     verbose: bool = False
 
 
@@ -277,6 +279,8 @@ async def generate_audio(model, payload: SpeechRequest):
             ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
         )
 
+    resampler = None
+
     for result in model.generate(
         payload.input,
         voice=payload.voice,
@@ -296,11 +300,41 @@ async def generate_audio(model, payload: SpeechRequest):
         verbose=payload.verbose,
     ):
 
+        audio = result.audio
         sample_rate = result.sample_rate
+
+        # Resample if necessary.
+        if sample_rate != payload.target_sample_rate:
+            if resampler is None:
+                nchannels = 1 if audio.ndim == 1 else audio.shape[1]
+                resampler = soxr.ResampleStream(
+                    sample_rate, payload.target_sample_rate, nchannels, "float32", "HQ"
+                )
+
+            audio = resampler.resample_chunk(
+                np.array(audio)
+            )  # audio is mx.array of float32
+
         buffer = io.BytesIO()
-        audio_write(buffer, result.audio, sample_rate, format=payload.response_format)
+        audio_write(
+            buffer, audio, payload.target_sample_rate, format=payload.response_format
+        )
         buffer.seek(0)
         yield buffer.getvalue()
+
+    # Flush resampler buffer and output last chunk, if any.
+    if resampler is not None:
+        final_chunk = resampler.resample_chunk(np.array([], np.float32), last=True)
+        if final_chunk.size > 0:
+            buffer = io.BytesIO()
+            audio_write(
+                buffer,
+                final_chunk,
+                payload.target_sample_rate,
+                format=payload.response_format,
+            )
+            buffer.seek(0)
+            yield buffer.getvalue()
 
 
 @app.post("/v1/audio/speech")
