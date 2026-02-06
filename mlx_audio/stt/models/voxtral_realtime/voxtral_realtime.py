@@ -101,28 +101,16 @@ class Model(nn.Module):
             audio_input = audio_input[0]
         return np.array(audio_input).flatten().astype(np.float32)
 
-    def generate(
-        self,
-        audio: Union[str, Path, List[mx.array], mx.array],
-        *,
-        max_tokens: int = 4096,
-        temperature: float = 0.0,
-        verbose: bool = False,
-        **kwargs,
-    ) -> STTOutput:
+    def _encode_and_prefill(self, audio_np, verbose=False):
+        """Shared encoder + prefill logic. Returns (adapter_out, prompt_len, cache, start_time)."""
         start_time = time.time()
 
-        audio_np = self._load_audio(audio)
-
-        # Compute streaming parameters
         n_delay = _num_delay_tokens(self.config.transcription_delay_ms)
         n_left = self.config.n_left_pad_tokens
         n_right = (n_delay + 1) + 10
 
-        # Pad audio
         padded = _pad_audio_streaming(audio_np, n_left, n_right)
 
-        # Mel spectrogram
         aec = self.config.audio_encoding_args
         mel_filters = self._ensure_mel_filters()
         audio_mx = mx.array(padded, dtype=mx.float32)
@@ -134,7 +122,6 @@ class Model(nn.Module):
             global_log_mel_max=aec.global_log_mel_max,
         )
 
-        # Truncate mel to even length for conv stride
         if mel.shape[1] % 2 != 0:
             mel = mel[:, 1:]
 
@@ -142,15 +129,13 @@ class Model(nn.Module):
             print(f"Audio: {len(audio_np)} samples ({len(audio_np)/SAMPLE_RATE:.1f}s)")
             print(f"Padded: {len(padded)} samples, Mel: {mel.shape[1]} frames")
 
-        # Encoder + adapter
-        adapter_out = self.encoder(mel)  # [seq, decoder_dim]
+        adapter_out = self.encoder(mel)
         mx.eval(adapter_out)
 
         n_audio = adapter_out.shape[0]
         if verbose:
             print(f"Adapter output: {n_audio} tokens")
 
-        # Construct prompt: [BOS] + [STREAMING_PAD] * (n_left + n_delay)
         prompt_len = 1 + n_left + n_delay
         prompt_ids = [self.config.bos_token_id] + [
             self.config.streaming_pad_token_id
@@ -163,42 +148,55 @@ class Model(nn.Module):
         if verbose:
             print(f"Prompt: {prompt_len} tokens, Audio span: {n_audio} tokens")
 
-        # Prefill
         if prompt_len > 1:
             h, cache = self.decoder.forward(prefix_embeds[:-1], start_pos=0)
         else:
             cache = None
 
-        # Generate first token from last prefix position
         h, cache = self.decoder.forward(
             prefix_embeds[-1:], start_pos=prompt_len - 1, cache=cache
         )
         logits = self.decoder.logits(h.squeeze(0))
-        token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
 
+        return adapter_out, n_audio, prompt_len, logits, cache, start_time
+
+    def generate(
+        self,
+        audio: Union[str, Path, List[mx.array], mx.array],
+        *,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        verbose: bool = False,
+        stream: bool = False,
+        **kwargs,
+    ):
+        """Transcribe audio. Returns STTOutput, or yields text deltas if stream=True."""
+        audio_np = self._load_audio(audio)
+
+        if stream:
+            return self._generate_stream(audio_np, max_tokens, temperature, verbose)
+
+        adapter_out, n_audio, prompt_len, logits, cache, start_time = \
+            self._encode_and_prefill(audio_np, verbose)
+
+        token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
         generated = [token]
 
-        # Autoregressive generation within audio span
         for pos in range(prompt_len, n_audio):
             if token == self.config.eos_token_id:
                 break
-
             embed = adapter_out[pos] + self.decoder.embed_token(token)
             h, cache = self.decoder.forward(embed[None, :], start_pos=pos, cache=cache)
             logits = self.decoder.logits(h.squeeze(0))
             token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
             generated.append(token)
-
             if len(generated) > max_tokens:
                 break
 
-        # Remove EOS from output
         if generated and generated[-1] == self.config.eos_token_id:
             generated = generated[:-1]
 
-        # Decode
         text = self._tokenizer.decode(generated).strip()
-
         end_time = time.time()
         total_time = end_time - start_time
 
@@ -213,6 +211,43 @@ class Model(nn.Module):
             prompt_tps=prompt_len / total_time if total_time > 0 else 0,
             generation_tps=len(generated) / total_time if total_time > 0 else 0,
         )
+
+    def _generate_stream(self, audio_np, max_tokens, temperature, verbose):
+        """Generator that yields text deltas as tokens are decoded."""
+        adapter_out, n_audio, prompt_len, logits, cache, start_time = \
+            self._encode_and_prefill(audio_np, verbose)
+
+        token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
+        generated = [token]
+        prev_text = ""
+
+        # Yield first token delta
+        text_so_far = self._tokenizer.decode(generated)
+        if text_so_far != prev_text:
+            yield text_so_far[len(prev_text):]
+            prev_text = text_so_far
+
+        for pos in range(prompt_len, n_audio):
+            if token == self.config.eos_token_id:
+                break
+            embed = adapter_out[pos] + self.decoder.embed_token(token)
+            h, cache = self.decoder.forward(embed[None, :], start_pos=pos, cache=cache)
+            logits = self.decoder.logits(h.squeeze(0))
+            token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
+            generated.append(token)
+
+            # Yield text delta
+            text_so_far = self._tokenizer.decode(
+                [t for t in generated if t != self.config.eos_token_id]
+            )
+            if text_so_far != prev_text:
+                yield text_so_far[len(prev_text):]
+                prev_text = text_so_far
+
+            if len(generated) > max_tokens:
+                break
+
+        mx.clear_cache()
 
     def _sample(self, logits, temperature):
         probs = mx.softmax(logits / temperature, axis=-1)
