@@ -208,6 +208,12 @@ class Model(nn.Module):
         verbose = kwargs.pop("verbose", False)
 
         if stream:
+            if chunk_duration is None:
+                chunk_duration = 5.0  # Default chunk duration for stream_generate
+            if (
+                overlap_duration == 15.0
+            ):  # Assume default value, use streaming-appropriate default
+                overlap_duration = 1.0
             return self.stream_generate(
                 audio,
                 dtype=dtype,
@@ -328,6 +334,11 @@ class Model(nn.Module):
         else:
             # mx.array input
             audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
+
+        if overlap_duration > chunk_duration:
+            raise ValueError(
+                f"overlap_duration ({overlap_duration}s) cannot be greater than chunk_duration ({chunk_duration}s)."
+            )
 
         sample_rate = self.preprocessor_config.sample_rate
         total_samples = len(audio_data)
