@@ -32,7 +32,7 @@ def _reset_kv_cache(cache) -> None:
 
 def pad_for_conv1d(x: mx.array, kernel_size: int, stride: int, padding_total: int = 0):
     extra_padding = get_extra_padding_for_conv1d(
-        x, kernel_size=kernel_size, stride=stride, padding_total=padding_total
+        x, ksize=kernel_size, stride=stride, padding_total=padding_total
     )
     if extra_padding <= 0:
         return x

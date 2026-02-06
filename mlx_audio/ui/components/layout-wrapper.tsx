@@ -8,7 +8,7 @@ import { Footer } from "@/components/footer"
 interface LayoutWrapperProps {
   children: ReactNode
   activeTab?: "audio" | "chat" | "video"
-  activePage?: "home" | "text-to-speech" | "speech-to-speech" | "voices" | "speech-to-text"
+  activePage?: "home" | "text-to-speech" | "speech-to-speech" | "voices" | "speech-to-text" | "audio-separation"
 }
 
 export function LayoutWrapper({ children, activeTab = "audio", activePage = "home" }: LayoutWrapperProps) {
