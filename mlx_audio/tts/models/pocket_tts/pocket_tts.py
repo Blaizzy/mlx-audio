@@ -184,10 +184,12 @@ class Model(nn.Module):
     ) -> Iterable[mx.array]:
         if model_state is None:
             model_state = self.get_state_for_audio_prompt(DEFAULT_AUDIO_PROMPT)
+        prompt_num_frames = self._get_flow_cache_num_frames(model_state)
         chunks = split_into_best_sentences(
             self.flow_lm.conditioner.tokenizer, text_to_generate
         )
         for chunk in chunks:
+            self._slice_flow_cache(model_state, prompt_num_frames)
             _, frames_after_eos_guess = prepare_text_prompt(chunk)
             if frames_after_eos is None:
                 frames_after_eos = frames_after_eos_guess + 2
@@ -350,6 +352,14 @@ class Model(nn.Module):
             cache.keys = cache.keys[..., :num_frames, :]
             cache.values = cache.values[..., :num_frames, :]
             cache.offset = min(cache.offset, num_frames)
+
+    def _get_flow_cache_num_frames(self, model_state: dict[str, Any]) -> int:
+        caches = model_state.get("flow_cache", [])
+        for cache in caches:
+            if cache.keys is None:
+                continue
+            return min(cache.offset, cache.keys.shape[2])
+        return 0
 
     def _expand_flow_cache(
         self, model_state: dict[str, Any], sequence_length: int
