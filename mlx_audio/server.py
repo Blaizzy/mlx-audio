@@ -168,6 +168,9 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    stream: bool = False
+    streaming_interval: float = 2.0
+    max_tokens: int = 1200
     verbose: bool = False
 
 
@@ -260,6 +263,8 @@ async def remove_model(model_name: str):
 async def generate_audio(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
+    audio_chunks = []
+    sample_rate = None
     if ref_audio and isinstance(ref_audio, str):
         if not os.path.exists(ref_audio):
             raise HTTPException(
@@ -289,13 +294,29 @@ async def generate_audio(model, payload: SpeechRequest):
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        stream=payload.stream,
+        streaming_interval=payload.streaming_interval,
+        max_tokens=payload.max_tokens,
         verbose=payload.verbose,
     ):
 
-        sample_rate = result.sample_rate
+        if payload.stream:
+            buffer = io.BytesIO()
+            audio_write(
+                buffer, result.audio, result.sample_rate, format=payload.response_format
+            )
+            yield buffer.getvalue()
+        else:
+            audio_chunks.append(result.audio)
+            if sample_rate is None:
+                sample_rate = result.sample_rate
+
+    if not payload.stream and audio_chunks:
+        concatenated_audio = np.concatenate(audio_chunks)
         buffer = io.BytesIO()
-        audio_write(buffer, result.audio, sample_rate, format=payload.response_format)
-        buffer.seek(0)
+        audio_write(
+            buffer, concatenated_audio, sample_rate, format=payload.response_format
+        )
         yield buffer.getvalue()
 
 
