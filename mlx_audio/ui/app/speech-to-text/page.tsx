@@ -80,6 +80,13 @@ export default function SpeechToTextPage() {
 
     let fileName = file.name
 
+    // Store audio as data URL for playback on the detail page
+    const audioDataUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.readAsDataURL(file)
+    })
+
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
@@ -123,6 +130,7 @@ export default function SpeechToTextPage() {
       const data: Record<string, unknown> = {
         fileName,
         text: accumulatedText,
+        audioDataUrl,
         ...(segments.length > 0 ? { segments } : {}),
       }
       localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))
