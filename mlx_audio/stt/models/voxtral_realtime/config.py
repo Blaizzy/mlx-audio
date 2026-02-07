@@ -80,11 +80,16 @@ class DecoderConfig:
 
 @dataclass
 class ModelConfig(BaseModelArgs):
+    """Voxtral Mini 4B Realtime model config.
+
+    Recommended settings: https://huggingface.co/mistralai/Voxtral-Mini-4B-Realtime-2602#recommended-settings
+    """
+
     model_type: str = "voxtral_realtime"
     encoder_args: Optional[EncoderConfig] = None
     decoder: Optional[DecoderConfig] = None
     audio_encoding_args: Optional[AudioEncodingConfig] = None
-    transcription_delay_ms: int = 480
+    transcription_delay_ms: int = 480  # Recommended: 480ms (sweet spot of performance and low latency)
 
     # Derived from decoder
     vocab_size: int = 131072
