@@ -143,6 +143,7 @@ export default function TranscriptViewerPage() {
           language?: string
           date?: string
           duration?: number
+          audioDataUrl?: string
           segments?: Array<{
             start: number
             end: number
@@ -154,7 +155,15 @@ export default function TranscriptViewerPage() {
         setFileName(data.fileName ?? "unknown file")
         setLanguage(data.language ?? "English")
         setDate(data.date ?? "yesterday")
-        setDuration(data.duration ?? 8)
+
+        if (data.audioDataUrl && audioRef.current) {
+          audioRef.current.src = data.audioDataUrl
+          audioRef.current.onloadedmetadata = () => {
+            setDuration(audioRef.current?.duration ?? 8)
+          }
+        } else {
+          setDuration(data.duration ?? 8)
+        }
 
         if (data.segments?.length) {
           const segments = data.segments.map(seg => ({
@@ -454,10 +463,7 @@ export default function TranscriptViewerPage() {
         </div>
 
         {/* Hidden audio element */}
-        <audio ref={audioRef} className="hidden">
-          <source src="/placeholder-audio.mp3" type="audio/mpeg" />
-          Your browser does not support the audio element.
-        </audio>
+        <audio ref={audioRef} className="hidden" />
       </div>
     </LayoutWrapper>
   )

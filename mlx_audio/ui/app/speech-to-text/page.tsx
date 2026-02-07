@@ -80,6 +80,13 @@ export default function SpeechToTextPage() {
 
     let fileName = file.name
 
+    // Store audio as data URL for playback on the detail page
+    const audioDataUrl = await new Promise<string>((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.readAsDataURL(file)
+    })
+
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
 
@@ -88,14 +95,48 @@ export default function SpeechToTextPage() {
         method: "POST",
         body: formData,
       })
-      const data = await res.json()
 
-      // Save the transcription to a JSON file via API
-      data.fileName = fileName
+      // Server returns NDJSON (newline-delimited JSON) stream
+      const reader = res.body?.getReader()
+      const decoder = new TextDecoder()
+      let accumulatedText = ""
+      const segments: Array<{ text: string; start?: number; end?: number }> = []
+
+      if (reader) {
+        let buffer = ""
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split("\n")
+          buffer = lines.pop() || ""
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const chunk = JSON.parse(line)
+              if (chunk.accumulated) {
+                accumulatedText = chunk.accumulated
+              } else if (chunk.text) {
+                accumulatedText += chunk.text
+              }
+              if (chunk.start != null || chunk.end != null) {
+                segments.push({ text: chunk.text, start: chunk.start, end: chunk.end })
+              }
+            } catch { /* skip malformed lines */ }
+          }
+        }
+      }
+
+      const data: Record<string, unknown> = {
+        fileName,
+        text: accumulatedText,
+        audioDataUrl,
+        ...(segments.length > 0 ? { segments } : {}),
+      }
       localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))
       setFiles((prev) =>
         prev.map((f) =>
-          f.id === id ? { ...f, status: "completed", result: data.text } : f
+          f.id === id ? { ...f, status: "completed", result: accumulatedText } : f
         )
       )
     } catch (err) {
