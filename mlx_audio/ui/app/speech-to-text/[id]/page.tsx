@@ -454,10 +454,7 @@ export default function TranscriptViewerPage() {
         </div>
 
         {/* Hidden audio element */}
-        <audio ref={audioRef} className="hidden">
-          <source src="/placeholder-audio.mp3" type="audio/mpeg" />
-          Your browser does not support the audio element.
-        </audio>
+        <audio ref={audioRef} className="hidden" />
       </div>
     </LayoutWrapper>
   )
