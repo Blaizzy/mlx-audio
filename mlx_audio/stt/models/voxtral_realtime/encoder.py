@@ -91,12 +91,13 @@ class EncoderAttention(nn.Module):
         self.wv = nn.Linear(config.dim, attn_dim, bias=True)
         self.wo = nn.Linear(attn_dim, config.dim, bias=True)
 
-    def __call__(self, x, rope_cos, rope_sin, mask):
+    def __call__(self, x, rope_cos, rope_sin, mask, cache=None):
         """
         Args:
             x: [seq, dim]
             rope_cos, rope_sin: precomputed [seq, head_dim // 2]
-            mask: precomputed [1, 1, seq, seq] additive mask
+            mask: precomputed additive mask, or "causal" string
+            cache: optional RotatingKVCache for chunked encoding
         """
         seq_len = x.shape[0]
         q = self.wq(x)
@@ -111,6 +112,10 @@ class EncoderAttention(nn.Module):
         q = q.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
+
+        # Update KV cache if provided (for chunked encoding)
+        if cache is not None:
+            k, v = cache.update_and_fetch(k, v)
 
         scale = 1.0 / math.sqrt(self.head_dim)
         attn_out = mx.fast.scaled_dot_product_attention(
@@ -136,10 +141,10 @@ class EncoderLayer(nn.Module):
         self.feed_forward_w3 = nn.Linear(config.dim, config.hidden_dim, bias=False)
         self.feed_forward_w2 = nn.Linear(config.hidden_dim, config.dim, bias=True)
 
-    def __call__(self, x, rope_cos, rope_sin, mask):
+    def __call__(self, x, rope_cos, rope_sin, mask, cache=None):
         # Attention
         h = self.attention_norm(x)
-        h = self.attention(h, rope_cos, rope_sin, mask)
+        h = self.attention(h, rope_cos, rope_sin, mask, cache=cache)
         x = x + h
 
         # SwiGLU FFN
@@ -176,57 +181,104 @@ class AudioEncoder(nn.Module):
             decoder_dim, decoder_dim, bias=False
         )
 
-    def __call__(self, mel):
+    def conv_stem(self, mel):
+        """Run conv layers and align to downsample_factor.
+
+        Args:
+            mel: [mel_bins, frames] log-mel spectrogram
+
+        Returns:
+            mx.array: [seq, dim] conv output ready for transformer layers
         """
+        x = mel.T[None, :, :]  # [1, frames, 128]
+        x = nn.gelu(self.conv_layers_0_conv(x))
+        x = nn.gelu(self.conv_layers_1_conv(x))
+        x = x.squeeze(0)  # [seq, 1280]
+
+        trunc = x.shape[0] % self.config.downsample_factor
+        if trunc > 0:
+            x = x[trunc:]
+        return x
+
+    def encode_chunks(self, conv_out):
+        """Generator that encodes conv output in sliding-window-sized chunks.
+
+        Processes through all transformer layers with KV caching, yielding
+        layer-normed output per chunk. Each chunk is ready for downsample
+        and projection.
+
+        Args:
+            conv_out: [seq, dim] output from conv_stem()
+
+        Yields:
+            mx.array: [chunk_size, dim] encoded chunk
+        """
+        from mlx_lm.models.cache import RotatingKVCache
+
+        seq_len = conv_out.shape[0]
+        sw = self.config.sliding_window
+        n_layers = len(self.transformer_layers)
+        caches = [RotatingKVCache(max_size=sw, keep=0) for _ in range(n_layers)]
+
+        for chunk_start in range(0, seq_len, sw):
+            chunk_end = min(chunk_start + sw, seq_len)
+            x = conv_out[chunk_start:chunk_end]
+            chunk_len = x.shape[0]
+
+            positions = mx.arange(chunk_start, chunk_end)
+            rope_cos, rope_sin = _compute_rope_freqs(
+                positions, self.config.head_dim, self.config.rope_theta
+            )
+
+            for i, layer in enumerate(self.transformer_layers):
+                mask = caches[i].make_mask(chunk_len, window_size=sw)
+                x = layer(x, rope_cos, rope_sin, mask, cache=caches[i])
+
+            yield self.transformer_norm(x)
+
+    def downsample_and_project(self, encoded):
+        """4x downsample encoder output and project to decoder dim.
+
+        Args:
+            encoded: [seq, dim] encoder output (from encode_chunks or full encode)
+
+        Returns:
+            mx.array: [seq/4, decoder_dim] adapter output
+        """
+        seq_len = encoded.shape[0]
+        ds = self.config.downsample_factor
+        ds_len = seq_len // ds
+        if ds_len == 0:
+            return encoded[:0]  # empty
+        x = encoded[:ds_len * ds].reshape(ds_len, self.config.dim * ds)
+        x = nn.gelu(self.audio_language_projection_0(x))
+        return self.audio_language_projection_2(x)
+
+    def __call__(self, mel):
+        """Full encode: conv stem + all transformer layers + downsample + project.
+
         Args:
             mel: [mel_bins, frames] log-mel spectrogram
 
         Returns:
             mx.array: [seq/4, decoder_dim] adapter output
         """
-        # mel is [128, frames], transpose to [frames, 128] for conv (NLC format)
-        x = mel.T  # [frames, 128]
-        x = x[None, :, :]  # [1, frames, 128]
+        conv_out = self.conv_stem(mel)
+        seq_len = conv_out.shape[0]
+        sw = self.config.sliding_window
 
-        # Conv stem
-        x = nn.gelu(self.conv_layers_0_conv(x))  # [1, frames, 1280]
-        x = nn.gelu(self.conv_layers_1_conv(x))  # [1, frames/2, 1280]
+        # Short sequences: process in one pass (no chunking needed)
+        if seq_len <= sw:
+            positions = mx.arange(seq_len)
+            rope_cos, rope_sin = _compute_rope_freqs(
+                positions, self.config.head_dim, self.config.rope_theta
+            )
+            x = conv_out
+            for layer in self.transformer_layers:
+                x = layer(x, rope_cos, rope_sin, "causal")
+            x = self.transformer_norm(x)
+        else:
+            # Long sequences: use chunked encoding
+            x = mx.concatenate(list(self.encode_chunks(conv_out)), axis=0)
 
-        x = x.squeeze(0)  # [seq, 1280]
-        seq_len = x.shape[0]
-
-        # Left-truncate to multiple of downsample_factor
-        trunc = seq_len % self.config.downsample_factor
-        if trunc > 0:
-            x = x[trunc:]
-            seq_len = x.shape[0]
-
-        # Pre-compute RoPE frequencies once for all 32 layers
-        positions = mx.arange(seq_len)
-        rope_cos, rope_sin = _compute_rope_freqs(
-            positions, self.config.head_dim, self.config.rope_theta
-        )
-
-        # Pre-compute causal sliding window mask once for all 32 layers
-        qi = mx.arange(seq_len)[:, None]
-        ki = mx.arange(seq_len)[None, :]
-        causal = ki <= qi
-        window = ki >= (qi - self.config.sliding_window + 1)
-        mask = mx.where(causal & window, mx.array(0.0), mx.array(-1e9))
-
-        # Transformer layers (reuse rope + mask)
-        for layer in self.transformer_layers:
-            x = layer(x, rope_cos, rope_sin, mask)
-
-        # Final norm
-        x = self.transformer_norm(x)
-
-        # 4x downsample: [seq, 1280] -> [seq/4, 5120]
-        ds_len = seq_len // self.config.downsample_factor
-        x = x.reshape(ds_len, self.config.dim * self.config.downsample_factor)
-
-        # Adapter MLP
-        x = nn.gelu(self.audio_language_projection_0(x))
-        x = self.audio_language_projection_2(x)
-
-        return x  # [seq/4, decoder_dim]
+        return self.downsample_and_project(x)

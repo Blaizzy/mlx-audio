@@ -105,10 +105,8 @@ class Model(nn.Module):
             audio_input = audio_input[0]
         return np.array(audio_input).flatten().astype(np.float32)
 
-    def _encode_and_prefill(self, audio_np, verbose=False):
-        """Shared encoder + prefill logic. Returns (adapter_out, n_audio, prompt_len, logits, cache, start_time)."""
-        start_time = time.time()
-
+    def _prepare_mel(self, audio_np):
+        """Prepare mel spectrogram from audio numpy array."""
         n_delay = _num_delay_tokens(self.config.transcription_delay_ms)
         n_left = self.config.n_left_pad_tokens
         n_right = (n_delay + 1) + 10
@@ -129,20 +127,60 @@ class Model(nn.Module):
         if mel.shape[1] % 2 != 0:
             mel = mel[:, 1:]
 
+        return mel, n_delay
+
+    def _encode_and_prefill(self, audio_np, verbose=False):
+        """Shared encoder + prefill logic with incremental encoding.
+
+        Only encodes the first audio chunk before prefill, deferring the
+        rest to the autoregressive loop. Returns a chunk generator for
+        on-demand encoding of remaining audio.
+
+        Returns:
+            (adapter_out, n_audio_total, prompt_len, logits, cache,
+             enc_chunk_gen, start_time)
+        """
+        start_time = time.time()
+
+        mel, n_delay = self._prepare_mel(audio_np)
+
         if verbose:
             print(f"Audio: {len(audio_np)} samples ({len(audio_np)/SAMPLE_RATE:.1f}s)")
-            print(f"Padded: {len(padded)} samples, Mel: {mel.shape[1]} frames")
+            print(f"Mel: {mel.shape[1]} frames")
 
-        # Encoder: force materialization to get timing and free mel memory
-        adapter_out = self.encoder(mel)
-        mx.eval(adapter_out)
+        # Run conv stem (cheap, ~10ms) and compute total audio token count
+        conv_out = self.encoder.conv_stem(mel)
+        ds = self.encoder.config.downsample_factor
+        n_audio_total = conv_out.shape[0] // ds
+
+        # Incremental encoding: get chunk generator
+        enc_chunk_gen = self.encoder.encode_chunks(conv_out)
+
+        # Encode enough chunks for prefill
+        n_left = self.config.n_left_pad_tokens
+        prompt_len = 1 + n_left + n_delay
+        adapter_chunks = []
+        adapter_len = 0
+
+        while adapter_len < prompt_len:
+            try:
+                chunk_out = next(enc_chunk_gen)
+                chunk_adapter = self.encoder.downsample_and_project(chunk_out)
+                mx.eval(chunk_adapter)
+                adapter_chunks.append(chunk_adapter)
+                adapter_len += chunk_adapter.shape[0]
+            except StopIteration:
+                enc_chunk_gen = None
+                break
+
+        adapter_out = mx.concatenate(adapter_chunks, axis=0) if adapter_chunks else None
         encoder_time = time.time() - start_time
 
-        n_audio = adapter_out.shape[0]
         if verbose:
-            print(f"Encoder: {n_audio} tokens in {encoder_time:.3f}s")
+            print(f"Encoder (first chunk): {adapter_len} tokens in {encoder_time:.3f}s")
+            print(f"Total audio tokens: {n_audio_total}")
 
-        prompt_len = 1 + n_left + n_delay
+        # Build prompt embeddings
         prompt_ids = [self.config.bos_token_id] + [
             self.config.streaming_pad_token_id
         ] * (n_left + n_delay)
@@ -152,9 +190,9 @@ class Model(nn.Module):
         prefix_embeds = adapter_out[:prompt_len] + prompt_text_embeds
 
         if verbose:
-            print(f"Prompt: {prompt_len} tokens, Audio span: {n_audio} tokens")
+            print(f"Prompt: {prompt_len} tokens, Audio span: {n_audio_total} tokens")
 
-        # Prefill: process all prompt tokens except last, then last separately
+        # Prefill
         prefill_start = time.time()
         if prompt_len > 1:
             h, cache = self.decoder.forward(prefix_embeds[:-1], start_pos=0)
@@ -165,7 +203,6 @@ class Model(nn.Module):
             prefix_embeds[-1:], start_pos=prompt_len - 1, cache=cache
         )
         logits = self.decoder.logits(h.squeeze(0))
-        # Force materialization of prefill: logits for first token + all cache tensors
         cache_arrays = [t for lc in cache for t in lc[:2]]
         mx.eval(logits, *cache_arrays)
 
@@ -174,7 +211,7 @@ class Model(nn.Module):
             print(f"Prefill: {prompt_len} tokens in {prefill_time:.3f}s "
                   f"({prompt_len / prefill_time:.0f} tok/s)")
 
-        return adapter_out, n_audio, prompt_len, logits, cache, start_time
+        return adapter_out, n_audio_total, prompt_len, logits, cache, enc_chunk_gen, start_time
 
     def generate(
         self,
@@ -192,9 +229,10 @@ class Model(nn.Module):
         if stream:
             return self._generate_stream(audio_np, max_tokens, temperature, verbose)
 
-        adapter_out, n_audio, prompt_len, logits, cache, start_time = \
+        adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = \
             self._encode_and_prefill(audio_np, verbose)
 
+        adapter_len = adapter_out.shape[0]
         token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
         generated = [token]
 
@@ -202,7 +240,23 @@ class Model(nn.Module):
         for pos in range(prompt_len, n_audio):
             if token == self.config.eos_token_id:
                 break
-            embed = adapter_out[pos] + self.decoder.embed_token(token)
+
+            # Encode more audio chunks on demand
+            if enc_chunk_gen is not None and pos >= adapter_len:
+                try:
+                    chunk_out = next(enc_chunk_gen)
+                    chunk_adapter = self.encoder.downsample_and_project(chunk_out)
+                    mx.eval(chunk_adapter)
+                    adapter_out = mx.concatenate([adapter_out, chunk_adapter], axis=0)
+                    adapter_len = adapter_out.shape[0]
+                except StopIteration:
+                    enc_chunk_gen = None
+
+            if pos < adapter_len:
+                embed = adapter_out[pos] + self.decoder.embed_token(token)
+            else:
+                embed = self.decoder.embed_token(token)
+
             h, cache = self.decoder.forward(embed[None, :], start_pos=pos, cache=cache)
             logits = self.decoder.logits(h.squeeze(0))
             token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
@@ -239,9 +293,10 @@ class Model(nn.Module):
 
     def _generate_stream(self, audio_np, max_tokens, temperature, verbose):
         """Generator that yields text deltas as tokens are decoded."""
-        adapter_out, n_audio, prompt_len, logits, cache, start_time = \
+        adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = \
             self._encode_and_prefill(audio_np, verbose)
 
+        adapter_len = adapter_out.shape[0]
         token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
         generated = [token]
         prev_text = ""
@@ -255,7 +310,23 @@ class Model(nn.Module):
         for pos in range(prompt_len, n_audio):
             if token == self.config.eos_token_id:
                 break
-            embed = adapter_out[pos] + self.decoder.embed_token(token)
+
+            # Encode more audio chunks on demand
+            if enc_chunk_gen is not None and pos >= adapter_len:
+                try:
+                    chunk_out = next(enc_chunk_gen)
+                    chunk_adapter = self.encoder.downsample_and_project(chunk_out)
+                    mx.eval(chunk_adapter)
+                    adapter_out = mx.concatenate([adapter_out, chunk_adapter], axis=0)
+                    adapter_len = adapter_out.shape[0]
+                except StopIteration:
+                    enc_chunk_gen = None
+
+            if pos < adapter_len:
+                embed = adapter_out[pos] + self.decoder.embed_token(token)
+            else:
+                embed = self.decoder.embed_token(token)
+
             h, cache = self.decoder.forward(embed[None, :], start_pos=pos, cache=cache)
             logits = self.decoder.logits(h.squeeze(0))
             token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
