@@ -27,6 +27,7 @@ export default function SpeechToTextPage() {
   const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo-asr-fp16")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
+  const [maxTokens, setMaxTokens] = useState(4096)
 
   // New state for stored transcriptions
   const [storedTranscriptions, setStoredTranscriptions] = useState<{ id: string; data: any }[]>([])
@@ -77,6 +78,7 @@ export default function SpeechToTextPage() {
     formData.append("language", primaryLanguage === "Detect" ? "en" : primaryLanguage.toLowerCase())
     formData.append("response_format", "verbose_json")
     formData.append("temperature", "0")
+    formData.append("max_tokens", maxTokens.toString())
 
     let fileName = file.name
 
@@ -390,6 +392,33 @@ export default function SpeechToTextPage() {
                 placeholder="Enter model name"
                 className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
               />
+            </div>
+
+            <div className="mb-6">
+              <div className="flex justify-between items-center mb-2">
+                <label className="block text-sm font-medium">Max tokens</label>
+                <span className="text-sm text-gray-500 dark:text-gray-400">{maxTokens}</span>
+              </div>
+              <div className="flex items-center space-x-3">
+                <input
+                  type="range"
+                  min={64}
+                  max={16384}
+                  step={64}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(Number(e.target.value))}
+                  className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer accent-sky-500"
+                />
+                <input
+                  type="number"
+                  min={64}
+                  max={16384}
+                  step={64}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(Math.max(64, Math.min(16384, Number(e.target.value))))}
+                  className="w-20 rounded-lg border border-gray-200 dark:border-gray-700 px-2 py-1.5 text-sm bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+              </div>
             </div>
 
             <div className="mb-6">

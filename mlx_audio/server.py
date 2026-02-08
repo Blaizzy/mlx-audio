@@ -178,7 +178,7 @@ class TranscriptionRequest(BaseModel):
     model: str
     language: str | None = None
     verbose: bool = False
-    max_tokens: int | None = None
+    max_tokens: int = 4096
     chunk_duration: float = 30.0
     frame_threshold: int = 25
     stream: bool = False
@@ -374,7 +374,7 @@ async def stt_transcriptions(
     model: str = Form(...),
     language: Optional[str] = Form(None),
     verbose: bool = Form(False),
-    max_tokens: Optional[int] = Form(None),
+    max_tokens: int = Form(4096),
     chunk_duration: float = Form(30.0),
     frame_threshold: int = Form(25),
     stream: bool = Form(False),
