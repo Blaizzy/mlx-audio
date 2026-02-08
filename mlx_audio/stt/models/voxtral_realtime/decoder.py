@@ -154,8 +154,11 @@ class DecoderAttention(nn.Module):
         # so no mask is needed. For prefill (seq_len > 1), apply causal mask.
         if seq_len == 1:
             mask = None
+        elif seq_len <= self.sliding_window and cache is None:
+            # Use SDPA's optimized causal kernel (avoids materializing T*T mask)
+            mask = "causal"
         else:
-            # Causal mask for prefill — positions are absolute
+            # Full position-based mask needed when sliding window is active
             q_pos = positions[:, None]  # [seq_q, 1]
             k_pos = mx.arange(cache_pos_offset, cache_pos_offset + kv_len)[None, :]
             causal = k_pos <= q_pos
