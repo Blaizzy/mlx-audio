@@ -27,7 +27,7 @@ export default function SpeechToTextPage() {
   const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo-asr-fp16")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
-  const [maxTokens, setMaxTokens] = useState(4096)
+  const [maxTokens, setMaxTokens] = useState(1024)
 
   // New state for stored transcriptions
   const [storedTranscriptions, setStoredTranscriptions] = useState<{ id: string; data: any }[]>([])

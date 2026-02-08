@@ -197,13 +197,13 @@ def read(
     use_ffmpeg = False
     if isinstance(file, (str, Path)):
         ext = Path(file).suffix.lstrip(".").lower()
-        if ext in ("m4a", "aac"):
+        if ext in ("m4a", "aac", "ogg"):
             use_ffmpeg = True
     elif isinstance(file, io.BytesIO):
         file.seek(0)
         header = file.read(12)
         file.seek(0)
-        if header[4:8] == b"ftyp":
+        if header[4:8] == b"ftyp" or header[:4] == b"OggS":
             use_ffmpeg = True
 
     if use_ffmpeg:
