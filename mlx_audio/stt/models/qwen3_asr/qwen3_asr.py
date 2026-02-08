@@ -26,6 +26,8 @@ class StreamingResult:
         start_time: Start timestamp in seconds.
         end_time: End timestamp in seconds.
         language: Language of the transcription.
+        prompt_tokens: Total prompt tokens (only set on final result).
+        generation_tokens: Total generation tokens (only set on final result).
     """
 
     text: str
@@ -33,6 +35,8 @@ class StreamingResult:
     start_time: float
     end_time: float
     language: str = "en"
+    prompt_tokens: int = 0
+    generation_tokens: int = 0
 
 
 def split_audio_into_chunks(
@@ -1104,16 +1108,21 @@ class Qwen3ASRModel(nn.Module):
         segments = []
         total_prompt_tokens = 0
         total_generation_tokens = 0
+        remaining_tokens = max_tokens
 
         chunk_iter = tqdm(
             chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1
         )
         for chunk_audio, offset_sec in chunk_iter:
+            # Stop if we've exhausted the token budget
+            if remaining_tokens <= 0:
+                break
+
             actual_chunk_duration = len(chunk_audio) / self.sample_rate
 
             text, prompt_toks, gen_toks = self._generate_single_chunk(
                 chunk_audio,
-                max_tokens=max_tokens,
+                max_tokens=remaining_tokens,
                 sampler=sampler,
                 logits_processors=logits_processors,
                 language=language,
@@ -1124,6 +1133,7 @@ class Qwen3ASRModel(nn.Module):
             all_texts.append(text)
             total_prompt_tokens += prompt_toks
             total_generation_tokens += gen_toks
+            remaining_tokens -= gen_toks
 
             # Create segment for this chunk
             segments.append(
@@ -1234,6 +1244,11 @@ class Qwen3ASRModel(nn.Module):
         # Normalize language code for output
         lang_code = language[:2].lower() if language else "en"
 
+        # Track token counts across chunks
+        total_prompt_tokens = 0
+        total_generation_tokens = 0
+        remaining_tokens = max_tokens
+
         # Process each chunk and stream tokens
         chunk_iter = tqdm(
             enumerate(chunks),
@@ -1246,9 +1261,15 @@ class Qwen3ASRModel(nn.Module):
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
 
+            # Get prompt tokens for this chunk
+            _, _, num_audio_tokens = self._preprocess_audio(chunk_audio)
+            input_ids = self._build_prompt(num_audio_tokens, language)
+            chunk_prompt_tokens = input_ids.shape[1]
+            total_prompt_tokens += chunk_prompt_tokens
+
             for token, _ in self.stream_generate(
                 chunk_audio,
-                max_tokens=max_tokens,
+                max_tokens=remaining_tokens,
                 sampler=sampler,
                 logits_processors=logits_processors,
                 language=language,
@@ -1259,9 +1280,9 @@ class Qwen3ASRModel(nn.Module):
 
                 # Estimate timing based on token position within chunk
                 # This is approximate since we don't have word-level alignment
-                prev_progress = token_count / max(max_tokens, 1)
+                prev_progress = token_count / max(remaining_tokens, 1)
                 token_count += 1
-                curr_progress = min(token_count / max(max_tokens, 1), 1.0)
+                curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
 
                 estimated_start = offset_sec + (actual_chunk_duration * prev_progress)
                 estimated_end = offset_sec + (actual_chunk_duration * curr_progress)
@@ -1274,17 +1295,27 @@ class Qwen3ASRModel(nn.Module):
                     language=lang_code,
                 )
 
+            # Update token counts
+            total_generation_tokens += token_count
+            remaining_tokens -= token_count
+
             # Yield final result for this chunk
             yield StreamingResult(
                 text="",
-                is_final=is_last_chunk,
+                is_final=is_last_chunk or remaining_tokens <= 0,
                 start_time=offset_sec,
                 end_time=offset_sec + actual_chunk_duration,
                 language=lang_code,
+                prompt_tokens=total_prompt_tokens,
+                generation_tokens=total_generation_tokens,
             )
 
             # Clear cache between chunks
             mx.clear_cache()
+
+            # Stop if we've exhausted the token budget
+            if remaining_tokens <= 0:
+                break
 
 
 class Model:

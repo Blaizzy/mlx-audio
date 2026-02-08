@@ -61,6 +61,7 @@ class SopranoDecoder(nn.Module):
         hop_length: int = 512,
         n_fft: int = 2048,
         upscale: int = 4,
+        input_kernel: int = 1,
         dw_kernel: int = 3,
     ):
         super().__init__()
@@ -73,14 +74,13 @@ class SopranoDecoder(nn.Module):
         self.hop_length = hop_length
         self.n_fft = n_fft
         self.upscale = upscale
-        self.dw_kernel = dw_kernel
 
         self.decoder = VocosBackbone(
             input_channels=self.decoder_initial_channels,
             dim=self.dim,
             intermediate_dim=self.intermediate_dim,
             num_layers=self.num_layers,
-            input_kernel_size=dw_kernel,
+            input_kernel_size=input_kernel,
             dw_kernel_size=dw_kernel,
         )
         self.head = ISTFTHead(

@@ -7,6 +7,7 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 
 import argparse
 import asyncio
+import base64
 import inspect
 import io
 import json
@@ -167,6 +168,9 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    stream: bool = False
+    streaming_interval: float = 2.0
+    max_tokens: int = 1200
     verbose: bool = False
 
 
@@ -181,6 +185,12 @@ class TranscriptionRequest(BaseModel):
     context: str | None = None
     prefill_step_size: int = 2048
     text: str | None = None
+
+
+class SeparationResponse(BaseModel):
+    target: str  # Base64 encoded WAV
+    residual: str  # Base64 encoded WAV
+    sample_rate: int
 
 
 # Initialize the ModelProvider
@@ -253,6 +263,8 @@ async def remove_model(model_name: str):
 async def generate_audio(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
+    audio_chunks = []
+    sample_rate = None
     if ref_audio and isinstance(ref_audio, str):
         if not os.path.exists(ref_audio):
             raise HTTPException(
@@ -282,14 +294,33 @@ async def generate_audio(model, payload: SpeechRequest):
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        stream=payload.stream,
+        streaming_interval=payload.streaming_interval,
+        max_tokens=payload.max_tokens,
         verbose=payload.verbose,
     ):
 
-        sample_rate = result.sample_rate
-        buffer = io.BytesIO()
-        audio_write(buffer, result.audio, sample_rate, format=payload.response_format)
-        buffer.seek(0)
-        yield buffer.getvalue()
+        if payload.stream:
+            buffer = io.BytesIO()
+            audio_write(
+                buffer, result.audio, result.sample_rate, format=payload.response_format
+            )
+            yield buffer.getvalue()
+        else:
+            audio_chunks.append(result.audio)
+            if sample_rate is None:
+                sample_rate = result.sample_rate
+
+    if payload.stream:
+        return
+
+    if not audio_chunks:
+        raise HTTPException(status_code=400, detail="No audio generated")
+
+    concatenated_audio = np.concatenate(audio_chunks)
+    buffer = io.BytesIO()
+    audio_write(buffer, concatenated_audio, sample_rate, format=payload.response_format)
+    yield buffer.getvalue()
 
 
 @app.post("/v1/audio/speech")
@@ -386,6 +417,96 @@ async def stt_transcriptions(
         generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
         media_type="application/x-ndjson",
     )
+
+
+SAM_MODEL = None
+SAM_PROCESSOR = None
+
+
+@app.post("/v1/audio/separations")
+async def audio_separations(
+    file: UploadFile = File(...),
+    model: str = Form("mlx-community/sam-audio-large-fp16"),
+    description: str = Form("speech"),
+    method: str = Form("midpoint"),
+    steps: int = Form(16),
+):
+    """Separate audio using SAM Audio model.
+
+    Args:
+        file: Audio file to process
+        model: SAM Audio model name (default: mlx-community/sam-audio-large-fp16)
+        description: Text description of what to separate (e.g., "speech", "guitar", "drums")
+        method: ODE solver method - "midpoint" or "euler" (default: midpoint)
+        steps: Number of ODE steps - 2, 4, 8, 16, or 32 (default: 16)
+
+    Returns:
+        JSON with base64-encoded target and residual audio, plus sample rate
+    """
+    global SAM_MODEL, SAM_PROCESSOR
+    from mlx_audio.sts import SAMAudio, SAMAudioProcessor
+
+    # Read uploaded file
+    data = await file.read()
+    tmp = io.BytesIO(data)
+    audio, sr = sf.read(tmp, always_2d=False)
+    tmp.close()
+
+    # Save to temp file for processor
+    tmp_path = f"/tmp/separation_{time.time()}.wav"
+    sf.write(tmp_path, audio, sr)
+
+    try:
+        # Load model and processor
+        if SAM_PROCESSOR is None:
+            SAM_PROCESSOR = SAMAudioProcessor.from_pretrained(model)
+        if SAM_MODEL is None:
+            SAM_MODEL = SAMAudio.from_pretrained(model)
+
+        # Process inputs
+        batch = SAM_PROCESSOR(
+            descriptions=[description],
+            audios=[tmp_path],
+        )
+
+        # Calculate step_size from steps
+        step_size = 2 / (steps * 2)  # e.g., 16 steps -> 2/32 = 0.0625
+        ode_opt = {"method": method, "step_size": step_size}
+
+        # Separate audio
+        result = SAM_MODEL.separate_long(
+            audios=batch.audios,
+            descriptions=batch.descriptions,
+            anchor_ids=batch.anchor_ids,
+            anchor_alignment=batch.anchor_alignment,
+            ode_opt=ode_opt,
+            ode_decode_chunk_size=50,
+        )
+
+        mx.clear_cache()
+
+        # Convert results to numpy
+        target_audio = np.array(result.target[0])
+        residual_audio = np.array(result.residual[0])
+        sample_rate = SAM_MODEL.sample_rate
+
+        # Encode as base64 WAV
+        def audio_to_base64(audio_array, sr):
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_array, sr, format="wav")
+            buffer.seek(0)
+            return base64.b64encode(buffer.read()).decode("utf-8")
+
+        return SeparationResponse(
+            target=audio_to_base64(target_audio, sample_rate),
+            residual=audio_to_base64(residual_audio, sample_rate),
+            sample_rate=sample_rate,
+        )
+
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 @app.websocket("/v1/audio/transcriptions/realtime")
@@ -779,7 +900,7 @@ def main():
     parser.add_argument(
         "--workers",
         type=int_or_float,
-        default=calculate_default_workers(),
+        default=0,
         help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
         Can be either an int or a float.
         If an int, it will be the number of workers to use.

@@ -93,6 +93,9 @@ all = [
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=1.0.0",
+    "black>=24.2.0",
+    "isort>=5.13.2",
+    "pre-commit>=3.7.0",
 ]
 
 # Evaluation dependencies
@@ -134,3 +137,10 @@ mlx_audio = [
     "tts/**/*.json",
     "tts/static/**/*",
 ]
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
