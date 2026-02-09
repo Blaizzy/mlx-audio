@@ -356,7 +356,7 @@ class Model(nn.Module):
             input_features=input_features,
         )[0]
 
-        with wired_limit(self, [generation_stream]):
+        with wired_limit(self, None):
             for n, (token, logprobs) in tqdm(
                 enumerate(
                     generate_step(
