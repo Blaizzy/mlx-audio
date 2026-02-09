@@ -30,9 +30,17 @@ def params_to_config(params: dict) -> dict:
 
     # Copy top-level decoder params
     decoder_keys = [
-        "dim", "n_layers", "head_dim", "hidden_dim", "n_heads",
-        "n_kv_heads", "vocab_size", "norm_eps", "rope_theta",
-        "sliding_window", "tied_embeddings",
+        "dim",
+        "n_layers",
+        "head_dim",
+        "hidden_dim",
+        "n_heads",
+        "n_kv_heads",
+        "vocab_size",
+        "norm_eps",
+        "rope_theta",
+        "sliding_window",
+        "tied_embeddings",
     ]
     decoder = {}
     for k in decoder_keys:
@@ -111,6 +119,7 @@ def convert(
     if not weight_file.exists():
         # Try model.safetensors or weight shard files
         import glob
+
         weight_files = glob.glob(str(src / "*.safetensors"))
         if not weight_files:
             raise FileNotFoundError(f"No safetensors files found at {src}")

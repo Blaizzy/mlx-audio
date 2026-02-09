@@ -118,12 +118,12 @@ class EncoderAttention(nn.Module):
             k, v = cache.update_and_fetch(k, v)
 
         scale = 1.0 / math.sqrt(self.head_dim)
-        attn_out = mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=scale, mask=mask
-        )
+        attn_out = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale, mask=mask)
 
         # Reshape back: [1, n_heads, seq, head_dim] -> [seq, n_heads * head_dim]
-        attn_out = attn_out.transpose(0, 2, 1, 3).reshape(seq_len, self.n_heads * self.head_dim)
+        attn_out = attn_out.transpose(0, 2, 1, 3).reshape(
+            seq_len, self.n_heads * self.head_dim
+        )
         return self.wo(attn_out)
 
 
@@ -165,7 +165,9 @@ class AudioEncoder(nn.Module):
 
         # Conv stem
         self.conv_layers_0_conv = CausalConv1d(128, config.dim, kernel_size=3, stride=1)
-        self.conv_layers_1_conv = CausalConv1d(config.dim, config.dim, kernel_size=3, stride=2)
+        self.conv_layers_1_conv = CausalConv1d(
+            config.dim, config.dim, kernel_size=3, stride=2
+        )
 
         # Transformer layers
         self.transformer_layers = [EncoderLayer(config) for _ in range(config.n_layers)]
@@ -250,7 +252,7 @@ class AudioEncoder(nn.Module):
         ds_len = seq_len // ds
         if ds_len == 0:
             return encoded[:0]  # empty
-        x = encoded[:ds_len * ds].reshape(ds_len, self.config.dim * ds)
+        x = encoded[: ds_len * ds].reshape(ds_len, self.config.dim * ds)
         x = nn.gelu(self.audio_language_projection_0(x))
         return self.audio_language_projection_2(x)
 

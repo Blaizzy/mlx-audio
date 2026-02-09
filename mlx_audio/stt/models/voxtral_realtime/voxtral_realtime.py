@@ -30,7 +30,6 @@ from .decoder import Decoder, compute_time_embedding
 from .encoder import AudioEncoder
 from .tokenizer import TekkenTokenizer
 
-
 # Derived streaming constants
 SAMPLE_RATE = 16000
 FRAME_RATE = 12.5
@@ -89,15 +88,19 @@ class Model(nn.Module):
             self._mel_filters = mx.array(filters_np, dtype=mx.float32)
         return self._mel_filters
 
-    def _load_audio(self, audio_input: Union[str, Path, List[mx.array], mx.array, np.ndarray]) -> np.ndarray:
+    def _load_audio(
+        self, audio_input: Union[str, Path, List[mx.array], mx.array, np.ndarray]
+    ) -> np.ndarray:
         """Load and resample audio from file path or array to 16kHz float32 numpy."""
         if isinstance(audio_input, (str, Path)):
             import soundfile as sf
+
             audio_np, sr = sf.read(str(audio_input), dtype="float32")
             audio_np = audio_np.flatten()
             if sr != SAMPLE_RATE:
                 # Resample to 16kHz
                 from scipy.signal import resample
+
                 n_samples = int(len(audio_np) * SAMPLE_RATE / sr)
                 audio_np = resample(audio_np, n_samples).astype(np.float32)
             return audio_np
@@ -105,9 +108,10 @@ class Model(nn.Module):
             audio_input = audio_input[0]
         return np.array(audio_input).flatten().astype(np.float32)
 
-    def _prepare_mel(self, audio_np):
+    def _prepare_mel(self, audio_np, transcription_delay_ms=None):
         """Prepare mel spectrogram from audio numpy array."""
-        n_delay = _num_delay_tokens(self.config.transcription_delay_ms)
+        delay_ms = transcription_delay_ms or self.config.transcription_delay_ms
+        n_delay = _num_delay_tokens(delay_ms)
         n_left = self.config.n_left_pad_tokens
         n_right = (n_delay + 1) + 10
 
@@ -129,7 +133,21 @@ class Model(nn.Module):
 
         return mel, n_delay
 
-    def _encode_and_prefill(self, audio_np, verbose=False):
+    def _ensure_ada_scales(self, transcription_delay_ms=None):
+        """Ensure ada_scales match the given delay. Recomputes if needed."""
+        delay_ms = transcription_delay_ms or self.config.transcription_delay_ms
+        n_delay = _num_delay_tokens(delay_ms)
+        if n_delay != self._ada_scale_delay:
+            from .decoder import compute_time_embedding
+
+            t_cond = compute_time_embedding(float(n_delay), self.config.decoder.dim)
+            self.decoder.precompute_ada_scales(t_cond)
+            for scale in self.decoder._ada_scales:
+                if scale is not None:
+                    mx.eval(scale)
+            self._ada_scale_delay = n_delay
+
+    def _encode_and_prefill(self, audio_np, verbose=False, transcription_delay_ms=None):
         """Shared encoder + prefill logic with incremental encoding.
 
         Only encodes the first audio chunk before prefill, deferring the
@@ -142,7 +160,8 @@ class Model(nn.Module):
         """
         start_time = time.time()
 
-        mel, n_delay = self._prepare_mel(audio_np)
+        self._ensure_ada_scales(transcription_delay_ms)
+        mel, n_delay = self._prepare_mel(audio_np, transcription_delay_ms)
 
         # Run conv stem and compute total audio token count
         conv_out = self.encoder.conv_stem(mel)
@@ -172,12 +191,16 @@ class Model(nn.Module):
                 except StopIteration:
                     enc_chunk_gen = None
                     break
-            adapter_out = mx.concatenate(adapter_chunks, axis=0) if adapter_chunks else None
+            adapter_out = (
+                mx.concatenate(adapter_chunks, axis=0) if adapter_chunks else None
+            )
 
         if verbose:
             print(f"Audio: {len(audio_np)} samples ({len(audio_np)/SAMPLE_RATE:.1f}s)")
-            print(f"Encoder: {'non-chunked (causal)' if conv_out.shape[0] <= sw else 'chunked'}, "
-                  f"{adapter_out.shape[0]} adapter tokens")
+            print(
+                f"Encoder: {'non-chunked (causal)' if conv_out.shape[0] <= sw else 'chunked'}, "
+                f"{adapter_out.shape[0]} adapter tokens"
+            )
             print(f"Total audio tokens: {n_audio_total}")
 
         # Build prompt embeddings
@@ -202,11 +225,21 @@ class Model(nn.Module):
         if verbose:
             total_ttft = time.time() - start_time
             prefill_time = time.time() - prefill_start
-            print(f"Prefill: {prompt_len} tokens in {prefill_time*1000:.0f}ms "
-                  f"({prompt_len / prefill_time:.0f} tok/s)")
+            print(
+                f"Prefill: {prompt_len} tokens in {prefill_time*1000:.0f}ms "
+                f"({prompt_len / prefill_time:.0f} tok/s)"
+            )
             print(f"Total TTFT: {total_ttft*1000:.0f}ms")
 
-        return adapter_out, n_audio_total, prompt_len, logits, cache, enc_chunk_gen, start_time
+        return (
+            adapter_out,
+            n_audio_total,
+            prompt_len,
+            logits,
+            cache,
+            enc_chunk_gen,
+            start_time,
+        )
 
     def generate(
         self,
@@ -216,16 +249,25 @@ class Model(nn.Module):
         temperature: float = 0.0,
         verbose: bool = False,
         stream: bool = False,
+        transcription_delay_ms: Optional[int] = None,
         **kwargs,
     ):
-        """Transcribe audio. Returns STTOutput, or yields text deltas if stream=True."""
+        """Transcribe audio. Returns STTOutput, or yields text deltas if stream=True.
+
+        Args:
+            transcription_delay_ms: Override the model's default transcription delay
+                (default 480ms). Lower values reduce latency but may hurt accuracy.
+        """
         audio_np = self._load_audio(audio)
 
         if stream:
-            return self._generate_stream(audio_np, max_tokens, temperature, verbose)
+            return self._generate_stream(
+                audio_np, max_tokens, temperature, verbose, transcription_delay_ms
+            )
 
-        adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = \
-            self._encode_and_prefill(audio_np, verbose)
+        adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = (
+            self._encode_and_prefill(audio_np, verbose, transcription_delay_ms)
+        )
 
         adapter_len = adapter_out.shape[0]
         generated = []
@@ -280,9 +322,11 @@ class Model(nn.Module):
 
         if verbose:
             n_gen = len(generated)
-            print(f"Decode: {n_gen} tokens in {decode_time:.3f}s "
-                  f"({n_gen / decode_time:.0f} tok/s, "
-                  f"{decode_time / max(n_gen, 1) * 1000:.1f} ms/tok)")
+            print(
+                f"Decode: {n_gen} tokens in {decode_time:.3f}s "
+                f"({n_gen / decode_time:.0f} tok/s, "
+                f"{decode_time / max(n_gen, 1) * 1000:.1f} ms/tok)"
+            )
             print(f"Total: {total_time:.3f}s")
 
         mx.clear_cache()
@@ -297,10 +341,13 @@ class Model(nn.Module):
             generation_tps=len(generated) / decode_time if decode_time > 0 else 0,
         )
 
-    def _generate_stream(self, audio_np, max_tokens, temperature, verbose):
+    def _generate_stream(
+        self, audio_np, max_tokens, temperature, verbose, transcription_delay_ms=None
+    ):
         """Generator that yields text deltas as tokens are decoded."""
-        adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = \
-            self._encode_and_prefill(audio_np, verbose)
+        adapter_out, n_audio, prompt_len, logits, cache, enc_chunk_gen, start_time = (
+            self._encode_and_prefill(audio_np, verbose, transcription_delay_ms)
+        )
 
         adapter_len = adapter_out.shape[0]
         generated = []
@@ -318,7 +365,7 @@ class Model(nn.Module):
                 [t for t in generated if t != self.config.eos_token_id]
             )
             if text_so_far != prev_text:
-                yield text_so_far[len(prev_text):]
+                yield text_so_far[len(prev_text) :]
                 prev_text = text_so_far
 
             if token == self.config.eos_token_id or len(generated) > max_tokens:
@@ -355,7 +402,7 @@ class Model(nn.Module):
                 [t for t in generated if t != self.config.eos_token_id]
             )
             if text_so_far != prev_text:
-                yield text_so_far[len(prev_text):]
+                yield text_so_far[len(prev_text) :]
 
         mx.clear_cache()
 
@@ -388,7 +435,7 @@ class Model(nn.Module):
 
             elif k.startswith(f"{enc_prefix}.conv_layers."):
                 # e.g., ...conv_layers.0.conv.weight -> encoder.conv_layers_0_conv.conv.weight
-                rest = k[len(f"{enc_prefix}.conv_layers."):]
+                rest = k[len(f"{enc_prefix}.conv_layers.") :]
                 # rest: "0.conv.weight" or "0.conv.bias"
                 parts = rest.split(".", 2)  # ['0', 'conv', 'weight']
                 layer_idx = parts[0]
@@ -400,7 +447,7 @@ class Model(nn.Module):
                     v = v.transpose(0, 2, 1)
 
             elif k.startswith(f"{enc_prefix}.transformer.layers."):
-                rest = k[len(f"{enc_prefix}.transformer.layers."):]
+                rest = k[len(f"{enc_prefix}.transformer.layers.") :]
                 # e.g., "0.attention.wq.weight"
                 parts = rest.split(".", 1)
                 layer_idx = parts[0]
@@ -414,11 +461,11 @@ class Model(nn.Module):
                 new_key = f"encoder.transformer_layers.{layer_idx}.{param_path}"
 
             elif k.startswith(f"{enc_prefix}.transformer.norm."):
-                rest = k[len(f"{enc_prefix}.transformer.norm."):]
+                rest = k[len(f"{enc_prefix}.transformer.norm.") :]
                 new_key = f"encoder.transformer_norm.{rest}"
 
             elif k.startswith(f"{adapter_prefix}.audio_language_projection."):
-                rest = k[len(f"{adapter_prefix}.audio_language_projection."):]
+                rest = k[len(f"{adapter_prefix}.audio_language_projection.") :]
                 # "0.weight" -> "audio_language_projection_0.weight"
                 # "2.weight" -> "audio_language_projection_2.weight"
                 parts = rest.split(".", 1)
@@ -427,7 +474,7 @@ class Model(nn.Module):
                 new_key = f"encoder.audio_language_projection_{idx}.{param}"
 
             elif k.startswith("layers."):
-                rest = k[len("layers."):]
+                rest = k[len("layers.") :]
                 # e.g., "0.attention.wq.weight"
                 parts = rest.split(".", 1)
                 layer_idx = parts[0]
@@ -477,10 +524,11 @@ class Model(nn.Module):
         # Precompute mel filters
         model._ensure_mel_filters()
 
-        # Precompute ada scales from time conditioning
+        # Precompute ada scales from time conditioning (tracked for runtime override)
         n_delay = _num_delay_tokens(model.config.transcription_delay_ms)
         t_cond = compute_time_embedding(float(n_delay), model.config.decoder.dim)
         model.decoder.precompute_ada_scales(t_cond)
+        model._ada_scale_delay = n_delay
         # Evaluate ada scales eagerly
         for scale in model.decoder._ada_scales:
             if scale is not None:

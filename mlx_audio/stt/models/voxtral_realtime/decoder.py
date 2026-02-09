@@ -24,7 +24,9 @@ from .config import DecoderConfig
 from .encoder import _interleaved_rope
 
 
-def compute_time_embedding(t_value: float, dim: int, theta: float = 10000.0) -> mx.array:
+def compute_time_embedding(
+    t_value: float, dim: int, theta: float = 10000.0
+) -> mx.array:
     """Sinusoidal time embedding for adaptive RMSNorm conditioning.
 
     Args:
@@ -91,7 +93,8 @@ class DecoderAttention(nn.Module):
         # Cache RoPE inverse frequencies (constant across calls)
         half_dim = config.head_dim // 2
         self._rope_inv_freq = 1.0 / (
-            config.rope_theta ** (mx.arange(0, config.head_dim, 2, dtype=mx.float32) / config.head_dim)
+            config.rope_theta
+            ** (mx.arange(0, config.head_dim, 2, dtype=mx.float32) / config.head_dim)
         )
 
     def _rope_freqs(self, positions):
@@ -170,7 +173,9 @@ class DecoderAttention(nn.Module):
         )
 
         # Reshape back: [1, n_heads, seq, head_dim] -> [seq, n_heads * head_dim]
-        attn_out = attn_out.transpose(0, 2, 1, 3).reshape(seq_len, self.n_heads * self.head_dim)
+        attn_out = attn_out.transpose(0, 2, 1, 3).reshape(
+            seq_len, self.n_heads * self.head_dim
+        )
 
         return self.wo(attn_out), new_cache
 
@@ -185,7 +190,9 @@ class DecoderLayer(nn.Module):
         self.ffn_norm = nn.RMSNorm(config.dim, eps=config.norm_eps)
 
         if config.ada_rms_norm_t_cond:
-            self.ada_rms_norm_t_cond = AdaRMSNorm(config.dim, config.ada_rms_norm_t_cond_dim)
+            self.ada_rms_norm_t_cond = AdaRMSNorm(
+                config.dim, config.ada_rms_norm_t_cond_dim
+            )
         else:
             self.ada_rms_norm_t_cond = None
 

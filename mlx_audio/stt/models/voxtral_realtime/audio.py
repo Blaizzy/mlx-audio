@@ -1,7 +1,7 @@
 """Mel spectrogram computation for Voxtral Realtime.
 
 Matches the exact computation from vLLM/mistral_common:
-- Slaney-style mel filter bank (0-8000 Hz, 128 bins)
+- Slaney-style mel filter bank (0-8000 Hz, 128 bins) via dsp.mel_filters
 - Periodic Hann window (size=400)
 - STFT with n_fft=400, hop=160, center=True
 - Drop last frame
@@ -13,32 +13,7 @@ import math
 import mlx.core as mx
 import numpy as np
 
-
-def _hertz_to_mel(freq):
-    """Slaney-style Hz to mel conversion (piecewise linear/log)."""
-    min_log_hertz = 1000.0
-    min_log_mel = 15.0
-    logstep = 27.0 / np.log(6.4)
-
-    mels = 3.0 * freq / 200.0
-    if isinstance(freq, np.ndarray):
-        log_region = freq >= min_log_hertz
-        mels[log_region] = min_log_mel + np.log(freq[log_region] / min_log_hertz) * logstep
-    elif freq >= min_log_hertz:
-        mels = min_log_mel + np.log(freq / min_log_hertz) * logstep
-    return mels
-
-
-def _mel_to_hertz(mels):
-    """Slaney-style mel to Hz conversion."""
-    min_log_hertz = 1000.0
-    min_log_mel = 15.0
-    logstep = np.log(6.4) / 27.0
-
-    freq = 200.0 * mels / 3.0
-    log_region = mels >= min_log_mel
-    freq[log_region] = min_log_hertz * np.exp(logstep * (mels[log_region] - min_log_mel))
-    return freq
+from mlx_audio.dsp import mel_filters
 
 
 def compute_mel_filters(
@@ -51,26 +26,16 @@ def compute_mel_filters(
     Returns:
         np.ndarray: Filter bank of shape [num_frequency_bins, num_mel_bins]
     """
-    num_frequency_bins = 1 + window_size // 2  # 201
-    fft_freqs = np.linspace(0, sample_rate // 2, num_frequency_bins)
-
-    mel_min = _hertz_to_mel(0.0)
-    mel_max = _hertz_to_mel(8000.0)
-    mel_freqs = np.linspace(mel_min, mel_max, num_mel_bins + 2)
-    filter_freqs = _mel_to_hertz(mel_freqs)
-
-    filter_diff = np.diff(filter_freqs)
-    slopes = np.expand_dims(filter_freqs, 0) - np.expand_dims(fft_freqs, 1)
-    down_slopes = -slopes[:, :-2] / filter_diff[:-1]
-    up_slopes = slopes[:, 2:] / filter_diff[1:]
-
-    fb = np.maximum(np.zeros(1), np.minimum(down_slopes, up_slopes))
-
-    # Slaney normalization
-    enorm = 2.0 / (filter_freqs[2 : num_mel_bins + 2] - filter_freqs[:num_mel_bins])
-    fb *= np.expand_dims(enorm, 0)
-
-    return fb  # [201, 128]
+    fb = mel_filters(
+        sample_rate=sample_rate,
+        n_fft=window_size,
+        n_mels=num_mel_bins,
+        f_min=0,
+        f_max=8000,
+        norm="slaney",
+        mel_scale="slaney",
+    )
+    return np.array(fb).T  # dsp returns [mel, freq], we need [freq, mel]
 
 
 def compute_mel_spectrogram(
@@ -107,7 +72,9 @@ def compute_mel_spectrogram(
     n_frames = 1 + (n_samples - window_size) // hop_length
 
     # Extract frames
-    indices = mx.arange(window_size)[None, :] + (mx.arange(n_frames) * hop_length)[:, None]
+    indices = (
+        mx.arange(window_size)[None, :] + (mx.arange(n_frames) * hop_length)[:, None]
+    )
     frames = audio[indices] * window[None, :]
 
     # Real FFT at exact n_fft size (MLX supports arbitrary sizes)

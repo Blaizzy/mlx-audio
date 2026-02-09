@@ -6,7 +6,7 @@ from mlx_audio.base import BaseModelArgs
 
 
 @dataclass
-class AudioEncodingConfig:
+class AudioEncodingConfig(BaseModelArgs):
     sampling_rate: int = 16000
     frame_rate: float = 12.5
     num_mel_bins: int = 128
@@ -14,19 +14,9 @@ class AudioEncodingConfig:
     window_size: int = 400
     global_log_mel_max: float = 1.5
 
-    @classmethod
-    def from_dict(cls, params):
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )
-
 
 @dataclass
-class EncoderConfig:
+class EncoderConfig(BaseModelArgs):
     dim: int = 1280
     n_layers: int = 32
     n_heads: int = 32
@@ -40,19 +30,9 @@ class EncoderConfig:
     use_biases: bool = True
     downsample_factor: int = 4
 
-    @classmethod
-    def from_dict(cls, params):
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )
-
 
 @dataclass
-class DecoderConfig:
+class DecoderConfig(BaseModelArgs):
     dim: int = 3072
     n_layers: int = 26
     n_heads: int = 32
@@ -67,16 +47,6 @@ class DecoderConfig:
     ada_rms_norm_t_cond: bool = True
     ada_rms_norm_t_cond_dim: int = 32
 
-    @classmethod
-    def from_dict(cls, params):
-        return cls(
-            **{
-                k: v
-                for k, v in params.items()
-                if k in inspect.signature(cls).parameters
-            }
-        )
-
 
 @dataclass
 class ModelConfig(BaseModelArgs):
@@ -89,7 +59,9 @@ class ModelConfig(BaseModelArgs):
     encoder_args: Optional[EncoderConfig] = None
     decoder: Optional[DecoderConfig] = None
     audio_encoding_args: Optional[AudioEncodingConfig] = None
-    transcription_delay_ms: int = 480  # Recommended: 480ms (sweet spot of performance and low latency)
+    transcription_delay_ms: int = (
+        480  # Recommended: 480ms (sweet spot of performance and low latency)
+    )
 
     # Derived from decoder
     vocab_size: int = 131072
