@@ -592,6 +592,8 @@ def convert(
         print(f"[INFO] Converting to {target_dtype}")
         mx_dtype = getattr(mx, target_dtype)
         weights = {k: v.astype(mx_dtype) for k, v in weights.items()}
+        # Persist converted tensors to the model so save_model writes the new dtype.
+        model.load_weights(list(weights.items()))
 
     # Handle quantization/dequantization
     if quantize:
