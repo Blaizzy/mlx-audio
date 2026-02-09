@@ -215,6 +215,7 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
                     "*.jsonl",
                     "*.yaml",
                     "*.wav",
+                    "*.pt",
                     "*.pth",
                 ],
             )
@@ -498,17 +499,59 @@ def copy_model_files(source: Path, dest: Path):
 
 
 def load_weights(model_path: Path) -> dict:
-    """Load model weights from safetensors files."""
+    """Load model weights from safetensors or PyTorch checkpoint files."""
     weight_files = glob.glob(str(model_path / "*.safetensors"))
 
-    if not weight_files:
-        raise FileNotFoundError(f"No safetensors found in {model_path}")
+    if weight_files:
+        weights = {}
+        for wf in weight_files:
+            if "tokenizer" in wf:
+                continue
+            weights.update(mx.load(wf))
+        return weights
+
+    pt_files = glob.glob(str(model_path / "*.pt")) + glob.glob(str(model_path / "*.pth"))
+    pt_files = [wf for wf in pt_files if "tokenizer" not in Path(wf).name]
+    if not pt_files:
+        raise FileNotFoundError(
+            f"No supported weight files (.safetensors, .pt, .pth) found in {model_path}"
+        )
+
+    try:
+        import torch
+    except ImportError as e:
+        raise ImportError(
+            "PyTorch is required to load .pt/.pth checkpoints during conversion. "
+            "Install torch or provide .safetensors weights."
+        ) from e
+
+    def _to_mx_array(value):
+        if hasattr(value, "detach"):
+            return mx.array(value.detach().cpu().numpy())
+        if hasattr(value, "numpy"):
+            return mx.array(value.numpy())
+        return mx.array(value)
+
+    def _extract_state_dict(payload):
+        if not isinstance(payload, dict):
+            raise ValueError("Unsupported checkpoint format: expected a dict payload")
+        for key in ("state_dict", "model_state_dict", "model", "weights"):
+            candidate = payload.get(key)
+            if isinstance(candidate, dict):
+                return candidate
+        return payload
 
     weights = {}
-    for wf in weight_files:
-        if "tokenizer" in wf:
-            continue
-        weights.update(mx.load(wf))
+    for wf in pt_files:
+        payload = torch.load(wf, map_location="cpu", weights_only=True)
+        state_dict = _extract_state_dict(payload)
+        for key, value in state_dict.items():
+            if key.startswith("module."):
+                key = key[len("module.") :]
+            try:
+                weights[key] = _to_mx_array(value)
+            except Exception:
+                continue
 
     return weights
 
