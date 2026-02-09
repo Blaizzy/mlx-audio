@@ -14,12 +14,25 @@ from textwrap import dedent
 from typing import Callable, Optional
 
 import mlx.core as mx
-from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
+from mlx_audio.utils import get_model_path
 
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
+CONVERSION_ALLOW_PATTERNS = [
+    "*.json",
+    "*.safetensors",
+    "*.py",
+    "*.model",
+    "*.tiktoken",
+    "*.txt",
+    "*.jsonl",
+    "*.yaml",
+    "*.wav",
+    "*.pt",
+    "*.pth",
+]
 
 
 class Domain(str, Enum):
@@ -190,38 +203,6 @@ def get_detection_hints(domain: Domain) -> dict:
     if domain_str not in _detection_hints_cache:
         _detection_hints_cache[domain_str] = _discover_detection_hints(domain_str)
     return _detection_hints_cache[domain_str]
-
-
-def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
-    """
-    Ensures the model is available locally.
-
-    Downloads from HuggingFace Hub if the path doesn't exist locally.
-    """
-    model_path = Path(path_or_hf_repo)
-
-    if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jsonl",
-                    "*.yaml",
-                    "*.wav",
-                    "*.pt",
-                    "*.pth",
-                ],
-            )
-        )
-
-    return model_path
 
 
 def load_config(model_path: Path) -> dict:
@@ -594,7 +575,9 @@ def convert(
         raise ValueError("Choose either quantize or dequantize, not both.")
 
     print(f"[INFO] Loading model from {hf_path}")
-    model_path = get_model_path(hf_path, revision=revision)
+    model_path = get_model_path(
+        hf_path, revision=revision, allow_patterns=CONVERSION_ALLOW_PATTERNS
+    )
     config = load_config(model_path)
 
     # Detect domain and model type
