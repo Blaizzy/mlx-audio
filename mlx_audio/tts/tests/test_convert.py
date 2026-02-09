@@ -42,6 +42,7 @@ class TestConvert(unittest.TestCase):
             revision=None,
             dequantize=False,
             model_domain=None,
+            model_type=None,
         )
 
     def test_quantized_conversion(self):
@@ -70,6 +71,7 @@ class TestConvert(unittest.TestCase):
             revision=None,
             dequantize=False,
             model_domain=None,
+            model_type=None,
         )
 
     def test_quantized_conversion_invalid_group_size_raises_error(self):
@@ -114,6 +116,7 @@ class TestConvert(unittest.TestCase):
             revision=None,
             dequantize=False,
             model_domain=None,
+            model_type=None,
         )
 
     def test_quantization_recipes(self):
@@ -137,6 +140,7 @@ class TestConvert(unittest.TestCase):
                     revision=None,
                     dequantize=False,  # Default dequantize
                     model_domain=None,
+                    model_type=None,
                 )
                 # No need to reset mock here, it's handled at the start of the loop
 
@@ -158,6 +162,7 @@ class TestConvert(unittest.TestCase):
             revision=None,
             dequantize=True,
             model_domain=None,
+            model_type=None,
         )
 
     def test_upload_repo_argument(self):
@@ -178,6 +183,34 @@ class TestConvert(unittest.TestCase):
             revision=None,
             dequantize=False,
             model_domain=None,
+            model_type=None,
+        )
+
+    def test_model_type_argument(self):
+        test_args = [
+            "--hf-path",
+            "dummy_hf",
+            "--model-domain",
+            "sts",
+            "--model-type",
+            "sam_audio",
+        ]
+        with patch.object(sys, "argv", ["convert.py"] + test_args):
+            main()
+
+        self.convert_mock.assert_called_once_with(
+            hf_path="dummy_hf",
+            mlx_path="mlx_model",
+            quantize=False,
+            q_group_size=64,
+            q_bits=4,
+            quant_predicate=None,
+            dtype=None,
+            upload_repo=None,
+            revision=None,
+            dequantize=False,
+            model_domain="sts",
+            model_type="sam_audio",
         )
 
 

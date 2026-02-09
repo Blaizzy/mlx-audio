@@ -550,6 +550,7 @@ def convert(
     dequantize: bool = False,
     quant_predicate: Optional[str] = None,
     model_domain: Optional[str] = None,
+    model_type: Optional[str] = None,
 ):
     """
     Convert a model from HuggingFace to MLX format.
@@ -569,6 +570,7 @@ def convert(
         dequantize: Whether to dequantize a quantized model.
         quant_predicate: Mixed-bit quantization recipe.
         model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
+        model_type: Force model type (e.g. "sam_audio"). Auto-detected if None.
     """
     from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
 
@@ -581,13 +583,29 @@ def convert(
     )
     config = load_config(model_path)
 
-    # Detect domain and model type
-    if model_domain is None:
-        domain = detect_model_domain(config, model_path)
-    else:
-        domain = Domain(model_domain)
+    forced_model_type = model_type.lower() if model_type else None
 
-    model_type = get_model_type(config, model_path, domain)
+    # Detect or force domain
+    if model_domain is not None:
+        domain = Domain(model_domain)
+    elif forced_model_type is not None:
+        domain = _match_by_model_type(forced_model_type) or detect_model_domain(
+            config, model_path
+        )
+    else:
+        domain = detect_model_domain(config, model_path)
+
+    # Detect or force model type
+    if forced_model_type is not None:
+        if forced_model_type not in get_model_types(domain):
+            raise ValueError(
+                f"Model type '{forced_model_type}' not supported for domain "
+                f"'{domain.value}'. Available types: "
+                f"{', '.join(sorted(get_model_types(domain)))}"
+            )
+        model_type = forced_model_type
+    else:
+        model_type = get_model_type(config, model_path, domain)
     print(f"\n[INFO] Model domain: {domain.name}, type: {model_type}")
 
     # Get model class and instantiate
@@ -724,6 +742,15 @@ def configure_parser() -> argparse.ArgumentParser:
         choices=["tts", "stt", "sts"],
         default=None,
         help="Force model domain (auto-detected if not specified).",
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default=None,
+        help=(
+            "Force model type (auto-detected if not specified). "
+            "Example: --model-domain sts --model-type sam_audio"
+        ),
     )
 
     return parser
