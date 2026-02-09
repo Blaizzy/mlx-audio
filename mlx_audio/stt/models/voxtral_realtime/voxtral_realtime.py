@@ -233,12 +233,18 @@ class Model(nn.Module):
             self._encode_and_prefill(audio_np, verbose)
 
         adapter_len = adapter_out.shape[0]
-        token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
-        generated = [token]
+        generated = []
+
+        # Double-buffered async eval: submit token computation to GPU,
+        # read result at start of next iteration while GPU works on new ops
+        next_tok = self._next_token_mx(logits, temperature)
+        mx.async_eval(next_tok)
 
         decode_start = time.time()
         for pos in range(prompt_len, n_audio):
-            if token == self.config.eos_token_id:
+            token = int(next_tok.item())
+            generated.append(token)
+            if token == self.config.eos_token_id or len(generated) > max_tokens:
                 break
 
             # Encode more audio chunks on demand
@@ -259,10 +265,15 @@ class Model(nn.Module):
 
             h, cache = self.decoder.forward(embed[None, :], start_pos=pos, cache=cache)
             logits = self.decoder.logits(h.squeeze(0))
-            token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
+            next_tok = self._next_token_mx(logits, temperature)
+            mx.async_eval(next_tok)
+
+            if len(generated) % 256 == 0:
+                mx.clear_cache()
+        else:
+            # Loop completed without break — read final pending token
+            token = int(next_tok.item())
             generated.append(token)
-            if len(generated) > max_tokens:
-                break
 
         if generated and generated[-1] == self.config.eos_token_id:
             generated = generated[:-1]
@@ -297,18 +308,25 @@ class Model(nn.Module):
             self._encode_and_prefill(audio_np, verbose)
 
         adapter_len = adapter_out.shape[0]
-        token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
-        generated = [token]
+        generated = []
         prev_text = ""
 
-        # Yield first token delta
-        text_so_far = self._tokenizer.decode(generated)
-        if text_so_far != prev_text:
-            yield text_so_far[len(prev_text):]
-            prev_text = text_so_far
+        next_tok = self._next_token_mx(logits, temperature)
+        mx.async_eval(next_tok)
 
         for pos in range(prompt_len, n_audio):
-            if token == self.config.eos_token_id:
+            token = int(next_tok.item())
+            generated.append(token)
+
+            # Yield text delta (filter EOS from partial decode)
+            text_so_far = self._tokenizer.decode(
+                [t for t in generated if t != self.config.eos_token_id]
+            )
+            if text_so_far != prev_text:
+                yield text_so_far[len(prev_text):]
+                prev_text = text_so_far
+
+            if token == self.config.eos_token_id or len(generated) > max_tokens:
                 break
 
             # Encode more audio chunks on demand
@@ -329,25 +347,32 @@ class Model(nn.Module):
 
             h, cache = self.decoder.forward(embed[None, :], start_pos=pos, cache=cache)
             logits = self.decoder.logits(h.squeeze(0))
-            token = int(mx.argmax(logits).item()) if temperature == 0 else self._sample(logits, temperature)
-            generated.append(token)
+            next_tok = self._next_token_mx(logits, temperature)
+            mx.async_eval(next_tok)
 
-            # Yield text delta (filter EOS from partial decode)
+            if len(generated) % 256 == 0:
+                mx.clear_cache()
+        else:
+            # Loop completed without break — read final pending token
+            token = int(next_tok.item())
+            generated.append(token)
             text_so_far = self._tokenizer.decode(
                 [t for t in generated if t != self.config.eos_token_id]
             )
             if text_so_far != prev_text:
                 yield text_so_far[len(prev_text):]
-                prev_text = text_so_far
-
-            if len(generated) > max_tokens:
-                break
 
         mx.clear_cache()
 
+    def _next_token_mx(self, logits, temperature):
+        """Compute next token as lazy mx.array (for async eval pipelining)."""
+        if temperature == 0:
+            return mx.argmax(logits)
+        return mx.random.categorical(logits * (1.0 / temperature))
+
     def _sample(self, logits, temperature):
         # categorical accepts unnormalized logits directly — no softmax+log needed
-        return int(mx.random.categorical(logits * (1.0 / temperature)).item())
+        return int(self._next_token_mx(logits, temperature).item())
 
     def sanitize(self, weights):
         """Map weight names from consolidated.safetensors to our module structure."""
