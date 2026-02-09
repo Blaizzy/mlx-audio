@@ -401,7 +401,7 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
-    tmp_path = f"/tmp/{time.time()}.wav"
+    tmp_path = f"/tmp/{time.time()}.mp3"
     audio_write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(payload.model)
