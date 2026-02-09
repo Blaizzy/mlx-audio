@@ -15,6 +15,7 @@ from typing import Callable, Optional
 
 import mlx.core as mx
 from mlx.utils import tree_flatten
+
 from mlx_audio.utils import get_model_path
 
 # Constants
@@ -359,8 +360,7 @@ def generate_readme_content(
     tags = ["mlx"] + config.tags
     tags.append("mlx-audio")
 
-    content = dedent(
-        f"""\
+    content = dedent(f"""\
         # {upload_repo}
 
         This model was converted to MLX format from [`{hf_path}`](https://huggingface.co/{hf_path}) using mlx-audio version **{__version__}**.
@@ -382,8 +382,7 @@ def generate_readme_content(
         ```python\
         {config.python_example.format(repo=upload_repo)}
         ```
-        """
-    )
+        """)
 
     return tags, content
 
@@ -491,7 +490,9 @@ def load_weights(model_path: Path) -> dict:
             weights.update(mx.load(wf))
         return weights
 
-    pt_files = glob.glob(str(model_path / "*.pt")) + glob.glob(str(model_path / "*.pth"))
+    pt_files = glob.glob(str(model_path / "*.pt")) + glob.glob(
+        str(model_path / "*.pth")
+    )
     pt_files = [wf for wf in pt_files if "tokenizer" not in Path(wf).name]
     if not pt_files:
         raise FileNotFoundError(
