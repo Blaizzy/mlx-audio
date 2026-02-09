@@ -254,6 +254,29 @@ class AudioEncoder(nn.Module):
         x = nn.gelu(self.audio_language_projection_0(x))
         return self.audio_language_projection_2(x)
 
+    def encode_full(self, conv_out):
+        """Non-chunked encoding of conv output using optimized causal attention.
+
+        Uses SDPA's native causal mask ("causal" string) which enables Flash
+        Attention. Only valid when conv_out fits within the sliding window.
+
+        Args:
+            conv_out: [seq, dim] output from conv_stem()
+
+        Returns:
+            mx.array: [seq/4, decoder_dim] adapter output
+        """
+        seq_len = conv_out.shape[0]
+        positions = mx.arange(seq_len)
+        rope_cos, rope_sin = _compute_rope_freqs(
+            positions, self.config.head_dim, self.config.rope_theta
+        )
+        x = conv_out
+        for layer in self.transformer_layers:
+            x = layer(x, rope_cos, rope_sin, "causal")
+        x = self.transformer_norm(x)
+        return self.downsample_and_project(x)
+
     def __call__(self, mel):
         """Full encode: conv stem + all transformer layers + downsample + project.
 
@@ -267,18 +290,8 @@ class AudioEncoder(nn.Module):
         seq_len = conv_out.shape[0]
         sw = self.config.sliding_window
 
-        # Short sequences: process in one pass (no chunking needed)
         if seq_len <= sw:
-            positions = mx.arange(seq_len)
-            rope_cos, rope_sin = _compute_rope_freqs(
-                positions, self.config.head_dim, self.config.rope_theta
-            )
-            x = conv_out
-            for layer in self.transformer_layers:
-                x = layer(x, rope_cos, rope_sin, "causal")
-            x = self.transformer_norm(x)
+            return self.encode_full(conv_out)
         else:
-            # Long sequences: use chunked encoding
             x = mx.concatenate(list(self.encode_chunks(conv_out)), axis=0)
-
-        return self.downsample_and_project(x)
+            return self.downsample_and_project(x)

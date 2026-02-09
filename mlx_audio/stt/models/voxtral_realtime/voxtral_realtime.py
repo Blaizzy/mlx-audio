@@ -144,40 +144,40 @@ class Model(nn.Module):
 
         mel, n_delay = self._prepare_mel(audio_np)
 
-        if verbose:
-            print(f"Audio: {len(audio_np)} samples ({len(audio_np)/SAMPLE_RATE:.1f}s)")
-            print(f"Mel: {mel.shape[1]} frames")
-
-        # Run conv stem (cheap, ~10ms) and compute total audio token count
+        # Run conv stem and compute total audio token count
         conv_out = self.encoder.conv_stem(mel)
         ds = self.encoder.config.downsample_factor
         n_audio_total = conv_out.shape[0] // ds
 
-        # Incremental encoding: get chunk generator
-        enc_chunk_gen = self.encoder.encode_chunks(conv_out)
-
-        # Encode enough chunks for prefill
         n_left = self.config.n_left_pad_tokens
         prompt_len = 1 + n_left + n_delay
-        adapter_chunks = []
-        adapter_len = 0
+        sw = self.encoder.config.sliding_window
 
-        while adapter_len < prompt_len:
-            try:
-                chunk_out = next(enc_chunk_gen)
-                chunk_adapter = self.encoder.downsample_and_project(chunk_out)
-                mx.eval(chunk_adapter)
-                adapter_chunks.append(chunk_adapter)
-                adapter_len += chunk_adapter.shape[0]
-            except StopIteration:
-                enc_chunk_gen = None
-                break
-
-        adapter_out = mx.concatenate(adapter_chunks, axis=0) if adapter_chunks else None
-        encoder_time = time.time() - start_time
+        if conv_out.shape[0] <= sw:
+            # Short audio: use non-chunked path with optimized causal attention
+            # (SDPA Flash Attention kernel, no RotatingKVCache overhead)
+            adapter_out = self.encoder.encode_full(conv_out)
+            enc_chunk_gen = None
+        else:
+            # Long audio: chunked encoding with generator for incremental decode
+            enc_chunk_gen = self.encoder.encode_chunks(conv_out)
+            adapter_chunks = []
+            adapter_len = 0
+            while adapter_len < prompt_len:
+                try:
+                    chunk_out = next(enc_chunk_gen)
+                    chunk_adapter = self.encoder.downsample_and_project(chunk_out)
+                    adapter_chunks.append(chunk_adapter)
+                    adapter_len += chunk_adapter.shape[0]
+                except StopIteration:
+                    enc_chunk_gen = None
+                    break
+            adapter_out = mx.concatenate(adapter_chunks, axis=0) if adapter_chunks else None
 
         if verbose:
-            print(f"Encoder (first chunk): {adapter_len} tokens in {encoder_time:.3f}s")
+            print(f"Audio: {len(audio_np)} samples ({len(audio_np)/SAMPLE_RATE:.1f}s)")
+            print(f"Encoder: {'non-chunked (causal)' if conv_out.shape[0] <= sw else 'chunked'}, "
+                  f"{adapter_out.shape[0]} adapter tokens")
             print(f"Total audio tokens: {n_audio_total}")
 
         # Build prompt embeddings
@@ -192,24 +192,19 @@ class Model(nn.Module):
         if verbose:
             print(f"Prompt: {prompt_len} tokens, Audio span: {n_audio_total} tokens")
 
-        # Prefill
+        # Prefill (single fused forward pass)
         prefill_start = time.time()
-        if prompt_len > 1:
-            h, cache = self.decoder.forward(prefix_embeds[:-1], start_pos=0)
-        else:
-            cache = None
-
-        h, cache = self.decoder.forward(
-            prefix_embeds[-1:], start_pos=prompt_len - 1, cache=cache
-        )
-        logits = self.decoder.logits(h.squeeze(0))
+        h, cache = self.decoder.forward(prefix_embeds, start_pos=0)
+        logits = self.decoder.logits(h[-1])
         cache_arrays = [t for lc in cache for t in lc[:2]]
         mx.eval(logits, *cache_arrays)
 
         if verbose:
+            total_ttft = time.time() - start_time
             prefill_time = time.time() - prefill_start
-            print(f"Prefill: {prompt_len} tokens in {prefill_time:.3f}s "
+            print(f"Prefill: {prompt_len} tokens in {prefill_time*1000:.0f}ms "
                   f"({prompt_len / prefill_time:.0f} tok/s)")
+            print(f"Total TTFT: {total_ttft*1000:.0f}ms")
 
         return adapter_out, n_audio_total, prompt_len, logits, cache, enc_chunk_gen, start_time
 
