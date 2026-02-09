@@ -96,7 +96,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
-| **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [mlx-community/voxtral-mini-4b-realtime-mlx-int4](https://huggingface.co/mlx-community/voxtral-mini-4b-realtime-mlx-int4) |
+| **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [int4](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-int4), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
 
 
@@ -315,10 +315,13 @@ python -m mlx_audio.stt.generate \
 
 Mistral's 4B parameter streaming speech-to-text model, optimized for low-latency transcription.
 
+Available variants: [int4](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-int4) (smaller/faster) | [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) (full precision)
+
 ```python
 from mlx_audio.stt.utils import load
 
-model = load("mlx-community/voxtral-mini-4b-realtime-mlx-int4")
+# Use int4 for faster inference, fp16 for full precision
+model = load("mlx-community/Voxtral-Mini-4B-Realtime-2602-int4")
 
 # Transcribe audio
 result = model.generate("audio.wav")
