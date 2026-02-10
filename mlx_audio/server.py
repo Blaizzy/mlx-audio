@@ -509,6 +509,72 @@ async def audio_separations(
             os.remove(tmp_path)
 
 
+async def _stream_transcription(
+    websocket: WebSocket,
+    stt_model,
+    audio_array: np.ndarray,
+    sample_rate: int,
+    language: Optional[str],
+    is_partial: bool,
+    streaming: bool = True,
+):
+    """Handle both streaming and non-streaming model inference over WebSocket.
+
+    Streaming models (whose generate() accepts a ``stream`` parameter) receive
+    the numpy array directly and yield token deltas sent as
+    ``{"type": "delta", "delta": "..."}`` messages, followed by a
+    ``{"type": "complete", ...}`` message.
+
+    Non-streaming models fall back to temp-file + batch generate, sending the
+    legacy ``{"text": ..., "is_partial": ...}`` format.
+    """
+    supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
+    lang_arg = language if language and language != "Detect" else None
+
+    if supports_stream and streaming:
+        result_iter = stt_model.generate(
+            audio_array, stream=True, language=lang_arg, verbose=False
+        )
+        accumulated = ""
+        for chunk in result_iter:
+            delta = (
+                chunk if isinstance(chunk, str) else getattr(chunk, "text", str(chunk))
+            )
+            accumulated += delta
+            await websocket.send_json({"type": "delta", "delta": delta})
+
+        await websocket.send_json(
+            {
+                "type": "complete",
+                "text": accumulated,
+                "segments": None,
+                "language": lang_arg,
+                "is_partial": is_partial,
+            }
+        )
+    else:
+        tmp_path = f"/tmp/realtime_{time.time()}.mp3"
+        audio_write(tmp_path, audio_array, sample_rate)
+        try:
+            result = stt_model.generate(tmp_path, language=lang_arg, verbose=False)
+            segments = (
+                sanitize_for_json(result.segments)
+                if hasattr(result, "segments") and result.segments
+                else None
+            )
+            await websocket.send_json(
+                {
+                    "text": result.text,
+                    "segments": segments,
+                    "language": getattr(result, "language", language),
+                    "is_partial": is_partial,
+                }
+            )
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+
 @app.websocket("/v1/audio/transcriptions/realtime")
 async def stt_realtime_transcriptions(websocket: WebSocket):
     """Realtime transcription via WebSocket."""
@@ -522,9 +588,10 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         )
         language = config.get("language", None)
         sample_rate = config.get("sample_rate", 16000)
+        streaming = config.get("streaming", True)
 
         print(
-            f"Configuration received: model={model_name}, language={language}, sample_rate={sample_rate}"
+            f"Configuration received: model={model_name}, language={language}, sample_rate={sample_rate}, streaming={streaming}"
         )
 
         # Load the STT model
@@ -666,41 +733,16 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     processed_samples = process_size
                     initial_chunk_processed = True
 
-                    # Save to temporary file for processing
-                    tmp_path = f"/tmp/realtime_initial_{time.time()}.mp3"
-                    audio_write(tmp_path, audio_array, sample_rate)
-
                     try:
-                        # Generate transcription for initial chunk
-                        result = stt_model.generate(
-                            tmp_path,
-                            language=(
-                                language if language and language != "Detect" else None
-                            ),
-                            verbose=False,
+                        await _stream_transcription(
+                            websocket,
+                            stt_model,
+                            audio_array,
+                            sample_rate,
+                            language,
+                            is_partial=True,
+                            streaming=streaming,
                         )
-
-                        print(f"Initial transcription: {result.text[:100]}...")
-
-                        # Send initial transcription result (marked as partial)
-                        segments = (
-                            sanitize_for_json(result.segments)
-                            if hasattr(result, "segments") and result.segments
-                            else None
-                        )
-                        await websocket.send_json(
-                            {
-                                "text": result.text,
-                                "segments": segments,
-                                "language": (
-                                    result.language
-                                    if hasattr(result, "language")
-                                    else language
-                                ),
-                                "is_partial": True,  # Mark as partial for UI
-                            }
-                        )
-
                     except Exception as e:
                         import traceback
 
@@ -710,10 +752,6 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         await websocket.send_json(
                             {"error": error_msg, "status": "error"}
                         )
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
 
                 # Process final chunk (entire accumulated buffer)
                 if should_process_final and len(audio_buffer) > 0:
@@ -721,40 +759,15 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     process_size = len(audio_buffer)
                     audio_array = np.array(audio_buffer)
 
-                    # Save to temporary file for processing
-                    tmp_path = f"/tmp/realtime_{time.time()}.mp3"
-                    audio_write(tmp_path, audio_array, sample_rate)
-
                     try:
-                        # Generate transcription
-
-                        result = stt_model.generate(
-                            tmp_path,
-                            language=(
-                                language if language and language != "Detect" else None
-                            ),
-                            verbose=False,
-                        )
-
-                        print(f"Transcription result: {result.text[:100]}...")
-
-                        # Send final transcription result (complete utterance)
-                        segments = (
-                            sanitize_for_json(result.segments)
-                            if hasattr(result, "segments") and result.segments
-                            else None
-                        )
-                        await websocket.send_json(
-                            {
-                                "text": result.text,
-                                "segments": segments,
-                                "language": (
-                                    result.language
-                                    if hasattr(result, "language")
-                                    else language
-                                ),
-                                "is_partial": False,  # Mark as final/complete
-                            }
+                        await _stream_transcription(
+                            websocket,
+                            stt_model,
+                            audio_array,
+                            sample_rate,
+                            language,
+                            is_partial=False,
+                            streaming=streaming,
                         )
 
                         # Clear processed audio from buffer and reset state
@@ -775,10 +788,6 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         await websocket.send_json(
                             {"error": error_msg, "status": "error"}
                         )
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
 
             elif "text" in message:
                 # JSON message received (e.g., stop command)
