@@ -780,6 +780,7 @@ class DiarizationOutput:
     speaker_probs: Optional[mx.array] = None
     num_speakers: int = 0
     total_time: float = 0.0
+    state: Optional["StreamingState"] = None
 
     @property
     def text(self) -> str:
@@ -1132,6 +1133,7 @@ class Model(nn.Module):
         self,
         audio: Union[str, np.ndarray, mx.array, Iterable[np.ndarray]],
         *,
+        state: Optional[StreamingState] = None,
         sample_rate: int = 16000,
         chunk_duration: float = 5.0,
         threshold: float = 0.5,
@@ -1143,28 +1145,31 @@ class Model(nn.Module):
     ) -> Generator[DiarizationOutput, None, None]:
         """Process audio in chunks, yielding diarization results incrementally.
 
-        When given a file path or array, features are extracted for the full
-        audio (with global per-feature normalization), then processed in
-        fixed-duration chunks.
+        Supports three modes:
 
-        When given an iterable of audio chunks, each chunk is independently
-        peak-normalized and feature-extracted (per-chunk normalization),
-        simulating a real-time streaming environment.
-
-        In both cases, each chunk sees long-range context through the speaker
-        cache and FIFO buffers.
+        1. **File / full array** (no ``state``): loads audio, extracts features
+           with global normalization, and processes in fixed-duration chunks.
+        2. **Iterable of chunks** (no ``state``): each chunk is independently
+           normalized and processed, simulating real-time streaming.
+        3. **Single chunk + state**: processes one chunk through the streaming
+           pipeline and yields a single result with the updated ``state``
+           attached (``result.state``).
 
         Args:
             audio: Audio input — one of:
 
                 - ``str``: path to an audio file
-                - ``np.ndarray`` or ``mx.array``: full waveform
-                - ``Iterable[np.ndarray]``: pre-built audio chunks for
-                  real-time streaming (e.g. from a microphone)
+                - ``np.ndarray`` or ``mx.array``: full waveform (or a single
+                  chunk when ``state`` is provided)
+                - ``Iterable[np.ndarray]``: pre-built audio chunks
 
+            state: Optional streaming state. When provided with a single
+                array, processes that one chunk and attaches the updated
+                state to the yielded result's ``state`` field. Use
+                :meth:`init_streaming_state` to create the initial state.
             sample_rate: Sample rate of input audio.
             chunk_duration: Duration of each chunk in seconds (ignored when
-                ``audio`` is an iterable of chunks).
+                ``audio`` is an iterable of chunks or ``state`` is provided).
             threshold: Speaker activity threshold (0-1).
             min_duration: Minimum segment duration in seconds.
             merge_gap: Maximum gap to merge consecutive segments.
@@ -1173,9 +1178,26 @@ class Model(nn.Module):
             verbose: Print progress information.
 
         Yields:
-            :class:`DiarizationOutput` for each chunk, containing segments
-            found in that time window.
+            :class:`DiarizationOutput` for each chunk. When ``state`` is
+            provided, the yielded result includes ``result.state`` with
+            the updated :class:`StreamingState`.
         """
+        # --- Single chunk + state: delegate to feed ---
+        if state is not None and isinstance(audio, (np.ndarray, mx.array)):
+            result, new_state = self.feed(
+                audio,
+                state,
+                sample_rate=sample_rate,
+                threshold=threshold,
+                min_duration=min_duration,
+                merge_gap=merge_gap,
+                spkcache_max=spkcache_max,
+                fifo_max=fifo_max,
+            )
+            result.state = new_state
+            yield result
+            return
+
         # --- Iterable of chunks: per-chunk normalization path ---
         if not isinstance(audio, (str, np.ndarray, mx.array)):
             yield from self._stream_from_chunks(

@@ -89,24 +89,52 @@ result = model.generate(audio, sample_rate=sr)
 
 ### Streaming diarization
 
-Process audio in chunks with incremental results. The model maintains a
-speaker cache and FIFO buffer for long-range context.
+`generate_stream` processes audio incrementally, yielding results per chunk.
+The model maintains a speaker cache and FIFO buffer for long-range context.
+
+**From a file path** (global normalization, auto-chunked):
 
 ```python
 from mlx_audio.vad import load
 
 model = load("nvidia/diar_sortformer_4spk-v1")
 
-for chunk in model.generate_stream("meeting.wav", chunk_duration=5.0, verbose=True):
-    for seg in chunk.segments:
+for result in model.generate_stream("meeting.wav", chunk_duration=5.0, verbose=True):
+    for seg in result.segments:
         print(f"Speaker {seg.speaker}: {seg.start:.2f}s - {seg.end:.2f}s")
+```
+
+**From a list of chunks** (per-chunk normalization):
+
+```python
+import soundfile as sf
+
+audio, sr = sf.read("meeting.wav")
+chunk_size = int(5.0 * sr)
+chunks = [audio[i:i+chunk_size] for i in range(0, len(audio), chunk_size)]
+
+for result in model.generate_stream(chunks, sample_rate=sr):
+    for seg in result.segments:
+        print(f"Speaker {seg.speaker}: {seg.start:.2f}s - {seg.end:.2f}s")
+```
+
+**One chunk at a time** (real-time streaming, e.g. from a microphone):
+
+```python
+state = model.init_streaming_state()
+for chunk in mic_stream():  # your audio source
+    for result in model.generate_stream(chunk, state=state, sample_rate=16000):
+        state = result.state
+        for seg in result.segments:
+            print(f"Speaker {seg.speaker}: {seg.start:.2f}s - {seg.end:.2f}s")
 ```
 
 Streaming parameters:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `chunk_duration` | `5.0` | Seconds of audio per chunk |
+| `chunk_duration` | `5.0` | Seconds per chunk (file/array mode) |
+| `state` | `None` | Streaming state for single-chunk mode |
 | `spkcache_max` | `188` | Max speaker cache size (diarization frames) |
 | `fifo_max` | `188` | Max FIFO buffer size (diarization frames) |
 
