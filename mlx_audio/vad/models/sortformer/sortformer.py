@@ -525,7 +525,7 @@ class TransformerAttention(nn.Module):
         self.head_dim = self.embed_dim // self.num_heads
 
         self.q_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
-        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.k_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=config.k_proj_bias)
         self.v_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.out_proj = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
         self.scale = self.head_dim**-0.5
@@ -739,6 +739,9 @@ class StreamingState:
     fifo: mx.array  # (1, fifo_frames, emb_dim)
     fifo_preds: mx.array  # (1, fifo_frames, n_spk)
     frames_processed: int  # total diarization frames emitted so far
+    # AOSC silence profile (v2.1)
+    mean_sil_emb: mx.array  # (1, emb_dim) running mean silence embedding
+    n_sil_frames: mx.array  # (1,) count of silence frames seen
 
     @property
     def spkcache_len(self) -> int:
@@ -912,6 +915,8 @@ class Model(nn.Module):
             fifo=empty_emb,
             fifo_preds=empty_pred,
             frames_processed=0,
+            mean_sil_emb=mx.zeros((1, emb_dim)),
+            n_sil_frames=mx.zeros((1,)),
         )
 
     def streaming_step(
@@ -919,23 +924,30 @@ class Model(nn.Module):
         chunk_features: mx.array,
         chunk_length: mx.array,
         state: StreamingState,
+        right_context_embs: Optional[mx.array] = None,
     ) -> Tuple[mx.array, StreamingState]:
         """Process one chunk of mel features through the streaming pipeline.
 
         Each call pre-encodes the chunk, concatenates it with the cached
-        context ``[spkcache + fifo + chunk]``, runs the full encoder, and
-        returns predictions for the *new chunk only*.
+        context ``[spkcache + fifo + left_ctx + chunk + right_ctx]``, runs the
+        full encoder, and returns predictions for the *new chunk only*.
 
         Args:
             chunk_features: ``(1, n_mels, chunk_mel_frames)`` mel features.
             chunk_length: ``(1,)`` valid length in mel frames.
             state: Current :class:`StreamingState`.
+            right_context_embs: Optional ``(1, rc_frames, emb_dim)`` pre-encoded
+                right context embeddings (file mode only).
 
         Returns:
             ``(chunk_preds, new_state)`` where ``chunk_preds`` is an mx.array
             of shape ``(chunk_diar_frames, n_spk)`` with speaker
             probabilities for this chunk.
         """
+        mc = self.config.modules_config
+        lc = mc.chunk_left_context
+        rc = mc.chunk_right_context
+
         # Pre-encode chunk through ConvSubsampling
         chunk_embs, chunk_emb_lengths = self.fc_encoder.pre_encode(
             chunk_features, chunk_length
@@ -943,19 +955,36 @@ class Model(nn.Module):
         chunk_diar_len = int(chunk_emb_lengths[0].item())
         chunk_embs = chunk_embs[:, :chunk_diar_len, :]
 
-        # Concatenate [spkcache, fifo, chunk]
+        # Build left context from end of FIFO
+        left_ctx = None
+        left_ctx_len = 0
+        if lc > 0 and state.fifo_len > 0:
+            take = min(lc, state.fifo_len)
+            left_ctx = state.fifo[:, -take:, :]
+            left_ctx_len = take
+
+        # Right context (only in file mode, pre-encoded by caller)
+        right_ctx_len = 0
+        if right_context_embs is not None and rc > 0:
+            right_ctx_len = right_context_embs.shape[1]
+
+        # Concatenate [spkcache, fifo, left_ctx, chunk, right_ctx]
         parts = []
         if state.spkcache_len > 0:
             parts.append(state.spkcache)
         if state.fifo_len > 0:
             parts.append(state.fifo)
+        if left_ctx is not None:
+            parts.append(left_ctx)
         parts.append(chunk_embs)
+        if right_context_embs is not None and right_ctx_len > 0:
+            parts.append(right_context_embs)
 
         all_embs = mx.concatenate(parts, axis=1)
         total_len = all_embs.shape[1]
         all_lengths = mx.array([total_len])
 
-        # Full encoder pass over [spkcache + fifo + chunk]
+        # Full encoder pass over assembled sequence
         fc_out, _ = self.fc_encoder.encode(all_embs, all_lengths)
         fc_out = mx.transpose(fc_out, axes=(0, 2, 1))
 
@@ -967,8 +996,8 @@ class Model(nn.Module):
         all_preds = self.sortformer_modules.forward_speaker_sigmoids(trans_out)
         all_preds = all_preds * encoder_mask[:, :, None]
 
-        # Extract predictions for the new chunk and re-attended cache/fifo
-        chunk_start = state.spkcache_len + state.fifo_len
+        # Extract predictions for the new chunk only (skip context regions)
+        chunk_start = state.spkcache_len + state.fifo_len + left_ctx_len
         chunk_preds = all_preds[:, chunk_start : chunk_start + chunk_diar_len, :]
         updated_cache_preds = all_preds[:, : state.spkcache_len, :]
         updated_fifo_preds = all_preds[
@@ -1069,23 +1098,46 @@ class Model(nn.Module):
             )
             return
 
+        mc = self.config.modules_config
+        # Use config defaults when caller uses default values
+        if mc.use_aosc:
+            spkcache_max = mc.spkcache_len
+            fifo_max = mc.fifo_len if mc.fifo_len > 0 else fifo_max
+
         waveform, sample_rate = self._load_audio(audio, sample_rate)
         proc = self._processor_config
-        waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
-        trim_offset_sec = trim_offset / proc.sampling_rate
 
-        waveform = mx.array(waveform)
-        waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
+        # v2.1 streaming: skip silence trimming, peak norm, and per-feature norm
+        use_v2_feats = mc.use_aosc
+        if use_v2_feats:
+            trim_offset_sec = 0.0
+            waveform = mx.array(waveform)
+            features = extract_mel_features(
+                waveform,
+                sample_rate=proc.sampling_rate,
+                n_fft=proc.n_fft,
+                hop_length=proc.hop_length,
+                win_length=proc.win_length,
+                n_mels=proc.feature_size,
+                preemphasis_coeff=proc.preemphasis,
+                normalize=None,
+                pad_to=0,
+            )
+        else:
+            waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
+            trim_offset_sec = trim_offset / proc.sampling_rate
+            waveform = mx.array(waveform)
+            waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
+            features = extract_mel_features(
+                waveform,
+                sample_rate=proc.sampling_rate,
+                n_fft=proc.n_fft,
+                hop_length=proc.hop_length,
+                win_length=proc.win_length,
+                n_mels=proc.feature_size,
+                preemphasis_coeff=proc.preemphasis,
+            )
 
-        features = extract_mel_features(
-            waveform,
-            sample_rate=proc.sampling_rate,
-            n_fft=proc.n_fft,
-            hop_length=proc.hop_length,
-            win_length=proc.win_length,
-            n_mels=proc.feature_size,
-            preemphasis_coeff=proc.preemphasis,
-        )
         total_mel_frames = features.shape[2]
 
         subsampling_factor = self.config.fc_encoder_config.subsampling_factor
@@ -1102,6 +1154,16 @@ class Model(nn.Module):
         )
         chunk_mel = max(chunk_mel, subsampling_factor)
 
+        # For v2.1 file mode: pre-encode all mel features so we can provide
+        # right context embeddings to each chunk
+        rc = mc.chunk_right_context
+        all_pre_embs = None
+        if use_v2_feats and rc > 0:
+            all_pre_embs, _ = self.fc_encoder.pre_encode(
+                features, mx.array([total_mel_frames])
+            )
+            mx.eval(all_pre_embs)
+
         if verbose:
             audio_dur = waveform.shape[-1] / proc.sampling_rate
             n_chunks = math.ceil(total_mel_frames / chunk_mel)
@@ -1113,13 +1175,55 @@ class Model(nn.Module):
         state = self.init_streaming_state()
         offset_mel = 0
         chunk_idx = 0
+        emb_offset = 0  # track position in pre-encoded embeddings
 
         while offset_mel < total_mel_frames:
             end_mel = min(offset_mel + chunk_mel, total_mel_frames)
             chunk_feat = features[:, :, offset_mel:end_mel]
             chunk_len = mx.array([chunk_feat.shape[2]])
 
-            chunk_preds, state = self.streaming_step(chunk_feat, chunk_len, state)
+            # Compute right context embeddings for file mode
+            right_ctx = None
+            if all_pre_embs is not None and rc > 0:
+                # Figure out how many diar frames this chunk produces
+                chunk_emb_len = int(
+                    (
+                        mx.floor(
+                            (
+                                mx.floor(
+                                    (
+                                        mx.floor(
+                                            (
+                                                mx.array(
+                                                    [chunk_feat.shape[2]],
+                                                    dtype=mx.float32,
+                                                )
+                                                - 1
+                                            )
+                                            / 2
+                                        )
+                                        + 1
+                                        - 1
+                                    )
+                                    / 2
+                                )
+                                + 1
+                                - 1
+                            )
+                            / 2
+                        )
+                        + 1
+                    )[0].item()
+                )
+                rc_start = emb_offset + chunk_emb_len
+                rc_end = min(rc_start + rc, all_pre_embs.shape[1])
+                if rc_end > rc_start:
+                    right_ctx = all_pre_embs[:, rc_start:rc_end, :]
+                emb_offset += chunk_emb_len
+
+            chunk_preds, state = self.streaming_step(
+                chunk_feat, chunk_len, state, right_context_embs=right_ctx
+            )
 
             chunk_time_offset = (offset_mel * proc.hop_length) / proc.sampling_rate
 
@@ -1158,7 +1262,9 @@ class Model(nn.Module):
                 num_speakers=len(active_speakers),
             )
 
-            state = self._maybe_compress_state(state, spkcache_max, fifo_max)
+            state = self._maybe_compress_state(
+                state, spkcache_max, fifo_max, self.config.modules_config
+            )
 
             offset_mel = end_mel
 
@@ -1259,7 +1365,9 @@ class Model(nn.Module):
         chunk_time_offset = state.frames_processed * frame_duration
 
         chunk_mx = mx.array(raw)
-        chunk_mx = (1.0 / (mx.max(mx.abs(chunk_mx)) + 1e-3)) * chunk_mx
+        use_v2_feats = self.config.modules_config.use_aosc
+        if not use_v2_feats:
+            chunk_mx = (1.0 / (mx.max(mx.abs(chunk_mx)) + 1e-3)) * chunk_mx
 
         features = extract_mel_features(
             chunk_mx,
@@ -1269,6 +1377,7 @@ class Model(nn.Module):
             win_length=proc.win_length,
             n_mels=proc.feature_size,
             preemphasis_coeff=proc.preemphasis,
+            normalize=None if use_v2_feats else "per_feature",
             pad_to=0,
         )
         feature_lengths = mx.array([features.shape[2]])
@@ -1291,7 +1400,9 @@ class Model(nn.Module):
             )
             for seg in segments
         ]
-        state = self._maybe_compress_state(state, spkcache_max, fifo_max)
+        state = self._maybe_compress_state(
+            state, spkcache_max, fifo_max, self.config.modules_config
+        )
 
         active_speakers = set(seg.speaker for seg in segments)
         output = DiarizationOutput(
@@ -1330,6 +1441,8 @@ class Model(nn.Module):
             fifo=new_fifo,
             fifo_preds=new_fifo_preds,
             frames_processed=state.frames_processed + chunk_preds.shape[1],
+            mean_sil_emb=state.mean_sil_emb,
+            n_sil_frames=state.n_sil_frames,
         )
 
     @staticmethod
@@ -1337,26 +1450,64 @@ class Model(nn.Module):
         state: StreamingState,
         spkcache_max: int,
         fifo_max: int,
+        modules_cfg: Optional["ModulesConfig"] = None,
     ) -> StreamingState:
-        """Move FIFO overflow into speaker cache, compressing if needed."""
+        """Move FIFO overflow into speaker cache, compressing if needed.
+
+        When ``modules_cfg`` is provided and ``use_aosc`` is True, uses AOSC
+        compression and transfers frames in ``spkcache_update_period``-sized
+        batches with silence profile updates.  Otherwise uses the simple v1
+        compression.
+        """
         if state.fifo_len <= fifo_max:
             return state
 
+        use_aosc = modules_cfg is not None and modules_cfg.use_aosc
+
         pop_len = state.fifo_len - fifo_max
-        new_cache = mx.concatenate([state.spkcache, state.fifo[:, :pop_len, :]], axis=1)
-        new_cache_preds = mx.concatenate(
-            [state.spkcache_preds, state.fifo_preds[:, :pop_len, :]], axis=1
-        )
+        if use_aosc:
+            # Transfer in update-period-sized batches
+            pop_len = min(pop_len, modules_cfg.spkcache_update_period)
+
+        popped_embs = state.fifo[:, :pop_len, :]
+        popped_preds = state.fifo_preds[:, :pop_len, :]
+
+        # Update silence profile from popped frames
+        mean_sil_emb = state.mean_sil_emb
+        n_sil_frames = state.n_sil_frames
+        if use_aosc:
+            mean_sil_emb, n_sil_frames = Model._get_silence_profile(
+                mean_sil_emb,
+                n_sil_frames,
+                popped_embs,
+                popped_preds,
+                modules_cfg.sil_threshold,
+            )
+
+        new_cache = mx.concatenate([state.spkcache, popped_embs], axis=1)
+        new_cache_preds = mx.concatenate([state.spkcache_preds, popped_preds], axis=1)
 
         if new_cache.shape[1] > spkcache_max:
-            new_cache, new_cache_preds = Model._compress_spkcache(
-                new_cache, new_cache_preds, spkcache_max
-            )
+            if use_aosc:
+                new_cache, new_cache_preds = Model._compress_spkcache_aosc(
+                    new_cache, new_cache_preds, mean_sil_emb, modules_cfg
+                )
+            else:
+                new_cache, new_cache_preds = Model._compress_spkcache_simple(
+                    new_cache, new_cache_preds, spkcache_max
+                )
 
         new_fifo = state.fifo[:, pop_len:, :]
         new_fifo_preds = state.fifo_preds[:, pop_len:, :]
 
-        mx.eval(new_cache, new_cache_preds, new_fifo, new_fifo_preds)
+        mx.eval(
+            new_cache,
+            new_cache_preds,
+            new_fifo,
+            new_fifo_preds,
+            mean_sil_emb,
+            n_sil_frames,
+        )
 
         return StreamingState(
             spkcache=new_cache,
@@ -1364,19 +1515,317 @@ class Model(nn.Module):
             fifo=new_fifo,
             fifo_preds=new_fifo_preds,
             frames_processed=state.frames_processed,
+            mean_sil_emb=mean_sil_emb,
+            n_sil_frames=n_sil_frames,
         )
 
+    # =================================================================
+    # AOSC (Arrival-Order Speaker Cache) Compression — v2.1
+    # =================================================================
+
     @staticmethod
-    def _compress_spkcache(
+    def _get_log_pred_scores(preds: mx.array, threshold: float) -> mx.array:
+        """Per-frame per-speaker log-likelihood ratio scores.
+
+        High when speaker k is confidently active alone (non-overlapped).
+
+        Args:
+            preds: (batch, n_frames, n_spk)
+            threshold: min clamp for log computation
+        Returns:
+            scores: (batch, n_frames, n_spk)
+        """
+        log_probs = mx.log(mx.clip(preds, a_min=threshold, a_max=None))
+        log_1_probs = mx.log(mx.clip(1.0 - preds, a_min=threshold, a_max=None))
+        # sum log(1-p_j) across all speakers
+        log_1_probs_sum = mx.sum(log_1_probs, axis=2, keepdims=True)
+        # broadcast to (batch, n_frames, n_spk)
+        log_1_probs_sum = mx.broadcast_to(log_1_probs_sum, preds.shape)
+        scores = log_probs - log_1_probs + log_1_probs_sum - math.log(0.5)
+        return scores
+
+    @staticmethod
+    def _disable_low_scores(
+        preds: mx.array, scores: mx.array, min_pos_scores_per_spk: int
+    ) -> mx.array:
+        """Set scores to -inf for non-speech and overlapped-speech frames.
+
+        Args:
+            preds: (batch, n_frames, n_spk)
+            scores: (batch, n_frames, n_spk)
+            min_pos_scores_per_spk: minimum positive scores before filtering overlap
+        Returns:
+            scores: (batch, n_frames, n_spk)
+        """
+        neg_inf = mx.array(float("-inf"))
+        # Non-speech → -inf
+        is_speech = preds > 0.5
+        scores = mx.where(is_speech, scores, neg_inf)
+
+        # Overlapped speech → -inf (only if speaker has enough clean frames)
+        is_pos = scores > 0
+        # Count positive scores per speaker: (batch, n_spk)
+        pos_count = mx.sum(is_pos.astype(mx.float32), axis=1, keepdims=True)
+        has_enough = pos_count >= min_pos_scores_per_spk
+        is_nonpos_replace = (~is_pos) & is_speech & has_enough
+        scores = mx.where(is_nonpos_replace, neg_inf, scores)
+        return scores
+
+    @staticmethod
+    def _boost_topk_scores(
+        scores: mx.array,
+        n_boost_per_spk: int,
+        scale_factor: float = 1.0,
+    ) -> mx.array:
+        """Boost the top-K scores per speaker to ensure minimum representation.
+
+        Args:
+            scores: (batch, n_frames, n_spk)
+            n_boost_per_spk: number of frames to boost per speaker
+            scale_factor: multiplier for the boost amount
+        Returns:
+            scores: (batch, n_frames, n_spk) with boosted values
+        """
+        if n_boost_per_spk <= 0:
+            return scores
+        _, n_frames, n_spk = scores.shape
+        k = min(n_boost_per_spk, n_frames)
+        boost_val = -scale_factor * math.log(0.5)  # positive value
+
+        # Process each speaker: find top-k, create mask, apply boost
+        result_slices = []
+        for spk in range(n_spk):
+            spk_scores = scores[:, :, spk : spk + 1]  # (batch, n_frames, 1)
+            flat = spk_scores[:, :, 0]  # (batch, n_frames)
+
+            # Get top-k indices
+            topk_idx = mx.argpartition(-flat, kth=k - 1, axis=1)[:, :k]
+
+            # Build one-hot mask via scatter: (batch, n_frames)
+            is_finite = flat > float("-inf")
+            mask = mx.zeros_like(flat)
+            # Set top-k positions to 1
+            ones = mx.ones(topk_idx.shape, dtype=mx.float32)
+            # Scatter ones into mask at topk positions
+            mask = mask.at[mx.arange(mask.shape[0])[:, None], topk_idx].add(ones)
+
+            boost_amount = mask * boost_val * is_finite.astype(mx.float32)
+            result_slices.append(flat + boost_amount)
+
+        return mx.stack(result_slices, axis=-1)
+
+    @staticmethod
+    def _get_topk_indices(
+        scores: mx.array,
+        spkcache_len: int,
+        spkcache_sil_frames_per_spk: int,
+        max_index: int,
+    ) -> Tuple[mx.array, mx.array]:
+        """Select top spkcache_len frames globally across speakers.
+
+        Args:
+            scores: (batch, n_frames, n_spk) — may include silence padding
+            spkcache_len: target number of frames
+            spkcache_sil_frames_per_spk: silence frames appended per speaker
+            max_index: placeholder index for disabled frames
+        Returns:
+            topk_indices_sorted: (batch, spkcache_len) frame indices
+            is_disabled: (batch, spkcache_len) True for disabled positions
+        """
+        batch_size, n_frames, _ = scores.shape
+        n_frames_no_sil = n_frames - spkcache_sil_frames_per_spk
+
+        # Flatten: (batch, n_spk, n_frames) → (batch, n_spk * n_frames)
+        scores_flat = mx.transpose(scores, axes=(0, 2, 1)).reshape(batch_size, -1)
+
+        # Top-k
+        k = min(spkcache_len, scores_flat.shape[1])
+        topk_indices = mx.argpartition(-scores_flat, kth=k - 1, axis=1)[:, :k]
+        topk_values = mx.take_along_axis(scores_flat, topk_indices, axis=1)
+
+        # Replace -inf indices with max_index placeholder
+        valid_mask = topk_values > float("-inf")
+        topk_indices = mx.where(valid_mask, topk_indices, mx.array(max_index))
+
+        # Sort to preserve temporal order
+        topk_indices_sorted = mx.sort(topk_indices, axis=1)
+
+        # Determine disabled positions
+        is_disabled = topk_indices_sorted == max_index
+
+        # Convert flattened speaker-indices back to frame indices
+        topk_indices_sorted = topk_indices_sorted % n_frames
+
+        # Mark silence-pad region as disabled
+        is_disabled = is_disabled | (topk_indices_sorted >= n_frames_no_sil)
+
+        # Set disabled indices to 0 as placeholder for gather
+        topk_indices_sorted = mx.where(is_disabled, mx.array(0), topk_indices_sorted)
+
+        return topk_indices_sorted, is_disabled
+
+    @staticmethod
+    def _gather_spkcache_and_preds(
+        embs: mx.array,
+        preds: mx.array,
+        topk_indices: mx.array,
+        is_disabled: mx.array,
+        mean_sil_emb: mx.array,
+        spkcache_len: int,
+    ) -> Tuple[mx.array, mx.array]:
+        """Gather selected frames, replacing disabled positions with silence.
+
+        Args:
+            embs: (batch, n_frames, emb_dim)
+            preds: (batch, n_frames, n_spk)
+            topk_indices: (batch, spkcache_len)
+            is_disabled: (batch, spkcache_len)
+            mean_sil_emb: (batch, emb_dim)
+            spkcache_len: target cache length
+        Returns:
+            gathered_embs: (batch, spkcache_len, emb_dim)
+            gathered_preds: (batch, spkcache_len, n_spk)
+        """
+        emb_dim = embs.shape[2]
+        n_spk = preds.shape[2]
+
+        # Expand indices for gather: (batch, spkcache_len, emb_dim)
+        idx_emb = mx.expand_dims(topk_indices, axis=-1)
+        idx_emb = mx.broadcast_to(
+            idx_emb, (topk_indices.shape[0], topk_indices.shape[1], emb_dim)
+        )
+        gathered_embs = mx.take_along_axis(embs, idx_emb, axis=1)
+
+        # Replace disabled with mean silence embedding
+        sil_expanded = mx.expand_dims(mean_sil_emb, axis=1)
+        sil_expanded = mx.broadcast_to(
+            sil_expanded, (topk_indices.shape[0], spkcache_len, emb_dim)
+        )
+        disabled_mask = mx.expand_dims(is_disabled, axis=-1)
+        gathered_embs = mx.where(disabled_mask, sil_expanded, gathered_embs)
+
+        # Gather preds
+        idx_spk = mx.expand_dims(topk_indices, axis=-1)
+        idx_spk = mx.broadcast_to(
+            idx_spk, (topk_indices.shape[0], topk_indices.shape[1], n_spk)
+        )
+        gathered_preds = mx.take_along_axis(preds, idx_spk, axis=1)
+        gathered_preds = mx.where(disabled_mask, mx.array(0.0), gathered_preds)
+
+        return gathered_embs, gathered_preds
+
+    @staticmethod
+    def _get_silence_profile(
+        mean_sil_emb: mx.array,
+        n_sil_frames: mx.array,
+        embs: mx.array,
+        preds: mx.array,
+        sil_threshold: float,
+    ) -> Tuple[mx.array, mx.array]:
+        """Update running mean silence embedding from new frames.
+
+        A frame is silence if sum of speaker preds < sil_threshold.
+
+        Args:
+            mean_sil_emb: (batch, emb_dim) current mean
+            n_sil_frames: (batch,) current count
+            embs: (batch, n_frames, emb_dim) new embeddings
+            preds: (batch, n_frames, n_spk) new predictions
+            sil_threshold: threshold for silence detection
+        Returns:
+            updated_mean_sil_emb: (batch, emb_dim)
+            updated_n_sil_frames: (batch,)
+        """
+        # Detect silence frames
+        is_sil = mx.sum(preds, axis=2) < sil_threshold  # (batch, n_frames)
+        sil_count = mx.sum(is_sil.astype(mx.float32), axis=1)  # (batch,)
+
+        # Sum silence embeddings
+        sil_emb_sum = mx.sum(
+            embs * mx.expand_dims(is_sil.astype(mx.float32), axis=-1), axis=1
+        )  # (batch, emb_dim)
+
+        # Incremental mean update
+        upd_n_sil = n_sil_frames + sil_count
+        old_sil_sum = mean_sil_emb * mx.expand_dims(n_sil_frames, axis=-1)
+        total_sil_sum = old_sil_sum + sil_emb_sum
+        upd_mean = total_sil_sum / mx.clip(
+            mx.expand_dims(upd_n_sil, axis=-1), a_min=1, a_max=None
+        )
+
+        return upd_mean, upd_n_sil
+
+    @staticmethod
+    def _compress_spkcache_aosc(
+        embs: mx.array,
+        preds: mx.array,
+        mean_sil_emb: mx.array,
+        modules_cfg: "ModulesConfig",
+    ) -> Tuple[mx.array, mx.array]:
+        """AOSC compression: keep the most informative frames per speaker.
+
+        Args:
+            embs: (1, N, emb_dim) pre-encoded embeddings
+            preds: (1, N, n_spk) speaker predictions
+            mean_sil_emb: (1, emb_dim) mean silence embedding
+            modules_cfg: module config with AOSC parameters
+        Returns:
+            (compressed_embs, compressed_preds) each (1, spkcache_len, *)
+        """
+        n_spk = modules_cfg.num_speakers
+        spkcache_len = modules_cfg.spkcache_len
+        sil_per_spk = modules_cfg.spkcache_sil_frames_per_spk
+        spkcache_len_per_spk = spkcache_len // n_spk - sil_per_spk
+        strong_boost = math.floor(spkcache_len_per_spk * modules_cfg.strong_boost_rate)
+        weak_boost = math.floor(spkcache_len_per_spk * modules_cfg.weak_boost_rate)
+        min_pos = math.floor(spkcache_len_per_spk * modules_cfg.min_pos_scores_rate)
+
+        # 1. Score
+        scores = Model._get_log_pred_scores(preds, modules_cfg.pred_score_threshold)
+        # 2. Disable non-speech and overlapped speech
+        scores = Model._disable_low_scores(preds, scores, min_pos)
+        # 3. Boost newly added frames (frames beyond current cache length)
+        if modules_cfg.scores_boost_latest > 0 and scores.shape[1] > spkcache_len:
+            boost_mask = mx.concatenate(
+                [
+                    mx.zeros((scores.shape[0], spkcache_len, n_spk)),
+                    mx.full(
+                        (scores.shape[0], scores.shape[1] - spkcache_len, n_spk),
+                        modules_cfg.scores_boost_latest,
+                    ),
+                ],
+                axis=1,
+            )
+            scores = scores + boost_mask
+        # 4. Strong boost (ensure min per-speaker representation)
+        scores = Model._boost_topk_scores(scores, strong_boost, scale_factor=2.0)
+        # 5. Weak boost (prevent single-speaker dominance)
+        scores = Model._boost_topk_scores(scores, weak_boost, scale_factor=1.0)
+        # 6. Append silence padding with +inf scores
+        if sil_per_spk > 0:
+            batch_size = scores.shape[0]
+            pad = mx.full((batch_size, sil_per_spk, n_spk), float("inf"))
+            scores = mx.concatenate([scores, pad], axis=1)
+        # 7. Select top frames
+        topk_indices, is_disabled = Model._get_topk_indices(
+            scores, spkcache_len, sil_per_spk, modules_cfg.max_index
+        )
+        # 8. Gather
+        compressed_embs, compressed_preds = Model._gather_spkcache_and_preds(
+            embs, preds, topk_indices, is_disabled, mean_sil_emb, spkcache_len
+        )
+        mx.eval(compressed_embs, compressed_preds)
+        return compressed_embs, compressed_preds
+
+    @staticmethod
+    def _compress_spkcache_simple(
         embs: mx.array,
         preds: mx.array,
         target_len: int,
     ) -> Tuple[mx.array, mx.array]:
-        """Compress speaker cache by keeping the most informative frames.
+        """Simple compression: keep frames with highest total speaker activity.
 
-        Frames are scored by their total speaker activity (sum of
-        log-predictions across speakers).  The top ``target_len`` frames
-        are kept in temporal order.
+        This is the v1 compression strategy.
 
         Args:
             embs: ``(1, N, emb_dim)`` pre-encoded embeddings.
@@ -1571,16 +2020,17 @@ class Model(nn.Module):
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Transform HuggingFace weights to match MLX model structure.
 
-        The HF safetensors has keys like:
-            fc_encoder.layers.N.conv.depthwise_conv.weight  (Conv1d: out, 1, K)
-            fc_encoder.layers.N.conv.pointwise_conv1.weight (Conv1d: out, in, 1)
-            fc_encoder.subsampling.layers.N.weight           (Conv2d: out, in, H, W)
-            tf_encoder.layers.N.self_attn.q_proj.weight
-            sortformer_modules.encoder_proj.weight
-            etc.
+        Handles two formats:
+          1. v1 HuggingFace safetensors (keys like ``fc_encoder.subsampling.layers.N.*``
+             with Conv weights in PyTorch layout)
+          2. Converted safetensors from ``convert.py`` (keys already use ``layers_N``
+             and Conv weights are already in MLX layout) — passed through unchanged.
         """
         sanitized = {}
         skip_keys = {"num_batches_tracked"}
+
+        # Detect if already converted (keys use layers_N, not layers.N)
+        already_converted = any("subsampling.layers_" in k for k in weights)
 
         for k, v in weights.items():
             if any(sk in k for sk in skip_keys):
@@ -1588,29 +2038,34 @@ class Model(nn.Module):
 
             new_k = k
 
-            # Remap subsampling.layers.N -> subsampling.layers_N
-            if "fc_encoder.subsampling.layers." in new_k:
-                new_k = new_k.replace("subsampling.layers.", "subsampling.layers_")
+            if not already_converted:
+                # Remap subsampling.layers.N -> subsampling.layers_N
+                if "fc_encoder.subsampling.layers." in new_k:
+                    new_k = new_k.replace("subsampling.layers.", "subsampling.layers_")
 
-            # Conv2d: PyTorch (O,I,H,W) -> MLX (O,H,W,I)
-            if "subsampling" in new_k and "weight" in new_k and "linear" not in new_k:
-                if v.ndim == 4:
-                    v = mx.transpose(v, axes=(0, 2, 3, 1))
+                # Conv2d: PyTorch (O,I,H,W) -> MLX (O,H,W,I)
+                if (
+                    "subsampling" in new_k
+                    and "weight" in new_k
+                    and "linear" not in new_k
+                ):
+                    if v.ndim == 4:
+                        v = mx.transpose(v, axes=(0, 2, 3, 1))
 
-            # Conv1d: PyTorch (O,I,K) -> MLX (O,K,I)
-            if (
-                any(
-                    conv_name in new_k
-                    for conv_name in [
-                        "pointwise_conv1",
-                        "pointwise_conv2",
-                        "depthwise_conv",
-                    ]
-                )
-                and "weight" in new_k
-            ):
-                if v.ndim == 3:
-                    v = mx.transpose(v, axes=(0, 2, 1))
+                # Conv1d: PyTorch (O,I,K) -> MLX (O,K,I)
+                if (
+                    any(
+                        conv_name in new_k
+                        for conv_name in [
+                            "pointwise_conv1",
+                            "pointwise_conv2",
+                            "depthwise_conv",
+                        ]
+                    )
+                    and "weight" in new_k
+                ):
+                    if v.ndim == 3:
+                        v = mx.transpose(v, axes=(0, 2, 1))
 
             sanitized[new_k] = v
 

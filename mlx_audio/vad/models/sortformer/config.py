@@ -53,6 +53,7 @@ class TFEncoderConfig(BaseModelArgs):
     init_std: float = 0.02
     initializer_range: float = 0.02
     num_mel_bins: int = 80
+    k_proj_bias: bool = False
 
 
 @dataclass
@@ -82,6 +83,7 @@ class ModulesConfig(BaseModelArgs):
     strong_boost_rate: float = 0.3
     weak_boost_rate: float = 0.7
     min_pos_scores_rate: float = 0.5
+    use_aosc: bool = False
 
 
 @dataclass
