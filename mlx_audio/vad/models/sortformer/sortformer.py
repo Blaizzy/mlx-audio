@@ -25,9 +25,8 @@ from mlx_audio.dsp import hanning, mel_filters, stft
 
 from .config import FCEncoderConfig, ModelConfig, ModulesConfig, TFEncoderConfig
 
-# NeMo constants
-_LOG_GUARD = 2**-24  # NeMo's log_zero_guard_value
-_NORM_CONSTANT = 1e-5  # NeMo's normalization epsilon
+_LOG_GUARD = 2**-24
+_NORM_CONSTANT = 1e-5
 
 
 # =============================================================================
@@ -62,15 +61,11 @@ def extract_mel_features(
         Returns: (batch, n_mels, num_frames) matching NeMo convention
     """
     if waveform.ndim == 1:
-        waveform = waveform[None, :]  # Add batch dim
+        waveform = waveform[None, :]
 
-    # Apply preemphasis
     waveform = preemphasis_filter(waveform, preemphasis_coeff)
-
     batch_size = waveform.shape[0]
 
-    # NeMo uses librosa mel filters with norm="slaney" and slaney mel scale
-    # (librosa defaults: htk=False → slaney scale, norm="slaney" per NeMo default)
     mel_fb = mel_filters(
         sample_rate=sample_rate,
         n_fft=n_fft,
@@ -79,11 +74,10 @@ def extract_mel_features(
         f_max=None,
         norm="slaney",
         mel_scale="slaney",
-    )  # (n_mels, n_fft//2+1)
+    )
 
-    # Center-padded window matching PyTorch's torch.stft behavior:
-    # When win_length < n_fft, PyTorch center-pads the window with zeros
-    window = hanning(win_length)  # symmetric (periodic=False)
+    # Center-pad window when win_length < n_fft (matching torch.stft behavior)
+    window = hanning(win_length)
     if win_length < n_fft:
         left = (n_fft - win_length) // 2
         right = n_fft - win_length - left
@@ -91,7 +85,6 @@ def extract_mel_features(
 
     all_features = []
     for b in range(batch_size):
-        # STFT with constant padding (matching NeMo's default pad_mode)
         spec = stft(
             waveform[b],
             n_fft=n_fft,
@@ -100,26 +93,16 @@ def extract_mel_features(
             window=window,
             center=True,
             pad_mode="constant",
-        )  # (num_frames, n_fft//2+1) complex
-
-        # Power spectrum: |STFT|^2 (magnitude then square, same as mag_power=2.0)
-        power = mx.abs(spec) ** 2  # (num_frames, n_fft//2+1)
-
-        # Apply mel filterbank: power @ mel_fb^T -> (num_frames, n_mels)
-        mel_spec = power @ mel_fb.T  # (num_frames, n_mels)
-
-        # Log with NeMo's guard value
+        )
+        power = mx.abs(spec) ** 2
+        mel_spec = power @ mel_fb.T
         mel_spec = mx.log(mel_spec + _LOG_GUARD)
+        all_features.append(mel_spec.T)
 
-        all_features.append(mel_spec.T)  # (n_mels, num_frames)
+    features = mx.stack(all_features)
 
-    features = mx.stack(all_features)  # (batch, n_mels, num_frames)
-
-    # Per-feature normalization (NeMo normalize="per_feature")
-    # Normalize each mel bin to zero mean and unit variance across time
     if normalize == "per_feature":
-        # features: (batch, n_mels, num_frames)
-        mean = mx.mean(features, axis=2, keepdims=True)  # (batch, n_mels, 1)
+        mean = mx.mean(features, axis=2, keepdims=True)
         # Bessel's correction: divide by (N-1)
         var = mx.sum((features - mean) ** 2, axis=2, keepdims=True) / (
             features.shape[2] - 1
@@ -127,7 +110,6 @@ def extract_mel_features(
         std = mx.sqrt(var)
         features = (features - mean) / (std + _NORM_CONSTANT)
 
-    # Pad to multiple of pad_to frames (NeMo default: 16)
     if pad_to > 0:
         num_frames = features.shape[2]
         remainder = num_frames % pad_to
@@ -165,11 +147,9 @@ class ConvSubsampling(nn.Module):
         stride = config.subsampling_conv_stride
         pad = (ks - 1) // 2
 
-        # Layer 0: regular conv (1 -> conv_channels, stride=2)
         self.layers_0 = nn.Conv2d(
             1, conv_channels, kernel_size=ks, stride=stride, padding=pad
         )
-        # Layer 2: depthwise conv (conv_channels -> conv_channels, stride=2, groups=conv_channels)
         self.layers_2 = nn.Conv2d(
             conv_channels,
             conv_channels,
@@ -178,9 +158,7 @@ class ConvSubsampling(nn.Module):
             padding=pad,
             groups=conv_channels,
         )
-        # Layer 3: pointwise conv (conv_channels -> conv_channels, kernel=1)
         self.layers_3 = nn.Conv2d(conv_channels, conv_channels, kernel_size=1)
-        # Layer 5: depthwise conv (conv_channels -> conv_channels, stride=2, groups=conv_channels)
         self.layers_5 = nn.Conv2d(
             conv_channels,
             conv_channels,
@@ -189,10 +167,8 @@ class ConvSubsampling(nn.Module):
             padding=pad,
             groups=conv_channels,
         )
-        # Layer 6: pointwise conv (conv_channels -> conv_channels, kernel=1)
         self.layers_6 = nn.Conv2d(conv_channels, conv_channels, kernel_size=1)
 
-        # Linear projection: conv_channels * (feat_in // 8) -> feat_out
         linear_in = conv_channels * (feat_in // 8)
         if feat_in % 8 != 0:
             linear_in = conv_channels * math.ceil(feat_in / 8)
@@ -207,31 +183,22 @@ class ConvSubsampling(nn.Module):
             x: (batch, time//8, hidden_size)
             lengths: (batch,) - subsampled lengths
         """
-        # NeMo Conv2d input: (B, C=1, H=time, W=feat) in NCHW
-        # MLX Conv2d input: (B, H=time, W=feat, C=1) in NHWC
-        # Input x is (batch, feat_dim, time), so transpose to (batch, time, feat_dim)
-        x = mx.transpose(x, axes=(0, 2, 1))  # (B, time, feat_dim)
-        x = mx.expand_dims(x, axis=-1)  # (B, time, feat_dim, 1)
+        # (batch, feat_dim, time) -> NHWC for MLX Conv2d
+        x = mx.transpose(x, axes=(0, 2, 1))
+        x = mx.expand_dims(x, axis=-1)
 
-        # Stage 1: regular conv + ReLU
         x = nn.relu(self.layers_0(x))
-        # Stage 2: depthwise + pointwise + ReLU
         x = nn.relu(self.layers_3(self.layers_2(x)))
-        # Stage 3: depthwise + pointwise + ReLU
         x = nn.relu(self.layers_6(self.layers_5(x)))
 
-        # x is (batch, time//8, feat_dim//8, conv_channels) in NHWC
-        # NeMo flattens as (batch, time//8, conv_channels * feat_dim//8)
-        # Transpose: (b, t, f, c) -> (b, t, c, f) then reshape
+        # NHWC -> (b, t, c, f) for flatten to match NeMo's NCHW ordering
         b, t, f, c = x.shape
-        x = mx.transpose(x, axes=(0, 1, 3, 2))  # (b, t, c, f)
+        x = mx.transpose(x, axes=(0, 1, 3, 2))
         x = x.reshape(b, t, c * f)
         x = self.linear(x)
 
-        # Update lengths using NeMo's calc_length formula:
-        # output = floor((input + 2*padding - kernel_size) / stride) + 1
-        # With padding=1, kernel_size=3, stride=2: floor((L - 1) / 2) + 1
-        for _ in range(3):  # 3 stages of stride-2
+        # floor((L - 1) / 2) + 1 per stride-2 stage
+        for _ in range(3):
             lengths = mx.floor((lengths - 1) / 2).astype(mx.int32) + 1
 
         return x, lengths
@@ -254,17 +221,15 @@ class RelPositionalEncoding(nn.Module):
         """
         seq_len = x.shape[1]
         positions = mx.arange(seq_len - 1, -seq_len, -1, dtype=mx.float32)
-        # positions shape: (2*seq_len - 1,)
 
         dim = mx.arange(0, self.d_model, 2, dtype=mx.float32)
         div_term = mx.exp(dim * -(math.log(10000.0) / self.d_model))
 
-        # (2*seq_len-1, d_model//2)
         angles = positions[:, None] * div_term[None, :]
         pe = mx.zeros((positions.shape[0], self.d_model))
         pe = pe.at[:, 0::2].add(mx.sin(angles))
         pe = pe.at[:, 1::2].add(mx.cos(angles))
-        return pe[None, :, :]  # (1, 2*seq_len-1, d_model)
+        return pe[None, :, :]
 
 
 class RelPositionMultiHeadAttention(nn.Module):
@@ -284,7 +249,6 @@ class RelPositionMultiHeadAttention(nn.Module):
         self.o_proj = nn.Linear(n_feat, n_feat, bias=config.attention_bias)
         self.relative_k_proj = nn.Linear(n_feat, n_feat, bias=False)
 
-        # Learnable biases for content and position attention
         self.bias_u = mx.zeros((n_head, self.d_k))
         self.bias_v = mx.zeros((n_head, self.d_k))
 
@@ -319,34 +283,21 @@ class RelPositionMultiHeadAttention(nn.Module):
         k = self.k_proj(key).reshape(n_batch, -1, self.h, self.d_k)
         v = self.v_proj(value).reshape(n_batch, -1, self.h, self.d_k)
 
-        # Transpose to (batch, head, time, d_k)
         q = mx.transpose(q, axes=(0, 2, 1, 3))
         k = mx.transpose(k, axes=(0, 2, 1, 3))
         v = mx.transpose(v, axes=(0, 2, 1, 3))
 
-        # For relative position: q needs to be (batch, time, head, d_k) first
-        q_t = mx.transpose(q, axes=(0, 2, 1, 3))  # (batch, time, head, d_k)
+        q_t = mx.transpose(q, axes=(0, 2, 1, 3))
 
-        # Positional encoding
         p = self.relative_k_proj(pos_emb).reshape(1, -1, self.h, self.d_k)
-        p = mx.transpose(p, axes=(0, 2, 1, 3))  # (1, head, 2*time-1, d_k)
+        p = mx.transpose(p, axes=(0, 2, 1, 3))
 
-        # q + bias_u for content attention, q + bias_v for position attention
-        q_with_bias_u = mx.transpose(
-            q_t + self.bias_u, axes=(0, 2, 1, 3)
-        )  # (batch, head, time, d_k)
-        q_with_bias_v = mx.transpose(
-            q_t + self.bias_v, axes=(0, 2, 1, 3)
-        )  # (batch, head, time, d_k)
+        q_with_bias_u = mx.transpose(q_t + self.bias_u, axes=(0, 2, 1, 3))
+        q_with_bias_v = mx.transpose(q_t + self.bias_v, axes=(0, 2, 1, 3))
 
-        # Content attention: matrix_ac
         matrix_ac = q_with_bias_u @ mx.transpose(k, axes=(0, 1, 3, 2))
-
-        # Position attention: matrix_bd
         matrix_bd = q_with_bias_v @ mx.transpose(p, axes=(0, 1, 3, 2))
         matrix_bd = self.rel_shift(matrix_bd)
-
-        # Trim to match content attention size
         matrix_bd = matrix_bd[:, :, :, : matrix_ac.shape[-1]]
 
         scores = (matrix_ac + matrix_bd) / self.s_d_k
@@ -383,9 +334,7 @@ class ConformerConvolution(nn.Module):
         d_model = config.hidden_size
         kernel_size = config.conv_kernel_size
 
-        # Pointwise conv1: d_model -> 2*d_model (for GLU)
         self.pointwise_conv1 = nn.Conv1d(d_model, d_model * 2, kernel_size=1, bias=True)
-        # Depthwise conv
         self.depthwise_conv = nn.Conv1d(
             d_model,
             d_model,
@@ -394,9 +343,7 @@ class ConformerConvolution(nn.Module):
             groups=d_model,
             bias=True,
         )
-        # BatchNorm (stored as running stats for inference)
         self.norm = BatchNorm1d(d_model)
-        # Pointwise conv2: d_model -> d_model
         self.pointwise_conv2 = nn.Conv1d(d_model, d_model, kernel_size=1, bias=True)
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -406,22 +353,16 @@ class ConformerConvolution(nn.Module):
         Returns:
             x: (batch, time, d_model)
         """
-        # (batch, time, d_model) -> (batch, d_model, time) via transpose
-        # MLX Conv1d expects (batch, time, channels), so we work in that space
-        # But the PyTorch model transposes to (batch, channels, time) for convs
-        # MLX Conv1d: input (N, L, C_in) -> output (N, L_out, C_out)
+        x = self.pointwise_conv1(x)
 
-        x = self.pointwise_conv1(x)  # (batch, time, 2*d_model)
-
-        # GLU: split and gate
+        # GLU
         x1, x2 = mx.split(x, 2, axis=-1)
-        x = x1 * mx.sigmoid(x2)  # (batch, time, d_model)
+        x = x1 * mx.sigmoid(x2)
 
-        x = self.depthwise_conv(x)  # (batch, time, d_model)
+        x = self.depthwise_conv(x)
         x = self.norm(x)
         x = nn.silu(x)
-        x = self.pointwise_conv2(x)  # (batch, time, d_model)
-
+        x = self.pointwise_conv2(x)
         return x
 
 
@@ -461,23 +402,14 @@ class ConformerLayer(nn.Module):
         d_ff = config.intermediate_size
         self.fc_factor = 0.5
 
-        # Feed-forward 1
         self.norm_feed_forward1 = nn.LayerNorm(d_model)
         self.feed_forward1 = ConformerFeedForward(d_model, d_ff)
-
-        # Self-attention
         self.norm_self_att = nn.LayerNorm(d_model)
         self.self_attn = RelPositionMultiHeadAttention(config)
-
-        # Convolution
         self.norm_conv = nn.LayerNorm(d_model)
         self.conv = ConformerConvolution(config)
-
-        # Feed-forward 2
         self.norm_feed_forward2 = nn.LayerNorm(d_model)
         self.feed_forward2 = ConformerFeedForward(d_model, d_ff)
-
-        # Output norm
         self.norm_out = nn.LayerNorm(d_model)
 
     def __call__(
@@ -492,30 +424,24 @@ class ConformerLayer(nn.Module):
             pos_emb: (1, 2*time-1, d_model)
             mask: optional attention mask
         """
-        # FF1
         residual = x
         x = self.norm_feed_forward1(x)
         x = self.feed_forward1(x)
         residual = residual + x * self.fc_factor
 
-        # Self-attention
         x = self.norm_self_att(residual)
         x = self.self_attn(x, x, x, mask=mask, pos_emb=pos_emb)
         residual = residual + x
 
-        # Conv
         x = self.norm_conv(residual)
         x = self.conv(x)
         residual = residual + x
 
-        # FF2
         x = self.norm_feed_forward2(residual)
         x = self.feed_forward2(x)
         residual = residual + x * self.fc_factor
 
-        # Output norm
-        x = self.norm_out(residual)
-        return x
+        return self.norm_out(residual)
 
 
 class FastConformerEncoder(nn.Module):
@@ -693,16 +619,11 @@ class TransformerEncoder(nn.Module):
             output: (batch, time, d_model)
         """
         seq_len = encoder_states.shape[1]
-
-        # Add positional embeddings
         positions = mx.arange(seq_len)
-        pos_emb = self.embed_positions(positions)
-        x = encoder_states + pos_emb
+        x = encoder_states + self.embed_positions(positions)
 
-        # Create attention mask from encoder_mask
         attn_mask = None
         if encoder_mask is not None:
-            # (batch, 1, 1, time) - mask for padding positions
             attn_mask = (~encoder_mask)[:, None, None, :].astype(mx.float32) * -1e4
 
         for layer in self.layers:
@@ -846,16 +767,9 @@ class Model(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-
-        # FastConformer encoder
         self.fc_encoder = FastConformerEncoder(config.fc_encoder_config)
-
-        # Transformer encoder
         self.tf_encoder = TransformerEncoder(config.tf_encoder_config)
-
-        # Sortformer modules
         self.sortformer_modules = SortformerModules(config.modules_config)
-
         self._processor_config = config.processor_config
 
     def __call__(
@@ -870,34 +784,20 @@ class Model(nn.Module):
         Returns:
             preds: (batch, diar_frame_count, num_speakers)
         """
-        # FastConformer encoder
         emb_seq, emb_seq_length = self.fc_encoder(audio_signal, audio_signal_length)
-        # emb_seq: (batch, hidden_size, time//8)
-
-        # Transpose to (batch, time, hidden_size)
         emb_seq = mx.transpose(emb_seq, axes=(0, 2, 1))
 
-        # Project to transformer dimension if needed
         if self.sortformer_modules.encoder_proj is not None:
             emb_seq = self.sortformer_modules.encoder_proj(emb_seq)
 
-        # Create mask
         encoder_mask = SortformerModules.length_to_mask(
             emb_seq_length, emb_seq.shape[1]
         )
-
-        # Transformer encoder
         trans_emb_seq = self.tf_encoder(
             encoder_states=emb_seq, encoder_mask=encoder_mask
         )
-
-        # Speaker sigmoids
         preds = self.sortformer_modules.forward_speaker_sigmoids(trans_emb_seq)
-
-        # Apply mask
-        preds = preds * encoder_mask[:, :, None]
-
-        return preds
+        return preds * encoder_mask[:, :, None]
 
     def generate(
         self,
@@ -927,18 +827,12 @@ class Model(nn.Module):
         waveform, sample_rate = self._load_audio(audio, sample_rate)
         proc = self._processor_config
 
-        # Trim leading/trailing silence using energy-based VAD.
-        # Per-feature normalization is distorted by long silence regions
-        # (NeMo's pipeline uses a VAD model for this; we use a simple energy check).
         waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
         trim_offset_sec = trim_offset / proc.sampling_rate
 
         waveform = mx.array(waveform)
-
-        # Peak normalization (NeMo style: eps=1e-3)
         waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
 
-        # Extract features
         features = extract_mel_features(
             waveform,
             sample_rate=proc.sampling_rate,
@@ -948,8 +842,6 @@ class Model(nn.Module):
             n_mels=proc.feature_size,
             preemphasis_coeff=proc.preemphasis,
         )
-        # features: (1, n_mels, num_frames)
-
         feature_lengths = mx.array([features.shape[2]])
 
         if verbose:
@@ -958,14 +850,10 @@ class Model(nn.Module):
                 print(f"Trimmed {trim_offset_sec:.2f}s leading silence")
             print(f"Features: {features.shape}")
 
-        # Forward pass
         preds = self(features, feature_lengths)
         mx.eval(preds)
-
-        # preds: (1, diar_frames, num_speakers)
         preds_np = np.array(preds[0])
 
-        # Post-process predictions to segments
         subsampling_factor = self.config.fc_encoder_config.subsampling_factor
         frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
 
@@ -977,7 +865,6 @@ class Model(nn.Module):
             merge_gap=merge_gap,
         )
 
-        # Shift segment timestamps back to original audio timeline
         if trim_offset > 0:
             segments = [
                 DiarizationSegment(
@@ -988,7 +875,6 @@ class Model(nn.Module):
                 for seg in segments
             ]
 
-        # Count unique speakers
         active_speakers = set(seg.speaker for seg in segments)
 
         elapsed = time.time() - start_time
@@ -1050,15 +936,14 @@ class Model(nn.Module):
             of shape ``(chunk_diar_frames, n_spk)`` with speaker
             probabilities for this chunk.
         """
-        # Step 1: Pre-encode chunk through ConvSubsampling
+        # Pre-encode chunk through ConvSubsampling
         chunk_embs, chunk_emb_lengths = self.fc_encoder.pre_encode(
             chunk_features, chunk_length
         )
-        # chunk_embs: (1, chunk_diar_frames, emb_dim)
         chunk_diar_len = int(chunk_emb_lengths[0].item())
         chunk_embs = chunk_embs[:, :chunk_diar_len, :]
 
-        # Step 2: Concatenate [spkcache, fifo, chunk]
+        # Concatenate [spkcache, fifo, chunk]
         parts = []
         if state.spkcache_len > 0:
             parts.append(state.spkcache)
@@ -1066,16 +951,14 @@ class Model(nn.Module):
             parts.append(state.fifo)
         parts.append(chunk_embs)
 
-        all_embs = mx.concatenate(parts, axis=1)  # (1, total, emb_dim)
+        all_embs = mx.concatenate(parts, axis=1)
         total_len = all_embs.shape[1]
         all_lengths = mx.array([total_len])
 
-        # Step 3: Run Conformer layers on full context
+        # Full encoder pass over [spkcache + fifo + chunk]
         fc_out, _ = self.fc_encoder.encode(all_embs, all_lengths)
-        # fc_out: (1, emb_dim, total_len)
-        fc_out = mx.transpose(fc_out, axes=(0, 2, 1))  # (1, total, emb_dim)
+        fc_out = mx.transpose(fc_out, axes=(0, 2, 1))
 
-        # Step 4: encoder_proj + Transformer + speaker sigmoids
         if self.sortformer_modules.encoder_proj is not None:
             fc_out = self.sortformer_modules.encoder_proj(fc_out)
 
@@ -1084,22 +967,17 @@ class Model(nn.Module):
         all_preds = self.sortformer_modules.forward_speaker_sigmoids(trans_out)
         all_preds = all_preds * encoder_mask[:, :, None]
 
-        # Step 5: Extract predictions for the new chunk only
+        # Extract predictions for the new chunk and re-attended cache/fifo
         chunk_start = state.spkcache_len + state.fifo_len
         chunk_preds = all_preds[:, chunk_start : chunk_start + chunk_diar_len, :]
-
-        # Also extract updated predictions for spkcache and fifo
-        # (the model re-attends over the full context each step)
         updated_cache_preds = all_preds[:, : state.spkcache_len, :]
         updated_fifo_preds = all_preds[
             :, state.spkcache_len : state.spkcache_len + state.fifo_len, :
         ]
 
-        # Eval all outputs to materialize data and release the forward-pass
-        # graph (attention matrices, encoder intermediates, etc.).
+        # Eval to materialize and release the forward-pass graph
         mx.eval(chunk_preds, chunk_embs, updated_cache_preds, updated_fifo_preds)
 
-        # Step 6: Update streaming state
         new_state = self._update_streaming_state(
             state,
             chunk_embs,
@@ -1163,7 +1041,6 @@ class Model(nn.Module):
             provided, the yielded result includes ``result.state`` with
             the updated :class:`StreamingState`.
         """
-        # --- Single chunk + state: delegate to feed ---
         if state is not None and isinstance(audio, (np.ndarray, mx.array)):
             result, new_state = self.feed(
                 audio,
@@ -1179,7 +1056,6 @@ class Model(nn.Module):
             yield result
             return
 
-        # --- Iterable of chunks: per-chunk normalization path ---
         if not isinstance(audio, (str, np.ndarray, mx.array)):
             yield from self._stream_from_chunks(
                 audio,
@@ -1193,7 +1069,6 @@ class Model(nn.Module):
             )
             return
 
-        # --- Audio loading (same as generate) ---
         waveform, sample_rate = self._load_audio(audio, sample_rate)
         proc = self._processor_config
         waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
@@ -1202,7 +1077,6 @@ class Model(nn.Module):
         waveform = mx.array(waveform)
         waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
 
-        # --- Feature extraction (global normalization) ---
         features = extract_mel_features(
             waveform,
             sample_rate=proc.sampling_rate,
@@ -1212,13 +1086,11 @@ class Model(nn.Module):
             n_mels=proc.feature_size,
             preemphasis_coeff=proc.preemphasis,
         )
-        # features: (1, n_mels, total_mel_frames)
         total_mel_frames = features.shape[2]
 
         subsampling_factor = self.config.fc_encoder_config.subsampling_factor
         frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
 
-        # Chunk size in mel frames, aligned to subsampling factor
         chunk_mel = (
             round(
                 chunk_duration
@@ -1238,7 +1110,6 @@ class Model(nn.Module):
                 f"({chunk_duration:.1f}s each)"
             )
 
-        # --- Streaming loop ---
         state = self.init_streaming_state()
         offset_mel = 0
         chunk_idx = 0
@@ -1250,10 +1121,6 @@ class Model(nn.Module):
 
             chunk_preds, state = self.streaming_step(chunk_feat, chunk_len, state)
 
-            # Time offset for this chunk's diarization frames
-            chunk_time_offset = offset_mel / proc.sampling_rate * proc.hop_length
-            # Actually: each mel frame = hop_length samples, and diar frames
-            # are subsampled by 8, so the time offset is:
             chunk_time_offset = (offset_mel * proc.hop_length) / proc.sampling_rate
 
             segments = self._preds_to_segments(
@@ -1264,7 +1131,6 @@ class Model(nn.Module):
                 merge_gap=merge_gap,
             )
 
-            # Shift to absolute timeline
             segments = [
                 DiarizationSegment(
                     start=seg.start + chunk_time_offset + trim_offset_sec,
@@ -1292,7 +1158,6 @@ class Model(nn.Module):
                 num_speakers=len(active_speakers),
             )
 
-            # Compress state if buffers exceed limits
             state = self._maybe_compress_state(state, spkcache_max, fifo_max)
 
             offset_mel = end_mel
@@ -1388,17 +1253,14 @@ class Model(nn.Module):
         if raw.ndim > 1:
             raw = raw.mean(axis=-1)
 
-        # Resample if needed
         if sample_rate != proc.sampling_rate:
             raw = self._resample(raw, sample_rate, proc.sampling_rate)
 
         chunk_time_offset = state.frames_processed * frame_duration
 
-        # Per-chunk peak normalization
         chunk_mx = mx.array(raw)
         chunk_mx = (1.0 / (mx.max(mx.abs(chunk_mx)) + 1e-3)) * chunk_mx
 
-        # Per-chunk feature extraction
         features = extract_mel_features(
             chunk_mx,
             sample_rate=proc.sampling_rate,
@@ -1421,7 +1283,6 @@ class Model(nn.Module):
             merge_gap=merge_gap,
         )
 
-        # Shift to absolute timeline
         segments = [
             DiarizationSegment(
                 start=seg.start + chunk_time_offset,
@@ -1430,7 +1291,6 @@ class Model(nn.Module):
             )
             for seg in segments
         ]
-
         state = self._maybe_compress_state(state, spkcache_max, fifo_max)
 
         active_speakers = set(seg.speaker for seg in segments)
@@ -1488,7 +1348,6 @@ class Model(nn.Module):
             [state.spkcache_preds, state.fifo_preds[:, :pop_len, :]], axis=1
         )
 
-        # Compress speaker cache if it exceeds the limit
         if new_cache.shape[1] > spkcache_max:
             new_cache, new_cache_preds = Model._compress_spkcache(
                 new_cache, new_cache_preds, spkcache_max
@@ -1497,7 +1356,6 @@ class Model(nn.Module):
         new_fifo = state.fifo[:, pop_len:, :]
         new_fifo_preds = state.fifo_preds[:, pop_len:, :]
 
-        # Eval to materialize slices and release references to old arrays
         mx.eval(new_cache, new_cache_preds, new_fifo, new_fifo_preds)
 
         return StreamingState(
@@ -1529,11 +1387,9 @@ class Model(nn.Module):
             ``(compressed_embs, compressed_preds)`` each with
             ``target_len`` frames.
         """
-        # Score frames by speaker activity importance
         log_preds = mx.log(mx.clip(preds[0], 1e-7, 1.0))
-        frame_scores = mx.sum(log_preds, axis=-1)  # (N,)
+        frame_scores = mx.sum(log_preds, axis=-1)
 
-        # Select top-k frames preserving temporal order
         top_indices = mx.argsort(-frame_scores)[:target_len]
         top_indices = mx.sort(top_indices)
 
@@ -1573,7 +1429,6 @@ class Model(nn.Module):
             if not activity.any():
                 continue
 
-            # Find contiguous active regions
             changes = np.diff(activity.astype(int), prepend=0, append=0)
             starts = np.where(changes == 1)[0]
             ends = np.where(changes == -1)[0]
@@ -1593,7 +1448,6 @@ class Model(nn.Module):
                         )
                     )
 
-            # Merge close segments
             if merge_gap > 0 and len(spk_segments) > 1:
                 merged = [spk_segments[0]]
                 for seg in spk_segments[1:]:
@@ -1609,7 +1463,6 @@ class Model(nn.Module):
 
             segments.extend(spk_segments)
 
-        # Sort by start time
         segments.sort(key=lambda s: s.start)
         return segments
 
@@ -1648,15 +1501,11 @@ class Model(nn.Module):
         if num_frames < min_speech_frames * 2:
             return waveform, 0
 
-        # Compute per-frame RMS energy
         frames = waveform[: num_frames * frame_len].reshape(num_frames, frame_len)
         energy = np.sqrt(np.mean(frames**2, axis=1))
-
-        # Adaptive threshold: fraction of peak energy
         threshold = energy.max() * energy_ratio
         speech = energy > threshold
 
-        # Find first and last runs of min_speech_frames consecutive speech
         start_frame = 0
         for i in range(num_frames - min_speech_frames + 1):
             if all(speech[i : i + min_speech_frames]):
@@ -1672,7 +1521,6 @@ class Model(nn.Module):
         start_sample = start_frame * frame_len
         end_sample = min(end_frame * frame_len, len(waveform))
 
-        # Only trim if we'd remove a meaningful amount of silence
         if start_sample == 0 and end_sample == len(waveform):
             return waveform, 0
 
@@ -1732,34 +1580,24 @@ class Model(nn.Module):
             etc.
         """
         sanitized = {}
-
-        # Keys to skip (batch norm running stats that aren't needed for the
-        # nn.Module parameters, but we DO need running_mean/running_var for inference)
         skip_keys = {"num_batches_tracked"}
 
         for k, v in weights.items():
-            # Skip certain keys
             if any(sk in k for sk in skip_keys):
                 continue
 
             new_k = k
 
-            # Remap subsampling conv layer indices
-            # HF: fc_encoder.subsampling.layers.0.weight -> layers_0.weight
-            # HF: fc_encoder.subsampling.layers.2.weight -> layers_2.weight
-            # HF: fc_encoder.subsampling.layers.4.weight -> layers_4.weight
+            # Remap subsampling.layers.N -> subsampling.layers_N
             if "fc_encoder.subsampling.layers." in new_k:
-                # fc_encoder.subsampling.layers.{idx}.weight ->
-                # fc_encoder.subsampling.layers_{idx}.weight
                 new_k = new_k.replace("subsampling.layers.", "subsampling.layers_")
 
-            # Handle Conv2d weights: PyTorch [out, in, H, W] -> MLX [out, H, W, in]
+            # Conv2d: PyTorch (O,I,H,W) -> MLX (O,H,W,I)
             if "subsampling" in new_k and "weight" in new_k and "linear" not in new_k:
                 if v.ndim == 4:
                     v = mx.transpose(v, axes=(0, 2, 3, 1))
 
-            # Handle Conv1d weights: PyTorch [out, in, K] -> MLX [out, K, in]
-            # For pointwise_conv1, pointwise_conv2, depthwise_conv
+            # Conv1d: PyTorch (O,I,K) -> MLX (O,K,I)
             if (
                 any(
                     conv_name in new_k
@@ -1773,19 +1611,6 @@ class Model(nn.Module):
             ):
                 if v.ndim == 3:
                     v = mx.transpose(v, axes=(0, 2, 1))
-
-            # Remap batch norm keys
-            # HF: fc_encoder.layers.N.conv.norm.weight -> BatchNorm1d weight
-            # The NeMo model uses nn.BatchNorm1d which has weight, bias, running_mean, running_var
-
-            # Remap self_attn bias_u and bias_v
-            # These are stored as parameters in the attention layers
-            # HF key: fc_encoder.layers.N.self_attn.bias_u
-            # MLX key: fc_encoder.layers.N.self_attn.bias_u (same)
-
-            # Remap relative_k_proj -> relative_k_proj
-            # HF: fc_encoder.layers.N.self_attn.relative_k_proj.weight
-            # (This is the linear_pos in NeMo)
 
             sanitized[new_k] = v
 
