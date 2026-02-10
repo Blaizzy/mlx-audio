@@ -945,8 +945,9 @@ class Model(nn.Module):
             probabilities for this chunk.
         """
         mc = self.config.modules_config
-        lc = mc.chunk_left_context
-        rc = mc.chunk_right_context
+        use_context = mc.use_aosc  # left/right context is v2.1 only
+        lc = mc.chunk_left_context if use_context else 0
+        rc = mc.chunk_right_context if use_context else 0
 
         # Pre-encode chunk through ConvSubsampling
         chunk_embs, chunk_emb_lengths = self.fc_encoder.pre_encode(
@@ -955,7 +956,7 @@ class Model(nn.Module):
         chunk_diar_len = int(chunk_emb_lengths[0].item())
         chunk_embs = chunk_embs[:, :chunk_diar_len, :]
 
-        # Build left context from end of FIFO
+        # Build left context from end of FIFO (v2.1 only)
         left_ctx = None
         left_ctx_len = 0
         if lc > 0 and state.fifo_len > 0:
@@ -963,7 +964,7 @@ class Model(nn.Module):
             left_ctx = state.fifo[:, -take:, :]
             left_ctx_len = take
 
-        # Right context (only in file mode, pre-encoded by caller)
+        # Right context (v2.1 file mode only, pre-encoded by caller)
         right_ctx_len = 0
         if right_context_embs is not None and rc > 0:
             right_ctx_len = right_context_embs.shape[1]
