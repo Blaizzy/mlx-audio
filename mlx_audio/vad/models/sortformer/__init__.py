@@ -1,5 +1,5 @@
 from .config import FCEncoderConfig, ModelConfig, ModulesConfig, TFEncoderConfig
-from .sortformer import Model
+from .sortformer import Model, StreamingState
 
 DETECTION_HINTS = {
     "architectures": ["SortformerOffline"],

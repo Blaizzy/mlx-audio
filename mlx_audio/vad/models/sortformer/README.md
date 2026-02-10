@@ -87,6 +87,29 @@ result = model.generate(audio, sample_rate=sr)
 ```
 
 
+### Streaming diarization
+
+Process audio in chunks with incremental results. The model maintains a
+speaker cache and FIFO buffer for long-range context.
+
+```python
+from mlx_audio.vad import load
+
+model = load("nvidia/diar_sortformer_4spk-v1")
+
+for chunk in model.generate_stream("meeting.wav", chunk_duration=5.0, verbose=True):
+    for seg in chunk.segments:
+        print(f"Speaker {seg.speaker}: {seg.start:.2f}s - {seg.end:.2f}s")
+```
+
+Streaming parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `chunk_duration` | `5.0` | Seconds of audio per chunk |
+| `spkcache_max` | `188` | Max speaker cache size (diarization frames) |
+| `fifo_max` | `188` | Max FIFO buffer size (diarization frames) |
+
 ### Visualization
 
 ```python

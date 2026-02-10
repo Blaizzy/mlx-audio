@@ -12,8 +12,8 @@ Architecture:
 
 import math
 import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass, field
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -529,10 +529,48 @@ class FastConformerEncoder(nn.Module):
         )
         self.scale_input = config.scale_input
 
+    def pre_encode(
+        self, audio_signal: mx.array, length: mx.array
+    ) -> Tuple[mx.array, mx.array]:
+        """Run only ConvSubsampling (first stage, used for streaming).
+
+        Args:
+            audio_signal: (batch, n_mels, time) - mel spectrogram
+            length: (batch,) - lengths in mel frames
+        Returns:
+            x: (batch, time//8, hidden_size) - pre-encoded embeddings
+            lengths: (batch,) - subsampled lengths
+        """
+        return self.subsampling(audio_signal, length)
+
+    def encode(
+        self, embeddings: mx.array, lengths: mx.array
+    ) -> Tuple[mx.array, mx.array]:
+        """Run Conformer layers on pre-encoded embeddings (bypass_pre_encode).
+
+        Args:
+            embeddings: (batch, time, hidden_size) - pre-encoded embeddings
+            lengths: (batch,) - valid lengths
+        Returns:
+            x: (batch, hidden_size, time) - encoder output (channels first)
+            lengths: (batch,) - unchanged
+        """
+        x = embeddings
+        if self.scale_input:
+            x = x * (self.config.hidden_size**0.5)
+
+        pos_emb = self.pos_enc(x)
+        for layer in self.layers:
+            x = layer(x, pos_emb)
+
+        x = mx.transpose(x, axes=(0, 2, 1))
+        return x, lengths
+
     def __call__(
         self, audio_signal: mx.array, length: mx.array
     ) -> Tuple[mx.array, mx.array]:
-        """
+        """Full forward: ConvSubsampling + Conformer layers.
+
         Args:
             audio_signal: (batch, n_mels, time) - mel spectrogram
             length: (batch,) - lengths in frames
@@ -540,23 +578,8 @@ class FastConformerEncoder(nn.Module):
             x: (batch, hidden_size, time//8) - encoder output (channels first)
             lengths: (batch,) - subsampled lengths
         """
-        # Subsampling
-        x, lengths = self.subsampling(audio_signal, length)
-        # x: (batch, time//8, hidden_size)
-
-        if self.scale_input:
-            x = x * (self.config.hidden_size**0.5)
-
-        # Relative positional encoding
-        pos_emb = self.pos_enc(x)
-
-        # Run through conformer layers
-        for layer in self.layers:
-            x = layer(x, pos_emb)
-
-        # Return in (batch, hidden_size, time) format to match NeMo
-        x = mx.transpose(x, axes=(0, 2, 1))
-        return x, lengths
+        x, lengths = self.pre_encode(audio_signal, length)
+        return self.encode(x, lengths)
 
 
 # =============================================================================
@@ -770,6 +793,38 @@ class DiarizationOutput:
         return "\n".join(lines)
 
 
+@dataclass
+class StreamingState:
+    """State maintained between streaming diarization chunks.
+
+    The streaming architecture maintains two buffers of pre-encoded embeddings
+    (after ConvSubsampling, before Conformer layers):
+
+    - **spkcache** (speaker cache): Long-term context, compressed when full
+      by keeping the most informative frames based on prediction scores.
+    - **fifo**: Recent context buffer. Oldest frames roll into spkcache
+      when the FIFO overflows.
+
+    Each streaming step processes ``[spkcache + fifo + new_chunk]`` through the
+    full Conformer + Transformer encoder, but only emits predictions for the
+    new chunk.
+    """
+
+    spkcache: mx.array  # (1, cache_frames, emb_dim)
+    spkcache_preds: mx.array  # (1, cache_frames, n_spk)
+    fifo: mx.array  # (1, fifo_frames, emb_dim)
+    fifo_preds: mx.array  # (1, fifo_frames, n_spk)
+    frames_processed: int  # total diarization frames emitted so far
+
+    @property
+    def spkcache_len(self) -> int:
+        return self.spkcache.shape[1]
+
+    @property
+    def fifo_len(self) -> int:
+        return self.fifo.shape[1]
+
+
 # =============================================================================
 # Main Model
 # =============================================================================
@@ -969,6 +1024,376 @@ class Model(nn.Module):
             speaker_probs=preds[0],
             num_speakers=len(active_speakers),
             total_time=elapsed,
+        )
+
+    # =====================================================================
+    # Streaming API
+    # =====================================================================
+
+    def init_streaming_state(self) -> StreamingState:
+        """Create an empty streaming state.
+
+        Returns:
+            A fresh StreamingState with empty speaker cache and FIFO.
+        """
+        emb_dim = self.config.fc_encoder_config.hidden_size
+        n_spk = self.config.modules_config.num_speakers
+        empty_emb = mx.zeros((1, 0, emb_dim))
+        empty_pred = mx.zeros((1, 0, n_spk))
+        return StreamingState(
+            spkcache=empty_emb,
+            spkcache_preds=empty_pred,
+            fifo=empty_emb,
+            fifo_preds=empty_pred,
+            frames_processed=0,
+        )
+
+    def streaming_step(
+        self,
+        chunk_features: mx.array,
+        chunk_length: mx.array,
+        state: StreamingState,
+    ) -> Tuple[np.ndarray, StreamingState]:
+        """Process one chunk of mel features through the streaming pipeline.
+
+        Each call pre-encodes the chunk, concatenates it with the cached
+        context ``[spkcache + fifo + chunk]``, runs the full encoder, and
+        returns predictions for the *new chunk only*.
+
+        Args:
+            chunk_features: ``(1, n_mels, chunk_mel_frames)`` mel features.
+            chunk_length: ``(1,)`` valid length in mel frames.
+            state: Current :class:`StreamingState`.
+
+        Returns:
+            ``(chunk_preds, new_state)`` where ``chunk_preds`` is a numpy
+            array of shape ``(chunk_diar_frames, n_spk)`` with speaker
+            probabilities for this chunk.
+        """
+        # Step 1: Pre-encode chunk through ConvSubsampling
+        chunk_embs, chunk_emb_lengths = self.fc_encoder.pre_encode(
+            chunk_features, chunk_length
+        )
+        # chunk_embs: (1, chunk_diar_frames, emb_dim)
+        chunk_diar_len = int(chunk_emb_lengths[0].item())
+        chunk_embs = chunk_embs[:, :chunk_diar_len, :]
+
+        # Step 2: Concatenate [spkcache, fifo, chunk]
+        parts = []
+        if state.spkcache_len > 0:
+            parts.append(state.spkcache)
+        if state.fifo_len > 0:
+            parts.append(state.fifo)
+        parts.append(chunk_embs)
+
+        all_embs = mx.concatenate(parts, axis=1)  # (1, total, emb_dim)
+        total_len = all_embs.shape[1]
+        all_lengths = mx.array([total_len])
+
+        # Step 3: Run Conformer layers on full context
+        fc_out, _ = self.fc_encoder.encode(all_embs, all_lengths)
+        # fc_out: (1, emb_dim, total_len)
+        fc_out = mx.transpose(fc_out, axes=(0, 2, 1))  # (1, total, emb_dim)
+
+        # Step 4: encoder_proj + Transformer + speaker sigmoids
+        if self.sortformer_modules.encoder_proj is not None:
+            fc_out = self.sortformer_modules.encoder_proj(fc_out)
+
+        encoder_mask = SortformerModules.length_to_mask(all_lengths, total_len)
+        trans_out = self.tf_encoder(fc_out, encoder_mask)
+        all_preds = self.sortformer_modules.forward_speaker_sigmoids(trans_out)
+        all_preds = all_preds * encoder_mask[:, :, None]
+
+        # Step 5: Extract predictions for the new chunk only
+        chunk_start = state.spkcache_len + state.fifo_len
+        chunk_preds = all_preds[:, chunk_start : chunk_start + chunk_diar_len, :]
+
+        # Also extract updated predictions for spkcache and fifo
+        # (the model re-attends over the full context each step)
+        updated_cache_preds = all_preds[:, : state.spkcache_len, :]
+        updated_fifo_preds = all_preds[
+            :, state.spkcache_len : state.spkcache_len + state.fifo_len, :
+        ]
+
+        mx.eval(chunk_preds, chunk_embs)
+
+        # Step 6: Update streaming state
+        new_state = self._update_streaming_state(
+            state,
+            chunk_embs,
+            chunk_preds,
+            updated_cache_preds,
+            updated_fifo_preds,
+        )
+
+        return np.array(chunk_preds[0]), new_state
+
+    def generate_stream(
+        self,
+        audio: Union[str, np.ndarray, mx.array],
+        *,
+        sample_rate: int = 16000,
+        chunk_duration: float = 5.0,
+        threshold: float = 0.5,
+        min_duration: float = 0.0,
+        merge_gap: float = 0.0,
+        spkcache_max: int = 188,
+        fifo_max: int = 188,
+        verbose: bool = False,
+    ) -> Generator[DiarizationOutput, None, None]:
+        """Process audio in chunks, yielding diarization results incrementally.
+
+        Features are extracted for the full audio (with global per-feature
+        normalization), then processed in fixed-duration chunks.  Each chunk
+        sees long-range context through the speaker cache and FIFO buffers.
+
+        Args:
+            audio: Path to audio file, numpy array, or mx.array.
+            sample_rate: Sample rate of input audio.
+            chunk_duration: Duration of each chunk in seconds.
+            threshold: Speaker activity threshold (0-1).
+            min_duration: Minimum segment duration in seconds.
+            merge_gap: Maximum gap to merge consecutive segments.
+            spkcache_max: Maximum speaker cache size in diarization frames.
+            fifo_max: Maximum FIFO size in diarization frames.
+            verbose: Print progress information.
+
+        Yields:
+            :class:`DiarizationOutput` for each chunk, containing segments
+            found in that time window.
+        """
+        # --- Audio loading (same as generate) ---
+        if isinstance(audio, str):
+            import soundfile as sf
+
+            waveform, sr = sf.read(audio)
+            waveform = waveform.astype(np.float32)
+            if sr != sample_rate:
+                sample_rate = sr
+        elif isinstance(audio, np.ndarray):
+            waveform = audio.astype(np.float32)
+        else:
+            waveform = np.array(audio)
+
+        if waveform.ndim > 1:
+            waveform = waveform.mean(axis=-1)
+
+        proc = self._processor_config
+        if sample_rate != proc.sampling_rate:
+            import librosa
+
+            waveform = librosa.resample(
+                waveform, orig_sr=sample_rate, target_sr=proc.sampling_rate
+            )
+
+        waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
+        trim_offset_sec = trim_offset / proc.sampling_rate
+
+        waveform = mx.array(waveform)
+        waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
+
+        # --- Feature extraction (global normalization) ---
+        features = extract_mel_features(
+            waveform,
+            sample_rate=proc.sampling_rate,
+            n_fft=proc.n_fft,
+            hop_length=proc.hop_length,
+            win_length=proc.win_length,
+            n_mels=proc.feature_size,
+            preemphasis_coeff=proc.preemphasis,
+        )
+        # features: (1, n_mels, total_mel_frames)
+        total_mel_frames = features.shape[2]
+
+        subsampling_factor = self.config.fc_encoder_config.subsampling_factor
+        frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
+
+        # Chunk size in mel frames, aligned to subsampling factor
+        chunk_mel = (
+            round(
+                chunk_duration
+                * proc.sampling_rate
+                / proc.hop_length
+                / subsampling_factor
+            )
+            * subsampling_factor
+        )
+        chunk_mel = max(chunk_mel, subsampling_factor)
+
+        if verbose:
+            audio_dur = waveform.shape[-1] / proc.sampling_rate
+            n_chunks = math.ceil(total_mel_frames / chunk_mel)
+            print(
+                f"Streaming: {audio_dur:.2f}s audio in {n_chunks} chunks "
+                f"({chunk_duration:.1f}s each)"
+            )
+
+        # --- Streaming loop ---
+        state = self.init_streaming_state()
+        offset_mel = 0
+        chunk_idx = 0
+
+        while offset_mel < total_mel_frames:
+            end_mel = min(offset_mel + chunk_mel, total_mel_frames)
+            chunk_feat = features[:, :, offset_mel:end_mel]
+            chunk_len = mx.array([chunk_feat.shape[2]])
+
+            chunk_preds, state = self.streaming_step(chunk_feat, chunk_len, state)
+
+            # Time offset for this chunk's diarization frames
+            chunk_time_offset = offset_mel / proc.sampling_rate * proc.hop_length
+            # Actually: each mel frame = hop_length samples, and diar frames
+            # are subsampled by 8, so the time offset is:
+            chunk_time_offset = (offset_mel * proc.hop_length) / proc.sampling_rate
+
+            segments = self._preds_to_segments(
+                chunk_preds,
+                frame_duration=frame_duration,
+                threshold=threshold,
+                min_duration=min_duration,
+                merge_gap=merge_gap,
+            )
+
+            # Shift to absolute timeline
+            segments = [
+                DiarizationSegment(
+                    start=seg.start + chunk_time_offset + trim_offset_sec,
+                    end=seg.end + chunk_time_offset + trim_offset_sec,
+                    speaker=seg.speaker,
+                )
+                for seg in segments
+            ]
+
+            active_speakers = set(seg.speaker for seg in segments)
+
+            if verbose:
+                chunk_idx += 1
+                t0 = chunk_time_offset + trim_offset_sec
+                t1 = t0 + chunk_preds.shape[0] * frame_duration
+                print(
+                    f"  Chunk {chunk_idx}: {t0:.2f}s-{t1:.2f}s  "
+                    f"{len(segments)} segments, "
+                    f"context={state.spkcache_len}+{state.fifo_len} frames"
+                )
+
+            yield DiarizationOutput(
+                segments=segments,
+                speaker_probs=mx.array(chunk_preds),
+                num_speakers=len(active_speakers),
+            )
+
+            # Compress state if buffers exceed limits
+            state = self._maybe_compress_state(state, spkcache_max, fifo_max)
+
+            offset_mel = end_mel
+
+    def _update_streaming_state(
+        self,
+        state: StreamingState,
+        chunk_embs: mx.array,
+        chunk_preds: mx.array,
+        updated_cache_preds: mx.array,
+        updated_fifo_preds: mx.array,
+    ) -> StreamingState:
+        """Push chunk into FIFO, updating predictions with re-attended values."""
+        # Update spkcache/fifo predictions with values from the latest forward
+        # pass (the model re-attends over the full context each step, so these
+        # predictions incorporate the new chunk's information).
+        spkcache = state.spkcache
+        spkcache_preds = (
+            updated_cache_preds if state.spkcache_len > 0 else state.spkcache_preds
+        )
+        fifo = state.fifo
+        fifo_preds = updated_fifo_preds if state.fifo_len > 0 else state.fifo_preds
+
+        # Append chunk to FIFO
+        new_fifo = mx.concatenate([fifo, chunk_embs], axis=1)
+        new_fifo_preds = mx.concatenate([fifo_preds, chunk_preds], axis=1)
+        mx.eval(new_fifo, new_fifo_preds, spkcache, spkcache_preds)
+
+        return StreamingState(
+            spkcache=spkcache,
+            spkcache_preds=spkcache_preds,
+            fifo=new_fifo,
+            fifo_preds=new_fifo_preds,
+            frames_processed=state.frames_processed + chunk_embs.shape[1],
+        )
+
+    def _maybe_compress_state(
+        self,
+        state: StreamingState,
+        spkcache_max: int,
+        fifo_max: int,
+    ) -> StreamingState:
+        """Move FIFO overflow into speaker cache, compressing if needed."""
+        if state.fifo_len <= fifo_max:
+            return state
+
+        # How many frames to pop from FIFO front into speaker cache
+        pop_len = state.fifo_len - fifo_max
+
+        pop_embs = state.fifo[:, :pop_len, :]
+        pop_preds = state.fifo_preds[:, :pop_len, :]
+        remaining_fifo = state.fifo[:, pop_len:, :]
+        remaining_fifo_preds = state.fifo_preds[:, pop_len:, :]
+
+        # Append popped frames to speaker cache
+        new_cache = mx.concatenate([state.spkcache, pop_embs], axis=1)
+        new_cache_preds = mx.concatenate([state.spkcache_preds, pop_preds], axis=1)
+
+        # Compress speaker cache if it exceeds the limit
+        if new_cache.shape[1] > spkcache_max:
+            new_cache, new_cache_preds = self._compress_spkcache(
+                new_cache, new_cache_preds, spkcache_max
+            )
+
+        mx.eval(new_cache, new_cache_preds, remaining_fifo, remaining_fifo_preds)
+
+        return StreamingState(
+            spkcache=new_cache,
+            spkcache_preds=new_cache_preds,
+            fifo=remaining_fifo,
+            fifo_preds=remaining_fifo_preds,
+            frames_processed=state.frames_processed,
+        )
+
+    @staticmethod
+    def _compress_spkcache(
+        embs: mx.array,
+        preds: mx.array,
+        target_len: int,
+    ) -> Tuple[mx.array, mx.array]:
+        """Compress speaker cache by keeping the most informative frames.
+
+        Frames are scored by their total speaker activity (sum of
+        log-predictions across speakers).  The top ``target_len`` frames
+        are kept in temporal order.
+
+        Args:
+            embs: ``(1, N, emb_dim)`` pre-encoded embeddings.
+            preds: ``(1, N, n_spk)`` speaker predictions.
+            target_len: Desired number of frames after compression.
+
+        Returns:
+            ``(compressed_embs, compressed_preds)`` each with
+            ``target_len`` frames.
+        """
+        preds_np = np.array(preds[0])  # (N, n_spk)
+
+        # Score frames by speaker activity importance
+        log_preds = np.log(np.clip(preds_np, 1e-7, 1.0))
+        frame_scores = np.sum(log_preds, axis=-1)  # (N,)
+
+        # Select top-k frames preserving temporal order
+        top_indices = np.argsort(-frame_scores)[:target_len]
+        top_indices.sort()
+
+        embs_np = np.array(embs)
+        preds_np_full = np.array(preds)
+
+        return (
+            mx.array(embs_np[:, top_indices, :]),
+            mx.array(preds_np_full[:, top_indices, :]),
         )
 
     @staticmethod
