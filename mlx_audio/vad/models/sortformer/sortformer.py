@@ -228,7 +228,7 @@ class RelPositionalEncoding(nn.Module):
         pe = mx.zeros((positions.shape[0], self.d_model))
         pe = pe.at[:, 0::2].add(mx.sin(angles))
         pe = pe.at[:, 1::2].add(mx.cos(angles))
-        return pe[None, :, :]
+        return pe[None, :, :].astype(x.dtype)
 
 
 class RelPositionMultiHeadAttention(nn.Module):
@@ -302,11 +302,11 @@ class RelPositionMultiHeadAttention(nn.Module):
         scores = (matrix_ac + matrix_bd) / self.s_d_k
 
         if mask is not None:
-            scores = mx.where(mask, mx.array(-1e4), scores)
+            scores = mx.where(mask, mx.array(-1e4, dtype=scores.dtype), scores)
 
         attn = mx.softmax(scores, axis=-1)
         if mask is not None:
-            attn = mx.where(mask, mx.array(0.0), attn)
+            attn = mx.where(mask, mx.array(0.0, dtype=scores.dtype), attn)
 
         x = attn @ v  # (batch, head, time, d_k)
         x = mx.transpose(x, axes=(0, 2, 1, 3)).reshape(n_batch, -1, self.h * self.d_k)
@@ -623,7 +623,9 @@ class TransformerEncoder(nn.Module):
 
         attn_mask = None
         if encoder_mask is not None:
-            attn_mask = (~encoder_mask)[:, None, None, :].astype(mx.float32) * -1e4
+            attn_mask = (~encoder_mask)[:, None, None, :].astype(
+                encoder_states.dtype
+            ) * -1e4
 
         for layer in self.layers:
             x = layer(x, mask=attn_mask)
@@ -774,6 +776,10 @@ class Model(nn.Module):
         self.sortformer_modules = SortformerModules(config.modules_config)
         self._processor_config = config.processor_config
 
+    @property
+    def dtype(self) -> mx.Dtype:
+        return self.sortformer_modules.encoder_proj.weight.dtype
+
     def __call__(
         self,
         audio_signal: mx.array,
@@ -786,6 +792,7 @@ class Model(nn.Module):
         Returns:
             preds: (batch, diar_frame_count, num_speakers)
         """
+        audio_signal = audio_signal.astype(self.dtype)
         emb_seq, emb_seq_length = self.fc_encoder(audio_signal, audio_signal_length)
         emb_seq = mx.transpose(emb_seq, axes=(0, 2, 1))
 
@@ -947,6 +954,7 @@ class Model(nn.Module):
         rc = mc.chunk_right_context if use_context else 0
 
         # Pre-encode chunk through ConvSubsampling
+        chunk_features = chunk_features.astype(self.dtype)
         chunk_embs, chunk_emb_lengths = self.fc_encoder.pre_encode(
             chunk_features, chunk_length
         )
