@@ -12,7 +12,7 @@ Architecture:
 
 import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
@@ -1286,6 +1286,117 @@ class Model(nn.Module):
             state = self._maybe_compress_state(state, spkcache_max, fifo_max)
 
             offset_mel = end_mel
+
+    def feed(
+        self,
+        chunk: Union[np.ndarray, mx.array],
+        state: StreamingState,
+        *,
+        sample_rate: int = 16000,
+        threshold: float = 0.5,
+        min_duration: float = 0.0,
+        merge_gap: float = 0.0,
+        spkcache_max: int = 188,
+        fifo_max: int = 188,
+    ) -> Tuple[DiarizationOutput, StreamingState]:
+        """Feed a single audio chunk and get diarization results.
+
+        Designed for real-time streaming where audio arrives incrementally
+        (e.g. from a microphone).  Each chunk is independently
+        peak-normalized and feature-extracted, then processed through the
+        streaming pipeline.
+
+        Use :meth:`init_streaming_state` to create the initial state, then
+        call ``feed()`` repeatedly as audio arrives.
+
+        Args:
+            chunk: 1-D audio samples (mono, ``float32``).
+            state: Current :class:`StreamingState` (from ``init_streaming_state``
+                or a previous ``feed`` call).
+            sample_rate: Sample rate of the audio chunk.
+            threshold: Speaker activity threshold (0-1).
+            min_duration: Minimum segment duration in seconds.
+            merge_gap: Maximum gap to merge consecutive segments.
+            spkcache_max: Maximum speaker cache size (diarization frames).
+            fifo_max: Maximum FIFO size (diarization frames).
+
+        Returns:
+            ``(output, new_state)`` — the diarization result for this chunk
+            and the updated streaming state.
+
+        Example::
+
+            state = model.init_streaming_state()
+            for chunk in mic_stream():          # your audio source
+                result, state = model.feed(chunk, state)
+                for seg in result.segments:
+                    print(f"Speaker {seg.speaker}: {seg.start:.2f}s-{seg.end:.2f}s")
+        """
+        proc = self._processor_config
+        subsampling_factor = self.config.fc_encoder_config.subsampling_factor
+        frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
+
+        raw = np.asarray(chunk, dtype=np.float32)
+        if raw.ndim > 1:
+            raw = raw.mean(axis=-1)
+
+        # Resample if needed
+        if sample_rate != proc.sampling_rate:
+            import librosa
+
+            raw = librosa.resample(
+                raw, orig_sr=sample_rate, target_sr=proc.sampling_rate
+            )
+
+        chunk_samples = len(raw)
+        chunk_time_offset = state.frames_processed * frame_duration
+
+        # Per-chunk peak normalization
+        chunk_mx = mx.array(raw)
+        chunk_mx = (1.0 / (mx.max(mx.abs(chunk_mx)) + 1e-3)) * chunk_mx
+
+        # Per-chunk feature extraction
+        features = extract_mel_features(
+            chunk_mx,
+            sample_rate=proc.sampling_rate,
+            n_fft=proc.n_fft,
+            hop_length=proc.hop_length,
+            win_length=proc.win_length,
+            n_mels=proc.feature_size,
+            preemphasis_coeff=proc.preemphasis,
+            pad_to=0,
+        )
+        feature_lengths = mx.array([features.shape[2]])
+
+        chunk_preds, state = self.streaming_step(features, feature_lengths, state)
+
+        segments = self._preds_to_segments(
+            chunk_preds,
+            frame_duration=frame_duration,
+            threshold=threshold,
+            min_duration=min_duration,
+            merge_gap=merge_gap,
+        )
+
+        # Shift to absolute timeline
+        segments = [
+            DiarizationSegment(
+                start=seg.start + chunk_time_offset,
+                end=seg.end + chunk_time_offset,
+                speaker=seg.speaker,
+            )
+            for seg in segments
+        ]
+
+        state = self._maybe_compress_state(state, spkcache_max, fifo_max)
+
+        active_speakers = set(seg.speaker for seg in segments)
+        output = DiarizationOutput(
+            segments=segments,
+            speaker_probs=mx.array(chunk_preds),
+            num_speakers=len(active_speakers),
+        )
+        return output, state
 
     def _update_streaming_state(
         self,
