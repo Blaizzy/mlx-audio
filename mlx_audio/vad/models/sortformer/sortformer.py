@@ -13,7 +13,7 @@ Architecture:
 import math
 import time
 from dataclasses import dataclass
-from typing import Dict, Generator, List, Optional, Tuple, Union
+from typing import Dict, Generator, Iterable, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -1130,7 +1130,7 @@ class Model(nn.Module):
 
     def generate_stream(
         self,
-        audio: Union[str, np.ndarray, mx.array],
+        audio: Union[str, np.ndarray, mx.array, Iterable[np.ndarray]],
         *,
         sample_rate: int = 16000,
         chunk_duration: float = 5.0,
@@ -1143,14 +1143,28 @@ class Model(nn.Module):
     ) -> Generator[DiarizationOutput, None, None]:
         """Process audio in chunks, yielding diarization results incrementally.
 
-        Features are extracted for the full audio (with global per-feature
-        normalization), then processed in fixed-duration chunks.  Each chunk
-        sees long-range context through the speaker cache and FIFO buffers.
+        When given a file path or array, features are extracted for the full
+        audio (with global per-feature normalization), then processed in
+        fixed-duration chunks.
+
+        When given an iterable of audio chunks, each chunk is independently
+        peak-normalized and feature-extracted (per-chunk normalization),
+        simulating a real-time streaming environment.
+
+        In both cases, each chunk sees long-range context through the speaker
+        cache and FIFO buffers.
 
         Args:
-            audio: Path to audio file, numpy array, or mx.array.
+            audio: Audio input — one of:
+
+                - ``str``: path to an audio file
+                - ``np.ndarray`` or ``mx.array``: full waveform
+                - ``Iterable[np.ndarray]``: pre-built audio chunks for
+                  real-time streaming (e.g. from a microphone)
+
             sample_rate: Sample rate of input audio.
-            chunk_duration: Duration of each chunk in seconds.
+            chunk_duration: Duration of each chunk in seconds (ignored when
+                ``audio`` is an iterable of chunks).
             threshold: Speaker activity threshold (0-1).
             min_duration: Minimum segment duration in seconds.
             merge_gap: Maximum gap to merge consecutive segments.
@@ -1162,6 +1176,20 @@ class Model(nn.Module):
             :class:`DiarizationOutput` for each chunk, containing segments
             found in that time window.
         """
+        # --- Iterable of chunks: per-chunk normalization path ---
+        if not isinstance(audio, (str, np.ndarray, mx.array)):
+            yield from self._stream_from_chunks(
+                audio,
+                sample_rate=sample_rate,
+                threshold=threshold,
+                min_duration=min_duration,
+                merge_gap=merge_gap,
+                spkcache_max=spkcache_max,
+                fifo_max=fifo_max,
+                verbose=verbose,
+            )
+            return
+
         # --- Audio loading (same as generate) ---
         if isinstance(audio, str):
             import soundfile as sf
@@ -1287,6 +1315,44 @@ class Model(nn.Module):
 
             offset_mel = end_mel
 
+    def _stream_from_chunks(
+        self,
+        audio_chunks: Iterable[np.ndarray],
+        *,
+        sample_rate: int = 16000,
+        threshold: float = 0.5,
+        min_duration: float = 0.0,
+        merge_gap: float = 0.0,
+        spkcache_max: int = 188,
+        fifo_max: int = 188,
+        verbose: bool = False,
+    ) -> Generator[DiarizationOutput, None, None]:
+        """Yield diarization results from an iterable of raw audio chunks."""
+        state = self.init_streaming_state()
+        chunk_idx = 0
+
+        for raw_chunk in audio_chunks:
+            result, state = self.feed(
+                raw_chunk,
+                state,
+                sample_rate=sample_rate,
+                threshold=threshold,
+                min_duration=min_duration,
+                merge_gap=merge_gap,
+                spkcache_max=spkcache_max,
+                fifo_max=fifo_max,
+            )
+
+            if verbose:
+                chunk_idx += 1
+                print(
+                    f"  Chunk {chunk_idx}: "
+                    f"{len(result.segments)} segments, "
+                    f"context={state.spkcache_len}+{state.fifo_len} frames"
+                )
+
+            yield result
+
     def feed(
         self,
         chunk: Union[np.ndarray, mx.array],
@@ -1348,7 +1414,6 @@ class Model(nn.Module):
                 raw, orig_sr=sample_rate, target_sr=proc.sampling_rate
             )
 
-        chunk_samples = len(raw)
         chunk_time_offset = state.frames_processed * frame_duration
 
         # Per-chunk peak normalization
