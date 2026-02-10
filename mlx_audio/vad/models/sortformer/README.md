@@ -86,6 +86,47 @@ audio, sr = audio_read("meeting.wav")
 result = model.generate(audio, sample_rate=sr)
 ```
 
+
+### Visualization
+
+```python
+import urllib.request
+import matplotlib.pyplot as plt
+from mlx_audio.vad import load
+
+# Load model and perform diarization
+model = load("nvidia/diar_sortformer_4spk-v1")
+result = model.generate("meeting.wav", threshold=0.5, verbose=True)
+
+# Print segments
+for seg in result.segments:
+    print(f"Speaker {seg.speaker}: {seg.start:.2f}s - {seg.end:.2f}s")
+
+# Visualization
+SPEAKER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
+
+fig, ax = plt.subplots(figsize=(12, 3))
+
+for seg in result.segments:
+    ax.barh(
+        y=f"Speaker {seg.speaker}",
+        width=seg.end - seg.start,
+        left=seg.start,
+        height=0.6,
+        color=SPEAKER_COLORS[seg.speaker % len(SPEAKER_COLORS)],
+        alpha=0.85,
+        edgecolor="white",
+        linewidth=0.5,
+    )
+
+ax.set_xlabel("Time (s)")
+ax.set_title("Speaker Diarization")
+ax.invert_yaxis()
+ax.grid(axis="x", alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
 ## Notes
 
 - Input audio is automatically resampled to 16kHz and converted to mono
