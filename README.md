@@ -100,6 +100,14 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
 
 
+### Voice Activity Detection / Speaker Diarization (VAD)
+
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **Sortformer** | NVIDIA's end-to-end speaker diarization (up to 4 speakers) | Language-agnostic | [nvidia/diar_sortformer_4spk-v1](https://huggingface.co/nvidia/diar_sortformer_4spk-v1) |
+
+See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API details and examples.
+
 ### Speech-to-Speech (STS)
 
 | Model | Description | Use Case | Repo |

@@ -11,7 +11,7 @@ MLX port of NVIDIA's [Sortformer](https://huggingface.co/nvidia/diar_sortformer_
 ## Quick Start
 
 ```python
-from mlx_audio.stt import load
+from mlx_audio.vad import load
 
 model = load("nvidia/diar_sortformer_4spk-v1")
 result = model.generate("audio.wav", threshold=0.5, verbose=True)
@@ -57,7 +57,7 @@ SPEAKER audio 1 3.520 5.120 <NA> <NA> speaker_1 <NA> <NA>
 ### Basic diarization
 
 ```python
-from mlx_audio.stt import load
+from mlx_audio.vad import load
 
 model = load("nvidia/diar_sortformer_4spk-v1")
 result = model.generate("meeting.wav", threshold=0.5)
