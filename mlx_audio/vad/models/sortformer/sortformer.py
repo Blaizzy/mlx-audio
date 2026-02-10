@@ -18,7 +18,6 @@ from typing import Dict, Generator, Iterable, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from scipy import signal as scipy_signal
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.dsp import hanning, mel_filters, stft
@@ -833,7 +832,6 @@ class Model(nn.Module):
         waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
         trim_offset_sec = trim_offset / proc.sampling_rate
 
-        waveform = mx.array(waveform)
         waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
 
         features = extract_mel_features(
@@ -855,13 +853,12 @@ class Model(nn.Module):
 
         preds = self(features, feature_lengths)
         mx.eval(preds)
-        preds_np = np.array(preds[0])
 
         subsampling_factor = self.config.fc_encoder_config.subsampling_factor
         frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
 
         segments = self._preds_to_segments(
-            preds_np,
+            preds[0],
             frame_duration=frame_duration,
             threshold=threshold,
             min_duration=min_duration,
@@ -1112,7 +1109,6 @@ class Model(nn.Module):
         use_v2_feats = mc.use_aosc
         if use_v2_feats:
             trim_offset_sec = 0.0
-            waveform = mx.array(waveform)
             features = extract_mel_features(
                 waveform,
                 sample_rate=proc.sampling_rate,
@@ -1127,7 +1123,6 @@ class Model(nn.Module):
         else:
             waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
             trim_offset_sec = trim_offset / proc.sampling_rate
-            waveform = mx.array(waveform)
             waveform = (1.0 / (mx.max(mx.abs(waveform)) + 1e-3)) * waveform
             features = extract_mel_features(
                 waveform,
@@ -1356,16 +1351,18 @@ class Model(nn.Module):
         subsampling_factor = self.config.fc_encoder_config.subsampling_factor
         frame_duration = (proc.hop_length * subsampling_factor) / proc.sampling_rate
 
-        raw = np.asarray(chunk, dtype=np.float32)
-        if raw.ndim > 1:
-            raw = raw.mean(axis=-1)
+        if not isinstance(chunk, mx.array):
+            chunk_mx = mx.array(chunk).astype(mx.float32)
+        else:
+            chunk_mx = chunk.astype(mx.float32)
+        if chunk_mx.ndim > 1:
+            chunk_mx = mx.mean(chunk_mx, axis=-1)
 
         if sample_rate != proc.sampling_rate:
-            raw = self._resample(raw, sample_rate, proc.sampling_rate)
+            chunk_mx = self._resample(chunk_mx, sample_rate, proc.sampling_rate)
 
         chunk_time_offset = state.frames_processed * frame_duration
 
-        chunk_mx = mx.array(raw)
         use_v2_feats = self.config.modules_config.use_aosc
         if not use_v2_feats:
             chunk_mx = (1.0 / (mx.max(mx.abs(chunk_mx)) + 1e-3)) * chunk_mx
@@ -1851,7 +1848,7 @@ class Model(nn.Module):
 
     @staticmethod
     def _preds_to_segments(
-        preds: Union[mx.array, np.ndarray],
+        preds: mx.array,
         frame_duration: float,
         threshold: float = 0.5,
         min_duration: float = 0.0,
@@ -1869,19 +1866,28 @@ class Model(nn.Module):
         Returns:
             List of DiarizationSegment
         """
-        if isinstance(preds, mx.array):
-            preds = np.array(preds)
         _, num_speakers = preds.shape
         segments = []
 
         for spk in range(num_speakers):
             activity = preds[:, spk] > threshold
-            if not activity.any():
+            if not mx.any(activity).item():
                 continue
 
-            changes = np.diff(activity.astype(int), prepend=0, append=0)
-            starts = np.where(changes == 1)[0]
-            ends = np.where(changes == -1)[0]
+            # Pad with False and diff to find transitions
+            padded = mx.concatenate(
+                [
+                    mx.zeros((1,), dtype=mx.bool_),
+                    activity,
+                    mx.zeros((1,), dtype=mx.bool_),
+                ]
+            )
+            changes = padded[1:].astype(mx.int32) - padded[:-1].astype(mx.int32)
+            mx.eval(changes)
+            changes_list = changes.tolist()
+
+            starts = [i for i, v in enumerate(changes_list) if v == 1]
+            ends = [i for i, v in enumerate(changes_list) if v == -1]
 
             spk_segments = []
             for s, e in zip(starts, ends):
@@ -1918,12 +1924,12 @@ class Model(nn.Module):
 
     @staticmethod
     def _trim_silence(
-        waveform: np.ndarray,
+        waveform: mx.array,
         sample_rate: int,
         frame_ms: int = 30,
         energy_ratio: float = 0.01,
         min_speech_sec: float = 0.5,
-    ) -> Tuple[np.ndarray, int]:
+    ) -> Tuple[mx.array, int]:
         """Trim leading/trailing silence from audio using frame energy.
 
         Per-feature normalization is distorted when silence dominates the audio.
@@ -1946,41 +1952,43 @@ class Model(nn.Module):
         """
         frame_len = int(sample_rate * frame_ms / 1000)
         min_speech_frames = max(3, int(min_speech_sec * 1000 / frame_ms))
-        num_frames = len(waveform) // frame_len
+        num_frames = waveform.shape[0] // frame_len
 
         if num_frames < min_speech_frames * 2:
             return waveform, 0
 
         frames = waveform[: num_frames * frame_len].reshape(num_frames, frame_len)
-        energy = np.sqrt(np.mean(frames**2, axis=1))
-        threshold = energy.max() * energy_ratio
-        speech = energy > threshold
+        energy = mx.sqrt(mx.mean(frames**2, axis=1))
+        threshold_val = mx.max(energy).item() * energy_ratio
+        speech = energy > threshold_val
+        mx.eval(speech)
+        speech_list = speech.tolist()
 
         start_frame = 0
         for i in range(num_frames - min_speech_frames + 1):
-            if all(speech[i : i + min_speech_frames]):
+            if all(speech_list[i : i + min_speech_frames]):
                 start_frame = i
                 break
 
         end_frame = num_frames
         for i in range(num_frames - 1, min_speech_frames - 2, -1):
-            if all(speech[i - min_speech_frames + 1 : i + 1]):
+            if all(speech_list[i - min_speech_frames + 1 : i + 1]):
                 end_frame = i + 1
                 break
 
         start_sample = start_frame * frame_len
-        end_sample = min(end_frame * frame_len, len(waveform))
+        end_sample = min(end_frame * frame_len, waveform.shape[0])
 
-        if start_sample == 0 and end_sample == len(waveform):
+        if start_sample == 0 and end_sample == waveform.shape[0]:
             return waveform, 0
 
         return waveform[start_sample:end_sample], start_sample
 
     def _load_audio(
         self,
-        audio: Union[str, np.ndarray, mx.array],
+        audio: Union[str, "np.ndarray", mx.array],
         sample_rate: int,
-    ) -> Tuple[np.ndarray, int]:
+    ) -> Tuple[mx.array, int]:
         """Load and prepare audio from any supported input.
 
         Handles file paths (via ``audio_io.read``), numpy arrays, and
@@ -1988,18 +1996,20 @@ class Model(nn.Module):
         expected sample rate.
 
         Returns:
-            ``(waveform, sample_rate)`` where waveform is 1-D float32 numpy.
+            ``(waveform, sample_rate)`` where waveform is 1-D mx.array.
         """
         if isinstance(audio, str):
-            waveform, sr = audio_read(audio, dtype="float32")
+            waveform_np, sr = audio_read(audio, dtype="float32")
+            waveform = mx.array(waveform_np)
             sample_rate = sr
-        elif isinstance(audio, np.ndarray):
-            waveform = audio.astype(np.float32)
+        elif isinstance(audio, mx.array):
+            waveform = audio.astype(mx.float32)
         else:
-            waveform = np.array(audio, dtype=np.float32)
+            # numpy array or other array-like
+            waveform = mx.array(audio).astype(mx.float32)
 
         if waveform.ndim > 1:
-            waveform = waveform.mean(axis=-1)
+            waveform = mx.mean(waveform, axis=-1)
 
         proc = self._processor_config
         if sample_rate != proc.sampling_rate:
@@ -2008,14 +2018,18 @@ class Model(nn.Module):
         return waveform, proc.sampling_rate
 
     @staticmethod
-    def _resample(waveform: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+    def _resample(waveform: mx.array, orig_sr: int, target_sr: int) -> mx.array:
         """Resample audio using scipy (no librosa dependency)."""
         if orig_sr == target_sr:
             return waveform
+        import numpy as np
+        from scipy import signal as scipy_signal
+
         gcd = math.gcd(orig_sr, target_sr)
-        return scipy_signal.resample_poly(
-            waveform, target_sr // gcd, orig_sr // gcd
+        resampled = scipy_signal.resample_poly(
+            np.array(waveform), target_sr // gcd, orig_sr // gcd
         ).astype(np.float32)
+        return mx.array(resampled)
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
