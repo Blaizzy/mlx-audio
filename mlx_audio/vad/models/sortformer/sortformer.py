@@ -18,7 +18,9 @@ from typing import Dict, Generator, Iterable, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from scipy import signal as scipy_signal
 
+from mlx_audio.audio_io import read as audio_read
 from mlx_audio.dsp import hanning, mel_filters, stft
 
 from .config import FCEncoderConfig, ModelConfig, ModulesConfig, TFEncoderConfig
@@ -922,31 +924,8 @@ class Model(nn.Module):
         """
         start_time = time.time()
 
-        # Load audio
-        if isinstance(audio, str):
-            import soundfile as sf
-
-            waveform, sr = sf.read(audio)
-            waveform = waveform.astype(np.float32)
-            if sr != sample_rate:
-                sample_rate = sr
-        elif isinstance(audio, np.ndarray):
-            waveform = audio.astype(np.float32)
-        else:
-            waveform = np.array(audio)
-
-        if waveform.ndim > 1:
-            waveform = waveform.mean(axis=-1)  # Convert to mono
-
-        # Resample to model's expected sample rate if needed
+        waveform, sample_rate = self._load_audio(audio, sample_rate)
         proc = self._processor_config
-        if sample_rate != proc.sampling_rate:
-            import librosa
-
-            waveform = librosa.resample(
-                waveform, orig_sr=sample_rate, target_sr=proc.sampling_rate
-            )
-            sample_rate = proc.sampling_rate
 
         # Trim leading/trailing silence using energy-based VAD.
         # Per-feature normalization is distorted by long silence regions
@@ -1054,7 +1033,7 @@ class Model(nn.Module):
         chunk_features: mx.array,
         chunk_length: mx.array,
         state: StreamingState,
-    ) -> Tuple[np.ndarray, StreamingState]:
+    ) -> Tuple[mx.array, StreamingState]:
         """Process one chunk of mel features through the streaming pipeline.
 
         Each call pre-encodes the chunk, concatenates it with the cached
@@ -1067,8 +1046,8 @@ class Model(nn.Module):
             state: Current :class:`StreamingState`.
 
         Returns:
-            ``(chunk_preds, new_state)`` where ``chunk_preds`` is a numpy
-            array of shape ``(chunk_diar_frames, n_spk)`` with speaker
+            ``(chunk_preds, new_state)`` where ``chunk_preds`` is an mx.array
+            of shape ``(chunk_diar_frames, n_spk)`` with speaker
             probabilities for this chunk.
         """
         # Step 1: Pre-encode chunk through ConvSubsampling
@@ -1116,7 +1095,9 @@ class Model(nn.Module):
             :, state.spkcache_len : state.spkcache_len + state.fifo_len, :
         ]
 
-        mx.eval(chunk_preds, chunk_embs)
+        # Eval all outputs to materialize data and release the forward-pass
+        # graph (attention matrices, encoder intermediates, etc.).
+        mx.eval(chunk_preds, chunk_embs, updated_cache_preds, updated_fifo_preds)
 
         # Step 6: Update streaming state
         new_state = self._update_streaming_state(
@@ -1127,7 +1108,7 @@ class Model(nn.Module):
             updated_fifo_preds,
         )
 
-        return np.array(chunk_preds[0]), new_state
+        return chunk_preds[0], new_state
 
     def generate_stream(
         self,
@@ -1213,29 +1194,8 @@ class Model(nn.Module):
             return
 
         # --- Audio loading (same as generate) ---
-        if isinstance(audio, str):
-            import soundfile as sf
-
-            waveform, sr = sf.read(audio)
-            waveform = waveform.astype(np.float32)
-            if sr != sample_rate:
-                sample_rate = sr
-        elif isinstance(audio, np.ndarray):
-            waveform = audio.astype(np.float32)
-        else:
-            waveform = np.array(audio)
-
-        if waveform.ndim > 1:
-            waveform = waveform.mean(axis=-1)
-
+        waveform, sample_rate = self._load_audio(audio, sample_rate)
         proc = self._processor_config
-        if sample_rate != proc.sampling_rate:
-            import librosa
-
-            waveform = librosa.resample(
-                waveform, orig_sr=sample_rate, target_sr=proc.sampling_rate
-            )
-
         waveform, trim_offset = self._trim_silence(waveform, proc.sampling_rate)
         trim_offset_sec = trim_offset / proc.sampling_rate
 
@@ -1328,7 +1288,7 @@ class Model(nn.Module):
 
             yield DiarizationOutput(
                 segments=segments,
-                speaker_probs=mx.array(chunk_preds),
+                speaker_probs=chunk_preds,
                 num_speakers=len(active_speakers),
             )
 
@@ -1430,11 +1390,7 @@ class Model(nn.Module):
 
         # Resample if needed
         if sample_rate != proc.sampling_rate:
-            import librosa
-
-            raw = librosa.resample(
-                raw, orig_sr=sample_rate, target_sr=proc.sampling_rate
-            )
+            raw = self._resample(raw, sample_rate, proc.sampling_rate)
 
         chunk_time_offset = state.frames_processed * frame_duration
 
@@ -1480,45 +1436,44 @@ class Model(nn.Module):
         active_speakers = set(seg.speaker for seg in segments)
         output = DiarizationOutput(
             segments=segments,
-            speaker_probs=mx.array(chunk_preds),
+            speaker_probs=chunk_preds,
             num_speakers=len(active_speakers),
         )
         return output, state
 
+    @staticmethod
     def _update_streaming_state(
-        self,
         state: StreamingState,
         chunk_embs: mx.array,
         chunk_preds: mx.array,
         updated_cache_preds: mx.array,
         updated_fifo_preds: mx.array,
     ) -> StreamingState:
-        """Push chunk into FIFO, updating predictions with re-attended values."""
-        # Update spkcache/fifo predictions with values from the latest forward
-        # pass (the model re-attends over the full context each step, so these
-        # predictions incorporate the new chunk's information).
+        """Push chunk into FIFO, updating predictions with re-attended values.
+
+        All inputs are mx.arrays that have been eval'd by the caller to
+        materialize data and release the forward-pass computation graph.
+        """
         spkcache = state.spkcache
         spkcache_preds = (
             updated_cache_preds if state.spkcache_len > 0 else state.spkcache_preds
         )
-        fifo = state.fifo
         fifo_preds = updated_fifo_preds if state.fifo_len > 0 else state.fifo_preds
 
-        # Append chunk to FIFO
-        new_fifo = mx.concatenate([fifo, chunk_embs], axis=1)
+        new_fifo = mx.concatenate([state.fifo, chunk_embs], axis=1)
         new_fifo_preds = mx.concatenate([fifo_preds, chunk_preds], axis=1)
-        mx.eval(new_fifo, new_fifo_preds, spkcache, spkcache_preds)
+        mx.eval(new_fifo, new_fifo_preds)
 
         return StreamingState(
             spkcache=spkcache,
             spkcache_preds=spkcache_preds,
             fifo=new_fifo,
             fifo_preds=new_fifo_preds,
-            frames_processed=state.frames_processed + chunk_embs.shape[1],
+            frames_processed=state.frames_processed + chunk_preds.shape[1],
         )
 
+    @staticmethod
     def _maybe_compress_state(
-        self,
         state: StreamingState,
         spkcache_max: int,
         fifo_max: int,
@@ -1527,31 +1482,29 @@ class Model(nn.Module):
         if state.fifo_len <= fifo_max:
             return state
 
-        # How many frames to pop from FIFO front into speaker cache
         pop_len = state.fifo_len - fifo_max
-
-        pop_embs = state.fifo[:, :pop_len, :]
-        pop_preds = state.fifo_preds[:, :pop_len, :]
-        remaining_fifo = state.fifo[:, pop_len:, :]
-        remaining_fifo_preds = state.fifo_preds[:, pop_len:, :]
-
-        # Append popped frames to speaker cache
-        new_cache = mx.concatenate([state.spkcache, pop_embs], axis=1)
-        new_cache_preds = mx.concatenate([state.spkcache_preds, pop_preds], axis=1)
+        new_cache = mx.concatenate([state.spkcache, state.fifo[:, :pop_len, :]], axis=1)
+        new_cache_preds = mx.concatenate(
+            [state.spkcache_preds, state.fifo_preds[:, :pop_len, :]], axis=1
+        )
 
         # Compress speaker cache if it exceeds the limit
         if new_cache.shape[1] > spkcache_max:
-            new_cache, new_cache_preds = self._compress_spkcache(
+            new_cache, new_cache_preds = Model._compress_spkcache(
                 new_cache, new_cache_preds, spkcache_max
             )
 
-        mx.eval(new_cache, new_cache_preds, remaining_fifo, remaining_fifo_preds)
+        new_fifo = state.fifo[:, pop_len:, :]
+        new_fifo_preds = state.fifo_preds[:, pop_len:, :]
+
+        # Eval to materialize slices and release references to old arrays
+        mx.eval(new_cache, new_cache_preds, new_fifo, new_fifo_preds)
 
         return StreamingState(
             spkcache=new_cache,
             spkcache_preds=new_cache_preds,
-            fifo=remaining_fifo,
-            fifo_preds=remaining_fifo_preds,
+            fifo=new_fifo,
+            fifo_preds=new_fifo_preds,
             frames_processed=state.frames_processed,
         )
 
@@ -1576,27 +1529,23 @@ class Model(nn.Module):
             ``(compressed_embs, compressed_preds)`` each with
             ``target_len`` frames.
         """
-        preds_np = np.array(preds[0])  # (N, n_spk)
-
         # Score frames by speaker activity importance
-        log_preds = np.log(np.clip(preds_np, 1e-7, 1.0))
-        frame_scores = np.sum(log_preds, axis=-1)  # (N,)
+        log_preds = mx.log(mx.clip(preds[0], 1e-7, 1.0))
+        frame_scores = mx.sum(log_preds, axis=-1)  # (N,)
 
         # Select top-k frames preserving temporal order
-        top_indices = np.argsort(-frame_scores)[:target_len]
-        top_indices.sort()
+        top_indices = mx.argsort(-frame_scores)[:target_len]
+        top_indices = mx.sort(top_indices)
 
-        embs_np = np.array(embs)
-        preds_np_full = np.array(preds)
+        compressed_embs = embs[:, top_indices, :]
+        compressed_preds = preds[:, top_indices, :]
+        mx.eval(compressed_embs, compressed_preds)
 
-        return (
-            mx.array(embs_np[:, top_indices, :]),
-            mx.array(preds_np_full[:, top_indices, :]),
-        )
+        return compressed_embs, compressed_preds
 
     @staticmethod
     def _preds_to_segments(
-        preds: np.ndarray,
+        preds: Union[mx.array, np.ndarray],
         frame_duration: float,
         threshold: float = 0.5,
         min_duration: float = 0.0,
@@ -1614,6 +1563,8 @@ class Model(nn.Module):
         Returns:
             List of DiarizationSegment
         """
+        if isinstance(preds, mx.array):
+            preds = np.array(preds)
         _, num_speakers = preds.shape
         segments = []
 
@@ -1726,6 +1677,47 @@ class Model(nn.Module):
             return waveform, 0
 
         return waveform[start_sample:end_sample], start_sample
+
+    def _load_audio(
+        self,
+        audio: Union[str, np.ndarray, mx.array],
+        sample_rate: int,
+    ) -> Tuple[np.ndarray, int]:
+        """Load and prepare audio from any supported input.
+
+        Handles file paths (via ``audio_io.read``), numpy arrays, and
+        mx arrays.  Converts to mono float32 and resamples to the model's
+        expected sample rate.
+
+        Returns:
+            ``(waveform, sample_rate)`` where waveform is 1-D float32 numpy.
+        """
+        if isinstance(audio, str):
+            waveform, sr = audio_read(audio, dtype="float32")
+            sample_rate = sr
+        elif isinstance(audio, np.ndarray):
+            waveform = audio.astype(np.float32)
+        else:
+            waveform = np.array(audio, dtype=np.float32)
+
+        if waveform.ndim > 1:
+            waveform = waveform.mean(axis=-1)
+
+        proc = self._processor_config
+        if sample_rate != proc.sampling_rate:
+            waveform = self._resample(waveform, sample_rate, proc.sampling_rate)
+
+        return waveform, proc.sampling_rate
+
+    @staticmethod
+    def _resample(waveform: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
+        """Resample audio using scipy (no librosa dependency)."""
+        if orig_sr == target_sr:
+            return waveform
+        gcd = math.gcd(orig_sr, target_sr)
+        return scipy_signal.resample_poly(
+            waveform, target_sr // gcd, orig_sr // gcd
+        ).astype(np.float32)
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
