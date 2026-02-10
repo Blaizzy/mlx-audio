@@ -77,14 +77,13 @@ result = model.generate(
 )
 ```
 
-### From numpy array
+### From mlx array
 
 ```python
-import numpy as np
-import soundfile as sf
+from mlx_audio.audio_io import read as audio_read
 
-audio, sr = sf.read("meeting.wav")
-result = model.generate(audio.astype(np.float32), sample_rate=sr)
+audio, sr = audio_read("meeting.wav")
+result = model.generate(audio, sample_rate=sr)
 ```
 
 ## Notes
