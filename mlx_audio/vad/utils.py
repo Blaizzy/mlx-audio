@@ -55,7 +55,7 @@ def load(
 
     Example:
         >>> from mlx_audio.vad import load
-        >>> model = load("nvidia/diar_sortformer_4spk-v1")
+        >>> model = load("mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16")
         >>> result = model.generate("audio.wav", verbose=True)
     """
     return load_model(model_path, lazy=lazy, strict=strict, **kwargs)

@@ -28,6 +28,8 @@ from typing import Dict, Tuple
 
 import numpy as np
 
+# TODO: Remove this once the conversion is stable (Prince Canuma)
+
 # ── Key remapping rules ──────────────────────────────────────────────
 #
 # NeMo module hierarchy → MLX key prefix
