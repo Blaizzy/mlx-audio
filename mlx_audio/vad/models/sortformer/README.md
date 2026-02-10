@@ -6,7 +6,7 @@ MLX port of NVIDIA's Sortformer speaker diarization models. Sortformer predicts 
 
 | Model | Mel Bins | FC Layers | Streaming | Repo |
 |-------|----------|-----------|-----------|------|
-| **Sortformer v1** | 80 | 18 | Basic | [nvidia/diar_sortformer_4spk-v1](https://huggingface.co/nvidia/diar_sortformer_4spk-v1) |
+| **Sortformer v1** | 80 | 18 | Basic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
 | **Sortformer v2.1** | 128 | 17 | AOSC | [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) |
 
 **v1** is available directly on HuggingFace as safetensors. **v2.1** is distributed as a `.nemo` archive and must be converted first (see [Converting v2.1](#converting-v21-from-nemo)).
@@ -35,7 +35,7 @@ v2.1 introduces several improvements over v1:
 ```python
 from mlx_audio.vad import load
 
-model = load("nvidia/diar_sortformer_4spk-v1")
+model = load("mlx-community/diar_sortformer_4spk-v1-fp32")
 result = model.generate("audio.wav", threshold=0.5, verbose=True)
 print(result.text)
 ```
@@ -160,7 +160,7 @@ SPEAKER audio 1 3.520 5.120 <NA> <NA> speaker_1 <NA> <NA>
 ```python
 from mlx_audio.vad import load
 
-model = load("nvidia/diar_sortformer_4spk-v1")
+model = load("mlx-community/diar_sortformer_4spk-v1-fp32")
 result = model.generate("meeting.wav", threshold=0.5)
 
 for seg in result.segments:
@@ -231,7 +231,7 @@ for chunk in mic_stream():
 import matplotlib.pyplot as plt
 from mlx_audio.vad import load
 
-model = load("nvidia/diar_sortformer_4spk-v1")
+model = load("mlx-community/diar_sortformer_4spk-v1-fp32")
 result = model.generate("meeting.wav", threshold=0.5, verbose=True)
 
 SPEAKER_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]
