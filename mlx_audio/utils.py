@@ -407,6 +407,7 @@ def base_load_model(
 # Lazy-loaded modules
 _stt_utils = None
 _tts_utils = None
+_vad_utils = None
 
 
 def _get_stt_utils():
@@ -427,6 +428,16 @@ def _get_tts_utils():
 
         _tts_utils = tts_utils
     return _tts_utils
+
+
+def _get_vad_utils():
+    """Lazy load VAD utils."""
+    global _vad_utils
+    if _vad_utils is None:
+        from mlx_audio.vad import utils as vad_utils
+
+        _vad_utils = vad_utils
+    return _vad_utils
 
 
 def audio_volume_normalize(audio, coeff: float = 0.2):
@@ -609,12 +620,14 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
     """Determine whether a model belongs to the TTS or STT category."""
     stt_utils = _get_stt_utils()
     tts_utils = _get_tts_utils()
+    vad_utils = _get_vad_utils()
 
     candidates = [model_type] + (model_name or [])
 
     categories = [
         ("tts", tts_utils.MODEL_REMAPPING),
         ("stt", stt_utils.MODEL_REMAPPING),
+        ("vad", vad_utils.MODEL_REMAPPING),
     ]
 
     # First pass: check for explicit remapping matches (higher priority)
@@ -665,6 +678,7 @@ def load_model(model_name: str):
     """
     tts_utils = _get_tts_utils()
     stt_utils = _get_stt_utils()
+    vad_utils = _get_vad_utils()
 
     config = tts_utils.load_config(model_name)
     model_name_parts = get_model_name_parts(model_name)
@@ -676,7 +690,11 @@ def load_model(model_name: str):
     if not model_category:
         raise ValueError(f"Could not determine model type for {model_name}")
 
-    model_loaders = {"tts": tts_utils.load_model, "stt": stt_utils.load_model}
+    model_loaders = {
+        "tts": tts_utils.load_model,
+        "stt": stt_utils.load_model,
+        "vad": vad_utils.load_model,
+    }
 
     if model_category not in model_loaders:
         raise ValueError(f"Model type '{model_category}' not supported")
