@@ -6,8 +6,8 @@ MLX port of NVIDIA's Sortformer speaker diarization models. Sortformer predicts 
 
 | Model | Mel Bins | FC Layers | Streaming | Repo |
 |-------|----------|-----------|-----------|------|
-| **Sortformer v1** | 80 | 18 | Basic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
-| **Sortformer v2.1** | 128 | 17 | AOSC | [nvidia/diar_streaming_sortformer_4spk-v2.1](https://huggingface.co/nvidia/diar_streaming_sortformer_4spk-v2.1) |
+| **Sortformer v1** | 80 | 18 | Basic | [mlx-community/diar_sortformer_4spk-v1-fp16](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp16) |
+| **Sortformer v2.1** | 128 | 17 | AOSC | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16) |
 
 **v1** is available directly on HuggingFace as safetensors. **v2.1** is distributed as a `.nemo` archive and must be converted first (see [Converting v2.1](#converting-v21-from-nemo)).
 
@@ -300,6 +300,34 @@ This produces a compressed cache that preserves the most informative frames from
 | `fifo_max` | `188` | Max FIFO buffer size (diarization frames) |
 
 For v2.1, `spkcache_max` and `fifo_max` are automatically set from the model config when using AOSC.
+
+## Memory Considerations (v2.1 Streaming)
+
+The v2.1 model was trained on chunks of up to **90 seconds** — using chunks larger than this will produce unreliable results and consume excessive memory. Each chunk is processed through **36 self-attention layers** (18 FastConformer + 18 Transformer), each creating a `(seq_len × seq_len)` attention score matrix, so memory scales **quadratically** with chunk duration:
+
+| Chunk Duration | Frames after Subsampling | Attention Memory (per layer) | Total (~36 layers) |
+|----------------|--------------------------|------------------------------|---------------------|
+| 5 seconds      | ~63                      | ~0.12 MB                     | **~4 MB**           |
+| 30 seconds     | ~375                     | ~4.3 MB                      | **~155 MB**         |
+| 90 seconds     | ~1,125                   | ~38.6 MB                     | **~1.4 GB**         |
+| 120 seconds    | ~1,500                   | ~68.7 MB                     | **~2.5 GB**         |
+
+**Use small chunks (5-10 seconds)** to keep memory usage low. Using large chunks defeats the purpose of streaming — the streaming state object (`state`) already carries context across chunks, so results remain accurate without needing large chunks:
+
+```python
+# Good: small chunks, low memory
+chunk_size = 5 * sr
+chunks = [audio[i:i + chunk_size] for i in range(0, len(audio), chunk_size)]
+
+state = model.init_streaming_state()
+for chunk in chunks:
+    for result in model.generate_stream(chunk, state=state, sample_rate=sr):
+        state = result.state
+        ...
+
+# Bad: large chunks cause memory explosion
+chunk_size = 120 * sr  # ~2.5 GB in attention matrices alone
+```
 
 ## Notes
 
