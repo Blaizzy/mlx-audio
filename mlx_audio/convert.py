@@ -14,12 +14,26 @@ from textwrap import dedent
 from typing import Callable, Optional
 
 import mlx.core as mx
-from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
+
+from mlx_audio.utils import get_model_path
 
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
+CONVERSION_ALLOW_PATTERNS = [
+    "*.json",
+    "*.safetensors",
+    "*.py",
+    "*.model",
+    "*.tiktoken",
+    "*.txt",
+    "*.jsonl",
+    "*.yaml",
+    "*.wav",
+    "*.pt",
+    "*.pth",
+]
 
 
 class Domain(str, Enum):
@@ -192,37 +206,6 @@ def get_detection_hints(domain: Domain) -> dict:
     return _detection_hints_cache[domain_str]
 
 
-def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
-    """
-    Ensures the model is available locally.
-
-    Downloads from HuggingFace Hub if the path doesn't exist locally.
-    """
-    model_path = Path(path_or_hf_repo)
-
-    if not model_path.exists():
-        model_path = Path(
-            snapshot_download(
-                path_or_hf_repo,
-                revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jsonl",
-                    "*.yaml",
-                    "*.wav",
-                    "*.pth",
-                ],
-            )
-        )
-
-    return model_path
-
-
 def load_config(model_path: Path) -> dict:
     """Load model configuration from a path."""
     config_path = model_path / "config.json"
@@ -377,8 +360,7 @@ def generate_readme_content(
     tags = ["mlx"] + config.tags
     tags.append("mlx-audio")
 
-    content = dedent(
-        f"""\
+    content = dedent(f"""\
         # {upload_repo}
 
         This model was converted to MLX format from [`{hf_path}`](https://huggingface.co/{hf_path}) using mlx-audio version **{__version__}**.
@@ -400,8 +382,7 @@ def generate_readme_content(
         ```python\
         {config.python_example.format(repo=upload_repo)}
         ```
-        """
-    )
+        """)
 
     return tags, content
 
@@ -498,17 +479,61 @@ def copy_model_files(source: Path, dest: Path):
 
 
 def load_weights(model_path: Path) -> dict:
-    """Load model weights from safetensors files."""
+    """Load model weights from safetensors or PyTorch checkpoint files."""
     weight_files = glob.glob(str(model_path / "*.safetensors"))
 
-    if not weight_files:
-        raise FileNotFoundError(f"No safetensors found in {model_path}")
+    if weight_files:
+        weights = {}
+        for wf in weight_files:
+            if "tokenizer" in wf:
+                continue
+            weights.update(mx.load(wf))
+        return weights
+
+    pt_files = glob.glob(str(model_path / "*.pt")) + glob.glob(
+        str(model_path / "*.pth")
+    )
+    pt_files = [wf for wf in pt_files if "tokenizer" not in Path(wf).name]
+    if not pt_files:
+        raise FileNotFoundError(
+            f"No supported weight files (.safetensors, .pt, .pth) found in {model_path}"
+        )
+
+    try:
+        import torch
+    except ImportError as e:
+        raise ImportError(
+            "PyTorch is required to load .pt/.pth checkpoints during conversion. "
+            "Install torch or provide .safetensors weights."
+        ) from e
+
+    def _to_mx_array(value):
+        if hasattr(value, "detach"):
+            return mx.array(value.detach().cpu().numpy())
+        if hasattr(value, "numpy"):
+            return mx.array(value.numpy())
+        return mx.array(value)
+
+    def _extract_state_dict(payload):
+        if not isinstance(payload, dict):
+            raise ValueError("Unsupported checkpoint format: expected a dict payload")
+        for key in ("state_dict", "model_state_dict", "model", "weights"):
+            candidate = payload.get(key)
+            if isinstance(candidate, dict):
+                return candidate
+        return payload
 
     weights = {}
-    for wf in weight_files:
-        if "tokenizer" in wf:
-            continue
-        weights.update(mx.load(wf))
+    for wf in pt_files:
+        payload = torch.load(wf, map_location="cpu", weights_only=True)
+        state_dict = _extract_state_dict(payload)
+        for key, value in state_dict.items():
+            if key.startswith("module."):
+                key = key[len("module.") :]
+            try:
+                weights[key] = _to_mx_array(value)
+            except Exception:
+                continue
 
     return weights
 
@@ -525,6 +550,7 @@ def convert(
     dequantize: bool = False,
     quant_predicate: Optional[str] = None,
     model_domain: Optional[str] = None,
+    model_type: Optional[str] = None,
 ):
     """
     Convert a model from HuggingFace to MLX format.
@@ -544,6 +570,7 @@ def convert(
         dequantize: Whether to dequantize a quantized model.
         quant_predicate: Mixed-bit quantization recipe.
         model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
+        model_type: Force model type (e.g. "sam_audio"). Auto-detected if None.
     """
     from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
 
@@ -551,16 +578,34 @@ def convert(
         raise ValueError("Choose either quantize or dequantize, not both.")
 
     print(f"[INFO] Loading model from {hf_path}")
-    model_path = get_model_path(hf_path, revision=revision)
+    model_path = get_model_path(
+        hf_path, revision=revision, allow_patterns=CONVERSION_ALLOW_PATTERNS
+    )
     config = load_config(model_path)
 
-    # Detect domain and model type
-    if model_domain is None:
-        domain = detect_model_domain(config, model_path)
-    else:
-        domain = Domain(model_domain)
+    forced_model_type = model_type.lower() if model_type else None
 
-    model_type = get_model_type(config, model_path, domain)
+    # Detect or force domain
+    if model_domain is not None:
+        domain = Domain(model_domain)
+    elif forced_model_type is not None:
+        domain = _match_by_model_type(forced_model_type) or detect_model_domain(
+            config, model_path
+        )
+    else:
+        domain = detect_model_domain(config, model_path)
+
+    # Detect or force model type
+    if forced_model_type is not None:
+        if forced_model_type not in get_model_types(domain):
+            raise ValueError(
+                f"Model type '{forced_model_type}' not supported for domain "
+                f"'{domain.value}'. Available types: "
+                f"{', '.join(sorted(get_model_types(domain)))}"
+            )
+        model_type = forced_model_type
+    else:
+        model_type = get_model_type(config, model_path, domain)
     print(f"\n[INFO] Model domain: {domain.name}, type: {model_type}")
 
     # Get model class and instantiate
@@ -592,6 +637,8 @@ def convert(
         print(f"[INFO] Converting to {target_dtype}")
         mx_dtype = getattr(mx, target_dtype)
         weights = {k: v.astype(mx_dtype) for k, v in weights.items()}
+        # Persist converted tensors to the model so save_model writes the new dtype.
+        model.load_weights(list(weights.items()))
 
     # Handle quantization/dequantization
     if quantize:
@@ -695,6 +742,15 @@ def configure_parser() -> argparse.ArgumentParser:
         choices=["tts", "stt", "sts"],
         default=None,
         help="Force model domain (auto-detected if not specified).",
+    )
+    parser.add_argument(
+        "--model-type",
+        type=str,
+        default=None,
+        help=(
+            "Force model type (auto-detected if not specified). "
+            "Example: --model-domain sts --model-type sam_audio"
+        ),
     )
 
     return parser
