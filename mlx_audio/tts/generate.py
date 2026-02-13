@@ -1,7 +1,8 @@
 import argparse
+import json
 import os
 import sys
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -103,12 +104,17 @@ def hertz_to_mel(pitch: float) -> float:
 
 
 def generate_audio(
-    text: str,
+    text: Optional[str],
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
     tokens: Optional[int] = None,
     voice: str = "af_heart",
     instruct: Optional[str] = None,
+    quality: Optional[str] = None,
+    sound_event: Optional[str] = None,
+    ambient_sound: Optional[str] = None,
+    language: Optional[str] = None,
+    dialogue_speakers_json: Optional[str] = None,
     input_type: str = "text",
     speed: float = 1.0,
     lang_code: str = "en",
@@ -156,7 +162,12 @@ def generate_audio(
     - None: The function writes the generated audio to a file.
     """
     try:
-        play = play or stream
+        # Keep streaming generation usable in headless/non-interactive runs.
+        # Playback remains explicitly opt-in via --play.
+        play = bool(play)
+
+        if (text is None or text.strip() == "") and ambient_sound:
+            text = ambient_sound
 
         if model is None:
             raise ValueError("Model path or model instance must be provided.")
@@ -211,6 +222,18 @@ def generate_audio(
         if instruct is not None:
             print(f"\033[94mInstruct:\033[0m {instruct}")
 
+        dialogue_speakers: Optional[list[dict[str, Any]]] = None
+        if dialogue_speakers_json is not None:
+            with open(dialogue_speakers_json, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, list):
+                raise ValueError("dialogue_speakers_json must contain a JSON list")
+            dialogue_speakers = []
+            for item in raw:
+                if not isinstance(item, dict):
+                    raise ValueError("Each dialogue_speakers item must be a JSON object")
+                dialogue_speakers.append(item)
+
         print(
             f"\033[94mText:\033[0m {text}\n"
             f"\033[94mVoice:\033[0m {voice}\n"
@@ -228,6 +251,11 @@ def generate_audio(
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             tokens=tokens,
+            quality=quality,
+            sound_event=sound_event,
+            ambient_sound=ambient_sound,
+            language=language,
+            dialogue_speakers=dialogue_speakers,
             input_type=input_type,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -341,6 +369,34 @@ def parse_args():
         default=None,
         help="Instruction for CustomVoice (emotion/style) or VoiceDesign (voice description)",
     )
+    parser.add_argument("--quality", type=str, default=None, help="Quality hint for supported models")
+    parser.add_argument(
+        "--sound_event",
+        type=str,
+        default=None,
+        help="Sound event description for supported models",
+    )
+    parser.add_argument(
+        "--ambient_sound",
+        type=str,
+        default=None,
+        help="Ambient sound description for supported models",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="Language hint for supported models",
+    )
+    parser.add_argument(
+        "--dialogue_speakers_json",
+        type=str,
+        default=None,
+        help=(
+            "Path to TTSD speaker schema JSON "
+            "(list of {speaker_id, ref_audio, ref_text/text})"
+        ),
+    )
     parser.add_argument(
         "--exaggeration",
         type=float,
@@ -424,6 +480,9 @@ def parse_args():
     )
 
     args = parser.parse_args()
+
+    if args.text is None and args.ambient_sound is not None:
+        args.text = args.ambient_sound
 
     if args.text is None:
         if not sys.stdin.isatty():

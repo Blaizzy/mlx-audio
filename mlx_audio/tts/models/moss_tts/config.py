@@ -123,8 +123,10 @@ class ModelConfig(BaseModelArgs):
         """
         Build the no-RoPE local transformer config.
 
-        Local transformer reuses Qwen3 attention/MLP dimensions but runs on a
-        short `(1 + n_vq)` sequence per global step.
+        Local transformer runs on a short `(1 + n_vq)` sequence per global
+        step, but keeps the language-attention head geometry from checkpoint
+        weights (`num_attention_heads`, `num_key_value_heads`, `head_dim`).
+        Local checkpoints shrink only the transformer hidden state width.
         """
 
         if not self.is_local_variant:
@@ -133,18 +135,12 @@ class ModelConfig(BaseModelArgs):
         assert self.local_ffn_hidden_size is not None
         assert self.local_num_layers is not None
 
-        if self.local_hidden_size % self.language_config.num_attention_heads != 0:
-            raise ValueError(
-                "local_hidden_size must be divisible by num_attention_heads"
-            )
-
         return replace(
             self.language_config,
             hidden_size=self.local_hidden_size,
             intermediate_size=self.local_ffn_hidden_size,
             num_hidden_layers=self.local_num_layers,
-            head_dim=self.local_hidden_size
-            // self.language_config.num_attention_heads,
+            head_dim=self.language_config.head_dim,
         )
 
 

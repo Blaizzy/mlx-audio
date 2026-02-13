@@ -9,6 +9,7 @@ from mlx_audio.tts.models.moss_tts.config import ModelConfig
 from mlx_audio.tts.models.moss_tts.local_model import MossTTSLocalModel
 from mlx_audio.tts.models.moss_tts.model import Model
 from mlx_audio.tts.models.moss_tts.processor import MossTTSProcessor
+from mlx_audio.tts.models.moss_tts.sampling import apply_repetition_penalty
 from mlx_audio.tts.models.moss_tts.sampling import resolve_channel_sampling_configs
 
 
@@ -120,6 +121,9 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
     def test_model_config_detects_local_vs_delay(self):
         local = ModelConfig.from_dict(_tiny_local_config_dict())
         self.assertTrue(local.is_local_variant)
+        local_transformer = local.local_transformer_config()
+        self.assertEqual(local_transformer.hidden_size, local.local_hidden_size)
+        self.assertEqual(local_transformer.head_dim, local.language_config.head_dim)
 
         delay_payload = _tiny_local_config_dict()
         delay_payload.pop("local_num_layers")
@@ -200,9 +204,11 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
 
         msg = processor.build_user_message(
             text="ni3 hao3",
-            reference=[mx.zeros((240,))],
+            reference=[mx.zeros((240,)), None],
             instruction="warm",
             tokens=32,
+            sound_event="speech",
+            ambient_sound="studio",
             language="zh",
             input_type="pinyin",
         )
@@ -210,6 +216,10 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
         self.assertEqual(packed["input_ids"].shape[0], 1)
         self.assertEqual(packed["input_ids"].shape[2], 1 + config.n_vq)
         self.assertEqual(int(packed["input_ids"][0, -1, 0]), config.audio_start_token_id)
+        self.assertIn("[S1]:", msg["content"])
+        self.assertIn("[S2]: None", msg["content"])
+        self.assertIn("Sound Event:\nspeech", msg["content"])
+        self.assertIn("Ambient Sound:\nstudio", msg["content"])
 
         with self.assertRaises(ValueError):
             processor.build_user_message(text="hello", input_type="kana")
@@ -251,6 +261,15 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
         self.assertGreaterEqual(len(results), 1)
         self.assertTrue(results[-1].is_final_chunk)
         self.assertTrue(any(r.samples > 0 for r in results))
+
+    def test_repetition_penalty_handles_bfloat16_logits(self):
+        logits = mx.array([[1.5, -0.3, 0.9]], dtype=mx.bfloat16)
+        history = mx.array([[0, 2, 2]], dtype=mx.int32)
+
+        penalized = apply_repetition_penalty(logits, history, penalty=1.2)
+
+        self.assertEqual(penalized.shape, logits.shape)
+        self.assertEqual(penalized.dtype, logits.dtype)
 
     def test_request_resolution_allows_instruct_with_ref_text(self):
         config = ModelConfig.from_dict(_tiny_local_config_dict())

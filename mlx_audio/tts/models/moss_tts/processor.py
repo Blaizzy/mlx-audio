@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -71,9 +71,10 @@ class UserMessage(Message):
             chunks: List[str] = []
             for speaker_idx, item in enumerate(self.reference):
                 if item is None:
-                    continue
-                chunks.append(f"[S{speaker_idx + 1}]:\n{AUDIO_PLACEHOLDER}")
-                references.append(item)
+                    chunks.append(f"[S{speaker_idx + 1}]: None")
+                else:
+                    chunks.append(f"[S{speaker_idx + 1}]:\n{AUDIO_PLACEHOLDER}")
+                    references.append(item)
             if chunks:
                 rendered_references = "\n".join(chunks)
 
@@ -189,6 +190,97 @@ class MossTTSProcessor:
         content: str = AUDIO_PLACEHOLDER,
     ) -> Dict[str, Any]:
         return AssistantMessage(audio_codes_list=audio_codes_list, content=content).to_dict()
+
+    @staticmethod
+    def _normalize_speaker_id(raw_speaker_id: Any) -> int:
+        try:
+            speaker_id = int(raw_speaker_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid speaker_id '{raw_speaker_id}'") from exc
+        # Allow either 0-based (`S0`) or 1-based (`S1`) ids in the input schema.
+        if speaker_id < 0:
+            raise ValueError("speaker_id must be non-negative")
+        return speaker_id + 1 if speaker_id == 0 else speaker_id
+
+    def build_ttsd_continuation_messages(
+        self,
+        *,
+        dialogue_text: str,
+        speakers: Sequence[Mapping[str, Any]],
+        instruction: Optional[str] = None,
+        tokens: Optional[int] = None,
+        quality: Optional[str] = None,
+        sound_event: Optional[str] = None,
+        ambient_sound: Optional[str] = None,
+        language: Optional[str] = None,
+        input_type: str = "text",
+        n_vq: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        if not dialogue_text or not dialogue_text.strip():
+            raise ValueError("dialogue_text must be a non-empty string")
+        if len(speakers) == 0:
+            raise ValueError("speakers must include at least one speaker definition")
+
+        n_vq = self.model_config.n_vq if n_vq is None else int(n_vq)
+        if n_vq <= 0:
+            raise ValueError("n_vq must be positive")
+
+        speaker_rows: Dict[int, Dict[str, Any]] = {}
+        for entry in speakers:
+            if not isinstance(entry, Mapping):
+                raise ValueError("Each speaker entry must be a mapping")
+            speaker_id = self._normalize_speaker_id(entry.get("speaker_id"))
+            prior = speaker_rows.get(speaker_id, {})
+            merged = dict(prior)
+            merged.update(dict(entry))
+            merged["speaker_id"] = speaker_id
+            speaker_rows[speaker_id] = merged
+
+        sorted_ids = sorted(speaker_rows.keys())
+        references: List[Optional[Union[str, mx.array]]] = [None] * max(sorted_ids)
+        prompt_lines: List[str] = []
+        assistant_reference_inputs: List[Union[str, mx.array]] = []
+
+        for speaker_id in sorted_ids:
+            row = speaker_rows[speaker_id]
+            ref_audio = row.get("ref_audio")
+            if ref_audio is not None:
+                references[speaker_id - 1] = ref_audio
+                assistant_reference_inputs.append(ref_audio)
+
+            ref_text = row.get("ref_text")
+            if ref_text is None:
+                ref_text = row.get("text")
+            if ref_text is not None:
+                normalized_text = str(ref_text).strip()
+                if normalized_text:
+                    prompt_lines.append(f"[S{speaker_id}] {normalized_text}")
+
+        full_dialogue = " ".join(prompt_lines + [dialogue_text.strip()])
+        user_message = self.build_user_message(
+            text=full_dialogue,
+            reference=references if any(item is not None for item in references) else None,
+            instruction=instruction,
+            tokens=tokens,
+            quality=quality,
+            sound_event=sound_event,
+            ambient_sound=ambient_sound,
+            language=language,
+            input_type=input_type,
+        )
+        messages: List[Dict[str, Any]] = [user_message]
+
+        if assistant_reference_inputs:
+            assistant_codes = self.encode_audios_from_reference(
+                assistant_reference_inputs,
+                n_vq=n_vq,
+            )
+            concatenated = mx.concatenate(assistant_codes, axis=0).astype(mx.int32)
+            messages.append(
+                self.build_assistant_message(audio_codes_list=[concatenated])
+            )
+
+        return messages
 
     def _normalize_message(self, message: Union[Message, Dict[str, Any]]) -> Dict[str, Any]:
         if isinstance(message, Message):
@@ -517,6 +609,7 @@ class MossTTSProcessor:
         *,
         n_vq: Optional[int] = None,
         apply_chat_template: bool = True,
+        mode: str = "generation",
     ) -> Dict[str, mx.array]:
         if isinstance(messages, (Message, dict)):
             messages = [messages]
@@ -524,8 +617,12 @@ class MossTTSProcessor:
         normalized = [self._normalize_message(message) for message in messages]
         if not normalized:
             raise ValueError("At least one message is required")
-        if normalized[-1]["role"] != "user":
-            raise ValueError("Generation requires final message role='user'")
+        if mode not in {"generation", "continuation"}:
+            raise ValueError(f"Unsupported mode '{mode}'")
+        if mode == "generation" and normalized[-1]["role"] != "user":
+            raise ValueError("Generation mode requires final message role='user'")
+        if mode == "continuation" and normalized[-1]["role"] != "assistant":
+            raise ValueError("Continuation mode requires final message role='assistant'")
 
         n_vq = self.model_config.n_vq if n_vq is None else int(n_vq)
         if n_vq <= 0:
@@ -554,9 +651,10 @@ class MossTTSProcessor:
             )
 
         input_ids = mx.concatenate(packed_parts, axis=0)
-        start_row = mx.full((1, 1 + n_vq), self.model_config.audio_pad_code, dtype=mx.int32)
-        start_row[:, 0] = self.model_config.audio_start_token_id
-        input_ids = mx.concatenate([input_ids, start_row], axis=0)
+        if mode == "generation":
+            start_row = mx.full((1, 1 + n_vq), self.model_config.audio_pad_code, dtype=mx.int32)
+            start_row[:, 0] = self.model_config.audio_start_token_id
+            input_ids = mx.concatenate([input_ids, start_row], axis=0)
         attention_mask = mx.ones((input_ids.shape[0],), dtype=mx.bool_)
 
         return {

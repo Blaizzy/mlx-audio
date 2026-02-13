@@ -64,8 +64,10 @@ def apply_repetition_penalty(
 
     if penalty == 1.0:
         return logits
-    logits_np = np.array(logits, copy=True)
-    history_np = np.array(previous_tokens)
+    # bfloat16 -> NumPy conversion can fail through the default bridge; run
+    # math in float32 NumPy space and cast back to the original MLX dtype.
+    logits_np = np.array(logits.astype(mx.float32), copy=True)
+    history_np = np.array(previous_tokens.astype(mx.int32))
 
     if history_np.ndim == 1:
         history_np = history_np[None, :]

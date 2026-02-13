@@ -204,6 +204,55 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertEqual(packed["input_ids"].shape[0], 1)
         self.assertEqual(packed["input_ids"].shape[2], 1 + config.n_vq)
 
+    def test_processor_continuation_mode_uses_assistant_suffix(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+        codes = mx.array([[3, 4], [5, 6]], dtype=mx.int32)
+
+        conversation = [
+            processor.build_user_message(text="[S1] Prompt", reference=[codes], input_type="text"),
+            processor.build_assistant_message(audio_codes_list=[codes]),
+        ]
+        packed = processor.prepare_generation_inputs(
+            conversation,
+            n_vq=config.n_vq,
+            apply_chat_template=False,
+            mode="continuation",
+        )
+
+        self.assertEqual(packed["input_ids"].shape[0], 1)
+        self.assertEqual(packed["input_ids"].shape[2], 1 + config.n_vq)
+        self.assertNotEqual(
+            int(packed["input_ids"][0, -1, 0]),
+            config.audio_start_token_id,
+        )
+
+    def test_processor_builds_ttsd_continuation_messages_from_speaker_schema(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+        ref_wave_1 = mx.zeros((80,), dtype=mx.float32)
+        ref_wave_3 = mx.ones((80,), dtype=mx.float32)
+
+        messages = processor.build_ttsd_continuation_messages(
+            dialogue_text="[S1] Continue the discussion. [S3] Add a counterpoint.",
+            speakers=[
+                {"speaker_id": 1, "ref_audio": ref_wave_1, "ref_text": "Prompt one."},
+                {"speaker_id": 3, "ref_audio": ref_wave_3, "text": "Prompt three."},
+            ],
+            input_type="text",
+        )
+
+        self.assertEqual(len(messages), 2)
+        user_message = messages[0]
+        assistant_message = messages[1]
+        self.assertIn("[S1]:", user_message["content"])
+        self.assertIn("[S2]: None", user_message["content"])
+        self.assertIn("[S3]:", user_message["content"])
+        self.assertIn("[S1] Prompt one.", user_message["content"])
+        self.assertIn("[S3] Prompt three.", user_message["content"])
+        self.assertEqual(len(assistant_message["audio_references"]), 1)
+        self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (4, 2))
+
     def test_delay_sanitize_remaps_expected_prefixes(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
         model = Model(config)
@@ -237,6 +286,51 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
 
             text = np.full((1, config.vocab_size), -1e9, dtype=np.float32)
             if step == 0:
+                text[0, config.audio_start_token_id] = 0.0
+            elif step == 1:
+                text[0, config.audio_assistant_gen_slot_token_id] = 0.0
+            elif step == 2:
+                text[0, config.audio_assistant_delay_slot_token_id] = 0.0
+            else:
+                text[0, config.audio_assistant_gen_slot_token_id] = 0.0
+
+            audio_vocab = config.audio_vocab_size + 1
+            audio0 = np.full((1, audio_vocab), -1e9, dtype=np.float32)
+            audio1 = np.full((1, audio_vocab), -1e9, dtype=np.float32)
+            audio0[0, 1] = 0.0
+            audio1[0, 2] = 0.0
+            return [mx.array(text), mx.array(audio0), mx.array(audio1)]
+
+        with patch.object(model.model, "compute_next_logits", side_effect=fake_logits):
+            results = list(
+                model.generate(
+                    text="hello",
+                    max_tokens=8,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertGreater(results[-1].samples, 0)
+
+    def test_delay_generate_with_dialogue_speakers_structured_schema(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        step_counter = {"step": 0}
+
+        def fake_logits(*args, **kwargs):
+            step = step_counter["step"]
+            step_counter["step"] += 1
+
+            text = np.full((1, config.vocab_size), -1e9, dtype=np.float32)
+            if step == 0:
                 text[0, config.audio_assistant_gen_slot_token_id] = 0.0
             elif step == 1:
                 text[0, config.audio_assistant_delay_slot_token_id] = 0.0
@@ -253,7 +347,11 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         with patch.object(model.model, "compute_next_logits", side_effect=fake_logits):
             results = list(
                 model.generate(
-                    text="hello",
+                    text="[S1] Continue. [S2] Respond.",
+                    dialogue_speakers=[
+                        {"speaker_id": 1, "ref_text": "Intro A."},
+                        {"speaker_id": 2, "ref_text": "Intro B."},
+                    ],
                     max_tokens=8,
                     temperature=1.0,
                     top_p=1.0,

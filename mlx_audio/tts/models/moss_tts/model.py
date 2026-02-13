@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Union
+from typing import Any, Dict, Generator, List, Mapping, Optional, Sequence, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -331,6 +331,59 @@ class Model(nn.Module):
         )
         return batch["input_ids"].astype(mx.int32)
 
+    def _build_prompt_inputs_from_messages(
+        self,
+        *,
+        messages: Sequence[Mapping[str, Any]],
+        mode: str,
+    ) -> mx.array:
+        if self.processor is None:
+            raise RuntimeError("processor is not initialized")
+        batch = self.processor.prepare_generation_inputs(
+            list(messages),
+            n_vq=self.config.n_vq,
+            apply_chat_template=True,
+            mode=mode,
+        )
+        return batch["input_ids"].astype(mx.int32)
+
+    def _build_ttsd_continuation_messages(
+        self,
+        *,
+        request: MossNormalizedRequest,
+        dialogue_speakers: Sequence[Mapping[str, Any]],
+        input_type: str,
+    ) -> List[Dict[str, Any]]:
+        if self.processor is None:
+            raise RuntimeError("processor is not initialized")
+        if (
+            isinstance(dialogue_speakers, (str, bytes))
+            or not isinstance(dialogue_speakers, Sequence)
+            or len(dialogue_speakers) == 0
+        ):
+            raise ValueError(
+                "dialogue_speakers must be a non-empty sequence of speaker mappings"
+            )
+        for entry in dialogue_speakers:
+            if not isinstance(entry, Mapping):
+                raise ValueError("Each dialogue_speakers entry must be a mapping")
+        if not request.text:
+            raise ValueError("dialogue_speakers requires a non-empty `text` prompt")
+
+        messages = self.processor.build_ttsd_continuation_messages(
+            dialogue_text=request.text,
+            speakers=dialogue_speakers,
+            instruction=request.instruction,
+            tokens=request.tokens,
+            quality=request.quality,
+            sound_event=request.sound_event,
+            ambient_sound=request.ambient_sound,
+            language=request.language,
+            input_type=input_type,
+            n_vq=self.config.n_vq,
+        )
+        return messages
+
     def _generate_local(
         self,
         *,
@@ -629,6 +682,11 @@ class Model(nn.Module):
         del voice, verbose
         self._ensure_processor_ready()
 
+        conversation = kwargs.pop("conversation", None)
+        dialogue_speakers = kwargs.pop("dialogue_speakers", None)
+        if conversation is not None and dialogue_speakers is not None:
+            raise ValueError("Provide either `conversation` or `dialogue_speakers`, not both")
+
         request = self._resolve_generation_request(
             text=text,
             ref_audio=ref_audio,
@@ -642,8 +700,38 @@ class Model(nn.Module):
                 f"Unsupported input_type '{input_type}'. "
                 f"Expected one of {sorted(VALID_INPUT_TYPES)}"
             )
-
-        input_ids = self._build_prompt_inputs(request=request, input_type=input_type)
+        if conversation is not None:
+            if not isinstance(conversation, list):
+                raise ValueError("conversation must be a list of message dicts")
+            if request.reference is not None or request.instruction is not None or request.text:
+                raise ValueError(
+                    "When `conversation` is provided, do not also provide text/ref/instruct fields"
+                )
+            input_ids = self._build_prompt_inputs_from_messages(
+                messages=conversation,
+                mode="continuation",
+            )
+        elif dialogue_speakers is not None:
+            if request.reference is not None:
+                raise ValueError(
+                    "dialogue_speakers cannot be combined with ref_audio/reference"
+                )
+            continuation_messages = self._build_ttsd_continuation_messages(
+                request=request,
+                dialogue_speakers=dialogue_speakers,
+                input_type=input_type,
+            )
+            continuation_mode = (
+                "continuation"
+                if continuation_messages and continuation_messages[-1]["role"] == "assistant"
+                else "generation"
+            )
+            input_ids = self._build_prompt_inputs_from_messages(
+                messages=continuation_messages,
+                mode=continuation_mode,
+            )
+        else:
+            input_ids = self._build_prompt_inputs(request=request, input_type=input_type)
         do_samples = kwargs.get("do_samples", None)
         layers = kwargs.get("layers", None)
         sampling_cfg = resolve_channel_sampling_configs(
