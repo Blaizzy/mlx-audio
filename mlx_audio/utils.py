@@ -274,7 +274,8 @@ def get_model_class(
     """
     # Stage 1: Apply direct model_type remapping when available.
     model_type_mapped = model_remapping.get(model_type, None)
-    if model_type_mapped is not None:
+    stage1_resolved = model_type_mapped is not None
+    if stage1_resolved:
         model_type = model_type_mapped
 
     # Stage 2: Check for partial matches in segments of the model name.
@@ -286,7 +287,7 @@ def get_model_class(
             if item.is_dir() and not item.name.startswith("__"):
                 available_models.append(item.name)
 
-    if model_name is not None:
+    if not stage1_resolved and model_name is not None:
         for part in model_name:
             if part in available_models:
                 model_type = part

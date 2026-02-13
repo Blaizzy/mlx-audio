@@ -106,8 +106,10 @@ def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
+    tokens: Optional[int] = None,
     voice: str = "af_heart",
     instruct: Optional[str] = None,
+    input_type: str = "text",
     speed: float = 1.0,
     lang_code: str = "en",
     cfg_scale: Optional[float] = None,
@@ -225,6 +227,8 @@ def generate_audio(
             ref_text=ref_text,
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
+            tokens=tokens,
+            input_type=input_type,
             temperature=temperature,
             max_tokens=max_tokens,
             verbose=verbose,
@@ -314,6 +318,12 @@ def parse_args():
         help="Maximum number of tokens to generate",
     )
     parser.add_argument(
+        "--tokens",
+        type=int,
+        default=None,
+        help="Target duration control for models that support token-based timing",
+    )
+    parser.add_argument(
         "--text",
         type=str,
         default=None,
@@ -356,6 +366,13 @@ def parse_args():
     )
     parser.add_argument("--pitch", type=float, default=1.0, help="Pitch of the voice")
     parser.add_argument("--lang_code", type=str, default="en", help="Language code")
+    parser.add_argument(
+        "--input_type",
+        type=str,
+        default="text",
+        choices=["text", "pinyin", "ipa"],
+        help="Input representation for supported models",
+    )
     parser.add_argument(
         "--output_path", type=str, default=None, help="Directory path for output files"
     )

@@ -34,6 +34,14 @@ class TestMossTTSPhase2Runtime(unittest.TestCase):
         self.assertEqual(resolved, "moss_tts")
         self.assertTrue(hasattr(module, "Model"))
 
+    def test_stage1_remap_precedence_over_repo_name_hints(self):
+        module, resolved = get_model_and_args(
+            model_type="qwen3_tts",
+            model_name=["qwen3", "tts", "voice", "clone"],
+        )
+        self.assertEqual(resolved, "qwen3_tts")
+        self.assertTrue(hasattr(module, "Model"))
+
 
 if __name__ == "__main__":
     unittest.main()

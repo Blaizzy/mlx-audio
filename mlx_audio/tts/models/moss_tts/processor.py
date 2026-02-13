@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -219,6 +219,8 @@ class MossTTSProcessor:
         audio_start_token: str,
         audio_end_token: str,
         slot_token: str,
+        delay_slot_token: Optional[str] = None,
+        n_vq: int = 1,
     ) -> str:
         result = content
         placeholder_count = result.count(AUDIO_PLACEHOLDER)
@@ -231,9 +233,121 @@ class MossTTSProcessor:
         for length in lengths:
             if length < 0:
                 raise ValueError("reference code length must be non-negative")
-            block = audio_start_token + (slot_token * length) + audio_end_token
+            if delay_slot_token is None:
+                block = audio_start_token + (slot_token * length) + audio_end_token
+            else:
+                block = (
+                    audio_start_token
+                    + (slot_token * length)
+                    + (delay_slot_token * max(n_vq - 1, 0))
+                    + audio_end_token
+                )
             result = result.replace(AUDIO_PLACEHOLDER, block, 1)
         return result
+
+    @staticmethod
+    def _is_preencoded_audio_codes(item: mx.array, *, n_vq: int) -> bool:
+        if item.ndim != 2:
+            return False
+        if int(item.shape[1]) < int(n_vq):
+            return False
+        return np.issubdtype(np.array(item).dtype, np.integer)
+
+    def apply_delay_pattern(
+        self,
+        codes: mx.array,
+        *,
+        pad_code: Optional[int] = None,
+    ) -> mx.array:
+        if codes.ndim != 2:
+            raise ValueError(f"Expected codes shape (T, NQ), got {codes.shape}")
+        pad_code = (
+            self.model_config.audio_pad_code if pad_code is None else int(pad_code)
+        )
+        time_steps = int(codes.shape[0])
+        n_vq = int(codes.shape[1])
+        delayed = np.full(
+            (time_steps + n_vq - 1, n_vq),
+            pad_code,
+            dtype=np.array(codes).dtype,
+        )
+        source = np.array(codes)
+        for channel_idx in range(n_vq):
+            delayed[channel_idx : channel_idx + time_steps, channel_idx] = source[
+                :, channel_idx
+            ]
+        return mx.array(delayed, dtype=codes.dtype)
+
+    def apply_de_delay_pattern(self, delay_codes: mx.array) -> mx.array:
+        if delay_codes.ndim != 2:
+            raise ValueError(
+                f"Expected delayed codes shape (T + NQ - 1, NQ), got {delay_codes.shape}"
+            )
+        total_steps = int(delay_codes.shape[0])
+        n_vq = int(delay_codes.shape[1])
+        if total_steps < n_vq:
+            return mx.zeros((0, n_vq), dtype=delay_codes.dtype)
+
+        time_steps = total_steps - n_vq + 1
+        output = np.zeros((time_steps, n_vq), dtype=np.array(delay_codes).dtype)
+        delayed = np.array(delay_codes)
+        for channel_idx in range(n_vq):
+            output[:, channel_idx] = delayed[
+                channel_idx : channel_idx + time_steps, channel_idx
+            ]
+        return mx.array(output, dtype=delay_codes.dtype)
+
+    def _split_audio_segments(self, audio_codes: mx.array) -> List[mx.array]:
+        if audio_codes.ndim != 2:
+            raise ValueError(
+                f"Expected audio_codes shape (T, NQ), got {audio_codes.shape}"
+            )
+        pad_code = int(self.model_config.audio_pad_code)
+        codes_np = np.array(audio_codes)
+        if codes_np.size == 0:
+            return []
+
+        is_pad = np.all(codes_np == pad_code, axis=1)
+        segments: List[mx.array] = []
+        start = -1
+        for idx, is_pad_row in enumerate(is_pad):
+            if not is_pad_row and start < 0:
+                start = idx
+            if is_pad_row and start >= 0:
+                segments.append(mx.array(codes_np[start:idx], dtype=audio_codes.dtype))
+                start = -1
+        if start >= 0:
+            segments.append(mx.array(codes_np[start:], dtype=audio_codes.dtype))
+        return segments
+
+    def parse_generated_assistant_segments(
+        self,
+        audio_codes: mx.array,
+        *,
+        delayed: Optional[bool] = None,
+    ) -> List[mx.array]:
+        if delayed is None:
+            delayed = not self.model_config.is_local_variant
+        normalized = (
+            self.apply_de_delay_pattern(audio_codes) if delayed else audio_codes
+        ).astype(mx.int32)
+        return self._split_audio_segments(normalized)
+
+    def extract_complete_delay_rows(self, delay_codes: mx.array) -> mx.array:
+        """
+        Convert delayed rows to standard `(T, n_vq)` codes and keep only rows where
+        all codebooks have emitted a real token (no pad values).
+        """
+
+        codes = self.apply_de_delay_pattern(delay_codes).astype(mx.int32)
+        if codes.shape[0] == 0:
+            return mx.zeros((0, int(delay_codes.shape[1])), dtype=mx.int32)
+
+        codes_np = np.array(codes)
+        keep = np.all(codes_np != int(self.model_config.audio_pad_code), axis=1)
+        if not np.any(keep):
+            return mx.zeros((0, int(delay_codes.shape[1])), dtype=mx.int32)
+        return mx.array(codes_np[keep], dtype=mx.int32)
 
     def encode_audios_from_reference(
         self,
@@ -244,37 +358,49 @@ class MossTTSProcessor:
         if self.audio_tokenizer is None:
             raise RuntimeError("audio_tokenizer is not loaded")
 
+        n_vq = self.model_config.n_vq if n_vq is None else int(n_vq)
+        normalized_items: List[Tuple[str, int | mx.array]] = []
         wav_list: List[mx.array] = []
         for item in references:
             if isinstance(item, str):
                 wav = load_audio(item, sample_rate=self.model_config.sampling_rate)
+                normalized_items.append(("wav", len(wav_list)))
             elif isinstance(item, mx.array):
+                if self._is_preencoded_audio_codes(item, n_vq=n_vq):
+                    normalized_items.append(("codes", item[:, :n_vq].astype(mx.int32)))
+                    continue
                 wav = item
+                normalized_items.append(("wav", len(wav_list)))
             else:
                 raise TypeError(
-                    "Each reference must be an audio path or mlx.array waveform"
+                    "Each reference must be an audio path, waveform, or pre-encoded "
+                    "audio codes (T, NQ)."
                 )
 
             if wav.ndim == 2:
                 wav = mx.mean(wav, axis=-1)
             wav_list.append(wav.astype(mx.float32))
 
-        if not wav_list:
-            return []
-
-        encoded = self.audio_tokenizer.batch_encode(
-            wav_list,
-            num_quantizers=n_vq,
-            return_dict=True,
-        )
-        if encoded.audio_codes is None or encoded.audio_codes_lengths is None:
-            raise RuntimeError("audio tokenizer encode returned empty outputs")
+        wav_codes: List[mx.array] = []
+        if wav_list:
+            encoded = self.audio_tokenizer.batch_encode(
+                wav_list,
+                num_quantizers=n_vq,
+            )
+            if encoded.audio_codes is None or encoded.audio_codes_lengths is None:
+                raise RuntimeError("audio tokenizer encode returned empty outputs")
+            for batch_idx in range(int(encoded.audio_codes.shape[1])):
+                length = int(encoded.audio_codes_lengths[batch_idx])
+                codes = encoded.audio_codes[:, batch_idx, :length].transpose(1, 0)
+                wav_codes.append(codes.astype(mx.int32))
 
         codes_list: List[mx.array] = []
-        for batch_idx in range(int(encoded.audio_codes.shape[1])):
-            length = int(encoded.audio_codes_lengths[batch_idx])
-            codes = encoded.audio_codes[:, batch_idx, :length].transpose(1, 0)
-            codes_list.append(codes.astype(mx.int32))
+        for source_type, payload in normalized_items:
+            if source_type == "codes":
+                codes_list.append(payload)  # type: ignore[arg-type]
+            else:
+                wav_idx = int(payload)
+                codes_list.append(wav_codes[wav_idx])
         return codes_list
 
     def decode_audio_codes(
@@ -308,10 +434,15 @@ class MossTTSProcessor:
         audio_codes_list: List[mx.array],
         n_vq: int,
     ) -> mx.array:
+        is_delay_variant = not self.model_config.is_local_variant
         if role == "user":
             slot_token = self.audio_user_slot_token
+            delay_slot_token = self.audio_user_slot_token if is_delay_variant else None
         else:
             slot_token = self.audio_assistant_gen_slot_token
+            delay_slot_token = (
+                self.audio_assistant_delay_slot_token if is_delay_variant else None
+            )
 
         text = self._replace_audio_placeholders(
             content=content,
@@ -319,6 +450,8 @@ class MossTTSProcessor:
             audio_start_token=self.audio_start_token,
             audio_end_token=self.audio_end_token,
             slot_token=slot_token,
+            delay_slot_token=delay_slot_token,
+            n_vq=n_vq,
         )
         text_ids = mx.array(self.tokenizer.encode(text), dtype=mx.int32)
         text_length = int(text_ids.shape[0])
@@ -352,12 +485,18 @@ class MossTTSProcessor:
         for start_idx, end_idx, codes in zip(start_positions, end_positions, audio_codes_list):
             start = int(start_idx)
             end = int(end_idx)
+            packed_codes = codes[:, :n_vq].astype(mx.int32)
+            if is_delay_variant:
+                packed_codes = self.apply_delay_pattern(
+                    packed_codes,
+                    pad_code=self.model_config.audio_pad_code,
+                )
             pad = mx.full(
                 (start - prefix_index + 1, n_vq),
                 self.model_config.audio_pad_code,
                 dtype=mx.int32,
             )
-            segments.extend([pad, codes[:, :n_vq].astype(mx.int32)])
+            segments.extend([pad, packed_codes])
             prefix_index = end
 
         trailing = mx.full(
