@@ -81,31 +81,133 @@ class MossAudioTokenizer(nn.Module):
             )
         return input_values
 
-    def _ensure_codes_layout(self, audio_codes: mx.array) -> mx.array:
-        expected_nq = self.config.quantizer.num_quantizers
+    def _resolve_requested_quantizers(self, num_quantizers: Optional[int]) -> int:
+        configured_quantizers = self.config.quantizer.num_quantizers
+        if num_quantizers is None:
+            return configured_quantizers
+        if num_quantizers <= 0:
+            raise ValueError("num_quantizers must be > 0 when provided.")
+        if num_quantizers > configured_quantizers:
+            raise ValueError(
+                f"num_quantizers ({num_quantizers}) must be <= configured "
+                f"quantizer count ({configured_quantizers})."
+            )
+        return int(num_quantizers)
+
+    def _normalize_decode_audio_codes(
+        self,
+        audio_codes: mx.array,
+        *,
+        num_quantizers: Optional[int],
+    ) -> mx.array:
+        configured_quantizers = self.config.quantizer.num_quantizers
+        requested_quantizers = self._resolve_requested_quantizers(num_quantizers)
+
+        if audio_codes.ndim not in {2, 3}:
+            raise ValueError(
+                f"Expected audio_codes with 2 or 3 dims, got shape={audio_codes.shape}"
+            )
+
+        candidates: list[tuple[str, int, mx.array]] = []
+
+        def register_candidate(
+            orientation: str,
+            quantizer_count: int,
+            normalized: mx.array,
+        ) -> None:
+            candidates.append((orientation, quantizer_count, normalized))
+
         if audio_codes.ndim == 2:
-            if audio_codes.shape[0] == expected_nq:
-                return audio_codes[:, None, :]
-            if audio_codes.shape[1] == expected_nq:
-                return audio_codes.transpose(1, 0)[:, None, :]
+            if audio_codes.shape[0] == configured_quantizers:
+                register_candidate(
+                    "NQ-first",
+                    configured_quantizers,
+                    audio_codes[:, None, :],
+                )
+            if (
+                requested_quantizers != configured_quantizers
+                and audio_codes.shape[0] == requested_quantizers
+            ):
+                register_candidate(
+                    "NQ-first",
+                    requested_quantizers,
+                    audio_codes[:, None, :],
+                )
+            if audio_codes.shape[1] == configured_quantizers:
+                register_candidate(
+                    "NQ-last",
+                    configured_quantizers,
+                    audio_codes.transpose(1, 0)[:, None, :],
+                )
+            if (
+                requested_quantizers != configured_quantizers
+                and audio_codes.shape[1] == requested_quantizers
+            ):
+                register_candidate(
+                    "NQ-last",
+                    requested_quantizers,
+                    audio_codes.transpose(1, 0)[:, None, :],
+                )
+        else:
+            if audio_codes.shape[0] == configured_quantizers:
+                register_candidate("NQ-first", configured_quantizers, audio_codes)
+            if (
+                requested_quantizers != configured_quantizers
+                and audio_codes.shape[0] == requested_quantizers
+            ):
+                register_candidate("NQ-first", requested_quantizers, audio_codes)
+            if audio_codes.shape[-1] == configured_quantizers:
+                register_candidate(
+                    "NQ-last",
+                    configured_quantizers,
+                    audio_codes.transpose(2, 0, 1),
+                )
+            if (
+                requested_quantizers != configured_quantizers
+                and audio_codes.shape[-1] == requested_quantizers
+            ):
+                register_candidate(
+                    "NQ-last",
+                    requested_quantizers,
+                    audio_codes.transpose(2, 0, 1),
+                )
+
+        if not candidates:
+            shape_contract = (
+                "Expected (NQ, T)/(T, NQ) or (NQ, B, T)/(B, T, NQ) with "
+                f"NQ in {{{configured_quantizers}"
+                + (
+                    f", {requested_quantizers}"
+                    if requested_quantizers != configured_quantizers
+                    else ""
+                )
+                + "}."
+            )
             raise ValueError(
-                "Ambiguous 2D audio_codes shape. Expected (NQ, T) or (T, NQ), "
-                f"got {audio_codes.shape}."
+                f"Unrecognized audio_codes layout for shape={audio_codes.shape}. "
+                f"{shape_contract}"
             )
 
-        if audio_codes.ndim != 3:
+        if len(candidates) > 1:
+            candidate_labels = [
+                f"{orientation}[nq={nq}]"
+                for orientation, nq, _ in candidates
+            ]
             raise ValueError(
-                f"Expected audio_codes with 2/3 dims, got shape={audio_codes.shape}"
+                "Ambiguous audio_codes layout. Multiple interpretations are valid for "
+                f"shape={audio_codes.shape}: {candidate_labels}. "
+                "Use a canonical layout to disambiguate."
             )
 
-        if audio_codes.shape[0] == expected_nq:
-            return audio_codes
-        if audio_codes.shape[-1] == expected_nq:
-            return audio_codes.transpose(2, 0, 1)
-        raise ValueError(
-            "Ambiguous 3D audio_codes shape. Expected (NQ, B, T) or (B, T, NQ), "
-            f"got {audio_codes.shape}."
-        )
+        _, source_quantizers, normalized = candidates[0]
+        if requested_quantizers > source_quantizers:
+            raise ValueError(
+                f"num_quantizers ({requested_quantizers}) must be <= decoded source "
+                f"quantizer count ({source_quantizers})."
+            )
+        if requested_quantizers < source_quantizers:
+            normalized = normalized[:requested_quantizers]
+        return normalized
 
     def _encode_frame(
         self,
@@ -153,7 +255,12 @@ class MossAudioTokenizer(nn.Module):
         audio_codes_lengths: Optional[mx.array] = None,
         caches: Optional[list[Optional[list]]] = None,
     ) -> MossAudioTokenizerDecoderOutput:
-        audio_codes = self._ensure_codes_layout(audio_codes).astype(mx.int32)
+        if audio_codes.ndim != 3:
+            raise ValueError(
+                "Expected canonical audio_codes layout (NQ, B, T) in _decode_frame, "
+                f"got shape={audio_codes.shape}."
+            )
+        audio_codes = audio_codes.astype(mx.int32)
         _, batch_size, time_steps = audio_codes.shape
 
         if audio_codes_lengths is None:
@@ -280,14 +387,10 @@ class MossAudioTokenizer(nn.Module):
         chunk_duration: Optional[float] = None,
         num_quantizers: Optional[int] = None,
     ) -> MossAudioTokenizerDecoderOutput | tuple[mx.array]:
-        audio_codes = self._ensure_codes_layout(audio_codes).astype(mx.int32)
-        if num_quantizers is not None:
-            if num_quantizers > audio_codes.shape[0]:
-                raise ValueError(
-                    f"num_quantizers ({num_quantizers}) must be <= "
-                    f"audio_codes.shape[0] ({audio_codes.shape[0]})."
-                )
-            audio_codes = audio_codes[:num_quantizers]
+        audio_codes = self._normalize_decode_audio_codes(
+            audio_codes,
+            num_quantizers=num_quantizers,
+        ).astype(mx.int32)
 
         _, batch_size, time_steps = audio_codes.shape
         if padding_mask is not None:
@@ -400,30 +503,25 @@ class MossAudioTokenizer(nn.Module):
         if not codes_list:
             raise ValueError("codes_list must contain at least one code tensor.")
 
-        normalized = [self._ensure_codes_layout(c).squeeze(1) for c in codes_list]
-        nqs = [int(c.shape[0]) for c in normalized]
-        if num_quantizers is None:
-            num_quantizers = nqs[0]
-            if any(nq != num_quantizers for nq in nqs):
-                raise ValueError(
-                    "All elements in codes_list must have the same number of quantizers "
-                    "when num_quantizers is None. Pass num_quantizers to decode a prefix."
-                )
-        else:
-            min_nq = min(nqs)
-            if min_nq < num_quantizers:
-                raise ValueError(
-                    "num_quantizers must be <= quantizer count for every tensor in codes_list. "
-                    f"Got num_quantizers={num_quantizers}, min={min_nq}."
-                )
+        normalized = [
+            self._normalize_decode_audio_codes(c, num_quantizers=num_quantizers).squeeze(1)
+            for c in codes_list
+        ]
+        target_quantizers = int(normalized[0].shape[0])
+        if any(int(c.shape[0]) != target_quantizers for c in normalized):
+            raise ValueError(
+                "All elements in codes_list must resolve to the same quantizer count."
+            )
 
         max_length = max(int(c.shape[-1]) for c in normalized)
         batch_size = len(normalized)
-        audio_codes = mx.zeros((num_quantizers, batch_size, max_length), dtype=mx.int32)
+        audio_codes = mx.zeros(
+            (target_quantizers, batch_size, max_length),
+            dtype=mx.int32,
+        )
         audio_codes_lengths = mx.zeros((batch_size,), dtype=mx.int32)
 
         for idx, codes in enumerate(normalized):
-            codes = codes[:num_quantizers]
             time_steps = int(codes.shape[-1])
             audio_codes[:, idx, :time_steps] = codes
             audio_codes_lengths[idx] = time_steps
@@ -440,14 +538,10 @@ class MossAudioTokenizer(nn.Module):
         if chunk_tokens <= 0:
             raise ValueError("chunk_tokens must be > 0.")
 
-        audio_codes = self._ensure_codes_layout(audio_codes).astype(mx.int32)
-        if num_quantizers is not None:
-            if num_quantizers > audio_codes.shape[0]:
-                raise ValueError(
-                    f"num_quantizers ({num_quantizers}) must be <= "
-                    f"audio_codes.shape[0] ({audio_codes.shape[0]})."
-                )
-            audio_codes = audio_codes[:num_quantizers]
+        audio_codes = self._normalize_decode_audio_codes(
+            audio_codes,
+            num_quantizers=num_quantizers,
+        ).astype(mx.int32)
 
         _, batch_size, total_tokens = audio_codes.shape
         if batch_size != 1:
@@ -655,4 +749,3 @@ class MossAudioTokenizer(nn.Module):
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
             json.dump(self.config.to_dict(), handle, indent=2, sort_keys=True)
-
