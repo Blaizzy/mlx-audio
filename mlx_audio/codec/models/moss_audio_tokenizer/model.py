@@ -189,15 +189,23 @@ class MossAudioTokenizer(nn.Module):
             )
 
         if len(candidates) > 1:
-            candidate_labels = [
-                f"{orientation}[nq={nq}]"
-                for orientation, nq, _ in candidates
+            # Prefer canonical layout in tie cases so encode() -> decode() round-trips
+            # remain valid when T == NQ.
+            canonical_candidates = [
+                candidate for candidate in candidates if candidate[0] == "NQ-first"
             ]
-            raise ValueError(
-                "Ambiguous audio_codes layout. Multiple interpretations are valid for "
-                f"shape={audio_codes.shape}: {candidate_labels}. "
-                "Use a canonical layout to disambiguate."
-            )
+            if len(canonical_candidates) == 1:
+                candidates = canonical_candidates
+            else:
+                candidate_labels = [
+                    f"{orientation}[nq={nq}]"
+                    for orientation, nq, _ in candidates
+                ]
+                raise ValueError(
+                    "Ambiguous audio_codes layout. Multiple interpretations are valid for "
+                    f"shape={audio_codes.shape}: {candidate_labels}. "
+                    "Use a canonical layout to disambiguate."
+                )
 
         _, source_quantizers, normalized = candidates[0]
         if requested_quantizers > source_quantizers:

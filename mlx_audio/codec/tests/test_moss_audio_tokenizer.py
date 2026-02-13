@@ -258,17 +258,40 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
         stream_concat = mx.concatenate(chunks, axis=-1)
         self.assertEqual(stream_concat.shape[-1], int(full.audio_lengths[0]))
 
-    def test_decode_rejects_ambiguous_3d_layout(self):
+    def test_decode_accepts_encode_output_when_time_equals_quantizers(self):
         model = MossAudioTokenizer(_tiny_moss_config())
-        ambiguous = mx.zeros((2, 5, 2), dtype=mx.int32)
-        with self.assertRaisesRegex(ValueError, "Ambiguous audio_codes layout"):
-            model.decode(ambiguous, return_dict=True)
+        # downsample_rate=4 => 8 samples encodes to 2 frames, matching num_quantizers=2.
+        audio = mx.random.normal((1, 1, 8))
+        enc = model.encode(audio, return_dict=True)
+        assert enc.audio_codes is not None
+        assert enc.audio_codes_lengths is not None
+        self.assertEqual(tuple(enc.audio_codes.shape), (2, 1, 2))
 
-    def test_decode_rejects_ambiguous_3d_layout_with_prefix_count(self):
+        dec = model.decode(enc.audio_codes, return_dict=True)
+        assert dec.audio is not None
+        assert dec.audio_lengths is not None
+        self.assertEqual(dec.audio.shape[0], 1)
+        self.assertEqual(int(dec.audio_lengths[0]), int(enc.audio_codes_lengths[0]) * 4)
+
+    def test_decode_prefers_nq_first_when_3d_shape_matches_both_orientations(self):
         model = MossAudioTokenizer(_tiny_moss_config())
-        ambiguous = mx.zeros((2, 5, 1), dtype=mx.int32)
-        with self.assertRaisesRegex(ValueError, "Ambiguous audio_codes layout"):
-            model.decode(ambiguous, num_quantizers=1, return_dict=True)
+        tie_shape_codes = mx.zeros((2, 5, 2), dtype=mx.int32)
+
+        dec = model.decode(tie_shape_codes, return_dict=True)
+        assert dec.audio is not None
+        assert dec.audio_lengths is not None
+        self.assertEqual(dec.audio.shape[0], 5)
+        self.assertTrue(np.all(np.array(dec.audio_lengths) == 8))
+
+    def test_decode_prefers_nq_first_for_prefix_count_in_tie_case(self):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.zeros((2, 5, 1), dtype=mx.int32)
+
+        dec = model.decode(tie_shape_codes, num_quantizers=1, return_dict=True)
+        assert dec.audio is not None
+        assert dec.audio_lengths is not None
+        self.assertEqual(dec.audio.shape[0], 5)
+        self.assertTrue(np.all(np.array(dec.audio_lengths) == 4))
 
     def test_sanitize_reconstructs_weight_norm(self):
         model = MossAudioTokenizer(_tiny_moss_config())
