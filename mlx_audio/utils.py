@@ -272,11 +272,13 @@ def get_model_class(
     Raises:
         ValueError: If the model type is not supported.
     """
-    # Stage 1: Check if the model type is in the remapping
+    # Stage 1: Apply direct model_type remapping when available.
     model_type_mapped = model_remapping.get(model_type, None)
+    if model_type_mapped is not None:
+        model_type = model_type_mapped
 
-    # Stage 2: Check for partial matches in segments of the model name
-    # Only do this if the initial mapping didn't find a match
+    # Stage 2: Check for partial matches in segments of the model name.
+    # This can further specialize the final type.
     models_dir = Path(__file__).parent / category / "models"
     available_models = []
     if models_dir.exists() and models_dir.is_dir():
@@ -284,15 +286,13 @@ def get_model_class(
             if item.is_dir() and not item.name.startswith("__"):
                 available_models.append(item.name)
 
-    if model_name is not None and model_type_mapped != model_type:
+    if model_name is not None:
         for part in model_name:
             if part in available_models:
                 model_type = part
             if part in model_remapping:
                 model_type = model_remapping[part]
                 break
-    elif model_type_mapped is not None:
-        model_type = model_type_mapped
 
     try:
         module_path = f"mlx_audio.{category}.models.{model_type}"
