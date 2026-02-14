@@ -403,6 +403,30 @@ class MossTTSProcessor:
         # Fallback keeps backward compatibility with historical `(T, NQ)` assumptions.
         return mx.array(item_np[:, :n_vq], dtype=mx.int32)
 
+    @staticmethod
+    def _normalize_waveform_layout_to_time_major(wav: mx.array) -> mx.array:
+        """Normalize a 2D waveform to `(T, C)` before mono downmix."""
+        if wav.ndim != 2:
+            return wav
+
+        rows = int(wav.shape[0])
+        cols = int(wav.shape[1])
+        max_expected_channels = 8
+
+        # Typical channel-first waveforms have a tiny channel axis (`C<=8`) and a much
+        # longer time axis. Transpose those to `(T, C)` before downmix.
+        if rows <= max_expected_channels and cols > rows:
+            return wav.transpose(1, 0)
+
+        # Typical time-major waveforms already have the channel axis in the last dim.
+        if cols <= max_expected_channels and rows >= cols:
+            return wav
+
+        # Ambiguous fallback: smaller leading axis is usually channel-first.
+        if rows < cols:
+            return wav.transpose(1, 0)
+        return wav
+
     def apply_delay_pattern(
         self,
         codes: mx.array,
@@ -532,7 +556,8 @@ class MossTTSProcessor:
                 )
 
             if wav.ndim == 2:
-                wav = mx.mean(wav, axis=-1)
+                wav = self._normalize_waveform_layout_to_time_major(wav)
+                wav = mx.mean(wav, axis=1)
             wav_list.append(wav.astype(mx.float32))
 
         wav_codes: List[mx.array] = []

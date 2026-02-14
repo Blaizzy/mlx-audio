@@ -314,6 +314,53 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         np.testing.assert_array_equal(np.array(normalized[0]), np.array(expected))
         np.testing.assert_array_equal(np.array(normalized[1]), np.array(expected))
 
+    def test_encode_audios_from_reference_preserves_time_axis_for_2d_waveforms(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+
+        class _ShapeTracingAudioTokenizer:
+            def __init__(self):
+                self.received_shapes: list[tuple[int, ...]] = []
+
+            def batch_encode(self, wav_list, num_quantizers=None):
+                self.received_shapes = [tuple(wav.shape) for wav in wav_list]
+                n_q = int(num_quantizers or 2)
+                batch = len(wav_list)
+                max_steps = max(int(wav.shape[0]) for wav in wav_list)
+                codes = np.zeros((n_q, batch, max_steps), dtype=np.int32)
+                lengths = np.zeros((batch,), dtype=np.int32)
+                for batch_idx, wav in enumerate(wav_list):
+                    length = int(wav.shape[0])
+                    lengths[batch_idx] = length
+                    for q_idx in range(n_q):
+                        codes[q_idx, batch_idx, :length] = q_idx + 1
+                return SimpleNamespace(
+                    audio_codes=mx.array(codes, dtype=mx.int32),
+                    audio_codes_lengths=mx.array(lengths, dtype=mx.int32),
+                )
+
+        shape_tracing_tokenizer = _ShapeTracingAudioTokenizer()
+        processor.audio_tokenizer = shape_tracing_tokenizer
+
+        t = 240
+        mono = mx.arange(t, dtype=mx.float32)
+        references = [
+            mono[None, :],  # (1, T)
+            mx.stack([mono, mono + 1], axis=0),  # (2, T)
+            mono[:, None],  # (T, 1)
+            mx.stack([mono, mono + 1], axis=1),  # (T, 2)
+        ]
+
+        normalized = processor.encode_audios_from_reference(references, n_vq=2)
+
+        self.assertEqual(
+            shape_tracing_tokenizer.received_shapes,
+            [(t,), (t,), (t,), (t,)],
+        )
+        self.assertEqual(len(normalized), 4)
+        for codes in normalized:
+            self.assertEqual(tuple(codes.shape), (t, 2))
+
     def test_delay_sanitize_remaps_expected_prefixes(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
         model = Model(config)

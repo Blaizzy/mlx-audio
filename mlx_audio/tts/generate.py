@@ -218,6 +218,11 @@ def generate_audio(
         if output_path:
             os.makedirs(output_path, exist_ok=True)
             file_prefix = os.path.join(output_path, file_prefix)
+        has_stream_output_sink = bool(output_path)
+        if stream and not play and not has_stream_output_sink:
+            raise ValueError(
+                "Streaming mode requires at least one sink: enable --play or provide --output_path."
+            )
 
         if instruct is not None:
             print(f"\033[94mInstruct:\033[0m {instruct}")
@@ -274,9 +279,20 @@ def generate_audio(
             if play:
                 player.queue_audio(result.audio)
 
-            if join_audio:
+            if join_audio and not stream:
                 audio_list.append(result.audio)
-            elif not stream:
+            if stream and has_stream_output_sink:
+                file_name = f"{file_prefix}_{i:03d}.{audio_format}"
+                audio_write(
+                    file_name,
+                    np.array(result.audio),
+                    result.sample_rate,
+                    format=audio_format,
+                )
+                print(
+                    f"✅ Stream chunk successfully generated and saved as: {file_name}"
+                )
+            elif not stream and not join_audio:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
                 audio_write(
                     file_name,
