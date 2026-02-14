@@ -23,7 +23,6 @@ from urllib.parse import unquote
 import mlx.core as mx
 import numpy as np
 import uvicorn
-import webrtcvad
 from fastapi import (
     FastAPI,
     File,
@@ -606,16 +605,39 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         stt_model = model_provider.load_model(model_name)
         print("STT model loaded successfully")
 
-        # Initialize WebRTC VAD for speech detection
-        vad = webrtcvad.Vad(
-            3
-        )  # Mode 3 is most aggressive (0-3, higher = more aggressive)
+        # Initialize WebRTC VAD for speech detection if available. When absent,
+        # fall back to a simple energy-based detector so `mlx-audio[server]`
+        # remains importable/runnable without STS extras.
+        vad = None
+        try:
+            import webrtcvad  # type: ignore
+
+            # Mode 3 is most aggressive (0-3, higher = more aggressive)
+            vad = webrtcvad.Vad(3)
+        except Exception as exc:
+            print(f"WebRTC VAD unavailable; falling back to energy detection: {exc}")
+
+        energy_threshold = float(config.get("vad_energy_threshold", 0.01))
+
+        def _frame_has_speech_energy(frame_int16: np.ndarray) -> bool:
+            frame_float = frame_int16.astype(np.float32) / 32768.0
+            energy = float(np.linalg.norm(frame_float) / np.sqrt(frame_float.size))
+            return energy >= energy_threshold
+
         # VAD requires specific frame sizes: 10ms, 20ms, or 30ms at 8kHz, 16kHz, 32kHz, or 48kHz
         vad_frame_duration_ms = 30  # 30ms frames
         vad_frame_size = int(sample_rate * vad_frame_duration_ms / 1000)
-        print(
-            f"VAD initialized: frame_size={vad_frame_size} samples ({vad_frame_duration_ms}ms at {sample_rate}Hz)"
-        )
+        if vad is None:
+            print(
+                "Energy detector initialized: "
+                f"threshold={energy_threshold}, "
+                f"frame_size={vad_frame_size} samples "
+                f"({vad_frame_duration_ms}ms at {sample_rate}Hz)"
+            )
+        else:
+            print(
+                f"VAD initialized: frame_size={vad_frame_size} samples ({vad_frame_duration_ms}ms at {sample_rate}Hz)"
+            )
 
         # Buffer for accumulating audio chunks with speech
         audio_buffer = []
@@ -661,18 +683,23 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     frame_end = frame_start + vad_frame_size
                     frame = audio_chunk_int16[frame_start:frame_end]
 
-                    # VAD requires exact frame size
+                    # VAD requires exact frame size.
                     if len(frame) == vad_frame_size:
-                        try:
-                            if vad.is_speech(frame.tobytes(), sample_rate):
+                        if vad is None:
+                            if _frame_has_speech_energy(frame):
                                 has_speech = True
                                 speech_frames += 1
-                        except (ValueError, OSError) as e:
-                            # If VAD fails (wrong sample rate or frame size), assume speech (conservative)
-                            # This can happen if sample rate doesn't match VAD requirements
-                            print(f"VAD error (assuming speech): {e}")
-                            has_speech = True
-                            speech_frames += 1
+                        else:
+                            try:
+                                if vad.is_speech(frame.tobytes(), sample_rate):
+                                    has_speech = True
+                                    speech_frames += 1
+                            except (ValueError, OSError) as e:
+                                # Wrong sample rate/frame size etc. Use energy fallback.
+                                print(f"VAD error (fallback to energy): {e}")
+                                if _frame_has_speech_energy(frame):
+                                    has_speech = True
+                                    speech_frames += 1
 
                 # Handle remaining samples that don't form a complete frame
                 # These will be processed in the next chunk

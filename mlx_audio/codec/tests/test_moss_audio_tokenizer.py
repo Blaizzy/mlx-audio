@@ -283,15 +283,85 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
         self.assertEqual(dec.audio.shape[0], 5)
         self.assertTrue(np.all(np.array(dec.audio_lengths) == 8))
 
-    def test_decode_prefers_nq_first_for_prefix_count_in_tie_case(self):
+    def test_decode_prefers_requested_quantizer_match_for_2d_nq_last_prefix_tie(self):
         model = MossAudioTokenizer(_tiny_moss_config())
-        tie_shape_codes = mx.zeros((2, 5, 1), dtype=mx.int32)
+        tie_shape_codes = mx.zeros((2, 1), dtype=mx.int32)
 
         dec = model.decode(tie_shape_codes, num_quantizers=1, return_dict=True)
         assert dec.audio is not None
         assert dec.audio_lengths is not None
-        self.assertEqual(dec.audio.shape[0], 5)
-        self.assertTrue(np.all(np.array(dec.audio_lengths) == 4))
+        self.assertEqual(dec.audio.shape[0], 1)
+        self.assertEqual(int(dec.audio_lengths[0]), 8)
+
+    def test_decode_prefers_requested_quantizer_match_for_3d_nq_last_prefix_tie(self):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.zeros((1, 2, 1), dtype=mx.int32)
+
+        dec = model.decode(tie_shape_codes, num_quantizers=1, return_dict=True)
+        assert dec.audio is not None
+        assert dec.audio_lengths is not None
+        self.assertEqual(dec.audio.shape[0], 1)
+        self.assertEqual(int(dec.audio_lengths[0]), 8)
+
+    def test_batch_decode_prefers_requested_quantizer_match_for_2d_nq_last_prefix_tie(
+        self,
+    ):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.zeros((2, 1), dtype=mx.int32)
+
+        dec = model.batch_decode([tie_shape_codes], num_quantizers=1)
+        assert dec.audio is not None
+        assert dec.audio_lengths is not None
+        self.assertEqual(dec.audio.shape[0], 1)
+        self.assertEqual(int(dec.audio_lengths[0]), 8)
+
+    def test_batch_decode_prefers_requested_quantizer_match_for_3d_nq_last_prefix_tie(
+        self,
+    ):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.zeros((1, 2, 1), dtype=mx.int32)
+
+        dec = model.batch_decode([tie_shape_codes], num_quantizers=1)
+        assert dec.audio is not None
+        assert dec.audio_lengths is not None
+        self.assertEqual(dec.audio.shape[0], 1)
+        self.assertEqual(int(dec.audio_lengths[0]), 8)
+
+    def test_streaming_decode_prefers_requested_quantizer_match_for_2d_nq_last_prefix_tie(
+        self,
+    ):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.zeros((2, 1), dtype=mx.int32)
+
+        chunks = list(
+            model.streaming_decode(
+                tie_shape_codes,
+                chunk_tokens=1,
+                num_quantizers=1,
+            )
+        )
+        stream_concat = mx.concatenate(chunks, axis=-1)
+        self.assertEqual(stream_concat.shape[0], 1)
+        self.assertEqual(stream_concat.shape[1], 1)
+        self.assertEqual(stream_concat.shape[-1], 8)
+
+    def test_streaming_decode_prefers_requested_quantizer_match_for_3d_nq_last_prefix_tie(
+        self,
+    ):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.zeros((1, 2, 1), dtype=mx.int32)
+
+        chunks = list(
+            model.streaming_decode(
+                tie_shape_codes,
+                chunk_tokens=1,
+                num_quantizers=1,
+            )
+        )
+        stream_concat = mx.concatenate(chunks, axis=-1)
+        self.assertEqual(stream_concat.shape[0], 1)
+        self.assertEqual(stream_concat.shape[1], 1)
+        self.assertEqual(stream_concat.shape[-1], 8)
 
     def test_sanitize_reconstructs_weight_norm(self):
         model = MossAudioTokenizer(_tiny_moss_config())

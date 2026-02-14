@@ -189,23 +189,46 @@ class MossAudioTokenizer(nn.Module):
             )
 
         if len(candidates) > 1:
-            # Prefer canonical layout in tie cases so encode() -> decode() round-trips
-            # remain valid when T == NQ.
-            canonical_candidates = [
-                candidate for candidate in candidates if candidate[0] == "NQ-first"
-            ]
-            if len(canonical_candidates) == 1:
-                candidates = canonical_candidates
-            else:
-                candidate_labels = [
-                    f"{orientation}[nq={nq}]"
-                    for orientation, nq, _ in candidates
+            if num_quantizers is not None:
+                # When callers request a quantizer prefix explicitly, prefer layout
+                # candidates that already match that quantizer count before applying
+                # canonical tie-break rules. This preserves legal NQ-last prefix time axes.
+                requested_candidates = [
+                    candidate
+                    for candidate in candidates
+                    if candidate[1] == requested_quantizers
                 ]
-                raise ValueError(
-                    "Ambiguous audio_codes layout. Multiple interpretations are valid for "
-                    f"shape={audio_codes.shape}: {candidate_labels}. "
-                    "Use a canonical layout to disambiguate."
-                )
+                if len(requested_candidates) == 1:
+                    candidates = requested_candidates
+                elif len(requested_candidates) > 1:
+                    requested_nq_last = [
+                        candidate
+                        for candidate in requested_candidates
+                        if candidate[0] == "NQ-last"
+                    ]
+                    if len(requested_nq_last) == 1:
+                        candidates = requested_nq_last
+                    else:
+                        candidates = requested_candidates
+
+            if len(candidates) > 1:
+                # Fallback tie-break: prefer canonical layout so encode() -> decode()
+                # round-trips remain valid when T == NQ.
+                canonical_candidates = [
+                    candidate for candidate in candidates if candidate[0] == "NQ-first"
+                ]
+                if len(canonical_candidates) == 1:
+                    candidates = canonical_candidates
+                else:
+                    candidate_labels = [
+                        f"{orientation}[nq={nq}]"
+                        for orientation, nq, _ in candidates
+                    ]
+                    raise ValueError(
+                        "Ambiguous audio_codes layout. Multiple interpretations are valid for "
+                        f"shape={audio_codes.shape}: {candidate_labels}. "
+                        "Use a canonical layout to disambiguate."
+                    )
 
         _, source_quantizers, normalized = candidates[0]
         if requested_quantizers > source_quantizers:
