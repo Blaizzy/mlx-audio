@@ -201,12 +201,40 @@ class MossAudioTokenizer(nn.Module):
                 if len(requested_candidates) == 1:
                     candidates = requested_candidates
                 elif len(requested_candidates) > 1:
+                    requested_nq_first = [
+                        candidate
+                        for candidate in requested_candidates
+                        if candidate[0] == "NQ-first"
+                    ]
                     requested_nq_last = [
                         candidate
                         for candidate in requested_candidates
                         if candidate[0] == "NQ-last"
                     ]
-                    if len(requested_nq_last) == 1:
+
+                    # Explicit square ties are ambiguous by shape alone. Keep canonical
+                    # NQ-first orientation for these cases so canonical decode inputs
+                    # do not get transposed under explicit num_quantizers requests.
+                    is_square_requested_tie = False
+                    if audio_codes.ndim == 2:
+                        is_square_requested_tie = (
+                            int(audio_codes.shape[0]) == requested_quantizers
+                            and int(audio_codes.shape[1]) == requested_quantizers
+                        )
+                    else:
+                        is_square_requested_tie = (
+                            int(audio_codes.shape[0]) == requested_quantizers
+                            and int(audio_codes.shape[1]) == 1
+                            and int(audio_codes.shape[-1]) == requested_quantizers
+                        ) or (
+                            int(audio_codes.shape[0]) == 1
+                            and int(audio_codes.shape[1]) == requested_quantizers
+                            and int(audio_codes.shape[-1]) == requested_quantizers
+                        )
+
+                    if is_square_requested_tie and len(requested_nq_first) == 1:
+                        candidates = requested_nq_first
+                    elif len(requested_nq_last) == 1:
                         candidates = requested_nq_last
                     else:
                         candidates = requested_candidates

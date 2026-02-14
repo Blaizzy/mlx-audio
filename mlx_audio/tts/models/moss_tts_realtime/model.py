@@ -236,7 +236,19 @@ class Model(nn.Module):
             if "num_batches_tracked" in key:
                 continue
 
-            if key.startswith("model.language_model."):
+            if key.startswith("model.language_model.embed_tokens."):
+                new_key = key.replace(
+                    "model.language_model.embed_tokens.",
+                    "model.embedding_list.",
+                    1,
+                )
+            elif key.startswith("language_model.embed_tokens."):
+                new_key = key.replace(
+                    "language_model.embed_tokens.",
+                    "model.embedding_list.",
+                    1,
+                )
+            elif key.startswith("model.language_model."):
                 new_key = key.replace("model.language_model.", "model.backbone.", 1)
             elif key.startswith("language_model."):
                 new_key = key.replace("language_model.", "model.backbone.", 1)
@@ -244,6 +256,42 @@ class Model(nn.Module):
                 new_key = key.replace("model.embed_tokens.", "model.embedding_list.", 1)
             elif key.startswith("embed_tokens."):
                 new_key = key.replace("embed_tokens.", "model.embedding_list.", 1)
+            elif key.startswith("local_transformer.model."):
+                new_key = key.replace(
+                    "local_transformer.model.",
+                    "model.local_transformer.",
+                    1,
+                )
+            elif key.startswith("model.local_transformer.model."):
+                new_key = key.replace(
+                    "model.local_transformer.model.",
+                    "model.local_transformer.",
+                    1,
+                )
+            elif key.startswith("local_transformer.local_lm_heads."):
+                new_key = key.replace(
+                    "local_transformer.local_lm_heads.",
+                    "model.lm_heads.",
+                    1,
+                )
+            elif key.startswith("model.local_transformer.local_lm_heads."):
+                new_key = key.replace(
+                    "model.local_transformer.local_lm_heads.",
+                    "model.lm_heads.",
+                    1,
+                )
+            elif key.startswith("local_transformer.layer_norm_before_lm_heads."):
+                new_key = key.replace(
+                    "local_transformer.layer_norm_before_lm_heads.",
+                    "model.layer_norm_before_lm_heads.",
+                    1,
+                )
+            elif key.startswith("model.local_transformer.layer_norm_before_lm_heads."):
+                new_key = key.replace(
+                    "model.local_transformer.layer_norm_before_lm_heads.",
+                    "model.layer_norm_before_lm_heads.",
+                    1,
+                )
             elif key.startswith("local_transformer."):
                 new_key = key.replace("local_transformer.", "model.local_transformer.", 1)
             elif key.startswith("speech_embedding_to_local_mlp."):

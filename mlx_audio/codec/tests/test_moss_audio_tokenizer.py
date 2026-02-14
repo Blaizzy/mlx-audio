@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import patch
 
 import mlx.core as mx
 import numpy as np
@@ -11,6 +12,7 @@ from mlx.utils import tree_flatten
 from mlx_audio.codec.models.moss_audio_tokenizer import (
     MossAudioTokenizer,
     MossAudioTokenizerConfig,
+    MossAudioTokenizerDecoderOutput,
     MossAudioTokenizerModuleConfig,
     MossAudioTokenizerQuantizerConfig,
 )
@@ -303,6 +305,30 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
         self.assertEqual(dec.audio.shape[0], 1)
         self.assertEqual(int(dec.audio_lengths[0]), 8)
 
+    def test_decode_preserves_nq_first_for_explicit_square_tie(self):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+        captured: list[np.ndarray] = []
+
+        def fake_decode_frame(audio_codes, audio_codes_lengths=None, caches=None):
+            del audio_codes_lengths, caches
+            captured.append(np.array(audio_codes))
+            batch = int(audio_codes.shape[1])
+            time_steps = int(audio_codes.shape[2])
+            sample_count = time_steps * model.downsample_rate
+            return MossAudioTokenizerDecoderOutput(
+                audio=mx.zeros((batch, 1, sample_count), dtype=mx.float32),
+                audio_lengths=mx.full((batch,), sample_count, dtype=mx.int32),
+            )
+
+        with patch.object(model, "_decode_frame", side_effect=fake_decode_frame):
+            dec = model.decode(tie_shape_codes, num_quantizers=2, return_dict=True)
+
+        assert dec.audio is not None
+        self.assertEqual(len(captured), 1)
+        expected = np.array([[[1, 2]], [[3, 4]]], dtype=np.int32)
+        np.testing.assert_array_equal(captured[0], expected)
+
     def test_batch_decode_prefers_requested_quantizer_match_for_2d_nq_last_prefix_tie(
         self,
     ):
@@ -327,6 +353,30 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
         self.assertEqual(dec.audio.shape[0], 1)
         self.assertEqual(int(dec.audio_lengths[0]), 8)
 
+    def test_batch_decode_preserves_nq_first_for_explicit_square_tie(self):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+        captured: list[np.ndarray] = []
+
+        def fake_decode_frame(audio_codes, audio_codes_lengths=None, caches=None):
+            del audio_codes_lengths, caches
+            captured.append(np.array(audio_codes))
+            batch = int(audio_codes.shape[1])
+            time_steps = int(audio_codes.shape[2])
+            sample_count = time_steps * model.downsample_rate
+            return MossAudioTokenizerDecoderOutput(
+                audio=mx.zeros((batch, 1, sample_count), dtype=mx.float32),
+                audio_lengths=mx.full((batch,), sample_count, dtype=mx.int32),
+            )
+
+        with patch.object(model, "_decode_frame", side_effect=fake_decode_frame):
+            dec = model.batch_decode([tie_shape_codes], num_quantizers=2)
+
+        assert dec.audio is not None
+        self.assertEqual(len(captured), 1)
+        expected = np.array([[[1, 2]], [[3, 4]]], dtype=np.int32)
+        np.testing.assert_array_equal(captured[0], expected)
+
     def test_streaming_decode_prefers_requested_quantizer_match_for_2d_nq_last_prefix_tie(
         self,
     ):
@@ -344,6 +394,42 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
         self.assertEqual(stream_concat.shape[0], 1)
         self.assertEqual(stream_concat.shape[1], 1)
         self.assertEqual(stream_concat.shape[-1], 8)
+
+    def test_streaming_decode_preserves_nq_first_for_explicit_square_tie(self):
+        model = MossAudioTokenizer(_tiny_moss_config())
+        tie_shape_codes = mx.array(
+            [
+                [[1, 2]],
+                [[3, 4]],
+            ],
+            dtype=mx.int32,
+        )
+        captured: list[np.ndarray] = []
+
+        def fake_decode_frame(audio_codes, audio_codes_lengths=None, caches=None):
+            del audio_codes_lengths, caches
+            captured.append(np.array(audio_codes))
+            batch = int(audio_codes.shape[1])
+            time_steps = int(audio_codes.shape[2])
+            sample_count = time_steps * model.downsample_rate
+            return MossAudioTokenizerDecoderOutput(
+                audio=mx.zeros((batch, 1, sample_count), dtype=mx.float32),
+                audio_lengths=mx.full((batch,), sample_count, dtype=mx.int32),
+            )
+
+        with patch.object(model, "_decode_frame", side_effect=fake_decode_frame):
+            _ = list(
+                model.streaming_decode(
+                    tie_shape_codes,
+                    chunk_tokens=1,
+                    num_quantizers=2,
+                )
+            )
+
+        self.assertGreaterEqual(len(captured), 1)
+        reconstructed = np.concatenate(captured, axis=2)
+        expected = np.array([[[1, 2]], [[3, 4]]], dtype=np.int32)
+        np.testing.assert_array_equal(reconstructed, expected)
 
     def test_streaming_decode_prefers_requested_quantizer_match_for_3d_nq_last_prefix_tie(
         self,

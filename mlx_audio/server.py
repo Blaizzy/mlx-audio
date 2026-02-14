@@ -173,6 +173,13 @@ class SpeechRequest(BaseModel):
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
+    include_system_prompt: bool | None = None
+    reset_cache: bool | None = None
+    chunk_frames: int | None = None
+    overlap_frames: int | None = None
+    decode_chunk_duration: float | None = None
+    max_pending_frames: int | None = None
+    decode_kwargs: dict[str, Any] | None = None
     max_tokens: int = 1200
     verbose: bool = False
 
@@ -283,28 +290,51 @@ async def generate_audio(model, payload: SpeechRequest):
             ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
         )
 
-    for result in model.generate(
-        payload.input,
-        voice=payload.voice,
-        speed=payload.speed,
-        gender=payload.gender,
-        pitch=payload.pitch,
-        instruct=payload.instruct,
-        tokens=payload.tokens,
-        duration_s=payload.duration_s if payload.duration_s is not None else payload.seconds,
-        n_vq_for_inference=payload.n_vq_for_inference,
-        lang_code=payload.lang_code,
-        ref_audio=ref_audio,
-        ref_text=payload.ref_text,
-        temperature=payload.temperature,
-        top_p=payload.top_p,
-        top_k=payload.top_k,
-        repetition_penalty=payload.repetition_penalty,
-        stream=payload.stream,
-        streaming_interval=payload.streaming_interval,
-        max_tokens=payload.max_tokens,
-        verbose=payload.verbose,
-    ):
+    generate_kwargs = {
+        "voice": payload.voice,
+        "speed": payload.speed,
+        "gender": payload.gender,
+        "pitch": payload.pitch,
+        "instruct": payload.instruct,
+        "tokens": payload.tokens,
+        "duration_s": (
+            payload.duration_s if payload.duration_s is not None else payload.seconds
+        ),
+        "n_vq_for_inference": payload.n_vq_for_inference,
+        "lang_code": payload.lang_code,
+        "ref_audio": ref_audio,
+        "ref_text": payload.ref_text,
+        "temperature": payload.temperature,
+        "top_p": payload.top_p,
+        "top_k": payload.top_k,
+        "repetition_penalty": payload.repetition_penalty,
+        "stream": payload.stream,
+        "streaming_interval": payload.streaming_interval,
+        "include_system_prompt": payload.include_system_prompt,
+        "reset_cache": payload.reset_cache,
+        "chunk_frames": payload.chunk_frames,
+        "overlap_frames": payload.overlap_frames,
+        "decode_chunk_duration": payload.decode_chunk_duration,
+        "max_pending_frames": payload.max_pending_frames,
+        "decode_kwargs": payload.decode_kwargs,
+        "max_tokens": payload.max_tokens,
+        "verbose": payload.verbose,
+    }
+    generate_kwargs = {k: v for k, v in generate_kwargs.items() if v is not None}
+
+    signature = inspect.signature(model.generate)
+    supports_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if not supports_var_kwargs:
+        generate_kwargs = {
+            key: value
+            for key, value in generate_kwargs.items()
+            if key in signature.parameters
+        }
+
+    for result in model.generate(payload.input, **generate_kwargs):
 
         if payload.stream:
             buffer = io.BytesIO()

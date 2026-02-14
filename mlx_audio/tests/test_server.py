@@ -104,6 +104,26 @@ def sync_mock_audio_stream_generator(input_text: str, **kwargs):
     yield MockAudioResult(audio_data.astype(np.float32), sample_rate)
 
 
+def sync_mock_realtime_generator(input_text: str, **kwargs):
+    del input_text, kwargs
+    sample_rate = 24000
+    duration = 0.25
+    frequency = 523.25
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    audio_data = 0.5 * np.sin(2 * np.pi * frequency * t)
+    yield MockAudioResult(audio_data.astype(np.float32), sample_rate)
+
+
+def strict_non_realtime_generator(input_text: str, *, voice=None, stream=False):
+    del input_text, voice, stream
+    sample_rate = 16000
+    duration = 0.25
+    frequency = 330.0
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    audio_data = 0.5 * np.sin(2 * np.pi * frequency * t)
+    yield MockAudioResult(audio_data.astype(np.float32), sample_rate)
+
+
 def test_tts_speech(client, mock_model_provider):
     # Test that the tts_speech endpoint returns a 200 status code
     mock_tts_model = MagicMock()
@@ -144,6 +164,78 @@ def test_tts_speech(client, mock_model_provider):
     except Exception as e:
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
 
+
+def test_tts_speech_realtime_single_turn_compat(client, mock_model_provider):
+    mock_tts_model = MagicMock()
+    mock_tts_model.model_type = "moss_tts_realtime"
+    mock_tts_model.generate = MagicMock(wraps=sync_mock_realtime_generator)
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    payload = {
+        "model": "test_realtime_model",
+        "input": "Realtime one-shot",
+        "response_format": "wav",
+        "include_system_prompt": False,
+        "reset_cache": False,
+        "chunk_frames": 12,
+        "overlap_frames": 2,
+        "decode_chunk_duration": 0.18,
+        "max_pending_frames": 128,
+        "decode_kwargs": {"chunk_duration": 0.11},
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+    assert response.status_code == 200
+    assert response.headers["content-type"].lower() == "audio/wav"
+    mock_tts_model.generate.assert_called_once()
+
+    args, kwargs = mock_tts_model.generate.call_args
+    assert args[0] == payload["input"]
+    assert kwargs.get("include_system_prompt") is False
+    assert kwargs.get("reset_cache") is False
+    assert kwargs.get("chunk_frames") == 12
+    assert kwargs.get("overlap_frames") == 2
+    assert kwargs.get("decode_chunk_duration") == 0.18
+    assert kwargs.get("max_pending_frames") == 128
+    assert kwargs.get("decode_kwargs") == {"chunk_duration": 0.11}
+
+    audio_data, sample_rate = audio_read(io.BytesIO(response.content))
+    assert sample_rate == 24000
+    assert len(audio_data) > 0
+
+
+def test_tts_speech_filters_unsupported_kwargs_for_strict_models(
+    client, mock_model_provider
+):
+    mock_tts_model = MagicMock()
+    captured = {"kwargs": None}
+
+    def tracked_strict_generate(input_text: str, *, voice=None, stream=False):
+        captured["kwargs"] = {"voice": voice, "stream": stream}
+        yield from strict_non_realtime_generator(
+            input_text,
+            voice=voice,
+            stream=stream,
+        )
+
+    mock_tts_model.generate = tracked_strict_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    payload = {
+        "model": "test_strict_model",
+        "input": "Strict signature",
+        "voice": "alloy",
+        "chunk_frames": 16,
+        "overlap_frames": 4,
+        "decode_chunk_duration": 0.2,
+        "max_pending_frames": 64,
+        "decode_kwargs": {"chunk_duration": 0.15},
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+    assert response.status_code == 200
+
+    assert captured["kwargs"] is not None
+    assert captured["kwargs"]["voice"] == "alloy"
+    assert captured["kwargs"]["stream"] is False
 
 def test_stt_transcriptions(client, mock_model_provider):
     # Test that the stt_transcriptions endpoint returns a 200 status code
