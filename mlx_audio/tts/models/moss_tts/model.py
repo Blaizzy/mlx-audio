@@ -772,7 +772,10 @@ class Model(nn.Module):
         except Exception as exc:  # pragma: no cover - import failure is environment specific
             raise RuntimeError("transformers is required for MOSS-TTS tokenizer") from exc
 
-        model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        model.tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path),
+            trust_remote_code=True,
+        )
 
         codec_path_candidates = [
             model_path / "audio_tokenizer",
