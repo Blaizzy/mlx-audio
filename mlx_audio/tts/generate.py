@@ -108,6 +108,9 @@ def generate_audio(
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
     tokens: Optional[int] = None,
+    duration_s: Optional[float] = None,
+    seconds: Optional[float] = None,
+    n_vq_for_inference: Optional[int] = None,
     voice: str = "af_heart",
     instruct: Optional[str] = None,
     quality: Optional[str] = None,
@@ -256,10 +259,12 @@ def generate_audio(
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             tokens=tokens,
+            duration_s=duration_s if duration_s is not None else seconds,
             quality=quality,
             sound_event=sound_event,
             ambient_sound=ambient_sound,
             language=language,
+            n_vq_for_inference=n_vq_for_inference,
             dialogue_speakers=dialogue_speakers,
             input_type=input_type,
             temperature=temperature,
@@ -366,6 +371,26 @@ def parse_args():
         type=int,
         default=None,
         help="Target duration control for models that support token-based timing",
+    )
+    parser.add_argument(
+        "--duration_s",
+        "--seconds",
+        dest="duration_s",
+        type=float,
+        default=None,
+        help=(
+            "Convenience duration control in seconds (mapped to tokens at 12.5 Hz; "
+            "ignored when --tokens is provided)"
+        ),
+    )
+    parser.add_argument(
+        "--n_vq_for_inference",
+        type=int,
+        default=None,
+        help=(
+            "Local-only inference depth override (1..n_vq) for quality/performance "
+            "trade-offs"
+        ),
     )
     parser.add_argument(
         "--text",

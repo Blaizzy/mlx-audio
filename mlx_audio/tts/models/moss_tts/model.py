@@ -274,11 +274,33 @@ class Model(nn.Module):
             instruct=instruct,
             ref_audio=ref_audio,
             tokens=kwargs.pop("tokens", None),
+            duration_s=kwargs.pop("duration_s", None),
+            seconds=kwargs.pop("seconds", None),
             quality=kwargs.pop("quality", None),
             sound_event=kwargs.pop("sound_event", None),
             ambient_sound=kwargs.pop("ambient_sound", None),
             language=kwargs.pop("language", None),
         )
+
+    def _resolve_normalize_inputs(self, value: Optional[bool]) -> bool:
+        if value is not None:
+            return bool(value)
+        # VoiceGenerator checkpoints expose this pair while other MOSS variants do not.
+        return bool(
+            self.config.gen_token_id is not None
+            and self.config.audio_ch0_vocab_size is not None
+        )
+
+    def _resolve_local_n_vq_for_inference(self, value: Optional[int]) -> int:
+        if value is None:
+            return self.config.n_vq
+        resolved = int(value)
+        if not (1 <= resolved <= self.config.n_vq):
+            raise ValueError(
+                f"n_vq_for_inference must be in [1, {self.config.n_vq}] "
+                f"for this checkpoint, got {resolved}"
+            )
+        return resolved
 
     def _ensure_processor_ready(self):
         if self.processor is None or self.tokenizer is None:
@@ -317,17 +339,20 @@ class Model(nn.Module):
         *,
         request: MossNormalizedRequest,
         input_type: str,
+        normalize_inputs: bool,
     ) -> mx.array:
         if self.processor is None:
             raise RuntimeError("processor is not initialized")
         user_message = self.processor.build_user_message(
             **request.to_user_message_kwargs(),
             input_type=input_type,
+            normalize=normalize_inputs,
         )
         batch = self.processor.prepare_generation_inputs(
             user_message,
             n_vq=self.config.n_vq,
             apply_chat_template=True,
+            normalize_inputs=normalize_inputs,
         )
         return batch["input_ids"].astype(mx.int32)
 
@@ -336,6 +361,7 @@ class Model(nn.Module):
         *,
         messages: Sequence[Mapping[str, Any]],
         mode: str,
+        normalize_inputs: bool,
     ) -> mx.array:
         if self.processor is None:
             raise RuntimeError("processor is not initialized")
@@ -344,6 +370,7 @@ class Model(nn.Module):
             n_vq=self.config.n_vq,
             apply_chat_template=True,
             mode=mode,
+            normalize_inputs=normalize_inputs,
         )
         return batch["input_ids"].astype(mx.int32)
 
@@ -353,6 +380,7 @@ class Model(nn.Module):
         request: MossNormalizedRequest,
         dialogue_speakers: Sequence[Mapping[str, Any]],
         input_type: str,
+        normalize_inputs: bool,
     ) -> List[Dict[str, Any]]:
         if self.processor is None:
             raise RuntimeError("processor is not initialized")
@@ -381,6 +409,7 @@ class Model(nn.Module):
             language=request.language,
             input_type=input_type,
             n_vq=self.config.n_vq,
+            normalize_inputs=normalize_inputs,
         )
         return messages
 
@@ -390,11 +419,14 @@ class Model(nn.Module):
         input_ids: mx.array,
         sampling_cfg,
         effective_max_tokens: int,
+        n_vq_for_inference: int,
         stream: bool,
         streaming_interval: float,
     ) -> Generator[GenerationResult, None, None]:
         cache = self.model.make_cache()
-        hidden_states = self.model(input_ids, cache=cache, n_vq_for_inference=self.config.n_vq)
+        hidden_states = self.model(
+            input_ids, cache=cache, n_vq_for_inference=n_vq_for_inference
+        )
         global_hidden = hidden_states[:, -1, :]
 
         chunk_rows = max(1, int(streaming_interval * 12.5))
@@ -408,14 +440,14 @@ class Model(nn.Module):
                 global_hidden,
                 input_ids,
                 sampling_cfg,
-                n_vq_for_inference=self.config.n_vq,
+                n_vq_for_inference=n_vq_for_inference,
             )
             input_ids = mx.concatenate([input_ids, next_tokens[:, None, :]], axis=1)
             generated_row_count += 1
 
             text_token = int(next_tokens[0, 0])
             if text_token == self.config.audio_assistant_gen_slot_token_id:
-                audio_rows.append(next_tokens[0, 1 : 1 + self.config.n_vq])
+                audio_rows.append(next_tokens[0, 1 : 1 + n_vq_for_inference])
 
             if text_token == self.config.audio_end_token_id:
                 break
@@ -423,7 +455,7 @@ class Model(nn.Module):
             hidden_states = self.model(
                 next_tokens[:, None, :],
                 cache=cache,
-                n_vq_for_inference=self.config.n_vq,
+                n_vq_for_inference=n_vq_for_inference,
             )
             global_hidden = hidden_states[:, -1, :]
 
@@ -694,6 +726,20 @@ class Model(nn.Module):
             instruct=instruct,
             **kwargs,
         )
+        normalize_inputs = self._resolve_normalize_inputs(
+            kwargs.pop("normalize_inputs", None)
+        )
+        requested_n_vq_for_inference = kwargs.pop("n_vq_for_inference", None)
+        if self.is_local_variant:
+            local_n_vq_for_inference = self._resolve_local_n_vq_for_inference(
+                requested_n_vq_for_inference
+            )
+        else:
+            if requested_n_vq_for_inference is not None:
+                raise ValueError(
+                    "n_vq_for_inference is only supported for MOSS-TTS Local checkpoints"
+                )
+            local_n_vq_for_inference = self.config.n_vq
         input_type = kwargs.pop("input_type", "text")
         if input_type not in VALID_INPUT_TYPES:
             raise ValueError(
@@ -710,6 +756,7 @@ class Model(nn.Module):
             input_ids = self._build_prompt_inputs_from_messages(
                 messages=conversation,
                 mode="continuation",
+                normalize_inputs=normalize_inputs,
             )
         elif dialogue_speakers is not None:
             if request.reference is not None:
@@ -720,6 +767,7 @@ class Model(nn.Module):
                 request=request,
                 dialogue_speakers=dialogue_speakers,
                 input_type=input_type,
+                normalize_inputs=normalize_inputs,
             )
             continuation_mode = (
                 "continuation"
@@ -729,9 +777,14 @@ class Model(nn.Module):
             input_ids = self._build_prompt_inputs_from_messages(
                 messages=continuation_messages,
                 mode=continuation_mode,
+                normalize_inputs=normalize_inputs,
             )
         else:
-            input_ids = self._build_prompt_inputs(request=request, input_type=input_type)
+            input_ids = self._build_prompt_inputs(
+                request=request,
+                input_type=input_type,
+                normalize_inputs=normalize_inputs,
+            )
         do_samples = kwargs.get("do_samples", None)
         layers = kwargs.get("layers", None)
         sampling_cfg = resolve_channel_sampling_configs(
@@ -753,6 +806,7 @@ class Model(nn.Module):
                 input_ids=input_ids,
                 sampling_cfg=sampling_cfg,
                 effective_max_tokens=effective_max_tokens,
+                n_vq_for_inference=local_n_vq_for_inference,
                 stream=stream,
                 streaming_interval=streaming_interval,
             )

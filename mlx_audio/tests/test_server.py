@@ -111,7 +111,14 @@ def test_tts_speech(client, mock_model_provider):
 
     mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
 
-    payload = {"model": "test_tts_model", "input": "Hello world", "voice": "alloy"}
+    payload = {
+        "model": "test_tts_model",
+        "input": "Hello world",
+        "voice": "alloy",
+        "tokens": 80,
+        "seconds": 2.0,
+        "n_vq_for_inference": 8,
+    }
     response = client.post("/v1/audio/speech", json=payload)
     assert response.status_code == 200
     assert response.headers["content-type"].lower() == "audio/mp3"
@@ -126,6 +133,9 @@ def test_tts_speech(client, mock_model_provider):
     args, kwargs = mock_tts_model.generate.call_args
     assert args[0] == payload["input"]
     assert kwargs.get("voice") == payload["voice"]
+    assert kwargs.get("tokens") == payload["tokens"]
+    assert kwargs.get("duration_s") == payload["seconds"]
+    assert kwargs.get("n_vq_for_inference") == payload["n_vq_for_inference"]
 
     try:
         audio_data, sample_rate = audio_read(io.BytesIO(response.content))

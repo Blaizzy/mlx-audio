@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Dict, List, Optional
+
+MOSS_AUDIO_TOKENS_PER_SECOND = 12.5
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,8 @@ class MossNormalizedRequest:
         instruct: Optional[str] = None,
         ref_audio: Optional[Any] = None,
         tokens: Optional[int] = None,
+        duration_s: Optional[float] = None,
+        seconds: Optional[float] = None,
         quality: Optional[str] = None,
         sound_event: Optional[str] = None,
         ambient_sound: Optional[str] = None,
@@ -54,11 +59,25 @@ class MossNormalizedRequest:
         ):
             normalized_reference = [normalized_reference]
 
+        resolved_tokens = tokens
+        if resolved_tokens is None:
+            duration_seconds = duration_s if duration_s is not None else seconds
+            if duration_seconds is not None:
+                duration_seconds = float(duration_seconds)
+                if duration_seconds <= 0:
+                    raise ValueError(
+                        "duration_s/seconds must be positive when provided"
+                    )
+                resolved_tokens = max(
+                    1,
+                    int(math.ceil(duration_seconds * MOSS_AUDIO_TOKENS_PER_SECOND)),
+                )
+
         return cls(
             text=text,
             reference=normalized_reference,
             instruction=instruction if instruction is not None else instruct,
-            tokens=tokens,
+            tokens=resolved_tokens,
             quality=quality,
             sound_event=sound_event,
             ambient_sound=ambient_sound,
@@ -76,4 +95,3 @@ class MossNormalizedRequest:
             "ambient_sound": self.ambient_sound,
             "language": self.language,
         }
-

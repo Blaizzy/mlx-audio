@@ -285,6 +285,142 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
         self.assertIn("warm tone", request.instruction)
         self.assertIn("Reference transcript: greetings", request.instruction)
 
+    def test_request_resolution_maps_duration_seconds_to_tokens(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+
+        request_from_duration = model._resolve_generation_request(
+            text="hello",
+            ref_audio=None,
+            ref_text=None,
+            instruct=None,
+            duration_s=2.0,
+        )
+        request_from_alias = model._resolve_generation_request(
+            text="hello",
+            ref_audio=None,
+            ref_text=None,
+            instruct=None,
+            seconds=2.0,
+        )
+        request_with_tokens = model._resolve_generation_request(
+            text="hello",
+            ref_audio=None,
+            ref_text=None,
+            instruct=None,
+            tokens=7,
+            duration_s=2.0,
+        )
+
+        self.assertEqual(request_from_duration.tokens, 25)
+        self.assertEqual(request_from_alias.tokens, 25)
+        self.assertEqual(request_with_tokens.tokens, 7)
+
+        with self.assertRaises(ValueError):
+            model._resolve_generation_request(
+                text="hello",
+                ref_audio=None,
+                ref_text=None,
+                instruct=None,
+                duration_s=0.0,
+            )
+
+    def test_local_generate_honors_n_vq_for_inference_override(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        class _TracingAudioTokenizer(_DummyAudioTokenizer):
+            def __init__(self):
+                self.decode_num_quantizers = []
+
+            def decode(
+                self,
+                audio_codes,
+                return_dict=True,
+                chunk_duration=8.0,
+                num_quantizers=None,
+            ):
+                self.decode_num_quantizers.append(num_quantizers)
+                return super().decode(
+                    audio_codes,
+                    return_dict=return_dict,
+                    chunk_duration=chunk_duration,
+                    num_quantizers=num_quantizers,
+                )
+
+        tracing_audio_tokenizer = _TracingAudioTokenizer()
+        model.processor.audio_tokenizer = tracing_audio_tokenizer
+
+        generated = {"count": 0}
+
+        def fake_sample_next_channels(*args, **kwargs):
+            generated["count"] += 1
+            text_token = (
+                config.audio_assistant_gen_slot_token_id
+                if generated["count"] < 3
+                else config.audio_end_token_id
+            )
+            return mx.array(
+                [[text_token, 1, config.audio_pad_code]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model,
+            "sample_next_channels",
+            side_effect=fake_sample_next_channels,
+        ) as sample_mock:
+            results = list(
+                model.generate(
+                    text="hello",
+                    max_tokens=6,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                    n_vq_for_inference=1,
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertGreater(results[-1].samples, 0)
+        self.assertTrue(
+            all(
+                call.kwargs.get("n_vq_for_inference") == 1
+                for call in sample_mock.call_args_list
+            )
+        )
+        self.assertEqual(tracing_audio_tokenizer.decode_num_quantizers[-1], 1)
+
+    def test_local_generate_rejects_out_of_bounds_n_vq_for_inference(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    n_vq_for_inference=0,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    n_vq_for_inference=3,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

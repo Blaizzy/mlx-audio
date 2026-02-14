@@ -204,6 +204,30 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertEqual(packed["input_ids"].shape[0], 1)
         self.assertEqual(packed["input_ids"].shape[2], 1 + config.n_vq)
 
+    def test_processor_user_message_normalize_flag(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+
+        raw = processor.build_user_message(
+            text='Line1\n[drop]{meta}"Line2"',
+            instruction="Calm\n[style]{voice}",
+            input_type="text",
+            normalize=False,
+        )
+        normalized = processor.build_user_message(
+            text='Line1\n[drop]{meta}"Line2"',
+            instruction="Calm\n[style]{voice}",
+            input_type="text",
+            normalize=True,
+        )
+
+        self.assertIn("[drop]", raw["content"])
+        self.assertIn("{voice}", raw["content"])
+        self.assertIn("Line1 Line2", normalized["content"])
+        self.assertIn("- Instruction:\nCalm", normalized["content"])
+        self.assertNotIn("[drop]", normalized["content"])
+        self.assertNotIn("{voice}", normalized["content"])
+
     def test_processor_continuation_mode_uses_assistant_suffix(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
         processor = _build_dummy_processor(config)
@@ -379,6 +403,33 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertNotIn(
             "local_transformer.layers.0.self_attn.q_proj.weight", sanitized
         )
+
+    def test_delay_variant_rejects_n_vq_for_inference_override(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    n_vq_for_inference=1,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+    def test_voice_generator_defaults_normalize_inputs_with_override(self):
+        payload = _tiny_delay_config_dict()
+        payload["gen_token_id"] = 151656
+        payload["audio_ch0_vocab_size"] = 1024
+        config = ModelConfig.from_dict(payload)
+        model = Model(config)
+
+        self.assertTrue(model._resolve_normalize_inputs(None))
+        self.assertFalse(model._resolve_normalize_inputs(False))
+        self.assertTrue(model._resolve_normalize_inputs(True))
 
     def test_delay_generate_smoke_with_stubbed_logits(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())

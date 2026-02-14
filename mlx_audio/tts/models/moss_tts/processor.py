@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 import mlx.core as mx
@@ -15,6 +16,41 @@ from .config import ModelConfig
 
 AUDIO_PLACEHOLDER = "<|audio|>"
 VALID_INPUT_TYPES = {"text", "pinyin", "ipa"}
+
+
+def normalize_instruction(instruction: str) -> str:
+    """Apply upstream-compatible normalization for instruction fields."""
+    if not instruction:
+        return instruction
+
+    normalized = instruction.replace("\n", " ")
+    normalized = re.sub(r"\[.*?\]", "", normalized)
+    normalized = re.sub(r"\{.*?\}", "", normalized)
+
+    for char in "【】《》（）『』「」～-_":
+        normalized = normalized.replace(char, "，")
+
+    normalized = re.sub(r"([，。！？,.!?;；])+", r"\1", normalized)
+    if re.search(r"[\u4e00-\u9fff]", normalized):
+        normalized = normalized.replace(",", "，")
+    return normalized.strip()
+
+
+def normalize_text(text: str) -> str:
+    """Apply upstream-compatible normalization for user text fields."""
+    if not text:
+        return text
+
+    normalized = text.replace("\n", " ")
+    normalized = re.sub(r"\[.*?\]", "", normalized)
+    normalized = re.sub(r"\{.*?\}", "", normalized)
+
+    for char in "【】《》（）『』「」～":
+        normalized = normalized.replace(char, "，")
+
+    normalized = normalized.replace('"', "")
+    normalized = re.sub(r"([，。！？,.!?;；])+", r"\1", normalized)
+    return normalized.strip()
 
 
 @dataclass
@@ -169,7 +205,13 @@ class MossTTSProcessor:
         ambient_sound: Optional[str] = None,
         language: Optional[str] = None,
         input_type: str = "text",
+        normalize: bool = False,
     ) -> Dict[str, Any]:
+        if normalize:
+            if text is not None:
+                text = normalize_text(text)
+            if instruction is not None:
+                instruction = normalize_instruction(instruction)
         if reference is not None and not isinstance(reference, list):
             reference = [reference]
         return UserMessage(
@@ -214,6 +256,7 @@ class MossTTSProcessor:
         language: Optional[str] = None,
         input_type: str = "text",
         n_vq: Optional[int] = None,
+        normalize_inputs: bool = False,
     ) -> List[Dict[str, Any]]:
         if not dialogue_text or not dialogue_text.strip():
             raise ValueError("dialogue_text must be a non-empty string")
@@ -274,6 +317,7 @@ class MossTTSProcessor:
             ambient_sound=ambient_sound,
             language=language,
             input_type=input_type,
+            normalize=normalize_inputs,
         )
         messages: List[Dict[str, Any]] = [user_message]
 
@@ -298,12 +342,18 @@ class MossTTSProcessor:
                     ambient_sound=ambient_sound,
                     language=language,
                     input_type=input_type,
+                    normalize=normalize_inputs,
                 )
             )
 
         return messages
 
-    def _normalize_message(self, message: Union[Message, Dict[str, Any]]) -> Dict[str, Any]:
+    def _normalize_message(
+        self,
+        message: Union[Message, Dict[str, Any]],
+        *,
+        normalize_inputs: bool = False,
+    ) -> Dict[str, Any]:
         if isinstance(message, Message):
             return message.to_dict()
         if not isinstance(message, dict):
@@ -317,6 +367,7 @@ class MossTTSProcessor:
         role = message["role"]
         if role == "user":
             kwargs = {field: message.get(field) for field in USER_MESSAGE_FIELDS}
+            kwargs["normalize"] = normalize_inputs
             return self.build_user_message(**kwargs)
         if role == "assistant":
             return self.build_assistant_message(
@@ -349,12 +400,15 @@ class MossTTSProcessor:
             if delay_slot_token is None:
                 block = audio_start_token + (slot_token * length) + audio_end_token
             else:
-                block = (
-                    audio_start_token
-                    + (slot_token * length)
-                    + (delay_slot_token * max(n_vq - 1, 0))
-                    + audio_end_token
-                )
+                if length == 0:
+                    block = audio_start_token + audio_end_token
+                else:
+                    block = (
+                        audio_start_token
+                        + (slot_token * length)
+                        + (delay_slot_token * max(n_vq - 1, 0))
+                        + audio_end_token
+                    )
             result = result.replace(AUDIO_PLACEHOLDER, block, 1)
         return result
 
@@ -697,11 +751,15 @@ class MossTTSProcessor:
         n_vq: Optional[int] = None,
         apply_chat_template: bool = True,
         mode: str = "generation",
+        normalize_inputs: bool = False,
     ) -> Dict[str, mx.array]:
         if isinstance(messages, (Message, dict)):
             messages = [messages]
 
-        normalized = [self._normalize_message(message) for message in messages]
+        normalized = [
+            self._normalize_message(message, normalize_inputs=normalize_inputs)
+            for message in messages
+        ]
         if not normalized:
             raise ValueError("At least one message is required")
         if mode not in {"generation", "continuation"}:
@@ -717,7 +775,7 @@ class MossTTSProcessor:
 
         packed_parts: List[mx.array] = []
         for idx, message in enumerate(normalized):
-            add_generation_prompt = idx == len(normalized) - 1
+            add_generation_prompt = mode == "generation" and idx == len(normalized) - 1
             content = message["content"]
             if apply_chat_template:
                 try:
@@ -726,6 +784,14 @@ class MossTTSProcessor:
                         add_generation_prompt=add_generation_prompt,
                         tokenize=False,
                     )
+                except TypeError:
+                    try:
+                        content = self.tokenizer.apply_chat_template(
+                            [{"role": message["role"], "content": content}],
+                            add_generation_prompt=add_generation_prompt,
+                        )
+                    except Exception:
+                        content = str(content)
                 except Exception:
                     content = str(content)
             else:

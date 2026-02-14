@@ -16,9 +16,10 @@ def _repo_root() -> Path:
 
 class TestMossPhase0Audit(unittest.TestCase):
     def test_load_variant_invariants_from_reference_configs(self):
-        invariants = load_moss_variant_invariants(
-            _repo_root() / "REFERENCE" / "MOSS-TTS-HF-Repos"
-        )
+        reference_root = _repo_root() / "REFERENCE" / "MOSS-TTS-HF-Repos"
+        if not reference_root.exists():
+            self.skipTest(f"Missing reference root at {reference_root}")
+        invariants = load_moss_variant_invariants(reference_root)
 
         self.assertEqual(
             set(invariants.keys()),
@@ -47,9 +48,10 @@ class TestMossPhase0Audit(unittest.TestCase):
         self.assertFalse(invariants["MOSS-TTS"].has_local_transformer)
 
     def test_audio_tokenizer_source_is_pinned_and_has_expected_contract(self):
-        audit = load_moss_audio_tokenizer_audit(
-            _repo_root() / "REFERENCE" / "MOSS-Audio-Tokenizer"
-        )
+        reference_root = _repo_root() / "REFERENCE" / "MOSS-Audio-Tokenizer"
+        if not reference_root.exists():
+            self.skipTest(f"Missing reference root at {reference_root}")
+        audit = load_moss_audio_tokenizer_audit(reference_root)
         self.assertTrue(re.match(r"^[0-9a-f]{40}$", audit.commit_hash or ""))
         self.assertEqual(audit.frame_rate_hz, 12.5)
         self.assertEqual(audit.num_quantizers, 32)

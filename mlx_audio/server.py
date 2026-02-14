@@ -156,6 +156,10 @@ class SpeechRequest(BaseModel):
     model: str
     input: str
     instruct: str | None = None
+    tokens: int | None = None
+    duration_s: float | None = None
+    seconds: float | None = None
+    n_vq_for_inference: int | None = None
     voice: str | None = None
     speed: float | None = 1.0
     gender: str | None = "male"
@@ -287,6 +291,9 @@ async def generate_audio(model, payload: SpeechRequest):
         gender=payload.gender,
         pitch=payload.pitch,
         instruct=payload.instruct,
+        tokens=payload.tokens,
+        duration_s=payload.duration_s if payload.duration_s is not None else payload.seconds,
+        n_vq_for_inference=payload.n_vq_for_inference,
         lang_code=payload.lang_code,
         ref_audio=ref_audio,
         ref_text=payload.ref_text,

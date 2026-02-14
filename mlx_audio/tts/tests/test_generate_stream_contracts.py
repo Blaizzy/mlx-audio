@@ -17,9 +17,11 @@ class _DummyModel:
     def __init__(self, results):
         self._results = list(results)
         self.generate_call_count = 0
+        self.last_generate_kwargs = None
 
     def generate(self, **kwargs):
         self.generate_call_count += 1
+        self.last_generate_kwargs = dict(kwargs)
         for result in self._results:
             yield result
 
@@ -137,6 +139,30 @@ class TestGenerateStreamContracts(unittest.TestCase):
         self.assertEqual(created_players[0].queued, 2)
         self.assertTrue(created_players[0].waited)
         self.assertTrue(created_players[0].stopped)
+
+    def test_generate_passes_duration_and_n_vq_controls(self):
+        model = _DummyModel([_result(1)])
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "mlx_audio.tts.generate.audio_write"
+        ):
+            generate_audio(
+                text="controls",
+                model=model,
+                stream=False,
+                output_path=tmpdir,
+                file_prefix="controls_case",
+                duration_s=None,
+                seconds=3.0,
+                n_vq_for_inference=8,
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        self.assertIsNotNone(model.last_generate_kwargs)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("duration_s"), 3.0)
+        self.assertEqual(model.last_generate_kwargs.get("n_vq_for_inference"), 8)
 
 
 if __name__ == "__main__":
