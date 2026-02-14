@@ -12,12 +12,20 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _fixture_path() -> Path:
+    return (
+        _repo_root()
+        / "tests"
+        / "fixtures"
+        / "moss"
+        / "MOSS-Audio-Tokenizer"
+        / "config.json"
+    )
+
+
 class TestMossAudioTokenizerPhase0Config(unittest.TestCase):
     def test_load_upstream_config_contract(self):
-        config_path = _repo_root() / "REFERENCE" / "MOSS-Audio-Tokenizer" / "config.json"
-        if not config_path.exists():
-            self.skipTest(f"Missing reference config at {config_path}")
-        config = load_moss_audio_tokenizer_config(config_path)
+        config = load_moss_audio_tokenizer_config(_fixture_path())
         self.assertEqual(config.model_type, CANONICAL_MODEL_TYPE)
         self.assertEqual(config.sampling_rate, 24000)
         self.assertEqual(config.downsample_rate, 1920)
@@ -27,10 +35,7 @@ class TestMossAudioTokenizerPhase0Config(unittest.TestCase):
         self.assertEqual(config.quantizer.quantizer_type, "rlfq")
 
     def test_patch_products_match_downsample_rate(self):
-        config_path = _repo_root() / "REFERENCE" / "MOSS-Audio-Tokenizer" / "config.json"
-        if not config_path.exists():
-            self.skipTest(f"Missing reference config at {config_path}")
-        config = load_moss_audio_tokenizer_config(config_path)
+        config = load_moss_audio_tokenizer_config(_fixture_path())
         self.assertEqual(config.encoder_patch_product, 1920)
         self.assertEqual(config.decoder_patch_product, 1920)
         self.assertTrue(config.patch_alignment_is_valid())
