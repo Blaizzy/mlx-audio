@@ -242,9 +242,10 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
             input_type="text",
         )
 
-        self.assertEqual(len(messages), 2)
+        self.assertEqual(len(messages), 3)
         user_message = messages[0]
         assistant_message = messages[1]
+        generation_user_message = messages[2]
         self.assertIn("[S1]:", user_message["content"])
         self.assertIn("[S2]: None", user_message["content"])
         self.assertIn("[S3]:", user_message["content"])
@@ -252,6 +253,66 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertIn("[S3] Prompt three.", user_message["content"])
         self.assertEqual(len(assistant_message["audio_references"]), 1)
         self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (4, 2))
+        self.assertEqual(generation_user_message["role"], "user")
+        self.assertIn("[S1] Continue the discussion.", generation_user_message["content"])
+
+    def test_ttsd_speaker_id_normalization_supports_zero_based_schema(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+        ref_wave_0 = mx.zeros((80,), dtype=mx.float32)
+        ref_wave_1 = mx.ones((80,), dtype=mx.float32)
+
+        messages = processor.build_ttsd_continuation_messages(
+            dialogue_text="[S1] Continue. [S2] Reply.",
+            speakers=[
+                {"speaker_id": 0, "ref_audio": ref_wave_0, "ref_text": "Speaker zero."},
+                {"speaker_id": 1, "ref_audio": ref_wave_1, "ref_text": "Speaker one."},
+            ],
+            input_type="text",
+        )
+
+        self.assertEqual(len(messages), 3)
+        user_message = messages[0]
+        assistant_message = messages[1]
+        self.assertIn("[S1]:", user_message["content"])
+        self.assertIn("[S2]:", user_message["content"])
+        self.assertNotIn("[S0]:", user_message["content"])
+        self.assertIn("[S1] Speaker zero.", user_message["content"])
+        self.assertIn("[S2] Speaker one.", user_message["content"])
+        self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (4, 2))
+
+    def test_encode_audios_from_reference_accepts_preencoded_layouts(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+
+        # Canonical `(T, NQ)` with extra quantizers.
+        time_major = mx.array(
+            [
+                [1, 11, 101, 111],
+                [2, 12, 102, 112],
+                [3, 13, 103, 113],
+            ],
+            dtype=mx.int32,
+        )
+        # Canonical tokenizer output `(NQ, T)` with the same values.
+        codebook_major = time_major.transpose(1, 0)
+
+        normalized = processor.encode_audios_from_reference(
+            [time_major, codebook_major],
+            n_vq=2,
+        )
+
+        expected = mx.array(
+            [
+                [1, 11],
+                [2, 12],
+                [3, 13],
+            ],
+            dtype=mx.int32,
+        )
+        self.assertEqual(len(normalized), 2)
+        np.testing.assert_array_equal(np.array(normalized[0]), np.array(expected))
+        np.testing.assert_array_equal(np.array(normalized[1]), np.array(expected))
 
     def test_delay_sanitize_remaps_expected_prefixes(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())

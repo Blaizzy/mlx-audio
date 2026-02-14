@@ -192,15 +192,14 @@ class MossTTSProcessor:
         return AssistantMessage(audio_codes_list=audio_codes_list, content=content).to_dict()
 
     @staticmethod
-    def _normalize_speaker_id(raw_speaker_id: Any) -> int:
+    def _parse_speaker_id(raw_speaker_id: Any) -> int:
         try:
             speaker_id = int(raw_speaker_id)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid speaker_id '{raw_speaker_id}'") from exc
-        # Allow either 0-based (`S0`) or 1-based (`S1`) ids in the input schema.
         if speaker_id < 0:
             raise ValueError("speaker_id must be non-negative")
-        return speaker_id + 1 if speaker_id == 0 else speaker_id
+        return speaker_id
 
     def build_ttsd_continuation_messages(
         self,
@@ -226,10 +225,18 @@ class MossTTSProcessor:
             raise ValueError("n_vq must be positive")
 
         speaker_rows: Dict[int, Dict[str, Any]] = {}
+        normalized_entries: List[Tuple[Mapping[str, Any], int]] = []
         for entry in speakers:
             if not isinstance(entry, Mapping):
                 raise ValueError("Each speaker entry must be a mapping")
-            speaker_id = self._normalize_speaker_id(entry.get("speaker_id"))
+            parsed_speaker_id = self._parse_speaker_id(entry.get("speaker_id"))
+            normalized_entries.append((entry, parsed_speaker_id))
+
+        # Interpret ids per request: if any speaker uses `0`, treat the whole schema as
+        # zero-based; otherwise treat it as one-based.
+        use_zero_based_ids = any(speaker_id == 0 for _, speaker_id in normalized_entries)
+        for entry, parsed_speaker_id in normalized_entries:
+            speaker_id = parsed_speaker_id + 1 if use_zero_based_ids else parsed_speaker_id
             prior = speaker_rows.get(speaker_id, {})
             merged = dict(prior)
             merged.update(dict(entry))
@@ -278,6 +285,20 @@ class MossTTSProcessor:
             concatenated = mx.concatenate(assistant_codes, axis=0).astype(mx.int32)
             messages.append(
                 self.build_assistant_message(audio_codes_list=[concatenated])
+            )
+            # End on a fresh user turn so downstream packing can run in generation mode
+            # after priming speaker references through the assistant continuation payload.
+            messages.append(
+                self.build_user_message(
+                    text=dialogue_text.strip(),
+                    instruction=instruction,
+                    tokens=tokens,
+                    quality=quality,
+                    sound_event=sound_event,
+                    ambient_sound=ambient_sound,
+                    language=language,
+                    input_type=input_type,
+                )
             )
 
         return messages
@@ -338,12 +359,49 @@ class MossTTSProcessor:
         return result
 
     @staticmethod
-    def _is_preencoded_audio_codes(item: mx.array, *, n_vq: int) -> bool:
+    def _normalize_preencoded_audio_codes(
+        item: mx.array,
+        *,
+        n_vq: int,
+    ) -> Optional[mx.array]:
         if item.ndim != 2:
-            return False
-        if int(item.shape[1]) < int(n_vq):
-            return False
-        return np.issubdtype(np.array(item).dtype, np.integer)
+            return None
+
+        item_np = np.array(item)
+        if not np.issubdtype(item_np.dtype, np.integer):
+            return None
+
+        rows = int(item.shape[0])
+        cols = int(item.shape[1])
+        if rows < n_vq and cols < n_vq:
+            return None
+
+        # `(NQ, T)` -> `(T, NQ)`
+        if rows >= n_vq and cols < n_vq:
+            return mx.array(item_np[:n_vq, :].T, dtype=mx.int32)
+        # `(T, NQ)` already
+        if cols >= n_vq and rows < n_vq:
+            return mx.array(item_np[:, :n_vq], dtype=mx.int32)
+
+        # Prefer exact axis matches when available.
+        if rows == n_vq and cols != n_vq:
+            return mx.array(item_np[:n_vq, :].T, dtype=mx.int32)
+        if cols == n_vq and rows != n_vq:
+            return mx.array(item_np[:, :n_vq], dtype=mx.int32)
+
+        # If neither axis exactly matches n_vq, bias toward plausible codebook axis:
+        # small, n_vq-aligned dimensions are likely codebook-major (`(NQ, T)`).
+        if rows % n_vq == 0 and rows <= 64:
+            return mx.array(item_np[:n_vq, :].T, dtype=mx.int32)
+        if cols % n_vq == 0 and cols <= 64:
+            return mx.array(item_np[:, :n_vq], dtype=mx.int32)
+        if rows <= 64 and cols > 64:
+            return mx.array(item_np[:n_vq, :].T, dtype=mx.int32)
+        if cols <= 64 and rows > 64:
+            return mx.array(item_np[:, :n_vq], dtype=mx.int32)
+
+        # Fallback keeps backward compatibility with historical `(T, NQ)` assumptions.
+        return mx.array(item_np[:, :n_vq], dtype=mx.int32)
 
     def apply_delay_pattern(
         self,
@@ -458,15 +516,19 @@ class MossTTSProcessor:
                 wav = load_audio(item, sample_rate=self.model_config.sampling_rate)
                 normalized_items.append(("wav", len(wav_list)))
             elif isinstance(item, mx.array):
-                if self._is_preencoded_audio_codes(item, n_vq=n_vq):
-                    normalized_items.append(("codes", item[:, :n_vq].astype(mx.int32)))
+                preencoded_codes = self._normalize_preencoded_audio_codes(
+                    item,
+                    n_vq=n_vq,
+                )
+                if preencoded_codes is not None:
+                    normalized_items.append(("codes", preencoded_codes))
                     continue
                 wav = item
                 normalized_items.append(("wav", len(wav_list)))
             else:
                 raise TypeError(
                     "Each reference must be an audio path, waveform, or pre-encoded "
-                    "audio codes (T, NQ)."
+                    "audio codes with shape (T, NQ) or (NQ, T)."
                 )
 
             if wav.ndim == 2:
