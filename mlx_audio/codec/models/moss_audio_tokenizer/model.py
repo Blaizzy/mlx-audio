@@ -189,10 +189,14 @@ class MossAudioTokenizer(nn.Module):
             )
 
         if len(candidates) > 1:
-            if num_quantizers is not None:
-                # When callers request a quantizer prefix explicitly, prefer layout
-                # candidates that already match that quantizer count before applying
-                # canonical tie-break rules. This preserves legal NQ-last prefix time axes.
+            if (
+                num_quantizers is not None
+                and requested_quantizers != configured_quantizers
+            ):
+                # Only prefix requests should override canonical tie resolution.
+                # For no-op requests (requested == configured), preserve implicit
+                # canonical behavior so explicit num_quantizers does not transpose
+                # canonical decode inputs.
                 requested_candidates = [
                     candidate
                     for candidate in candidates
@@ -238,7 +242,6 @@ class MossAudioTokenizer(nn.Module):
                         candidates = requested_nq_last
                     else:
                         candidates = requested_candidates
-
             if len(candidates) > 1:
                 # Fallback tie-break: prefer canonical layout so encode() -> decode()
                 # round-trips remain valid when T == NQ.

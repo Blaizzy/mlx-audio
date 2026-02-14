@@ -597,6 +597,37 @@ class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
         cumulative = np.cumsum(chunk_lengths).tolist()
         self.assertEqual(cumulative, sorted(cumulative))
 
+    def test_overlap_crossfade_non_final_decode_path_is_mlx_safe(self):
+        config = ModelConfig.from_dict(_tiny_realtime_config_dict())
+        processor = _FakeRealtimeProcessor(config)
+        decoder = AudioStreamDecoder(
+            processor=processor,
+            chunk_frames=3,
+            overlap_frames=1,
+            max_pending_frames=8,
+        )
+
+        decoder.push_tokens(
+            mx.array(
+                [
+                    [1, 2],
+                    [3, 4],
+                    [5, 6],
+                    [7, 8],
+                    [9, 10],
+                ],
+                dtype=mx.int32,
+            )
+        )
+        chunks = decoder.audio_chunks()
+        tail = decoder.flush()
+
+        self.assertEqual([int(chunk.shape[0]) for chunk in chunks], [18])
+        self.assertIsNotNone(tail)
+        if tail is not None:
+            self.assertEqual(int(tail.shape[0]), 14)
+        self.assertIsNone(decoder._previous_tail)
+
     def test_decoder_rejects_invalid_or_overflow_paths(self):
         config = ModelConfig.from_dict(_tiny_realtime_config_dict())
         processor = _FakeRealtimeProcessor(config)

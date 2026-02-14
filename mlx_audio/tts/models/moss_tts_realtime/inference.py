@@ -501,7 +501,7 @@ class AudioStreamDecoder:
 
         if self._previous_tail is None:
             if not final_chunk:
-                self._previous_tail = wav[-overlap:].copy()
+                self._previous_tail = self._copy_tail(wav, overlap)
             return wav
 
         prev_np = np.array(self._previous_tail)
@@ -509,7 +509,10 @@ class AudioStreamDecoder:
         overlap = min(overlap, prev_np.shape[0], wav_np.shape[0])
         if overlap <= 0:
             if not final_chunk:
-                self._previous_tail = wav[-self._overlap_samples(wav) :].copy()
+                self._previous_tail = self._copy_tail(
+                    wav,
+                    self._overlap_samples(wav),
+                )
             else:
                 self._previous_tail = None
             return wav
@@ -522,8 +525,15 @@ class AudioStreamDecoder:
         if final_chunk:
             self._previous_tail = None
         else:
-            self._previous_tail = wav[-overlap:].copy()
+            self._previous_tail = self._copy_tail(wav, overlap)
         return mx.array(merged, dtype=wav.dtype)
+
+    def _copy_tail(self, wav: mx.array, overlap: int) -> mx.array:
+        tail_size = max(0, int(overlap))
+        if tail_size <= 0:
+            return mx.zeros((0,), dtype=wav.dtype)
+        # MLX arrays do not implement `.copy()`.
+        return mx.array(np.array(wav[-tail_size:], copy=True), dtype=wav.dtype)
 
     def _overlap_samples(self, wav: mx.array) -> int:
         if self.chunk_frames <= 0:
