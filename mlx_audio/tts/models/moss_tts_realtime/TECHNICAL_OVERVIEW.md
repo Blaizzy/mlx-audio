@@ -102,18 +102,80 @@ Wrapper flow:
 2. Build `RealtimeSession` with decode/backpressure controls.
 3. Reset turn, optionally encode prompt audio.
 4. Push text tokens, `end_text`, then `drain`.
-5. Build `GenerationResult` chunks or merged final audio.
+5. In `stream=True` mode, emit chunks incrementally as each stage produces audio (with one-chunk lookahead so `is_final_chunk` is correct).
+6. In `stream=False` mode, merge all chunks into one final `GenerationResult`.
 
 For strict lifecycle/latency control, call session APIs directly.
 
-## Known Follow-Ups (Tracker Date: 2026-02-15)
+## Streaming Contract: Incremental vs Buffered
 
-The progress tracker currently lists:
+`stream=True` must mean "yield as soon as audio exists," not "yield after synthesis ends."
 
-- `P5-STAB-04`: stream-first-yield behavior in high-level `Model.generate(stream=True)`
-- `P5-STAB-05`: square tie normalization for pre-encoded realtime audio tokens
+The main pitfall is generator structure:
 
-Reference: `../../../../PLANS/MOSS-TTS-PLANS/moss_tts_master_plan_progress_tracker.md`
+- Correct streaming: stage work -> yield available chunks -> continue stage work.
+- Fake streaming: do all stage work first, then yield from a fully buffered list.
+
+Why this matters:
+
+- Time-to-first-audio: buffered behavior delays first playback until full turn completion.
+- Memory: buffered behavior scales with total turn output instead of near-current decode window.
+- Client semantics: realtime consumers expect progressive playback and chunk cadence.
+
+Current `Model.generate(stream=True)` behavior is incremental and protected by regression tests.
+
+## Audio Token Layout Normalization Cheat Sheet
+
+Realtime pre-encoded prompt tokens can arrive in either:
+
+- `(T, RVQ)` time-major
+- `(NQ, T)` codebook-major
+
+Normalization goal is always internal `(T, RVQ)`.
+
+### Why this is tricky
+
+Shape ties can be ambiguous, especially square matrices (`rows == cols == rvq`).
+Both orientations are shape-valid, so incorrect interpretation may silently pass shape checks.
+
+### Rule of thumb
+
+- Prefer explicit axis matches first.
+- For ambiguous small, RVQ-aligned ties, prefer canonical codebook-major interpretation (`(NQ, T)`), then transpose to `(T, RVQ)`.
+
+### Current normalization decisions (`_normalize_preencoded_audio_tokens`)
+
+| Input shape signal | Interpretation | Normalized output |
+|---|---|---|
+| `rows == rvq and cols != rvq` | likely `(NQ, T)` | transpose (`tokens[:rvq, :].T`) |
+| `cols == rvq and rows != rvq` | likely `(T, NQ)` | keep (`tokens[:, :rvq]`) |
+| `rows >= rvq and cols < rvq` | likely codebook-major prefix | transpose |
+| `cols >= rvq and rows < rvq` | likely time-major prefix | keep |
+| `rows % rvq == 0 and rows <= 64` | ambiguous RVQ-aligned small tie, bias codebook-major | transpose |
+| `cols % rvq == 0 and cols <= 64` | ambiguous RVQ-aligned small tie, bias time-major | keep |
+| `rows <= 64 and cols > 64` | small-leading-axis heuristic | transpose |
+| `cols <= 64 and rows > 64` | small-trailing-axis heuristic | keep |
+| fallback | backward-compatible default | keep (`tokens[:, :rvq]`) |
+
+### Square tie example (important)
+
+If `rvq = 16` and input shape is `16 x 16`, shape alone cannot distinguish axes.
+This is why square ties were a frequent source of silent conditioning corruption:
+
+- Wrong orientation does not crash.
+- Wrong orientation can still decode.
+- Audio quality/conditioning fidelity degrades without obvious runtime errors.
+
+## Why This Area Is Error-Prone
+
+This boundary has repeatedly produced subtle bugs because:
+
+- Raw arrays do not carry explicit layout metadata.
+- Multiple modules normalize similar data (codec path + realtime path).
+- "Looks valid" shape checks can hide semantic axis flips.
+- Realtime performance bugs (buffering) can be masked in short test inputs.
+
+When modifying this area, treat layout + streaming semantics as load-bearing contracts.
 
 ## Contract Tests
 
@@ -121,5 +183,6 @@ Primary regressions:
 
 - `mlx_audio/tts/tests/test_moss_tts_realtime_runtime.py`
 - `mlx_audio/tts/tests/test_generate_stream_contracts.py`
+- `tests/tts/models/moss_tts_realtime/test_realtime_regressions.py`
 
-These tests define the current runtime contracts for transitions, decode flow control, and parity behaviors.
+These tests define current contracts for lifecycle transitions, decode flow control, stream ordering, and ambiguous pre-encoded token normalization.

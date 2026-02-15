@@ -54,7 +54,7 @@ When `chunk_duration` is used:
 - `chunk_duration * sampling_rate` must be divisible by `downsample_rate`
 - streaming chunked paths currently require `batch_size=1`
 
-Chunked decode/encode insert explicit `mx.eval(...)`/`mx.clear_cache()` boundaries to keep long runs bounded.
+Chunked decode and `streaming_decode(...)` include explicit `mx.eval(...)`/`mx.clear_cache()` boundaries to keep long runs bounded.
 
 ## Checkpoint Sanitization
 

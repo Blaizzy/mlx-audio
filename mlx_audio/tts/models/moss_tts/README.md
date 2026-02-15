@@ -80,11 +80,20 @@ More complete runnable examples are in:
 | `preset` | Variant sampling defaults |
 | `stream`, `streaming_interval` | Chunked output controls |
 
+### `quality` hint (advisory)
+
+This integration treats `quality` as a user hint string. Recommended values:
+
+- `draft`, `balanced`, `high`, `max`, or `custom:<label>`
+
+For Delay-family variants in this package, `quality` is passed through verbatim into the prompt (unknown values are allowed).
+
 ### Precedence and validation rules
 
 - `tokens` wins over `duration_s`/`seconds` if both are provided.
 - `duration_s`/`seconds` must be positive.
 - `ref_audio` and raw `reference` cannot be provided together.
+- `ref_audio` may be a path, waveform (`mx.array`), or pre-encoded codec tokens (`(T, NQ)` or `(NQ, T)`).
 - `n_vq_for_inference` is Local-only (`1..config.n_vq`).
 - `conversation` and `dialogue_speakers` are mutually exclusive.
 - `long_form=True` cannot be combined with `conversation` or `dialogue_speakers`.
@@ -154,7 +163,8 @@ Runtime emits segment/boundary metrics into model attributes after generation:
 ## Practical Notes
 
 - Streaming CLI mode requires an output sink (`--output_path`) or `--play`.
-- VoiceGenerator defaults to normalized prompt inputs unless overridden.
+- VoiceGenerator defaults to normalized prompt inputs unless overridden (`normalize_inputs=False`).
+- CLI convenience: if you provide `--ref_audio` without `--ref_text`, the default `mlx_audio.tts.generate` flow will transcribe the reference audio using Whisper; provide `--ref_text` to avoid extra downloads/latency.
 - SoundEffect can synthesize from `ambient_sound` even when `text` is omitted.
 - The shared codec is mandatory at runtime; see codec docs below.
 

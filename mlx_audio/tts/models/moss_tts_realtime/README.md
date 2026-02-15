@@ -116,19 +116,17 @@ Sampling defaults come from preset `realtime`:
 
 ## Reference Audio Priming
 
-- High-level API: pass `ref_audio` to `model.generate(...)`.
-- Session API: pass `user_audio_tokens` (waveform or pre-encoded tokens) to `reset_turn(...)`.
+- High-level API: pass `ref_audio` (path or `mx.array`) to `model.generate(...)`.
+- Session API: pass `user_audio_tokens` as a waveform `mx.array` or pre-encoded tokens.
+  - To prime from a file path, pre-encode first: `prompt_tokens = model.processor.encode_prompt_audio("ref.wav")`, then pass `user_audio_tokens=prompt_tokens`.
 
 Runtime packs prompt audio into reference-audio rows and continues generation from the same turn context.
 
-## Known Runtime Notes (Tracker Date: 2026-02-15)
+## Notes
 
-From `PLANS/MOSS-TTS-PLANS/moss_tts_master_plan_progress_tracker.md`:
-
-- `P5-STAB-04` remains open: high-level `Model.generate(stream=True)` still needs first-yield timing hardening.
-- `P5-STAB-05` remains open: square pre-encoded token tie normalization in realtime processor has follow-up work.
-
-If you need strict lifecycle control today, prefer the explicit `RealtimeSession` API.
+- `stream=True` emits chunks incrementally, with a one-chunk lookahead so only the last chunk is marked `is_final_chunk=True`.
+- Pre-encoded prompt audio tokens are accepted in either `(T, RVQ)` or `(NQ, T)` layouts; for ambiguous square ties (`rvq x rvq`), inputs are interpreted as codebook-major `(NQ, T)` and transposed to time-major `(T, RVQ)`.
+- If you need strict lifecycle control, prefer the explicit `RealtimeSession` API.
 
 ## Additional Docs
 

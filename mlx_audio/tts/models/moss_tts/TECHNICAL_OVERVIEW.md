@@ -56,6 +56,35 @@ This keeps the upstream `build_user_message(...)` contract stable at one boundar
 - Local keeps direct `(T, NQ)` audio-code alignment.
 - Delay applies channel-offset delay coding via `apply_delay_pattern(...)` before packing.
 
+## Token Layout Ambiguity: Intern Cheat Sheet
+
+Many regressions in this family came from axis interpretation, not model math.
+At input boundaries, pre-encoded tokens may be either:
+
+- `(T, NQ)` time-major
+- `(NQ, T)` codebook-major
+
+Normalization always targets internal `(T, NQ)`, but square ties (`rows == cols == n_vq`) are ambiguous and shape checks alone cannot disambiguate semantics.
+
+### Practical rules
+
+- Prefer explicit `n_vq` axis matches first.
+- For ambiguous small `n_vq`-aligned ties, bias toward canonical codebook-major input (`(NQ, T)`), then transpose.
+- Treat short square prompts as high-risk regression cases because they can silently pass while degrading conditioning quality.
+
+### Typical consequences of wrong orientation
+
+- No exception or shape error.
+- Decode still runs with valid-looking tensors.
+- Output quality/conditioning drifts because time and codebook axes were swapped.
+
+### Where normalization logic lives
+
+- Main MOSS runtime: `MossTTSProcessor._normalize_preencoded_audio_codes(...)` in `processor.py`
+- Realtime runtime: `_normalize_preencoded_audio_tokens(...)` in `../moss_tts_realtime/processor.py`
+
+Keep behavior aligned when editing either path.
+
 ## Generation Loops
 
 ### Local Loop
@@ -81,6 +110,17 @@ Local-only depth control is enforced by `_resolve_local_n_vq_for_inference(...)`
 5. Decode complete delay rows through `extract_complete_delay_rows(...)`.
 
 This avoids branch ladders in `model.py`; phase logic stays in `inference_utils.py`.
+
+## Streaming Contract Guardrail
+
+Any `stream=True` entry point must yield incrementally, not after full synthesis.
+Buffering all chunks before first yield causes:
+
+- inflated time-to-first-audio
+- memory growth proportional to full output length
+- client-visible "streaming but delayed" behavior
+
+When touching stream paths, add ordering assertions that first yield occurs before final drain/close completion.
 
 ## Long-Form Orchestration
 
@@ -131,5 +171,6 @@ Primary regression anchors:
 - `mlx_audio/tts/tests/test_moss_tts_long_form_runtime.py`
 - `mlx_audio/tts/tests/test_moss_tts_bootstrap_safety.py`
 - `mlx_audio/tts/tests/test_generate_stream_contracts.py`
+- `tests/tts/models/moss_tts_realtime/test_realtime_regressions.py`
 
 Use these when updating runtime contracts or docs.
