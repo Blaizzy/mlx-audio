@@ -284,15 +284,15 @@ def get_model_class(
             if item.is_dir() and not item.name.startswith("__"):
                 available_models.append(item.name)
 
-    if model_name is not None and model_type_mapped != model_type:
+    if model_type_mapped is not None:
+        model_type = model_type_mapped
+    elif model_name is not None:
         for part in model_name:
             if part in available_models:
                 model_type = part
             if part in model_remapping:
                 model_type = model_remapping[part]
                 break
-    elif model_type_mapped is not None:
-        model_type = model_type_mapped
 
     try:
         module_path = f"mlx_audio.{category}.models.{model_type}"
@@ -370,6 +370,10 @@ def base_load_model(
         category=category,
         model_remapping=model_remapping,
     )
+
+    # Models with custom_loading delegate entirely to from_pretrained
+    if getattr(model_class.Model, "custom_loading", False):
+        return model_class.Model.from_pretrained(str(model_path))
 
     # Get model config from model class if it exists, otherwise use the config
     model_config = (

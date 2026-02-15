@@ -295,32 +295,12 @@ class Attention(nn.Module):
 
         kv_len = keys.shape[2]
 
-        # Repeat KV heads for grouped query attention
-        if self.num_kv_heads < self.num_heads:
-            n_rep = self.num_heads // self.num_kv_heads
-            keys = mx.repeat(keys, n_rep, axis=1)
-            values = mx.repeat(values, n_rep, axis=1)
-
-        # ACE-Step turbo uses standard scaled dot-product attention (softmax)
-        # for both self-attention and cross-attention
-        # queries, keys, values: [B, H, S, D]
         scale = 1.0 / math.sqrt(self.head_dim)
 
-        # Compute attention scores
-        # scores: [B, H, seq_len, kv_len]
-        scores = (queries @ keys.transpose(0, 1, 3, 2)) * scale
+        output = mx.fast.scaled_dot_product_attention(
+            queries, keys, values, scale=scale, mask=attention_mask
+        )
 
-        # Apply attention mask if provided
-        if attention_mask is not None:
-            scores = scores + attention_mask
-
-        # Softmax
-        weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(queries.dtype)
-
-        # Apply to values
-        output = weights @ values  # [B, H, S, D]
-
-        # Reshape output
         output = output.transpose(0, 2, 1, 3)  # [B, S, H, D]
         output = output.reshape(batch_size, seq_len, -1)
 
