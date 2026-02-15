@@ -13,6 +13,7 @@ from mlx_audio.tts.models.moss_tts.long_form import (
     advance_continuity_state,
     compose_segment_text,
     compute_prefix_audio_sample_cap,
+    evaluate_segment_boundary,
     extract_prefix_audio_tail,
     plan_text_segments,
     trim_prefix_text_window,
@@ -210,6 +211,31 @@ class TestMossTTSLongFormContinuity(unittest.TestCase):
         self.assertIn("delta", compose_segment_text(segment_text="tail", prefix_text=next_state.prefix_text))
 
 
+class TestMossTTSLongFormBoundaryQuality(unittest.TestCase):
+    def test_boundary_heuristic_flags_large_discontinuity(self):
+        metric = evaluate_segment_boundary(
+            left_audio=mx.ones((400,), dtype=mx.float32),
+            right_audio=mx.full((400,), -1.0, dtype=mx.float32),
+            left_segment_idx=0,
+            right_segment_idx=1,
+        )
+        self.assertIsNotNone(metric)
+        self.assertTrue(metric.flagged)
+        self.assertGreater(metric.normalized_jump, 1.5)
+
+    def test_boundary_heuristic_keeps_smooth_transition_clean(self):
+        left = mx.linspace(0.0, 1.0, 500, dtype=mx.float32)
+        right = mx.linspace(1.0, 2.0, 500, dtype=mx.float32)
+        metric = evaluate_segment_boundary(
+            left_audio=left,
+            right_audio=right,
+            left_segment_idx=0,
+            right_segment_idx=1,
+        )
+        self.assertIsNotNone(metric)
+        self.assertFalse(metric.flagged)
+
+
 class TestMossTTSLongFormOrchestrator(unittest.TestCase):
     def _build_model(self) -> Model:
         config = ModelConfig.from_dict(_tiny_local_config_dict())
@@ -218,8 +244,16 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
         model.tokenizer = model.processor.tokenizer
         return model
 
-    def _make_segment_result(self, model: Model, samples: int, token_count: int):
-        audio = mx.linspace(0.0, 1.0, samples, dtype=mx.float32)
+    def _make_segment_result(
+        self,
+        model: Model,
+        samples: int,
+        token_count: int,
+        *,
+        start_value: float = 0.0,
+        end_value: float = 1.0,
+    ):
+        audio = mx.linspace(start_value, end_value, samples, dtype=mx.float32)
         return model._build_generation_result(
             audio,
             start_time=time.perf_counter() - 0.01,
@@ -258,11 +292,16 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
         self.assertGreater(len(model._last_long_form_segment_metrics), 1)
         self.assertEqual(results[0].prompt.get("segments"), len(model._last_long_form_segment_metrics))
         self.assertEqual(len(captured_requests), len(model._last_long_form_segment_metrics))
+        self.assertEqual(
+            len(model._last_long_form_boundary_metrics),
+            max(0, len(model._last_long_form_segment_metrics) - 1),
+        )
 
         self.assertIsNone(captured_requests[0].reference)
         self.assertIsNotNone(captured_requests[1].reference)
         self.assertIsInstance(captured_requests[1].reference[-1], mx.array)
         self.assertIn("\n", captured_requests[1].text)
+        self.assertEqual(model._last_long_form_segment_metrics[0].boundary_note, "segment-start")
 
     def test_long_form_retries_segment_deterministically(self):
         model = self._build_model()
@@ -295,18 +334,94 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
         self.assertGreater(call_state["calls"], len(model._last_long_form_segment_metrics))
         self.assertEqual(model._last_long_form_segment_metrics[0].retry_count, 1)
 
-    def test_long_form_rejects_streaming_mode_until_incremental_decode_phase(self):
+    def test_long_form_streaming_emits_monotonic_chunks_without_silent_drop(self):
         model = self._build_model()
-        with self.assertRaises(ValueError):
-            list(
+        long_text = " ".join(["stream boundary."] * 120)
+
+        call_idx = {"value": 0}
+
+        def fake_segment(*, request, **kwargs):
+            del request, kwargs
+            idx = call_idx["value"]
+            call_idx["value"] += 1
+            return self._make_segment_result(
+                model,
+                samples=100 + idx * 20,
+                token_count=30 + idx,
+                start_value=float(idx),
+                end_value=float(idx) + 1.0,
+            )
+
+        with patch.object(model, "_generate_single_segment_result", side_effect=fake_segment):
+            streamed = list(
                 model.generate(
-                    text="stream not yet enabled for long form",
+                    text=long_text,
                     long_form=True,
                     stream=True,
-                    max_tokens=16,
+                    max_tokens=120,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
                     input_type="text",
                 )
             )
+
+        self.assertGreater(len(streamed), 1)
+        self.assertTrue(all(result.is_streaming_chunk for result in streamed))
+        self.assertTrue(streamed[-1].is_final_chunk)
+        self.assertTrue(all(int(result.samples) > 0 for result in streamed))
+        self.assertEqual(len(streamed), len(model._last_long_form_segment_metrics))
+
+        cumulative = [int(result.prompt["cumulative_samples"]) for result in streamed]
+        self.assertEqual(cumulative, sorted(cumulative))
+        self.assertEqual(cumulative[-1], sum(int(result.samples) for result in streamed))
+
+    def test_long_form_non_stream_metrics_are_monotonic_and_non_silent(self):
+        model = self._build_model()
+        long_text = " ".join(["monotonic boundary."] * 120)
+
+        call_idx = {"value": 0}
+
+        def fake_segment(*, request, **kwargs):
+            del request, kwargs
+            idx = call_idx["value"]
+            call_idx["value"] += 1
+            return self._make_segment_result(
+                model,
+                samples=90 + idx * 15,
+                token_count=22,
+                start_value=float(idx),
+                end_value=float(idx) + 0.5,
+            )
+
+        with patch.object(model, "_generate_single_segment_result", side_effect=fake_segment):
+            results = list(
+                model.generate(
+                    text=long_text,
+                    long_form=True,
+                    max_tokens=90,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertEqual(len(results), 1)
+        segment_samples = [
+            int(metric.emitted_samples) for metric in model._last_long_form_segment_metrics
+        ]
+        self.assertTrue(all(samples > 0 for samples in segment_samples))
+
+        cumulative = []
+        running = 0
+        for samples in segment_samples:
+            running += samples
+            cumulative.append(running)
+        self.assertEqual(cumulative, sorted(cumulative))
+        self.assertEqual(int(results[0].prompt["cumulative_samples"]), cumulative[-1])
 
     def test_long_form_calls_cache_boundaries_each_segment_attempt(self):
         model = self._build_model()

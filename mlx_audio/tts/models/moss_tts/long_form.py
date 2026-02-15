@@ -104,11 +104,42 @@ class LongFormSegmentMetric:
     total_peak_memory_gb: float
     prefix_audio_samples: int
     prefix_text_chars: int
+    boundary_note: str = ""
+
+
+@dataclass(frozen=True)
+class BoundarySeamMetric:
+    """Objective seam metric between consecutive emitted segments."""
+
+    left_segment_idx: int
+    right_segment_idx: int
+    sample_window: int
+    left_tail_rms: float
+    right_head_rms: float
+    boundary_jump: float
+    normalized_jump: float
+    energy_ratio: float
+    flagged: bool
 
 
 def _normalize_source_text(text: str) -> str:
     normalized = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
     return normalized
+
+
+def _to_mono_waveform_np(audio: Optional[mx.array]) -> Optional[np.ndarray]:
+    if audio is None:
+        return None
+    if audio.ndim == 1:
+        return np.array(audio, dtype=np.float32, copy=False)
+    if audio.ndim == 2:
+        audio_np = np.array(audio, dtype=np.float32, copy=False)
+        rows, cols = int(audio_np.shape[0]), int(audio_np.shape[1])
+        # Heuristic: smaller axis is channel axis.
+        if rows <= cols:
+            return audio_np.mean(axis=0)
+        return audio_np.mean(axis=1)
+    raise ValueError(f"Expected 1D or 2D audio for seam analysis, got {audio.shape}")
 
 
 def _collect_paragraph_boundaries(text: str) -> set[int]:
@@ -341,6 +372,56 @@ def compose_segment_text(
     return f"{prefix}\n{segment}"
 
 
+def evaluate_segment_boundary(
+    *,
+    left_audio: Optional[mx.array],
+    right_audio: Optional[mx.array],
+    left_segment_idx: int,
+    right_segment_idx: int,
+    sample_window: int = 480,
+    normalized_jump_threshold: float = 1.5,
+    energy_ratio_threshold: float = 3.0,
+) -> Optional[BoundarySeamMetric]:
+    """Compute seam discontinuity heuristic between two adjacent segments."""
+
+    left = _to_mono_waveform_np(left_audio)
+    right = _to_mono_waveform_np(right_audio)
+    if left is None or right is None:
+        return None
+    if left.size == 0 or right.size == 0:
+        return None
+
+    window = max(1, min(int(sample_window), int(left.size), int(right.size)))
+    left_tail = left[-window:]
+    right_head = right[:window]
+
+    left_tail_rms = float(np.sqrt(np.mean(np.square(left_tail))))
+    right_head_rms = float(np.sqrt(np.mean(np.square(right_head))))
+    boundary_jump = float(abs(left[-1] - right[0]))
+
+    scale = max(left_tail_rms, right_head_rms, 1e-8)
+    normalized_jump = boundary_jump / scale
+    energy_ratio = (max(left_tail_rms, right_head_rms) + 1e-8) / (
+        min(left_tail_rms, right_head_rms) + 1e-8
+    )
+    flagged = bool(
+        normalized_jump > float(normalized_jump_threshold)
+        or energy_ratio > float(energy_ratio_threshold)
+    )
+
+    return BoundarySeamMetric(
+        left_segment_idx=int(left_segment_idx),
+        right_segment_idx=int(right_segment_idx),
+        sample_window=window,
+        left_tail_rms=left_tail_rms,
+        right_head_rms=right_head_rms,
+        boundary_jump=boundary_jump,
+        normalized_jump=normalized_jump,
+        energy_ratio=energy_ratio,
+        flagged=flagged,
+    )
+
+
 def merge_reference_with_prefix_audio(
     *,
     base_reference: Optional[list[Optional[object]]],
@@ -381,6 +462,7 @@ def advance_continuity_state(
 
 
 __all__ = [
+    "BoundarySeamMetric",
     "ContinuityConfig",
     "ContinuityState",
     "LongFormRuntimeConfig",
@@ -390,6 +472,7 @@ __all__ = [
     "advance_continuity_state",
     "compose_segment_text",
     "compute_prefix_audio_sample_cap",
+    "evaluate_segment_boundary",
     "extract_prefix_audio_tail",
     "merge_reference_with_prefix_audio",
     "plan_text_segments",

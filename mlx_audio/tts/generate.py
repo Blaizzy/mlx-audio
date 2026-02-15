@@ -137,6 +137,14 @@ def generate_audio(
     temperature: float = 0.7,
     stream: bool = False,
     streaming_interval: float = 2.0,
+    long_form: bool = False,
+    long_form_min_chars: int = 160,
+    long_form_target_chars: int = 320,
+    long_form_max_chars: int = 520,
+    long_form_prefix_audio_seconds: float = 2.0,
+    long_form_prefix_audio_max_tokens: int = 25,
+    long_form_prefix_text_chars: int = 0,
+    long_form_retry_attempts: int = 0,
     **kwargs,
 ) -> None:
     """
@@ -275,6 +283,23 @@ def generate_audio(
             instruct=instruct,
             **kwargs,
         )
+        if long_form:
+            gen_kwargs.update(
+                {
+                    "long_form": True,
+                    "long_form_min_chars": int(long_form_min_chars),
+                    "long_form_target_chars": int(long_form_target_chars),
+                    "long_form_max_chars": int(long_form_max_chars),
+                    "long_form_prefix_audio_seconds": float(
+                        long_form_prefix_audio_seconds
+                    ),
+                    "long_form_prefix_audio_max_tokens": int(
+                        long_form_prefix_audio_max_tokens
+                    ),
+                    "long_form_prefix_text_chars": int(long_form_prefix_text_chars),
+                    "long_form_retry_attempts": int(long_form_retry_attempts),
+                }
+            )
 
         results = model.generate(**gen_kwargs)
 
@@ -518,6 +543,53 @@ def parse_args():
         type=float,
         default=2.0,
         help="The time interval in seconds for streaming segments",
+    )
+    parser.add_argument(
+        "--long_form",
+        action="store_true",
+        help="Enable segmented long-form generation for MOSS-TTS variants",
+    )
+    parser.add_argument(
+        "--long_form_min_chars",
+        type=int,
+        default=160,
+        help="Minimum per-segment text budget for long-form planning",
+    )
+    parser.add_argument(
+        "--long_form_target_chars",
+        type=int,
+        default=320,
+        help="Target per-segment text budget for long-form planning",
+    )
+    parser.add_argument(
+        "--long_form_max_chars",
+        type=int,
+        default=520,
+        help="Maximum per-segment text budget for long-form planning",
+    )
+    parser.add_argument(
+        "--long_form_prefix_audio_seconds",
+        type=float,
+        default=2.0,
+        help="Carry-forward tail duration (seconds) between long-form segments",
+    )
+    parser.add_argument(
+        "--long_form_prefix_audio_max_tokens",
+        type=int,
+        default=25,
+        help="Carry-forward tail budget in audio tokens (stricter cap wins)",
+    )
+    parser.add_argument(
+        "--long_form_prefix_text_chars",
+        type=int,
+        default=0,
+        help="Optional carry-forward text window size in characters",
+    )
+    parser.add_argument(
+        "--long_form_retry_attempts",
+        type=int,
+        default=0,
+        help="Retry attempts per long-form segment before failing",
     )
 
     args = parser.parse_args()

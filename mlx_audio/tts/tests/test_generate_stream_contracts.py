@@ -164,6 +164,42 @@ class TestGenerateStreamContracts(unittest.TestCase):
         self.assertEqual(model.last_generate_kwargs.get("duration_s"), 3.0)
         self.assertEqual(model.last_generate_kwargs.get("n_vq_for_inference"), 8)
 
+    def test_long_form_controls_forward_only_when_enabled(self):
+        model = _DummyModel([_result(1)])
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "mlx_audio.tts.generate.audio_write"
+        ):
+            generate_audio(
+                text="no long form",
+                model=model,
+                stream=False,
+                output_path=tmpdir,
+                file_prefix="no_long_form_case",
+                verbose=False,
+            )
+        assert model.last_generate_kwargs is not None
+        self.assertNotIn("long_form", model.last_generate_kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "mlx_audio.tts.generate.audio_write"
+        ):
+            generate_audio(
+                text="with long form",
+                model=model,
+                stream=False,
+                output_path=tmpdir,
+                file_prefix="long_form_case",
+                long_form=True,
+                long_form_min_chars=111,
+                long_form_retry_attempts=2,
+                verbose=False,
+            )
+        assert model.last_generate_kwargs is not None
+        self.assertTrue(model.last_generate_kwargs.get("long_form"))
+        self.assertEqual(model.last_generate_kwargs.get("long_form_min_chars"), 111)
+        self.assertEqual(model.last_generate_kwargs.get("long_form_retry_attempts"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

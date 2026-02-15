@@ -26,6 +26,7 @@ from .inference_utils import (
 )
 from .local_model import MossTTSLocalModel
 from .long_form import (
+    BoundarySeamMetric,
     ContinuityConfig,
     ContinuityState,
     LongFormRuntimeConfig,
@@ -33,6 +34,7 @@ from .long_form import (
     SegmentPlannerConfig,
     advance_continuity_state,
     compose_segment_text,
+    evaluate_segment_boundary,
     merge_reference_with_prefix_audio,
     plan_text_segments,
 )
@@ -78,6 +80,7 @@ class Model(nn.Module):
         self.processor: Optional[MossTTSProcessor] = None
         self.generation_config: Dict[str, Union[int, float, bool]] = {}
         self._last_long_form_segment_metrics: List[LongFormSegmentMetric] = []
+        self._last_long_form_boundary_metrics: List[BoundarySeamMetric] = []
 
     @property
     def sample_rate(self) -> int:
@@ -504,6 +507,7 @@ class Model(nn.Module):
         sampling_cfg,
         effective_max_tokens: int,
         n_vq_for_inference: int,
+        stream: bool,
         runtime_config: LongFormRuntimeConfig,
     ) -> Generator[GenerationResult, None, None]:
         if request.text is None or not str(request.text).strip():
@@ -513,12 +517,18 @@ class Model(nn.Module):
         if not segment_plan:
             raise ValueError("long_form planner produced no segments from input text")
 
+        self._last_long_form_segment_metrics = []
+        self._last_long_form_boundary_metrics = []
         continuity_state = ContinuityState()
         base_reference = list(request.reference) if request.reference is not None else None
         merged_audio_segments: List[mx.array] = []
         total_generated_tokens = 0
+        total_emitted_samples = 0
         metrics: List[LongFormSegmentMetric] = []
+        boundary_metrics: List[BoundarySeamMetric] = []
+        previous_segment_audio: Optional[mx.array] = None
         overall_start = time.perf_counter()
+        segment_count = len(segment_plan)
 
         for planned_segment in segment_plan:
             retries_used = 0
@@ -565,8 +575,31 @@ class Model(nn.Module):
                 ) from segment_failure
 
             mx.eval(segment_result.audio)
-            merged_audio_segments.append(segment_result.audio)
+            if int(segment_result.samples) <= 0:
+                raise RuntimeError(
+                    "Long-form segment execution produced zero samples at "
+                    f"segment_idx={planned_segment.segment_idx}"
+                )
+            if not stream:
+                merged_audio_segments.append(segment_result.audio)
             total_generated_tokens += int(segment_result.token_count)
+            total_emitted_samples += int(segment_result.samples)
+
+            boundary_note = "segment-start"
+            boundary_metric = evaluate_segment_boundary(
+                left_audio=previous_segment_audio,
+                right_audio=segment_result.audio,
+                left_segment_idx=max(0, planned_segment.segment_idx - 1),
+                right_segment_idx=planned_segment.segment_idx,
+            )
+            if boundary_metric is not None:
+                boundary_metrics.append(boundary_metric)
+                boundary_note = (
+                    "discontinuity-flagged"
+                    if boundary_metric.flagged
+                    else "seam-clean"
+                )
+            previous_segment_audio = segment_result.audio
 
             continuity_state = advance_continuity_state(
                 previous_state=continuity_state,
@@ -600,14 +633,35 @@ class Model(nn.Module):
                     total_peak_memory_gb=float(mx.get_peak_memory() / 1e9),
                     prefix_audio_samples=prefix_audio_samples,
                     prefix_text_chars=prefix_text_chars,
+                    boundary_note=boundary_note,
                 )
             )
+
+            if stream:
+                segment_elapsed = max(float(segment_result.processing_time_seconds), 1e-6)
+                chunk_result = self._build_generation_result(
+                    segment_result.audio,
+                    start_time=time.perf_counter() - segment_elapsed,
+                    token_count=int(segment_result.token_count),
+                    segment_idx=planned_segment.segment_idx,
+                    is_streaming_chunk=True,
+                    is_final_chunk=planned_segment.segment_idx == (segment_count - 1),
+                )
+                chunk_result.prompt["segments"] = segment_count
+                chunk_result.prompt["cumulative_samples"] = total_emitted_samples
+                chunk_result.prompt["segment_idx"] = planned_segment.segment_idx
+                yield chunk_result
             mx.clear_cache()
 
+        self._last_long_form_segment_metrics = metrics
+        self._last_long_form_boundary_metrics = boundary_metrics
+        if stream:
+            if not metrics:
+                raise RuntimeError("long_form generation produced no segment audio")
+            return
         if not merged_audio_segments:
             raise RuntimeError("long_form generation produced no segment audio")
 
-        self._last_long_form_segment_metrics = metrics
         merged_audio = (
             merged_audio_segments[0]
             if len(merged_audio_segments) == 1
@@ -620,7 +674,8 @@ class Model(nn.Module):
             token_count=total_generated_tokens,
             segment_idx=0,
         )
-        result.prompt["segments"] = len(segment_plan)
+        result.prompt["segments"] = segment_count
+        result.prompt["cumulative_samples"] = total_emitted_samples
         yield result
         mx.clear_cache()
 
@@ -932,6 +987,7 @@ class Model(nn.Module):
         long_form_enabled, long_form_runtime = self._resolve_long_form_runtime_config(kwargs)
         if not long_form_enabled:
             self._last_long_form_segment_metrics = []
+            self._last_long_form_boundary_metrics = []
 
         request = self._resolve_generation_request(
             text=text,
@@ -961,11 +1017,6 @@ class Model(nn.Module):
                 f"Expected one of {sorted(VALID_INPUT_TYPES)}"
             )
         if long_form_enabled:
-            if stream:
-                raise ValueError(
-                    "long_form currently supports non-streaming mode only "
-                    "(streaming integration is staged for a later phase)"
-                )
             if conversation is not None or dialogue_speakers is not None:
                 raise ValueError(
                     "long_form cannot be combined with conversation/dialogue_speakers"
@@ -1036,6 +1087,7 @@ class Model(nn.Module):
                 sampling_cfg=sampling_cfg,
                 effective_max_tokens=effective_max_tokens,
                 n_vq_for_inference=local_n_vq_for_inference,
+                stream=stream,
                 runtime_config=long_form_runtime,
             )
             return
