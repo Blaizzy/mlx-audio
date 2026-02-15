@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import time
 from pathlib import Path
@@ -24,6 +25,17 @@ from .inference_utils import (
     update_delay_scheduler_state,
 )
 from .local_model import MossTTSLocalModel
+from .long_form import (
+    ContinuityConfig,
+    ContinuityState,
+    LongFormRuntimeConfig,
+    LongFormSegmentMetric,
+    SegmentPlannerConfig,
+    advance_continuity_state,
+    compose_segment_text,
+    merge_reference_with_prefix_audio,
+    plan_text_segments,
+)
 from .processor import MossTTSProcessor, VALID_INPUT_TYPES
 from .request import MossNormalizedRequest
 from .sampling import resolve_channel_sampling_configs, sample_channel_token
@@ -65,6 +77,7 @@ class Model(nn.Module):
         self.audio_tokenizer: Optional[MossAudioTokenizer] = None
         self.processor: Optional[MossTTSProcessor] = None
         self.generation_config: Dict[str, Union[int, float, bool]] = {}
+        self._last_long_form_segment_metrics: List[LongFormSegmentMetric] = []
 
     @property
     def sample_rate(self) -> int:
@@ -413,6 +426,204 @@ class Model(nn.Module):
         )
         return messages
 
+    def _resolve_long_form_runtime_config(
+        self,
+        kwargs: Dict[str, Any],
+    ) -> tuple[bool, LongFormRuntimeConfig]:
+        long_form_enabled = bool(kwargs.pop("long_form", False))
+        if not long_form_enabled:
+            return False, LongFormRuntimeConfig()
+        planner = SegmentPlannerConfig(
+            min_chars=int(kwargs.pop("long_form_min_chars", 160)),
+            target_chars=int(kwargs.pop("long_form_target_chars", 320)),
+            max_chars=int(kwargs.pop("long_form_max_chars", 520)),
+        )
+        continuity = ContinuityConfig(
+            prefix_audio_seconds=float(kwargs.pop("long_form_prefix_audio_seconds", 2.0)),
+            prefix_audio_max_tokens=int(kwargs.pop("long_form_prefix_audio_max_tokens", 25)),
+            prefix_text_max_chars=int(kwargs.pop("long_form_prefix_text_chars", 0)),
+        )
+        runtime = LongFormRuntimeConfig(
+            planner=planner,
+            continuity=continuity,
+            retry_attempts=int(kwargs.pop("long_form_retry_attempts", 0)),
+        )
+        return long_form_enabled, runtime
+
+    def _generate_single_segment_result(
+        self,
+        *,
+        request: MossNormalizedRequest,
+        input_type: str,
+        normalize_inputs: bool,
+        sampling_cfg,
+        effective_max_tokens: int,
+        n_vq_for_inference: int,
+    ) -> GenerationResult:
+        input_ids = self._build_prompt_inputs(
+            request=request,
+            input_type=input_type,
+            normalize_inputs=normalize_inputs,
+        )
+
+        if self.is_local_variant:
+            segment_results = list(
+                self._generate_local(
+                    input_ids=input_ids,
+                    sampling_cfg=sampling_cfg,
+                    effective_max_tokens=effective_max_tokens,
+                    n_vq_for_inference=n_vq_for_inference,
+                    stream=False,
+                    streaming_interval=2.0,
+                )
+            )
+        else:
+            segment_results = list(
+                self._generate_delay(
+                    input_ids=input_ids,
+                    sampling_cfg=sampling_cfg,
+                    effective_max_tokens=effective_max_tokens,
+                    stream=False,
+                    streaming_interval=2.0,
+                )
+            )
+
+        if len(segment_results) != 1:
+            raise RuntimeError(
+                "Long-form segment execution expected exactly one non-streaming "
+                f"result, got {len(segment_results)}"
+            )
+        return segment_results[0]
+
+    def _generate_long_form(
+        self,
+        *,
+        request: MossNormalizedRequest,
+        input_type: str,
+        normalize_inputs: bool,
+        sampling_cfg,
+        effective_max_tokens: int,
+        n_vq_for_inference: int,
+        runtime_config: LongFormRuntimeConfig,
+    ) -> Generator[GenerationResult, None, None]:
+        if request.text is None or not str(request.text).strip():
+            raise ValueError("long_form generation requires a non-empty `text` prompt")
+
+        segment_plan = plan_text_segments(request.text, config=runtime_config.planner)
+        if not segment_plan:
+            raise ValueError("long_form planner produced no segments from input text")
+
+        continuity_state = ContinuityState()
+        base_reference = list(request.reference) if request.reference is not None else None
+        merged_audio_segments: List[mx.array] = []
+        total_generated_tokens = 0
+        metrics: List[LongFormSegmentMetric] = []
+        overall_start = time.perf_counter()
+
+        for planned_segment in segment_plan:
+            retries_used = 0
+            segment_result: Optional[GenerationResult] = None
+            segment_failure: Optional[Exception] = None
+
+            for attempt in range(int(runtime_config.retry_attempts) + 1):
+                retries_used = attempt
+                segment_text = compose_segment_text(
+                    segment_text=planned_segment.text,
+                    prefix_text=continuity_state.prefix_text,
+                )
+                segment_reference = merge_reference_with_prefix_audio(
+                    base_reference=base_reference,
+                    prefix_audio=continuity_state.prefix_audio,
+                )
+                segment_request = replace(
+                    request,
+                    text=segment_text,
+                    reference=segment_reference,
+                )
+                try:
+                    segment_result = self._generate_single_segment_result(
+                        request=segment_request,
+                        input_type=input_type,
+                        normalize_inputs=normalize_inputs,
+                        sampling_cfg=sampling_cfg,
+                        effective_max_tokens=effective_max_tokens,
+                        n_vq_for_inference=n_vq_for_inference,
+                    )
+                    break
+                except Exception as exc:
+                    segment_failure = exc
+                    if attempt >= int(runtime_config.retry_attempts):
+                        break
+                finally:
+                    mx.clear_cache()
+
+            if segment_result is None:
+                raise RuntimeError(
+                    "Long-form segment execution failed at "
+                    f"segment_idx={planned_segment.segment_idx} after "
+                    f"{int(runtime_config.retry_attempts) + 1} attempt(s)"
+                ) from segment_failure
+
+            mx.eval(segment_result.audio)
+            merged_audio_segments.append(segment_result.audio)
+            total_generated_tokens += int(segment_result.token_count)
+
+            continuity_state = advance_continuity_state(
+                previous_state=continuity_state,
+                segment_audio=segment_result.audio,
+                segment_text=planned_segment.text,
+                sample_rate=self.sample_rate,
+                config=runtime_config.continuity,
+            )
+            prefix_audio_samples = (
+                int(continuity_state.prefix_audio.shape[0])
+                if continuity_state.prefix_audio is not None
+                else 0
+            )
+            prefix_text_chars = (
+                len(continuity_state.prefix_text)
+                if continuity_state.prefix_text is not None
+                else 0
+            )
+            metrics.append(
+                LongFormSegmentMetric(
+                    segment_idx=planned_segment.segment_idx,
+                    segment_chars=planned_segment.char_count,
+                    start_offset=planned_segment.start_offset,
+                    end_offset=planned_segment.end_offset,
+                    retry_count=retries_used,
+                    prompt_tokens_generated=int(segment_result.token_count),
+                    emitted_samples=int(segment_result.samples),
+                    emitted_seconds=float(segment_result.samples) / float(self.sample_rate),
+                    segment_latency_seconds=float(segment_result.processing_time_seconds),
+                    segment_peak_memory_gb=float(segment_result.peak_memory_usage),
+                    total_peak_memory_gb=float(mx.get_peak_memory() / 1e9),
+                    prefix_audio_samples=prefix_audio_samples,
+                    prefix_text_chars=prefix_text_chars,
+                )
+            )
+            mx.clear_cache()
+
+        if not merged_audio_segments:
+            raise RuntimeError("long_form generation produced no segment audio")
+
+        self._last_long_form_segment_metrics = metrics
+        merged_audio = (
+            merged_audio_segments[0]
+            if len(merged_audio_segments) == 1
+            else mx.concatenate(merged_audio_segments, axis=0)
+        )
+        mx.eval(merged_audio)
+        result = self._build_generation_result(
+            merged_audio,
+            start_time=overall_start,
+            token_count=total_generated_tokens,
+            segment_idx=0,
+        )
+        result.prompt["segments"] = len(segment_plan)
+        yield result
+        mx.clear_cache()
+
     def _generate_local(
         self,
         *,
@@ -718,6 +929,9 @@ class Model(nn.Module):
         dialogue_speakers = kwargs.pop("dialogue_speakers", None)
         if conversation is not None and dialogue_speakers is not None:
             raise ValueError("Provide either `conversation` or `dialogue_speakers`, not both")
+        long_form_enabled, long_form_runtime = self._resolve_long_form_runtime_config(kwargs)
+        if not long_form_enabled:
+            self._last_long_form_segment_metrics = []
 
         request = self._resolve_generation_request(
             text=text,
@@ -746,45 +960,59 @@ class Model(nn.Module):
                 f"Unsupported input_type '{input_type}'. "
                 f"Expected one of {sorted(VALID_INPUT_TYPES)}"
             )
-        if conversation is not None:
-            if not isinstance(conversation, list):
-                raise ValueError("conversation must be a list of message dicts")
-            if request.reference is not None or request.instruction is not None or request.text:
+        if long_form_enabled:
+            if stream:
                 raise ValueError(
-                    "When `conversation` is provided, do not also provide text/ref/instruct fields"
+                    "long_form currently supports non-streaming mode only "
+                    "(streaming integration is staged for a later phase)"
                 )
-            input_ids = self._build_prompt_inputs_from_messages(
-                messages=conversation,
-                mode="continuation",
-                normalize_inputs=normalize_inputs,
-            )
-        elif dialogue_speakers is not None:
-            if request.reference is not None:
+            if conversation is not None or dialogue_speakers is not None:
                 raise ValueError(
-                    "dialogue_speakers cannot be combined with ref_audio/reference"
+                    "long_form cannot be combined with conversation/dialogue_speakers"
                 )
-            continuation_messages = self._build_ttsd_continuation_messages(
-                request=request,
-                dialogue_speakers=dialogue_speakers,
-                input_type=input_type,
-                normalize_inputs=normalize_inputs,
-            )
-            continuation_mode = (
-                "continuation"
-                if continuation_messages and continuation_messages[-1]["role"] == "assistant"
-                else "generation"
-            )
-            input_ids = self._build_prompt_inputs_from_messages(
-                messages=continuation_messages,
-                mode=continuation_mode,
-                normalize_inputs=normalize_inputs,
-            )
-        else:
-            input_ids = self._build_prompt_inputs(
-                request=request,
-                input_type=input_type,
-                normalize_inputs=normalize_inputs,
-            )
+            if request.text is None or not str(request.text).strip():
+                raise ValueError("long_form requires non-empty text input")
+        input_ids: Optional[mx.array] = None
+        if not long_form_enabled:
+            if conversation is not None:
+                if not isinstance(conversation, list):
+                    raise ValueError("conversation must be a list of message dicts")
+                if request.reference is not None or request.instruction is not None or request.text:
+                    raise ValueError(
+                        "When `conversation` is provided, do not also provide text/ref/instruct fields"
+                    )
+                input_ids = self._build_prompt_inputs_from_messages(
+                    messages=conversation,
+                    mode="continuation",
+                    normalize_inputs=normalize_inputs,
+                )
+            elif dialogue_speakers is not None:
+                if request.reference is not None:
+                    raise ValueError(
+                        "dialogue_speakers cannot be combined with ref_audio/reference"
+                    )
+                continuation_messages = self._build_ttsd_continuation_messages(
+                    request=request,
+                    dialogue_speakers=dialogue_speakers,
+                    input_type=input_type,
+                    normalize_inputs=normalize_inputs,
+                )
+                continuation_mode = (
+                    "continuation"
+                    if continuation_messages and continuation_messages[-1]["role"] == "assistant"
+                    else "generation"
+                )
+                input_ids = self._build_prompt_inputs_from_messages(
+                    messages=continuation_messages,
+                    mode=continuation_mode,
+                    normalize_inputs=normalize_inputs,
+                )
+            else:
+                input_ids = self._build_prompt_inputs(
+                    request=request,
+                    input_type=input_type,
+                    normalize_inputs=normalize_inputs,
+                )
         do_samples = kwargs.get("do_samples", None)
         layers = kwargs.get("layers", None)
         sampling_cfg = resolve_channel_sampling_configs(
@@ -800,6 +1028,20 @@ class Model(nn.Module):
             max_tokens=max_tokens,
             request=request,
         )
+        if long_form_enabled:
+            yield from self._generate_long_form(
+                request=request,
+                input_type=input_type,
+                normalize_inputs=normalize_inputs,
+                sampling_cfg=sampling_cfg,
+                effective_max_tokens=effective_max_tokens,
+                n_vq_for_inference=local_n_vq_for_inference,
+                runtime_config=long_form_runtime,
+            )
+            return
+
+        if input_ids is None:
+            raise RuntimeError("input_ids were not prepared for non-long-form generation")
 
         if self.is_local_variant:
             yield from self._generate_local(
