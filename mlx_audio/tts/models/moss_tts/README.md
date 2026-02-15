@@ -58,6 +58,7 @@ uv run python -m mlx_audio.tts.generate \
 More complete runnable examples are in:
 
 - `examples/moss_tts_basic.py`
+- `examples/moss_tts_deterministic.py`
 - `examples/moss_tts_voice_cloning.py`
 - `examples/moss_tts_continuation_showcase.py`
 - `examples/moss_ttsd_dialogue.py`
@@ -98,6 +99,65 @@ uv run python examples/moss_tts_showcase_album.py \
 
 `moss_tts_showcase_album.py` writes `showcase_album.json` and
 `showcase_album.md` alongside generated tracks.
+
+## Deterministic Recipes
+
+If voice/style/emotion vary between runs, use the deterministic script:
+`examples/moss_tts_deterministic.py`.
+
+Default mode is deterministic **hybrid** decoding:
+
+- text/control channel: greedy (`do_sample=False`)
+- audio channels: seeded sampling (`do_sample=True`)
+
+This remains reproducible but avoids a known full-greedy silence collapse on
+some prompts/checkpoints.
+
+- Deterministic text-only generation:
+
+```bash
+uv run python examples/moss_tts_deterministic.py \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --text "Hello what is happening this is from MOSS on MLX." \
+  --instruct "Calm, friendly, medium speaking rate, conversational tone." \
+  --output-dir outputs/moss_tts_deterministic
+```
+
+- Direct CLI equivalent (`-m mlx_audio.tts.generate`) using `model_kwargs_json`:
+
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --text "Hello what is happening this is from MOSS on MLX." \
+  --instruct "Calm, friendly, medium speaking rate, conversational tone." \
+  --seed 1234 \
+  --model_kwargs_json '{"do_samples":[false]}' \
+  --output_path outputs/moss_tts_deterministic_cli
+```
+
+- Deterministic reference-conditioned generation (strongest voice consistency):
+
+```bash
+uv run python examples/moss_tts_deterministic.py \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --with-reference \
+  --ref-audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
+  --ref-text "Demo reference transcript." \
+  --text "Hello what is happening this is from MOSS on MLX." \
+  --instruct "Warm expressive narrator, medium speaking rate." \
+  --output-dir outputs/moss_tts_deterministic_ref
+```
+
+Notes:
+
+- `preset` sets default sampling (`temperature`, `top_p`, `top_k`, `repetition_penalty`).
+- Determinism in this recipe comes from fixed seed + fixed channel sampling flags.
+- `--determinism-mode full_greedy` is available, but can produce silent clips in some cases.
+- For short prompts without references, avoid forcing a long `duration_s`; let natural stopping decide clip length.
+- Keep `text`, `instruct`, `duration_s`/`tokens`, and reference inputs identical across runs for reproducibility.
 
 ## Generation Controls
 

@@ -137,6 +137,7 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
+    seed: Optional[int] = None,
     repetition_window: Optional[int] = None,
     stream: bool = False,
     streaming_interval: float = 2.0,
@@ -176,6 +177,9 @@ def generate_audio(
     - None: The function writes the generated audio to a file.
     """
     try:
+        if seed is not None:
+            mx.random.seed(int(seed))
+
         # Keep streaming generation usable in headless/non-interactive runs.
         # Playback remains explicitly opt-in via --play.
         play = bool(play)
@@ -565,6 +569,12 @@ def parse_args():
     )
     parser.add_argument(
         "--temperature", type=float, default=0.7, help="Temperature for the model"
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling paths",
     )
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
