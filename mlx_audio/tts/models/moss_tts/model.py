@@ -38,7 +38,8 @@ from .long_form import (
     merge_reference_with_prefix_audio,
     plan_text_segments,
 )
-from .processor import MossTTSProcessor, VALID_INPUT_TYPES
+from .processor import MossTTSProcessor
+from .pronunciation import validate_input_type
 from .presets import MOSS_TTS_RUNTIME, resolve_sampling_preset
 from .request import MossNormalizedRequest
 from .sampling import resolve_channel_sampling_configs, sample_channel_token
@@ -133,7 +134,9 @@ class Model(nn.Module):
             if key.startswith("model.language_model."):
                 new_key = key.replace("model.language_model.", "model.backbone.", 1)
             elif key.startswith("local_transformer."):
-                new_key = key.replace("local_transformer.", "model.local_transformer.", 1)
+                new_key = key.replace(
+                    "local_transformer.", "model.local_transformer.", 1
+                )
             elif key.startswith("speech_embedding_to_local_mlp."):
                 new_key = key.replace(
                     "speech_embedding_to_local_mlp.",
@@ -443,8 +446,12 @@ class Model(nn.Module):
             max_chars=int(kwargs.pop("long_form_max_chars", 520)),
         )
         continuity = ContinuityConfig(
-            prefix_audio_seconds=float(kwargs.pop("long_form_prefix_audio_seconds", 2.0)),
-            prefix_audio_max_tokens=int(kwargs.pop("long_form_prefix_audio_max_tokens", 25)),
+            prefix_audio_seconds=float(
+                kwargs.pop("long_form_prefix_audio_seconds", 2.0)
+            ),
+            prefix_audio_max_tokens=int(
+                kwargs.pop("long_form_prefix_audio_max_tokens", 25)
+            ),
             prefix_text_max_chars=int(kwargs.pop("long_form_prefix_text_chars", 0)),
         )
         runtime = LongFormRuntimeConfig(
@@ -521,7 +528,9 @@ class Model(nn.Module):
         self._last_long_form_segment_metrics = []
         self._last_long_form_boundary_metrics = []
         continuity_state = ContinuityState()
-        base_reference = list(request.reference) if request.reference is not None else None
+        base_reference = (
+            list(request.reference) if request.reference is not None else None
+        )
         merged_audio_segments: List[mx.array] = []
         total_generated_tokens = 0
         total_emitted_samples = 0
@@ -596,9 +605,7 @@ class Model(nn.Module):
             if boundary_metric is not None:
                 boundary_metrics.append(boundary_metric)
                 boundary_note = (
-                    "discontinuity-flagged"
-                    if boundary_metric.flagged
-                    else "seam-clean"
+                    "discontinuity-flagged" if boundary_metric.flagged else "seam-clean"
                 )
             previous_segment_audio = segment_result.audio
 
@@ -628,8 +635,11 @@ class Model(nn.Module):
                     retry_count=retries_used,
                     prompt_tokens_generated=int(segment_result.token_count),
                     emitted_samples=int(segment_result.samples),
-                    emitted_seconds=float(segment_result.samples) / float(self.sample_rate),
-                    segment_latency_seconds=float(segment_result.processing_time_seconds),
+                    emitted_seconds=float(segment_result.samples)
+                    / float(self.sample_rate),
+                    segment_latency_seconds=float(
+                        segment_result.processing_time_seconds
+                    ),
                     segment_peak_memory_gb=float(segment_result.peak_memory_usage),
                     total_peak_memory_gb=float(mx.get_peak_memory() / 1e9),
                     prefix_audio_samples=prefix_audio_samples,
@@ -639,7 +649,9 @@ class Model(nn.Module):
             )
 
             if stream:
-                segment_elapsed = max(float(segment_result.processing_time_seconds), 1e-6)
+                segment_elapsed = max(
+                    float(segment_result.processing_time_seconds), 1e-6
+                )
                 chunk_result = self._build_generation_result(
                     segment_result.audio,
                     start_time=time.perf_counter() - segment_elapsed,
@@ -822,7 +834,9 @@ class Model(nn.Module):
         streaming_interval: float,
     ) -> Generator[GenerationResult, None, None]:
         cache = self.model.make_cache()
-        hidden_states = self.model(input_ids, cache=cache, n_vq_for_inference=self.config.n_vq)
+        hidden_states = self.model(
+            input_ids, cache=cache, n_vq_for_inference=self.config.n_vq
+        )
         global_hidden = hidden_states[:, -1, :]
         scheduler_state = initialize_delay_scheduler_state(input_ids, self.config)
 
@@ -838,7 +852,9 @@ class Model(nn.Module):
                 n_vq_for_inference=self.config.n_vq,
             )
             next_text_token, text_sampling_mask, forcing_audio_eos = (
-                build_delay_forced_text_tokens(scheduler_state, self.config, self.config.n_vq)
+                build_delay_forced_text_tokens(
+                    scheduler_state, self.config, self.config.n_vq
+                )
             )
 
             text_logits = self._apply_delay_text_constraints(
@@ -877,10 +893,14 @@ class Model(nn.Module):
                     sampling_cfg[channel_idx + 1],
                     previous_tokens=input_ids[row_indices, :, channel_idx + 1],
                 )
-                next_audio_np[np.array(row_indices), channel_idx] = np.array(sampled_audio)
+                next_audio_np[np.array(row_indices), channel_idx] = np.array(
+                    sampled_audio
+                )
 
             next_audio_tokens = mx.array(next_audio_np, dtype=mx.int32)
-            next_tokens = mx.concatenate([next_text_token[:, None], next_audio_tokens], axis=1)
+            next_tokens = mx.concatenate(
+                [next_text_token[:, None], next_audio_tokens], axis=1
+            )
             input_ids = mx.concatenate([input_ids, next_tokens[:, None, :]], axis=1)
             generated_row_count += 1
 
@@ -900,7 +920,11 @@ class Model(nn.Module):
             }:
                 delay_rows.append(next_audio_tokens[0, : self.config.n_vq])
 
-            if stream and len(delay_rows) >= self.config.n_vq and len(delay_rows) % chunk_rows == 0:
+            if (
+                stream
+                and len(delay_rows) >= self.config.n_vq
+                and len(delay_rows) % chunk_rows == 0
+            ):
                 decoded = self._decode_delay_audio_rows(delay_rows)
                 if decoded.shape[0] > last_yielded_samples:
                     new_audio = decoded[last_yielded_samples:]
@@ -916,7 +940,10 @@ class Model(nn.Module):
                     chunk_start_time = time.perf_counter()
                 mx.clear_cache()
 
-            if text_token in {self.config.audio_end_token_id, self.config.im_end_token_id}:
+            if text_token in {
+                self.config.audio_end_token_id,
+                self.config.im_end_token_id,
+            }:
                 break
 
             hidden_states = self.model(
@@ -984,7 +1011,9 @@ class Model(nn.Module):
         conversation = kwargs.pop("conversation", None)
         dialogue_speakers = kwargs.pop("dialogue_speakers", None)
         if conversation is not None and dialogue_speakers is not None:
-            raise ValueError("Provide either `conversation` or `dialogue_speakers`, not both")
+            raise ValueError(
+                "Provide either `conversation` or `dialogue_speakers`, not both"
+            )
         preset = resolve_sampling_preset(
             kwargs.pop("preset", None),
             runtime=MOSS_TTS_RUNTIME,
@@ -994,7 +1023,9 @@ class Model(nn.Module):
             top_p = float(preset.top_p)
             top_k = int(preset.top_k)
             repetition_penalty = float(preset.repetition_penalty)
-        long_form_enabled, long_form_runtime = self._resolve_long_form_runtime_config(kwargs)
+        long_form_enabled, long_form_runtime = self._resolve_long_form_runtime_config(
+            kwargs
+        )
         if not long_form_enabled:
             self._last_long_form_segment_metrics = []
             self._last_long_form_boundary_metrics = []
@@ -1020,12 +1051,7 @@ class Model(nn.Module):
                     "n_vq_for_inference is only supported for MOSS-TTS Local checkpoints"
                 )
             local_n_vq_for_inference = self.config.n_vq
-        input_type = kwargs.pop("input_type", "text")
-        if input_type not in VALID_INPUT_TYPES:
-            raise ValueError(
-                f"Unsupported input_type '{input_type}'. "
-                f"Expected one of {sorted(VALID_INPUT_TYPES)}"
-            )
+        input_type = validate_input_type(kwargs.pop("input_type", "text"))
         if long_form_enabled:
             if conversation is not None or dialogue_speakers is not None:
                 raise ValueError(
@@ -1038,7 +1064,11 @@ class Model(nn.Module):
             if conversation is not None:
                 if not isinstance(conversation, list):
                     raise ValueError("conversation must be a list of message dicts")
-                if request.reference is not None or request.instruction is not None or request.text:
+                if (
+                    request.reference is not None
+                    or request.instruction is not None
+                    or request.text
+                ):
                     raise ValueError(
                         "When `conversation` is provided, do not also provide text/ref/instruct fields"
                     )
@@ -1060,7 +1090,8 @@ class Model(nn.Module):
                 )
                 continuation_mode = (
                     "continuation"
-                    if continuation_messages and continuation_messages[-1]["role"] == "assistant"
+                    if continuation_messages
+                    and continuation_messages[-1]["role"] == "assistant"
                     else "generation"
                 )
                 input_ids = self._build_prompt_inputs_from_messages(
@@ -1103,7 +1134,9 @@ class Model(nn.Module):
             return
 
         if input_ids is None:
-            raise RuntimeError("input_ids were not prepared for non-long-form generation")
+            raise RuntimeError(
+                "input_ids were not prepared for non-long-form generation"
+            )
 
         if self.is_local_variant:
             yield from self._generate_local(
@@ -1127,8 +1160,12 @@ class Model(nn.Module):
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         try:
             from transformers import AutoTokenizer
-        except Exception as exc:  # pragma: no cover - import failure is environment specific
-            raise RuntimeError("transformers is required for MOSS-TTS tokenizer") from exc
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - import failure is environment specific
+            raise RuntimeError(
+                "transformers is required for MOSS-TTS tokenizer"
+            ) from exc
 
         model.tokenizer = AutoTokenizer.from_pretrained(
             str(model_path),

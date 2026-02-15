@@ -13,9 +13,9 @@ from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
 from mlx_audio.utils import load_audio
 
 from .config import ModelConfig
+from .pronunciation import VALID_INPUT_TYPES, validate_pronunciation_input_contract
 
 AUDIO_PLACEHOLDER = "<|audio|>"
-VALID_INPUT_TYPES = {"text", "pinyin", "ipa"}
 
 
 def normalize_instruction(instruction: str) -> str:
@@ -72,11 +72,10 @@ class UserMessage(Message):
     input_type: str = "text"
 
     def __post_init__(self):
-        if self.input_type not in VALID_INPUT_TYPES:
-            raise ValueError(
-                f"Unsupported input_type '{self.input_type}'. "
-                f"Expected one of {sorted(VALID_INPUT_TYPES)}"
-            )
+        self.input_type = validate_pronunciation_input_contract(
+            self.text,
+            self.input_type,
+        )
 
         template = """<user_inst>
 - Reference(s):
@@ -93,8 +92,6 @@ class UserMessage(Message):
 {ambient_sound}
 - Language:
 {language}
-- Input Type:
-{input_type}
 - Text:
 {text}
 </user_inst>"""
@@ -122,7 +119,6 @@ class UserMessage(Message):
             .replace("{sound_event}", str(self.sound_event))
             .replace("{ambient_sound}", str(self.ambient_sound))
             .replace("{language}", str(self.language))
-            .replace("{input_type}", str(self.input_type))
             .replace("{text}", str(self.text))
         )
         self._references = references
@@ -231,7 +227,9 @@ class MossTTSProcessor:
         audio_codes_list: List[Union[str, mx.array]],
         content: str = AUDIO_PLACEHOLDER,
     ) -> Dict[str, Any]:
-        return AssistantMessage(audio_codes_list=audio_codes_list, content=content).to_dict()
+        return AssistantMessage(
+            audio_codes_list=audio_codes_list, content=content
+        ).to_dict()
 
     @staticmethod
     def _parse_speaker_id(raw_speaker_id: Any) -> int:
@@ -277,9 +275,13 @@ class MossTTSProcessor:
 
         # Interpret ids per request: if any speaker uses `0`, treat the whole schema as
         # zero-based; otherwise treat it as one-based.
-        use_zero_based_ids = any(speaker_id == 0 for _, speaker_id in normalized_entries)
+        use_zero_based_ids = any(
+            speaker_id == 0 for _, speaker_id in normalized_entries
+        )
         for entry, parsed_speaker_id in normalized_entries:
-            speaker_id = parsed_speaker_id + 1 if use_zero_based_ids else parsed_speaker_id
+            speaker_id = (
+                parsed_speaker_id + 1 if use_zero_based_ids else parsed_speaker_id
+            )
             prior = speaker_rows.get(speaker_id, {})
             merged = dict(prior)
             merged.update(dict(entry))
@@ -309,7 +311,9 @@ class MossTTSProcessor:
         full_dialogue = " ".join(prompt_lines + [dialogue_text.strip()])
         user_message = self.build_user_message(
             text=full_dialogue,
-            reference=references if any(item is not None for item in references) else None,
+            reference=(
+                references if any(item is not None for item in references) else None
+            ),
             instruction=instruction,
             tokens=tokens,
             quality=quality,
@@ -782,7 +786,9 @@ class MossTTSProcessor:
 
         segments: List[mx.array] = []
         prefix_index = 0
-        for start_idx, end_idx, codes in zip(start_positions, end_positions, audio_codes_list):
+        for start_idx, end_idx, codes in zip(
+            start_positions, end_positions, audio_codes_list
+        ):
             start = int(start_idx)
             end = int(end_idx)
             packed_codes = codes[:, :n_vq].astype(mx.int32)
@@ -834,7 +840,9 @@ class MossTTSProcessor:
         if mode == "generation" and normalized[-1]["role"] != "user":
             raise ValueError("Generation mode requires final message role='user'")
         if mode == "continuation" and normalized[-1]["role"] != "assistant":
-            raise ValueError("Continuation mode requires final message role='assistant'")
+            raise ValueError(
+                "Continuation mode requires final message role='assistant'"
+            )
 
         n_vq = self.model_config.n_vq if n_vq is None else int(n_vq)
         if n_vq <= 0:
@@ -872,7 +880,9 @@ class MossTTSProcessor:
 
         input_ids = mx.concatenate(packed_parts, axis=0)
         if mode == "generation":
-            start_row = mx.full((1, 1 + n_vq), self.model_config.audio_pad_code, dtype=mx.int32)
+            start_row = mx.full(
+                (1, 1 + n_vq), self.model_config.audio_pad_code, dtype=mx.int32
+            )
             start_row[:, 0] = self.model_config.audio_start_token_id
             input_ids = mx.concatenate([input_ids, start_row], axis=0)
         attention_mask = mx.ones((input_ids.shape[0],), dtype=mx.bool_)

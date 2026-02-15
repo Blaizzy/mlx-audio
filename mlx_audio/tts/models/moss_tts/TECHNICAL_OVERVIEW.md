@@ -10,6 +10,7 @@ This document describes how the `moss_tts` MLX runtime is wired internally for D
 | `model.py` | High-level generation orchestration, variant routing, sanitize, long-form integration |
 | `request.py` | Narrow-waist request normalization (`MossNormalizedRequest`) |
 | `processor.py` | Prompt packing, message normalization, reference encode/decode, delay pattern transforms |
+| `pronunciation.py` | `input_type` fail-fast validation + optional helper conversions (`pypinyin`, IPA helpers) |
 | `delay_model.py` | Delay architecture core (global backbone + per-channel heads) |
 | `local_model.py` | Local architecture core (global backbone + local transformer autoregression) |
 | `backbone.py` | Shared Qwen3-style backbone with KV cache support |
@@ -44,6 +45,16 @@ This keeps the upstream `build_user_message(...)` contract stable at one boundar
 - Accepts `Message` objects or dict payloads.
 - `mode="generation"` requires final message role `user`.
 - `mode="continuation"` requires final message role `assistant`.
+
+### Pronunciation contract boundary
+
+- `input_type` is validated through `pronunciation.py` before prompt serialization.
+- `text` mode is pass-through.
+- `pinyin` mode requires tone-numbered whitespace syllables and rejects clear
+  non-pinyin payloads (for example, Han characters or missing tone digits).
+- `ipa` mode requires balanced `/.../` spans and rejects malformed delimiters.
+- No conversion occurs in runtime generation loops; optional helper conversions are
+  explicit opt-in utility calls.
 
 ### Audio reference path
 

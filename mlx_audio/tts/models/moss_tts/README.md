@@ -63,6 +63,7 @@ More complete runnable examples are in:
 - `examples/moss_voice_design.py`
 - `examples/moss_sound_effects.py`
 - `examples/moss_tts_long_form.py`
+- `examples/moss_tts_pronunciation_control.py`
 
 ## Generation Controls
 
@@ -98,6 +99,33 @@ For Delay-family variants in this package, `quality` is passed through verbatim 
 - `n_vq_for_inference` is Local-only (`1..config.n_vq`).
 - `conversation` and `dialogue_speakers` are mutually exclusive.
 - `long_form=True` cannot be combined with `conversation` or `dialogue_speakers`.
+
+### `input_type` pronunciation semantics
+
+- `input_type` is a mlx-audio affordance for validation and explicit helper workflows.
+- The upstream user prompt continues to carry only text/reference-style fields; `input_type`
+  itself is not injected as an upstream message field.
+- `input_type="text"`: no pronunciation-specific validation.
+- `input_type="pinyin"`: requires tone-numbered, whitespace-separated pinyin syllables
+  (for example, `ni3 hao3`); obvious non-pinyin payloads fail fast.
+- `input_type="ipa"`: requires one or more balanced `/.../` IPA spans; malformed slash
+  delimiters fail fast.
+- No silent conversion is performed during generation. Conversion helpers are opt-in.
+
+Optional helper entrypoints:
+
+```python
+from mlx_audio.tts.models.moss_tts import (
+    convert_text_to_tone_numbered_pinyin,
+    convert_text_to_ipa,
+)
+
+pinyin_text = convert_text_to_tone_numbered_pinyin("您好，请问您来自哪座城市？")
+ipa_text = convert_text_to_ipa("Hello, may I ask which city you are from?")
+```
+
+Optional helper dependencies can be installed separately (for example,
+`pip install pypinyin phonemizer-fork deep-phonemizer`).
 
 ### Variant-focused controls
 

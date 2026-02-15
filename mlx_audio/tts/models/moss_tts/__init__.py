@@ -1,6 +1,12 @@
 """MOSS-TTS family package."""
 
 from .model import Model, ModelConfig
+from .pronunciation import (
+    PronunciationHelperUnavailableError,
+    convert_text_to_ipa,
+    convert_text_to_tone_numbered_pinyin,
+    validate_pronunciation_input_contract,
+)
 from .request import MossNormalizedRequest
 
 DETECTION_HINTS = {
@@ -26,4 +32,13 @@ DETECTION_HINTS = {
     },
 }
 
-__all__ = ["Model", "ModelConfig", "MossNormalizedRequest", "DETECTION_HINTS"]
+__all__ = [
+    "Model",
+    "ModelConfig",
+    "MossNormalizedRequest",
+    "PronunciationHelperUnavailableError",
+    "convert_text_to_ipa",
+    "convert_text_to_tone_numbered_pinyin",
+    "validate_pronunciation_input_contract",
+    "DETECTION_HINTS",
+]
