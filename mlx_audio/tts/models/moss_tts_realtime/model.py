@@ -463,41 +463,69 @@ class Model(nn.Module):
         )
 
         start_time = time.perf_counter()
-        token_count = 0
-        chunks: list[mx.array] = []
-
-        if text_token_ids:
-            token_count += len(text_token_ids)
-            chunks.extend(session.push_text_tokens(text_token_ids))
-        chunks.extend(session.end_text())
-        chunks.extend(session.drain(max_steps=max_tokens))
-
-        session.close()
-
-        if not chunks:
-            raise RuntimeError("No realtime audio was generated")
+        token_count = len(text_token_ids)
 
         if stream:
-            for idx, chunk in enumerate(chunks):
+            segment_idx = 0
+            pending_chunk: Optional[mx.array] = None
+
+            def _emit_ready_chunks(stage_chunks: list[mx.array]):
+                nonlocal pending_chunk, segment_idx
+                for chunk in stage_chunks:
+                    if pending_chunk is not None:
+                        yield self._build_generation_result(
+                            pending_chunk,
+                            start_time=start_time,
+                            token_count=token_count,
+                            segment_idx=segment_idx,
+                            is_streaming_chunk=True,
+                            is_final_chunk=False,
+                        )
+                        segment_idx += 1
+                    pending_chunk = chunk
+
+            try:
+                if text_token_ids:
+                    yield from _emit_ready_chunks(session.push_text_tokens(text_token_ids))
+                yield from _emit_ready_chunks(session.end_text())
+                yield from _emit_ready_chunks(session.drain(max_steps=max_tokens))
+
+                if pending_chunk is None:
+                    raise RuntimeError("No realtime audio was generated")
+
                 yield self._build_generation_result(
-                    chunk,
+                    pending_chunk,
                     start_time=start_time,
                     token_count=token_count,
-                    segment_idx=idx,
+                    segment_idx=segment_idx,
                     is_streaming_chunk=True,
-                    is_final_chunk=idx == len(chunks) - 1,
+                    is_final_chunk=True,
                 )
+            finally:
+                session.close()
             return
 
-        merged = mx.concatenate(chunks, axis=0)
-        yield self._build_generation_result(
-            merged,
-            start_time=start_time,
-            token_count=token_count,
-            segment_idx=0,
-            is_streaming_chunk=False,
-            is_final_chunk=True,
-        )
+        chunks: list[mx.array] = []
+        try:
+            if text_token_ids:
+                chunks.extend(session.push_text_tokens(text_token_ids))
+            chunks.extend(session.end_text())
+            chunks.extend(session.drain(max_steps=max_tokens))
+
+            if not chunks:
+                raise RuntimeError("No realtime audio was generated")
+
+            merged = mx.concatenate(chunks, axis=0)
+            yield self._build_generation_result(
+                merged,
+                start_time=start_time,
+                token_count=token_count,
+                segment_idx=0,
+                is_streaming_chunk=False,
+                is_final_chunk=True,
+            )
+        finally:
+            session.close()
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":

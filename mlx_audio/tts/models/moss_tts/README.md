@@ -1,93 +1,172 @@
-# MOSS-TTS Family
+# MOSS-TTS Family (MLX Runtime)
 
-MLX runtime support for the OpenMOSS MOSS-TTS family:
+Unified MLX runtime support for the OpenMOSS MOSS-TTS family.
 
-- Delay: `OpenMOSS-Team/MOSS-TTS`
-- Local: `OpenMOSS-Team/MOSS-TTS-Local-Transformer`
-- TTSD: `OpenMOSS-Team/MOSS-TTSD-v1.0`
-- VoiceGenerator: `OpenMOSS-Team/MOSS-Voice-Generator`
-- SoundEffect: `OpenMOSS-Team/MOSS-SoundEffect`
-- Realtime: `OpenMOSS-Team/MOSS-TTS-Realtime`
+Supported checkpoints:
 
-## Presets
+- `OpenMOSS-Team/MOSS-TTS` (Delay)
+- `OpenMOSS-Team/MOSS-TTS-Local-Transformer` (Local)
+- `OpenMOSS-Team/MOSS-TTSD-v1.0` (TTSD)
+- `OpenMOSS-Team/MOSS-Voice-Generator` (VoiceGenerator)
+- `OpenMOSS-Team/MOSS-SoundEffect` (SoundEffect)
 
-| Preset | Runtime | Defaults |
-|---|---|---|
-| `moss_tts` | Delay | `temperature=1.7`, `top_p=0.8`, `top_k=25`, `repetition_penalty=1.0` |
-| `moss_tts_local` | Local | `temperature=1.0`, `top_p=0.95`, `top_k=50`, `repetition_penalty=1.1` |
-| `ttsd` | TTSD | `temperature=1.1`, `top_p=0.9`, `top_k=50`, `repetition_penalty=1.1` |
-| `voice_generator` | VoiceGenerator | `temperature=1.5`, `top_p=0.6`, `top_k=50`, `repetition_penalty=1.1` |
-| `soundeffect` | SoundEffect | `temperature=1.5`, `top_p=0.6`, `top_k=50`, `repetition_penalty=1.2` |
-| `realtime` | Realtime | `temperature=0.8`, `top_p=0.6`, `top_k=30`, `repetition_penalty=1.1` |
+Realtime has a dedicated runtime package: `mlx_audio/tts/models/moss_tts_realtime/`.
 
-## CLI Examples
+## Model Variants
 
-### Delay / Local text generation
+| Variant | HF ID | Runtime | Preset | Primary Use |
+|---|---|---|---|---|
+| Delay | `OpenMOSS-Team/MOSS-TTS` | `moss_tts` | `moss_tts` | General high-capability TTS |
+| Local | `OpenMOSS-Team/MOSS-TTS-Local-Transformer` | `moss_tts` | `moss_tts_local` | Lower-memory TTS, inference depth override |
+| TTSD | `OpenMOSS-Team/MOSS-TTSD-v1.0` | `moss_tts` | `ttsd` | Multi-speaker dialogue |
+| VoiceGenerator | `OpenMOSS-Team/MOSS-Voice-Generator` | `moss_tts` | `voice_generator` | Voice design from text instruction |
+| SoundEffect | `OpenMOSS-Team/MOSS-SoundEffect` | `moss_tts` | `soundeffect` | Text-to-sound-event synthesis |
+
+## Quick Start
+
+### Python API
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("OpenMOSS-Team/MOSS-TTS-Local-Transformer")
+
+results = list(
+    model.generate(
+        text="Hello from MOSS on MLX.",
+        preset="moss_tts_local",
+        input_type="text",  # text | pinyin | ipa
+        duration_s=6.0,       # mapped to tokens at 12.5 Hz when tokens is omitted
+        max_tokens=240,
+    )
+)
+
+audio = results[0].audio
+```
+
+### CLI
 
 ```bash
 uv run python -m mlx_audio.tts.generate \
   --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --text "Hello from MLX MOSS Local." \
+  --text "Hello from MOSS on MLX." \
   --preset moss_tts_local \
-  --tokens 120 \
+  --duration_s 6 \
   --output_path ./outputs/moss_local
 ```
 
-### Voice cloning
+More complete runnable examples are in:
 
-```bash
-uv run python -m mlx_audio.tts.generate \
-  --model OpenMOSS-Team/MOSS-TTS \
-  --text "This is a cloned style sample." \
-  --ref_audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
-  --ref_text "Demo reference transcript." \
-  --preset moss_tts \
-  --output_path ./outputs/moss_clone
+- `examples/moss_tts_basic.py`
+- `examples/moss_tts_voice_cloning.py`
+- `examples/moss_ttsd_dialogue.py`
+- `examples/moss_voice_design.py`
+- `examples/moss_sound_effects.py`
+- `examples/moss_tts_long_form.py`
+
+## Generation Controls
+
+### Common fields
+
+| Field | Meaning |
+|---|---|
+| `text` | Primary user text |
+| `ref_audio`, `ref_text` | Voice/reference conditioning |
+| `instruct` | Style or voice instruction |
+| `tokens` | Explicit target token budget |
+| `duration_s` / `seconds` | Convenience duration mapped at 12.5 tokens/sec |
+| `quality` | Quality hint string (variant-dependent behavior) |
+| `input_type` | `text`, `pinyin`, or `ipa` |
+| `preset` | Variant sampling defaults |
+| `stream`, `streaming_interval` | Chunked output controls |
+
+### Precedence and validation rules
+
+- `tokens` wins over `duration_s`/`seconds` if both are provided.
+- `duration_s`/`seconds` must be positive.
+- `ref_audio` and raw `reference` cannot be provided together.
+- `n_vq_for_inference` is Local-only (`1..config.n_vq`).
+- `conversation` and `dialogue_speakers` are mutually exclusive.
+- `long_form=True` cannot be combined with `conversation` or `dialogue_speakers`.
+
+### Variant-focused controls
+
+| Variant | Key fields |
+|---|---|
+| Delay / Local | `text`, `input_type`, `instruct`, `ref_audio`, `ref_text`, `tokens`/`duration_s` |
+| TTSD | `text` + `dialogue_speakers` schema |
+| VoiceGenerator | `instruct` (+ optional `normalize_inputs`) |
+| SoundEffect | `ambient_sound`, `sound_event`, optional `quality` |
+
+For full effective-field contracts see:
+`../../../../PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_effective_field_matrix.md`
+
+## TTSD `dialogue_speakers` Schema
+
+`dialogue_speakers_json` should contain a JSON list of speaker mappings:
+
+```json
+[
+  {
+    "speaker_id": 1,
+    "ref_audio": "path/to/speaker1.wav",
+    "ref_text": "Speaker one reference transcript"
+  },
+  {
+    "speaker_id": 2,
+    "ref_audio": "path/to/speaker2.wav",
+    "ref_text": "Speaker two reference transcript"
+  }
+]
 ```
 
-### TTSD multi-speaker dialogue
+Notes:
 
-```bash
-uv run python -m mlx_audio.tts.generate \
-  --model OpenMOSS-Team/MOSS-TTSD-v1.0 \
-  --text "[S1] Hi there. [S2] Good to meet you." \
-  --dialogue_speakers_json PLANS/MOSS-TTS-PLANS/artifacts/phase4/real_model_smokes/ttsd/dialogue_speakers_demo.json \
-  --preset ttsd \
-  --output_path ./outputs/moss_ttsd
-```
+- `speaker_id` may be one-based (`1..N`) or zero-based (`0..N-1`); runtime normalizes both.
+- `ref_text` can be supplied as `text` in each speaker entry.
 
-### SoundEffect generation
+## Long-Form Mode
 
-```bash
-uv run python -m mlx_audio.tts.generate \
-  --model OpenMOSS-Team/MOSS-SoundEffect \
-  --ambient_sound "Thunder and rain over a city street." \
-  --sound_event storm \
-  --preset soundeffect \
-  --tokens 120 \
-  --output_path ./outputs/moss_soundeffect
-```
+Enable segmented long-form synthesis with `long_form=True`.
 
-### Realtime one-shot generation
+Main controls:
 
-```bash
-uv run python -m mlx_audio.tts.generate \
-  --model OpenMOSS-Team/MOSS-TTS-Realtime \
-  --text "Realtime confirmation clip." \
-  --preset realtime \
-  --stream \
-  --output_path ./outputs/moss_realtime
-```
+- `long_form_min_chars`, `long_form_target_chars`, `long_form_max_chars`
+- `long_form_prefix_audio_seconds`, `long_form_prefix_audio_max_tokens`
+- `long_form_prefix_text_chars`
+- `long_form_retry_attempts`
 
-## Phase 7 Parity Docs
+Runtime emits segment/boundary metrics into model attributes after generation:
 
-- Multilingual smoke matrix:
-  - `PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_multilingual_smoke_matrix.md`
-- Effective-field matrix:
-  - `PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_effective_field_matrix.md`
-- Canonical IDs and alias table:
-  - `PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_canonical_model_ids_and_aliases.md`
+- `_last_long_form_segment_metrics`
+- `_last_long_form_boundary_metrics`
+
+## Preset Catalog
+
+| Preset | Runtime | Defaults |
+|---|---|---|
+| `moss_tts` | `moss_tts` | `temperature=1.7`, `top_p=0.8`, `top_k=25`, `repetition_penalty=1.0` |
+| `moss_tts_local` | `moss_tts` | `temperature=1.0`, `top_p=0.95`, `top_k=50`, `repetition_penalty=1.1` |
+| `ttsd` | `moss_tts` | `temperature=1.1`, `top_p=0.9`, `top_k=50`, `repetition_penalty=1.1` |
+| `voice_generator` | `moss_tts` | `temperature=1.5`, `top_p=0.6`, `top_k=50`, `repetition_penalty=1.1` |
+| `soundeffect` | `moss_tts` | `temperature=1.5`, `top_p=0.6`, `top_k=50`, `repetition_penalty=1.2` |
+
+## Practical Notes
+
+- Streaming CLI mode requires an output sink (`--output_path`) or `--play`.
+- VoiceGenerator defaults to normalized prompt inputs unless overridden.
+- SoundEffect can synthesize from `ambient_sound` even when `text` is omitted.
+- The shared codec is mandatory at runtime; see codec docs below.
+
+## Technical Docs and Artifacts
+
+- Architecture details: `TECHNICAL_OVERVIEW.md`
+- Realtime runtime docs: `../moss_tts_realtime/README.md`
+- Realtime architecture: `../moss_tts_realtime/TECHNICAL_OVERVIEW.md`
+- Codec contracts: `../../../codec/models/moss_audio_tokenizer/README.md`
+- Canonical model IDs / aliases:
+  `../../../../PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_canonical_model_ids_and_aliases.md`
 - `quality` taxonomy contract:
-  - `PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_quality_taxonomy_contract.md`
-- Schema-versioned request contract and watchlist:
-  - `PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_schema_versioned_request_contract_and_watchlist.md`
+  `../../../../PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_quality_taxonomy_contract.md`
+- Schema/watchlist contract:
+  `../../../../PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_schema_versioned_request_contract_and_watchlist.md`

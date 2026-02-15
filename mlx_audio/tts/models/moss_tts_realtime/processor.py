@@ -56,8 +56,14 @@ def _normalize_preencoded_audio_tokens(
         normalized = tokens_np[:rvq, :].T
     elif cols >= rvq and rows < rvq:
         normalized = tokens_np[:, :rvq]
+    elif rvq > 0 and rows % rvq == 0 and rows <= 64:
+        normalized = tokens_np[:rvq, :].T
+    elif rvq > 0 and cols % rvq == 0 and cols <= 64:
+        normalized = tokens_np[:, :rvq]
     elif rows <= 64 and cols > 64:
         normalized = tokens_np[:rvq, :].T
+    elif cols <= 64 and rows > 64:
+        normalized = tokens_np[:, :rvq]
     else:
         normalized = tokens_np[:, :rvq]
 
