@@ -46,6 +46,24 @@ This keeps the upstream `build_user_message(...)` contract stable at one boundar
 - `mode="generation"` requires final message role `user`.
 - `mode="continuation"` requires final message role `assistant`.
 
+## Showcase-to-Contract Map
+
+Phase 7 examples intentionally map to specific runtime seams:
+
+- `examples/moss_tts_continuation_showcase.py`
+  - Uses explicit `conversation=[user, assistant]` payloads.
+  - Relies on continuation-mode invariant: final message is `assistant`.
+  - Demonstrates cloning/continuation without passing `ref_audio` to `generate(...)`.
+
+- `examples/moss_tts_realtime_multiturn_agent.py`
+  - Runs against `moss_tts_realtime` session APIs, not this package's one-shot path.
+  - Exercises voice-prompt persistence + per-turn user-audio conditioning boundary.
+  - Uses `bridge_text_stream(...)` to bind assistant text deltas to chunked decode output.
+
+- `examples/moss_tts_showcase_album.py`
+  - Validates variant presets and effective-field wiring end-to-end.
+  - Produces shareable artifact manifests (`json`/`md`) to reduce ambiguity in parity reviews.
+
 ### Pronunciation contract boundary
 
 - `input_type` is validated through `pronunciation.py` before prompt serialization.

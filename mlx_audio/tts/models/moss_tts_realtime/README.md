@@ -98,6 +98,11 @@ finally:
     session.close()
 ```
 
+Runnable references:
+
+- `../../../../examples/moss_tts_realtime_text_deltas.py`
+- `../../../../examples/moss_tts_realtime_multiturn_agent.py`
+
 ## Delta-Bridge API
 
 For LLM token/delta streams, use `bridge_text_stream(...)` on an active session:
@@ -108,6 +113,8 @@ for chunk in session.bridge_text_stream(["Hello ", "realtime ", "world"], hold_b
 ```
 
 See runnable reference: `../../../../examples/moss_tts_realtime_text_deltas.py`.
+For upstream-style multiturn (voice prompt + per-turn user audio + assistant deltas),
+see `../../../../examples/moss_tts_realtime_multiturn_agent.py`.
 
 ## Main Controls
 

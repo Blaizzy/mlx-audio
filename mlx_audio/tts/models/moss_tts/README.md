@@ -59,11 +59,45 @@ More complete runnable examples are in:
 
 - `examples/moss_tts_basic.py`
 - `examples/moss_tts_voice_cloning.py`
+- `examples/moss_tts_continuation_showcase.py`
 - `examples/moss_ttsd_dialogue.py`
 - `examples/moss_voice_design.py`
 - `examples/moss_sound_effects.py`
 - `examples/moss_tts_long_form.py`
 - `examples/moss_tts_pronunciation_control.py`
+- `examples/moss_tts_realtime_text_deltas.py`
+- `examples/moss_tts_realtime_multiturn_agent.py`
+- `examples/moss_tts_showcase_album.py`
+
+## Showcase Recipes
+
+Use these scripts as fast entry points for the most important MOSS workflows:
+
+- Continuation prompting (assistant prefix audio, no `ref_audio` generate arg):
+
+```bash
+uv run python examples/moss_tts_continuation_showcase.py \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local
+```
+
+- Realtime multiturn agent flow (persistent voice prompt + per-turn user audio):
+
+```bash
+uv run python examples/moss_tts_realtime_multiturn_agent.py \
+  --model OpenMOSS-Team/MOSS-TTS-Realtime \
+  --save-chunks
+```
+
+- Full family album export (all variants + shareable manifest files):
+
+```bash
+uv run python examples/moss_tts_showcase_album.py \
+  --output-dir outputs/moss_tts_showcase_album
+```
+
+`moss_tts_showcase_album.py` writes `showcase_album.json` and
+`showcase_album.md` alongside generated tracks.
 
 ## Generation Controls
 

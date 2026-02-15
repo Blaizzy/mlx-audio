@@ -180,6 +180,7 @@ OpenMOSS MOSS-TTS variants are available through the unified MOSS runtime (`moss
 
 See the [MOSS-TTS README](mlx_audio/tts/models/moss_tts/README.md) for presets, CLI recipes, and parity artifacts.
 Pronunciation-control guidance (tone-numbered pinyin, `/.../`-wrapped IPA, and optional helper conversion flows) is covered there and in [`examples/moss_tts_pronunciation_control.py`](examples/moss_tts_pronunciation_control.py).
+Phase 7 showcase scripts include [`examples/moss_tts_continuation_showcase.py`](examples/moss_tts_continuation_showcase.py), [`examples/moss_tts_realtime_multiturn_agent.py`](examples/moss_tts_realtime_multiturn_agent.py), and [`examples/moss_tts_showcase_album.py`](examples/moss_tts_showcase_album.py).
 For realtime session controls (voice-prompt API, prompt packing, repetition-window sampling), see [MOSS-TTS-Realtime README](mlx_audio/tts/models/moss_tts_realtime/README.md).
 
 ### CSM (Voice Cloning)
