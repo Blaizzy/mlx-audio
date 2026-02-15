@@ -10,7 +10,6 @@ from typing import Dict, Optional
 
 from .request import MossNormalizedRequest
 
-
 MOSS_VARIANT_DIRS = {
     "MOSS-TTS": "MOSS-TTS",
     "MOSS-TTS-Local": "MOSS-TTS-Local-Transformer",

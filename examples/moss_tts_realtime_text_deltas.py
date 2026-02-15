@@ -24,7 +24,10 @@ import mlx.core as mx
 import numpy as np
 
 from mlx_audio.audio_io import write as audio_write
-from mlx_audio.tts.models.moss_tts_realtime import MossTTSRealtimeInference, RealtimeSession
+from mlx_audio.tts.models.moss_tts_realtime import (
+    MossTTSRealtimeInference,
+    RealtimeSession,
+)
 from mlx_audio.tts.utils import load_model
 from mlx_audio.utils import load_audio
 
@@ -184,8 +187,12 @@ def _load_text_deltas(args: argparse.Namespace) -> list[str]:
     return [text[idx : idx + step] for idx in range(0, len(text), step)]
 
 
-def _iter_chunks(session: RealtimeSession, deltas: Iterable[str], hold_back: int, drain_step: int):
-    for chunk in session.bridge_text_stream(deltas, hold_back=hold_back, drain_step=drain_step):
+def _iter_chunks(
+    session: RealtimeSession, deltas: Iterable[str], hold_back: int, drain_step: int
+):
+    for chunk in session.bridge_text_stream(
+        deltas, hold_back=hold_back, drain_step=drain_step
+    ):
         if int(chunk.shape[0]) > 0:
             yield chunk
 

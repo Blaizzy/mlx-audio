@@ -72,20 +72,24 @@ class MossAudioTokenizerTransformerConfig:
             num_layers=int(module_config.num_layers),
             dim_feedforward=int(dim_feedforward),
             causal=bool(
-                module_config.causal
-                if module_config.causal is not None
-                else True
+                module_config.causal if module_config.causal is not None else True
             ),
-            norm=str(module_config.norm if module_config.norm is not None else "layer_norm"),
+            norm=str(
+                module_config.norm if module_config.norm is not None else "layer_norm"
+            ),
             positional_embedding=str(
                 module_config.positional_embedding
                 if module_config.positional_embedding is not None
                 else "rope"
             ),
             max_period=float(
-                module_config.max_period if module_config.max_period is not None else 10000
+                module_config.max_period
+                if module_config.max_period is not None
+                else 10000
             ),
-            gating=str(module_config.gating if module_config.gating is not None else "none"),
+            gating=str(
+                module_config.gating if module_config.gating is not None else "none"
+            ),
             layer_scale=(
                 float(module_config.layer_scale)
                 if module_config.layer_scale is not None
@@ -175,9 +179,7 @@ class MossAudioTokenizerMultiheadAttention(nn.Module):
 
         self.rope = None
         if config.positional_embedding in {"rope", "sin_rope"}:
-            self.rope = nn.RoPE(
-                self.head_dim, traditional=True, base=config.max_period
-            )
+            self.rope = nn.RoPE(self.head_dim, traditional=True, base=config.max_period)
 
     def __call__(
         self,
@@ -187,9 +189,7 @@ class MossAudioTokenizerMultiheadAttention(nn.Module):
     ) -> mx.array:
         batch_size, time_steps, hidden_dim = x.shape
         if hidden_dim != self.embed_dim:
-            raise ValueError(
-                f"Expected hidden dim {self.embed_dim}, got {hidden_dim}"
-            )
+            raise ValueError(f"Expected hidden dim {self.embed_dim}, got {hidden_dim}")
 
         offset = 0 if cache is None else int(cache.offset)
         projected = _apply_weights_per_step(
@@ -287,16 +287,14 @@ class MossAudioTokenizerTransformer(nn.Module):
         super().__init__()
         self.config = config
         self.layers = [
-            MossAudioTokenizerTransformerLayer(config)
-            for _ in range(config.num_layers)
+            MossAudioTokenizerTransformerLayer(config) for _ in range(config.num_layers)
         ]
 
     def make_cache(self) -> list[KVCache | RotatingKVCache]:
         if self.config.context is None:
             return [KVCache() for _ in self.layers]
         return [
-            RotatingKVCache(max_size=self.config.context, keep=0)
-            for _ in self.layers
+            RotatingKVCache(max_size=self.config.context, keep=0) for _ in self.layers
         ]
 
     def __call__(
@@ -341,12 +339,16 @@ class MossAudioTokenizerProjectedTransformer(nn.Module):
         if config.input_dimension == config.d_model:
             self.input_proj = None
         else:
-            self.input_proj = nn.Linear(config.input_dimension, config.d_model, bias=False)
+            self.input_proj = nn.Linear(
+                config.input_dimension, config.d_model, bias=False
+            )
         self.transformer = MossAudioTokenizerTransformer(config)
         if config.output_dimension == config.d_model:
             self.output_proj = None
         else:
-            self.output_proj = nn.Linear(config.d_model, config.output_dimension, bias=False)
+            self.output_proj = nn.Linear(
+                config.d_model, config.output_dimension, bias=False
+            )
 
     def make_cache(self) -> list[KVCache | RotatingKVCache]:
         return self.transformer.make_cache()
@@ -420,4 +422,3 @@ class MossAudioTokenizerPatchedPretransform(nn.Module):
         if self.is_downsample:
             return self.encode(x, input_lengths)
         return self.decode(x, input_lengths)
-

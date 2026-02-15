@@ -171,7 +171,10 @@ def test_tts_speech(client, mock_model_provider):
     assert kwargs.get("ambient_sound") == payload["ambient_sound"]
     assert kwargs.get("language") == payload["language"]
     assert kwargs.get("preset") == payload["preset"]
-    assert kwargs.get("decode_chunk_duration") == payload["model_kwargs"]["decode_chunk_duration"]
+    assert (
+        kwargs.get("decode_chunk_duration")
+        == payload["model_kwargs"]["decode_chunk_duration"]
+    )
 
     try:
         audio_data, sample_rate = audio_read(io.BytesIO(response.content))

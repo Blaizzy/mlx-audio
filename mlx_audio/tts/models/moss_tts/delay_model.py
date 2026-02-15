@@ -65,7 +65,9 @@ class MossTTSDelayModel(nn.Module):
 
         embeddings = self.text_embedding(input_ids[:, :, 0])
         for channel_idx in range(n_vq_for_inference):
-            embeddings = embeddings + self.emb_ext[channel_idx](input_ids[:, :, channel_idx + 1])
+            embeddings = embeddings + self.emb_ext[channel_idx](
+                input_ids[:, :, channel_idx + 1]
+            )
         return embeddings.astype(mx.float32)
 
     def __call__(
@@ -94,7 +96,10 @@ class MossTTSDelayModel(nn.Module):
         channels_for_step = 1 + n_vq_for_inference
         for channel_idx in range(channels_for_step):
             head_logits = self.lm_heads[channel_idx](global_hidden_state)
-            if channel_idx > 0 and 0 <= self.config.audio_pad_code < head_logits.shape[-1]:
+            if (
+                channel_idx > 0
+                and 0 <= self.config.audio_pad_code < head_logits.shape[-1]
+            ):
                 token_ids = mx.arange(head_logits.shape[-1], dtype=mx.int32)
                 pad_mask = token_ids == int(self.config.audio_pad_code)
                 head_logits = mx.where(pad_mask[None, :], -mx.inf, head_logits)

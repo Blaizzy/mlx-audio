@@ -21,9 +21,7 @@ def build_moss_audio_tokenizer_encoder_modules(
     for module_config in config.encoder_modules:
         if module_config.module_type == "PatchedPretransform":
             if module_config.patch_size is None:
-                raise ValueError(
-                    "PatchedPretransform in encoder is missing patch_size"
-                )
+                raise ValueError("PatchedPretransform in encoder is missing patch_size")
             module = MossAudioTokenizerPatchedPretransform(
                 patch_size=int(module_config.patch_size),
                 is_downsample=True,
@@ -48,4 +46,3 @@ def build_moss_audio_tokenizer_encoder_modules(
         current_frame_rate /= int(getattr(module, "downsample_ratio", 1))
 
     return modules
-

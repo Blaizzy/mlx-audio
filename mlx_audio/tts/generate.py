@@ -250,7 +250,9 @@ def generate_audio(
             dialogue_speakers = []
             for item in raw:
                 if not isinstance(item, dict):
-                    raise ValueError("Each dialogue_speakers item must be a JSON object")
+                    raise ValueError(
+                        "Each dialogue_speakers item must be a JSON object"
+                    )
                 dialogue_speakers.append(item)
 
         print(
@@ -379,7 +381,9 @@ def generate_audio(
                 format=audio_format,
             )
             if verbose:
-                print(f"✅ Audio successfully generated and saving as: {joined_file_name}")
+                print(
+                    f"✅ Audio successfully generated and saving as: {joined_file_name}"
+                )
 
         if play:
             player.wait_for_drain()
@@ -455,7 +459,9 @@ def parse_args():
         default=None,
         help="Instruction for CustomVoice (emotion/style) or VoiceDesign (voice description)",
     )
-    parser.add_argument("--quality", type=str, default=None, help="Quality hint for supported models")
+    parser.add_argument(
+        "--quality", type=str, default=None, help="Quality hint for supported models"
+    )
     parser.add_argument(
         "--sound_event",
         type=str,

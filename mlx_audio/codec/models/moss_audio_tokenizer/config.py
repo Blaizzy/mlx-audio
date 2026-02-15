@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-
 LEGACY_MODEL_TYPES = {"speech_tokenizer", "moss-audio-tokenizer"}
 CANONICAL_MODEL_TYPE = "moss_audio_tokenizer"
 

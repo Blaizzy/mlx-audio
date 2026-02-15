@@ -255,7 +255,9 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
         assert full.audio_lengths is not None
 
         chunks = list(
-            model.streaming_decode(enc.audio_codes[:1], chunk_tokens=2, num_quantizers=1)
+            model.streaming_decode(
+                enc.audio_codes[:1], chunk_tokens=2, num_quantizers=1
+            )
         )
         stream_concat = mx.concatenate(chunks, axis=-1)
         self.assertEqual(stream_concat.shape[-1], int(full.audio_lengths[0]))
@@ -514,7 +516,9 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
             name: tuple(value.shape) for name, value in tree_flatten(model.parameters())
         }
         linear_key = next(
-            key for key in expected_shapes if key.endswith("encoder.1.transformer.layers.0.linear1.weight")
+            key
+            for key in expected_shapes
+            if key.endswith("encoder.1.transformer.layers.0.linear1.weight")
         )
         linear_shape = expected_shapes[linear_key]
 
@@ -549,9 +553,7 @@ class TestMossAudioTokenizerModel(unittest.TestCase):
             "quantizer.input_proj.parametrizations.weight.original1", sanitized
         )
         self.assertTrue(
-            np.allclose(
-                np.array(sanitized[linear_key]), np.array(weights[linear_key])
-            )
+            np.allclose(np.array(sanitized[linear_key]), np.array(weights[linear_key]))
         )
 
     def test_from_pretrained_loads_local_directory(self):

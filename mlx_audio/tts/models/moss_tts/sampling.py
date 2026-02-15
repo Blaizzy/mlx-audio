@@ -38,7 +38,9 @@ def resolve_channel_sampling_configs(
 
     configs: List[ChannelSamplingConfig] = []
     for channel_idx in range(num_channels):
-        layer_cfg = {} if layers is None or channel_idx >= len(layers) else layers[channel_idx]
+        layer_cfg = (
+            {} if layers is None or channel_idx >= len(layers) else layers[channel_idx]
+        )
         do_sample = (
             do_samples[channel_idx]
             if do_samples is not None and channel_idx < len(do_samples)

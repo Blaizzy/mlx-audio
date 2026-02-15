@@ -139,7 +139,9 @@ class _FakeRealtimeModel:
             raise ValueError(f"Expected [B, T, C], got {input_ids.shape}")
         self.model_call_shapes.append(tuple(int(dim) for dim in input_ids.shape))
         if cache:
-            cache[0].offset = int(getattr(cache[0], "offset", 0)) + int(input_ids.shape[1])
+            cache[0].offset = int(getattr(cache[0], "offset", 0)) + int(
+                input_ids.shape[1]
+            )
         batch = int(input_ids.shape[0])
         time_steps = int(input_ids.shape[1])
         return mx.zeros((batch, time_steps, self.hidden_size), dtype=mx.float32)
@@ -311,12 +313,16 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
             "embed_tokens.weight": mx.ones((4, 4)),
             "local_transformer.model.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
             "local_transformer.model.embed_tokens.0.weight": mx.ones((4, 4)),
-            "model.local_transformer.model.layers.0.self_attn.k_proj.weight": mx.ones((4, 4)),
+            "model.local_transformer.model.layers.0.self_attn.k_proj.weight": mx.ones(
+                (4, 4)
+            ),
             "model.local_transformer.model.embed_tokens.1.weight": mx.ones((4, 4)),
             "local_transformer.local_lm_heads.0.weight": mx.ones((4, 4)),
             "model.local_transformer.local_lm_heads.1.weight": mx.ones((4, 4)),
             "local_transformer.layer_norm_before_lm_heads.0.weight": mx.ones((4,)),
-            "model.local_transformer.layer_norm_before_lm_heads.1.weight": mx.ones((4,)),
+            "model.local_transformer.layer_norm_before_lm_heads.1.weight": mx.ones(
+                (4,)
+            ),
             "local_transformer.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
             "speech_embedding_to_local_mlp.gate_proj.weight": mx.ones((4, 4)),
             "local_to_speech_embedding_mlps.0.gate_proj.weight": mx.ones((4, 4)),
@@ -330,8 +336,12 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
         self.assertIn("model.embedding_list.1.weight", sanitized)
         self.assertIn("model.embedding_list.2.weight", sanitized)
         self.assertIn("model.embedding_list.0.weight", sanitized)
-        self.assertIn("model.local_transformer.layers.0.self_attn.k_proj.weight", sanitized)
-        self.assertIn("model.local_transformer.layers.0.self_attn.q_proj.weight", sanitized)
+        self.assertIn(
+            "model.local_transformer.layers.0.self_attn.k_proj.weight", sanitized
+        )
+        self.assertIn(
+            "model.local_transformer.layers.0.self_attn.q_proj.weight", sanitized
+        )
         self.assertIn("model.lm_heads.0.weight", sanitized)
         self.assertIn("model.lm_heads.1.weight", sanitized)
         self.assertIn("model.layer_norm_before_lm_heads.1.weight", sanitized)
@@ -351,11 +361,17 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
         self.assertFalse(
             model.model_quant_predicate("model.embedding_list.0", nn.Embedding(2, 2))
         )
-        self.assertFalse(model.model_quant_predicate("model.lm_heads.0", nn.Linear(2, 2)))
         self.assertFalse(
-            model.model_quant_predicate("model.layer_norm_before_lm_heads.0", nn.RMSNorm(2))
+            model.model_quant_predicate("model.lm_heads.0", nn.Linear(2, 2))
         )
-        self.assertTrue(model.model_quant_predicate("model.backbone.layers.0", nn.Linear(2, 2)))
+        self.assertFalse(
+            model.model_quant_predicate(
+                "model.layer_norm_before_lm_heads.0", nn.RMSNorm(2)
+            )
+        )
+        self.assertTrue(
+            model.model_quant_predicate("model.backbone.layers.0", nn.Linear(2, 2))
+        )
 
     def test_realtime_model_applies_preset_defaults(self):
         config = ModelConfig.from_dict(_tiny_realtime_config_dict())
@@ -414,12 +430,15 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
         model.processor = _PresetProcessor()
         model.tokenizer = _TinyTokenizer()
 
-        with patch(
-            "mlx_audio.tts.models.moss_tts_realtime.model.MossTTSRealtimeInference",
-            return_value=SimpleNamespace(),
-        ), patch(
-            "mlx_audio.tts.models.moss_tts_realtime.model.RealtimeSession",
-            side_effect=lambda **kwargs: _PresetSession(**kwargs),
+        with (
+            patch(
+                "mlx_audio.tts.models.moss_tts_realtime.model.MossTTSRealtimeInference",
+                return_value=SimpleNamespace(),
+            ),
+            patch(
+                "mlx_audio.tts.models.moss_tts_realtime.model.RealtimeSession",
+                side_effect=lambda **kwargs: _PresetSession(**kwargs),
+            ),
         ):
             results = list(
                 model.generate(
@@ -519,7 +538,9 @@ class TestMossTTSRealtimeInferencerTransitions(unittest.TestCase):
         config, _, inferencer = self._build_inferencer(eos_after=5)
         turn = mx.full((2, config.channels), config.audio_pad_token, dtype=mx.int32)
         turn[:, 0] = config.text_pad
-        inferencer.prefill(input_ids=turn, text_prefix_ids=[1, 2], do_sample=False, top_k=0)
+        inferencer.prefill(
+            input_ids=turn, text_prefix_ids=[1, 2], do_sample=False, top_k=0
+        )
         self.assertIsNotNone(inferencer.cache)
         cache_ref = inferencer.cache
 
@@ -573,7 +594,9 @@ class TestMossTTSRealtimeInferencerTransitions(unittest.TestCase):
         )
         turn = mx.full((2, config.channels), config.audio_pad_token, dtype=mx.int32)
         turn[:, 0] = config.text_pad
-        inferencer.prefill(input_ids=turn, text_prefix_ids=[1, 2], do_sample=False, top_k=0)
+        inferencer.prefill(
+            input_ids=turn, text_prefix_ids=[1, 2], do_sample=False, top_k=0
+        )
         self.assertGreaterEqual(model.make_cache_calls, 2)
 
     def test_repetition_window_flows_through_prefill_step_finish(self):
@@ -668,10 +691,14 @@ class TestMossTTSRealtimeSessionLifecycle(unittest.TestCase):
         session.reset_turn("hello", include_system_prompt=False, reset_cache=False)
         session.push_text_tokens([1, 2])
 
-        with self.assertRaisesRegex(RuntimeError, "drain\\(\\) must be called before reset_turn"):
+        with self.assertRaisesRegex(
+            RuntimeError, "drain\\(\\) must be called before reset_turn"
+        ):
             session.reset_turn("next", include_system_prompt=False, reset_cache=False)
 
-        with self.assertRaisesRegex(RuntimeError, "end_text\\(\\) \\+ drain\\(\\) are required"):
+        with self.assertRaisesRegex(
+            RuntimeError, "end_text\\(\\) \\+ drain\\(\\) are required"
+        ):
             session.reset(reset_cache=False)
 
     def test_end_text_and_drain_lifecycle_then_close(self):
@@ -791,11 +818,7 @@ class TestMossTTSRealtimeBridgeParity(unittest.TestCase):
         recording_session = _RecordingSession(tokenizer)
         bridge = RealtimeTextDeltaBridge(recording_session, hold_back=0)
 
-        full_text = (
-            "\u4f60\u597d "
-            "\u0645\u0631\u062d\u0628\u0627 "
-            "hello"
-        )
+        full_text = "\u4f60\u597d " "\u0645\u0631\u062d\u0628\u0627 " "hello"
         bridge.push_text_delta("\u4f60\u597d ")
         bridge.push_text_delta("\u0645\u0631\u062d\u0628\u0627 ")
         bridge.push_text_delta("hello")
@@ -822,7 +845,9 @@ class TestMossTTSRealtimePromptPackingParity(unittest.TestCase):
 
         system_prompt = processor.make_ensemble(voice_prompt_tokens)
         system_prompt_np = np.array(system_prompt)
-        placeholder_rows = np.where(system_prompt_np[:, 0] == processor.audio_pad_token_id)[0]
+        placeholder_rows = np.where(
+            system_prompt_np[:, 0] == processor.audio_pad_token_id
+        )[0]
 
         self.assertEqual(len(placeholder_rows), 2)
         np.testing.assert_array_equal(
@@ -870,7 +895,9 @@ class TestMossTTSRealtimePromptPackingParity(unittest.TestCase):
                 np.array(assistant_boundary, dtype=np.int32),
             )
 
-    def test_reset_turn_build_and_input_override_share_same_shape_and_voice_separation(self):
+    def test_reset_turn_build_and_input_override_share_same_shape_and_voice_separation(
+        self,
+    ):
         config = self._build_config()
         processor = _build_prompt_parity_processor(config)
         inferencer = MossTTSRealtimeInference(
@@ -906,7 +933,9 @@ class TestMossTTSRealtimePromptPackingParity(unittest.TestCase):
             include_system_prompt=True,
             reset_cache=False,
         )
-        np.testing.assert_array_equal(np.array(session._turn_input_ids), np.array(built))
+        np.testing.assert_array_equal(
+            np.array(session._turn_input_ids), np.array(built)
+        )
 
         session.reset(reset_cache=False)
         session.reset_turn(
@@ -920,7 +949,9 @@ class TestMossTTSRealtimePromptPackingParity(unittest.TestCase):
         packed_np = np.array(built[0])
         system_prompt = np.array(processor.make_ensemble(normalized_voice_tokens))
         user_prompt = np.array(processor.make_user_prompt("hello", user_audio_tokens))
-        np.testing.assert_array_equal(packed_np[: system_prompt.shape[0]], system_prompt)
+        np.testing.assert_array_equal(
+            packed_np[: system_prompt.shape[0]], system_prompt
+        )
         np.testing.assert_array_equal(packed_np[system_prompt.shape[0] :], user_prompt)
 
         session.clear_voice_prompt_tokens()
@@ -1191,7 +1222,9 @@ class TestMossTTSRealtimeSyntheticSoak(unittest.TestCase):
             self.assertGreater(len(chunks), 0)
             self.assertTrue(all(int(chunk.shape[0]) > 0 for chunk in chunks))
 
-            peak_pending_frames = max(peak_pending_frames, session.decoder.pending_frames)
+            peak_pending_frames = max(
+                peak_pending_frames, session.decoder.pending_frames
+            )
             if inferencer.cache:
                 max_cache_offset = max(
                     max_cache_offset,

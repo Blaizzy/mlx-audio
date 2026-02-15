@@ -13,8 +13,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import mlx.core as mx
@@ -22,7 +22,6 @@ import numpy as np
 
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.utils import load_model
-
 
 DEFAULT_TEXT = (
     "Long-form synthesis in MOSS-TTS works by planning bounded text segments, "
@@ -35,7 +34,9 @@ DEFAULT_TEXT = (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MOSS-TTS long-form generation example")
+    parser = argparse.ArgumentParser(
+        description="MOSS-TTS long-form generation example"
+    )
     parser.add_argument(
         "--model",
         default="OpenMOSS-Team/MOSS-TTS-Local-Transformer",

@@ -101,7 +101,9 @@ class MossAudioTokenizerLFQ(nn.Module):
         return z_q.astype(mx.float32)
 
     def _decode_latents(self, latents: mx.array) -> tuple[mx.array, mx.array]:
-        encodings = latents.swapaxes(1, 2).reshape(-1, latents.shape[1]).astype(mx.float32)
+        encodings = (
+            latents.swapaxes(1, 2).reshape(-1, latents.shape[1]).astype(mx.float32)
+        )
         codebook = self.codebook.weight.astype(mx.float32)
 
         encodings = _l2_normalize(encodings, axis=-1)
@@ -112,8 +114,8 @@ class MossAudioTokenizerLFQ(nn.Module):
             - 2.0 * (encodings @ codebook.transpose())
             + mx.sum(codebook**2, axis=1)[None, :]
         )
-        indices = mx.argmax(-distances, axis=1).reshape(latents.shape[0], -1).astype(
-            mx.int32
+        indices = (
+            mx.argmax(-distances, axis=1).reshape(latents.shape[0], -1).astype(mx.int32)
         )
         z_q = self.decode_code_wo_out_proj(indices)
         return z_q.astype(mx.float32), indices
@@ -149,9 +151,7 @@ class MossAudioTokenizerResidualVQ(nn.Module):
             Conv1d(input_dim, rvq_dim, 1, bias=True) if input_dim != rvq_dim else None
         )
         self.output_proj = (
-            Conv1d(rvq_dim, output_dim, 1, bias=True)
-            if rvq_dim != output_dim
-            else None
+            Conv1d(rvq_dim, output_dim, 1, bias=True) if rvq_dim != output_dim else None
         )
         self.quantizers = [
             MossAudioTokenizerVectorQuantize(
@@ -191,7 +191,11 @@ class MossAudioTokenizerResidualVQ(nn.Module):
 
         if self.output_proj is not None:
             quantized_out = self.output_proj(quantized_out)
-        return quantized_out.astype(mx.float32), audio_codes, input_length.astype(mx.int32)
+        return (
+            quantized_out.astype(mx.float32),
+            audio_codes,
+            input_length.astype(mx.int32),
+        )
 
     def decode_codes(self, codes: mx.array) -> mx.array:
         nq, batch_size, time_steps = codes.shape
@@ -225,9 +229,7 @@ class MossAudioTokenizerResidualLFQ(nn.Module):
             Conv1d(input_dim, rvq_dim, 1, bias=True) if input_dim != rvq_dim else None
         )
         self.output_proj = (
-            Conv1d(rvq_dim, output_dim, 1, bias=True)
-            if rvq_dim != output_dim
-            else None
+            Conv1d(rvq_dim, output_dim, 1, bias=True) if rvq_dim != output_dim else None
         )
         self.quantizers = [
             MossAudioTokenizerLFQ(
@@ -267,7 +269,11 @@ class MossAudioTokenizerResidualLFQ(nn.Module):
 
         if self.output_proj is not None:
             quantized_out = self.output_proj(quantized_out)
-        return quantized_out.astype(mx.float32), audio_codes, input_length.astype(mx.int32)
+        return (
+            quantized_out.astype(mx.float32),
+            audio_codes,
+            input_length.astype(mx.int32),
+        )
 
     def decode_codes(self, codes: mx.array) -> mx.array:
         nq, batch_size, time_steps = codes.shape

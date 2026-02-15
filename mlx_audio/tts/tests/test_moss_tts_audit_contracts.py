@@ -19,7 +19,9 @@ def _fixtures_root() -> Path:
 
 class TestMossPhase0Audit(unittest.TestCase):
     def test_load_variant_invariants_from_fixture_configs(self):
-        invariants = load_moss_variant_invariants(_fixtures_root() / "MOSS-TTS-HF-Repos")
+        invariants = load_moss_variant_invariants(
+            _fixtures_root() / "MOSS-TTS-HF-Repos"
+        )
 
         self.assertEqual(
             set(invariants.keys()),
@@ -48,7 +50,9 @@ class TestMossPhase0Audit(unittest.TestCase):
         self.assertFalse(invariants["MOSS-TTS"].has_local_transformer)
 
     def test_audio_tokenizer_fixture_has_expected_contract(self):
-        audit = load_moss_audio_tokenizer_audit(_fixtures_root() / "MOSS-Audio-Tokenizer")
+        audit = load_moss_audio_tokenizer_audit(
+            _fixtures_root() / "MOSS-Audio-Tokenizer"
+        )
         self.assertIsNone(audit.commit_hash)
         self.assertEqual(audit.frame_rate_hz, 12.5)
         self.assertEqual(audit.num_quantizers, 32)

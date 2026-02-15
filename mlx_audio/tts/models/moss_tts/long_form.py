@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import re
+from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 import mlx.core as mx
@@ -12,7 +12,7 @@ import numpy as np
 from .request import MOSS_AUDIO_TOKENS_PER_SECOND
 
 _SENTENCE_ENDING_CHARS = frozenset(".!?;。！？；")
-_TRAILING_CLOSERS = frozenset('"\'”’)]}》】」』')
+_TRAILING_CLOSERS = frozenset("\"'”’)]}》】」』")
 
 
 @dataclass(frozen=True)
@@ -182,11 +182,15 @@ def _choose_boundary(
     target_end: int,
     max_end: int,
 ) -> Optional[int]:
-    filtered = [candidate for candidate in candidates if min_end <= candidate <= max_end]
+    filtered = [
+        candidate for candidate in candidates if min_end <= candidate <= max_end
+    ]
     if not filtered:
         return None
     # Deterministic tie-break: nearest target, then later split (larger chunk).
-    return min(filtered, key=lambda candidate: (abs(candidate - target_end), -candidate))
+    return min(
+        filtered, key=lambda candidate: (abs(candidate - target_end), -candidate)
+    )
 
 
 def plan_text_segments(

@@ -20,7 +20,9 @@ from mlx_audio.tts.generate import generate_audio
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="MOSS-TTSD multi-speaker dialogue example")
+    parser = argparse.ArgumentParser(
+        description="MOSS-TTSD multi-speaker dialogue example"
+    )
     parser.add_argument(
         "--model",
         default="OpenMOSS-Team/MOSS-TTSD-v1.0",

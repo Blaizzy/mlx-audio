@@ -100,7 +100,9 @@ class _DummyAudioTokenizer:
         lengths = mx.full((batch,), 2, dtype=mx.int32)
         return SimpleNamespace(audio_codes=codes, audio_codes_lengths=lengths)
 
-    def decode(self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None):
+    def decode(
+        self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None
+    ):
         del return_dict, chunk_duration, num_quantizers
         if audio_codes.ndim == 2:
             steps = int(audio_codes.shape[1])
@@ -208,7 +210,12 @@ class TestMossTTSLongFormContinuity(unittest.TestCase):
         self.assertLessEqual(int(next_state.prefix_audio.shape[0]), 96)
         self.assertIsNotNone(next_state.prefix_text)
         self.assertLessEqual(len(next_state.prefix_text), 16)
-        self.assertIn("delta", compose_segment_text(segment_text="tail", prefix_text=next_state.prefix_text))
+        self.assertIn(
+            "delta",
+            compose_segment_text(
+                segment_text="tail", prefix_text=next_state.prefix_text
+            ),
+        )
 
 
 class TestMossTTSLongFormBoundaryQuality(unittest.TestCase):
@@ -271,9 +278,13 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
             del kwargs
             idx = len(captured_requests)
             captured_requests.append(request)
-            return self._make_segment_result(model, samples=120 + idx * 10, token_count=40)
+            return self._make_segment_result(
+                model, samples=120 + idx * 10, token_count=40
+            )
 
-        with patch.object(model, "_generate_single_segment_result", side_effect=fake_segment):
+        with patch.object(
+            model, "_generate_single_segment_result", side_effect=fake_segment
+        ):
             results = list(
                 model.generate(
                     text=long_text,
@@ -290,8 +301,13 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         self.assertGreater(len(model._last_long_form_segment_metrics), 1)
-        self.assertEqual(results[0].prompt.get("segments"), len(model._last_long_form_segment_metrics))
-        self.assertEqual(len(captured_requests), len(model._last_long_form_segment_metrics))
+        self.assertEqual(
+            results[0].prompt.get("segments"),
+            len(model._last_long_form_segment_metrics),
+        )
+        self.assertEqual(
+            len(captured_requests), len(model._last_long_form_segment_metrics)
+        )
         self.assertEqual(
             len(model._last_long_form_boundary_metrics),
             max(0, len(model._last_long_form_segment_metrics) - 1),
@@ -301,7 +317,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
         self.assertIsNotNone(captured_requests[1].reference)
         self.assertIsInstance(captured_requests[1].reference[-1], mx.array)
         self.assertIn("\n", captured_requests[1].text)
-        self.assertEqual(model._last_long_form_segment_metrics[0].boundary_note, "segment-start")
+        self.assertEqual(
+            model._last_long_form_segment_metrics[0].boundary_note, "segment-start"
+        )
 
     def test_long_form_retries_segment_deterministically(self):
         model = self._build_model()
@@ -315,7 +333,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
                 raise RuntimeError("synthetic first-attempt failure")
             return self._make_segment_result(model, samples=100, token_count=24)
 
-        with patch.object(model, "_generate_single_segment_result", side_effect=flaky_segment):
+        with patch.object(
+            model, "_generate_single_segment_result", side_effect=flaky_segment
+        ):
             results = list(
                 model.generate(
                     text=long_text,
@@ -331,7 +351,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
             )
 
         self.assertEqual(len(results), 1)
-        self.assertGreater(call_state["calls"], len(model._last_long_form_segment_metrics))
+        self.assertGreater(
+            call_state["calls"], len(model._last_long_form_segment_metrics)
+        )
         self.assertEqual(model._last_long_form_segment_metrics[0].retry_count, 1)
 
     def test_long_form_streaming_emits_monotonic_chunks_without_silent_drop(self):
@@ -352,7 +374,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
                 end_value=float(idx) + 1.0,
             )
 
-        with patch.object(model, "_generate_single_segment_result", side_effect=fake_segment):
+        with patch.object(
+            model, "_generate_single_segment_result", side_effect=fake_segment
+        ):
             streamed = list(
                 model.generate(
                     text=long_text,
@@ -375,7 +399,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
 
         cumulative = [int(result.prompt["cumulative_samples"]) for result in streamed]
         self.assertEqual(cumulative, sorted(cumulative))
-        self.assertEqual(cumulative[-1], sum(int(result.samples) for result in streamed))
+        self.assertEqual(
+            cumulative[-1], sum(int(result.samples) for result in streamed)
+        )
 
     def test_long_form_non_stream_metrics_are_monotonic_and_non_silent(self):
         model = self._build_model()
@@ -395,7 +421,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
                 end_value=float(idx) + 0.5,
             )
 
-        with patch.object(model, "_generate_single_segment_result", side_effect=fake_segment):
+        with patch.object(
+            model, "_generate_single_segment_result", side_effect=fake_segment
+        ):
             results = list(
                 model.generate(
                     text=long_text,
@@ -411,7 +439,8 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         segment_samples = [
-            int(metric.emitted_samples) for metric in model._last_long_form_segment_metrics
+            int(metric.emitted_samples)
+            for metric in model._last_long_form_segment_metrics
         ]
         self.assertTrue(all(samples > 0 for samples in segment_samples))
 
@@ -431,7 +460,9 @@ class TestMossTTSLongFormOrchestrator(unittest.TestCase):
             segment_mock.side_effect = lambda **kwargs: self._make_segment_result(
                 model, samples=90, token_count=20
             )
-            with patch("mlx_audio.tts.models.moss_tts.model.mx.clear_cache") as clear_cache_mock:
+            with patch(
+                "mlx_audio.tts.models.moss_tts.model.mx.clear_cache"
+            ) as clear_cache_mock:
                 list(
                     model.generate(
                         text=long_text,

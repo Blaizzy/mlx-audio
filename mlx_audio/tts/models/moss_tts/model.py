@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Mapping, Optional, Sequence, Union
 
@@ -38,9 +38,9 @@ from .long_form import (
     merge_reference_with_prefix_audio,
     plan_text_segments,
 )
+from .presets import MOSS_TTS_RUNTIME, resolve_sampling_preset
 from .processor import MossTTSProcessor
 from .pronunciation import validate_input_type
-from .presets import MOSS_TTS_RUNTIME, resolve_sampling_preset
 from .request import MossNormalizedRequest
 from .sampling import resolve_channel_sampling_configs, sample_channel_token
 
@@ -483,6 +483,7 @@ class Model(nn.Module):
                     input_ids=input_ids,
                     sampling_cfg=sampling_cfg,
                     effective_max_tokens=effective_max_tokens,
+                    stop_on_audio_end=request.tokens is None,
                     n_vq_for_inference=n_vq_for_inference,
                     stream=False,
                     streaming_interval=2.0,
@@ -698,6 +699,7 @@ class Model(nn.Module):
         input_ids: mx.array,
         sampling_cfg,
         effective_max_tokens: int,
+        stop_on_audio_end: bool,
         n_vq_for_inference: int,
         stream: bool,
         streaming_interval: float,
@@ -728,7 +730,9 @@ class Model(nn.Module):
             if text_token == self.config.audio_assistant_gen_slot_token_id:
                 audio_rows.append(next_tokens[0, 1 : 1 + n_vq_for_inference])
 
-            if text_token == self.config.audio_end_token_id:
+            if text_token == self.config.im_end_token_id:
+                break
+            if stop_on_audio_end and text_token == self.config.audio_end_token_id:
                 break
 
             hidden_states = self.model(
@@ -1143,6 +1147,7 @@ class Model(nn.Module):
                 input_ids=input_ids,
                 sampling_cfg=sampling_cfg,
                 effective_max_tokens=effective_max_tokens,
+                stop_on_audio_end=request.tokens is None,
                 n_vq_for_inference=local_n_vq_for_inference,
                 stream=stream,
                 streaming_interval=streaming_interval,

@@ -58,9 +58,9 @@ class RealtimeNormalizedRequest:
             )
         return cls(
             text=resolved_text,
-            include_system_prompt=True
-            if include_system_prompt is None
-            else bool(include_system_prompt),
+            include_system_prompt=(
+                True if include_system_prompt is None else bool(include_system_prompt)
+            ),
             reset_cache=True if reset_cache is None else bool(reset_cache),
             chunk_frames=40 if chunk_frames is None else int(chunk_frames),
             overlap_frames=4 if overlap_frames is None else int(overlap_frames),

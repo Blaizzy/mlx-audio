@@ -29,7 +29,9 @@ class MossTTSMLP(nn.Module):
         self.down_proj = nn.Linear(hidden_size, output_size, bias=False)
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
-        return self.down_proj(nn.silu(self.gate_proj(hidden_states)) * self.up_proj(hidden_states))
+        return self.down_proj(
+            nn.silu(self.gate_proj(hidden_states)) * self.up_proj(hidden_states)
+        )
 
 
 class MossTTSLocalModel(nn.Module):
@@ -55,7 +57,9 @@ class MossTTSLocalModel(nn.Module):
         ]
 
         self.backbone = MossTTSBackbone(config.language_config)
-        self.local_transformer = MossTTSLocalTransformer(config.local_transformer_config())
+        self.local_transformer = MossTTSLocalTransformer(
+            config.local_transformer_config()
+        )
 
         local_hidden_size = self.local_transformer.config.hidden_size
         self.speech_embedding_to_local_mlp = MossTTSMLP(
@@ -114,7 +118,9 @@ class MossTTSLocalModel(nn.Module):
             dtype=self.embedding_list[0].weight.dtype,
         )
         for channel_idx in range(1 + n_vq_for_inference):
-            fused = fused + self.embedding_list[channel_idx](input_ids[:, :, channel_idx])
+            fused = fused + self.embedding_list[channel_idx](
+                input_ids[:, :, channel_idx]
+            )
         return fused
 
     def __call__(
@@ -162,7 +168,9 @@ class MossTTSLocalModel(nn.Module):
             )
             local_outputs = self.local_transformer(local_inputs)
             hidden_state = local_outputs[:, -1, :]
-            hidden_state = self.local_to_speech_embedding_mlps[channel_idx](hidden_state)
+            hidden_state = self.local_to_speech_embedding_mlps[channel_idx](
+                hidden_state
+            )
             hidden_state = self.layer_norm_before_lm_heads[channel_idx](hidden_state)
 
             logits = self.lm_heads[channel_idx](hidden_state)
@@ -179,7 +187,9 @@ class MossTTSLocalModel(nn.Module):
             )
             sampled_channels.append(next_token)
 
-            current_input = self.embedding_list[channel_idx](next_token.astype(mx.int32))
+            current_input = self.embedding_list[channel_idx](
+                next_token.astype(mx.int32)
+            )
             current_input = self.speech_embedding_to_local_mlp(current_input)
 
         next_tokens = mx.stack(sampled_channels, axis=-1).astype(mx.int32)

@@ -93,13 +93,17 @@ class MossTTSLocalMLP(nn.Module):
         self.gate_proj = nn.Linear(
             config.hidden_size, config.intermediate_size, bias=False
         )
-        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=False
+        )
         self.down_proj = nn.Linear(
             config.intermediate_size, config.hidden_size, bias=False
         )
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
-        return self.down_proj(swiglu(self.gate_proj(hidden_states), self.up_proj(hidden_states)))
+        return self.down_proj(
+            swiglu(self.gate_proj(hidden_states), self.up_proj(hidden_states))
+        )
 
 
 class MossTTSLocalLayer(nn.Module):
@@ -127,7 +131,9 @@ class MossTTSLocalTransformer(nn.Module):
     def __init__(self, config: MossQwen3Config):
         super().__init__()
         self.config = config
-        self.layers = [MossTTSLocalLayer(config) for _ in range(config.num_hidden_layers)]
+        self.layers = [
+            MossTTSLocalLayer(config) for _ in range(config.num_hidden_layers)
+        ]
         self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
     def __call__(self, input_embeddings: mx.array) -> mx.array:

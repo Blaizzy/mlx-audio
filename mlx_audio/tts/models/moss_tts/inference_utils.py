@@ -50,7 +50,9 @@ def initialize_delay_scheduler_state(
         last_text_token == config.audio_assistant_gen_slot_token_id
     )
 
-    audio_start_indices = _find_last_token_indices(text_channel, config.audio_start_token_id)
+    audio_start_indices = _find_last_token_indices(
+        text_channel, config.audio_start_token_id
+    )
     has_audio_start = audio_start_indices >= 0
     audio_start_mask = is_continuation & has_audio_start
     sequence_lengths = mx.full((batch_size,), sequence_length, dtype=mx.int64)
@@ -83,7 +85,9 @@ def build_delay_forced_text_tokens(
     """
 
     active = ~state.is_stopping
-    forcing_delay = active & (state.delayed_lengths >= 0) & (state.delayed_lengths < n_vq)
+    forcing_delay = (
+        active & (state.delayed_lengths >= 0) & (state.delayed_lengths < n_vq)
+    )
     forcing_audio_eos = active & (state.delayed_lengths == n_vq)
     sampling_mask = active & (state.delayed_lengths < 0)
 
@@ -102,7 +106,11 @@ def build_delay_forced_text_tokens(
         int(config.audio_end_token_id),
         next_text_token,
     )
-    return next_text_token.astype(mx.int32), sampling_mask.astype(mx.bool_), forcing_audio_eos
+    return (
+        next_text_token.astype(mx.int32),
+        sampling_mask.astype(mx.bool_),
+        forcing_audio_eos,
+    )
 
 
 def build_delay_audio_sampling_mask(
@@ -136,7 +144,9 @@ def update_delay_scheduler_state(
 ) -> DelaySchedulerState:
     next_text_token = next_text_token.astype(mx.int32)
 
-    is_audio = mx.where(next_text_token == config.audio_start_token_id, True, state.is_audio)
+    is_audio = mx.where(
+        next_text_token == config.audio_start_token_id, True, state.is_audio
+    )
     is_audio = mx.where(
         forcing_audio_eos | (next_text_token == config.audio_end_token_id),
         False,
@@ -151,7 +161,9 @@ def update_delay_scheduler_state(
         | (next_text_token == config.audio_assistant_delay_slot_token_id)
     )
     audio_lengths = state.audio_lengths + audio_increment_mask.astype(mx.int64)
-    audio_lengths = mx.where(next_text_token == config.audio_end_token_id, 0, audio_lengths)
+    audio_lengths = mx.where(
+        next_text_token == config.audio_end_token_id, 0, audio_lengths
+    )
 
     delayed_lengths = state.delayed_lengths
     delay_start = (delayed_lengths < 0) & (

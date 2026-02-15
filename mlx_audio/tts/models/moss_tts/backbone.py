@@ -113,13 +113,17 @@ class MossTTSBackboneMLP(nn.Module):
         self.gate_proj = nn.Linear(
             config.hidden_size, config.intermediate_size, bias=False
         )
-        self.up_proj = nn.Linear(config.hidden_size, config.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(
+            config.hidden_size, config.intermediate_size, bias=False
+        )
         self.down_proj = nn.Linear(
             config.intermediate_size, config.hidden_size, bias=False
         )
 
     def __call__(self, hidden_states: mx.array) -> mx.array:
-        return self.down_proj(swiglu(self.gate_proj(hidden_states), self.up_proj(hidden_states)))
+        return self.down_proj(
+            swiglu(self.gate_proj(hidden_states), self.up_proj(hidden_states))
+        )
 
 
 class MossTTSBackboneLayer(nn.Module):

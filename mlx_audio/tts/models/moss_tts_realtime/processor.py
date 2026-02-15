@@ -147,7 +147,9 @@ class MossTTSRealtimeProcessor:
             return int(token_ids[0])
         return int(fallback_id)
 
-    def tokens_from_text(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+    def tokens_from_text(
+        self, text: str, *, add_special_tokens: bool = False
+    ) -> list[int]:
         return self._tokenize(text, add_special_tokens=add_special_tokens)
 
     def encode_prompt_audio(self, audio: Any) -> mx.array:
@@ -173,7 +175,9 @@ class MossTTSRealtimeProcessor:
             )
 
         if normalized_audio.ndim == 2:
-            normalized_audio = _normalize_waveform_layout_to_time_major(normalized_audio)
+            normalized_audio = _normalize_waveform_layout_to_time_major(
+                normalized_audio
+            )
             normalized_audio = mx.mean(normalized_audio, axis=1)
         if normalized_audio.ndim != 1:
             raise ValueError(
@@ -201,7 +205,9 @@ class MossTTSRealtimeProcessor:
         if self.audio_tokenizer is None:
             raise RuntimeError("audio_tokenizer is not loaded")
         if audio_codes.ndim != 2:
-            raise ValueError(f"Expected audio_codes with shape (T, RVQ), got {audio_codes.shape}")
+            raise ValueError(
+                f"Expected audio_codes with shape (T, RVQ), got {audio_codes.shape}"
+            )
 
         kwargs = {} if decode_kwargs is None else dict(decode_kwargs)
         decoded = self.audio_tokenizer.decode(
@@ -257,7 +263,9 @@ class MossTTSRealtimeProcessor:
         )
 
     def make_ensemble(self, prompt_audio_tokens: Optional[mx.array] = None) -> mx.array:
-        normalized_prompt_tokens = self._normalize_audio_prompt_tokens(prompt_audio_tokens)
+        normalized_prompt_tokens = self._normalize_audio_prompt_tokens(
+            prompt_audio_tokens
+        )
         if int(normalized_prompt_tokens.shape[0]) > 0:
             system_prompt_text = (
                 f"{self.model_config.tts_system_prompt}"
@@ -266,7 +274,9 @@ class MossTTSRealtimeProcessor:
         else:
             system_prompt_text = f"{self.model_config.tts_system_prompt}"
 
-        system_prompt_tokens = self._tokenize(system_prompt_text, add_special_tokens=None)
+        system_prompt_tokens = self._tokenize(
+            system_prompt_text, add_special_tokens=None
+        )
         if not system_prompt_tokens:
             system_prompt_tokens = [self.text_pad_token_id]
 
@@ -307,8 +317,12 @@ class MossTTSRealtimeProcessor:
 
         if text_len >= self.delay_tokens_len:
             padded_text_len = max(0, audio_len + self.delay_tokens_len - text_len + 1)
-            cur_input_id_ch1 = f"{_USER_PREFIX}{text}{_TEXT_PAD_TOKEN_TEXT * padded_text_len}"
-            assistant_tokens_ch1 = self._tokenize(cur_input_id_ch1, add_special_tokens=None)
+            cur_input_id_ch1 = (
+                f"{_USER_PREFIX}{text}{_TEXT_PAD_TOKEN_TEXT * padded_text_len}"
+            )
+            assistant_tokens_ch1 = self._tokenize(
+                cur_input_id_ch1, add_special_tokens=None
+            )
             cur_input_id = mx.full(
                 (len(assistant_tokens_ch1), self.channels),
                 self.model_config.audio_pad_token,
@@ -316,7 +330,10 @@ class MossTTSRealtimeProcessor:
             )
             cur_input_id[:, 0] = mx.array(assistant_tokens_ch1, dtype=mx.int32)
             cur_input_id[
-                text_start_pos + self.delay_tokens_len : text_start_pos + self.delay_tokens_len + audio_len,
+                text_start_pos
+                + self.delay_tokens_len : text_start_pos
+                + self.delay_tokens_len
+                + audio_len,
                 1:,
             ] = token
             cur_input_id[text_start_pos + self.delay_tokens_len - 1, 1] = int(
@@ -327,8 +344,12 @@ class MossTTSRealtimeProcessor:
             )
         else:
             padded_text_len = audio_len + 1
-            cur_input_id_ch1 = f"{_USER_PREFIX}{text}{_TEXT_PAD_TOKEN_TEXT * padded_text_len}"
-            assistant_tokens_ch1 = self._tokenize(cur_input_id_ch1, add_special_tokens=None)
+            cur_input_id_ch1 = (
+                f"{_USER_PREFIX}{text}{_TEXT_PAD_TOKEN_TEXT * padded_text_len}"
+            )
+            assistant_tokens_ch1 = self._tokenize(
+                cur_input_id_ch1, add_special_tokens=None
+            )
             cur_input_id = mx.full(
                 (len(assistant_tokens_ch1), self.channels),
                 self.model_config.audio_pad_token,
@@ -346,7 +367,9 @@ class MossTTSRealtimeProcessor:
             dtype=mx.int32,
         )
         begin_of_response_full[:, 0] = mx.array(begin_of_response, dtype=mx.int32)
-        return mx.concatenate([cur_input_id, begin_of_response_full], axis=0).astype(mx.int32)
+        return mx.concatenate([cur_input_id, begin_of_response_full], axis=0).astype(
+            mx.int32
+        )
 
     def build_turn_input_ids(
         self,

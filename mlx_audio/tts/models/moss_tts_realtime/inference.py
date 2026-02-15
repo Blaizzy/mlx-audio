@@ -114,7 +114,10 @@ class MossTTSRealtimeInference:
             if input_ids.ndim == 2:
                 return [input_ids.astype(mx.int32)]
             if input_ids.ndim == 3:
-                return [input_ids[idx].astype(mx.int32) for idx in range(int(input_ids.shape[0]))]
+                return [
+                    input_ids[idx].astype(mx.int32)
+                    for idx in range(int(input_ids.shape[0]))
+                ]
         if isinstance(input_ids, (list, tuple)):
             normalized: list[mx.array] = []
             for entry in input_ids:
@@ -151,7 +154,10 @@ class MossTTSRealtimeInference:
                     return [list(prefix) for _ in range(batch_size)]
                 return [prefix]
             if len(text_prefix_ids) == 1 and batch_size > 1:
-                return [list(int(token) for token in text_prefix_ids[0]) for _ in range(batch_size)]
+                return [
+                    list(int(token) for token in text_prefix_ids[0])
+                    for _ in range(batch_size)
+                ]
             if len(text_prefix_ids) != batch_size:
                 raise ValueError(
                     f"text_prefix_ids batch mismatch: {len(text_prefix_ids)} vs {batch_size}"
@@ -319,7 +325,9 @@ class MossTTSRealtimeInference:
             dtype=mx.int32,
         )
         step_ids[:, 0] = mx.array(text_tokens, dtype=mx.int32)
-        step_ids[:, 1 : 1 + self.config.rvq] = self.last_audio_tokens[:, : self.config.rvq]
+        step_ids[:, 1 : 1 + self.config.rvq] = self.last_audio_tokens[
+            :, : self.config.rvq
+        ]
 
         if self.cache is None:
             self.cache = self.model.make_cache()
@@ -336,9 +344,7 @@ class MossTTSRealtimeInference:
             repetition_penalty=repetition_penalty,
         )
         history = (
-            mx.stack(self.generated_tokens, axis=1)
-            if self.generated_tokens
-            else None
+            mx.stack(self.generated_tokens, axis=1) if self.generated_tokens else None
         )
         audio_tokens = self.model.sample_next_audio_tokens(
             global_hidden,
@@ -434,7 +440,9 @@ class AudioStreamDecoder:
         if tokens.ndim == 3 and int(tokens.shape[0]) == 1:
             tokens = tokens[0]
         if tokens.ndim != 2:
-            raise ValueError(f"Expected audio tokens shape [T, RVQ], got {tokens.shape}")
+            raise ValueError(
+                f"Expected audio tokens shape [T, RVQ], got {tokens.shape}"
+            )
         if int(tokens.shape[1]) != self.processor.model_config.rvq:
             raise ValueError(
                 "Unexpected RVQ width in pushed tokens: "
@@ -754,7 +762,10 @@ class RealtimeSession:
                     include_system_prompt=bool(include_system_prompt),
                 )
 
-        if input_ids.ndim != 3 or int(input_ids.shape[2]) != self.processor.model_config.channels:
+        if (
+            input_ids.ndim != 3
+            or int(input_ids.shape[2]) != self.processor.model_config.channels
+        ):
             raise ValueError(
                 "reset_turn input_ids must have shape [B, T, channels], "
                 f"got {input_ids.shape}"
@@ -993,9 +1004,7 @@ class RealtimeSession:
                 tokens = tokens[None, :]
 
             if tokens.ndim != 2:
-                raise ValueError(
-                    f"Expected [T, RVQ] frame tokens, got {tokens.shape}"
-                )
+                raise ValueError(f"Expected [T, RVQ] frame tokens, got {tokens.shape}")
 
             sanitized, stop = _sanitize_audio_tokens(
                 tokens,

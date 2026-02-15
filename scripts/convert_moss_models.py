@@ -30,21 +30,18 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
-import shutil
 from typing import Dict, List, Sequence
 
 import mlx.core as mx
 from mlx.utils import tree_flatten
 
 from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
-from mlx_audio.convert import (
-    MODEL_CONVERSION_DTYPES,
-    QUANT_RECIPES,
-    convert as convert_generic_model,
-    get_model_path,
-)
+from mlx_audio.convert import MODEL_CONVERSION_DTYPES, QUANT_RECIPES
+from mlx_audio.convert import convert as convert_generic_model
+from mlx_audio.convert import get_model_path
 
 
 @dataclass(frozen=True)

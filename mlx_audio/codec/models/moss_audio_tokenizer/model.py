@@ -246,10 +246,9 @@ class MossAudioTokenizer(nn.Module):
                             and int(audio_codes.shape[1]) > 1
                         )
 
-                    if (
-                        (is_square_requested_tie or is_canonical_prefix_tie)
-                        and len(requested_nq_first) == 1
-                    ):
+                    if (is_square_requested_tie or is_canonical_prefix_tie) and len(
+                        requested_nq_first
+                    ) == 1:
                         candidates = requested_nq_first
                     elif len(requested_nq_last) == 1:
                         candidates = requested_nq_last
@@ -265,8 +264,7 @@ class MossAudioTokenizer(nn.Module):
                     candidates = canonical_candidates
                 else:
                     candidate_labels = [
-                        f"{orientation}[nq={nq}]"
-                        for orientation, nq, _ in candidates
+                        f"{orientation}[nq={nq}]" for orientation, nq, _ in candidates
                     ]
                     raise ValueError(
                         "Ambiguous audio_codes layout. Multiple interpretations are valid for "
@@ -373,7 +371,9 @@ class MossAudioTokenizer(nn.Module):
         batch_size, _, time_steps = input_values.shape
 
         if padding_mask is not None:
-            input_lengths = mx.sum(padding_mask.astype(mx.int32), axis=-1).astype(mx.int32)
+            input_lengths = mx.sum(padding_mask.astype(mx.int32), axis=-1).astype(
+                mx.int32
+            )
         else:
             input_lengths = mx.full((batch_size,), time_steps, dtype=mx.int32)
 
@@ -430,21 +430,30 @@ class MossAudioTokenizer(nn.Module):
                         n_quantizers=num_quantizers,
                         caches=caches,
                     )
-                    if chunk_output.audio_codes is None or chunk_output.audio_codes_lengths is None:
-                        raise RuntimeError("Internal error: _encode_frame returned empty audio codes.")
+                    if (
+                        chunk_output.audio_codes is None
+                        or chunk_output.audio_codes_lengths is None
+                    ):
+                        raise RuntimeError(
+                            "Internal error: _encode_frame returned empty audio codes."
+                        )
                     if chunk_output.encoder_hidden_states is None:
                         raise RuntimeError(
                             "Internal error: _encode_frame returned empty hidden states."
                         )
                     length_i = int(chunk_output.audio_codes_lengths[0])
                     codes_chunks.append(chunk_output.audio_codes[:, :, :length_i])
-                    hidden_chunks.append(chunk_output.encoder_hidden_states[:, :, :length_i])
+                    hidden_chunks.append(
+                        chunk_output.encoder_hidden_states[:, :, :length_i]
+                    )
 
                 audio_codes = mx.concatenate(codes_chunks, axis=-1)
                 hidden_states = mx.concatenate(hidden_chunks, axis=-1)
                 output = MossAudioTokenizerEncoderOutput(
                     audio_codes=audio_codes,
-                    audio_codes_lengths=mx.array([audio_codes.shape[-1]], dtype=mx.int32),
+                    audio_codes_lengths=mx.array(
+                        [audio_codes.shape[-1]], dtype=mx.int32
+                    ),
                     encoder_hidden_states=hidden_states,
                 )
 
@@ -469,7 +478,9 @@ class MossAudioTokenizer(nn.Module):
 
         _, batch_size, time_steps = audio_codes.shape
         if padding_mask is not None:
-            codes_lengths = mx.sum(padding_mask.astype(mx.int32), axis=-1).astype(mx.int32)
+            codes_lengths = mx.sum(padding_mask.astype(mx.int32), axis=-1).astype(
+                mx.int32
+            )
         else:
             codes_lengths = mx.full((batch_size,), time_steps, dtype=mx.int32)
 
@@ -502,7 +513,9 @@ class MossAudioTokenizer(nn.Module):
 
             codes_length = int(codes_lengths[0])
             if codes_length <= chunk_frame_length:
-                output = self._decode_frame(audio_codes[..., :codes_length], codes_lengths)
+                output = self._decode_frame(
+                    audio_codes[..., :codes_length], codes_lengths
+                )
             else:
                 caches = self._build_caches(self.decoder)
                 wav_chunks = []
@@ -512,10 +525,16 @@ class MossAudioTokenizer(nn.Module):
                         break
                     codes_i = audio_codes[:, :, start_idx : start_idx + codes_length_i]
                     codes_lengths_i = mx.array([codes_length_i], dtype=mx.int32)
-                    chunk_output = self._decode_frame(codes_i, codes_lengths_i, caches=caches)
+                    chunk_output = self._decode_frame(
+                        codes_i, codes_lengths_i, caches=caches
+                    )
                     if chunk_output.audio is None or chunk_output.audio_lengths is None:
-                        raise RuntimeError("Internal error: _decode_frame returned empty audio.")
-                    wav_chunk = chunk_output.audio[:, :, : int(chunk_output.audio_lengths[0])]
+                        raise RuntimeError(
+                            "Internal error: _decode_frame returned empty audio."
+                        )
+                    wav_chunk = chunk_output.audio[
+                        :, :, : int(chunk_output.audio_lengths[0])
+                    ]
                     mx.eval(wav_chunk)
                     wav_chunks.append(wav_chunk)
                     mx.clear_cache()
@@ -544,8 +563,7 @@ class MossAudioTokenizer(nn.Module):
             if wav.ndim == 2:
                 if wav.shape[0] != 1:
                     raise ValueError(
-                        "Expected 2D waveform shape (1, T), got shape="
-                        f"{wav.shape}."
+                        "Expected 2D waveform shape (1, T), got shape=" f"{wav.shape}."
                     )
                 wav = wav.squeeze(0)
             if wav.ndim != 1:
@@ -642,7 +660,9 @@ class MossAudioTokenizer(nn.Module):
                 caches=caches,
             )
             if output.audio is None or output.audio_lengths is None:
-                raise RuntimeError("Internal error: _decode_frame returned empty audio.")
+                raise RuntimeError(
+                    "Internal error: _decode_frame returned empty audio."
+                )
             wav_chunk = output.audio[:, :, : int(output.audio_lengths[0])]
             mx.eval(wav_chunk)
             yield wav_chunk
@@ -655,7 +675,10 @@ class MossAudioTokenizer(nn.Module):
         audio_codes: Optional[mx.array] = None,
         num_quantizers: Optional[int] = None,
         return_dict: bool = True,
-    ) -> MossAudioTokenizerOutput | tuple[Optional[mx.array], Optional[mx.array], Optional[mx.array]]:
+    ) -> (
+        MossAudioTokenizerOutput
+        | tuple[Optional[mx.array], Optional[mx.array], Optional[mx.array]]
+    ):
         output_audio_codes = None
         output_audio_codes_lengths = None
         output_audio = None
@@ -670,7 +693,9 @@ class MossAudioTokenizer(nn.Module):
                 return_dict=True,
             )
             if not isinstance(encode_output, MossAudioTokenizerEncoderOutput):
-                raise RuntimeError("Internal error: encode() returned unexpected output type.")
+                raise RuntimeError(
+                    "Internal error: encode() returned unexpected output type."
+                )
             output_audio_codes = encode_output.audio_codes
             output_audio_codes_lengths = encode_output.audio_codes_lengths
 
@@ -680,7 +705,9 @@ class MossAudioTokenizer(nn.Module):
 
         if audio_codes is not None:
             if decoded_from_encoded_codes and output_audio_codes_lengths is not None:
-                decode_output = self._decode_frame(audio_codes, output_audio_codes_lengths)
+                decode_output = self._decode_frame(
+                    audio_codes, output_audio_codes_lengths
+                )
             else:
                 decode_output = self.decode(
                     audio_codes,
@@ -821,8 +848,7 @@ class MossAudioTokenizer(nn.Module):
             if missing:
                 raise ValueError(
                     "Strict load failed: missing parameter weights for keys: "
-                    f"{missing[:20]}"
-                    + ("..." if len(missing) > 20 else "")
+                    f"{missing[:20]}" + ("..." if len(missing) > 20 else "")
                 )
 
         mx.eval(model.parameters())

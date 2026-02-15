@@ -15,7 +15,9 @@ class _FakeProcessor:
     def encode_prompt_audio(self, audio):
         return audio
 
-    def tokens_from_text(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
+    def tokens_from_text(
+        self, text: str, *, add_special_tokens: bool = False
+    ) -> list[int]:
         del add_special_tokens
         return [101, 102, 103] if text else []
 
@@ -79,7 +81,9 @@ def test_stream_mode_yields_before_full_turn_drain(monkeypatch):
     """First stream chunk should arrive before drain/close complete the turn."""
     _FakeSession.instances.clear()
 
-    monkeypatch.setattr(realtime_model_module, "MossTTSRealtimeInference", _FakeInferencer)
+    monkeypatch.setattr(
+        realtime_model_module, "MossTTSRealtimeInference", _FakeInferencer
+    )
     monkeypatch.setattr(realtime_model_module, "RealtimeSession", _FakeSession)
 
     model = _ModelShim()

@@ -91,7 +91,9 @@ class _DummyAudioTokenizer:
         lengths = mx.full((batch,), 2, dtype=mx.int32)
         return SimpleNamespace(audio_codes=codes, audio_codes_lengths=lengths)
 
-    def decode(self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None):
+    def decode(
+        self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None
+    ):
         if audio_codes.ndim == 2:
             steps = int(audio_codes.shape[1])
         else:
@@ -123,10 +125,14 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
         model = MossTTSDelayModel(config)
         input_ids = mx.zeros((1, 4, config.channels), dtype=mx.int32)
-        hidden = model(input_ids, cache=model.make_cache(), n_vq_for_inference=config.n_vq)
+        hidden = model(
+            input_ids, cache=model.make_cache(), n_vq_for_inference=config.n_vq
+        )
         self.assertEqual(hidden.shape, (1, 4, config.hidden_size))
 
-        logits = model.compute_next_logits(hidden[:, -1, :], n_vq_for_inference=config.n_vq)
+        logits = model.compute_next_logits(
+            hidden[:, -1, :], n_vq_for_inference=config.n_vq
+        )
         self.assertEqual(len(logits), config.channels)
         self.assertEqual(logits[0].shape, (1, config.vocab_size))
         self.assertEqual(logits[1].shape, (1, config.audio_vocab_size + 1))
@@ -196,7 +202,9 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertEqual(len(segments), 1)
         np.testing.assert_array_equal(np.array(segments[0]), np.array(codes))
 
-        assistant = processor.build_assistant_message([codes], content=AUDIO_PLACEHOLDER)
+        assistant = processor.build_assistant_message(
+            [codes], content=AUDIO_PLACEHOLDER
+        )
         user = processor.build_user_message(text="hello", input_type="text")
         packed = processor.prepare_generation_inputs(
             [assistant, user], n_vq=config.n_vq, apply_chat_template=False
@@ -234,7 +242,9 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         codes = mx.array([[3, 4], [5, 6]], dtype=mx.int32)
 
         conversation = [
-            processor.build_user_message(text="[S1] Prompt", reference=[codes], input_type="text"),
+            processor.build_user_message(
+                text="[S1] Prompt", reference=[codes], input_type="text"
+            ),
             processor.build_assistant_message(audio_codes_list=[codes]),
         ]
         packed = processor.prepare_generation_inputs(
@@ -278,7 +288,9 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertEqual(len(assistant_message["audio_references"]), 1)
         self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (2, 2))
         self.assertEqual(generation_user_message["role"], "user")
-        self.assertIn("[S1] Continue the discussion.", generation_user_message["content"])
+        self.assertIn(
+            "[S1] Continue the discussion.", generation_user_message["content"]
+        )
 
     def test_ttsd_speaker_id_normalization_supports_zero_based_schema(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
@@ -340,9 +352,7 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tone-numbered"):
             processor.build_ttsd_continuation_messages(
                 dialogue_text="hello there friend",
-                speakers=[
-                    {"speaker_id": 1, "ref_text": "Plain transcript context."}
-                ],
+                speakers=[{"speaker_id": 1, "ref_text": "Plain transcript context."}],
                 input_type="pinyin",
             )
 
@@ -447,7 +457,9 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
             "\u4f60\u597d\uff0c\u4eca\u5929\u600e\u4e48\u6837\uff1f",
             generation_user_message["content"],
         )
-        self.assertIn("\u0645\u0645\u062a\u0627\u0632", generation_user_message["content"])
+        self.assertIn(
+            "\u0645\u0645\u062a\u0627\u0632", generation_user_message["content"]
+        )
 
     def test_encode_audios_from_reference_accepts_preencoded_layouts(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())

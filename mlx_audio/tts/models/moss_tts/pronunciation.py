@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from importlib import import_module
 import re
+from importlib import import_module
 from typing import Optional
 
 VALID_INPUT_TYPES = {"text", "pinyin", "ipa"}

@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
-
 MOSS_TTS_RUNTIME = "moss_tts"
 MOSS_TTS_REALTIME_RUNTIME = "moss_tts_realtime"
 
@@ -92,9 +91,7 @@ def _normalize_preset_name(preset: str) -> str:
 
 def available_presets_for_runtime(runtime: str) -> Tuple[str, ...]:
     return tuple(
-        preset.name
-        for preset in _PRESET_CATALOG.values()
-        if preset.runtime == runtime
+        preset.name for preset in _PRESET_CATALOG.values() if preset.runtime == runtime
     )
 
 
@@ -110,9 +107,7 @@ def resolve_sampling_preset(
     resolved = _PRESET_CATALOG.get(canonical_name)
     if resolved is None:
         known = sorted(_PRESET_CATALOG.keys())
-        raise ValueError(
-            f"Unsupported preset '{preset}'. Expected one of {known}"
-        )
+        raise ValueError(f"Unsupported preset '{preset}'. Expected one of {known}")
     if resolved.runtime != runtime:
         expected = sorted(available_presets_for_runtime(runtime))
         raise ValueError(

@@ -14,11 +14,11 @@ from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.tts.models.moss_tts.backbone import MossTTSBackbone
 from mlx_audio.tts.models.moss_tts.local_model import MossTTSMLP
+from mlx_audio.tts.models.moss_tts.local_transformer import MossTTSLocalTransformer
 from mlx_audio.tts.models.moss_tts.presets import (
     MOSS_TTS_REALTIME_RUNTIME,
     resolve_sampling_preset,
 )
-from mlx_audio.tts.models.moss_tts.local_transformer import MossTTSLocalTransformer
 from mlx_audio.tts.models.moss_tts.sampling import (
     ChannelSamplingConfig,
     resolve_channel_sampling_configs,
@@ -54,7 +54,9 @@ class MossTTSRealtimeCore(nn.Module):
         ]
 
         self.backbone = MossTTSBackbone(config.language_config)
-        self.local_transformer = MossTTSLocalTransformer(config.local_transformer_config())
+        self.local_transformer = MossTTSLocalTransformer(
+            config.local_transformer_config()
+        )
 
         local_hidden_size = self.local_transformer.config.hidden_size
         self.speech_embedding_to_local_mlp = MossTTSMLP(
@@ -116,15 +118,21 @@ class MossTTSRealtimeCore(nn.Module):
 
         batch_size = int(global_hidden_state.shape[0])
         local_hidden_size = self.local_transformer.config.hidden_size
-        local_inputs = mx.zeros((batch_size, 0, local_hidden_size), dtype=global_hidden_state.dtype)
+        local_inputs = mx.zeros(
+            (batch_size, 0, local_hidden_size), dtype=global_hidden_state.dtype
+        )
         current_input = self.speech_embedding_to_local_mlp(global_hidden_state)
 
         logits_per_channel: List[mx.array] = []
         for channel_idx in range(self.config.rvq):
-            local_inputs = mx.concatenate([local_inputs, current_input[:, None, :]], axis=1)
+            local_inputs = mx.concatenate(
+                [local_inputs, current_input[:, None, :]], axis=1
+            )
             local_outputs = self.local_transformer(local_inputs)
             hidden_state = local_outputs[:, -1, :]
-            hidden_state = self.local_to_speech_embedding_mlps[channel_idx](hidden_state)
+            hidden_state = self.local_to_speech_embedding_mlps[channel_idx](
+                hidden_state
+            )
             hidden_state = self.layer_norm_before_lm_heads[channel_idx](hidden_state)
 
             logits = self.lm_heads[channel_idx](hidden_state)
@@ -162,15 +170,21 @@ class MossTTSRealtimeCore(nn.Module):
 
         batch_size = int(global_hidden_state.shape[0])
         local_hidden_size = self.local_transformer.config.hidden_size
-        local_inputs = mx.zeros((batch_size, 0, local_hidden_size), dtype=global_hidden_state.dtype)
+        local_inputs = mx.zeros(
+            (batch_size, 0, local_hidden_size), dtype=global_hidden_state.dtype
+        )
         current_input = self.speech_embedding_to_local_mlp(global_hidden_state)
 
         sampled: List[mx.array] = []
         for channel_idx in range(self.config.rvq):
-            local_inputs = mx.concatenate([local_inputs, current_input[:, None, :]], axis=1)
+            local_inputs = mx.concatenate(
+                [local_inputs, current_input[:, None, :]], axis=1
+            )
             local_outputs = self.local_transformer(local_inputs)
             hidden_state = local_outputs[:, -1, :]
-            hidden_state = self.local_to_speech_embedding_mlps[channel_idx](hidden_state)
+            hidden_state = self.local_to_speech_embedding_mlps[channel_idx](
+                hidden_state
+            )
             hidden_state = self.layer_norm_before_lm_heads[channel_idx](hidden_state)
 
             logits = self.lm_heads[channel_idx](hidden_state)
@@ -252,9 +266,9 @@ class Model(nn.Module):
                 new_key = "model.embedding_list.0.weight"
             # Upstream local transformer checkpoints can contain this family, but the
             # runtime local transformer has no embed_tokens parameters to receive it.
-            elif key.startswith("local_transformer.model.embed_tokens.") or key.startswith(
-                "model.local_transformer.model.embed_tokens."
-            ):
+            elif key.startswith(
+                "local_transformer.model.embed_tokens."
+            ) or key.startswith("model.local_transformer.model.embed_tokens."):
                 continue
             elif key.startswith("model.language_model.embed_tokens."):
                 new_key = key.replace(
@@ -313,7 +327,9 @@ class Model(nn.Module):
                     1,
                 )
             elif key.startswith("local_transformer."):
-                new_key = key.replace("local_transformer.", "model.local_transformer.", 1)
+                new_key = key.replace(
+                    "local_transformer.", "model.local_transformer.", 1
+                )
             elif key.startswith("speech_embedding_to_local_mlp."):
                 new_key = key.replace(
                     "speech_embedding_to_local_mlp.",
@@ -347,9 +363,7 @@ class Model(nn.Module):
                 "Realtime processor is not initialized. Ensure post_load_hook has run."
             )
         if self.processor.audio_tokenizer is None:
-            raise RuntimeError(
-                "Realtime codec tokenizer is not available."
-            )
+            raise RuntimeError("Realtime codec tokenizer is not available.")
 
     def _build_generation_result(
         self,
@@ -363,7 +377,9 @@ class Model(nn.Module):
     ) -> GenerationResult:
         samples = int(audio.shape[0])
         elapsed = max(time.perf_counter() - start_time, 1e-6)
-        audio_duration_seconds = samples / self.sample_rate if self.sample_rate > 0 else 0.0
+        audio_duration_seconds = (
+            samples / self.sample_rate if self.sample_rate > 0 else 0.0
+        )
         rtf = audio_duration_seconds / elapsed if elapsed > 0 else 0.0
 
         return GenerationResult(
@@ -465,7 +481,9 @@ class Model(nn.Module):
 
         prompt_audio_tokens = None
         if request.reference_audio is not None:
-            prompt_audio_tokens = self.processor.encode_prompt_audio(request.reference_audio)
+            prompt_audio_tokens = self.processor.encode_prompt_audio(
+                request.reference_audio
+            )
             session.set_voice_prompt_tokens(prompt_audio_tokens)
 
         session.reset_turn(
@@ -503,7 +521,9 @@ class Model(nn.Module):
 
             try:
                 if text_token_ids:
-                    yield from _emit_ready_chunks(session.push_text_tokens(text_token_ids))
+                    yield from _emit_ready_chunks(
+                        session.push_text_tokens(text_token_ids)
+                    )
                 yield from _emit_ready_chunks(session.end_text())
                 yield from _emit_ready_chunks(session.drain(max_steps=max_tokens))
 

@@ -62,9 +62,10 @@ class TestGenerateStreamContracts(unittest.TestCase):
     def test_stream_writes_chunks_with_output_path_and_no_playback(self):
         model = _DummyModel([_result(1), _result(2)])
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "mlx_audio.tts.generate.audio_write"
-        ) as audio_write_mock:
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write") as audio_write_mock,
+        ):
             generate_audio(
                 text="stream me",
                 model=model,
@@ -167,13 +168,16 @@ class TestGenerateStreamContracts(unittest.TestCase):
             os.path.join(tmpdir, "joined_case.wav"),
         )
         self.assertNotIn("Error loading model", output.getvalue())
-        self.assertIn("✅ Audio successfully generated and saving as:", output.getvalue())
+        self.assertIn(
+            "✅ Audio successfully generated and saving as:", output.getvalue()
+        )
 
     def test_generate_passes_duration_and_n_vq_controls(self):
         model = _DummyModel([_result(1)])
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "mlx_audio.tts.generate.audio_write"
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
         ):
             generate_audio(
                 text="controls",
@@ -198,8 +202,9 @@ class TestGenerateStreamContracts(unittest.TestCase):
     def test_generate_forwards_preset_and_model_kwargs_json(self):
         model = _DummyModel([_result(1)])
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "mlx_audio.tts.generate.audio_write"
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
         ):
             generate_audio(
                 text="preset controls",
@@ -221,8 +226,9 @@ class TestGenerateStreamContracts(unittest.TestCase):
     def test_long_form_controls_forward_only_when_enabled(self):
         model = _DummyModel([_result(1)])
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "mlx_audio.tts.generate.audio_write"
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
         ):
             generate_audio(
                 text="no long form",
@@ -235,8 +241,9 @@ class TestGenerateStreamContracts(unittest.TestCase):
         assert model.last_generate_kwargs is not None
         self.assertNotIn("long_form", model.last_generate_kwargs)
 
-        with tempfile.TemporaryDirectory() as tmpdir, patch(
-            "mlx_audio.tts.generate.audio_write"
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
         ):
             generate_audio(
                 text="with long form",

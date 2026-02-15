@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 MOSS_AUDIO_TOKENS_PER_SECOND = 12.5

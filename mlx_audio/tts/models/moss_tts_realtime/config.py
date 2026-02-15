@@ -7,7 +7,6 @@ from typing import Any, Dict, Optional
 
 from mlx_audio.tts.models.base import BaseModelArgs
 
-
 DEFAULT_TTS_SYSTEM_PROMPT = (
     "<|im_start|>system\n"
     "You are a highly expressive text-to-speech (TTS) engine developed by "

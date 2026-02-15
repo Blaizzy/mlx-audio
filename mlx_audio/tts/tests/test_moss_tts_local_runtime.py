@@ -9,8 +9,10 @@ from mlx_audio.tts.models.moss_tts.config import ModelConfig
 from mlx_audio.tts.models.moss_tts.local_model import MossTTSLocalModel
 from mlx_audio.tts.models.moss_tts.model import Model
 from mlx_audio.tts.models.moss_tts.processor import MossTTSProcessor
-from mlx_audio.tts.models.moss_tts.sampling import apply_repetition_penalty
-from mlx_audio.tts.models.moss_tts.sampling import resolve_channel_sampling_configs
+from mlx_audio.tts.models.moss_tts.sampling import (
+    apply_repetition_penalty,
+    resolve_channel_sampling_configs,
+)
 
 
 def _tiny_local_config_dict():
@@ -90,7 +92,9 @@ class _DummyAudioTokenizer:
         lengths = mx.full((batch,), 2, dtype=mx.int32)
         return SimpleNamespace(audio_codes=codes, audio_codes_lengths=lengths)
 
-    def decode(self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None):
+    def decode(
+        self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None
+    ):
         if audio_codes.ndim == 2:
             steps = int(audio_codes.shape[1])
         else:
@@ -137,7 +141,9 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
         model = MossTTSLocalModel(config)
 
         input_ids = mx.zeros((1, 4, config.channels), dtype=mx.int32)
-        hidden = model(input_ids, cache=model.make_cache(), n_vq_for_inference=config.n_vq)
+        hidden = model(
+            input_ids, cache=model.make_cache(), n_vq_for_inference=config.n_vq
+        )
         self.assertEqual(hidden.shape, (1, 4, config.hidden_size))
 
         sampling = resolve_channel_sampling_configs(
@@ -175,7 +181,9 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
         sanitized = model.sanitize(weights)
         self.assertIn("model.backbone.layers.0.self_attn.q_proj.weight", sanitized)
         self.assertIn("model.embedding_list.0.weight", sanitized)
-        self.assertIn("model.local_transformer.layers.0.self_attn.q_proj.weight", sanitized)
+        self.assertIn(
+            "model.local_transformer.layers.0.self_attn.q_proj.weight", sanitized
+        )
         self.assertIn("model.speech_embedding_to_local_mlp.gate_proj.weight", sanitized)
         self.assertIn(
             "model.local_to_speech_embedding_mlps.0.gate_proj.weight", sanitized
@@ -188,15 +196,21 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
     def test_quant_predicate_blocks_sensitive_modules(self):
         config = ModelConfig.from_dict(_tiny_local_config_dict())
         model = Model(config)
-        self.assertFalse(model.model_quant_predicate("model.embedding_list.0", nn.Embedding(2, 2)))
-        self.assertFalse(model.model_quant_predicate("model.lm_heads.0", nn.Linear(2, 2)))
+        self.assertFalse(
+            model.model_quant_predicate("model.embedding_list.0", nn.Embedding(2, 2))
+        )
+        self.assertFalse(
+            model.model_quant_predicate("model.lm_heads.0", nn.Linear(2, 2))
+        )
         self.assertFalse(
             model.model_quant_predicate(
                 "model.layer_norm_before_lm_heads.0",
                 nn.RMSNorm(2),
             )
         )
-        self.assertTrue(model.model_quant_predicate("model.backbone.layers.0", nn.Linear(2, 2)))
+        self.assertTrue(
+            model.model_quant_predicate("model.backbone.layers.0", nn.Linear(2, 2))
+        )
 
     def test_processor_user_message_and_input_type_contract(self):
         config = ModelConfig.from_dict(_tiny_local_config_dict())
@@ -212,10 +226,14 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
             language="zh",
             input_type="pinyin",
         )
-        packed = processor.prepare_generation_inputs(msg, n_vq=config.n_vq, apply_chat_template=False)
+        packed = processor.prepare_generation_inputs(
+            msg, n_vq=config.n_vq, apply_chat_template=False
+        )
         self.assertEqual(packed["input_ids"].shape[0], 1)
         self.assertEqual(packed["input_ids"].shape[2], 1 + config.n_vq)
-        self.assertEqual(int(packed["input_ids"][0, -1, 0]), config.audio_start_token_id)
+        self.assertEqual(
+            int(packed["input_ids"][0, -1, 0]), config.audio_start_token_id
+        )
         self.assertIn("[S1]:", msg["content"])
         self.assertIn("[S2]: None", msg["content"])
         self.assertIn("Sound Event:\nspeech", msg["content"])
@@ -243,7 +261,9 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
                 dtype=mx.int32,
             )
 
-        with patch.object(model.model, "sample_next_channels", side_effect=fake_sample_next_channels):
+        with patch.object(
+            model.model, "sample_next_channels", side_effect=fake_sample_next_channels
+        ):
             results = list(
                 model.generate(
                     text="hello",
@@ -325,6 +345,54 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
                 duration_s=0.0,
             )
 
+    def test_local_generate_honors_explicit_token_budget_past_early_audio_end(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        generated = {"count": 0}
+        sequence = [
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_end_token_id,
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_assistant_gen_slot_token_id,
+        ]
+
+        def fake_sample_next_channels(*args, **kwargs):
+            idx = generated["count"]
+            generated["count"] += 1
+            text_token = sequence[min(idx, len(sequence) - 1)]
+            return mx.array(
+                [[text_token, 1, 2]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model,
+            "sample_next_channels",
+            side_effect=fake_sample_next_channels,
+        ):
+            results = list(
+                model.generate(
+                    text="hello",
+                    tokens=5,
+                    max_tokens=20,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(generated["count"], 5)
+        self.assertEqual(results[-1].token_count, 5)
+        self.assertGreater(results[-1].samples, 0)
+
     def test_local_generate_applies_preset_sampling_defaults(self):
         config = ModelConfig.from_dict(_tiny_local_config_dict())
         model = Model(config)
@@ -342,10 +410,13 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
             ]
             return resolve_channel_sampling_configs(num_channels, **kwargs)
 
-        with patch(
-            "mlx_audio.tts.models.moss_tts.model.resolve_channel_sampling_configs",
-            side_effect=capture_sampling_defaults,
-        ), patch.object(model, "_generate_local", return_value=iter(())):
+        with (
+            patch(
+                "mlx_audio.tts.models.moss_tts.model.resolve_channel_sampling_configs",
+                side_effect=capture_sampling_defaults,
+            ),
+            patch.object(model, "_generate_local", return_value=iter(())),
+        ):
             list(
                 model.generate(
                     text="hello",
