@@ -117,6 +117,8 @@ def generate_audio(
     sound_event: Optional[str] = None,
     ambient_sound: Optional[str] = None,
     language: Optional[str] = None,
+    preset: Optional[str] = None,
+    model_kwargs_json: Optional[Union[str, dict[str, Any]]] = None,
     dialogue_speakers_json: Optional[str] = None,
     input_type: str = "text",
     speed: float = 1.0,
@@ -272,6 +274,7 @@ def generate_audio(
             sound_event=sound_event,
             ambient_sound=ambient_sound,
             language=language,
+            preset=preset,
             n_vq_for_inference=n_vq_for_inference,
             dialogue_speakers=dialogue_speakers,
             input_type=input_type,
@@ -283,6 +286,19 @@ def generate_audio(
             instruct=instruct,
             **kwargs,
         )
+        if model_kwargs_json is not None:
+            parsed_kwargs = model_kwargs_json
+            if isinstance(parsed_kwargs, str):
+                try:
+                    parsed_kwargs = json.loads(parsed_kwargs)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Invalid --model_kwargs_json value: {exc.msg}"
+                    ) from exc
+            if not isinstance(parsed_kwargs, dict):
+                raise ValueError("--model_kwargs_json must decode to a JSON object")
+            gen_kwargs.update(parsed_kwargs)
+
         if long_form:
             gen_kwargs.update(
                 {
@@ -453,6 +469,21 @@ def parse_args():
         type=str,
         default=None,
         help="Language hint for supported models",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help=(
+            "Variant sampling preset (MOSS family): moss_tts, moss_tts_local, "
+            "ttsd, voice_generator, soundeffect, realtime"
+        ),
+    )
+    parser.add_argument(
+        "--model_kwargs_json",
+        type=str,
+        default=None,
+        help="JSON object for advanced model.generate kwargs (escape hatch)",
     )
     parser.add_argument(
         "--dialogue_speakers_json",

@@ -135,9 +135,17 @@ def test_tts_speech(client, mock_model_provider):
         "model": "test_tts_model",
         "input": "Hello world",
         "voice": "alloy",
+        "input_type": "pinyin",
+        "instruct": "calm",
         "tokens": 80,
         "seconds": 2.0,
         "n_vq_for_inference": 8,
+        "quality": "studio",
+        "sound_event": "speech",
+        "ambient_sound": "office",
+        "language": "zh",
+        "preset": "moss_tts_local",
+        "model_kwargs": {"decode_chunk_duration": 0.2},
     }
     response = client.post("/v1/audio/speech", json=payload)
     assert response.status_code == 200
@@ -156,6 +164,14 @@ def test_tts_speech(client, mock_model_provider):
     assert kwargs.get("tokens") == payload["tokens"]
     assert kwargs.get("duration_s") == payload["seconds"]
     assert kwargs.get("n_vq_for_inference") == payload["n_vq_for_inference"]
+    assert kwargs.get("input_type") == payload["input_type"]
+    assert kwargs.get("instruct") == payload["instruct"]
+    assert kwargs.get("quality") == payload["quality"]
+    assert kwargs.get("sound_event") == payload["sound_event"]
+    assert kwargs.get("ambient_sound") == payload["ambient_sound"]
+    assert kwargs.get("language") == payload["language"]
+    assert kwargs.get("preset") == payload["preset"]
+    assert kwargs.get("decode_chunk_duration") == payload["model_kwargs"]["decode_chunk_duration"]
 
     try:
         audio_data, sample_rate = audio_read(io.BytesIO(response.content))

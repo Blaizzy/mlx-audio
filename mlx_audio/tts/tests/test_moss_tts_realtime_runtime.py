@@ -3,6 +3,7 @@ import unittest
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Iterable, Optional
+from unittest.mock import patch
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -302,6 +303,99 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
             model.model_quant_predicate("model.layer_norm_before_lm_heads.0", nn.RMSNorm(2))
         )
         self.assertTrue(model.model_quant_predicate("model.backbone.layers.0", nn.Linear(2, 2)))
+
+    def test_realtime_model_applies_preset_defaults(self):
+        config = ModelConfig.from_dict(_tiny_realtime_config_dict())
+        model = Model(config)
+
+        class _PresetProcessor:
+            def __init__(self):
+                self.audio_tokenizer = object()
+
+            @staticmethod
+            def tokens_from_text(text: str, add_special_tokens: bool = False):
+                del text, add_special_tokens
+                return [5, 6]
+
+            @staticmethod
+            def make_text_prefix(token_ids):
+                return list(token_ids)
+
+            @staticmethod
+            def encode_prompt_audio(_):
+                return mx.array([[1, 2]], dtype=mx.int32)
+
+        captured = {}
+
+        class _PresetSession:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            @staticmethod
+            def reset_turn(
+                user_text: str,
+                user_audio_tokens: Optional[mx.array] = None,
+                include_system_prompt: bool = True,
+                reset_cache: bool = True,
+            ):
+                del user_text, user_audio_tokens, include_system_prompt, reset_cache
+
+            @staticmethod
+            def push_text_tokens(token_ids):
+                del token_ids
+                return []
+
+            @staticmethod
+            def end_text():
+                return []
+
+            @staticmethod
+            def drain(*, max_steps: Optional[int] = None):
+                del max_steps
+                return [mx.zeros((8,), dtype=mx.float32)]
+
+            @staticmethod
+            def close():
+                return None
+
+        model.processor = _PresetProcessor()
+        model.tokenizer = _TinyTokenizer()
+
+        with patch(
+            "mlx_audio.tts.models.moss_tts_realtime.model.MossTTSRealtimeInference",
+            return_value=SimpleNamespace(),
+        ), patch(
+            "mlx_audio.tts.models.moss_tts_realtime.model.RealtimeSession",
+            side_effect=lambda **kwargs: _PresetSession(**kwargs),
+        ):
+            results = list(
+                model.generate(
+                    text="hello",
+                    preset="realtime",
+                    max_tokens=4,
+                )
+            )
+
+        self.assertEqual(captured["temperature"], 0.8)
+        self.assertEqual(captured["top_p"], 0.6)
+        self.assertEqual(captured["top_k"], 30)
+        self.assertEqual(captured["repetition_penalty"], 1.1)
+        self.assertEqual(len(results), 1)
+
+    def test_realtime_model_rejects_non_realtime_preset(self):
+        config = ModelConfig.from_dict(_tiny_realtime_config_dict())
+        model = Model(config)
+        model.processor = SimpleNamespace(audio_tokenizer=object())
+        model.tokenizer = _TinyTokenizer()
+
+        with self.assertRaisesRegex(ValueError, "not valid for runtime"):
+            list(
+                model.generate(
+                    text="hello",
+                    preset="moss_tts",
+                    max_tokens=4,
+                )
+            )
 
 
 class TestMossTTSRealtimeInferencerTransitions(unittest.TestCase):

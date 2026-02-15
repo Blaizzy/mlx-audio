@@ -14,6 +14,10 @@ from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.tts.models.moss_tts.backbone import MossTTSBackbone
 from mlx_audio.tts.models.moss_tts.local_model import MossTTSMLP
+from mlx_audio.tts.models.moss_tts.presets import (
+    MOSS_TTS_REALTIME_RUNTIME,
+    resolve_sampling_preset,
+)
 from mlx_audio.tts.models.moss_tts.local_transformer import MossTTSLocalTransformer
 from mlx_audio.tts.models.moss_tts.sampling import (
     ChannelSamplingConfig,
@@ -398,6 +402,15 @@ class Model(nn.Module):
     ) -> Generator[GenerationResult, None, None]:
         del voice, verbose
         self._ensure_runtime_ready()
+        preset = resolve_sampling_preset(
+            kwargs.pop("preset", None),
+            runtime=MOSS_TTS_REALTIME_RUNTIME,
+        )
+        if preset is not None:
+            temperature = float(preset.temperature)
+            top_p = float(preset.top_p)
+            top_k = int(preset.top_k)
+            repetition_penalty = float(preset.repetition_penalty)
 
         request = RealtimeNormalizedRequest.from_generate_kwargs(
             text=text,

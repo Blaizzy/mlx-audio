@@ -39,6 +39,7 @@ from .long_form import (
     plan_text_segments,
 )
 from .processor import MossTTSProcessor, VALID_INPUT_TYPES
+from .presets import MOSS_TTS_RUNTIME, resolve_sampling_preset
 from .request import MossNormalizedRequest
 from .sampling import resolve_channel_sampling_configs, sample_channel_token
 
@@ -984,6 +985,15 @@ class Model(nn.Module):
         dialogue_speakers = kwargs.pop("dialogue_speakers", None)
         if conversation is not None and dialogue_speakers is not None:
             raise ValueError("Provide either `conversation` or `dialogue_speakers`, not both")
+        preset = resolve_sampling_preset(
+            kwargs.pop("preset", None),
+            runtime=MOSS_TTS_RUNTIME,
+        )
+        if preset is not None:
+            temperature = float(preset.temperature)
+            top_p = float(preset.top_p)
+            top_k = int(preset.top_k)
+            repetition_penalty = float(preset.repetition_penalty)
         long_form_enabled, long_form_runtime = self._resolve_long_form_runtime_config(kwargs)
         if not long_form_enabled:
             self._last_long_form_segment_metrics = []

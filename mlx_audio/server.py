@@ -155,10 +155,17 @@ class SpeechRequest(BaseModel):
     model: str
     input: str
     instruct: str | None = None
+    input_type: str | None = None
     tokens: int | None = None
     duration_s: float | None = None
     seconds: float | None = None
     n_vq_for_inference: int | None = None
+    quality: str | None = None
+    sound_event: str | None = None
+    ambient_sound: str | None = None
+    language: str | None = None
+    preset: str | None = None
+    model_kwargs: dict[str, Any] | None = None
     voice: str | None = None
     speed: float | None = 1.0
     gender: str | None = "male"
@@ -296,11 +303,17 @@ async def generate_audio(model, payload: SpeechRequest):
         "gender": payload.gender,
         "pitch": payload.pitch,
         "instruct": payload.instruct,
+        "input_type": payload.input_type,
         "tokens": payload.tokens,
         "duration_s": (
             payload.duration_s if payload.duration_s is not None else payload.seconds
         ),
         "n_vq_for_inference": payload.n_vq_for_inference,
+        "quality": payload.quality,
+        "sound_event": payload.sound_event,
+        "ambient_sound": payload.ambient_sound,
+        "language": payload.language,
+        "preset": payload.preset,
         "lang_code": payload.lang_code,
         "ref_audio": ref_audio,
         "ref_text": payload.ref_text,
@@ -320,6 +333,8 @@ async def generate_audio(model, payload: SpeechRequest):
         "max_tokens": payload.max_tokens,
         "verbose": payload.verbose,
     }
+    if payload.model_kwargs:
+        generate_kwargs.update(payload.model_kwargs)
     generate_kwargs = {k: v for k, v in generate_kwargs.items() if v is not None}
 
     signature = inspect.signature(model.generate)

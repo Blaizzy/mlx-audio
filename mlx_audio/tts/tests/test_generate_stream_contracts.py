@@ -164,6 +164,29 @@ class TestGenerateStreamContracts(unittest.TestCase):
         self.assertEqual(model.last_generate_kwargs.get("duration_s"), 3.0)
         self.assertEqual(model.last_generate_kwargs.get("n_vq_for_inference"), 8)
 
+    def test_generate_forwards_preset_and_model_kwargs_json(self):
+        model = _DummyModel([_result(1)])
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "mlx_audio.tts.generate.audio_write"
+        ):
+            generate_audio(
+                text="preset controls",
+                model=model,
+                stream=False,
+                output_path=tmpdir,
+                file_prefix="preset_case",
+                preset="moss_tts_local",
+                model_kwargs_json='{"decode_chunk_duration": 0.25, "top_k": 17}',
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "moss_tts_local")
+        self.assertEqual(model.last_generate_kwargs.get("decode_chunk_duration"), 0.25)
+        self.assertEqual(model.last_generate_kwargs.get("top_k"), 17)
+
     def test_long_form_controls_forward_only_when_enabled(self):
         model = _DummyModel([_result(1)])
 

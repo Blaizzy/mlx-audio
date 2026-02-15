@@ -420,6 +420,22 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
                 )
             )
 
+    def test_delay_variant_rejects_realtime_preset(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        with self.assertRaisesRegex(ValueError, "not valid for runtime"):
+            list(
+                model.generate(
+                    text="hello",
+                    preset="realtime",
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
     def test_voice_generator_defaults_normalize_inputs_with_override(self):
         payload = _tiny_delay_config_dict()
         payload["gen_token_id"] = 151656

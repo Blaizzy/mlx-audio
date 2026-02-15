@@ -325,6 +325,41 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
                 duration_s=0.0,
             )
 
+    def test_local_generate_applies_preset_sampling_defaults(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        captured_defaults = {}
+
+        def capture_sampling_defaults(num_channels, **kwargs):
+            captured_defaults["temperature"] = kwargs["default_temperature"]
+            captured_defaults["top_p"] = kwargs["default_top_p"]
+            captured_defaults["top_k"] = kwargs["default_top_k"]
+            captured_defaults["repetition_penalty"] = kwargs[
+                "default_repetition_penalty"
+            ]
+            return resolve_channel_sampling_configs(num_channels, **kwargs)
+
+        with patch(
+            "mlx_audio.tts.models.moss_tts.model.resolve_channel_sampling_configs",
+            side_effect=capture_sampling_defaults,
+        ), patch.object(model, "_generate_local", return_value=iter(())):
+            list(
+                model.generate(
+                    text="hello",
+                    preset="moss_tts_local",
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+        self.assertEqual(captured_defaults["temperature"], 1.0)
+        self.assertEqual(captured_defaults["top_p"], 0.95)
+        self.assertEqual(captured_defaults["top_k"], 50)
+        self.assertEqual(captured_defaults["repetition_penalty"], 1.1)
+
     def test_local_generate_honors_n_vq_for_inference_override(self):
         config = ModelConfig.from_dict(_tiny_local_config_dict())
         model = Model(config)
