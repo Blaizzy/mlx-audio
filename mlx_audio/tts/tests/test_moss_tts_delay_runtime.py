@@ -276,7 +276,7 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertIn("[S1] Prompt one.", user_message["content"])
         self.assertIn("[S3] Prompt three.", user_message["content"])
         self.assertEqual(len(assistant_message["audio_references"]), 1)
-        self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (4, 2))
+        self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (2, 2))
         self.assertEqual(generation_user_message["role"], "user")
         self.assertIn("[S1] Continue the discussion.", generation_user_message["content"])
 
@@ -303,7 +303,71 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertNotIn("[S0]:", user_message["content"])
         self.assertIn("[S1] Speaker zero.", user_message["content"])
         self.assertIn("[S2] Speaker one.", user_message["content"])
-        self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (4, 2))
+        self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (2, 2))
+
+    def test_ttsd_assistant_prompt_codes_encode_concatenated_waveform_once(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+
+        class _ConcatTracingTokenizer:
+            def __init__(self):
+                self.received_shapes: list[tuple[int, ...]] = []
+
+            def batch_encode(self, wav_list, num_quantizers=None):
+                self.received_shapes = [tuple(wav.shape) for wav in wav_list]
+                n_q = int(num_quantizers or 2)
+                length = int(wav_list[0].shape[0])
+                codes = np.zeros((n_q, 1, length), dtype=np.int32)
+                for q_idx in range(n_q):
+                    codes[q_idx, 0, :] = q_idx + 1
+                lengths = np.array([length], dtype=np.int32)
+                return SimpleNamespace(
+                    audio_codes=mx.array(codes, dtype=mx.int32),
+                    audio_codes_lengths=mx.array(lengths, dtype=mx.int32),
+                )
+
+        tracing_tokenizer = _ConcatTracingTokenizer()
+        processor.audio_tokenizer = tracing_tokenizer
+
+        ref_wave_1 = mx.zeros((80,), dtype=mx.float32)
+        ref_wave_2 = mx.ones((120,), dtype=mx.float32)
+        messages = processor.build_ttsd_continuation_messages(
+            dialogue_text="[S1] Continue. [S2] Reply.",
+            speakers=[
+                {"speaker_id": 1, "ref_audio": ref_wave_1, "ref_text": "One."},
+                {"speaker_id": 2, "ref_audio": ref_wave_2, "ref_text": "Two."},
+            ],
+            input_type="text",
+        )
+
+        self.assertEqual(tracing_tokenizer.received_shapes, [(200,)])
+        assistant_codes = messages[1]["audio_references"][0]
+        self.assertEqual(tuple(assistant_codes.shape), (200, 2))
+
+    def test_ttsd_assistant_prompt_codes_preserve_preencoded_reference_support(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+
+        time_major = mx.array(
+            [
+                [1, 11],
+                [2, 12],
+                [3, 13],
+            ],
+            dtype=mx.int32,
+        )
+        codebook_major = time_major.transpose(1, 0)
+        messages = processor.build_ttsd_continuation_messages(
+            dialogue_text="[S1] Continue. [S2] Reply.",
+            speakers=[
+                {"speaker_id": 1, "ref_audio": time_major, "ref_text": "One."},
+                {"speaker_id": 2, "ref_audio": codebook_major, "ref_text": "Two."},
+            ],
+            input_type="text",
+        )
+
+        assistant_codes = messages[1]["audio_references"][0]
+        self.assertEqual(tuple(assistant_codes.shape), (6, 2))
 
     def test_ttsd_continuation_preserves_multilingual_text_and_language_hint(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())

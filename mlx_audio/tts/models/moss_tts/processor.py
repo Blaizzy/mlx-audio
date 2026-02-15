@@ -322,11 +322,10 @@ class MossTTSProcessor:
         messages: List[Dict[str, Any]] = [user_message]
 
         if assistant_reference_inputs:
-            assistant_codes = self.encode_audios_from_reference(
+            concatenated = self.build_ttsd_assistant_prompt_audio_codes(
                 assistant_reference_inputs,
                 n_vq=n_vq,
             )
-            concatenated = mx.concatenate(assistant_codes, axis=0).astype(mx.int32)
             messages.append(
                 self.build_assistant_message(audio_codes_list=[concatenated])
             )
@@ -347,6 +346,74 @@ class MossTTSProcessor:
             )
 
         return messages
+
+    def build_ttsd_assistant_prompt_audio_codes(
+        self,
+        references: Iterable[Union[str, mx.array]],
+        *,
+        n_vq: Optional[int] = None,
+    ) -> mx.array:
+        """
+        Build assistant priming prompt audio codes for TTSD continuation.
+
+        Upstream parity path encodes a single waveform created by concatenating all
+        speaker prompt waveforms on the time axis. If any input is pre-encoded codes,
+        keep the advanced direct-code path by concatenating normalized code segments.
+        """
+
+        if self.audio_tokenizer is None:
+            raise RuntimeError("audio_tokenizer is not loaded")
+
+        n_vq = self.model_config.n_vq if n_vq is None else int(n_vq)
+        normalized_refs = list(references)
+        if len(normalized_refs) == 0:
+            raise ValueError("references must include at least one item")
+
+        has_preencoded = any(
+            isinstance(item, mx.array)
+            and self._normalize_preencoded_audio_codes(item, n_vq=n_vq) is not None
+            for item in normalized_refs
+        )
+        if has_preencoded:
+            # Advanced path: preserve direct pre-encoded support (and mixed inputs)
+            # by normalizing each segment and concatenating on code-time axis.
+            assistant_codes = self.encode_audios_from_reference(
+                normalized_refs,
+                n_vq=n_vq,
+            )
+            return mx.concatenate(assistant_codes, axis=0).astype(mx.int32)
+
+        prompt_wavs: List[mx.array] = []
+        for item in normalized_refs:
+            if isinstance(item, str):
+                wav = load_audio(item, sample_rate=self.model_config.sampling_rate)
+            elif isinstance(item, mx.array):
+                wav = item
+            else:
+                raise TypeError(
+                    "Each reference must be an audio path, waveform, or pre-encoded "
+                    "audio codes with shape (T, NQ) or (NQ, T)."
+                )
+            if wav.ndim == 2:
+                wav = self._normalize_waveform_layout_to_time_major(wav)
+                wav = mx.mean(wav, axis=1)
+            prompt_wavs.append(wav.astype(mx.float32))
+
+        concat_prompt_wav = (
+            prompt_wavs[0]
+            if len(prompt_wavs) == 1
+            else mx.concatenate(prompt_wavs, axis=0)
+        )
+        encoded = self.audio_tokenizer.batch_encode(
+            [concat_prompt_wav],
+            num_quantizers=n_vq,
+        )
+        if encoded.audio_codes is None or encoded.audio_codes_lengths is None:
+            raise RuntimeError("audio tokenizer encode returned empty outputs")
+
+        prompt_length = int(encoded.audio_codes_lengths[0])
+        prompt_codes = encoded.audio_codes[:, 0, :prompt_length].transpose(1, 0)
+        return prompt_codes.astype(mx.int32)
 
     def _normalize_message(
         self,

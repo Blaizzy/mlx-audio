@@ -368,14 +368,16 @@ def generate_audio(
         if join_audio and not stream:
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
+            joined_file_name = f"{file_prefix}.{audio_format}"
             audio = mx.concatenate(audio_list, axis=0)
             audio_write(
-                f"{file_prefix}.{audio_format}",
+                joined_file_name,
                 audio,
                 model.sample_rate,
+                format=audio_format,
             )
             if verbose:
-                print(f"✅ Audio successfully generated and saving as: {file_name}")
+                print(f"✅ Audio successfully generated and saving as: {joined_file_name}")
 
         if play:
             player.wait_for_drain()

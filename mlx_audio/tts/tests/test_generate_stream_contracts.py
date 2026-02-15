@@ -140,6 +140,35 @@ class TestGenerateStreamContracts(unittest.TestCase):
         self.assertTrue(created_players[0].waited)
         self.assertTrue(created_players[0].stopped)
 
+    def test_join_audio_verbose_does_not_reference_chunk_file_name(self):
+        model = _DummyModel([_result(1), _result(2)])
+        output = io.StringIO()
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write") as audio_write_mock,
+            redirect_stdout(output),
+            redirect_stderr(output),
+        ):
+            generate_audio(
+                text="join case",
+                model=model,
+                stream=False,
+                join_audio=True,
+                output_path=tmpdir,
+                file_prefix="joined_case",
+                verbose=True,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        self.assertEqual(audio_write_mock.call_count, 1)
+        self.assertEqual(
+            audio_write_mock.call_args.args[0],
+            os.path.join(tmpdir, "joined_case.wav"),
+        )
+        self.assertNotIn("Error loading model", output.getvalue())
+        self.assertIn("✅ Audio successfully generated and saving as:", output.getvalue())
+
     def test_generate_passes_duration_and_n_vq_controls(self):
         model = _DummyModel([_result(1)])
 
