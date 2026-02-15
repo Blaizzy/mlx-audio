@@ -305,6 +305,47 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertIn("[S2] Speaker one.", user_message["content"])
         self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (2, 2))
 
+    def test_ttsd_continuation_pronunciation_validates_dialogue_only(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+        ref_wave = mx.zeros((80,), dtype=mx.float32)
+
+        messages = processor.build_ttsd_continuation_messages(
+            dialogue_text="ni3 hao3 peng2 you3",
+            speakers=[
+                {
+                    "speaker_id": 1,
+                    "ref_audio": ref_wave,
+                    "ref_text": "Hello there, friend.",
+                }
+            ],
+            input_type="pinyin",
+        )
+
+        self.assertEqual(len(messages), 3)
+        self.assertIn("[S1] Hello there, friend.", messages[0]["content"])
+        self.assertIn("- Text:\nni3 hao3 peng2 you3", messages[2]["content"])
+
+        messages_without_audio = processor.build_ttsd_continuation_messages(
+            dialogue_text="ni3 hao3",
+            speakers=[{"speaker_id": 1, "ref_text": "Plain transcript context."}],
+            input_type="pinyin",
+        )
+        self.assertEqual(len(messages_without_audio), 1)
+        self.assertIn(
+            "[S1] Plain transcript context.",
+            messages_without_audio[0]["content"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "tone-numbered"):
+            processor.build_ttsd_continuation_messages(
+                dialogue_text="hello there friend",
+                speakers=[
+                    {"speaker_id": 1, "ref_text": "Plain transcript context."}
+                ],
+                input_type="pinyin",
+            )
+
     def test_ttsd_assistant_prompt_codes_encode_concatenated_waveform_once(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
         processor = _build_dummy_processor(config)

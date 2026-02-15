@@ -730,6 +730,8 @@ class RealtimeSession:
 
         if include_system_prompt is None:
             include_system_prompt = self._turn_index == 0
+            if not include_system_prompt and bool(reset_cache):
+                include_system_prompt = self._voice_prompt_tokens is not None
 
         if input_ids is None:
             build_turn = self.processor.build_turn_input_ids

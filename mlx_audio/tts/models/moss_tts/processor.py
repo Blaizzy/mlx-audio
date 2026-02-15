@@ -308,7 +308,12 @@ class MossTTSProcessor:
                 if normalized_text:
                     prompt_lines.append(f"[S{speaker_id}] {normalized_text}")
 
-        full_dialogue = " ".join(prompt_lines + [dialogue_text.strip()])
+        dialogue_payload = dialogue_text.strip()
+        validated_input_type = validate_pronunciation_input_contract(
+            dialogue_payload,
+            input_type,
+        )
+        full_dialogue = " ".join(prompt_lines + [dialogue_payload])
         user_message = self.build_user_message(
             text=full_dialogue,
             reference=(
@@ -320,7 +325,9 @@ class MossTTSProcessor:
             sound_event=sound_event,
             ambient_sound=ambient_sound,
             language=language,
-            input_type=input_type,
+            # Speaker reference transcripts are context only; pronunciation contracts
+            # should apply to the active synthesis payload, validated above.
+            input_type="text",
             normalize=normalize_inputs,
         )
         messages: List[Dict[str, Any]] = [user_message]
@@ -337,14 +344,14 @@ class MossTTSProcessor:
             # after priming speaker references through the assistant continuation payload.
             messages.append(
                 self.build_user_message(
-                    text=dialogue_text.strip(),
+                    text=dialogue_payload,
                     instruction=instruction,
                     tokens=tokens,
                     quality=quality,
                     sound_event=sound_event,
                     ambient_sound=ambient_sound,
                     language=language,
-                    input_type=input_type,
+                    input_type=validated_input_type,
                     normalize=normalize_inputs,
                 )
             )

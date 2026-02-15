@@ -926,6 +926,67 @@ class TestMossTTSRealtimePromptPackingParity(unittest.TestCase):
         session.clear_voice_prompt_tokens()
         session.close()
 
+    def test_reset_turn_defaults_reapply_voice_prompt_after_cache_reset(self):
+        config = self._build_config()
+        processor = _build_prompt_parity_processor(config)
+        inferencer = MossTTSRealtimeInference(
+            model=_FakeRealtimeModel(config, eos_after=7),
+            tokenizer=processor.tokenizer,
+            config=config,
+            max_length=10,
+        )
+        session = RealtimeSession(
+            inferencer=inferencer,
+            processor=processor,
+            do_sample=False,
+            top_k=0,
+            top_p=1.0,
+        )
+
+        voice_prompt_tokens = mx.array([[31, 32], [33, 34]], dtype=mx.int32)
+        normalized_voice_tokens = processor.normalize_audio_prompt_tokens(
+            voice_prompt_tokens
+        )
+        session.set_voice_prompt_tokens(voice_prompt_tokens)
+
+        expected_first = processor.build_turn_input_ids(
+            user_text="turn one",
+            user_audio_tokens=None,
+            include_system_prompt=True,
+            voice_prompt_tokens=normalized_voice_tokens,
+        )
+        session.reset_turn("turn one", reset_cache=False)
+        np.testing.assert_array_equal(
+            np.array(session._turn_input_ids),
+            np.array(expected_first),
+        )
+
+        expected_second = processor.build_turn_input_ids(
+            user_text="turn two",
+            user_audio_tokens=None,
+            include_system_prompt=False,
+            voice_prompt_tokens=normalized_voice_tokens,
+        )
+        session.reset_turn("turn two", reset_cache=False)
+        np.testing.assert_array_equal(
+            np.array(session._turn_input_ids),
+            np.array(expected_second),
+        )
+
+        expected_third = processor.build_turn_input_ids(
+            user_text="turn three",
+            user_audio_tokens=None,
+            include_system_prompt=True,
+            voice_prompt_tokens=normalized_voice_tokens,
+        )
+        session.reset_turn("turn three", reset_cache=True)
+        np.testing.assert_array_equal(
+            np.array(session._turn_input_ids),
+            np.array(expected_third),
+        )
+
+        session.close()
+
 
 class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
     def test_decode_control_defaults_and_override(self):
