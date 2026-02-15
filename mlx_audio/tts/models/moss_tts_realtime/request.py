@@ -15,6 +15,7 @@ class RealtimeNormalizedRequest:
     overlap_frames: int = 4
     decode_chunk_duration: Optional[float] = 0.32
     max_pending_frames: int = 4096
+    repetition_window: Optional[int] = 50
     reference_audio: Optional[Any] = None
 
     def __post_init__(self):
@@ -28,6 +29,8 @@ class RealtimeNormalizedRequest:
             raise ValueError("overlap_frames must be smaller than chunk_frames")
         if self.decode_chunk_duration is not None and self.decode_chunk_duration <= 0:
             raise ValueError("decode_chunk_duration must be positive when provided")
+        if self.repetition_window is not None and self.repetition_window <= 0:
+            raise ValueError("repetition_window must be positive when provided")
 
     @classmethod
     def from_generate_kwargs(
@@ -41,9 +44,18 @@ class RealtimeNormalizedRequest:
         overlap_frames: Optional[int] = None,
         decode_chunk_duration: Optional[float] = 0.32,
         max_pending_frames: Optional[int] = None,
+        repetition_window: Optional[int] = None,
         **_: Any,
     ) -> "RealtimeNormalizedRequest":
         resolved_text = "" if text is None else str(text)
+        resolved_repetition_window: Optional[int]
+        if repetition_window is None:
+            resolved_repetition_window = 50
+        else:
+            repetition_window_value = int(repetition_window)
+            resolved_repetition_window = (
+                None if repetition_window_value <= 0 else repetition_window_value
+            )
         return cls(
             text=resolved_text,
             include_system_prompt=True
@@ -58,5 +70,6 @@ class RealtimeNormalizedRequest:
             max_pending_frames=(
                 4096 if max_pending_frames is None else int(max_pending_frames)
             ),
+            repetition_window=resolved_repetition_window,
             reference_audio=ref_audio,
         )

@@ -151,6 +151,7 @@ class MossTTSRealtimeCore(nn.Module):
         *,
         generated_history: Optional[mx.array],
         channel_sampling: Sequence[ChannelSamplingConfig],
+        repetition_window: Optional[int] = None,
     ) -> mx.array:
         """Sample one RVQ frame from logits with per-channel policies."""
 
@@ -186,6 +187,7 @@ class MossTTSRealtimeCore(nn.Module):
                 logits,
                 channel_sampling[channel_idx],
                 previous_tokens=previous_tokens,
+                repetition_window=repetition_window,
             )
             sampled.append(token)
 
@@ -394,6 +396,7 @@ class Model(nn.Module):
         top_p: float = 0.6,
         top_k: int = 30,
         repetition_penalty: float = 1.1,
+        repetition_window: Optional[int] = 50,
         max_tokens: int = 1200,
         verbose: bool = False,
         ref_audio: Optional[Any] = None,
@@ -411,6 +414,12 @@ class Model(nn.Module):
             top_p = float(preset.top_p)
             top_k = int(preset.top_k)
             repetition_penalty = float(preset.repetition_penalty)
+            if repetition_window is None:
+                repetition_window = (
+                    None
+                    if preset.repetition_window is None
+                    else int(preset.repetition_window)
+                )
 
         request = RealtimeNormalizedRequest.from_generate_kwargs(
             text=text,
@@ -421,6 +430,11 @@ class Model(nn.Module):
             overlap_frames=kwargs.pop("overlap_frames", None),
             decode_chunk_duration=kwargs.pop("decode_chunk_duration", 0.32),
             max_pending_frames=kwargs.pop("max_pending_frames", None),
+            repetition_window=(
+                repetition_window
+                if "repetition_window" not in kwargs
+                else kwargs.pop("repetition_window")
+            ),
         )
 
         decode_kwargs = dict(kwargs.pop("decode_kwargs", {}) or {})
@@ -440,20 +454,23 @@ class Model(nn.Module):
             overlap_frames=request.overlap_frames,
             decode_kwargs=decode_kwargs,
             max_pending_frames=request.max_pending_frames,
+            prefill_text_len=int(getattr(self.processor, "delay_tokens_len", 12)),
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
             do_sample=kwargs.pop("do_sample", True),
             repetition_penalty=repetition_penalty,
+            repetition_window=request.repetition_window,
         )
 
         prompt_audio_tokens = None
         if request.reference_audio is not None:
             prompt_audio_tokens = self.processor.encode_prompt_audio(request.reference_audio)
+            session.set_voice_prompt_tokens(prompt_audio_tokens)
 
         session.reset_turn(
             user_text="",
-            user_audio_tokens=prompt_audio_tokens,
+            user_audio_tokens=None,
             include_system_prompt=request.include_system_prompt,
             reset_cache=request.reset_cache,
         )

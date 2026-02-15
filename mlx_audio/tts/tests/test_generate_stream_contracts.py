@@ -184,6 +184,7 @@ class TestGenerateStreamContracts(unittest.TestCase):
                 duration_s=None,
                 seconds=3.0,
                 n_vq_for_inference=8,
+                repetition_window=64,
                 verbose=False,
             )
 
@@ -192,6 +193,7 @@ class TestGenerateStreamContracts(unittest.TestCase):
         assert model.last_generate_kwargs is not None
         self.assertEqual(model.last_generate_kwargs.get("duration_s"), 3.0)
         self.assertEqual(model.last_generate_kwargs.get("n_vq_for_inference"), 8)
+        self.assertEqual(model.last_generate_kwargs.get("repetition_window"), 64)
 
     def test_generate_forwards_preset_and_model_kwargs_json(self):
         model = _DummyModel([_result(1)])

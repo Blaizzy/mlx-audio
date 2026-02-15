@@ -58,7 +58,10 @@ def resolve_channel_sampling_configs(
 
 
 def apply_repetition_penalty(
-    logits: mx.array, previous_tokens: mx.array, penalty: float
+    logits: mx.array,
+    previous_tokens: mx.array,
+    penalty: float,
+    repetition_window: Optional[int] = None,
 ) -> mx.array:
     """Apply repetition penalty independently per batch row."""
 
@@ -71,6 +74,8 @@ def apply_repetition_penalty(
 
     if history_np.ndim == 1:
         history_np = history_np[None, :]
+    if repetition_window is not None and int(repetition_window) > 0:
+        history_np = history_np[:, -int(repetition_window) :]
 
     for row_idx in range(history_np.shape[0]):
         unique = np.unique(history_np[row_idx]).astype(np.int64)
@@ -89,6 +94,7 @@ def sample_channel_token(
     logits: mx.array,
     config: ChannelSamplingConfig,
     previous_tokens: Optional[mx.array] = None,
+    repetition_window: Optional[int] = None,
 ) -> mx.array:
     """
     Sample one token per batch row from channel logits.
@@ -98,7 +104,10 @@ def sample_channel_token(
 
     if previous_tokens is not None and config.repetition_penalty != 1.0:
         logits = apply_repetition_penalty(
-            logits, previous_tokens, config.repetition_penalty
+            logits,
+            previous_tokens,
+            config.repetition_penalty,
+            repetition_window=repetition_window,
         )
 
     if not config.do_sample or config.temperature <= 0:

@@ -18,6 +18,7 @@ class MossSamplingPreset:
     top_p: float
     top_k: int
     repetition_penalty: float
+    repetition_window: Optional[int] = None
 
 
 _PRESET_CATALOG: Dict[str, MossSamplingPreset] = {
@@ -68,6 +69,7 @@ _PRESET_CATALOG: Dict[str, MossSamplingPreset] = {
         top_p=0.6,
         top_k=30,
         repetition_penalty=1.1,
+        repetition_window=50,
     ),
 }
 

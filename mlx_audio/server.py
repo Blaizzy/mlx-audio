@@ -177,6 +177,7 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
+    repetition_window: int | None = None
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
@@ -321,6 +322,7 @@ async def generate_audio(model, payload: SpeechRequest):
         "top_p": payload.top_p,
         "top_k": payload.top_k,
         "repetition_penalty": payload.repetition_penalty,
+        "repetition_window": payload.repetition_window,
         "stream": payload.stream,
         "streaming_interval": payload.streaming_interval,
         "include_system_prompt": payload.include_system_prompt,

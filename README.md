@@ -179,6 +179,7 @@ See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice c
 OpenMOSS MOSS-TTS variants are available through the unified MOSS runtime (`moss_tts` and `moss_tts_realtime` model packages), including Delay, Local, TTSD, VoiceGenerator, SoundEffect, and Realtime.
 
 See the [MOSS-TTS README](mlx_audio/tts/models/moss_tts/README.md) for presets, CLI recipes, and parity artifacts.
+For realtime session controls (voice-prompt API, prompt packing, repetition-window sampling), see [MOSS-TTS-Realtime README](mlx_audio/tts/models/moss_tts_realtime/README.md).
 
 ### CSM (Voice Cloning)
 

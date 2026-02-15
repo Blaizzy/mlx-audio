@@ -12,6 +12,11 @@ from mlx_audio.utils import load_audio
 
 from .config import ModelConfig
 
+_AUDIO_PAD_TOKEN_TEXT = "<|audio_pad|>"
+_TEXT_PAD_TOKEN_TEXT = "<|text_pad|>"
+_USER_PREFIX = "<|im_end|>\n<|im_start|>user\n"
+_ASSISTANT_PREFIX = "<|im_end|>\n<|im_start|>assistant\n"
+
 
 def _normalize_waveform_layout_to_time_major(wav: mx.array) -> mx.array:
     if wav.ndim != 2:
@@ -84,14 +89,66 @@ class MossTTSRealtimeProcessor:
         self.tokenizer = tokenizer
         self.audio_tokenizer = audio_tokenizer
         self.model_config = model_config
+        self.delay_tokens_len = int(model_config.delay_tokens_len)
+        self.channels = int(model_config.channels)
+        self.audio_pad_token_id = self._convert_token_to_id(
+            _AUDIO_PAD_TOKEN_TEXT,
+            fallback_id=int(model_config.reference_audio_pad),
+        )
+        self.text_pad_token_id = self._convert_token_to_id(
+            _TEXT_PAD_TOKEN_TEXT,
+            fallback_id=int(model_config.text_pad),
+        )
+
+    def _tokenize(
+        self,
+        text: str,
+        *,
+        add_special_tokens: Optional[bool] = None,
+    ) -> list[int]:
+        if callable(getattr(self.tokenizer, "__call__", None)):
+            try:
+                if add_special_tokens is None:
+                    encoded = self.tokenizer(text)
+                else:
+                    encoded = self.tokenizer(
+                        text,
+                        add_special_tokens=bool(add_special_tokens),
+                    )
+                if isinstance(encoded, dict) and "input_ids" in encoded:
+                    input_ids = encoded["input_ids"]
+                    if input_ids and isinstance(input_ids[0], list):
+                        input_ids = input_ids[0]
+                    return [int(token_id) for token_id in input_ids]
+            except TypeError:
+                pass
+
+        try:
+            if add_special_tokens is None:
+                token_ids = self.tokenizer.encode(text)
+            else:
+                token_ids = self.tokenizer.encode(
+                    text,
+                    add_special_tokens=bool(add_special_tokens),
+                )
+        except TypeError:
+            token_ids = self.tokenizer.encode(text)
+        return [int(token_id) for token_id in token_ids]
+
+    def _convert_token_to_id(self, token: str, *, fallback_id: int) -> int:
+        if hasattr(self.tokenizer, "convert_tokens_to_ids"):
+            token_id = self.tokenizer.convert_tokens_to_ids(token)
+            unk_token_id = getattr(self.tokenizer, "unk_token_id", None)
+            if token_id is not None and token_id != unk_token_id:
+                return int(token_id)
+
+        token_ids = self._tokenize(token, add_special_tokens=False)
+        if len(token_ids) == 1:
+            return int(token_ids[0])
+        return int(fallback_id)
 
     def tokens_from_text(self, text: str, *, add_special_tokens: bool = False) -> list[int]:
-        try:
-            return list(
-                self.tokenizer.encode(text, add_special_tokens=add_special_tokens)
-            )
-        except TypeError:
-            return list(self.tokenizer.encode(text))
+        return self._tokenize(text, add_special_tokens=add_special_tokens)
 
     def encode_prompt_audio(self, audio: Any) -> mx.array:
         if self.audio_tokenizer is None:
@@ -168,56 +225,143 @@ class MossTTSRealtimeProcessor:
         length = int(decoded.audio_lengths[0])
         return decoded.audio[0, 0, :length]
 
+    def _normalize_audio_prompt_tokens(self, audio_tokens: Optional[Any]) -> mx.array:
+        if audio_tokens is None:
+            return mx.zeros((0, self.model_config.rvq), dtype=mx.int32)
+
+        candidate = audio_tokens
+        if isinstance(audio_tokens, np.ndarray):
+            candidate = mx.array(audio_tokens)
+
+        if isinstance(candidate, mx.array):
+            preencoded = _normalize_preencoded_audio_tokens(
+                candidate,
+                rvq=self.model_config.rvq,
+                audio_pad_token=self.model_config.audio_pad_token,
+            )
+            if preencoded is not None:
+                return preencoded
+
+        return self.encode_prompt_audio(candidate)
+
+    def normalize_audio_prompt_tokens(self, audio_tokens: Optional[Any]) -> mx.array:
+        return self._normalize_audio_prompt_tokens(audio_tokens)
+
+    @staticmethod
+    def make_voice_clone_prompt(prompt_audio_tokens_len: int) -> str:
+        padded_audio_prompt = f"{_AUDIO_PAD_TOKEN_TEXT * int(prompt_audio_tokens_len)}"
+        return (
+            "<|im_start|>context\n"
+            "The assistant section should be synthesized using the following voice timbre:"
+            f"{padded_audio_prompt}"
+        )
+
+    def make_ensemble(self, prompt_audio_tokens: Optional[mx.array] = None) -> mx.array:
+        normalized_prompt_tokens = self._normalize_audio_prompt_tokens(prompt_audio_tokens)
+        if int(normalized_prompt_tokens.shape[0]) > 0:
+            system_prompt_text = (
+                f"{self.model_config.tts_system_prompt}"
+                f"{self.make_voice_clone_prompt(int(normalized_prompt_tokens.shape[0]))}"
+            )
+        else:
+            system_prompt_text = f"{self.model_config.tts_system_prompt}"
+
+        system_prompt_tokens = self._tokenize(system_prompt_text, add_special_tokens=None)
+        if not system_prompt_tokens:
+            system_prompt_tokens = [self.text_pad_token_id]
+
+        system_prompt = mx.full(
+            (len(system_prompt_tokens), self.channels),
+            self.model_config.audio_pad_token,
+            dtype=mx.int32,
+        )
+        system_prompt[:, 0] = mx.array(system_prompt_tokens, dtype=mx.int32)
+
+        if int(normalized_prompt_tokens.shape[0]) > 0:
+            token_array = np.array(system_prompt_tokens)
+            indices = np.where(token_array == int(self.audio_pad_token_id))[0]
+            if indices.size == 0:
+                raise ValueError("No <|audio_pad|> tokens found in the system prompt.")
+            prompt_audio_start_pos = int(indices[0])
+            prompt_audio_end_pos = int(indices[-1])
+            prompt_audio_len = prompt_audio_end_pos - prompt_audio_start_pos + 1
+            if prompt_audio_len != int(normalized_prompt_tokens.shape[0]):
+                raise ValueError(
+                    "Voice prompt placeholder length mismatch: "
+                    f"{prompt_audio_len} placeholders vs {int(normalized_prompt_tokens.shape[0])} frames"
+                )
+            system_prompt[prompt_audio_start_pos : prompt_audio_end_pos + 1, 1:] = (
+                normalized_prompt_tokens[:, : self.model_config.rvq]
+            )
+
+        return system_prompt.astype(mx.int32)
+
+    def make_user_prompt(self, text: str, audio_tokens: Optional[mx.array]) -> mx.array:
+        token = self._normalize_audio_prompt_tokens(audio_tokens)
+        token = token[:, : self.model_config.rvq]
+
+        text_tokens = self._tokenize(text, add_special_tokens=None)
+        text_start_pos = len(self._tokenize(_USER_PREFIX, add_special_tokens=None))
+        text_len = len(text_tokens)
+        audio_len = int(token.shape[0])
+
+        if text_len >= self.delay_tokens_len:
+            padded_text_len = max(0, audio_len + self.delay_tokens_len - text_len + 1)
+            cur_input_id_ch1 = f"{_USER_PREFIX}{text}{_TEXT_PAD_TOKEN_TEXT * padded_text_len}"
+            assistant_tokens_ch1 = self._tokenize(cur_input_id_ch1, add_special_tokens=None)
+            cur_input_id = mx.full(
+                (len(assistant_tokens_ch1), self.channels),
+                self.model_config.audio_pad_token,
+                dtype=mx.int32,
+            )
+            cur_input_id[:, 0] = mx.array(assistant_tokens_ch1, dtype=mx.int32)
+            cur_input_id[
+                text_start_pos + self.delay_tokens_len : text_start_pos + self.delay_tokens_len + audio_len,
+                1:,
+            ] = token
+            cur_input_id[text_start_pos + self.delay_tokens_len - 1, 1] = int(
+                self.model_config.audio_bos_token
+            )
+            cur_input_id[text_start_pos + self.delay_tokens_len + audio_len, 1] = int(
+                self.model_config.audio_eos_token
+            )
+        else:
+            padded_text_len = audio_len + 1
+            cur_input_id_ch1 = f"{_USER_PREFIX}{text}{_TEXT_PAD_TOKEN_TEXT * padded_text_len}"
+            assistant_tokens_ch1 = self._tokenize(cur_input_id_ch1, add_special_tokens=None)
+            cur_input_id = mx.full(
+                (len(assistant_tokens_ch1), self.channels),
+                self.model_config.audio_pad_token,
+                dtype=mx.int32,
+            )
+            cur_input_id[:, 0] = mx.array(assistant_tokens_ch1, dtype=mx.int32)
+            cur_input_id[-(audio_len + 1) : -1, 1:] = token
+            cur_input_id[-(audio_len + 2), 1] = int(self.model_config.audio_bos_token)
+            cur_input_id[-1, 1] = int(self.model_config.audio_eos_token)
+
+        begin_of_response = self._tokenize(_ASSISTANT_PREFIX, add_special_tokens=None)
+        begin_of_response_full = mx.full(
+            (len(begin_of_response), self.channels),
+            self.model_config.audio_pad_token,
+            dtype=mx.int32,
+        )
+        begin_of_response_full[:, 0] = mx.array(begin_of_response, dtype=mx.int32)
+        return mx.concatenate([cur_input_id, begin_of_response_full], axis=0).astype(mx.int32)
+
     def build_turn_input_ids(
         self,
         *,
         user_text: str,
-        user_audio_tokens: Optional[mx.array] = None,
+        user_audio_tokens: Optional[Any] = None,
         include_system_prompt: bool = True,
+        voice_prompt_tokens: Optional[Any] = None,
     ) -> mx.array:
-        channels = self.model_config.channels
-        rvq = self.model_config.rvq
-        audio_pad_token = self.model_config.audio_pad_token
-
-        segments: list[mx.array] = []
-
+        user_prompt = self.make_user_prompt(user_text, user_audio_tokens)
         if include_system_prompt:
-            system_ids = self.tokens_from_text(
-                self.model_config.tts_system_prompt,
-                add_special_tokens=False,
-            )
-            if not system_ids:
-                system_ids = [self.model_config.text_pad]
-            system = mx.full((len(system_ids), channels), audio_pad_token, dtype=mx.int32)
-            system[:, 0] = mx.array(system_ids, dtype=mx.int32)
-            segments.append(system)
-
-        user_ids = self.tokens_from_text(user_text, add_special_tokens=False)
-        if not user_ids:
-            user_ids = [self.model_config.text_pad]
-        user = mx.full((len(user_ids), channels), audio_pad_token, dtype=mx.int32)
-        user[:, 0] = mx.array(user_ids, dtype=mx.int32)
-        segments.append(user)
-
-        if user_audio_tokens is not None:
-            normalized_tokens = _normalize_preencoded_audio_tokens(
-                user_audio_tokens,
-                rvq=rvq,
-                audio_pad_token=audio_pad_token,
-            )
-            if normalized_tokens is None:
-                normalized_tokens = self.encode_prompt_audio(user_audio_tokens)
-
-            prompt = mx.full(
-                (int(normalized_tokens.shape[0]), channels),
-                audio_pad_token,
-                dtype=mx.int32,
-            )
-            prompt[:, 0] = int(self.model_config.reference_audio_pad)
-            prompt[:, 1 : 1 + rvq] = normalized_tokens[:, :rvq]
-            segments.append(prompt)
-
-        turn_input = mx.concatenate(segments, axis=0)
+            system_prompt = self.make_ensemble(voice_prompt_tokens)
+            turn_input = mx.concatenate([system_prompt, user_prompt], axis=0)
+        else:
+            turn_input = user_prompt
         return turn_input[None, :, :].astype(mx.int32)
 
     def make_text_prefix(self, text_token_ids: Iterable[int]) -> list[int]:

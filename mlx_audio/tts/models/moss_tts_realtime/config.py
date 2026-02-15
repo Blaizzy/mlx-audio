@@ -116,6 +116,7 @@ class ModelConfig(BaseModelArgs):
 
     reference_audio_pad: int = 151654
     text_pad: int = 151655
+    delay_tokens_len: int = 12
     sampling_rate: int = 24000
     max_context_tokens: int = 32768
     initializer_range: float = 0.02
@@ -154,6 +155,8 @@ class ModelConfig(BaseModelArgs):
             raise ValueError("sampling_rate must be positive")
         if self.max_context_tokens <= 0:
             raise ValueError("max_context_tokens must be positive")
+        if self.delay_tokens_len <= 0:
+            raise ValueError("delay_tokens_len must be positive")
 
         if not (0 <= self.audio_pad_token < self.audio_vocab_size):
             raise ValueError("audio_pad_token must be within audio vocab range")

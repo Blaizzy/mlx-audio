@@ -34,11 +34,26 @@ Configured in `ModelConfig`:
 - `channels = 1 + rvq`
 - audio tokens: `audio_pad_token`, `audio_bos_token`, `audio_eos_token`
 - text/reference markers: `text_pad`, `reference_audio_pad`
+- prompt alignment: `delay_tokens_len`
 
 `MossTTSRealtimeProcessor.build_turn_input_ids(...)` packs a turn as `[B, T, channels]` with:
 
 - channel 0: text/control tokens
 - channels 1..rvq: audio tokens or `audio_pad_token`
+
+## Prompt Packing Parity
+
+Realtime prompt assembly now mirrors upstream split builders:
+
+- `make_ensemble(prompt_audio_tokens=...)`
+  - builds system rows
+  - fills `<|audio_pad|>` placeholder rows with voice-prompt token frames
+- `make_user_prompt(text, audio_tokens)`
+  - applies `delay_tokens_len` text/audio alignment
+  - inserts channel-1 BOS/EOS at upstream offsets
+  - appends `"<|im_end|>\n<|im_start|>assistant\n"` boundary rows
+
+This keeps `RealtimeSession.reset_turn(input_ids=...)` as an escape hatch while making the default path upstream-compatible.
 
 ## Inferencer Lifecycle
 
@@ -49,6 +64,9 @@ Configured in `ModelConfig`:
 3. `finish(max_steps)`: continue until EOS/cap.
 4. `reset_turn(...)` / `reset_generation_state(...)`: clear turn state and optionally cache.
 
+Sampling controls (`temperature`, `top_p`, `top_k`, `repetition_penalty`, `repetition_window`) are threaded through all three generation steps.
+`repetition_window` applies windowed penalty over the most recent generated frames per channel.
+
 Cache growth is bounded by `_ensure_cache_capacity(...)`; cache is rebuilt when context cap is exceeded.
 
 ## Session Lifecycle and Invariants
@@ -58,6 +76,10 @@ Cache growth is bounded by `_ensure_cache_capacity(...)`; cache is rebuilt when 
 - Required order: `reset_turn` -> `push_text`/`push_text_tokens` -> `end_text` -> `drain`.
 - `reset_turn`/`reset` during active undrained turns raises.
 - `close()` drains active turns before shutdown.
+- Session-level voice prompt API is persistent until explicit clear:
+  - `set_voice_prompt_tokens(...)`
+  - `set_voice_prompt_audio(...)`
+  - `clear_voice_prompt_tokens()`
 
 This prevents orphaned buffered tokens/audio between turns.
 
@@ -100,10 +122,11 @@ Wrapper flow:
 
 1. Resolve preset (`realtime`) and request defaults (`RealtimeNormalizedRequest`).
 2. Build `RealtimeSession` with decode/backpressure controls.
-3. Reset turn, optionally encode prompt audio.
-4. Push text tokens, `end_text`, then `drain`.
-5. In `stream=True` mode, emit chunks incrementally as each stage produces audio (with one-chunk lookahead so `is_final_chunk` is correct).
-6. In `stream=False` mode, merge all chunks into one final `GenerationResult`.
+3. If `ref_audio` is provided, map it to session voice-prompt state (`set_voice_prompt_tokens(...)`).
+4. Reset turn with turn-local user conditioning (`user_audio_tokens` path remains separate).
+5. Push text tokens, `end_text`, then `drain`.
+6. In `stream=True` mode, emit chunks incrementally as each stage produces audio (with one-chunk lookahead so `is_final_chunk` is correct).
+7. In `stream=False` mode, merge all chunks into one final `GenerationResult`.
 
 For strict lifecycle/latency control, call session APIs directly.
 

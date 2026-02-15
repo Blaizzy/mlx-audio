@@ -137,6 +137,7 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
+    repetition_window: Optional[int] = None,
     stream: bool = False,
     streaming_interval: float = 2.0,
     long_form: bool = False,
@@ -279,6 +280,7 @@ def generate_audio(
             dialogue_speakers=dialogue_speakers,
             input_type=input_type,
             temperature=temperature,
+            repetition_window=repetition_window,
             max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
@@ -565,6 +567,15 @@ def parse_args():
         type=float,
         default=1.1,
         help="Repetition penalty for the model",
+    )
+    parser.add_argument(
+        "--repetition_window",
+        type=int,
+        default=None,
+        help=(
+            "Realtime repetition-history window size; <=0 disables windowing "
+            "and applies repetition penalty over full history"
+        ),
     )
     parser.add_argument(
         "--stream",

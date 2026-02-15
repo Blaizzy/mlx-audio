@@ -79,6 +79,7 @@ More complete runnable examples are in:
 | `input_type` | `text`, `pinyin`, or `ipa` |
 | `preset` | Variant sampling defaults |
 | `stream`, `streaming_interval` | Chunked output controls |
+| `repetition_window` | Realtime-only repetition-penalty history window |
 
 ### `quality` hint (advisory)
 
@@ -106,6 +107,7 @@ For Delay-family variants in this package, `quality` is passed through verbatim 
 | TTSD | `text` + `dialogue_speakers` schema |
 | VoiceGenerator | `instruct` (+ optional `normalize_inputs`) |
 | SoundEffect | `ambient_sound`, `sound_event`, optional `quality` |
+| Realtime | `chunk_frames`, `overlap_frames`, `decode_chunk_duration`, `max_pending_frames`, `repetition_window` + session voice-prompt API |
 
 For full effective-field contracts see:
 `../../../../PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_effective_field_matrix.md`

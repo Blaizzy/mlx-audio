@@ -197,6 +197,7 @@ def test_tts_speech_realtime_single_turn_compat(client, mock_model_provider):
         "overlap_frames": 2,
         "decode_chunk_duration": 0.18,
         "max_pending_frames": 128,
+        "repetition_window": 24,
         "decode_kwargs": {"chunk_duration": 0.11},
     }
     response = client.post("/v1/audio/speech", json=payload)
@@ -212,6 +213,7 @@ def test_tts_speech_realtime_single_turn_compat(client, mock_model_provider):
     assert kwargs.get("overlap_frames") == 2
     assert kwargs.get("decode_chunk_duration") == 0.18
     assert kwargs.get("max_pending_frames") == 128
+    assert kwargs.get("repetition_window") == 24
     assert kwargs.get("decode_kwargs") == {"chunk_duration": 0.11}
 
     audio_data, sample_rate = audio_read(io.BytesIO(response.content))

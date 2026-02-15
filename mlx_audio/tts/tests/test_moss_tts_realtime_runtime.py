@@ -10,7 +10,10 @@ import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_flatten
 
-from mlx_audio.tts.models.moss_tts.sampling import resolve_channel_sampling_configs
+from mlx_audio.tts.models.moss_tts.sampling import (
+    apply_repetition_penalty,
+    resolve_channel_sampling_configs,
+)
 from mlx_audio.tts.models.moss_tts_realtime.config import ModelConfig
 from mlx_audio.tts.models.moss_tts_realtime.inference import (
     AudioStreamDecoder,
@@ -19,6 +22,7 @@ from mlx_audio.tts.models.moss_tts_realtime.inference import (
     RealtimeTextDeltaBridge,
 )
 from mlx_audio.tts.models.moss_tts_realtime.model import Model, MossTTSRealtimeCore
+from mlx_audio.tts.models.moss_tts_realtime.processor import MossTTSRealtimeProcessor
 from mlx_audio.tts.models.moss_tts_realtime.request import RealtimeNormalizedRequest
 
 
@@ -79,6 +83,43 @@ class _TinyTokenizer:
         return [3 + (ord(char) % 21) for char in str(text)]
 
 
+class _PromptParityTokenizer:
+    _SPECIAL = {
+        "<|audio_pad|>": 28,
+        "<|text_pad|>": 27,
+        "<|im_start|>": 40,
+        "<|im_end|>": 41,
+    }
+
+    unk_token_id = -1
+
+    def convert_tokens_to_ids(self, token: str):
+        return self._SPECIAL.get(token, self.unk_token_id)
+
+    def __call__(self, text: str, add_special_tokens: bool = True):
+        del add_special_tokens
+        return {"input_ids": self.encode(text)}
+
+    def encode(self, text: str, add_special_tokens: bool = True):
+        del add_special_tokens
+        input_text = str(text)
+        token_ids: list[int] = []
+        idx = 0
+        while idx < len(input_text):
+            matched = None
+            for token_text in sorted(self._SPECIAL.keys(), key=len, reverse=True):
+                if input_text.startswith(token_text, idx):
+                    matched = token_text
+                    break
+            if matched is not None:
+                token_ids.append(int(self._SPECIAL[matched]))
+                idx += len(matched)
+                continue
+            token_ids.append(60 + (ord(input_text[idx]) % 31))
+            idx += 1
+        return token_ids
+
+
 class _FakeRealtimeModel:
     def __init__(self, config: ModelConfig, *, eos_after: int = 5):
         self.config = config
@@ -87,6 +128,7 @@ class _FakeRealtimeModel:
         self.sample_calls = 0
         self.make_cache_calls = 0
         self.model_call_shapes: list[tuple[int, int, int]] = []
+        self.repetition_windows_seen: list[Optional[int]] = []
 
     def make_cache(self):
         self.make_cache_calls += 1
@@ -108,9 +150,11 @@ class _FakeRealtimeModel:
         *,
         generated_history: Optional[mx.array],
         channel_sampling,
+        repetition_window: Optional[int] = None,
     ) -> mx.array:
         del generated_history, channel_sampling
         self.sample_calls += 1
+        self.repetition_windows_seen.append(repetition_window)
         batch_size = int(global_hidden_state.shape[0])
 
         max_non_eos = max(1, int(self.config.audio_eos_token) - 1)
@@ -140,8 +184,9 @@ class _FakeRealtimeProcessor:
         user_text: str,
         user_audio_tokens: Optional[mx.array] = None,
         include_system_prompt: bool = True,
+        voice_prompt_tokens: Optional[mx.array] = None,
     ) -> mx.array:
-        del user_text, include_system_prompt
+        del user_text, include_system_prompt, voice_prompt_tokens
         channels = self.model_config.channels
         rows = mx.full((1, channels), self.model_config.audio_pad_token, dtype=mx.int32)
         rows[:, 0] = int(self.model_config.text_pad)
@@ -177,6 +222,14 @@ class _FakeRealtimeProcessor:
         samples = frames * 6
         waveform = np.linspace(0.0, 1.0, samples, endpoint=False, dtype=np.float32)
         return mx.array(waveform, dtype=mx.float32)
+
+
+def _build_prompt_parity_processor(config: ModelConfig) -> MossTTSRealtimeProcessor:
+    return MossTTSRealtimeProcessor(
+        tokenizer=_PromptParityTokenizer(),
+        audio_tokenizer=None,
+        model_config=config,
+    )
 
 
 class _RecordingSession:
@@ -380,6 +433,7 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
         self.assertEqual(captured["top_p"], 0.6)
         self.assertEqual(captured["top_k"], 30)
         self.assertEqual(captured["repetition_penalty"], 1.1)
+        self.assertEqual(captured["repetition_window"], 50)
         self.assertEqual(len(results), 1)
 
     def test_realtime_model_rejects_non_realtime_preset(self):
@@ -521,6 +575,59 @@ class TestMossTTSRealtimeInferencerTransitions(unittest.TestCase):
         turn[:, 0] = config.text_pad
         inferencer.prefill(input_ids=turn, text_prefix_ids=[1, 2], do_sample=False, top_k=0)
         self.assertGreaterEqual(model.make_cache_calls, 2)
+
+    def test_repetition_window_flows_through_prefill_step_finish(self):
+        config, model, inferencer = self._build_inferencer(eos_after=9)
+        turn = mx.full((2, config.channels), config.audio_pad_token, dtype=mx.int32)
+        turn[:, 0] = config.text_pad
+
+        inferencer.prefill(
+            input_ids=turn,
+            text_prefix_ids=[1, 2, 3],
+            do_sample=False,
+            top_k=0,
+            repetition_window=7,
+        )
+        inferencer.step(
+            4,
+            do_sample=False,
+            top_k=0,
+            repetition_window=5,
+        )
+        inferencer.finish(
+            max_steps=1,
+            do_sample=False,
+            top_k=0,
+            repetition_window=3,
+        )
+
+        self.assertEqual(model.repetition_windows_seen[:3], [7, 5, 3])
+
+
+class TestMossTTSRealtimeSamplingContracts(unittest.TestCase):
+    def test_repetition_window_changes_penalized_history_set(self):
+        logits = mx.array([[10.0, 9.0, 8.0, 7.0]], dtype=mx.float32)
+        history = mx.array([[1, 2, 2, 3]], dtype=mx.int32)
+
+        unbounded = apply_repetition_penalty(
+            logits,
+            history,
+            penalty=2.0,
+            repetition_window=None,
+        )
+        windowed = apply_repetition_penalty(
+            logits,
+            history,
+            penalty=2.0,
+            repetition_window=1,
+        )
+
+        unbounded_np = np.array(unbounded)
+        windowed_np = np.array(windowed)
+        self.assertEqual(float(unbounded_np[0, 1]), 4.5)
+        self.assertEqual(float(windowed_np[0, 1]), 9.0)
+        self.assertEqual(float(unbounded_np[0, 3]), 3.5)
+        self.assertEqual(float(windowed_np[0, 3]), 3.5)
 
 
 class TestMossTTSRealtimeSessionLifecycle(unittest.TestCase):
@@ -699,6 +806,127 @@ class TestMossTTSRealtimeBridgeParity(unittest.TestCase):
         self.assertEqual(recording_session.recorded_token_ids, expected)
 
 
+class TestMossTTSRealtimePromptPackingParity(unittest.TestCase):
+    def _build_config(self, *, delay_tokens_len: int = 3) -> ModelConfig:
+        config_dict = _tiny_realtime_config_dict()
+        config_dict["delay_tokens_len"] = int(delay_tokens_len)
+        return ModelConfig.from_dict(config_dict)
+
+    def test_make_ensemble_fills_audio_pad_placeholder_rows(self):
+        config = self._build_config()
+        processor = _build_prompt_parity_processor(config)
+        voice_prompt_tokens = mx.array([[11, 12], [13, 14]], dtype=mx.int32)
+        normalized_voice_tokens = processor.normalize_audio_prompt_tokens(
+            voice_prompt_tokens
+        )
+
+        system_prompt = processor.make_ensemble(voice_prompt_tokens)
+        system_prompt_np = np.array(system_prompt)
+        placeholder_rows = np.where(system_prompt_np[:, 0] == processor.audio_pad_token_id)[0]
+
+        self.assertEqual(len(placeholder_rows), 2)
+        np.testing.assert_array_equal(
+            system_prompt_np[placeholder_rows, 1:],
+            np.array(normalized_voice_tokens),
+        )
+
+    def test_make_user_prompt_places_bos_eos_and_assistant_boundary(self):
+        config = self._build_config(delay_tokens_len=3)
+        processor = _build_prompt_parity_processor(config)
+        user_audio_tokens = mx.array([[3, 4], [5, 6]], dtype=mx.int32)
+        normalized_user_audio_tokens = processor.normalize_audio_prompt_tokens(
+            user_audio_tokens
+        )
+
+        long_prompt = processor.make_user_prompt("long text branch", user_audio_tokens)
+        short_prompt = processor.make_user_prompt("x", user_audio_tokens)
+
+        assistant_boundary = processor.tokens_from_text(
+            "<|im_end|>\n<|im_start|>assistant\n",
+            add_special_tokens=False,
+        )
+        boundary_len = len(assistant_boundary)
+
+        for packed in (long_prompt, short_prompt):
+            packed_np = np.array(packed)
+            bos_rows = np.where(packed_np[:, 1] == int(config.audio_bos_token))[0]
+            eos_rows = np.where(packed_np[:, 1] == int(config.audio_eos_token))[0]
+            self.assertEqual(len(bos_rows), 1)
+            self.assertEqual(len(eos_rows), 1)
+            bos_idx = int(bos_rows[0])
+            eos_idx = int(eos_rows[0])
+            self.assertLess(bos_idx, eos_idx)
+            np.testing.assert_array_equal(
+                packed_np[bos_idx + 1 : eos_idx, 1:],
+                np.array(normalized_user_audio_tokens),
+            )
+            self.assertEqual(
+                packed_np.shape[1],
+                config.channels,
+            )
+            self.assertGreaterEqual(packed_np.shape[0], boundary_len)
+            np.testing.assert_array_equal(
+                packed_np[-boundary_len:, 0],
+                np.array(assistant_boundary, dtype=np.int32),
+            )
+
+    def test_reset_turn_build_and_input_override_share_same_shape_and_voice_separation(self):
+        config = self._build_config()
+        processor = _build_prompt_parity_processor(config)
+        inferencer = MossTTSRealtimeInference(
+            model=_FakeRealtimeModel(config, eos_after=7),
+            tokenizer=processor.tokenizer,
+            config=config,
+            max_length=10,
+        )
+        session = RealtimeSession(
+            inferencer=inferencer,
+            processor=processor,
+            do_sample=False,
+            top_k=0,
+            top_p=1.0,
+        )
+
+        voice_prompt_tokens = mx.array([[21, 22], [23, 24]], dtype=mx.int32)
+        user_audio_tokens = mx.array([[7, 8], [9, 10]], dtype=mx.int32)
+        normalized_voice_tokens = processor.normalize_audio_prompt_tokens(
+            voice_prompt_tokens
+        )
+        session.set_voice_prompt_tokens(voice_prompt_tokens)
+
+        built = processor.build_turn_input_ids(
+            user_text="hello",
+            user_audio_tokens=user_audio_tokens,
+            include_system_prompt=True,
+            voice_prompt_tokens=normalized_voice_tokens,
+        )
+        session.reset_turn(
+            "hello",
+            user_audio_tokens=user_audio_tokens,
+            include_system_prompt=True,
+            reset_cache=False,
+        )
+        np.testing.assert_array_equal(np.array(session._turn_input_ids), np.array(built))
+
+        session.reset(reset_cache=False)
+        session.reset_turn(
+            None,
+            input_ids=built,
+            include_system_prompt=False,
+            reset_cache=False,
+        )
+        self.assertEqual(tuple(session._turn_input_ids.shape), tuple(built.shape))
+
+        packed_np = np.array(built[0])
+        system_prompt = np.array(processor.make_ensemble(normalized_voice_tokens))
+        user_prompt = np.array(processor.make_user_prompt("hello", user_audio_tokens))
+        np.testing.assert_array_equal(packed_np[: system_prompt.shape[0]], system_prompt)
+        np.testing.assert_array_equal(packed_np[system_prompt.shape[0] :], user_prompt)
+
+        session.clear_voice_prompt_tokens()
+        session.close()
+
+
 class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
     def test_decode_control_defaults_and_override(self):
         request = RealtimeNormalizedRequest.from_generate_kwargs(text="hello")
@@ -706,6 +934,13 @@ class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
         self.assertEqual(request.overlap_frames, 4)
         self.assertEqual(request.max_pending_frames, 4096)
         self.assertAlmostEqual(request.decode_chunk_duration, 0.32)
+        self.assertEqual(request.repetition_window, 50)
+
+        disabled_window = RealtimeNormalizedRequest.from_generate_kwargs(
+            text="hello",
+            repetition_window=0,
+        )
+        self.assertIsNone(disabled_window.repetition_window)
 
         config = ModelConfig.from_dict(_tiny_realtime_config_dict())
         processor = _FakeRealtimeProcessor(config)
@@ -773,7 +1008,12 @@ class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
         self.assertEqual([int(chunk.shape[0]) for chunk in chunks], [18])
         self.assertIsNotNone(tail)
         if tail is not None:
-            self.assertEqual(int(tail.shape[0]), 14)
+            self.assertEqual(int(tail.shape[0]), 12)
+        emitted_samples = int(sum(int(chunk.shape[0]) for chunk in chunks)) + int(
+            0 if tail is None else int(tail.shape[0])
+        )
+        decoded_samples = int(sum(call.frames * 6 for call in processor.decode_calls))
+        self.assertEqual(emitted_samples, decoded_samples)
         self.assertIsNone(decoder._previous_tail)
 
     def test_decoder_rejects_invalid_or_overflow_paths(self):

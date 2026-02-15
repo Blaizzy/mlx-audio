@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
@@ -218,6 +219,7 @@ class MossTTSRealtimeInference:
         top_k: int = 30,
         do_sample: bool = True,
         repetition_penalty: float = 1.1,
+        repetition_window: Optional[int] = 50,
     ) -> mx.array:
         turns = self._normalize_input_ids(input_ids)
         batch_size = len(turns)
@@ -268,6 +270,7 @@ class MossTTSRealtimeInference:
             global_hidden,
             generated_history=None,
             channel_sampling=sampling_cfg,
+            repetition_window=repetition_window,
         )
 
         self.generated_tokens = [audio_tokens]
@@ -286,6 +289,7 @@ class MossTTSRealtimeInference:
         top_k: int = 30,
         do_sample: bool = True,
         repetition_penalty: float = 1.1,
+        repetition_window: Optional[int] = 50,
     ) -> mx.array:
         if not self.has_prefilled or self.last_audio_tokens is None:
             raise ValueError("prefill() must be called before step()")
@@ -340,6 +344,7 @@ class MossTTSRealtimeInference:
             global_hidden,
             generated_history=history,
             channel_sampling=sampling_cfg,
+            repetition_window=repetition_window,
         )
 
         self.generated_tokens.append(audio_tokens)
@@ -362,6 +367,7 @@ class MossTTSRealtimeInference:
         top_k: int = 30,
         do_sample: bool = True,
         repetition_penalty: float = 1.1,
+        repetition_window: Optional[int] = 50,
     ) -> list[mx.array]:
         outputs: list[mx.array] = []
         steps_left = self.max_length if max_steps is None else int(max_steps)
@@ -374,6 +380,7 @@ class MossTTSRealtimeInference:
                     top_k=top_k,
                     do_sample=do_sample,
                     repetition_penalty=repetition_penalty,
+                    repetition_window=repetition_window,
                 )
             )
             steps_left -= 1
@@ -523,7 +530,9 @@ class AudioStreamDecoder:
         fade_out = np.linspace(1.0, 0.0, overlap, dtype=np.float32)
         fade_in = 1.0 - fade_out
         cross = prev_np[-overlap:] * fade_out + wav_np[:overlap] * fade_in
-        merged = np.concatenate([prev_np[:-overlap], cross, wav_np[overlap:]], axis=0)
+        # Only emit samples aligned to the current decode; previous tail provides
+        # blend context but must not be prepended or we duplicate stale audio.
+        merged = np.concatenate([cross, wav_np[overlap:]], axis=0)
 
         if final_chunk:
             self._previous_tail = None
@@ -636,6 +645,7 @@ class RealtimeSession:
         top_k: int = 30,
         do_sample: bool = True,
         repetition_penalty: float = 1.1,
+        repetition_window: Optional[int] = 50,
     ):
         self.inferencer = inferencer
         self.processor = processor
@@ -657,9 +667,15 @@ class RealtimeSession:
         self.top_k = int(top_k)
         self.do_sample = bool(do_sample)
         self.repetition_penalty = float(repetition_penalty)
+        self.repetition_window = (
+            None
+            if repetition_window is None or int(repetition_window) <= 0
+            else int(repetition_window)
+        )
 
         self._turn_input_ids: Optional[mx.array] = None
         self._turn_index = 0
+        self._voice_prompt_tokens: Optional[mx.array] = None
         self._text_cache = ""
         self._pending_tokens: list[int] = []
         self._prefilled = False
@@ -671,10 +687,32 @@ class RealtimeSession:
         if self._closed:
             raise RuntimeError("RealtimeSession is closed")
 
+    def set_voice_prompt_tokens(self, audio_tokens: Optional[mx.array]):
+        self._assert_open()
+        if audio_tokens is None:
+            self._voice_prompt_tokens = None
+            return
+        if hasattr(self.processor, "normalize_audio_prompt_tokens"):
+            self._voice_prompt_tokens = self.processor.normalize_audio_prompt_tokens(
+                audio_tokens
+            )
+        else:
+            self._voice_prompt_tokens = mx.array(audio_tokens, dtype=mx.int32)
+
+    def set_voice_prompt_audio(self, audio: Any):
+        self._assert_open()
+        if not hasattr(self.processor, "encode_prompt_audio"):
+            raise RuntimeError("processor does not support prompt-audio encoding")
+        self._voice_prompt_tokens = self.processor.encode_prompt_audio(audio)
+
+    def clear_voice_prompt_tokens(self):
+        self._assert_open()
+        self._voice_prompt_tokens = None
+
     def reset_turn(
         self,
         user_text: Optional[str],
-        user_audio_tokens: Optional[mx.array] = None,
+        user_audio_tokens: Optional[Any] = None,
         include_system_prompt: Optional[bool] = None,
         reset_cache: bool = False,
         input_ids: Optional[mx.array] = None,
@@ -694,11 +732,21 @@ class RealtimeSession:
             include_system_prompt = self._turn_index == 0
 
         if input_ids is None:
-            input_ids = self.processor.build_turn_input_ids(
-                user_text="" if user_text is None else str(user_text),
-                user_audio_tokens=user_audio_tokens,
-                include_system_prompt=bool(include_system_prompt),
-            )
+            build_turn = self.processor.build_turn_input_ids
+            params = inspect.signature(build_turn).parameters
+            if "voice_prompt_tokens" in params:
+                input_ids = build_turn(
+                    user_text="" if user_text is None else str(user_text),
+                    user_audio_tokens=user_audio_tokens,
+                    include_system_prompt=bool(include_system_prompt),
+                    voice_prompt_tokens=self._voice_prompt_tokens,
+                )
+            else:
+                input_ids = build_turn(
+                    user_text="" if user_text is None else str(user_text),
+                    user_audio_tokens=user_audio_tokens,
+                    include_system_prompt=bool(include_system_prompt),
+                )
 
         if input_ids.ndim != 3 or int(input_ids.shape[2]) != self.processor.model_config.channels:
             raise ValueError(
@@ -766,6 +814,7 @@ class RealtimeSession:
                 top_k=self.top_k,
                 do_sample=self.do_sample,
                 repetition_penalty=self.repetition_penalty,
+                repetition_window=self.repetition_window,
             )
             chunks.extend(self._decode_audio_frames(frames))
 
@@ -816,6 +865,7 @@ class RealtimeSession:
         self._prefilled = False
         self._text_ended = False
         self._turn_drained = True
+        self._voice_prompt_tokens = None
         self._closed = True
 
     def bridge_text_stream(
@@ -901,6 +951,7 @@ class RealtimeSession:
             top_k=self.top_k,
             do_sample=self.do_sample,
             repetition_penalty=self.repetition_penalty,
+            repetition_window=self.repetition_window,
         )
         self._prefilled = True
         return self._decode_audio_frames([first_audio])
@@ -921,6 +972,7 @@ class RealtimeSession:
                 top_k=self.top_k,
                 do_sample=self.do_sample,
                 repetition_penalty=self.repetition_penalty,
+                repetition_window=self.repetition_window,
             )
             chunks.extend(self._decode_audio_frames([frame]))
         return chunks

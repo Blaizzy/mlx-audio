@@ -29,6 +29,7 @@ for chunk in model.generate(
     text="Realtime check from MLX.",
     preset="realtime",
     stream=True,
+    repetition_window=50,
     chunk_frames=40,
     overlap_frames=4,
 ):
@@ -68,12 +69,23 @@ session = RealtimeSession(
     processor=model.processor,
     chunk_frames=40,
     overlap_frames=4,
+    repetition_window=50,
 )
 
 try:
-    session.reset_turn(user_text="", include_system_prompt=True, reset_cache=False)
+    # Optional persistent voice-timbre prompt (path, waveform, or pre-encoded tokens).
+    session.set_voice_prompt_audio("voice_prompt.wav")
+    # session.set_voice_prompt_tokens(prompt_tokens)
 
-    # Push text incrementally.
+    # Per-turn user prompt: text + optional turn-local user audio tokens.
+    session.reset_turn(
+        user_text="",
+        user_audio_tokens=None,
+        include_system_prompt=True,
+        reset_cache=False,
+    )
+
+    # Push assistant text incrementally.
     chunks = []
     chunks.extend(session.push_text("Hello realtime "))
     chunks.extend(session.push_text("world."))
@@ -82,6 +94,7 @@ try:
     chunks.extend(session.end_text())
     chunks.extend(session.drain())
 finally:
+    session.clear_voice_prompt_tokens()
     session.close()
 ```
 
@@ -106,6 +119,7 @@ See runnable reference: `../../../../examples/moss_tts_realtime_text_deltas.py`.
 | `overlap_frames` | `4` | Crossfade overlap in frames |
 | `decode_chunk_duration` | `0.32` | Codec decode chunk override |
 | `max_pending_frames` | `4096` | Backpressure guard for queued token frames |
+| `repetition_window` | `50` | Repetition-penalty history window (`None`/`<=0` = unbounded) |
 
 Sampling defaults come from preset `realtime`:
 
@@ -113,14 +127,32 @@ Sampling defaults come from preset `realtime`:
 - `top_p=0.6`
 - `top_k=30`
 - `repetition_penalty=1.1`
+- `repetition_window=50`
 
-## Reference Audio Priming
+## Voice Prompt vs Turn Audio (Upstream Parity)
 
-- High-level API: pass `ref_audio` (path or `mx.array`) to `model.generate(...)`.
-- Session API: pass `user_audio_tokens` as a waveform `mx.array` or pre-encoded tokens.
-  - To prime from a file path, pre-encode first: `prompt_tokens = model.processor.encode_prompt_audio("ref.wav")`, then pass `user_audio_tokens=prompt_tokens`.
+Realtime now mirrors upstream separation between:
 
-Runtime packs prompt audio into reference-audio rows and continues generation from the same turn context.
+- persistent **voice prompt** timbre (system prompt rows): `set_voice_prompt_tokens(...)`, `set_voice_prompt_audio(...)`, `clear_voice_prompt_tokens()`
+- per-turn **user audio conditioning** (user prompt rows): `reset_turn(..., user_audio_tokens=...)`
+
+High-level one-shot generation keeps user ergonomics simple:
+
+- `model.generate(..., ref_audio=...)` maps `ref_audio` into the persistent voice-prompt path for that request.
+
+Session API behavior:
+
+- call voice-prompt setter once per conversation (or whenever timbre changes)
+- pass `user_audio_tokens` only for turn-local conditioning
+- `reset_turn(input_ids=...)` remains available as an escape hatch for advanced integrations
+
+## Prompt Packing Contract
+
+The default session path uses upstream-compatible prompt builders:
+
+- `make_ensemble(...)`: system prompt with `<|audio_pad|>` placeholder rows filled by voice-prompt tokens
+- `make_user_prompt(...)`: user turn with explicit `delay_tokens_len` alignment + channel-1 BOS/EOS placement
+- always appends `"<|im_end|>\n<|im_start|>assistant\n"` boundary rows before streaming response tokens
 
 ## Notes
 
