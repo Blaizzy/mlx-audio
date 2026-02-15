@@ -220,6 +220,7 @@ class MossAudioTokenizer(nn.Module):
                     # NQ-first orientation for these cases so canonical decode inputs
                     # do not get transposed under explicit num_quantizers requests.
                     is_square_requested_tie = False
+                    is_canonical_prefix_tie = False
                     if audio_codes.ndim == 2:
                         is_square_requested_tie = (
                             int(audio_codes.shape[0]) == requested_quantizers
@@ -235,8 +236,20 @@ class MossAudioTokenizer(nn.Module):
                             and int(audio_codes.shape[1]) == requested_quantizers
                             and int(audio_codes.shape[-1]) == requested_quantizers
                         )
+                        # True-prefix 3D ties can still be canonical `(NQ, B, T)` inputs
+                        # when both first/last dimensions match the requested prefix
+                        # count. Preserve NQ-first in this family so we do not swap
+                        # batch/time semantics into `(NQ, T, B)`.
+                        is_canonical_prefix_tie = (
+                            int(audio_codes.shape[0]) == requested_quantizers
+                            and int(audio_codes.shape[-1]) == requested_quantizers
+                            and int(audio_codes.shape[1]) > 1
+                        )
 
-                    if is_square_requested_tie and len(requested_nq_first) == 1:
+                    if (
+                        (is_square_requested_tie or is_canonical_prefix_tie)
+                        and len(requested_nq_first) == 1
+                    ):
                         candidates = requested_nq_first
                     elif len(requested_nq_last) == 1:
                         candidates = requested_nq_last
@@ -565,10 +578,19 @@ class MossAudioTokenizer(nn.Module):
         if not codes_list:
             raise ValueError("codes_list must contain at least one code tensor.")
 
-        normalized = [
-            self._normalize_decode_audio_codes(c, num_quantizers=num_quantizers).squeeze(1)
-            for c in codes_list
-        ]
+        normalized = []
+        for codes in codes_list:
+            normalized_codes = self._normalize_decode_audio_codes(
+                codes,
+                num_quantizers=num_quantizers,
+            )
+            if int(normalized_codes.shape[1]) != 1:
+                raise ValueError(
+                    "batch_decode() expects each codes_list entry to resolve to "
+                    f"batch_size=1, got batch_size={int(normalized_codes.shape[1])} "
+                    f"for shape={codes.shape}. Use decode() for batched code tensors."
+                )
+            normalized.append(normalized_codes.squeeze(1))
         target_quantizers = int(normalized[0].shape[0])
         if any(int(c.shape[0]) != target_quantizers for c in normalized):
             raise ValueError(

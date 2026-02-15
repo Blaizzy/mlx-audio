@@ -236,7 +236,21 @@ class Model(nn.Module):
             if "num_batches_tracked" in key:
                 continue
 
-            if key.startswith("model.language_model.embed_tokens."):
+            # Realtime runtime owns an indexed embedding_list where index 0 is text.
+            if key in {
+                "model.language_model.embed_tokens.weight",
+                "language_model.embed_tokens.weight",
+                "model.embed_tokens.weight",
+                "embed_tokens.weight",
+            }:
+                new_key = "model.embedding_list.0.weight"
+            # Upstream local transformer checkpoints can contain this family, but the
+            # runtime local transformer has no embed_tokens parameters to receive it.
+            elif key.startswith("local_transformer.model.embed_tokens.") or key.startswith(
+                "model.local_transformer.model.embed_tokens."
+            ):
+                continue
+            elif key.startswith("model.language_model.embed_tokens."):
                 new_key = key.replace(
                     "model.language_model.embed_tokens.",
                     "model.embedding_list.",

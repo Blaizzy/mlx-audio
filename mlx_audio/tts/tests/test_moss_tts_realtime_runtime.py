@@ -249,10 +249,16 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
         weights = {
             "model.language_model.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
             "model.language_model.embed_tokens.1.weight": mx.ones((4, 4)),
+            "model.language_model.embed_tokens.weight": mx.ones((4, 4)),
             "language_model.embed_tokens.2.weight": mx.ones((4, 4)),
+            "language_model.embed_tokens.weight": mx.ones((4, 4)),
             "model.embed_tokens.0.weight": mx.ones((4, 4)),
+            "model.embed_tokens.weight": mx.ones((4, 4)),
+            "embed_tokens.weight": mx.ones((4, 4)),
             "local_transformer.model.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
+            "local_transformer.model.embed_tokens.0.weight": mx.ones((4, 4)),
             "model.local_transformer.model.layers.0.self_attn.k_proj.weight": mx.ones((4, 4)),
+            "model.local_transformer.model.embed_tokens.1.weight": mx.ones((4, 4)),
             "local_transformer.local_lm_heads.0.weight": mx.ones((4, 4)),
             "model.local_transformer.local_lm_heads.1.weight": mx.ones((4, 4)),
             "local_transformer.layer_norm_before_lm_heads.0.weight": mx.ones((4,)),
@@ -283,6 +289,9 @@ class TestMossTTSRealtimeModelContracts(unittest.TestCase):
         self.assertIn("model.layer_norm_before_lm_heads.0.weight", sanitized)
         self.assertIn("model.lm_heads.0.weight", sanitized)
         self.assertNotIn("foo.num_batches_tracked", sanitized)
+        self.assertNotIn("model.embedding_list.weight", sanitized)
+        self.assertNotIn("model.local_transformer.embed_tokens.0.weight", sanitized)
+        self.assertNotIn("model.local_transformer.embed_tokens.1.weight", sanitized)
         self.assertTrue(all(key in parameter_names for key in sanitized))
 
         self.assertFalse(
@@ -382,6 +391,32 @@ class TestMossTTSRealtimeInferencerTransitions(unittest.TestCase):
             reset_cache=True,
         )
         self.assertIsNone(inferencer.cache)
+
+    def test_prefill_broadcasts_flat_prefix_ids_for_batched_inputs(self):
+        config, _, inferencer = self._build_inferencer(eos_after=6)
+        turn_a = mx.full((2, config.channels), config.audio_pad_token, dtype=mx.int32)
+        turn_b = mx.full((3, config.channels), config.audio_pad_token, dtype=mx.int32)
+        turn_a[:, 0] = config.text_pad
+        turn_b[:, 0] = config.text_pad
+
+        first = inferencer.prefill(
+            input_ids=[turn_a, turn_b],
+            text_prefix_ids=[9, 10, 11],
+            do_sample=False,
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.0,
+        )
+        self.assertEqual(tuple(first.shape), (2, config.rvq))
+
+        second = inferencer.step(
+            [12, 13],
+            do_sample=False,
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.0,
+        )
+        self.assertEqual(tuple(second.shape), (2, config.rvq))
 
     def test_cache_cap_rebuilds_cache_when_capacity_exceeded(self):
         config, model, inferencer = self._build_inferencer(

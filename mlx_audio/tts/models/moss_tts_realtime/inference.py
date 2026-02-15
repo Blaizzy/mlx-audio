@@ -145,7 +145,10 @@ class MossTTSRealtimeInference:
             if not text_prefix_ids:
                 return [[] for _ in range(batch_size)]
             if isinstance(text_prefix_ids[0], (int, np.integer)):
-                return [list(int(token) for token in text_prefix_ids)]
+                prefix = [int(token) for token in text_prefix_ids]
+                if batch_size > 1:
+                    return [list(prefix) for _ in range(batch_size)]
+                return [prefix]
             if len(text_prefix_ids) == 1 and batch_size > 1:
                 return [list(int(token) for token in text_prefix_ids[0]) for _ in range(batch_size)]
             if len(text_prefix_ids) != batch_size:
