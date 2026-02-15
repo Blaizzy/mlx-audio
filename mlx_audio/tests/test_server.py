@@ -255,6 +255,25 @@ def test_tts_speech_filters_unsupported_kwargs_for_strict_models(
     assert captured["kwargs"]["voice"] == "alloy"
     assert captured["kwargs"]["stream"] is False
 
+
+def test_tts_speech_rejects_reserved_model_kwargs(client, mock_model_provider):
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    payload = {
+        "model": "test_tts_model",
+        "input": "Hello world",
+        "model_kwargs": {"text": "conflicting positional value"},
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+    assert response.status_code == 400
+    detail = response.json().get("detail", "")
+    assert "reserved generation arguments" in detail
+    assert "text" in detail
+    mock_tts_model.generate.assert_not_called()
+
+
 def test_stt_transcriptions(client, mock_model_provider):
     # Test that the stt_transcriptions endpoint returns a 200 status code
     mock_stt_model = MagicMock()

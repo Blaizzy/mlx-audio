@@ -503,10 +503,14 @@ class AudioStreamDecoder:
 
     def _apply_crossfade(self, wav: mx.array, *, final_chunk: bool) -> mx.array:
         if self.overlap_frames <= 0:
+            if final_chunk:
+                self._previous_tail = None
             return wav
 
         overlap = self._overlap_samples(wav)
         if overlap <= 0:
+            if final_chunk:
+                self._previous_tail = None
             return wav
 
         if self._previous_tail is None:

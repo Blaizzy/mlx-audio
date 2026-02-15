@@ -68,6 +68,43 @@ def sanitize_for_json(obj: Any) -> Any:
         return obj
 
 
+_RESERVED_MODEL_KWARGS = frozenset({"text", "input", "input_text"})
+
+
+def _reserved_model_kwargs_for_generate(signature: inspect.Signature) -> set[str]:
+    """Return kwargs that must not be passed via `model_kwargs`."""
+    reserved = set(_RESERVED_MODEL_KWARGS)
+    for parameter in signature.parameters.values():
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            reserved.add(parameter.name)
+            break
+    return reserved
+
+
+def _validate_reserved_model_kwargs(
+    *,
+    signature: inspect.Signature,
+    model_kwargs: Optional[dict[str, Any]],
+):
+    if not model_kwargs:
+        return
+    reserved_model_kwargs = _reserved_model_kwargs_for_generate(signature)
+    collisions = sorted(key for key in model_kwargs if key in reserved_model_kwargs)
+    if collisions:
+        collisions_csv = ", ".join(collisions)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "model_kwargs contains reserved generation arguments "
+                f"({collisions_csv}). Pass these as top-level request fields "
+                "instead."
+            ),
+        )
+
+
 MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
 
@@ -335,11 +372,16 @@ async def generate_audio(model, payload: SpeechRequest):
         "max_tokens": payload.max_tokens,
         "verbose": payload.verbose,
     }
+
+    signature = inspect.signature(model.generate)
     if payload.model_kwargs:
+        _validate_reserved_model_kwargs(
+            signature=signature,
+            model_kwargs=payload.model_kwargs,
+        )
         generate_kwargs.update(payload.model_kwargs)
     generate_kwargs = {k: v for k, v in generate_kwargs.items() if v is not None}
 
-    signature = inspect.signature(model.generate)
     supports_var_kwargs = any(
         parameter.kind == inspect.Parameter.VAR_KEYWORD
         for parameter in signature.parameters.values()
@@ -380,6 +422,10 @@ async def generate_audio(model, payload: SpeechRequest):
 async def tts_speech(payload: SpeechRequest):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
+    _validate_reserved_model_kwargs(
+        signature=inspect.signature(model.generate),
+        model_kwargs=payload.model_kwargs,
+    )
     return StreamingResponse(
         generate_audio(model, payload),
         media_type=f"audio/{payload.response_format}",

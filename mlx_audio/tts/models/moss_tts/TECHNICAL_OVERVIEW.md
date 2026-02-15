@@ -188,6 +188,9 @@ Memory/cache pressure is bounded by explicit `mx.clear_cache()` boundaries per s
 - Tokenizer + chat template behavior (`transformers` tokenizer)
 - Audio codec encode/decode (`MossAudioTokenizer`)
 - CLI/server wiring (`mlx_audio/tts/generate.py`, `mlx_audio/server.py`)
+- Server escape-hatch guardrail: `/v1/audio/speech` rejects reserved
+  `model_kwargs` (`text`, `input`, `input_text`) to prevent positional-argument
+  collisions in `model.generate(...)`.
 
 Core generation flow remains in pure MLX model/runtime modules.
 

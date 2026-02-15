@@ -136,6 +136,14 @@ Sampling defaults come from preset `realtime`:
 - `repetition_penalty=1.1`
 - `repetition_window=50`
 
+## Stream Assembly Guarantees
+
+- Emitted streaming audio is sample-conservative relative to decoded chunk totals.
+- Overlap crossfade uses the current chunk overlap window and adapts when the
+  final flush chunk is shorter than steady chunks.
+- Final flush clears overlap state, preventing stale-tail carryover into the
+  next turn/session.
+
 ## Voice Prompt vs Turn Audio (Upstream Parity)
 
 Realtime now mirrors upstream separation between:

@@ -101,6 +101,9 @@ Key behaviors:
 - chunked decode (`chunk_frames`)
 - overlap crossfade (`overlap_frames`)
 - explicit final flush behavior
+- sample-conservative chunk emission: overlap blending never increases emitted
+  sample count beyond raw decoded chunk totals, including shrinking final flush
+  overlap windows
 
 Backpressure is fail-fast: exceeding pending-frame cap raises instead of silently growing memory.
 

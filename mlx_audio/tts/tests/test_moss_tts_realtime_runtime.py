@@ -1077,6 +1077,47 @@ class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
         self.assertEqual(emitted_samples, decoded_samples)
         self.assertIsNone(decoder._previous_tail)
 
+    def test_overlap_crossfade_shrinking_flush_is_sample_conservative(self):
+        config = ModelConfig.from_dict(_tiny_realtime_config_dict())
+        processor = _FakeRealtimeProcessor(config)
+        decoder = AudioStreamDecoder(
+            processor=processor,
+            chunk_frames=4,
+            overlap_frames=2,
+            max_pending_frames=12,
+        )
+
+        decoder.push_tokens(
+            mx.array(
+                [
+                    [1, 2],
+                    [3, 4],
+                    [5, 6],
+                    [7, 8],
+                    [9, 10],
+                    [11, 12],
+                    [13, 14],
+                    [15, 16],
+                    [17, 18],
+                    [19, 20],
+                ],
+                dtype=mx.int32,
+            )
+        )
+
+        chunks = decoder.audio_chunks()
+        tail = decoder.flush()
+        if tail is not None:
+            chunks.append(tail)
+
+        self.assertEqual([int(chunk.shape[0]) for chunk in chunks], [24, 24, 12])
+
+        emitted_samples = int(sum(int(chunk.shape[0]) for chunk in chunks))
+        decoded_samples = int(sum(call.frames * 6 for call in processor.decode_calls))
+        self.assertEqual(emitted_samples, decoded_samples)
+        self.assertLessEqual(emitted_samples, decoded_samples)
+        self.assertIsNone(decoder._previous_tail)
+
     def test_decoder_rejects_invalid_or_overflow_paths(self):
         config = ModelConfig.from_dict(_tiny_realtime_config_dict())
         processor = _FakeRealtimeProcessor(config)

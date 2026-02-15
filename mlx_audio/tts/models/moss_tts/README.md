@@ -232,6 +232,20 @@ Runtime emits segment/boundary metrics into model attributes after generation:
 - SoundEffect can synthesize from `ambient_sound` even when `text` is omitted.
 - The shared codec is mandatory at runtime; see codec docs below.
 
+## Server Escape Hatch Safety (`model_kwargs`)
+
+`/v1/audio/speech` supports `model_kwargs` for advanced controls that do not
+already have first-class request fields.
+
+Reserved keys are rejected with HTTP 400:
+
+- `text`
+- `input`
+- `input_text`
+
+Use top-level `input` for synthesis text instead of passing these keys inside
+`model_kwargs`.
+
 ## Technical Docs and Artifacts
 
 - Architecture details: `TECHNICAL_OVERVIEW.md`
