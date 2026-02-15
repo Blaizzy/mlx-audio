@@ -1,5 +1,5 @@
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
-from .qwen3_asr import Model, Qwen3ASRModel
+from .qwen3_asr import Model, Qwen3ASRModel, StreamingResult
 from .qwen3_forced_aligner import (
     ForceAlignProcessor,
     ForcedAlignerConfig,
@@ -14,6 +14,7 @@ __all__ = [
     "ModelConfig",
     "Model",
     "Qwen3ASRModel",
+    "StreamingResult",
     "ForcedAlignerConfig",
     "ForcedAlignerModel",
     "ForcedAlignItem",

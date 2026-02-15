@@ -81,11 +81,11 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
-| **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-bf16](https://huggingface.co/mlx-community/Dia-1.6B-bf16) |
-| **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-0.2-500M](https://huggingface.co/mlx-community/OuteTTS-0.2-500M) |
-| **Spark** | SparkTTS model | EN, ZH | [mlx-community/SparkTTS-0.5B-bf16](https://huggingface.co/mlx-community/SparkTTS-0.5B-bf16) |
-| **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/Chatterbox-bf16](https://huggingface.co/mlx-community/Chatterbox-bf16) |
-| **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-bf16](https://huggingface.co/mlx-community/Soprano-bf16) |
+| **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
+| **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
+| **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
+| **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/chatterbox-fp16](https://huggingface.co/mlx-community/chatterbox-fp16) |
+| **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
 
 ### Speech-to-Text (STT)
 
@@ -94,10 +94,20 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
-| **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
+| **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
+| **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
 
+
+### Voice Activity Detection / Speaker Diarization (VAD)
+
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **Sortformer v1** | NVIDIA's end-to-end speaker diarization (up to 4 speakers) | Language-agnostic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
+| **Sortformer v2.1** | NVIDIA's streaming speaker diarization with AOSC compression | Language-agnostic | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32) |
+
+See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API details, streaming examples, and model conversion.
 
 ### Speech-to-Speech (STS)
 
@@ -274,6 +284,70 @@ python -m mlx_audio.stt.generate \
     --max-tokens 8192 \
     --context "MLX, Apple Silicon, PyTorch, Transformer" \
     --verbose
+```
+
+### Parakeet (Multilingual STT)
+
+NVIDIA's high-accuracy speech-to-text model. Parakeet v3 supports 25 European languages.
+
+```python
+from mlx_audio.stt.utils import load
+
+# Load the multilingual v3 model
+model = load("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Transcribe audio
+result = model.generate("audio.wav")
+print(f"Text: {result.text}")
+
+# Access word-level timestamps
+for sentence in result.sentences:
+    print(f"[{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+```
+
+**Streaming transcription:**
+
+```python
+for chunk in model.generate("long_audio.wav", stream=True):
+    print(chunk.text, end="", flush=True)
+```
+
+**Supported languages (v3):**
+Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish, Swedish, Russian, Ukrainian
+
+**CLI usage:**
+
+```bash
+python -m mlx_audio.stt.generate \
+    --model mlx-community/parakeet-tdt-0.6b-v3 \
+    --audio speech.wav \
+    --output-path output \
+    --format json \
+    --verbose
+```
+
+### Voxtral Realtime
+
+Mistral's 4B parameter streaming speech-to-text model, optimized for low-latency transcription.
+
+Available variants: [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) (smaller/faster) | [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) (full precision)
+
+```python
+from mlx_audio.stt.utils import load
+
+# Use 4bit for faster inference, fp16 for full precision
+model = load("mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
+
+# Transcribe audio
+result = model.generate("audio.wav")
+print(result.text)
+
+# Streaming transcription
+for chunk in model.generate("audio.wav", stream=True):
+    print(chunk, end="", flush=True)
+
+# Adjust transcription delay (lower = faster but less accurate)
+result = model.generate("audio.wav", transcription_delay_ms=240)
 ```
 
 ### MedASR (Medical Transcription)

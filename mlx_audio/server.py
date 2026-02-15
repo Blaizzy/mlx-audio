@@ -7,6 +7,7 @@ It offers an OpenAI-compatible API for Audio completions and model management.
 
 import argparse
 import asyncio
+import base64
 import inspect
 import io
 import json
@@ -167,6 +168,9 @@ class SpeechRequest(BaseModel):
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
     response_format: str | None = "mp3"
+    stream: bool = False
+    streaming_interval: float = 2.0
+    max_tokens: int = 1200
     verbose: bool = False
 
 
@@ -174,13 +178,19 @@ class TranscriptionRequest(BaseModel):
     model: str
     language: str | None = None
     verbose: bool = False
-    max_tokens: int = 128
+    max_tokens: int = 1024
     chunk_duration: float = 30.0
     frame_threshold: int = 25
     stream: bool = False
     context: str | None = None
     prefill_step_size: int = 2048
     text: str | None = None
+
+
+class SeparationResponse(BaseModel):
+    target: str  # Base64 encoded WAV
+    residual: str  # Base64 encoded WAV
+    sample_rate: int
 
 
 # Initialize the ModelProvider
@@ -253,6 +263,8 @@ async def remove_model(model_name: str):
 async def generate_audio(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
+    audio_chunks = []
+    sample_rate = None
     if ref_audio and isinstance(ref_audio, str):
         if not os.path.exists(ref_audio):
             raise HTTPException(
@@ -282,14 +294,33 @@ async def generate_audio(model, payload: SpeechRequest):
         top_p=payload.top_p,
         top_k=payload.top_k,
         repetition_penalty=payload.repetition_penalty,
+        stream=payload.stream,
+        streaming_interval=payload.streaming_interval,
+        max_tokens=payload.max_tokens,
         verbose=payload.verbose,
     ):
 
-        sample_rate = result.sample_rate
-        buffer = io.BytesIO()
-        audio_write(buffer, result.audio, sample_rate, format=payload.response_format)
-        buffer.seek(0)
-        yield buffer.getvalue()
+        if payload.stream:
+            buffer = io.BytesIO()
+            audio_write(
+                buffer, result.audio, result.sample_rate, format=payload.response_format
+            )
+            yield buffer.getvalue()
+        else:
+            audio_chunks.append(result.audio)
+            if sample_rate is None:
+                sample_rate = result.sample_rate
+
+    if payload.stream:
+        return
+
+    if not audio_chunks:
+        raise HTTPException(status_code=400, detail="No audio generated")
+
+    concatenated_audio = np.concatenate(audio_chunks)
+    buffer = io.BytesIO()
+    audio_write(buffer, concatenated_audio, sample_rate, format=payload.response_format)
+    yield buffer.getvalue()
 
 
 @app.post("/v1/audio/speech")
@@ -343,7 +374,7 @@ async def stt_transcriptions(
     model: str = Form(...),
     language: Optional[str] = Form(None),
     verbose: bool = Form(False),
-    max_tokens: int = Form(128),
+    max_tokens: int = Form(1024),
     chunk_duration: float = Form(30.0),
     frame_threshold: int = Form(25),
     stream: bool = Form(False),
@@ -388,6 +419,162 @@ async def stt_transcriptions(
     )
 
 
+SAM_MODEL = None
+SAM_PROCESSOR = None
+
+
+@app.post("/v1/audio/separations")
+async def audio_separations(
+    file: UploadFile = File(...),
+    model: str = Form("mlx-community/sam-audio-large-fp16"),
+    description: str = Form("speech"),
+    method: str = Form("midpoint"),
+    steps: int = Form(16),
+):
+    """Separate audio using SAM Audio model.
+
+    Args:
+        file: Audio file to process
+        model: SAM Audio model name (default: mlx-community/sam-audio-large-fp16)
+        description: Text description of what to separate (e.g., "speech", "guitar", "drums")
+        method: ODE solver method - "midpoint" or "euler" (default: midpoint)
+        steps: Number of ODE steps - 2, 4, 8, 16, or 32 (default: 16)
+
+    Returns:
+        JSON with base64-encoded target and residual audio, plus sample rate
+    """
+    global SAM_MODEL, SAM_PROCESSOR
+    from mlx_audio.sts import SAMAudio, SAMAudioProcessor
+
+    # Read uploaded file
+    data = await file.read()
+    tmp = io.BytesIO(data)
+    audio, sr = sf.read(tmp, always_2d=False)
+    tmp.close()
+
+    # Save to temp file for processor
+    tmp_path = f"/tmp/separation_{time.time()}.wav"
+    sf.write(tmp_path, audio, sr)
+
+    try:
+        # Load model and processor
+        if SAM_PROCESSOR is None:
+            SAM_PROCESSOR = SAMAudioProcessor.from_pretrained(model)
+        if SAM_MODEL is None:
+            SAM_MODEL = SAMAudio.from_pretrained(model)
+
+        # Process inputs
+        batch = SAM_PROCESSOR(
+            descriptions=[description],
+            audios=[tmp_path],
+        )
+
+        # Calculate step_size from steps
+        step_size = 2 / (steps * 2)  # e.g., 16 steps -> 2/32 = 0.0625
+        ode_opt = {"method": method, "step_size": step_size}
+
+        # Separate audio
+        result = SAM_MODEL.separate_long(
+            audios=batch.audios,
+            descriptions=batch.descriptions,
+            anchor_ids=batch.anchor_ids,
+            anchor_alignment=batch.anchor_alignment,
+            ode_opt=ode_opt,
+            ode_decode_chunk_size=50,
+        )
+
+        mx.clear_cache()
+
+        # Convert results to numpy
+        target_audio = np.array(result.target[0])
+        residual_audio = np.array(result.residual[0])
+        sample_rate = SAM_MODEL.sample_rate
+
+        # Encode as base64 WAV
+        def audio_to_base64(audio_array, sr):
+            buffer = io.BytesIO()
+            sf.write(buffer, audio_array, sr, format="wav")
+            buffer.seek(0)
+            return base64.b64encode(buffer.read()).decode("utf-8")
+
+        return SeparationResponse(
+            target=audio_to_base64(target_audio, sample_rate),
+            residual=audio_to_base64(residual_audio, sample_rate),
+            sample_rate=sample_rate,
+        )
+
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+async def _stream_transcription(
+    websocket: WebSocket,
+    stt_model,
+    audio_array: np.ndarray,
+    sample_rate: int,
+    language: Optional[str],
+    is_partial: bool,
+    streaming: bool = True,
+):
+    """Handle both streaming and non-streaming model inference over WebSocket.
+
+    Streaming models (whose generate() accepts a ``stream`` parameter) receive
+    the numpy array directly and yield token deltas sent as
+    ``{"type": "delta", "delta": "..."}`` messages, followed by a
+    ``{"type": "complete", ...}`` message.
+
+    Non-streaming models fall back to temp-file + batch generate, sending the
+    legacy ``{"text": ..., "is_partial": ...}`` format.
+    """
+    supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
+    lang_arg = language if language and language != "Detect" else None
+
+    if supports_stream and streaming:
+        result_iter = stt_model.generate(
+            audio_array, stream=True, language=lang_arg, verbose=False
+        )
+        accumulated = ""
+        for chunk in result_iter:
+            delta = (
+                chunk if isinstance(chunk, str) else getattr(chunk, "text", str(chunk))
+            )
+            accumulated += delta
+            await websocket.send_json({"type": "delta", "delta": delta})
+
+        await websocket.send_json(
+            {
+                "type": "complete",
+                "text": accumulated,
+                "segments": None,
+                "language": lang_arg,
+                "is_partial": is_partial,
+            }
+        )
+    else:
+        tmp_path = f"/tmp/realtime_{time.time()}.mp3"
+        audio_write(tmp_path, audio_array, sample_rate)
+        try:
+            result = stt_model.generate(tmp_path, language=lang_arg, verbose=False)
+            segments = (
+                sanitize_for_json(result.segments)
+                if hasattr(result, "segments") and result.segments
+                else None
+            )
+            await websocket.send_json(
+                {
+                    "text": result.text,
+                    "segments": segments,
+                    "language": getattr(result, "language", language),
+                    "is_partial": is_partial,
+                }
+            )
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+
 @app.websocket("/v1/audio/transcriptions/realtime")
 async def stt_realtime_transcriptions(websocket: WebSocket):
     """Realtime transcription via WebSocket."""
@@ -401,9 +588,10 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         )
         language = config.get("language", None)
         sample_rate = config.get("sample_rate", 16000)
+        streaming = config.get("streaming", True)
 
         print(
-            f"Configuration received: model={model_name}, language={language}, sample_rate={sample_rate}"
+            f"Configuration received: model={model_name}, language={language}, sample_rate={sample_rate}, streaming={streaming}"
         )
 
         # Load the STT model
@@ -545,41 +733,16 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     processed_samples = process_size
                     initial_chunk_processed = True
 
-                    # Save to temporary file for processing
-                    tmp_path = f"/tmp/realtime_initial_{time.time()}.mp3"
-                    audio_write(tmp_path, audio_array, sample_rate)
-
                     try:
-                        # Generate transcription for initial chunk
-                        result = stt_model.generate(
-                            tmp_path,
-                            language=(
-                                language if language and language != "Detect" else None
-                            ),
-                            verbose=False,
+                        await _stream_transcription(
+                            websocket,
+                            stt_model,
+                            audio_array,
+                            sample_rate,
+                            language,
+                            is_partial=True,
+                            streaming=streaming,
                         )
-
-                        print(f"Initial transcription: {result.text[:100]}...")
-
-                        # Send initial transcription result (marked as partial)
-                        segments = (
-                            sanitize_for_json(result.segments)
-                            if hasattr(result, "segments") and result.segments
-                            else None
-                        )
-                        await websocket.send_json(
-                            {
-                                "text": result.text,
-                                "segments": segments,
-                                "language": (
-                                    result.language
-                                    if hasattr(result, "language")
-                                    else language
-                                ),
-                                "is_partial": True,  # Mark as partial for UI
-                            }
-                        )
-
                     except Exception as e:
                         import traceback
 
@@ -589,10 +752,6 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         await websocket.send_json(
                             {"error": error_msg, "status": "error"}
                         )
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
 
                 # Process final chunk (entire accumulated buffer)
                 if should_process_final and len(audio_buffer) > 0:
@@ -600,40 +759,15 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     process_size = len(audio_buffer)
                     audio_array = np.array(audio_buffer)
 
-                    # Save to temporary file for processing
-                    tmp_path = f"/tmp/realtime_{time.time()}.mp3"
-                    audio_write(tmp_path, audio_array, sample_rate)
-
                     try:
-                        # Generate transcription
-
-                        result = stt_model.generate(
-                            tmp_path,
-                            language=(
-                                language if language and language != "Detect" else None
-                            ),
-                            verbose=False,
-                        )
-
-                        print(f"Transcription result: {result.text[:100]}...")
-
-                        # Send final transcription result (complete utterance)
-                        segments = (
-                            sanitize_for_json(result.segments)
-                            if hasattr(result, "segments") and result.segments
-                            else None
-                        )
-                        await websocket.send_json(
-                            {
-                                "text": result.text,
-                                "segments": segments,
-                                "language": (
-                                    result.language
-                                    if hasattr(result, "language")
-                                    else language
-                                ),
-                                "is_partial": False,  # Mark as final/complete
-                            }
+                        await _stream_transcription(
+                            websocket,
+                            stt_model,
+                            audio_array,
+                            sample_rate,
+                            language,
+                            is_partial=False,
+                            streaming=streaming,
                         )
 
                         # Clear processed audio from buffer and reset state
@@ -654,10 +788,6 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         await websocket.send_json(
                             {"error": error_msg, "status": "error"}
                         )
-                    finally:
-                        # Clean up temp file
-                        if os.path.exists(tmp_path):
-                            os.remove(tmp_path)
 
             elif "text" in message:
                 # JSON message received (e.g., stop command)
@@ -779,7 +909,7 @@ def main():
     parser.add_argument(
         "--workers",
         type=int_or_float,
-        default=calculate_default_workers(),
+        default=0,
         help="""Number of workers. Overrides the `MLX_AUDIO_NUM_WORKERS` env variable.
         Can be either an int or a float.
         If an int, it will be the number of workers to use.

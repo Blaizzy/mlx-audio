@@ -12,6 +12,7 @@ SAMPLE_RATE = 16000
 MODEL_REMAPPING = {
     "glm": "glmasr",
     "voxtral": "voxtral",
+    "voxtral_realtime": "voxtral_realtime",
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
 }

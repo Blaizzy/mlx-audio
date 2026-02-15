@@ -1562,11 +1562,12 @@ class TestSoprano(unittest.TestCase):
 
         config = DecoderConfig()
         self.assertEqual(config.decoder_num_layers, 8)
-        self.assertEqual(config.decoder_dim, 512)
-        self.assertEqual(config.decoder_intermediate_dim, 1536)
+        self.assertEqual(config.decoder_dim, 768)
+        self.assertEqual(config.decoder_intermediate_dim, 2304)
         self.assertEqual(config.hop_length, 512)
         self.assertEqual(config.n_fft, 2048)
         self.assertEqual(config.upscale, 4)
+        self.assertEqual(config.input_kernel, 1)
         self.assertEqual(config.dw_kernel, 3)
         self.assertEqual(config.token_size, 2048)
         self.assertEqual(config.receptive_field, 4)
@@ -1660,8 +1661,8 @@ class TestSoprano(unittest.TestCase):
 
         sanitized = model.sanitize(weights)
 
-        self.assertIn("embed_tokens.weight", sanitized)
-        self.assertIn("layers.0.input_layernorm.weight", sanitized)
+        self.assertIn("language_model.embed_tokens.weight", sanitized)
+        self.assertIn("language_model.layers.0.input_layernorm.weight", sanitized)
         self.assertIn("decoder.backbone.weight", sanitized)
         self.assertNotIn("model.embed_tokens.weight", sanitized)
 
@@ -1680,7 +1681,7 @@ class TestSoprano(unittest.TestCase):
         sanitized = model.sanitize(weights)
 
         self.assertEqual(sanitized["decoder.backbone.weight"].dtype, mx.float32)
-        self.assertEqual(sanitized["lm_head.weight"].dtype, mx.bfloat16)
+        self.assertEqual(sanitized["language_model.lm_head.weight"].dtype, mx.bfloat16)
 
     def test_format_duration(self):
         """Test _format_duration helper method."""
@@ -1786,6 +1787,7 @@ class TestSoprano(unittest.TestCase):
             hop_length=512,
             n_fft=2048,
             upscale=4,
+            input_kernel=1,
             dw_kernel=3,
         )
 
@@ -1796,7 +1798,6 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(decoder.hop_length, 512)
         self.assertEqual(decoder.n_fft, 2048)
         self.assertEqual(decoder.upscale, 4)
-        self.assertEqual(decoder.dw_kernel, 3)
 
     def test_decoder_default_intermediate_dim(self):
         """Test default intermediate_dim calculation."""

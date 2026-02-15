@@ -95,6 +95,8 @@ class ModelConfig:
     max_whisper_length: int = 1500
     max_length: int = 65536
 
+    sample_rate: int = 16000
+
     def __post_init__(self):
         if self.whisper_config is None:
             self.whisper_config = WhisperConfig()
