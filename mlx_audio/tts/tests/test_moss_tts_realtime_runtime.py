@@ -679,6 +679,25 @@ class TestMossTTSRealtimeBridgeParity(unittest.TestCase):
 
         self.assertEqual(run_bridge(), run_direct())
 
+    def test_delta_bridge_handles_multilingual_unicode_deltas(self):
+        tokenizer = _TinyTokenizer()
+        recording_session = _RecordingSession(tokenizer)
+        bridge = RealtimeTextDeltaBridge(recording_session, hold_back=0)
+
+        full_text = (
+            "\u4f60\u597d "
+            "\u0645\u0631\u062d\u0628\u0627 "
+            "hello"
+        )
+        bridge.push_text_delta("\u4f60\u597d ")
+        bridge.push_text_delta("\u0645\u0631\u062d\u0628\u0627 ")
+        bridge.push_text_delta("hello")
+        bridge.end_text()
+        bridge.drain(max_steps=4)
+
+        expected = tokenizer.encode(full_text, add_special_tokens=False)
+        self.assertEqual(recording_session.recorded_token_ids, expected)
+
 
 class TestMossTTSRealtimeDecodeFlowControl(unittest.TestCase):
     def test_decode_control_defaults_and_override(self):

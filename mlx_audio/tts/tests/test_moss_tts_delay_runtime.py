@@ -305,6 +305,45 @@ class TestMossTTSDelayRuntime(unittest.TestCase):
         self.assertIn("[S2] Speaker one.", user_message["content"])
         self.assertEqual(tuple(assistant_message["audio_references"][0].shape), (4, 2))
 
+    def test_ttsd_continuation_preserves_multilingual_text_and_language_hint(self):
+        config = ModelConfig.from_dict(_tiny_delay_config_dict())
+        processor = _build_dummy_processor(config)
+        ref_wave_1 = mx.zeros((80,), dtype=mx.float32)
+        ref_wave_2 = mx.ones((80,), dtype=mx.float32)
+
+        messages = processor.build_ttsd_continuation_messages(
+            dialogue_text=(
+                "[S1] \u4f60\u597d\uff0c\u4eca\u5929\u600e\u4e48\u6837\uff1f "
+                "[S2] \u0645\u0645\u062a\u0627\u0632\u060c let's continue."
+            ),
+            speakers=[
+                {
+                    "speaker_id": 1,
+                    "ref_audio": ref_wave_1,
+                    "ref_text": "\u4f60\u597d\u3002",
+                },
+                {
+                    "speaker_id": 2,
+                    "ref_audio": ref_wave_2,
+                    "ref_text": "\u0645\u0631\u062d\u0628\u0627.",
+                },
+            ],
+            language="zh-CN",
+            input_type="text",
+        )
+
+        self.assertEqual(len(messages), 3)
+        user_message = messages[0]
+        generation_user_message = messages[2]
+        self.assertIn("Language:\nzh-CN", user_message["content"])
+        self.assertIn("[S1] \u4f60\u597d\u3002", user_message["content"])
+        self.assertIn("[S2] \u0645\u0631\u062d\u0628\u0627.", user_message["content"])
+        self.assertIn(
+            "\u4f60\u597d\uff0c\u4eca\u5929\u600e\u4e48\u6837\uff1f",
+            generation_user_message["content"],
+        )
+        self.assertIn("\u0645\u0645\u062a\u0627\u0632", generation_user_message["content"])
+
     def test_encode_audios_from_reference_accepts_preencoded_layouts(self):
         config = ModelConfig.from_dict(_tiny_delay_config_dict())
         processor = _build_dummy_processor(config)

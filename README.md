@@ -80,6 +80,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 |-------|-------------|-----------|------|
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
+| **MOSS-TTS Family** | Delay/Local/TTSD/VoiceGenerator/SoundEffect/Realtime | Multilingual + pinyin/ipa input modes | [OpenMOSS-Team/MOSS-TTS](https://huggingface.co/OpenMOSS-Team/MOSS-TTS) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
@@ -172,6 +173,12 @@ audio = results[0].audio  # mx.array
 ```
 
 See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
+
+### MOSS-TTS Family
+
+OpenMOSS MOSS-TTS variants are available through the unified MOSS runtime (`moss_tts` and `moss_tts_realtime` model packages), including Delay, Local, TTSD, VoiceGenerator, SoundEffect, and Realtime.
+
+See the [MOSS-TTS README](mlx_audio/tts/models/moss_tts/README.md) for presets, CLI recipes, and parity artifacts.
 
 ### CSM (Voice Cloning)
 
