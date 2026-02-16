@@ -154,8 +154,10 @@ def _infer_gateway_task_and_preset(
 
     moss_context = moss_hint or ttsd_marker or soundeffect_marker or realtime_marker
     has_instruct = bool(str(instruct).strip()) if instruct is not None else False
+    # `instruct` can represent style guidance for base TTS; only treat it as
+    # VoiceGenerator routing when no explicit non-voice-design preset is pinned.
     voice_design_marker = normalized_preset == "voice_generator" or (
-        moss_context and has_instruct
+        moss_context and has_instruct and explicit_preset_task is None
     )
 
     inferred_task = "default_tts"

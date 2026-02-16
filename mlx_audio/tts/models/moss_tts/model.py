@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -354,6 +355,26 @@ class Model(nn.Module):
 
         return max(effective_max_tokens, 1)
 
+    def _estimate_natural_stop_min_audio_rows(self, text: Optional[str]) -> int:
+        if text is None:
+            return 16
+        normalized_text = str(text).strip()
+        if not normalized_text:
+            return 16
+
+        word_count = len([chunk for chunk in normalized_text.split() if chunk])
+        char_count = len(normalized_text)
+
+        estimated_seconds_from_words = (
+            float(word_count) / 2.6 if word_count >= 2 else 0.0
+        )
+        estimated_seconds_from_chars = float(char_count) / 18.0
+        estimated_seconds = max(
+            1.2, estimated_seconds_from_words, estimated_seconds_from_chars
+        )
+        estimated_rows = int(math.ceil(estimated_seconds * 12.5 * 0.65))
+        return max(16, min(estimated_rows, 192))
+
     def _build_prompt_inputs(
         self,
         *,
@@ -700,6 +721,7 @@ class Model(nn.Module):
         sampling_cfg,
         effective_max_tokens: int,
         stop_on_audio_end: bool,
+        natural_stop_min_audio_rows: int,
         n_vq_for_inference: int,
         stream: bool,
         streaming_interval: float,
@@ -717,11 +739,22 @@ class Model(nn.Module):
         audio_rows: List[mx.array] = []
 
         for _ in range(effective_max_tokens):
+            disallow_text_token_ids: Optional[List[int]] = None
+            if (
+                stop_on_audio_end
+                and natural_stop_min_audio_rows > 0
+                and len(audio_rows) < natural_stop_min_audio_rows
+            ):
+                disallow_text_token_ids = [
+                    int(self.config.audio_end_token_id),
+                    int(self.config.im_end_token_id),
+                ]
             next_tokens = self.model.sample_next_channels(
                 global_hidden,
                 input_ids,
                 sampling_cfg,
                 n_vq_for_inference=n_vq_for_inference,
+                disallow_text_token_ids=disallow_text_token_ids,
             )
             input_ids = mx.concatenate([input_ids, next_tokens[:, None, :]], axis=1)
             generated_row_count += 1
@@ -1045,6 +1078,17 @@ class Model(nn.Module):
             kwargs.pop("normalize_inputs", None)
         )
         requested_n_vq_for_inference = kwargs.pop("n_vq_for_inference", None)
+        natural_stop_min_audio_rows_raw = kwargs.pop(
+            "natural_stop_min_audio_rows", None
+        )
+        if natural_stop_min_audio_rows_raw is None:
+            natural_stop_min_audio_rows = self._estimate_natural_stop_min_audio_rows(
+                request.text
+            )
+        else:
+            natural_stop_min_audio_rows = int(natural_stop_min_audio_rows_raw)
+        if natural_stop_min_audio_rows < 0:
+            raise ValueError("natural_stop_min_audio_rows must be >= 0")
         if self.is_local_variant:
             local_n_vq_for_inference = self._resolve_local_n_vq_for_inference(
                 requested_n_vq_for_inference
@@ -1148,6 +1192,7 @@ class Model(nn.Module):
                 sampling_cfg=sampling_cfg,
                 effective_max_tokens=effective_max_tokens,
                 stop_on_audio_end=request.tokens is None,
+                natural_stop_min_audio_rows=natural_stop_min_audio_rows,
                 n_vq_for_inference=local_n_vq_for_inference,
                 stream=stream,
                 streaming_interval=streaming_interval,

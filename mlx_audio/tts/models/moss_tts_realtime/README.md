@@ -47,23 +47,30 @@ uv run python -m mlx_audio.tts.generate \
   --output_path ./outputs/moss_realtime
 ```
 
-## Session API (Recommended for Interactive Pipelines)
+## Capability Recipes (No External Scripts)
 
-The explicit lifecycle API provides better control than one-shot `generate(...)` for low-latency apps.
+### 1) Session API (recommended for interactive pipelines)
 
 ```python
+from pathlib import Path
+
+import mlx.core as mx
+import numpy as np
+
+from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.models.moss_tts_realtime import MossTTSRealtimeInference, RealtimeSession
 from mlx_audio.tts.utils import load_model
 
-model = load_model("OpenMOSS-Team/MOSS-TTS-Realtime")
+output_dir = Path("outputs/moss_realtime_session")
+output_dir.mkdir(parents=True, exist_ok=True)
 
+model = load_model("OpenMOSS-Team/MOSS-TTS-Realtime")
 inferencer = MossTTSRealtimeInference(
     model=model.model,
     tokenizer=model.tokenizer,
     config=model.config,
     max_length=1200,
 )
-
 session = RealtimeSession(
     inferencer=inferencer,
     processor=model.processor,
@@ -72,49 +79,191 @@ session = RealtimeSession(
     repetition_window=50,
 )
 
+chunks = []
 try:
-    # Optional persistent voice-timbre prompt (path, waveform, or pre-encoded tokens).
+    # Optional persistent voice prompt for this conversation:
     session.set_voice_prompt_audio("voice_prompt.wav")
-    # session.set_voice_prompt_tokens(prompt_tokens)
 
-    # Per-turn user prompt: text + optional turn-local user audio tokens.
     session.reset_turn(
         user_text="",
         user_audio_tokens=None,
         include_system_prompt=True,
         reset_cache=False,
     )
-
-    # Push assistant text incrementally.
-    chunks = []
     chunks.extend(session.push_text("Hello realtime "))
     chunks.extend(session.push_text("world."))
-
-    # Explicit end-of-text + drain.
     chunks.extend(session.end_text())
     chunks.extend(session.drain())
 finally:
-    session.clear_voice_prompt_tokens()
+    session.close()
+
+if not chunks:
+    raise RuntimeError("No realtime audio chunks generated")
+merged = chunks[0] if len(chunks) == 1 else mx.concatenate(chunks, axis=0)
+audio_write(
+    str(output_dir / "session_turn.wav"),
+    np.array(merged),
+    model.sample_rate,
+    format="wav",
+)
+```
+
+### 2) Delta-bridge API for LLM token/delta streams
+
+Use `session.bridge_text_stream(...)` or the top-level `bridge_text_stream(...)`
+helper:
+
+```python
+from pathlib import Path
+
+import mlx.core as mx
+import numpy as np
+
+from mlx_audio.audio_io import write as audio_write
+from mlx_audio.tts.models.moss_tts_realtime import (
+    MossTTSRealtimeInference,
+    RealtimeSession,
+    bridge_text_stream,
+)
+from mlx_audio.tts.utils import load_model
+
+output_dir = Path("outputs/moss_realtime_session")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+model = load_model("OpenMOSS-Team/MOSS-TTS-Realtime")
+inferencer = MossTTSRealtimeInference(
+    model=model.model,
+    tokenizer=model.tokenizer,
+    config=model.config,
+    max_length=1200,
+)
+session = RealtimeSession(
+    inferencer=inferencer,
+    processor=model.processor,
+    chunk_frames=40,
+    overlap_frames=4,
+    repetition_window=50,
+)
+deltas = ["Hello ", "realtime ", "world."]
+
+chunks = []
+try:
+    session.reset_turn(
+        user_text="",
+        include_system_prompt=True,
+        reset_cache=False,
+    )
+    chunks.extend(bridge_text_stream(session, deltas, hold_back=0, drain_step=1))
+finally:
+    session.close()
+
+if not chunks:
+    raise RuntimeError("No realtime chunks emitted from delta bridge")
+merged = chunks[0] if len(chunks) == 1 else mx.concatenate(chunks, axis=0)
+audio_write(
+    str(output_dir / "delta_bridge.wav"),
+    np.array(merged),
+    model.sample_rate,
+    format="wav",
+)
+```
+
+### 3) Multiturn flow (persistent voice prompt + per-turn user audio)
+
+```python
+from pathlib import Path
+
+import mlx.core as mx
+import numpy as np
+
+from mlx_audio.audio_io import write as audio_write
+from mlx_audio.tts.models.moss_tts_realtime import MossTTSRealtimeInference, RealtimeSession
+from mlx_audio.tts.utils import load_model
+
+output_dir = Path("outputs/moss_realtime_session")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+model = load_model("OpenMOSS-Team/MOSS-TTS-Realtime")
+inferencer = MossTTSRealtimeInference(
+    model=model.model,
+    tokenizer=model.tokenizer,
+    config=model.config,
+    max_length=1200,
+)
+session = RealtimeSession(
+    inferencer=inferencer,
+    processor=model.processor,
+    chunk_frames=40,
+    overlap_frames=4,
+    repetition_window=50,
+)
+
+turns = [
+    {
+        "user_text": "I have six hours in Paris. What should I prioritize?",
+        "user_audio_tokens": "REFERENCE/MOSS-TTS-GitHub/moss_tts_realtime/audio/user1.wav",
+        "assistant_deltas": ["Start near the Seine. ", "Visit one museum. ", "Leave buffer for transit."],
+    },
+    {
+        "user_text": "I prefer a relaxed outdoor route.",
+        "user_audio_tokens": "REFERENCE/MOSS-TTS-GitHub/moss_tts_realtime/audio/user2.wav",
+        "assistant_deltas": ["Great. ", "Walk Notre-Dame to the gardens. ", "End by the river at sunset."],
+    },
+]
+
+session.set_voice_prompt_audio("REFERENCE/MOSS-TTS-GitHub/moss_tts_realtime/audio/user1.wav")
+
+try:
+    for turn_idx, turn in enumerate(turns):
+        session.reset_turn(
+            user_text=turn["user_text"],
+            user_audio_tokens=turn["user_audio_tokens"],
+            include_system_prompt=(turn_idx == 0),
+            reset_cache=False,
+        )
+        chunks = list(
+            session.bridge_text_stream(
+                turn["assistant_deltas"],
+                hold_back=0,
+                drain_step=1,
+            )
+        )
+        if not chunks:
+            raise RuntimeError(f"No chunks for turn {turn_idx}")
+        merged = chunks[0] if len(chunks) == 1 else mx.concatenate(chunks, axis=0)
+        audio_write(
+            str(output_dir / f"turn_{turn_idx:02d}.wav"),
+            np.array(merged),
+            model.sample_rate,
+            format="wav",
+        )
+finally:
     session.close()
 ```
 
-Runnable references:
+### 4) CLI recipes
 
-- `../../../../examples/moss_tts_realtime_text_deltas.py`
-- `../../../../examples/moss_tts_realtime_multiturn_agent.py`
+One-shot realtime:
 
-## Delta-Bridge API
-
-For LLM token/delta streams, use `bridge_text_stream(...)` on an active session:
-
-```python
-for chunk in session.bridge_text_stream(["Hello ", "realtime ", "world"], hold_back=0):
-    handle(chunk)
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Realtime \
+  --text "Realtime check from MLX." \
+  --preset realtime \
+  --output_path ./outputs/moss_realtime_cli
 ```
 
-See runnable reference: `../../../../examples/moss_tts_realtime_text_deltas.py`.
-For upstream-style multiturn (voice prompt + per-turn user audio + assistant deltas),
-see `../../../../examples/moss_tts_realtime_multiturn_agent.py`.
+Streaming realtime with explicit realtime controls via `model_kwargs_json`:
+
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Realtime \
+  --text "Stream this realtime response." \
+  --preset realtime \
+  --stream \
+  --model_kwargs_json '{"chunk_frames":40,"overlap_frames":4,"decode_chunk_duration":0.32,"max_pending_frames":4096,"repetition_window":50}' \
+  --output_path ./outputs/moss_realtime_cli_stream
+```
 
 ## Main Controls
 

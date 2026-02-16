@@ -141,6 +141,7 @@ class MossTTSLocalModel(nn.Module):
         input_history: mx.array,
         channel_sampling: List[ChannelSamplingConfig],
         n_vq_for_inference: Optional[int] = None,
+        disallow_text_token_ids: Optional[List[int]] = None,
     ) -> mx.array:
         """
         Decode one Local timestep:
@@ -174,6 +175,20 @@ class MossTTSLocalModel(nn.Module):
             hidden_state = self.layer_norm_before_lm_heads[channel_idx](hidden_state)
 
             logits = self.lm_heads[channel_idx](hidden_state)
+            if channel_idx == 0 and disallow_text_token_ids:
+                token_ids = mx.arange(logits.shape[-1], dtype=mx.int32)
+                blocked_mask = None
+                for token_id in {int(value) for value in disallow_text_token_ids}:
+                    if token_id < 0 or token_id >= int(logits.shape[-1]):
+                        continue
+                    is_blocked = token_ids == token_id
+                    blocked_mask = (
+                        is_blocked
+                        if blocked_mask is None
+                        else mx.logical_or(blocked_mask, is_blocked)
+                    )
+                if blocked_mask is not None:
+                    logits = mx.where(blocked_mask[None, :], -mx.inf, logits)
             if channel_idx > 0 and 0 <= self.config.audio_pad_code < logits.shape[-1]:
                 channel_ids = mx.arange(logits.shape[-1], dtype=mx.int32)
                 pad_mask = channel_ids == int(self.config.audio_pad_code)

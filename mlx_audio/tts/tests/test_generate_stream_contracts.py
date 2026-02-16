@@ -390,6 +390,28 @@ class TestGenerateStreamContracts(unittest.TestCase):
         assert model.last_generate_kwargs is not None
         self.assertEqual(model.last_generate_kwargs.get("preset"), "voice_generator")
 
+    def test_gateway_keeps_explicit_base_tts_preset_when_instruct_is_present(self):
+        model = _DummyModel([_result(1)])
+        model.model_type = "moss_tts"
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+        ):
+            generate_audio(
+                text="base tts with style guidance",
+                model=model,
+                output_path=tmpdir,
+                file_prefix="explicit_base_preset_case",
+                preset="moss_tts_local",
+                instruct="Calm, clear narrator",
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "moss_tts_local")
+
     def test_gateway_rejects_conflicting_markers(self):
         model = _DummyModel([_result(1)])
         output = io.StringIO()

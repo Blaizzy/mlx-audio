@@ -123,8 +123,10 @@ Keep behavior aligned when editing either path.
 1. Prefill backbone with packed prompt.
 2. For each step, sample next channel bundle via `MossTTSLocalModel.sample_next_channels(...)`.
 3. Append generated audio rows when channel-0 emits `audio_assistant_gen_slot_token_id`.
-4. Stop at `audio_end_token_id` or `effective_max_tokens`.
-5. Decode rows through codec and stream/finalize according to `stream`.
+4. In natural-stop mode (no explicit `tokens`), suppress early `audio_end_token_id`/`im_end_token_id`
+   for an adaptive minimum-audio-rows warmup window (`natural_stop_min_audio_rows`).
+5. Stop at `audio_end_token_id` or `effective_max_tokens`.
+6. Decode rows through codec and stream/finalize according to `stream`.
 
 Local-only depth control is enforced by `_resolve_local_n_vq_for_inference(...)`.
 

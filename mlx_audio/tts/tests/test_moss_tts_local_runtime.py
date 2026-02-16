@@ -393,6 +393,121 @@ class TestMossTTSLocalRuntime(unittest.TestCase):
         self.assertEqual(results[-1].token_count, 5)
         self.assertGreater(results[-1].samples, 0)
 
+    def test_local_natural_stop_applies_min_audio_rows_guard(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        disallow_history = []
+
+        def fake_sample_next_channels(*args, **kwargs):
+            disallow = kwargs.get("disallow_text_token_ids") or []
+            disallow_history.append(tuple(int(value) for value in disallow))
+            if int(config.audio_end_token_id) in disallow:
+                text_token = config.audio_assistant_gen_slot_token_id
+            else:
+                text_token = config.audio_end_token_id
+            return mx.array(
+                [[text_token, 1, 2]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model,
+            "sample_next_channels",
+            side_effect=fake_sample_next_channels,
+        ):
+            results = list(
+                model.generate(
+                    text="hello",
+                    max_tokens=12,
+                    natural_stop_min_audio_rows=3,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertGreater(results[-1].samples, 0)
+        self.assertEqual(len(disallow_history), 4)
+        self.assertEqual(
+            disallow_history[:3],
+            [
+                (config.audio_end_token_id, config.im_end_token_id),
+                (config.audio_end_token_id, config.im_end_token_id),
+                (config.audio_end_token_id, config.im_end_token_id),
+            ],
+        )
+        self.assertEqual(disallow_history[3], ())
+
+    def test_local_generate_rejects_negative_natural_stop_guard(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    natural_stop_min_audio_rows=-1,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+    def test_local_natural_stop_auto_guard_scales_with_prompt_length(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        def _run_and_count_steps(prompt_text: str) -> int:
+            step_count = {"value": 0}
+
+            def fake_sample_next_channels(*args, **kwargs):
+                step_count["value"] += 1
+                disallow = kwargs.get("disallow_text_token_ids") or []
+                if int(config.audio_end_token_id) in disallow:
+                    text_token = config.audio_assistant_gen_slot_token_id
+                else:
+                    text_token = config.audio_end_token_id
+                return mx.array(
+                    [[text_token, 1, 2]],
+                    dtype=mx.int32,
+                )
+
+            with patch.object(
+                model.model,
+                "sample_next_channels",
+                side_effect=fake_sample_next_channels,
+            ):
+                list(
+                    model.generate(
+                        text=prompt_text,
+                        max_tokens=256,
+                        temperature=1.0,
+                        top_p=1.0,
+                        top_k=0,
+                        repetition_penalty=1.0,
+                        input_type="text",
+                    )
+                )
+            return int(step_count["value"])
+
+        short_steps = _run_and_count_steps("Hello world.")
+        long_steps = _run_and_count_steps(
+            "This is a much longer sentence designed to trigger a larger natural "
+            "stop guard budget during local decoding."
+        )
+
+        self.assertGreater(long_steps, short_steps)
+        self.assertGreaterEqual(short_steps, 2)
+
     def test_local_generate_applies_preset_sampling_defaults(self):
         config = ModelConfig.from_dict(_tiny_local_config_dict())
         model = Model(config)

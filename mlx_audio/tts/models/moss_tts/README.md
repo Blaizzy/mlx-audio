@@ -27,16 +27,21 @@ Realtime has a dedicated runtime package: `mlx_audio/tts/models/moss_tts_realtim
 ### Python API
 
 ```python
+import mlx.core as mx
+
 from mlx_audio.tts.utils import load_model
 
+mx.random.seed(1234)
 model = load_model("OpenMOSS-Team/MOSS-TTS-Local-Transformer")
 
 results = list(
     model.generate(
-        text="Hello from MOSS on MLX.",
+        text="Hello and good morning and good evening from the moss model on MLX.",
+        instruct="Calm, clear narrator, medium pace.",
         preset="moss_tts_local",
-        input_type="text",  # text | pinyin | ipa
-        duration_s=6.0,       # mapped to tokens at 12.5 Hz when tokens is omitted
+        input_type="text",    # text | pinyin | ipa
+        do_samples=[False],   # optional explicit default for channel-0
+        # recommended natural-stop baseline: no tokens/duration_s required
         max_tokens=240,
     )
 )
@@ -49,176 +54,257 @@ audio = results[0].audio
 ```bash
 uv run python -m mlx_audio.tts.generate \
   --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --text "Hello from MOSS on MLX." \
+  --text "Hello and good morning and good evening from the moss model on MLX." \
   --preset moss_tts_local \
-  --duration_s 6 \
+  --seed 1234 \
+  --model_kwargs_json '{"do_samples":[false]}' \
+  --instruct "Calm, clear narrator, medium pace." \
   --output_path ./outputs/moss_local
 ```
 
-More complete runnable examples are in:
+`--model_kwargs_json '{"do_samples":[false]}'` is optional here and equivalent to
+the Local preset default for channel-0; keep it only if you want explicit per-channel
+sampling overrides.
 
-- `examples/moss_tts_basic.py`
-- `examples/moss_tts_deterministic.py`
-- `examples/moss_tts_voice_cloning.py`
-- `examples/moss_tts_continuation_showcase.py`
-- `examples/moss_ttsd_dialogue.py`
-- `examples/moss_voice_design.py`
-- `examples/moss_sound_effects.py`
-- `examples/moss_tts_long_form.py`
-- `examples/moss_tts_pronunciation_control.py`
-- `examples/moss_tts_realtime_text_deltas.py`
-- `examples/moss_tts_realtime_multiturn_agent.py`
-- `examples/moss_tts_showcase_album.py`
+## Capability Recipes (No External Scripts)
 
-## Task Recipes
+All recipes below run directly through `mlx_audio.tts.generate`.
 
-One runnable command per task family:
-
-- Base TTS (Delay/Local):
-
-```bash
-uv run python examples/moss_tts_basic.py \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --preset moss_tts_local
-```
-
-- Voice cloning (reference-conditioned Delay/Local):
-
-```bash
-uv run python examples/moss_tts_voice_cloning.py \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --preset moss_tts_local \
-  --ref-audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
-  --ref-text "Demo reference transcript."
-```
-
-- TTSD multi-speaker dialogue:
-
-```bash
-uv run python examples/moss_ttsd_dialogue.py \
-  --model OpenMOSS-Team/MOSS-TTSD-v1.0 \
-  --preset ttsd
-```
-
-- Voice design:
-
-```bash
-uv run python examples/moss_voice_design.py \
-  --model OpenMOSS-Team/MOSS-Voice-Generator \
-  --preset voice_generator
-```
-
-- SoundEffect (text-to-audio / text-to-music-adjacent):
-
-```bash
-uv run python examples/moss_sound_effects.py \
-  --model OpenMOSS-Team/MOSS-SoundEffect \
-  --preset soundeffect
-```
-
-- Long-form synthesis:
-
-```bash
-uv run python examples/moss_tts_long_form.py \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --preset moss_tts_local
-```
-
-- Realtime pointer:
-
-```bash
-uv run python examples/moss_tts_realtime_text_deltas.py \
-  --model OpenMOSS-Team/MOSS-TTS-Realtime
-```
-
-For session lifecycle details and multiturn realtime usage, see
-`../moss_tts_realtime/README.md`.
-
-## Showcase Recipes
-
-Use these scripts as fast entry points for the most important MOSS workflows:
-
-- Continuation prompting (assistant prefix audio, no `ref_audio` generate arg):
-
-```bash
-uv run python examples/moss_tts_continuation_showcase.py \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --preset moss_tts_local
-```
-
-- Realtime multiturn agent flow (persistent voice prompt + per-turn user audio):
-
-```bash
-uv run python examples/moss_tts_realtime_multiturn_agent.py \
-  --model OpenMOSS-Team/MOSS-TTS-Realtime \
-  --save-chunks
-```
-
-- Full family album export (all variants + shareable manifest files):
-
-```bash
-uv run python examples/moss_tts_showcase_album.py \
-  --output-dir outputs/moss_tts_showcase_album
-```
-
-`moss_tts_showcase_album.py` writes `showcase_album.json` and
-`showcase_album.md` alongside generated tracks.
-
-## Deterministic Recipes
-
-If voice/style/emotion vary between runs, use the deterministic script:
-`examples/moss_tts_deterministic.py`.
-
-Default mode is deterministic **hybrid** decoding:
-
-- text/control channel: greedy (`do_sample=False`)
-- audio channels: seeded sampling (`do_sample=True`)
-
-This remains reproducible but avoids a known full-greedy silence collapse on
-some prompts/checkpoints.
-
-- Deterministic text-only generation:
-
-```bash
-uv run python examples/moss_tts_deterministic.py \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --preset moss_tts_local \
-  --text "Hello what is happening this is from MOSS on MLX." \
-  --output-dir outputs/moss_tts_deterministic
-```
-
-- Direct CLI equivalent (`-m mlx_audio.tts.generate`) using `model_kwargs_json`:
+### 1) Base TTS (Local variant)
 
 ```bash
 uv run python -m mlx_audio.tts.generate \
   --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
   --preset moss_tts_local \
-  --text "Hello what is happening this is from MOSS on MLX." \
-  --seed 1234 \
-  --model_kwargs_json '{"do_samples":[false]}' \
-  --output_path outputs/moss_tts_deterministic_cli
+  --text "Hello from MOSS Local on MLX." \
+  --duration_s 6 \
+  --output_path outputs/moss_local_base
 ```
 
-- Deterministic reference-conditioned generation (strongest voice consistency):
+### 2) Base TTS (Delay variant)
 
 ```bash
-uv run python examples/moss_tts_deterministic.py \
-  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
-  --preset moss_tts_local \
-  --with-reference \
-  --ref-audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
-  --ref-text "Demo reference transcript." \
-  --text "Hello what is happening this is from MOSS on MLX." \
-  --output-dir outputs/moss_tts_deterministic_ref
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS \
+  --preset moss_tts \
+  --text "Hello from the Delay runtime." \
+  --tokens 120 \
+  --seed 1234 \
+  --instruct "Calm, clear narrator, medium pace." \
+  --output_path outputs/moss_delay_base
 ```
 
-Notes:
+### 3) Voice cloning (reference-conditioned Delay/Local)
 
-- `preset` sets default sampling (`temperature`, `top_p`, `top_k`, `repetition_penalty`).
-- Determinism in this recipe comes from fixed seed + fixed channel sampling flags.
-- `--determinism-mode full_greedy` is available, but can produce silent clips in some cases.
-- For short prompts without references, avoid forcing a long `duration_s`; let natural stopping decide clip length.
-- Keep `text`, `instruct`, `duration_s`/`tokens`, and reference inputs identical across runs for reproducibility.
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --text "This line should follow the reference timbre and cadence." \
+  --ref_audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
+  --ref_text "Demo reference transcript." \
+  --tokens 180 \
+  --output_path outputs/moss_voice_clone
+```
+
+### 4) TTSD multi-speaker dialogue
+
+```bash
+cat > /tmp/moss_ttsd_speakers.json <<'JSON'
+[
+  {
+    "speaker_id": 1,
+    "ref_audio": "REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav",
+    "ref_text": "Speaker one prompt."
+  },
+  {
+    "speaker_id": 2,
+    "ref_audio": "REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav",
+    "ref_text": "Speaker two prompt."
+  }
+]
+JSON
+
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTSD-v1.0 \
+  --preset ttsd \
+  --text "[S1] Thanks for joining. [S2] Happy to help." \
+  --dialogue_speakers_json /tmp/moss_ttsd_speakers.json \
+  --tokens 220 \
+  --output_path outputs/moss_ttsd_dialogue
+```
+
+### 5) Voice design (VoiceGenerator)
+
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-Voice-Generator \
+  --preset voice_generator \
+  --text "Welcome to the voice design demo." \
+  --instruct "Calm premium narrator, warm tone, medium pace." \
+  --quality high \
+  --tokens 180 \
+  --output_path outputs/moss_voice_generator
+```
+
+### 6) SoundEffect generation (ambient + event cues)
+
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-SoundEffect \
+  --preset soundeffect \
+  --ambient_sound "Thunder and rain over a city street at night." \
+  --sound_event storm \
+  --quality high \
+  --tokens 140 \
+  --output_path outputs/moss_soundeffect
+```
+
+### 7) Long-form segmented synthesis
+
+```bash
+cat <<'TXT' | uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --long_form \
+  --long_form_min_chars 160 \
+  --long_form_target_chars 320 \
+  --long_form_max_chars 520 \
+  --long_form_prefix_audio_seconds 2.0 \
+  --long_form_prefix_audio_max_tokens 25 \
+  --long_form_retry_attempts 1 \
+  --max_tokens 260 \
+  --output_path outputs/moss_long_form
+Long-form synthesis in MOSS-TTS plans bounded text segments, carries a short
+audio tail for continuity, and emits segment/boundary metrics after generation.
+TXT
+```
+
+### 8) Streaming chunks (non-realtime variants)
+
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --text "Stream this response in chunks." \
+  --stream \
+  --streaming_interval 0.5 \
+  --output_path outputs/moss_streamed
+```
+
+### 9) Deterministic hybrid decoding (recommended reproducibility mode)
+
+For Local/Delay MOSS runtime, hybrid decoding is already the default behavior:
+channel-0 (text/control) is greedy while audio channels remain sampled.
+
+```bash
+uv run python -m mlx_audio.tts.generate \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --text "Deterministic hybrid run." \
+  --duration_s 6 \
+  --seed 1234 \
+  --output_path outputs/moss_deterministic_hybrid
+```
+
+Use `do_samples` only when you want to override per-channel defaults.
+
+For explicit turn lifecycle control and multiturn realtime usage, see
+`../moss_tts_realtime/README.md`.
+
+## Advanced Python Recipes
+
+### Continuation prompting (assistant-prefix audio, no `ref_audio` argument)
+
+```python
+from pathlib import Path
+
+import numpy as np
+from mlx_audio.audio_io import write as audio_write
+from mlx_audio.tts.utils import load_model
+
+output_dir = Path("outputs/moss_continuation")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+model = load_model("OpenMOSS-Team/MOSS-TTS-Local-Transformer")
+processor = model.processor
+
+user_message = processor.build_user_message(
+    text="Continue in the same voice and cadence, then close with one sentence.",
+    instruction="Warm narrator, steady pace.",
+    tokens=180,
+    input_type="text",
+)
+assistant_message = processor.build_assistant_message(
+    audio_codes_list=["REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav"],
+    content="<|audio|> Continue in the same voice and cadence.",
+)
+
+results = list(
+    model.generate(
+        conversation=[user_message, assistant_message],
+        preset="moss_tts_local",
+        max_tokens=320,
+    )
+)
+audio_write(
+    str(output_dir / "continuation.wav"),
+    np.array(results[0].audio),
+    results[0].sample_rate,
+    format="wav",
+)
+```
+
+### Long-form with metric capture
+
+```python
+from dataclasses import asdict
+
+from mlx_audio.tts.utils import load_model
+
+model = load_model("OpenMOSS-Team/MOSS-TTS-Local-Transformer")
+results = list(
+    model.generate(
+        text="Long text goes here...",
+        preset="moss_tts_local",
+        long_form=True,
+        long_form_min_chars=160,
+        long_form_target_chars=320,
+        long_form_max_chars=520,
+        long_form_prefix_audio_seconds=2.0,
+        long_form_prefix_audio_max_tokens=25,
+        long_form_retry_attempts=1,
+        max_tokens=260,
+    )
+)
+
+segment_metrics = [asdict(item) for item in model._last_long_form_segment_metrics]
+boundary_metrics = [asdict(item) for item in model._last_long_form_boundary_metrics]
+```
+
+### Deterministic full-greedy (all channels)
+
+```python
+import mlx.core as mx
+
+from mlx_audio.tts.utils import load_model
+
+mx.random.seed(1234)
+model = load_model("OpenMOSS-Team/MOSS-TTS-Local-Transformer")
+all_greedy = [False] * int(model.config.channels)
+
+results = list(
+    model.generate(
+        text="Full-greedy deterministic run.",
+        preset="moss_tts_local",
+        duration_s=6.0,
+        do_samples=all_greedy,
+        max_tokens=260,
+    )
+)
+```
+
+`full-greedy` is deterministic but can produce silent clips on some prompts/checkpoints.
 
 ## Generation Controls
 
@@ -235,7 +321,9 @@ Notes:
 | `input_type` | `text`, `pinyin`, or `ipa` |
 | `preset` | Variant sampling defaults |
 | `stream`, `streaming_interval` | Chunked output controls |
-| `repetition_window` | Realtime-only repetition-penalty history window |
+| `do_samples`, `layers` | Per-channel deterministic/sampling overrides |
+| `natural_stop_min_audio_rows` | Local natural-stop guard floor (`0` disables; default auto) |
+| `long_form` (+ `long_form_*`) | Segmented long-form synthesis planner/continuity controls |
 
 ### `quality` hint (advisory)
 
@@ -286,11 +374,11 @@ Optional helper dependencies can be installed separately (for example,
 
 | Variant | Key fields |
 |---|---|
-| Delay / Local | `text`, `input_type`, `instruct`, `ref_audio`, `ref_text`, `tokens`/`duration_s` |
+| Delay / Local | `text`, `input_type`, `instruct`, `ref_audio`, `ref_text`, `tokens`/`duration_s`, `natural_stop_min_audio_rows` |
 | TTSD | `text` + `dialogue_speakers` schema |
 | VoiceGenerator | `instruct` (+ optional `normalize_inputs`) |
 | SoundEffect | `ambient_sound`, `sound_event`, optional `quality` |
-| Realtime | `chunk_frames`, `overlap_frames`, `decode_chunk_duration`, `max_pending_frames`, `repetition_window` + session voice-prompt API |
+| Realtime | use dedicated runtime docs: `../moss_tts_realtime/README.md` |
 
 For full effective-field contracts see:
 `../../../../PLANS/MOSS-TTS-PLANS/artifacts/phase7/p7_effective_field_matrix.md`
@@ -348,6 +436,10 @@ Runtime emits segment/boundary metrics into model attributes after generation:
 ## Practical Notes
 
 - Streaming CLI mode requires an output sink (`--output_path`) or `--play`.
+- Local natural stopping now includes an adaptive EOS guard derived from prompt length.
+- Tune/override with `natural_stop_min_audio_rows` in `model_kwargs` (`0` disables the guard).
+- Delay natural stopping can miss EOS on short prompts and run until `max_tokens`; for Delay checkpoints, set `tokens` or `duration_s` explicitly.
+- For fixed output length, explicitly set `tokens` or `duration_s`.
 - VoiceGenerator defaults to normalized prompt inputs unless overridden (`normalize_inputs=False`).
 - CLI convenience: if you provide `--ref_audio` without `--ref_text`, the default `mlx_audio.tts.generate` flow will transcribe the reference audio using Whisper; provide `--ref_text` to avoid extra downloads/latency.
 - SoundEffect can synthesize from `ambient_sound` even when `text` is omitted.
