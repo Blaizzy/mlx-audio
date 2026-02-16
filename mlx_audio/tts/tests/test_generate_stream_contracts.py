@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import patch
 
 import mlx.core as mx
 
-from mlx_audio.tts.generate import generate_audio
+from mlx_audio.tts.generate import generate_audio, generate_stream
 
 
 class _DummyModel:
@@ -260,6 +261,181 @@ class TestGenerateStreamContracts(unittest.TestCase):
         self.assertTrue(model.last_generate_kwargs.get("long_form"))
         self.assertEqual(model.last_generate_kwargs.get("long_form_min_chars"), 111)
         self.assertEqual(model.last_generate_kwargs.get("long_form_retry_attempts"), 2)
+
+    def test_gateway_infers_ttsd_when_dialogue_payload_is_present(self):
+        model = _DummyModel([_result(1)])
+        dialogue_payload = [
+            {"speaker_id": 1, "ref_audio": "spk1.wav", "ref_text": "hello"},
+            {"speaker_id": 2, "ref_audio": "spk2.wav", "ref_text": "world"},
+        ]
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+        ):
+            dialogue_json = os.path.join(tmpdir, "dialogue.json")
+            with open(dialogue_json, "w", encoding="utf-8") as f:
+                json.dump(dialogue_payload, f)
+
+            generate_audio(
+                text="dialogue route",
+                model=model,
+                output_path=tmpdir,
+                file_prefix="dialogue_case",
+                dialogue_speakers_json=dialogue_json,
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "ttsd")
+        self.assertEqual(
+            model.last_generate_kwargs.get("dialogue_speakers"), dialogue_payload
+        )
+
+    def test_gateway_routing_precedence_realtime_over_ttsd_and_soundeffect(self):
+        model = _DummyModel([_result(1)])
+        dialogue_payload = [{"speaker_id": 1, "ref_audio": "spk1.wav", "ref_text": "x"}]
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+            patch("mlx_audio.tts.generate.load_model", return_value=model),
+        ):
+            dialogue_json = os.path.join(tmpdir, "dialogue.json")
+            with open(dialogue_json, "w", encoding="utf-8") as f:
+                json.dump(dialogue_payload, f)
+
+            generate_audio(
+                text="priority route",
+                model="OpenMOSS-Team/MOSS-TTS",
+                output_path=tmpdir,
+                file_prefix="priority_case",
+                dialogue_speakers_json=dialogue_json,
+                sound_event="wind",
+                repetition_window=50,
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "realtime")
+
+    def test_gateway_routing_precedence_ttsd_over_soundeffect(self):
+        model = _DummyModel([_result(1)])
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+        ):
+            dialogue_json = os.path.join(tmpdir, "dialogue.json")
+            with open(dialogue_json, "w", encoding="utf-8") as f:
+                json.dump([{"speaker_id": 1, "ref_audio": "x.wav", "ref_text": "x"}], f)
+
+            generate_audio(
+                text="dialogue beats sound",
+                model=model,
+                output_path=tmpdir,
+                file_prefix="ttsd_precedence_case",
+                dialogue_speakers_json=dialogue_json,
+                sound_event="thunder",
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "ttsd")
+
+    def test_gateway_routing_precedence_soundeffect_over_voice_design(self):
+        model = _DummyModel([_result(1)])
+        model.model_type = "moss_tts"
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+        ):
+            generate_audio(
+                text=None,
+                model=model,
+                output_path=tmpdir,
+                file_prefix="sound_precedence_case",
+                sound_event="city ambience",
+                instruct="warm and energetic",
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "soundeffect")
+
+    def test_gateway_infers_voice_generator_from_instruct_in_moss_context(self):
+        model = _DummyModel([_result(1)])
+        model.model_type = "moss_tts"
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+            patch("mlx_audio.tts.generate.load_model", return_value=model),
+        ):
+            generate_audio(
+                text="voice design route",
+                model="OpenMOSS-Team/MOSS-TTS",
+                output_path=tmpdir,
+                file_prefix="voice_design_case",
+                instruct="Warm, cinematic narrator",
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertEqual(model.last_generate_kwargs.get("preset"), "voice_generator")
+
+    def test_gateway_rejects_conflicting_markers(self):
+        model = _DummyModel([_result(1)])
+        output = io.StringIO()
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write"),
+            redirect_stdout(output),
+            redirect_stderr(output),
+        ):
+            dialogue_json = os.path.join(tmpdir, "dialogue.json")
+            with open(dialogue_json, "w", encoding="utf-8") as f:
+                json.dump([{"speaker_id": 1, "ref_audio": "x.wav", "ref_text": "x"}], f)
+
+            generate_audio(
+                text="conflict route",
+                model=model,
+                output_path=tmpdir,
+                file_prefix="conflict_case",
+                preset="voice_generator",
+                dialogue_speakers_json=dialogue_json,
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 0)
+        self.assertIn("Incompatible task markers", output.getvalue())
+
+    def test_generate_stream_wrapper_forces_stream_true(self):
+        model = _DummyModel([_result(1)])
+
+        with (
+            tempfile.TemporaryDirectory() as tmpdir,
+            patch("mlx_audio.tts.generate.audio_write") as audio_write_mock,
+        ):
+            generate_stream(
+                text="stream wrapper",
+                model=model,
+                output_path=tmpdir,
+                file_prefix="stream_wrapper_case",
+                verbose=False,
+            )
+
+        self.assertEqual(model.generate_call_count, 1)
+        self.assertEqual(audio_write_mock.call_count, 1)
+        assert model.last_generate_kwargs is not None
+        self.assertTrue(model.last_generate_kwargs.get("stream"))
 
 
 if __name__ == "__main__":

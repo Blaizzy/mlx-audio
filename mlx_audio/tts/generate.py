@@ -15,6 +15,177 @@ from mlx_audio.utils import load_audio
 from .audio_player import AudioPlayer
 from .utils import load_model
 
+_MOSS_PRESET_ALIASES = {
+    "voicegenerator": "voice_generator",
+    "moss_voice_generator": "voice_generator",
+    "moss_voicegenerator": "voice_generator",
+    "moss_voice_design": "voice_generator",
+    "moss_sound_effect": "soundeffect",
+    "sound_effect": "soundeffect",
+    "moss_soundeffect": "soundeffect",
+}
+
+_MOSS_PRESET_TASKS = {
+    "moss_tts": "default_tts",
+    "moss_tts_local": "default_tts",
+    "ttsd": "ttsd",
+    "soundeffect": "soundeffect",
+    "voice_generator": "voice_generator",
+    "realtime": "realtime",
+}
+
+_TASK_DEFAULT_PRESETS = {
+    "ttsd": "ttsd",
+    "soundeffect": "soundeffect",
+    "voice_generator": "voice_generator",
+    "realtime": "realtime",
+}
+
+_REALTIME_ONLY_KWARGS = frozenset(
+    {
+        "chunk_frames",
+        "overlap_frames",
+        "decode_chunk_duration",
+        "max_pending_frames",
+        "repetition_window",
+    }
+)
+
+
+def _normalize_preset(preset: Optional[str]) -> Optional[str]:
+    if preset is None:
+        return None
+    normalized = str(preset).strip().lower().replace("-", "_")
+    return _MOSS_PRESET_ALIASES.get(normalized, normalized)
+
+
+def _normalize_model_type(model_type: Optional[str]) -> Optional[str]:
+    if model_type is None:
+        return None
+    return str(model_type).strip().lower().replace("-", "_")
+
+
+def _looks_like_moss_model(model: Optional[Union[str, nn.Module]]) -> bool:
+    if isinstance(model, str):
+        return "moss" in model.lower()
+    if model is None:
+        return False
+    model_type = _normalize_model_type(getattr(model, "model_type", None))
+    if model_type:
+        return "moss" in model_type
+    return "moss" in str(type(model)).lower()
+
+
+def _is_explicit_realtime_model(model: Optional[Union[str, nn.Module]]) -> bool:
+    if isinstance(model, str):
+        normalized = model.strip().lower().replace("-", "_")
+        return "moss_tts_realtime" in normalized or "moss/tts/realtime" in normalized
+    if model is None:
+        return False
+    model_type = _normalize_model_type(getattr(model, "model_type", None))
+    return model_type == "moss_tts_realtime"
+
+
+def _parse_model_kwargs_json(
+    model_kwargs_json: Optional[Union[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    if model_kwargs_json is None:
+        return {}
+    parsed_kwargs = model_kwargs_json
+    if isinstance(parsed_kwargs, str):
+        try:
+            parsed_kwargs = json.loads(parsed_kwargs)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid --model_kwargs_json value: {exc.msg}") from exc
+    if not isinstance(parsed_kwargs, dict):
+        raise ValueError("--model_kwargs_json must decode to a JSON object")
+    return dict(parsed_kwargs)
+
+
+def _load_dialogue_speakers(
+    dialogue_speakers_json: Optional[str],
+) -> Optional[list[dict[str, Any]]]:
+    if dialogue_speakers_json is None:
+        return None
+    with open(dialogue_speakers_json, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError("dialogue_speakers_json must contain a JSON list")
+    dialogue_speakers: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each dialogue_speakers item must be a JSON object")
+        dialogue_speakers.append(item)
+    return dialogue_speakers
+
+
+def _infer_gateway_task_and_preset(
+    *,
+    model: Optional[Union[str, nn.Module]],
+    preset: Optional[str],
+    dialogue_speakers: Optional[list[dict[str, Any]]],
+    sound_event: Optional[str],
+    ambient_sound: Optional[str],
+    instruct: Optional[str],
+    repetition_window: Optional[int],
+    passthrough_kwargs: dict[str, Any],
+) -> tuple[str, Optional[str]]:
+    normalized_preset = _normalize_preset(preset)
+    explicit_preset_task = _MOSS_PRESET_TASKS.get(normalized_preset)
+
+    explicit_realtime_marker = _is_explicit_realtime_model(model)
+    realtime_kwarg_marker = bool(_REALTIME_ONLY_KWARGS & set(passthrough_kwargs.keys()))
+    moss_hint = (
+        _looks_like_moss_model(model)
+        or normalized_preset in _MOSS_PRESET_TASKS
+        or bool(dialogue_speakers)
+        or bool(ambient_sound or sound_event)
+    )
+    realtime_marker = (
+        explicit_realtime_marker
+        or normalized_preset == "realtime"
+        or (moss_hint and (repetition_window is not None or realtime_kwarg_marker))
+    )
+
+    ttsd_marker = bool(dialogue_speakers) or normalized_preset == "ttsd"
+    soundeffect_marker = bool(ambient_sound or sound_event) or (
+        normalized_preset == "soundeffect"
+    )
+
+    moss_context = moss_hint or ttsd_marker or soundeffect_marker or realtime_marker
+    has_instruct = bool(str(instruct).strip()) if instruct is not None else False
+    voice_design_marker = normalized_preset == "voice_generator" or (
+        moss_context and has_instruct
+    )
+
+    inferred_task = "default_tts"
+    if realtime_marker:
+        inferred_task = "realtime"
+    elif ttsd_marker:
+        inferred_task = "ttsd"
+    elif soundeffect_marker:
+        inferred_task = "soundeffect"
+    elif voice_design_marker:
+        inferred_task = "voice_generator"
+
+    if (
+        explicit_preset_task is not None
+        and inferred_task != explicit_preset_task
+        and inferred_task != "default_tts"
+    ):
+        raise ValueError(
+            "Incompatible task markers: "
+            f"preset={preset!r} conflicts with inferred task '{inferred_task}'"
+        )
+
+    effective_preset = preset
+    if normalized_preset in _MOSS_PRESET_TASKS:
+        effective_preset = normalized_preset
+    elif inferred_task in _TASK_DEFAULT_PRESETS:
+        effective_preset = _TASK_DEFAULT_PRESETS[inferred_task]
+
+    return inferred_task, effective_preset
+
 
 def detect_speech_boundaries(
     wav: np.ndarray,
@@ -242,22 +413,21 @@ def generate_audio(
                 "Streaming mode requires at least one sink: enable --play or provide --output_path."
             )
 
+        parsed_model_kwargs_json = _parse_model_kwargs_json(model_kwargs_json)
+        dialogue_speakers = _load_dialogue_speakers(dialogue_speakers_json)
+        _, effective_preset = _infer_gateway_task_and_preset(
+            model=model,
+            preset=preset,
+            dialogue_speakers=dialogue_speakers,
+            sound_event=sound_event,
+            ambient_sound=ambient_sound,
+            instruct=instruct,
+            repetition_window=repetition_window,
+            passthrough_kwargs=kwargs,
+        )
+
         if instruct is not None:
             print(f"\033[94mInstruct:\033[0m {instruct}")
-
-        dialogue_speakers: Optional[list[dict[str, Any]]] = None
-        if dialogue_speakers_json is not None:
-            with open(dialogue_speakers_json, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if not isinstance(raw, list):
-                raise ValueError("dialogue_speakers_json must contain a JSON list")
-            dialogue_speakers = []
-            for item in raw:
-                if not isinstance(item, dict):
-                    raise ValueError(
-                        "Each dialogue_speakers item must be a JSON object"
-                    )
-                dialogue_speakers.append(item)
 
         print(
             f"\033[94mText:\033[0m {text}\n"
@@ -281,7 +451,7 @@ def generate_audio(
             sound_event=sound_event,
             ambient_sound=ambient_sound,
             language=language,
-            preset=preset,
+            preset=effective_preset,
             n_vq_for_inference=n_vq_for_inference,
             dialogue_speakers=dialogue_speakers,
             input_type=input_type,
@@ -294,18 +464,7 @@ def generate_audio(
             instruct=instruct,
             **kwargs,
         )
-        if model_kwargs_json is not None:
-            parsed_kwargs = model_kwargs_json
-            if isinstance(parsed_kwargs, str):
-                try:
-                    parsed_kwargs = json.loads(parsed_kwargs)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"Invalid --model_kwargs_json value: {exc.msg}"
-                    ) from exc
-            if not isinstance(parsed_kwargs, dict):
-                raise ValueError("--model_kwargs_json must decode to a JSON object")
-            gen_kwargs.update(parsed_kwargs)
+        gen_kwargs.update(parsed_model_kwargs_json)
 
         if long_form:
             gen_kwargs.update(
@@ -403,6 +562,11 @@ def generate_audio(
         import traceback
 
         traceback.print_exc()
+
+
+def generate_stream(text: Optional[str], **kwargs) -> None:
+    kwargs["stream"] = True
+    generate_audio(text=text, **kwargs)
 
 
 def parse_args():
