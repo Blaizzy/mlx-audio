@@ -70,6 +70,70 @@ More complete runnable examples are in:
 - `examples/moss_tts_realtime_multiturn_agent.py`
 - `examples/moss_tts_showcase_album.py`
 
+## Task Recipes
+
+One runnable command per task family:
+
+- Base TTS (Delay/Local):
+
+```bash
+uv run python examples/moss_tts_basic.py \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local
+```
+
+- Voice cloning (reference-conditioned Delay/Local):
+
+```bash
+uv run python examples/moss_tts_voice_cloning.py \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local \
+  --ref-audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
+  --ref-text "Demo reference transcript."
+```
+
+- TTSD multi-speaker dialogue:
+
+```bash
+uv run python examples/moss_ttsd_dialogue.py \
+  --model OpenMOSS-Team/MOSS-TTSD-v1.0 \
+  --preset ttsd
+```
+
+- Voice design:
+
+```bash
+uv run python examples/moss_voice_design.py \
+  --model OpenMOSS-Team/MOSS-Voice-Generator \
+  --preset voice_generator
+```
+
+- SoundEffect (text-to-audio / text-to-music-adjacent):
+
+```bash
+uv run python examples/moss_sound_effects.py \
+  --model OpenMOSS-Team/MOSS-SoundEffect \
+  --preset soundeffect
+```
+
+- Long-form synthesis:
+
+```bash
+uv run python examples/moss_tts_long_form.py \
+  --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
+  --preset moss_tts_local
+```
+
+- Realtime pointer:
+
+```bash
+uv run python examples/moss_tts_realtime_text_deltas.py \
+  --model OpenMOSS-Team/MOSS-TTS-Realtime
+```
+
+For session lifecycle details and multiturn realtime usage, see
+`../moss_tts_realtime/README.md`.
+
 ## Showcase Recipes
 
 Use these scripts as fast entry points for the most important MOSS workflows:
@@ -120,7 +184,6 @@ uv run python examples/moss_tts_deterministic.py \
   --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
   --preset moss_tts_local \
   --text "Hello what is happening this is from MOSS on MLX." \
-  --instruct "Calm, friendly, medium speaking rate, conversational tone." \
   --output-dir outputs/moss_tts_deterministic
 ```
 
@@ -131,7 +194,6 @@ uv run python -m mlx_audio.tts.generate \
   --model OpenMOSS-Team/MOSS-TTS-Local-Transformer \
   --preset moss_tts_local \
   --text "Hello what is happening this is from MOSS on MLX." \
-  --instruct "Calm, friendly, medium speaking rate, conversational tone." \
   --seed 1234 \
   --model_kwargs_json '{"do_samples":[false]}' \
   --output_path outputs/moss_tts_deterministic_cli
@@ -147,7 +209,6 @@ uv run python examples/moss_tts_deterministic.py \
   --ref-audio REFERENCE/MOSS-Audio-Tokenizer/demo/demo_gt.wav \
   --ref-text "Demo reference transcript." \
   --text "Hello what is happening this is from MOSS on MLX." \
-  --instruct "Warm expressive narrator, medium speaking rate." \
   --output-dir outputs/moss_tts_deterministic_ref
 ```
 
