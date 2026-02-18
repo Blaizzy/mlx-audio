@@ -640,11 +640,11 @@ class Model(nn.Module):
         sampling_rate: Optional[int] = None,
         max_tokens: int = 8192,
         temperature: float = 0.0,
-        top_p: float = 0.95,
-        top_k: int = 25,
-        min_p: float = 0.02,
+        top_p: float = 1.0,
+        top_k: int = 0,
+        min_p: float = 0.0,
         min_tokens_to_keep: int = 1,
-        repetition_penalty: Optional[float] = 1.2,
+        repetition_penalty: Optional[float] = 1.0,
         repetition_context_size: int = 100,
         prefill_step_size: int = 2048,
         generation_stream: bool = False,
@@ -662,9 +662,9 @@ class Model(nn.Module):
                 so that it is resampled correctly.
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
-            top_p: Top-p sampling
-            top_k: Top-k sampling
-            min_p: Min-p sampling
+            top_p: Top-p sampling (1.0 = no filtering)
+            top_k: Top-k sampling (0 = disabled)
+            min_p: Min-p sampling (0.0 = disabled)
             min_tokens_to_keep: Min tokens for sampling
             repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
             repetition_context_size: Number of recent tokens to check for repetition
@@ -755,11 +755,11 @@ class Model(nn.Module):
         sampling_rate: Optional[int] = None,
         max_tokens: int = 8192,
         temperature: float = 0.0,
-        top_p: float = 0.95,
+        top_p: float = 1.0,
         top_k: int = 0,
         min_p: float = 0.0,
         min_tokens_to_keep: int = 1,
-        repetition_penalty: Optional[float] = 1.2,
+        repetition_penalty: Optional[float] = 1.0,
         repetition_context_size: int = 100,
         prefill_step_size: int = 2048,
         verbose: bool = False,
@@ -775,8 +775,8 @@ class Model(nn.Module):
                 so that it is resampled correctly.
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
-            top_p: Top-p sampling
-            top_k: Top-k sampling
+            top_p: Top-p sampling (1.0 = no filtering)
+            top_k: Top-k sampling (0 = disabled)
             min_p: Min-p sampling
             min_tokens_to_keep: Min tokens for sampling
             repetition_penalty: Penalty for repeated tokens (1.0 = no penalty)
