@@ -659,7 +659,8 @@ class Model(nn.Module):
         for wf in wf:
             weights.update(mx.load(wf))
 
-        model = Model(model_args, dtype)
+        model = cls(model_args, dtype)
+        model = cls.post_load_hook(model, model_path)
 
         if quantization is not None:
             class_predicate = (
