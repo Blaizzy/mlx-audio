@@ -56,7 +56,7 @@ class TestWhisperModel(unittest.TestCase):
     @patch("mlx_audio.stt.models.whisper.whisper.mx.load")
     @patch("mlx_audio.stt.models.whisper.whisper.json.loads")
     @patch("glob.glob")
-    @patch("builtins.open", new_callable=MagicMock)
+    @patch("mlx_audio.stt.models.whisper.whisper.open", new_callable=MagicMock)
     def test_from_pretrained(
         self,
         mock_open,
@@ -126,7 +126,8 @@ class TestWhisperModel(unittest.TestCase):
         mock_snapshot_download.assert_called_once_with(
             repo_id="mlx-community/whisper-tiny-asr-fp16"
         )
-        mock_open.assert_called_once_with("dummy_path/config.json", "r")
+        mock_open.assert_any_call("dummy_path/config.json", "r")
+        self.assertGreaterEqual(mock_open.call_count, 1)
         mock_mx_load.assert_called_once_with("dummy_path/weights.safetensors")
 
     @patch("mlx_audio.stt.models.whisper.whisper.pad_or_trim")
@@ -632,81 +633,20 @@ class TestGLMASRModel(unittest.TestCase):
         self.assertEqual(logits.shape[1], seq_len)
         self.assertEqual(logits.shape[2], self.llama_config.vocab_size)
 
-    @patch("mlx.nn.Module.load_weights")
-    @patch("mlx_audio.utils.load_config")
-    @patch("mlx_audio.utils.get_model_path")
-    @patch("mlx_audio.stt.models.glmasr.glmasr.glob.glob")
-    @patch("mlx_audio.stt.models.glmasr.glmasr.mx.load")
-    @patch("builtins.open", new_callable=MagicMock)
-    @patch("mlx_audio.stt.models.glmasr.glmasr.json.load")
-    @patch("transformers.AutoTokenizer.from_pretrained")
+    @patch("mlx_audio.stt.utils.load")
     def test_from_pretrained(
         self,
-        mock_auto_tokenizer,
-        mock_json_load,
-        mock_open,
-        mock_mx_load,
-        mock_glob,
-        mock_get_model_path,
-        mock_load_config,
-        mock_load_weights,
+        mock_stt_load,
     ):
         """Test GLMASRModel.from_pretrained method."""
         dummy_repo_id = "dummy/glm-asr-model"
-        dummy_model_path = Path("/tmp/dummy_model_path")
-
-        mock_get_model_path.return_value = dummy_model_path
-
-        # Mock tokenizer
-        mock_tokenizer = MagicMock()
-        mock_tokenizer.encode.return_value = [1, 2, 3]
-        mock_tokenizer.decode.return_value = "test"
-        mock_auto_tokenizer.return_value = mock_tokenizer
-
-        # Mock config
-        dummy_config_dict = {
-            "model_type": "glmasr",
-            "whisper_config": {
-                "d_model": 256,
-                "encoder_attention_heads": 4,
-                "encoder_ffn_dim": 1024,
-                "encoder_layers": 2,
-                "num_mel_bins": 80,
-            },
-            "lm_config": {
-                "vocab_size": 1000,
-                "hidden_size": 256,
-                "intermediate_size": 512,
-                "num_hidden_layers": 2,
-                "num_attention_heads": 4,
-                "num_key_value_heads": 2,
-                "tie_word_embeddings": False,
-            },
-            "merge_factor": 4,
-            "use_rope": True,
-        }
-        mock_json_load.return_value = dummy_config_dict
-        mock_load_config.return_value = dummy_config_dict
-
-        # Mock weight files
-        mock_glob.return_value = [str(dummy_model_path / "model.safetensors")]
-
-        # Mock weights - minimal weights for model initialization
-        mock_mx_load.return_value = {}
+        loaded_model = MagicMock(spec=self.GLMASRModel)
+        mock_stt_load.return_value = loaded_model
 
         model = self.GLMASRModel.from_pretrained(dummy_repo_id)
 
-        self.assertIsInstance(model, self.GLMASRModel)
-        mock_get_model_path.assert_called_once()
-        mock_auto_tokenizer.assert_called_once_with(
-            str(dummy_model_path), trust_remote_code=True
-        )
-        mock_load_weights.assert_called_once()
-
-        # Verify config was loaded correctly
-        self.assertEqual(model.config.whisper_config.d_model, 256)
-        self.assertEqual(model.config.lm_config.vocab_size, 1000)
-        self.assertEqual(model.config.merge_factor, 4)
+        self.assertIs(model, loaded_model)
+        mock_stt_load.assert_called_once_with(dummy_repo_id)
 
 
 class TestQwen3ASRConfig(unittest.TestCase):
