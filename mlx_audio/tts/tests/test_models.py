@@ -1,5 +1,7 @@
 import importlib.resources
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
@@ -3167,6 +3169,145 @@ class TestQwen3TTSStreamingDecode(unittest.TestCase):
 
         # streaming_interval=0.1 -> 1 token (minimum)
         self.assertEqual(max(1, int(0.1 * 12.5)), 1)
+
+
+@patch("importlib.resources.open_text", patched_open_text)
+class TestBailingMMModel(unittest.TestCase):
+   
+
+    def _make_minimal_bailingmm_model(self):
+        from mlx_audio.tts.models.bailingmm.bailingmm import Model
+
+        model = Model.__new__(Model)
+        model.tokenizer = MagicMock()
+        model.tokenizer.encode.return_value = [1, 2, 3]
+        model.audio = MagicMock()
+        model.audio.sample_rate = 24000
+        return model
+
+    def test_convert_campplus_onnx_to_safetensors_allclose(self):
+        from safetensors.numpy import load_file
+
+        from mlx_audio.tts.models.bailingmm import (
+            convert_campplus_onnx_to_safetensors,
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            onnx_path = Path(tmpdir) / "campplus.onnx"
+            expected = self._build_dummy_onnx(onnx_path)
+
+            safetensors_path = convert_campplus_onnx_to_safetensors(
+                onnx_path=onnx_path,
+                output_path=Path(tmpdir) / "campplus.safetensors",
+                verify_allclose=True,
+            )
+
+            converted = load_file(str(safetensors_path))
+            self.assertEqual(set(converted.keys()), set(expected.keys()))
+            for key in expected:
+                self.assertTrue(
+                    np.allclose(expected[key], converted[key], rtol=1e-5, atol=1e-6)
+                )
+
+    def test_qwen2_sliding_window_attention_applies_after_window_boundary(self):
+        from mlx_lm.models.base import create_attention_mask
+        from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
+
+        from mlx_audio.tts.models.bailingmm.bailingmm import MingQwen2Model
+
+        args = Qwen2ModelArgs(
+            model_type="qwen2",
+            hidden_size=32,
+            num_hidden_layers=2,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-6,
+            vocab_size=1,
+            rope_theta=1_000_000.0,
+        )
+        model = MingQwen2Model(
+            args,
+            {
+                "use_sliding_window": True,
+                "sliding_window": 4,
+                "max_window_layers": 0,
+            },
+        )
+
+        x = mx.random.normal((1, 8, 32), dtype=mx.float32)
+        mask = create_attention_mask(x, None)
+
+        y_sliding = model.layers[0](x, mask, None)
+        model.layers[0].self_attn.sliding_window = None
+        y_full = model.layers[0](x, mask, None)
+
+        diff = np.abs(np.array(y_sliding) - np.array(y_full)).mean(axis=-1)[0]
+        self.assertLess(diff[:4].max(), 1e-6)
+        self.assertGreater(diff[4:].max(), 1e-6)
+
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
+        return_value=0.0,
+    )
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.time.perf_counter",
+        side_effect=[0.0, 1.0],
+    )
+    def test_generate_keeps_trailing_samples(
+        self, _mock_perf_counter, _mock_peak_memory
+    ):
+        model = self._make_minimal_bailingmm_model()
+
+        latent = mx.zeros((1, 1, 64), dtype=mx.float32)
+        model.sample = MagicMock(return_value=iter([(latent, True)]))
+
+        # Torch path does not apply a trailing low-energy trim pass.
+        chunk = mx.array([[0.25, 0.15, 0.0, 0.0, 0.0]], dtype=mx.float32)
+        model.audio.decode.return_value = (chunk, (None, None, None), None)
+
+        result = next(model.generate(text="hello", max_tokens=1))
+        np.testing.assert_allclose(np.array(result.audio), np.array(chunk)[0], atol=0)
+
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
+        return_value=0.0,
+    )
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.time.perf_counter",
+        side_effect=[0.0, 1.0],
+    )
+    def test_generate_concatenates_all_decode_chunks(
+        self, _mock_perf_counter, _mock_peak_memory
+    ):
+        from mlx_audio.tts.models.bailingmm.bailingmm import bailingmm as bailingmm_module
+
+        model = self._make_minimal_bailingmm_model()
+
+        latent = mx.zeros((1, 1, 64), dtype=mx.float32)
+        model.sample = MagicMock(return_value=iter([(latent, False), (latent, True)]))
+        chunk1 = mx.array([[0.1, 0.2]], dtype=mx.float32)
+        chunk2 = mx.zeros((1, 0), dtype=mx.float32)
+        model.audio.decode.side_effect = [
+            (chunk1, (None, None, None), None),
+            (chunk2, (None, None, None), None),
+        ]
+
+        observed = {}
+        original_concat = bailingmm_module.mx.concatenate
+
+        def _concat_spy(items, axis=0):
+            observed["num_chunks"] = len(items)
+            return original_concat(items, axis=axis)
+
+        with patch(
+            "mlx_audio.tts.models.bailingmm.bailingmm.mx.concatenate",
+            side_effect=_concat_spy,
+        ):
+            result = next(model.generate(text="hello", max_tokens=2))
+
+        self.assertEqual(observed.get("num_chunks"), 2)
+        np.testing.assert_allclose(np.array(result.audio), np.array(chunk1)[0], atol=0)
 
 
 if __name__ == "__main__":
