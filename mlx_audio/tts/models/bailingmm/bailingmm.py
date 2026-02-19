@@ -8,14 +8,14 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import mlx_lm.models.bailing_moe as bailing_moe_impl
+import mlx_lm.models.qwen2 as qwen2_impl
 import numpy as np
 from huggingface_hub import snapshot_download
-from mlx_lm.models.base import create_attention_mask
-import mlx_lm.models.bailing_moe as bailing_moe_impl
 from mlx_lm.models.bailing_moe import Model as BailingMoeModel
 from mlx_lm.models.bailing_moe import ModelArgs as BailingMoeModelArgs
+from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
-import mlx_lm.models.qwen2 as qwen2_impl
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 from mlx_lm.models.qwen2 import Qwen2Model
 
@@ -109,8 +109,12 @@ def _apply_multimodal_rotary_pos_emb(
 
     cos_chunks = mx.split(cos, split_points, axis=-1)
     sin_chunks = mx.split(sin, split_points, axis=-1)
-    cos_m = mx.concatenate([chunk[i % 3] for i, chunk in enumerate(cos_chunks)], axis=-1)
-    sin_m = mx.concatenate([chunk[i % 3] for i, chunk in enumerate(sin_chunks)], axis=-1)
+    cos_m = mx.concatenate(
+        [chunk[i % 3] for i, chunk in enumerate(cos_chunks)], axis=-1
+    )
+    sin_m = mx.concatenate(
+        [chunk[i % 3] for i, chunk in enumerate(sin_chunks)], axis=-1
+    )
     return _apply_rotary_pos_emb(q, k, cos_m, sin_m, unsqueeze_dim=unsqueeze_dim)
 
 
@@ -121,7 +125,9 @@ class MingBailingMoe3DRotaryEmbedding(nn.Module):
         self.base = base
         self._inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
 
-    def __call__(self, x: mx.array, position_ids: mx.array) -> Tuple[mx.array, mx.array]:
+    def __call__(
+        self, x: mx.array, position_ids: mx.array
+    ) -> Tuple[mx.array, mx.array]:
         if position_ids.ndim == 2:
             position_ids = mx.broadcast_to(
                 position_ids[None, ...],
@@ -155,7 +161,9 @@ def _prepare_sdpa_mask(
         q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
         k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
         causal = q_pos >= k_pos
-        return mx.where(causal, mx.array(0.0, dtype=out_dtype), neg_inf)[None, None, :, :]
+        return mx.where(causal, mx.array(0.0, dtype=out_dtype), neg_inf)[
+            None, None, :, :
+        ]
 
     add_mask = mask
     if add_mask.dtype == mx.bool_:
@@ -244,7 +252,9 @@ class MingBailingMoeSparseMoeBlock(bailing_moe_impl.BailingMoeSparseMoeBlock):
     def __init__(self, args: BailingMoeModelArgs):
         super().__init__(args)
         self.gate = MingBailingMoeGate(args)
-        shared_dim = args.moe_shared_expert_intermediate_size or args.moe_intermediate_size
+        shared_dim = (
+            args.moe_shared_expert_intermediate_size or args.moe_intermediate_size
+        )
         if args.num_shared_experts > 0 and args.moe_router_enable_shared_expert:
             self.shared_experts = MingBailingMoeMLP(
                 args=args,
@@ -320,15 +330,15 @@ class MingBailingMoeAttention(nn.Module):
         q_size = self.num_attention_heads * self.head_dim
         kv_size = self.num_key_value_heads * self.head_dim
         q, k, v = mx.split(qkv, [q_size, q_size + kv_size], axis=-1)
-        queries = q.reshape(bsz, seqlen, self.num_attention_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
-        keys = k.reshape(bsz, seqlen, self.num_key_value_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
-        values = v.reshape(bsz, seqlen, self.num_key_value_heads, self.head_dim).transpose(
-            0, 2, 1, 3
-        )
+        queries = q.reshape(
+            bsz, seqlen, self.num_attention_heads, self.head_dim
+        ).transpose(0, 2, 1, 3)
+        keys = k.reshape(
+            bsz, seqlen, self.num_key_value_heads, self.head_dim
+        ).transpose(0, 2, 1, 3)
+        values = v.reshape(
+            bsz, seqlen, self.num_key_value_heads, self.head_dim
+        ).transpose(0, 2, 1, 3)
 
         if self.use_qk_norm:
             queries = self.query_layernorm(queries)
@@ -337,7 +347,9 @@ class MingBailingMoeAttention(nn.Module):
         cache_offset = cache.offset if cache is not None else 0
         if self.use_mrope:
             if position_ids is None:
-                pos = mx.arange(cache_offset, cache_offset + seqlen, dtype=mx.int32)[None, :]
+                pos = mx.arange(cache_offset, cache_offset + seqlen, dtype=mx.int32)[
+                    None, :
+                ]
                 pos = mx.broadcast_to(pos, (bsz, seqlen))
                 position_ids = mx.stack([pos, pos, pos], axis=0)
             cos, sin = self.mrope(values, position_ids=position_ids)
@@ -383,7 +395,9 @@ class MingBailingMoeDecoderLayer(bailing_moe_impl.BailingMoeDecoderLayer):
             else MingBailingMoeMLP(args)
         )
         self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
-        self.post_attention_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
+            args.hidden_size, eps=args.rms_norm_eps
+        )
 
     def __call__(
         self,
@@ -392,7 +406,9 @@ class MingBailingMoeDecoderLayer(bailing_moe_impl.BailingMoeDecoderLayer):
         cache: Optional[Any] = None,
         position_ids: Optional[mx.array] = None,
     ) -> mx.array:
-        r = self.attention(self.input_layernorm(x), mask, cache, position_ids=position_ids)
+        r = self.attention(
+            self.input_layernorm(x), mask, cache, position_ids=position_ids
+        )
         h = x + r
         r = self.mlp(self.post_attention_layernorm(h))
         return h + r
@@ -455,7 +471,9 @@ class MingQwen2Attention(qwen2_impl.Attention):
     def __init__(self, args: Qwen2ModelArgs, sliding_window: Optional[int]):
         super().__init__(args)
         self.sliding_window = (
-            int(sliding_window) if sliding_window is not None and int(sliding_window) > 0 else None
+            int(sliding_window)
+            if sliding_window is not None and int(sliding_window) > 0
+            else None
         )
 
     @staticmethod
@@ -470,7 +488,9 @@ class MingQwen2Attention(qwen2_impl.Attention):
         q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
         k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
         sw_allowed = k_pos > (q_pos - sliding_window)
-        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=mx.float32), neg_inf)[None, None, :, :]
+        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=mx.float32), neg_inf)[
+            None, None, :, :
+        ]
 
         if mask is None:
             return sw_add
@@ -632,14 +652,20 @@ class Attention(nn.Module):
         rope: Optional[RotaryEmbedding] = None,
     ) -> mx.array:
         bsz, seqlen, _ = x.shape
-        q = self.to_q(x).reshape(bsz, seqlen, self.heads, self.dim_head).transpose(
-            0, 2, 1, 3
+        q = (
+            self.to_q(x)
+            .reshape(bsz, seqlen, self.heads, self.dim_head)
+            .transpose(0, 2, 1, 3)
         )
-        k = self.to_k(x).reshape(bsz, seqlen, self.heads, self.dim_head).transpose(
-            0, 2, 1, 3
+        k = (
+            self.to_k(x)
+            .reshape(bsz, seqlen, self.heads, self.dim_head)
+            .transpose(0, 2, 1, 3)
         )
-        v = self.to_v(x).reshape(bsz, seqlen, self.heads, self.dim_head).transpose(
-            0, 2, 1, 3
+        v = (
+            self.to_v(x)
+            .reshape(bsz, seqlen, self.heads, self.dim_head)
+            .transpose(0, 2, 1, 3)
         )
 
         if rope is not None:
@@ -844,7 +870,9 @@ def get_epss_timesteps(n: int, dtype: Any) -> mx.array:
 
 
 class Solver:
-    def __init__(self, func, y0: mx.array, sigma: float = 0.25, temperature: float = 1.5):
+    def __init__(
+        self, func, y0: mx.array, sigma: float = 0.25, temperature: float = 1.5
+    ):
         self.func = func
         self.y0 = y0
         self.sigma = sigma
@@ -864,12 +892,7 @@ class Solver:
             dy = dt.astype(y.dtype) * f0
             y = y + dy
             noise = mx.random.normal(y.shape, dtype=y.dtype)
-            shift = (
-                self.sigma
-                * (self.temperature**0.5)
-                * (mx.abs(dt) ** 0.5)
-                * noise
-            )
+            shift = self.sigma * (self.temperature**0.5) * (mx.abs(dt) ** 0.5) * noise
             y = y + shift
             solution.append(y)
         return solution
@@ -932,7 +955,9 @@ class FlowLoss(nn.Module):
     def __init__(self, z_channels: int, llm_cond_dim: int, **kwargs: Any):
         super().__init__()
         self.z_channels = z_channels
-        self.cfm = CFM(model=DiT(in_channels=z_channels, llm_cond_dim=llm_cond_dim, **kwargs))
+        self.cfm = CFM(
+            model=DiT(in_channels=z_channels, llm_cond_dim=llm_cond_dim, **kwargs)
+        )
 
     def sample(
         self,
@@ -945,7 +970,9 @@ class FlowLoss(nn.Module):
         steps: int = 10,
     ) -> Tuple[mx.array, List[mx.array]]:
         # Match Torch path: sample diffusion noise in float32 and integrate in float32.
-        noise = mx.random.normal((z.shape[0], self.z_channels, patch_size), dtype=mx.float32)
+        noise = mx.random.normal(
+            (z.shape[0], self.z_channels, patch_size), dtype=mx.float32
+        )
         sampled, trajectory = self.cfm.sample(
             noise=noise,
             c=z,
@@ -1090,7 +1117,9 @@ class Encoder(nn.Module):
             agg_cfg_dict["num_hidden_layers"] = 4
             agg_cfg = Qwen2ModelArgs.from_dict(agg_cfg_dict)
             self.aggregator = MingQwen2Model(agg_cfg, agg_cfg_dict)
-            self.cls_embed = mx.random.normal((1, 1, cfg.hidden_size)).astype(mx.float32)
+            self.cls_embed = mx.random.normal((1, 1, cfg.hidden_size)).astype(
+                mx.float32
+            )
 
     def get_frames(self, x: mx.array) -> mx.array:
         # x: (B, T)
@@ -1146,7 +1175,9 @@ class Decoder(nn.Module):
         self.decoder = MingQwen2Model(cfg, decoder_args)
         self.fc1 = nn.Linear(latent_dim, cfg.hidden_size)
         self.patch_size = patch_size
-        self.head = ISTFTHead(dim=cfg.hidden_size, n_fft=output_dim * 4, hop_length=output_dim)
+        self.head = ISTFTHead(
+            dim=cfg.hidden_size, n_fft=output_dim * 4, hop_length=output_dim
+        )
 
     def _upsample(self, x: mx.array) -> mx.array:
         x_bc = x.transpose(0, 2, 1)
@@ -1168,12 +1199,12 @@ class Decoder(nn.Module):
         right = np.clip(right, 0, in_t - 1)
         left_v = x_np[:, :, left]
         right_v = x_np[:, :, right]
-        y_np = left_v * (1.0 - w_right)[None, None, :] + right_v * w_right[None, None, :]
+        y_np = (
+            left_v * (1.0 - w_right)[None, None, :] + right_v * w_right[None, None, :]
+        )
         return mx.array(y_np)
 
-    def _streaming_linear_upsample(
-        self, x: mx.array, state, is_last: bool = False
-    ):
+    def _streaming_linear_upsample(self, x: mx.array, state, is_last: bool = False):
         if state is None:
             state = {
                 "prev_chunk": None,
@@ -1250,7 +1281,11 @@ class Decoder(nn.Module):
                 )
                 if x is None:
                     empty = mx.zeros((bsz, 0), dtype=mx.float32)
-                    return empty, (upsample_state, audio_buffer, window_buffer), past_key_values
+                    return (
+                        empty,
+                        (upsample_state, audio_buffer, window_buffer),
+                        past_key_values,
+                    )
             else:
                 x = self._upsample(x)
 
@@ -1294,8 +1329,12 @@ class AudioVAE(nn.Module):
             patch_size=self.patch_size,
         )
 
-    def encode_latent(self, waveform: mx.array, waveform_length: mx.array) -> Tuple[mx.array, mx.array]:
-        frame_num = mx.ceil(waveform_length / self.config["enc_kwargs"]["input_dim"]).astype(mx.int32)
+    def encode_latent(
+        self, waveform: mx.array, waveform_length: mx.array
+    ) -> Tuple[mx.array, mx.array]:
+        frame_num = mx.ceil(
+            waveform_length / self.config["enc_kwargs"]["input_dim"]
+        ).astype(mx.int32)
         if self.patch_size != -1:
             frame_num = mx.ceil(frame_num / self.patch_size).astype(mx.int32)
         h = self.encoder(waveform)  # (B, T, 2*latent)
@@ -1348,7 +1387,9 @@ class Model(nn.Module):
         self.audio = AudioVAE(config.audio_tokenizer_config)
         self.latent_dim = int(config.audio_tokenizer_config["enc_kwargs"]["latent_dim"])
         self.patch_size = int(config.ditar_config["patch_size"])
-        self.history_patch_size = int(config.ditar_config.get("history_patch_size", self.patch_size))
+        self.history_patch_size = int(
+            config.ditar_config.get("history_patch_size", self.patch_size)
+        )
 
         self.linear_proj_audio = Aggregator(
             in_channels=self.latent_dim,
@@ -1431,7 +1472,9 @@ class Model(nn.Module):
 
         instruction_prompt = []
         if instruction is not None:
-            instruction_prompt = self._encode(instruction) + self._encode("<|endoftext|>")
+            instruction_prompt = self._encode(instruction) + self._encode(
+                "<|endoftext|>"
+            )
 
         input_part = (
             self._encode("<role>HUMAN</role>")
@@ -1474,7 +1517,9 @@ class Model(nn.Module):
         pad = mx.zeros((waveform.shape[0], new_len - cur_len), dtype=waveform.dtype)
         return mx.concatenate([waveform, pad], axis=1)
 
-    def _forward_llm_hidden(self, inputs_embeds: mx.array, cache: List[KVCache]) -> mx.array:
+    def _forward_llm_hidden(
+        self, inputs_embeds: mx.array, cache: List[KVCache]
+    ) -> mx.array:
         h = inputs_embeds
         mask = create_attention_mask(h, cache[0] if cache else None)
         use_mrope = bool(
@@ -1509,8 +1554,12 @@ class Model(nn.Module):
         prompt_latent = None
         if prompt_waveform is not None and prompt_text is not None:
             prompt_waveform = self._pad_prompt_waveform(prompt_waveform)
-            prompt_waveform_length = mx.array([prompt_waveform.shape[1]], dtype=mx.int32)
-            prompt_latent, _ = self.audio.encode_latent(prompt_waveform, prompt_waveform_length)
+            prompt_waveform_length = mx.array(
+                [prompt_waveform.shape[1]], dtype=mx.int32
+            )
+            prompt_latent, _ = self.audio.encode_latent(
+                prompt_waveform, prompt_waveform_length
+            )
 
         _, inputs_embeds = self._prepare_input_embed(
             prompt=prompt,
@@ -1583,7 +1632,9 @@ class Model(nn.Module):
         del voice, lang_code, stream, streaming_interval
 
         if self.tokenizer is None:
-            raise ValueError("Tokenizer is not initialized. Load model with load()/from_pretrained first.")
+            raise ValueError(
+                "Tokenizer is not initialized. Load model with load()/from_pretrained first."
+            )
 
         if isinstance(ref_audio, str):
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
@@ -1607,8 +1658,8 @@ class Model(nn.Module):
                 instruction=instruct,
                 prompt_waveform=ref_audio,
                 prompt_text=ref_text,
-            max_decode_steps=max_decode_steps,
-            cfg=cfg,
+                max_decode_steps=max_decode_steps,
+                cfg=cfg,
                 sigma=sigma,
                 temperature=temperature,
                 flow_steps=flow_steps,
@@ -1662,12 +1713,13 @@ class Model(nn.Module):
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         from transformers import AutoTokenizer
 
-        # Convert campplus ONNX -> safetensors 
+        # Convert campplus ONNX -> safetensors
         onnx_path = model_path / "campplus.onnx"
         safetensors_path = model_path / "campplus.safetensors"
         if onnx_path.exists() and not safetensors_path.exists():
             try:
                 from .convert import convert_campplus_onnx_to_safetensors
+
                 convert_campplus_onnx_to_safetensors(
                     onnx_path=onnx_path,
                     output_path=safetensors_path,
@@ -1679,7 +1731,6 @@ class Model(nn.Module):
 
         model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
         return model
-
 
     @classmethod
     def from_pretrained(cls, path_or_hf_repo: str) -> "Model":

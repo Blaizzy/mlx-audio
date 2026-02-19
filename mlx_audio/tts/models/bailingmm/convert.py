@@ -12,8 +12,7 @@ from safetensors.numpy import load_file, save_file
 def _load_onnx_initializers(onnx_path: Path) -> Dict[str, np.ndarray]:
     model = onnx.load(onnx_path.as_posix(), load_external_data=True)
     return {
-        tensor.name: numpy_helper.to_array(tensor)
-        for tensor in model.graph.initializer
+        tensor.name: numpy_helper.to_array(tensor) for tensor in model.graph.initializer
     }
 
 

@@ -3173,7 +3173,6 @@ class TestQwen3TTSStreamingDecode(unittest.TestCase):
 
 @patch("importlib.resources.open_text", patched_open_text)
 class TestBailingMMModel(unittest.TestCase):
-   
 
     def _make_minimal_bailingmm_model(self):
         from mlx_audio.tts.models.bailingmm.bailingmm import Model
@@ -3188,9 +3187,7 @@ class TestBailingMMModel(unittest.TestCase):
     def test_convert_campplus_onnx_to_safetensors_allclose(self):
         from safetensors.numpy import load_file
 
-        from mlx_audio.tts.models.bailingmm import (
-            convert_campplus_onnx_to_safetensors,
-        )
+        from mlx_audio.tts.models.bailingmm import convert_campplus_onnx_to_safetensors
 
         with TemporaryDirectory() as tmpdir:
             onnx_path = Path(tmpdir) / "campplus.onnx"
@@ -3280,7 +3277,9 @@ class TestBailingMMModel(unittest.TestCase):
     def test_generate_concatenates_all_decode_chunks(
         self, _mock_perf_counter, _mock_peak_memory
     ):
-        from mlx_audio.tts.models.bailingmm.bailingmm import bailingmm as bailingmm_module
+        from mlx_audio.tts.models.bailingmm.bailingmm import (
+            bailingmm as bailingmm_module,
+        )
 
         model = self._make_minimal_bailingmm_model()
 
