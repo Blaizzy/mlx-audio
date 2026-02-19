@@ -64,6 +64,8 @@ print(output)
 
 ### 2) Basic style control
 
+Note: only provide `ref_text` when it exactly matches `ref_audio`. A mismatched transcript can collapse audio amplitude.
+
 ```bash
 uv run mlx_audio.tts.generate \
   --model "mlx-community/Ming-omni-tts-16.8B-A3B-bf16" \
