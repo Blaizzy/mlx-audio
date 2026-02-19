@@ -10,15 +10,16 @@ import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx_lm.models.base import create_attention_mask
+import mlx_lm.models.bailing_moe as bailing_moe_impl
 from mlx_lm.models.bailing_moe import Model as BailingMoeModel
 from mlx_lm.models.bailing_moe import ModelArgs as BailingMoeModelArgs
 from mlx_lm.models.cache import KVCache
+import mlx_lm.models.qwen2 as qwen2_impl
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 from mlx_lm.models.qwen2 import Qwen2Model
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
-from mlx_audio.tts.models.interpolate import interpolate
 from mlx_audio.utils import load_audio
 
 from .convert import convert_campplus_onnx_to_safetensors
@@ -38,6 +39,329 @@ class ModelConfig(BaseModelArgs):
     ditar_config: Optional[dict] = None
     aggregator_config: Optional[dict] = None
     model_path: Optional[str] = None
+
+
+def _patch_bailing_moe_group_select() -> None:
+    if getattr(bailing_moe_impl, "_ming_torchlike_group_select", False):
+        return
+
+    @mx.compile
+    def _torchlike_group_expert_select(
+        gates,
+        e_score_correction_bias,
+        top_k,
+        n_group,
+        topk_group,
+        routed_scaling_factor,
+        norm_topk_prob,
+        score_function,
+    ):
+        in_type = gates.dtype
+        if score_function == "sigmoid":
+            scores = mx.sigmoid(gates.astype(mx.float32))
+        else:
+            scores = mx.softmax(gates.astype(mx.float32), axis=-1)
+
+        orig_scores = scores
+        if e_score_correction_bias is not None:
+            scores = scores + e_score_correction_bias
+
+        # Keep grouped routing behavior if enabled in config.
+        if n_group is not None and n_group > 1:
+            scores = mx.unflatten(scores, axis=-1, shape=(n_group, -1))
+            group_top2 = mx.topk(scores, 2, axis=-1)[0]
+            group_scores = group_top2.sum(axis=-1, keepdims=True)
+            k = n_group - topk_group
+            group_idx = mx.argpartition(group_scores, kth=k - 1, axis=-2)[..., :k, :]
+            scores = mx.put_along_axis(
+                scores, mx.stop_gradient(group_idx), mx.array(0.0, scores.dtype), axis=-2
+            )
+            scores = mx.flatten(scores, -2, -1)
+
+        # Torch topk returns sorted top-k experts. MLX lacks index-returning topk,
+        # so emulate it by argpartition + descending sort inside the top-k slice.
+        inds = mx.argpartition(scores, kth=-top_k, axis=-1)[..., -top_k:]
+        selected_scores = mx.take_along_axis(scores, inds, axis=-1)
+        order = mx.argsort(-selected_scores, axis=-1)
+        inds = mx.take_along_axis(inds, order, axis=-1)
+        scores = mx.take_along_axis(orig_scores, inds, axis=-1)
+        if top_k > 1 and norm_topk_prob:
+            denominator = scores.sum(axis=-1, keepdims=True) + 1e-20
+            scores = scores / denominator
+        scores = scores * routed_scaling_factor
+        return inds, scores.astype(in_type)
+
+    bailing_moe_impl.group_expert_select = _torchlike_group_expert_select
+
+    # Match Torch router numerics: compute gate logits in float32 so top-k
+    # routing and normalized expert weights are less sensitive to bf16 rounding.
+    def _torchlike_gate_call(self, x):
+        logits = self.gate_proj(x.astype(mx.float32))
+        return bailing_moe_impl.group_expert_select(
+            logits,
+            self.expert_bias,
+            self.top_k,
+            self.n_group,
+            self.topk_group,
+            self.routed_scaling_factor,
+            self.norm_topk_prob,
+            self.score_function,
+        )
+
+    bailing_moe_impl.BailingMoeGate.__call__ = _torchlike_gate_call
+
+    # Shared experts in Ming's MoE stack are regular MLPs. Keeping this path
+    # in fp32 reduces rare bf16 outliers that compound across long decoding.
+    def _torchlike_mlp_call(self, x):
+        x32 = x.astype(mx.float32)
+        gate = self.gate_proj(x32)
+        up = self.up_proj(x32)
+        out = self.down_proj((gate * mx.sigmoid(gate)) * up)
+        return out.astype(x.dtype)
+
+    bailing_moe_impl.BailingMoeMLP.__call__ = _torchlike_mlp_call
+
+    # Route+expert accumulation in fp32 to better match Torch GEMM accumulation
+    # behavior and reduce long-horizon drift from sparse MoE layers.
+    def _torchlike_sparse_moe_call(self, x):
+        in_dtype = x.dtype
+        x32 = x.astype(mx.float32)
+        topk_idx, topk_weight = self.gate(x32)
+        out = self.switch_mlp(x32, topk_idx)
+        out = bailing_moe_impl.aggregate_expert_outputs(
+            out.astype(mx.float32), topk_weight.astype(mx.float32)
+        )
+        if self.shared_experts is not None:
+            out = out + self.shared_experts(x32).astype(mx.float32)
+        return out.astype(in_dtype)
+
+    bailing_moe_impl.BailingMoeSparseMoeBlock.__call__ = _torchlike_sparse_moe_call
+
+    def _repeat_kv_torchlike(x: mx.array, n_rep: int) -> mx.array:
+        if n_rep == 1:
+            return x
+        bsz, n_kv, seqlen, head_dim = x.shape
+        x = mx.expand_dims(x, axis=2)
+        x = mx.broadcast_to(x, (bsz, n_kv, n_rep, seqlen, head_dim))
+        return x.reshape(bsz, n_kv * n_rep, seqlen, head_dim)
+
+    def _apply_torchlike_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
+        # Match Torch BailingMoeRotaryEmbedding numerics:
+        # - inv_freq and positions are quantized to activation dtype for bf16 runs
+        # - freqs are built via outer(pos, inv_freq) in that quantized dtype
+        dims = min(int(dims), x.shape[-1])
+        if dims <= 0:
+            return x
+
+        x_rope = x[..., :dims]
+        x_pass = x[..., dims:]
+        seqlen = x.shape[2]
+        pos_dtype = x.dtype if x.dtype in (mx.float16, mx.bfloat16) else mx.float32
+        pos = mx.arange(offset, offset + seqlen, dtype=pos_dtype)
+        inv = 1.0 / (float(base) ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims))
+        inv = inv.astype(pos_dtype)
+        freqs = mx.outer(pos, inv)
+        emb = mx.concatenate([freqs, freqs], axis=-1)
+        cos = mx.cos(emb).astype(x.dtype)[None, None, :, :]
+        sin = mx.sin(emb).astype(x.dtype)[None, None, :, :]
+
+        half = dims // 2
+        x1 = x_rope[..., :half]
+        x2 = x_rope[..., half:]
+        rotated = mx.concatenate([-x2, x1], axis=-1)
+        x_rope = (x_rope * cos) + (rotated * sin)
+        if dims < x.shape[-1]:
+            return mx.concatenate([x_rope, x_pass], axis=-1)
+        return x_rope
+
+    def _apply_torchlike_attention_mask(
+        scores: mx.array,
+        mask: Optional[Union[str, mx.array]],
+        q_len: int,
+        kv_len: int,
+        cache_offset: int,
+    ) -> mx.array:
+        if mask is None:
+            return scores
+
+        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
+        if isinstance(mask, str):
+            if mask != "causal":
+                raise ValueError(f"Unsupported attention mask spec: {mask}")
+            # Query i corresponds to absolute position cache_offset + i.
+            q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
+            k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
+            causal = q_pos >= k_pos
+            add = mx.where(causal, mx.array(0.0, dtype=mx.float32), neg_inf)
+            return scores + add[None, None, :, :]
+
+        add_mask = mask
+        if add_mask.dtype == mx.bool_:
+            add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
+        else:
+            add_mask = add_mask.astype(mx.float32)
+        while add_mask.ndim < scores.ndim:
+            add_mask = mx.expand_dims(add_mask, axis=0)
+        return scores + add_mask
+
+    def _torchlike_attention_call(
+        self,
+        x: mx.array,
+        mask: Optional[mx.array] = None,
+        cache: Optional[Any] = None,
+    ) -> mx.array:
+        bsz, seqlen, _ = x.shape
+        qkv = self.query_key_value(x)
+
+        q_size = self.num_attention_heads * self.head_dim
+        kv_size = self.num_key_value_heads * self.head_dim
+        q, k, v = mx.split(qkv, [q_size, q_size + kv_size], axis=-1)
+
+        queries = q.reshape(bsz, seqlen, self.num_attention_heads, self.head_dim).transpose(
+            0, 2, 1, 3
+        )
+        keys = k.reshape(bsz, seqlen, self.num_key_value_heads, self.head_dim).transpose(
+            0, 2, 1, 3
+        )
+        values = v.reshape(bsz, seqlen, self.num_key_value_heads, self.head_dim).transpose(
+            0, 2, 1, 3
+        )
+
+        if self.use_qk_norm:
+            queries = self.query_layernorm(queries)
+            keys = self.key_layernorm(keys)
+
+        cache_offset = cache.offset if cache is not None else 0
+        rope_dims = getattr(self.rope, "dims", self.head_dim)
+        rope_base = getattr(self.rope, "base", 10000.0)
+        queries = _apply_torchlike_rope(queries, rope_base, rope_dims, cache_offset)
+        keys = _apply_torchlike_rope(keys, rope_base, rope_dims, cache_offset)
+
+        if cache is not None:
+            keys, values = cache.update_and_fetch(keys, values)
+
+        n_rep = self.num_attention_heads // self.num_key_value_heads
+        keys = _repeat_kv_torchlike(keys, n_rep)
+        values = _repeat_kv_torchlike(values, n_rep)
+        kv_len = keys.shape[2]
+
+        # Mirror Torch eager path: bf16 matmul -> fp32 mask/softmax -> bf16 weights.
+        scores = (queries * self.scale) @ mx.transpose(keys, (0, 1, 3, 2))
+        scores = scores.astype(mx.float32)
+        scores = _apply_torchlike_attention_mask(scores, mask, seqlen, kv_len, cache_offset)
+        attn = mx.softmax(scores, axis=-1).astype(queries.dtype)
+        output = attn @ values
+
+        output = output.transpose(0, 2, 1, 3).reshape(bsz, seqlen, -1)
+        return self.dense(output)
+
+    bailing_moe_impl.BailingMoeAttention.__call__ = _torchlike_attention_call
+
+    bailing_moe_impl._ming_torchlike_group_select = True
+
+
+def _patch_qwen2_sliding_attention() -> None:
+    if getattr(qwen2_impl, "_ming_sliding_attention_patch", False):
+        return
+
+    original_attention_call = qwen2_impl.Attention.__call__
+
+    def _build_sliding_additive_mask(
+        mask: Optional[Union[str, mx.array]],
+        q_len: int,
+        kv_len: int,
+        cache_offset: int,
+        sliding_window: int,
+    ) -> mx.array:
+        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
+        q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
+        k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
+        sw_allowed = k_pos > (q_pos - sliding_window)
+        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=mx.float32), neg_inf)[None, None, :, :]
+
+        if mask is None:
+            return sw_add
+
+        if isinstance(mask, str):
+            if mask != "causal":
+                raise ValueError(f"Unsupported attention mask spec: {mask}")
+            causal_allowed = q_pos >= k_pos
+            causal_add = mx.where(
+                causal_allowed, mx.array(0.0, dtype=mx.float32), neg_inf
+            )[None, None, :, :]
+            return mx.minimum(causal_add, sw_add)
+
+        add_mask = mask
+        if add_mask.dtype == mx.bool_:
+            add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
+        else:
+            add_mask = add_mask.astype(mx.float32)
+        while add_mask.ndim < 4:
+            add_mask = mx.expand_dims(add_mask, axis=0)
+        return mx.minimum(add_mask, sw_add)
+
+    def _qwen2_attention_call(
+        self,
+        x: mx.array,
+        mask: Optional[mx.array] = None,
+        cache: Optional[Any] = None,
+    ) -> mx.array:
+        sliding_window = getattr(self, "_ming_sliding_window", None)
+        if sliding_window is None or int(sliding_window) <= 0:
+            return original_attention_call(self, x, mask, cache)
+
+        B, L, _ = x.shape
+        queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
+
+        queries = queries.reshape(B, L, self.n_heads, -1).transpose(0, 2, 1, 3)
+        keys = keys.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+        values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+
+        cache_offset = cache.offset if cache is not None else 0
+        if cache is not None:
+            queries = self.rope(queries, offset=cache_offset)
+            keys = self.rope(keys, offset=cache_offset)
+            keys, values = cache.update_and_fetch(keys, values)
+        else:
+            queries = self.rope(queries)
+            keys = self.rope(keys)
+
+        attn_mask = _build_sliding_additive_mask(
+            mask=mask,
+            q_len=L,
+            kv_len=keys.shape[2],
+            cache_offset=cache_offset,
+            sliding_window=int(sliding_window),
+        )
+        output = mx.fast.scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale=self.scale,
+            mask=attn_mask,
+        )
+        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+        return self.o_proj(output)
+
+    qwen2_impl.Attention.__call__ = _qwen2_attention_call
+    qwen2_impl._ming_sliding_attention_patch = True
+
+
+def _configure_qwen2_sliding_layers(model: Qwen2Model, cfg_dict: Dict[str, Any]) -> None:
+    use_sliding = bool(cfg_dict.get("use_sliding_window", False))
+    sliding_window = int(cfg_dict.get("sliding_window", 0)) if use_sliding else 0
+    max_window_layers = int(cfg_dict.get("max_window_layers", len(model.layers)))
+    layer_types = cfg_dict.get("layer_types")
+
+    for idx, layer in enumerate(model.layers):
+        layer_sliding = None
+        if sliding_window > 0:
+            if isinstance(layer_types, list) and idx < len(layer_types):
+                if layer_types[idx] == "sliding_attention":
+                    layer_sliding = sliding_window
+            elif idx >= max_window_layers:
+                layer_sliding = sliding_window
+        layer.self_attn._ming_sliding_window = layer_sliding
 
 
 class RotaryEmbedding(nn.Module):
@@ -88,7 +412,8 @@ class FeedForward(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.ff[0][0](x)
-        x = nn.gelu(x)
+        # Torch Ming uses GELU(approximate="tanh").
+        x = nn.gelu_approx(x)
         x = self.ff[2](x)
         return x
 
@@ -344,7 +669,11 @@ class Solver:
             t0 = t[i - 1]
             t1 = t[i]
             dt = t1 - t0
-            dy = dt * self.func(t0, y)
+            # Keep solver state arithmetic in the state dtype (float32 for parity).
+            f0 = self.func(t0, y)
+            if f0.dtype != y.dtype:
+                f0 = f0.astype(y.dtype)
+            dy = dt.astype(y.dtype) * f0
             y = y + dy
             noise = mx.random.normal(y.shape, dtype=y.dtype)
             shift = (
@@ -376,14 +705,17 @@ class CFM(nn.Module):
         sigma: float = 0.25,
         temperature: float = 1.5,
     ) -> Tuple[mx.array, List[mx.array]]:
+        solver_dtype = mx.float32
+
         def fn(t: mx.array, x: mx.array) -> mx.array:
             if cfg_scale < 1e-5:
-                return self.model(
+                pred = self.model(
                     x=x,
                     t=mx.full((x.shape[0],), t, dtype=x.dtype),
                     c=c,
                     latent_history=latent_history,
                 )
+                return pred.astype(solver_dtype)
             pred_cfg = self.model.forward_with_cfg(
                 x=x,
                 t=t,
@@ -393,13 +725,13 @@ class CFM(nn.Module):
                 patch_size=patch_size,
             )
             pred, null_pred = mx.split(pred_cfg, 2, axis=0)
-            return pred + (pred - null_pred) * cfg_scale
+            return (pred + (pred - null_pred) * cfg_scale).astype(solver_dtype)
 
-        y0 = noise.transpose(0, 2, 1)
+        y0 = noise.transpose(0, 2, 1).astype(solver_dtype)
         if use_epss:
-            t = get_epss_timesteps(steps, dtype=noise.dtype)
+            t = get_epss_timesteps(steps, dtype=solver_dtype)
         else:
-            t = mx.linspace(0, 1, steps + 1, dtype=noise.dtype)
+            t = mx.linspace(0, 1, steps + 1, dtype=solver_dtype)
         if sway_sampling_coef is not None:
             t = t + sway_sampling_coef * (mx.cos(math.pi / 2 * t) - 1 + t)
 
@@ -424,7 +756,8 @@ class FlowLoss(nn.Module):
         temperature: float = 0.0,
         steps: int = 10,
     ) -> Tuple[mx.array, List[mx.array]]:
-        noise = mx.random.normal((z.shape[0], self.z_channels, patch_size), dtype=z.dtype)
+        # Torch reference samples diffusion noise in float32 and integrates in float32.
+        noise = mx.random.normal((z.shape[0], self.z_channels, patch_size), dtype=mx.float32)
         sampled, trajectory = self.cfm.sample(
             noise=noise,
             c=z,
@@ -438,14 +771,63 @@ class FlowLoss(nn.Module):
         return sampled, trajectory
 
 
+class _ISTFTWindowState(nn.Module):
+    def __init__(self, n_fft: int):
+        super().__init__()
+        n = n_fft
+        # Default to torch.hann_window(periodic=True); checkpoint can overwrite this
+        # via audio.decoder.head.istft.window for exact parity.
+        self.window = mx.array(
+            0.5 - 0.5 * mx.cos(2.0 * math.pi * mx.arange(n, dtype=mx.float32) / n),
+            dtype=mx.float32,
+        )
+
+
 class ISTFTHead(nn.Module):
     def __init__(self, dim: int, n_fft: int, hop_length: int):
         super().__init__()
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.out = nn.Linear(dim, n_fft + 2)
+        self.istft = _ISTFTWindowState(n_fft)
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def _buffer_process(
+        self,
+        x,
+        buffer,
+        pad: int,
+        last_chunk: bool = False,
+        streaming: bool = False,
+    ):
+        import numpy as np
+
+        buffer_len = self.n_fft - self.hop_length
+        if streaming:
+            if buffer is None:
+                x = x[:, pad:]
+            if buffer is not None:
+                x[:, :buffer_len] += buffer
+            buffer = x[:, -buffer_len:]
+            if not last_chunk:
+                x = x[:, :-buffer_len]
+            else:
+                x = x[:, :-pad]
+        else:
+            x = x[:, pad:-pad]
+            buffer = None
+
+        if not isinstance(x, np.ndarray):
+            x = np.array(x, dtype=np.float32)
+        return x, buffer
+
+    def __call__(
+        self,
+        x: mx.array,
+        audio_buffer=None,
+        window_buffer=None,
+        streaming: bool = False,
+        last_chunk: bool = False,
+    ):
         import numpy as np
 
         x_pred = self.out(x).transpose(0, 2, 1)
@@ -455,7 +837,8 @@ class ISTFTHead(nn.Module):
         spec = mag * (mx.cos(phase) + 1j * mx.sin(phase))
         # Match Torch Ming implementation: ISTFT with "same" padding via overlap-add.
         spec_np = np.array(spec)
-        window = np.hanning(self.n_fft).astype(np.float32)
+        # Prefer checkpoint window for exact parity; fallback is periodic Hann.
+        window = np.array(self.istft.window.astype(mx.float32))
         batch, _, frames = spec_np.shape
         output_size = (frames - 1) * self.hop_length + self.n_fft
         pad = (self.n_fft - self.hop_length) // 2
@@ -464,20 +847,36 @@ class ISTFTHead(nn.Module):
         ifft *= window[None, :, None]
 
         audio = np.zeros((batch, output_size), dtype=np.float32)
-        env = np.zeros((output_size,), dtype=np.float32)
+        env = np.zeros((batch, output_size), dtype=np.float32)
         win_sq = window * window
 
         for t in range(frames):
             start = t * self.hop_length
             end = start + self.n_fft
             audio[:, start:end] += ifft[:, :, t]
-            env[start:end] += win_sq
+            env[:, start:end] += win_sq
 
-        audio = audio[:, pad:-pad]
-        env = env[pad:-pad]
+        audio, audio_buffer = self._buffer_process(
+            audio,
+            audio_buffer,
+            pad=pad,
+            last_chunk=last_chunk,
+            streaming=streaming,
+        )
+        env, window_buffer = self._buffer_process(
+            env,
+            window_buffer,
+            pad=pad,
+            last_chunk=last_chunk,
+            streaming=streaming,
+        )
+
         env = np.clip(env, 1e-11, None)
-        audio = audio / env[None, :]
-        return mx.array(audio)
+        audio = audio / env
+        audio_mx = mx.array(audio)
+        if streaming:
+            return audio_mx, x_pred, audio_buffer, window_buffer
+        return audio_mx
 
 
 class Encoder(nn.Module):
@@ -490,8 +889,10 @@ class Encoder(nn.Module):
         patch_size: int = -1,
     ):
         super().__init__()
+        _patch_qwen2_sliding_attention()
         cfg = Qwen2ModelArgs.from_dict(encoder_args)
         self.encoder = Qwen2Model(cfg)
+        _configure_qwen2_sliding_layers(self.encoder, encoder_args)
         self.input_dim = input_dim
         self.hop_size = hop_size
         self.patch_size = patch_size
@@ -504,6 +905,7 @@ class Encoder(nn.Module):
             agg_cfg_dict["num_hidden_layers"] = 4
             agg_cfg = Qwen2ModelArgs.from_dict(agg_cfg_dict)
             self.aggregator = Qwen2Model(agg_cfg)
+            _configure_qwen2_sliding_layers(self.aggregator, agg_cfg_dict)
             self.cls_embed = mx.random.normal((1, 1, cfg.hidden_size)).astype(mx.float32)
 
     def get_frames(self, x: mx.array) -> mx.array:
@@ -556,26 +958,139 @@ class Decoder(nn.Module):
         patch_size: int = -1,
     ):
         super().__init__()
+        _patch_qwen2_sliding_attention()
         cfg = Qwen2ModelArgs.from_dict(decoder_args)
         self.decoder = Qwen2Model(cfg)
+        _configure_qwen2_sliding_layers(self.decoder, decoder_args)
         self.fc1 = nn.Linear(latent_dim, cfg.hidden_size)
         self.patch_size = patch_size
         self.head = ISTFTHead(dim=cfg.hidden_size, n_fft=output_dim * 4, hop_length=output_dim)
 
-    def low_level_reconstruct(self, x: mx.array) -> mx.array:
+    def _upsample(self, x: mx.array) -> mx.array:
+        x_bc = x.transpose(0, 2, 1)
+        y_bc = self._torch_like_linear_upsample_1d(x_bc)
+        return y_bc.transpose(0, 2, 1)
+
+    def _torch_like_linear_upsample_1d(self, x_bc: mx.array) -> mx.array:
+        import numpy as np
+
+        # Match torch.nn.Upsample(mode="linear", align_corners=False) exactly.
+        x_np = np.array(x_bc, dtype=np.float32)  # (B, C, T)
+        bsz, channels, in_t = x_np.shape
+        scale = int(self.patch_size)
+        out_t = in_t * scale
+        idx = (np.arange(out_t, dtype=np.float32) + 0.5) / scale - 0.5
+        left = np.floor(idx).astype(np.int64)
+        right = left + 1
+        w_right = idx - left.astype(np.float32)
+        left = np.clip(left, 0, in_t - 1)
+        right = np.clip(right, 0, in_t - 1)
+        left_v = x_np[:, :, left]
+        right_v = x_np[:, :, right]
+        y_np = left_v * (1.0 - w_right)[None, None, :] + right_v * w_right[None, None, :]
+        return mx.array(y_np)
+
+    def _streaming_linear_upsample(
+        self, x: mx.array, state, is_last: bool = False
+    ):
+        if state is None:
+            state = {
+                "prev_chunk": None,
+                "history_last": None,
+                "is_first": True,
+            }
+
+        if x is None and not is_last:
+            return None, state
+
+        if state["is_first"] and is_last:
+            out = self._upsample(x)
+            return out, None
+
+        output_chunks = []
+
+        if state["is_first"]:
+            state["prev_chunk"] = x
+            state["is_first"] = False
+            if not is_last:
+                return None, state
+
+        if state["prev_chunk"] is not None:
+            p = state["prev_chunk"].transpose(0, 2, 1)
+            if x is None:
+                lookahead = p[:, :, -1:]
+            else:
+                lookahead = x[:, :1, :].transpose(0, 2, 1)
+
+            if state["history_last"] is None:
+                inp = mx.concatenate([p, lookahead], axis=2)
+                up = self._torch_like_linear_upsample_1d(inp)
+                out_prev = up[:, :, : p.shape[2] * self.patch_size]
+            else:
+                inp = mx.concatenate([state["history_last"], p, lookahead], axis=2)
+                up = self._torch_like_linear_upsample_1d(inp)
+                start = self.patch_size
+                end = start + p.shape[2] * self.patch_size
+                out_prev = up[:, :, start:end]
+
+            output_chunks.append(out_prev.transpose(0, 2, 1))
+            state["history_last"] = p[:, :, -1:]
+            state["prev_chunk"] = x
+
+        if is_last:
+            p = state["prev_chunk"].transpose(0, 2, 1)
+            history_last = state["history_last"]
+            if history_last is None:
+                history_last = p[:, :, :1]
+            inp = mx.concatenate([history_last, p], axis=2)
+            up = self._torch_like_linear_upsample_1d(inp)
+            out_last = up[:, :, self.patch_size :]
+            output_chunks.append(out_last.transpose(0, 2, 1))
+            state = None
+
+        final_out = mx.concatenate(output_chunks, axis=1) if output_chunks else None
+        return final_out, state
+
+    def low_level_reconstruct(
+        self,
+        x: mx.array,
+        past_key_values=None,
+        use_cache: bool = False,
+        stream_state=(None, None, None),
+        last_chunk: bool = False,
+    ):
+        upsample_state, audio_buffer, window_buffer = stream_state
+        bsz = int(x.shape[0])
         x = self.fc1(x)
         if self.patch_size != -1:
-            x = x.transpose(0, 2, 1)
-            x = interpolate(
-                x,
-                scale_factor=float(self.patch_size),
-                mode="linear",
-                align_corners=False,
-            )
-            x = x.transpose(0, 2, 1)
+            if use_cache:
+                x, upsample_state = self._streaming_linear_upsample(
+                    x, state=upsample_state, is_last=last_chunk
+                )
+                if x is None:
+                    empty = mx.zeros((bsz, 0), dtype=mx.float32)
+                    return empty, (upsample_state, audio_buffer, window_buffer), past_key_values
+            else:
+                x = self._upsample(x)
+
         dummy = mx.zeros((x.shape[0], x.shape[1]), dtype=mx.int32)
+        if use_cache:
+            if past_key_values is None:
+                past_key_values = [KVCache() for _ in range(len(self.decoder.layers))]
+            x = self.decoder(dummy, cache=past_key_values, input_embeddings=x)
+            waveform, _, audio_buffer, window_buffer = self.head(
+                x,
+                audio_buffer=audio_buffer,
+                window_buffer=window_buffer,
+                streaming=True,
+                last_chunk=last_chunk,
+            )
+            stream_state = (upsample_state, audio_buffer, window_buffer)
+            return waveform, stream_state, past_key_values
+
         x = self.decoder(dummy, input_embeddings=x)
-        return self.head(x)
+        waveform = self.head(x)
+        return waveform, (None, None, None), None
 
 
 class AudioVAE(nn.Module):
@@ -618,8 +1133,13 @@ class AudioVAE(nn.Module):
         stream_state=(None, None, None),
         last_chunk: bool = False,
     ):
-        waveform = self.decoder.low_level_reconstruct(latent)
-        return waveform, stream_state, past_key_values
+        return self.decoder.low_level_reconstruct(
+            latent,
+            past_key_values=past_key_values,
+            use_cache=use_cache,
+            stream_state=stream_state,
+            last_chunk=last_chunk,
+        )
 
 
 class Model(nn.Module):
@@ -641,10 +1161,10 @@ class Model(nn.Module):
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
         llm_cfg = dict(config.llm_config)
-        # mlx-lm bailing_moe does not currently support rope_scaling.type == "3D".
-        # For this TTS path we do not use image/video position masks, so standard RoPE works.
-        if isinstance(llm_cfg.get("rope_scaling"), dict):
-            llm_cfg["rope_scaling"] = None
+        # mlx-lm bailing_moe currently does not support Ming's custom 3D RoPE type.
+        # Keep this disabled so we can run inference and parity checks.
+        llm_cfg["rope_scaling"] = None
+        _patch_bailing_moe_group_select()
         self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
         self.model = BailingMoeModel(self.llm_args)
 
@@ -697,13 +1217,46 @@ class Model(nn.Module):
             if not k.startswith("model."):
                 if not k.startswith(allowed_non_llm_prefixes):
                     continue
-                if k == "audio.decoder.head.istft.window":
-                    continue
                 sanitized[k] = v
         return sanitized
 
     def _encode(self, text: str) -> List[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
+
+    def _trim_trailing_low_energy(self, speech: mx.array) -> mx.array:
+        import numpy as np
+
+        wav = np.array(speech, dtype=np.float32)
+        if wav.size < 2048:
+            return speech
+
+        frame = 1024
+        hop = 256
+        n_frames = 1 + max(0, (wav.size - frame) // hop)
+        if n_frames <= 1:
+            return speech
+
+        rms = np.empty((n_frames,), dtype=np.float32)
+        for i in range(n_frames):
+            seg = wav[i * hop : i * hop + frame]
+            rms[i] = np.sqrt(np.mean(seg * seg) + 1e-12)
+
+        speech_ref = float(np.percentile(rms, 75))
+        threshold = max(1e-4, 0.03 * speech_ref)
+        active = np.where(rms > threshold)[0]
+        if active.size == 0:
+            return speech
+
+        keep = int(min(wav.size, active[-1] * hop + frame + int(0.05 * self.sample_rate)))
+        if keep >= wav.size:
+            return speech
+
+        # Apply a short fade-out to avoid boundary clicks after trimming.
+        out = wav[:keep].copy()
+        fade = min(256, out.size)
+        if fade > 1:
+            out[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
+        return mx.array(out)
 
     def _prepare_input_embed(
         self,
@@ -765,7 +1318,12 @@ class Model(nn.Module):
 
     def _forward_llm_hidden(self, inputs_embeds: mx.array, cache: List[KVCache]) -> mx.array:
         h = inputs_embeds
-        mask = create_attention_mask(h, cache[0] if cache else None)
+        # Match mlx-lm native behavior:
+        # first full pass should use causal masking (not cache.make_mask with offset=0).
+        if cache and inputs_embeds.shape[1] > 1 and getattr(cache[0], "offset", 0) == 0:
+            mask = "causal"
+        else:
+            mask = create_attention_mask(h, cache[0] if cache else None)
         for layer, layer_cache in zip(self.model.model.layers, cache):
             h = layer(h, mask, layer_cache)
         return self.model.model.norm(h)
@@ -864,7 +1422,9 @@ class Model(nn.Module):
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
 
         start_time = time.perf_counter()
-        sampled_tokens_list = []
+        speech_chunks = []
+        stream_state = (None, None, None)
+        past_key_values = None
         prompt = kwargs.get(
             "prompt", "Please generate speech based on the following description.\n"
         )
@@ -873,30 +1433,35 @@ class Model(nn.Module):
         sigma = float(kwargs.get("sigma", 0.25))
         max_decode_steps = int(kwargs.get("max_decode_steps", max_tokens))
 
-        for sampled_tokens, last_chunk in self.sample(
-            prompt=prompt,
-            text=text,
-            instruction=instruct,
-            prompt_waveform=ref_audio,
-            prompt_text=ref_text,
+        for step_idx, (sampled_tokens, last_chunk) in enumerate(
+            self.sample(
+                prompt=prompt,
+                text=text,
+                instruction=instruct,
+                prompt_waveform=ref_audio,
+                prompt_text=ref_text,
             max_decode_steps=max_decode_steps,
             cfg=cfg,
-            sigma=sigma,
-            temperature=temperature,
-            flow_steps=flow_steps,
+                sigma=sigma,
+                temperature=temperature,
+                flow_steps=flow_steps,
+            )
         ):
-            sampled_tokens_list.append(sampled_tokens)
+            speech_tmp, stream_state, past_key_values = self.audio.decode(
+                sampled_tokens,
+                past_key_values=past_key_values,
+                use_cache=True,
+                stream_state=stream_state,
+                last_chunk=last_chunk,
+            )
+            if speech_tmp.shape[1] > 0:
+                speech_chunks.append(speech_tmp)
             if last_chunk:
                 break
 
-        if not sampled_tokens_list:
-            raise RuntimeError("No latent tokens were generated")
-
-        sampled_tokens = mx.concatenate(sampled_tokens_list, axis=1)
-        speech, _, _ = self.audio.decode(
-            sampled_tokens, past_key_values=None, use_cache=False
-        )
-        speech = speech[0]
+        if not speech_chunks:
+            raise RuntimeError("No audio chunks were generated")
+        speech = mx.concatenate(speech_chunks, axis=1)[0]
 
         if speed != 1.0:
             # Speed control is not implemented for Ming Omni yet; keep native timing.
