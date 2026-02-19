@@ -17,12 +17,9 @@ from mlx_lm.models.cache import KVCache
 import mlx_lm.models.qwen2 as qwen2_impl
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 from mlx_lm.models.qwen2 import Qwen2Model
-from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 from mlx_audio.utils import load_audio
-
-from .convert import convert_campplus_onnx_to_safetensors
 
 
 def format_duration(seconds: float) -> str:
@@ -34,7 +31,7 @@ def format_duration(seconds: float) -> str:
 @dataclass
 class ModelConfig(BaseModelArgs):
     model_type: str = "ming_omni_tts"
-    llm_config: Optional[dict] = None
+    text_config: Optional[dict] = None
     audio_tokenizer_config: Optional[dict] = None
     ditar_config: Optional[dict] = None
     aggregator_config: Optional[dict] = None
@@ -1167,8 +1164,8 @@ class Model(nn.Module):
         self.model_type = "ming_omni_tts"
         self.tokenizer = None
 
-        if not config.llm_config:
-            raise ValueError("Missing llm_config in Ming Omni config")
+        if not config.text_config:
+            raise ValueError("Missing text_config in Ming Omni config")
         if not config.audio_tokenizer_config:
             raise ValueError("Missing audio_tokenizer_config in Ming Omni config")
         if not config.ditar_config:
@@ -1176,7 +1173,7 @@ class Model(nn.Module):
         if not config.aggregator_config:
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
-        llm_cfg = dict(config.llm_config)
+        llm_cfg = dict(config.text_config)
         # mlx-lm bailing_moe currently does not support Ming's custom 3D RoPE type.
         # Keep this disabled so we can run inference and parity checks.
         llm_cfg["rope_scaling"] = None
@@ -1473,7 +1470,10 @@ class Model(nn.Module):
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
-        # Convert campplus ONNX -> safetensors once to satisfy safetensors-only workflows.
+        from transformers import AutoTokenizer
+        from .convert import convert_campplus_onnx_to_safetensors
+
+        # Convert campplus ONNX -> safetensors 
         onnx_path = model_path / "campplus.onnx"
         safetensors_path = model_path / "campplus.safetensors"
         if onnx_path.exists() and not safetensors_path.exists():
@@ -1486,86 +1486,9 @@ class Model(nn.Module):
             except Exception as e:
                 print(f"[WARN] campplus ONNX conversion failed: {e}")
 
-        model.tokenizer = cls._load_compatible_tokenizer(
-            model_path=model_path,
-            llm_vocab_size=int(model.llm_args.vocab_size),
-        )
+        model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
         return model
 
-    @staticmethod
-    def _is_tokenizer_compatible(tokenizer, llm_vocab_size: int) -> bool:
-        required_tokens = ["<audio>", "<audioPatch>", "<|endoftext|>"]
-        for token in required_tokens:
-            token_id = tokenizer.convert_tokens_to_ids(token)
-            if token_id is None or token_id < 0 or token_id >= llm_vocab_size:
-                return False
-        probe = (
-            tokenizer.encode("<role>HUMAN</role>", add_special_tokens=False)
-            + tokenizer.encode("<role>ASSISTANT</role>", add_special_tokens=False)
-            + tokenizer.encode("<audio>", add_special_tokens=False)
-        )
-        return (not probe) or (max(probe) < llm_vocab_size and min(probe) >= 0)
-
-    @classmethod
-    def _load_compatible_tokenizer(
-        cls, model_path: Path, llm_vocab_size: int
-    ):
-        candidates = []
-
-        # 1) Prefer colocated tokenizer files if present.
-        candidates.append(model_path)
-
-        # 2) Optional user override.
-        import os
-
-        override = os.environ.get("MING_OMNI_TOKENIZER_PATH")
-        if override:
-            candidates.append(Path(override).expanduser())
-
-        # 3) Common local layout: .../mlx-audio-dev/{mlx-audio,Ming-omni-tts}
-        cwd = Path.cwd()
-        for parent in [cwd] + list(cwd.parents):
-            candidate = parent / "Ming-omni-tts"
-            candidates.append(candidate)
-
-        seen = set()
-        for candidate in candidates:
-            try:
-                candidate = candidate.resolve()
-            except Exception:
-                continue
-            key = candidate.as_posix()
-            if key in seen:
-                continue
-            seen.add(key)
-            if not (candidate / "tokenizer.json").exists():
-                continue
-            try:
-                tok = PreTrainedTokenizerFast.from_pretrained(candidate.as_posix())
-                if cls._is_tokenizer_compatible(tok, llm_vocab_size):
-                    return tok
-            except Exception:
-                continue
-
-        # 4) Last-resort remote tokenizer load.
-        for repo, trust_remote_code in [
-            (str(model_path), True),
-            ("inclusionAI/Ming-omni-tts-0.5B", True),
-        ]:
-            try:
-                tok = AutoTokenizer.from_pretrained(
-                    repo,
-                    trust_remote_code=trust_remote_code,
-                )
-                if cls._is_tokenizer_compatible(tok, llm_vocab_size):
-                    return tok
-            except Exception:
-                continue
-
-        raise RuntimeError(
-            "Could not find a tokenizer compatible with Ming-omni-tts-16.8B-A3B. "
-            "Set MING_OMNI_TOKENIZER_PATH to a directory containing tokenizer.json."
-        )
 
     @classmethod
     def from_pretrained(cls, path_or_hf_repo: str) -> "Model":
