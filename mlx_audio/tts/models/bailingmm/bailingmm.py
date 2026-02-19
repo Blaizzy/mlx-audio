@@ -516,6 +516,7 @@ class MingQwen2Attention(qwen2_impl.Attention):
             queries = self.rope(queries)
             keys = self.rope(keys)
 
+        # TODO: move this to mask creation and pass in the mask to the attention layer
         attn_mask = self._build_sliding_additive_mask(
             mask=mask,
             q_len=seqlen,
@@ -596,12 +597,10 @@ class FeedForward(nn.Module):
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = dim if dim_out is None else dim_out
-        # Keep list layout to preserve checkpoint keys (ff.0.0.*, ff.2.*).
         self.ff = [[nn.Linear(dim, inner_dim)], None, nn.Linear(inner_dim, dim_out)]
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.ff[0][0](x)
-        # Torch Ming uses GELU(approximate="tanh").
         x = nn.gelu_approx(x)
         x = self.ff[2](x)
         return x
@@ -721,7 +720,6 @@ class CondEmbedder(nn.Module):
         self.cond_embedder = nn.Linear(input_feature_size, hidden_size)
 
     def __call__(self, llm_cond: mx.array, train: bool = False) -> mx.array:
-        # Training-time CFG dropout is not needed for inference.
         return self.cond_embedder(llm_cond)
 
 
@@ -1024,9 +1022,8 @@ class ISTFTHead(nn.Module):
         mag = mx.exp(mag)
         mag = mx.clip(mag, None, 1e2)
         spec = mag * (mx.cos(phase) + 1j * mx.sin(phase))
-        # Match Torch Ming implementation: ISTFT with "same" padding via overlap-add.
+
         spec_np = np.array(spec)
-        # Prefer checkpoint window for exact parity; fallback is periodic Hann.
         window = np.array(self.istft.window.astype(mx.float32))
         batch, _, frames = spec_np.shape
         output_size = (frames - 1) * self.hop_length + self.n_fft
@@ -1158,7 +1155,6 @@ class Decoder(nn.Module):
     def _linear_upsample_1d(self, x_bc: mx.array) -> mx.array:
         import numpy as np
 
-        # Match torch.nn.Upsample(mode="linear", align_corners=False) exactly.
         x_np = np.array(x_bc, dtype=np.float32)  # (B, C, T)
         bsz, channels, in_t = x_np.shape
         scale = int(self.patch_size)
@@ -1389,7 +1385,7 @@ class Model(nn.Module):
             "stop_head.",
         )
         for k, v in llm_weights.items():
-            # These gates are only used with explicit modality masks; not needed for text-only TTS path.
+
             if ".audio_gate." in k or ".image_gate." in k:
                 continue
             sanitized[f"model.{k}"] = v
@@ -1463,12 +1459,7 @@ class Model(nn.Module):
 
     def _forward_llm_hidden(self, inputs_embeds: mx.array, cache: List[KVCache]) -> mx.array:
         h = inputs_embeds
-        # Match mlx-lm native behavior:
-        # first full pass should use causal masking (not cache.make_mask with offset=0).
-        if cache and inputs_embeds.shape[1] > 1 and getattr(cache[0], "offset", 0) == 0:
-            mask = "causal"
-        else:
-            mask = create_attention_mask(h, cache[0] if cache else None)
+        mask = create_attention_mask(h, cache[0] if cache else None)
         use_mrope = bool(
             self.model.model.layers
             and getattr(self.model.model.layers[0].attention, "use_mrope", False)
