@@ -1642,13 +1642,13 @@ class Model(nn.Module):
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         from transformers import AutoTokenizer
-        from .convert import convert_campplus_onnx_to_safetensors
 
         # Convert campplus ONNX -> safetensors 
         onnx_path = model_path / "campplus.onnx"
         safetensors_path = model_path / "campplus.safetensors"
         if onnx_path.exists() and not safetensors_path.exists():
             try:
+                from .convert import convert_campplus_onnx_to_safetensors
                 convert_campplus_onnx_to_safetensors(
                     onnx_path=onnx_path,
                     output_path=safetensors_path,
@@ -1656,6 +1656,7 @@ class Model(nn.Module):
                 )
             except Exception as e:
                 print(f"[WARN] campplus ONNX conversion failed: {e}")
+                raise e
 
         model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
         return model
