@@ -1,0 +1,51 @@
+{
+  "model_type": "speech_tokenizer",
+  "sampling_rate": 24000,
+  "downsample_rate": 1920,
+  "causal_transformer_context_duration": 10,
+  "encoder_kwargs": [
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 240
+    },
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 2
+    },
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 2
+    },
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 2
+    }
+  ],
+  "decoder_kwargs": [
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 2
+    },
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 2
+    },
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 2
+    },
+    {
+      "module_type": "PatchedPretransform",
+      "patch_size": 240
+    }
+  ],
+  "quantizer_kwargs": {
+    "input_dim": 768,
+    "rvq_dim": 512,
+    "output_dim": 768,
+    "num_quantizers": 32,
+    "codebook_size": 1024,
+    "codebook_dim": 8,
+    "quantizer_type": "rlfq"
+  }
+}

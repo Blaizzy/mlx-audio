@@ -1,0 +1,6 @@
+{
+  "model_type": "moss_tts_realtime",
+  "audio_vocab_size": 1027,
+  "rvq": 16,
+  "vocab_size": 151936
+}
