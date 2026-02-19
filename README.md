@@ -117,6 +117,12 @@ See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API d
 | **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit)
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 
+### Music Generation
+
+| Model | Description | Use Case | Repo |
+|-------|-------------|----------|------|
+| **ACE-Step** | Diffusion-based music generation | Text-to-music, covers, track completion | [ACE-Step/Ace-Step1.5](https://huggingface.co/ACE-Step/Ace-Step1.5) |
+
 ## Model Examples
 
 ### Kokoro TTS
@@ -401,6 +407,89 @@ model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX")
 enhanced = model.enhance("noisy_speech.wav")
 save_audio(enhanced, "clean.wav", 48000)
 ```
+
+### ACE-Step (Music Generation)
+
+Generate music from text descriptions with ACE-Step, a diffusion-based music generation model.
+
+**CLI - Basic text-to-music:**
+
+```bash
+mlx_audio.tts.generate \
+    --model ACE-Step/Ace-Step1.5 \
+    --text "A gentle piano melody with soft drums and bass" \
+    --gen-kwargs '{"lyrics": "[Instrumental]", "duration": 30.0, "seed": 42}' \
+    --output_path ./music \
+    --verbose
+```
+
+**CLI - Generate with specific parameters:**
+
+```bash
+mlx_audio.tts.generate \
+    --model ACE-Step/Ace-Step1.5 \
+    --text "Upbeat electronic dance track with heavy bass" \
+    --gen-kwargs '{"lyrics": "[Instrumental]", "duration": 60.0, "num_steps": 8, "shift": 3.0, "seed": 123}' \
+    --play
+```
+
+**Python API - Basic text-to-music:**
+
+```python
+from mlx_audio.tts.models.ace_step import Model
+import soundfile as sf
+import numpy as np
+
+model = Model.from_pretrained("ACE-Step/Ace-Step1.5")
+
+for result in model.generate(
+    text="A gentle piano melody with soft drums and bass",
+    lyrics="[Instrumental]",
+    duration=30.0,
+    seed=42,
+    num_steps=8,
+    shift=3.0,
+    verbose=True,
+):
+    sf.write("music.wav", np.array(result.audio).T, 48000)
+```
+
+**Python API - Complete task (add instruments to existing audio):**
+
+```python
+import mlx.core as mx
+
+# Load source audio
+audio, sr = sf.read("piano.wav")
+source_audio = mx.array(audio.T)  # [channels, samples]
+
+# Add drums to the piano track
+for result in model.generate(
+    text="Piano with energetic drums",
+    lyrics="[Instrumental]",
+    duration=8.0,
+    task_type="complete",
+    complete_track_classes=["drums", "bass"],
+    source_audio=source_audio,
+    source_audio_sample_rate=sr,
+    seed=42,
+):
+    sf.write("piano_with_drums.wav", np.array(result.audio).T, 48000)
+```
+
+**Available task types:**
+
+| Task | Description | Key Parameters |
+|------|-------------|----------------|
+| `text2music` | Generate music from text | `text`, `lyrics` |
+| `complete` | Add instruments to audio | `source_audio`, `complete_track_classes` |
+| `cover` | Generate cover version | `source_audio` |
+| `extract` | Extract track from audio | `source_audio`, `track_name` |
+| `lego` | Generate specific track | `source_audio`, `track_name` |
+| `repaint` | Repaint audio region | `source_audio` |
+
+**Track names for complete/extract/lego:**
+`woodwinds`, `brass`, `fx`, `synth`, `strings`, `percussion`, `keyboard`, `guitar`, `bass`, `drums`, `backing_vocals`, `vocals`
 
 ## Web Interface & API Server
 
