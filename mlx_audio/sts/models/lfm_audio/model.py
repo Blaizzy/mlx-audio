@@ -868,21 +868,13 @@ class LFM2AudioModel(nn.Module):
                         audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype
                     )
                     yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
-
-                    # Embed EOS back into the model (matches PyTorch reference)
-                    next_emb = self._embed_audio_out(audio_frame)[:, None, :]
-                    last_hidden = self.lfm(
-                        inputs=None,
-                        cache=cache,
-                        input_embeddings=next_emb,
-                    )
-
                     generated += 1
-                    current_modality = LFMModality.TEXT
                     # If text is done, break after final audio EOS
                     if text_done:
                         break
-
+                    # Otherwise switch back to text mode
+                    modality_left = n_text
+                    current_modality = LFMModality.TEXT
                     continue
 
                 yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
