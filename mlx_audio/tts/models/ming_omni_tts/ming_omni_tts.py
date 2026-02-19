@@ -1238,41 +1238,6 @@ class Model(nn.Module):
     def _encode(self, text: str) -> List[int]:
         return self.tokenizer.encode(text, add_special_tokens=False)
 
-    def _trim_trailing_low_energy(self, speech: mx.array) -> mx.array:
-        import numpy as np
-
-        wav = np.array(speech, dtype=np.float32)
-        if wav.size < 2048:
-            return speech
-
-        frame = 1024
-        hop = 256
-        n_frames = 1 + max(0, (wav.size - frame) // hop)
-        if n_frames <= 1:
-            return speech
-
-        rms = np.empty((n_frames,), dtype=np.float32)
-        for i in range(n_frames):
-            seg = wav[i * hop : i * hop + frame]
-            rms[i] = np.sqrt(np.mean(seg * seg) + 1e-12)
-
-        speech_ref = float(np.percentile(rms, 75))
-        threshold = max(1e-4, 0.03 * speech_ref)
-        active = np.where(rms > threshold)[0]
-        if active.size == 0:
-            return speech
-
-        keep = int(min(wav.size, active[-1] * hop + frame + int(0.05 * self.sample_rate)))
-        if keep >= wav.size:
-            return speech
-
-        # Apply a short fade-out to avoid boundary clicks after trimming.
-        out = wav[:keep].copy()
-        fade = min(256, out.size)
-        if fade > 1:
-            out[-fade:] *= np.linspace(1.0, 0.0, fade, dtype=np.float32)
-        return mx.array(out)
-
     def _prepare_input_embed(
         self,
         prompt: str,
@@ -1469,8 +1434,7 @@ class Model(nn.Module):
                 stream_state=stream_state,
                 last_chunk=last_chunk,
             )
-            if speech_tmp.shape[1] > 0:
-                speech_chunks.append(speech_tmp)
+            speech_chunks.append(speech_tmp)
             if last_chunk:
                 break
 
