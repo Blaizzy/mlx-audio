@@ -41,15 +41,6 @@ class ModelConfig(BaseModelArgs):
     model_path: Optional[str] = None
 
 
-def _repeat_kv(x: mx.array, n_rep: int) -> mx.array:
-    if n_rep == 1:
-        return x
-    bsz, n_kv, seqlen, head_dim = x.shape
-    x = mx.expand_dims(x, axis=2)
-    x = mx.broadcast_to(x, (bsz, n_kv, n_rep, seqlen, head_dim))
-    return x.reshape(bsz, n_kv * n_rep, seqlen, head_dim)
-
-
 def _apply_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
     dims = min(int(dims), x.shape[-1])
     if dims <= 0:
@@ -77,34 +68,39 @@ def _apply_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
     return x_rope
 
 
-def _apply_attention_mask(
-    scores: mx.array,
+def _prepare_sdpa_mask(
     mask: Optional[Union[str, mx.array]],
     q_len: int,
     kv_len: int,
     cache_offset: int,
-) -> mx.array:
+    out_dtype: mx.Dtype,
+) -> Optional[mx.array]:
     if mask is None:
-        return scores
+        return None
 
-    neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
+    neg_inf = mx.array(-3.4028235e38, dtype=mx.float32).astype(out_dtype)
     if isinstance(mask, str):
         if mask != "causal":
             raise ValueError(f"Unsupported attention mask spec: {mask}")
         q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
         k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
         causal = q_pos >= k_pos
-        add = mx.where(causal, mx.array(0.0, dtype=mx.float32), neg_inf)
-        return scores + add[None, None, :, :]
+        return mx.where(causal, mx.array(0.0, dtype=out_dtype), neg_inf)[None, None, :, :]
 
     add_mask = mask
     if add_mask.dtype == mx.bool_:
-        add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
+        add_mask = mx.where(add_mask, mx.array(0.0, dtype=out_dtype), neg_inf)
     else:
-        add_mask = add_mask.astype(mx.float32)
-    while add_mask.ndim < scores.ndim:
+        add_mask = add_mask.astype(out_dtype)
+
+    while add_mask.ndim < 4:
         add_mask = mx.expand_dims(add_mask, axis=0)
-    return scores + add_mask
+
+    if add_mask.shape[-1] != kv_len:
+        add_mask = add_mask[..., -kv_len:]
+    if add_mask.shape[-2] != q_len:
+        add_mask = add_mask[..., -q_len:, :]
+    return add_mask
 
 
 @mx.compile
@@ -233,16 +229,21 @@ class MingBailingMoeAttention(bailing_moe_impl.BailingMoeAttention):
         if cache is not None:
             keys, values = cache.update_and_fetch(keys, values)
 
-        n_rep = self.num_attention_heads // self.num_key_value_heads
-        keys = _repeat_kv(keys, n_rep)
-        values = _repeat_kv(values, n_rep)
-        kv_len = keys.shape[2]
+        attn_mask = _prepare_sdpa_mask(
+            mask=mask,
+            q_len=seqlen,
+            kv_len=keys.shape[-2],
+            cache_offset=cache_offset,
+            out_dtype=queries.dtype,
+        )
 
-        scores = (queries * self.scale) @ mx.transpose(keys, (0, 1, 3, 2))
-        scores = scores.astype(mx.float32)
-        scores = _apply_attention_mask(scores, mask, seqlen, kv_len, cache_offset)
-        attn = mx.softmax(scores, axis=-1).astype(queries.dtype)
-        output = attn @ values
+        output = mx.fast.scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            scale=self.scale,
+            mask=attn_mask,
+        )
         output = output.transpose(0, 2, 1, 3).reshape(bsz, seqlen, -1)
         return self.dense(output)
 
