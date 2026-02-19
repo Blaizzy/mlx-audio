@@ -14,6 +14,24 @@ The best audio processing library built on Apple's MLX framework, providing fast
 - Quantization support (3-bit, 4-bit, 6-bit, 8-bit, and more) for optimized performance
 - Swift package for iOS/macOS integration
 
+## Quickstart (macOS, Apple Silicon)
+
+If you want the web UI + API server in one command:
+
+```bash
+# Install prerequisites (Homebrew must be /opt/homebrew on Apple Silicon)
+brew install ffmpeg uv
+
+# Run everything (API server + web UI)
+uvx --from "mlx-audio[app]" mlx_audio.dev
+```
+
+**Homebrew note:** on Apple Silicon, `brew --prefix` should return `/opt/homebrew`
+(not the Intel `/usr/local`). If it doesn’t, fix Homebrew first or you may hit
+missing dependencies.
+
+If you cloned the repo, you can also double‑click `mlx_audio_dev.command`.
+
 ## Installation
 
 ### Using pip
@@ -409,6 +427,12 @@ MLX-Audio includes a modern web interface and OpenAI-compatible API.
 ### Starting the Server
 
 ```bash
+# One-command dev server + UI
+mlx_audio.dev
+
+# Or run via uvx (installs server + STS deps)
+uvx --from "mlx-audio[app]" mlx_audio.dev
+
 # Start API server
 mlx_audio.server --host 0.0.0.0 --port 8000
 
