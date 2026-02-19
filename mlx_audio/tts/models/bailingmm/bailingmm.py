@@ -46,10 +46,9 @@ def _apply_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
     x_rope = x[..., :dims]
     x_pass = x[..., dims:]
     seqlen = x.shape[2]
-    pos_dtype = x.dtype if x.dtype in (mx.float16, mx.bfloat16) else mx.float32
-    pos = mx.arange(offset, offset + seqlen, dtype=pos_dtype)
+    # Compute RoPE angles in fp32 for stable long-context phase precision.
+    pos = mx.arange(offset, offset + seqlen, dtype=mx.float32)
     inv = 1.0 / (float(base) ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims))
-    inv = inv.astype(pos_dtype)
     freqs = mx.outer(pos, inv)
     emb = mx.concatenate([freqs, freqs], axis=-1)
     cos = mx.cos(emb).astype(x.dtype)[None, None, :, :]
@@ -63,6 +62,79 @@ def _apply_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
     if dims < x.shape[-1]:
         return mx.concatenate([x_rope, x_pass], axis=-1)
     return x_rope
+
+
+def _rotate_half(x: mx.array) -> mx.array:
+    half = x.shape[-1] // 2
+    x1 = x[..., :half]
+    x2 = x[..., half:]
+    return mx.concatenate([-x2, x1], axis=-1)
+
+
+def _apply_rotary_pos_emb(
+    q: mx.array,
+    k: mx.array,
+    cos: mx.array,
+    sin: mx.array,
+    unsqueeze_dim: int = 1,
+) -> Tuple[mx.array, mx.array]:
+    cos = mx.expand_dims(cos, axis=unsqueeze_dim)
+    sin = mx.expand_dims(sin, axis=unsqueeze_dim)
+    q_embed = (q * cos) + (_rotate_half(q) * sin)
+    k_embed = (k * cos) + (_rotate_half(k) * sin)
+    return q_embed, k_embed
+
+
+def _apply_multimodal_rotary_pos_emb(
+    q: mx.array,
+    k: mx.array,
+    cos: mx.array,
+    sin: mx.array,
+    mrope_section: Optional[List[int]] = None,
+    unsqueeze_dim: int = 1,
+) -> Tuple[mx.array, mx.array]:
+    # Match Torch Ming default split layout.
+    mrope_section = list(mrope_section) if mrope_section is not None else [16, 24, 24]
+    split_sizes = [int(s) * 2 for s in mrope_section]
+    if sum(split_sizes) != cos.shape[-1]:
+        # Fallback to first stream if section metadata doesn't match this head dim.
+        return _apply_rotary_pos_emb(q, k, cos[0], sin[0], unsqueeze_dim=unsqueeze_dim)
+
+    split_points = []
+    running = 0
+    for size in split_sizes[:-1]:
+        running += size
+        split_points.append(running)
+
+    cos_chunks = mx.split(cos, split_points, axis=-1)
+    sin_chunks = mx.split(sin, split_points, axis=-1)
+    cos_m = mx.concatenate([chunk[i % 3] for i, chunk in enumerate(cos_chunks)], axis=-1)
+    sin_m = mx.concatenate([chunk[i % 3] for i, chunk in enumerate(sin_chunks)], axis=-1)
+    return _apply_rotary_pos_emb(q, k, cos_m, sin_m, unsqueeze_dim=unsqueeze_dim)
+
+
+class MingBailingMoe3DRotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, base: float):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        self._inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
+
+    def __call__(self, x: mx.array, position_ids: mx.array) -> Tuple[mx.array, mx.array]:
+        if position_ids.ndim == 2:
+            position_ids = mx.broadcast_to(
+                position_ids[None, ...],
+                (3, position_ids.shape[0], position_ids.shape[1]),
+            )
+
+        inv_freq = mx.broadcast_to(
+            self._inv_freq[None, None, :, None],
+            (3, position_ids.shape[1], self._inv_freq.shape[0], 1),
+        )
+        pos = mx.expand_dims(position_ids.astype(mx.float32), axis=2)
+        freqs = mx.swapaxes(inv_freq @ pos, 2, 3)
+        emb = mx.concatenate([freqs, freqs], axis=-1)
+        return mx.cos(emb).astype(x.dtype), mx.sin(emb).astype(x.dtype)
 
 
 def _prepare_sdpa_mask(
@@ -191,12 +263,55 @@ class MingBailingMoeSparseMoeBlock(bailing_moe_impl.BailingMoeSparseMoeBlock):
         return out.astype(in_dtype)
 
 
-class MingBailingMoeAttention(bailing_moe_impl.BailingMoeAttention):
+class MingBailingMoeAttention(nn.Module):
+    def __init__(self, args: BailingMoeModelArgs):
+        super().__init__()
+        self.use_qk_norm = args.use_qk_norm
+        self.num_attention_heads = args.num_attention_heads
+        self.num_key_value_heads = args.num_key_value_heads
+        self.head_dim = args.hidden_size // self.num_attention_heads
+        self.scale = self.head_dim**-0.5
+
+        self.query_key_value = nn.Linear(
+            args.hidden_size,
+            (self.num_attention_heads + 2 * self.num_key_value_heads) * self.head_dim,
+            bias=args.use_qkv_bias,
+        )
+        self.dense = nn.Linear(
+            self.num_attention_heads * self.head_dim,
+            args.hidden_size,
+            bias=args.use_bias,
+        )
+
+        if args.use_qk_norm:
+            self.key_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+            self.query_layernorm = nn.RMSNorm(self.head_dim, eps=args.rms_norm_eps)
+
+        if (rope_dim := args.rotary_dim) is None:
+            rope_dim = int(self.head_dim * args.partial_rotary_factor)
+        self.rope_dims = int(rope_dim)
+        self.rope_base = float(args.rope_theta)
+
+        rope_scaling = args.rope_scaling if args.rope_scaling is not None else {}
+        rope_type = str(rope_scaling.get("type", "")).lower() if rope_scaling else ""
+        self.use_mrope = rope_type == "3d"
+        self.mrope_section = (
+            list(rope_scaling.get("mrope_section", [16, 24, 24]))
+            if self.use_mrope
+            else None
+        )
+        self.mrope = (
+            MingBailingMoe3DRotaryEmbedding(self.rope_dims, self.rope_base)
+            if self.use_mrope
+            else None
+        )
+
     def __call__(
         self,
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
+        position_ids: Optional[mx.array] = None,
     ) -> mx.array:
         bsz, seqlen, _ = x.shape
         qkv = self.query_key_value(x)
@@ -219,10 +334,22 @@ class MingBailingMoeAttention(bailing_moe_impl.BailingMoeAttention):
             keys = self.key_layernorm(keys)
 
         cache_offset = cache.offset if cache is not None else 0
-        rope_dims = getattr(self.rope, "dims", self.head_dim)
-        rope_base = getattr(self.rope, "base", 10000.0)
-        queries = _apply_rope(queries, rope_base, rope_dims, cache_offset)
-        keys = _apply_rope(keys, rope_base, rope_dims, cache_offset)
+        if self.use_mrope:
+            if position_ids is None:
+                pos = mx.arange(cache_offset, cache_offset + seqlen, dtype=mx.int32)[None, :]
+                pos = mx.broadcast_to(pos, (bsz, seqlen))
+                position_ids = mx.stack([pos, pos, pos], axis=0)
+            cos, sin = self.mrope(values, position_ids=position_ids)
+            queries, keys = _apply_multimodal_rotary_pos_emb(
+                queries,
+                keys,
+                cos,
+                sin,
+                mrope_section=self.mrope_section,
+            )
+        else:
+            queries = _apply_rope(queries, self.rope_base, self.rope_dims, cache_offset)
+            keys = _apply_rope(keys, self.rope_base, self.rope_dims, cache_offset)
         if cache is not None:
             keys, values = cache.update_and_fetch(keys, values)
 
@@ -257,20 +384,70 @@ class MingBailingMoeDecoderLayer(bailing_moe_impl.BailingMoeDecoderLayer):
         self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
         self.post_attention_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
+    def __call__(
+        self,
+        x: mx.array,
+        mask: Optional[mx.array] = None,
+        cache: Optional[Any] = None,
+        position_ids: Optional[mx.array] = None,
+    ) -> mx.array:
+        r = self.attention(self.input_layernorm(x), mask, cache, position_ids=position_ids)
+        h = x + r
+        r = self.mlp(self.post_attention_layernorm(h))
+        return h + r
+
 
 class MingBailingMoeBackbone(bailing_moe_impl.BailingMoeModel):
     def __init__(self, args: BailingMoeModelArgs):
-        super().__init__(args)
+        nn.Module.__init__(self)
+        self.word_embeddings = nn.Embedding(args.vocab_size, args.hidden_size)
         self.layers = [
             MingBailingMoeDecoderLayer(args, layer_idx=i)
             for i in range(args.num_hidden_layers)
         ]
+        self.norm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+
+    def __call__(
+        self,
+        inputs: mx.array,
+        cache: Optional[Any] = None,
+        position_ids: Optional[mx.array] = None,
+    ):
+        h = self.word_embeddings(inputs)
+
+        if cache is None:
+            cache = [None] * len(self.layers)
+
+        mask = create_attention_mask(h, cache[0])
+
+        for layer, c in zip(self.layers, cache):
+            h = layer(h, mask, c, position_ids=position_ids)
+
+        return self.norm(h)
 
 
 class MingBailingMoeModel(BailingMoeModel):
     def __init__(self, args: BailingMoeModelArgs):
-        super().__init__(args)
+        nn.Module.__init__(self)
+        self.args = args
+        self.norm_head = args.norm_head
+        self.model_type = args.model_type
         self.model = MingBailingMoeBackbone(args)
+        if not args.tie_word_embeddings:
+            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+
+    def __call__(
+        self,
+        inputs: mx.array,
+        cache=None,
+        position_ids: Optional[mx.array] = None,
+    ):
+        out = self.model(inputs, cache, position_ids=position_ids)
+        if self.args.tie_word_embeddings:
+            out = self.model.word_embeddings.as_linear(out)
+        else:
+            out = self.lm_head(out)
+        return out
 
 
 class MingQwen2Attention(qwen2_impl.Attention):
@@ -1168,9 +1345,6 @@ class Model(nn.Module):
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
         llm_cfg = dict(config.text_config)
-        # mlx-lm bailing_moe currently does not support Ming's custom 3D RoPE type.
-        # Keep this disabled so we can run inference and parity checks.
-        llm_cfg["rope_scaling"] = None
         self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
         self.model = MingBailingMoeModel(self.llm_args)
 
@@ -1295,8 +1469,20 @@ class Model(nn.Module):
             mask = "causal"
         else:
             mask = create_attention_mask(h, cache[0] if cache else None)
+        use_mrope = bool(
+            self.model.model.layers
+            and getattr(self.model.model.layers[0].attention, "use_mrope", False)
+        )
+        position_ids = None
+        if use_mrope:
+            offset = cache[0].offset if cache else 0
+            seq_len = h.shape[1]
+            pos = mx.arange(offset, offset + seq_len, dtype=mx.int32)[None, :]
+            pos = mx.broadcast_to(pos, (h.shape[0], seq_len))
+            position_ids = mx.stack([pos, pos, pos], axis=0)
+
         for layer, layer_cache in zip(self.model.model.layers, cache):
-            h = layer(h, mask, layer_cache)
+            h = layer(h, mask, layer_cache, position_ids=position_ids)
         return self.model.model.norm(h)
 
     def sample(
