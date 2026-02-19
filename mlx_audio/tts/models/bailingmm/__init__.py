@@ -14,4 +14,5 @@ except ModuleNotFoundError as exc:
             "Please install onnx using `pip install onnx`."
         ) from _ONNX_IMPORT_ERROR
 
+
 __all__ = ["Model", "ModelConfig", "convert_campplus_onnx_to_safetensors"]
