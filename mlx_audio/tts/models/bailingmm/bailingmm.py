@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
 from huggingface_hub import snapshot_download
 from mlx_lm.models.base import create_attention_mask
 import mlx_lm.models.bailing_moe as bailing_moe_impl
@@ -1449,13 +1450,29 @@ class Model(nn.Module):
 
         if prompt_latent is not None:
             audio_token_id = self.tokenizer.convert_tokens_to_ids("<audio>")
-            audio_positions = mx.where(input_ids[0] == audio_token_id)[0]
-            if audio_positions.shape[0] > 0:
+            audio_positions = np.where(np.array(input_ids[0]) == audio_token_id)[0]
+            if audio_positions.size > 0:
                 start = int(audio_positions[0]) + 1
                 end = start + prompt_latent.shape[1]
-                inputs_embeds = inputs_embeds.at[0, start:end, :].set(prompt_latent[0])
+                prefix = inputs_embeds[:, :start, :]
+                suffix = inputs_embeds[:, end:, :]
+                inputs_embeds = mx.concatenate([prefix, prompt_latent, suffix], axis=1)
 
         return input_ids, inputs_embeds
+
+    def _pad_prompt_waveform(self, waveform: mx.array) -> mx.array:
+        if waveform.ndim == 1:
+            waveform = waveform[None, :]
+        # Match Torch Ming alignment for 12.5 Hz tokenizer frames.
+        pad_align = int((1 / 12.5) * self.patch_size * self.sample_rate)
+        if pad_align <= 0:
+            return waveform
+        cur_len = int(waveform.shape[-1])
+        new_len = ((cur_len + pad_align - 1) // pad_align) * pad_align
+        if new_len == cur_len:
+            return waveform
+        pad = mx.zeros((waveform.shape[0], new_len - cur_len), dtype=waveform.dtype)
+        return mx.concatenate([waveform, pad], axis=1)
 
     def _forward_llm_hidden(self, inputs_embeds: mx.array, cache: List[KVCache]) -> mx.array:
         h = inputs_embeds
@@ -1491,8 +1508,7 @@ class Model(nn.Module):
     ):
         prompt_latent = None
         if prompt_waveform is not None and prompt_text is not None:
-            if prompt_waveform.ndim == 1:
-                prompt_waveform = prompt_waveform[None, :]
+            prompt_waveform = self._pad_prompt_waveform(prompt_waveform)
             prompt_waveform_length = mx.array([prompt_waveform.shape[1]], dtype=mx.int32)
             prompt_latent, _ = self.audio.encode_latent(prompt_waveform, prompt_waveform_length)
 
@@ -1520,7 +1536,10 @@ class Model(nn.Module):
                     if start < 0:
                         latent_history = prompt_latent[:, -start:, :]
                     else:
-                        latent_history = latent_history.at[:, start:, :].set(prompt_latent)
+                        latent_history = mx.concatenate(
+                            [latent_history[:, :start, :], prompt_latent],
+                            axis=1,
+                        )
 
             sampled_token_latent, _ = self.flowloss.sample(
                 z_diff,
