@@ -41,63 +41,119 @@ class ModelConfig(BaseModelArgs):
     model_path: Optional[str] = None
 
 
-def _patch_bailing_moe_group_select() -> None:
-    if getattr(bailing_moe_impl, "_ming_torchlike_group_select", False):
-        return
+def _repeat_kv(x: mx.array, n_rep: int) -> mx.array:
+    if n_rep == 1:
+        return x
+    bsz, n_kv, seqlen, head_dim = x.shape
+    x = mx.expand_dims(x, axis=2)
+    x = mx.broadcast_to(x, (bsz, n_kv, n_rep, seqlen, head_dim))
+    return x.reshape(bsz, n_kv * n_rep, seqlen, head_dim)
 
-    @mx.compile
-    def _torchlike_group_expert_select(
-        gates,
-        e_score_correction_bias,
-        top_k,
-        n_group,
-        topk_group,
-        routed_scaling_factor,
-        norm_topk_prob,
-        score_function,
-    ):
-        in_type = gates.dtype
-        if score_function == "sigmoid":
-            scores = mx.sigmoid(gates.astype(mx.float32))
-        else:
-            scores = mx.softmax(gates.astype(mx.float32), axis=-1)
 
-        orig_scores = scores
-        if e_score_correction_bias is not None:
-            scores = scores + e_score_correction_bias
+def _apply_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
+    dims = min(int(dims), x.shape[-1])
+    if dims <= 0:
+        return x
 
-        # Keep grouped routing behavior if enabled in config.
-        if n_group is not None and n_group > 1:
-            scores = mx.unflatten(scores, axis=-1, shape=(n_group, -1))
-            group_top2 = mx.topk(scores, 2, axis=-1)[0]
-            group_scores = group_top2.sum(axis=-1, keepdims=True)
-            k = n_group - topk_group
-            group_idx = mx.argpartition(group_scores, kth=k - 1, axis=-2)[..., :k, :]
-            scores = mx.put_along_axis(
-                scores, mx.stop_gradient(group_idx), mx.array(0.0, scores.dtype), axis=-2
-            )
-            scores = mx.flatten(scores, -2, -1)
+    x_rope = x[..., :dims]
+    x_pass = x[..., dims:]
+    seqlen = x.shape[2]
+    pos_dtype = x.dtype if x.dtype in (mx.float16, mx.bfloat16) else mx.float32
+    pos = mx.arange(offset, offset + seqlen, dtype=pos_dtype)
+    inv = 1.0 / (float(base) ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims))
+    inv = inv.astype(pos_dtype)
+    freqs = mx.outer(pos, inv)
+    emb = mx.concatenate([freqs, freqs], axis=-1)
+    cos = mx.cos(emb).astype(x.dtype)[None, None, :, :]
+    sin = mx.sin(emb).astype(x.dtype)[None, None, :, :]
 
-        # Torch topk returns sorted top-k experts. MLX lacks index-returning topk,
-        # so emulate it by argpartition + descending sort inside the top-k slice.
-        inds = mx.argpartition(scores, kth=-top_k, axis=-1)[..., -top_k:]
-        selected_scores = mx.take_along_axis(scores, inds, axis=-1)
-        order = mx.argsort(-selected_scores, axis=-1)
-        inds = mx.take_along_axis(inds, order, axis=-1)
-        scores = mx.take_along_axis(orig_scores, inds, axis=-1)
-        if top_k > 1 and norm_topk_prob:
-            denominator = scores.sum(axis=-1, keepdims=True) + 1e-20
-            scores = scores / denominator
-        scores = scores * routed_scaling_factor
-        return inds, scores.astype(in_type)
+    half = dims // 2
+    x1 = x_rope[..., :half]
+    x2 = x_rope[..., half:]
+    rotated = mx.concatenate([-x2, x1], axis=-1)
+    x_rope = (x_rope * cos) + (rotated * sin)
+    if dims < x.shape[-1]:
+        return mx.concatenate([x_rope, x_pass], axis=-1)
+    return x_rope
 
-    bailing_moe_impl.group_expert_select = _torchlike_group_expert_select
 
-    # Match Torch router numerics: compute gate logits in float32 so top-k
-    # routing and normalized expert weights are less sensitive to bf16 rounding.
-    def _torchlike_gate_call(self, x):
+def _apply_attention_mask(
+    scores: mx.array,
+    mask: Optional[Union[str, mx.array]],
+    q_len: int,
+    kv_len: int,
+    cache_offset: int,
+) -> mx.array:
+    if mask is None:
+        return scores
+
+    neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
+    if isinstance(mask, str):
+        if mask != "causal":
+            raise ValueError(f"Unsupported attention mask spec: {mask}")
+        q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
+        k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
+        causal = q_pos >= k_pos
+        add = mx.where(causal, mx.array(0.0, dtype=mx.float32), neg_inf)
+        return scores + add[None, None, :, :]
+
+    add_mask = mask
+    if add_mask.dtype == mx.bool_:
+        add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
+    else:
+        add_mask = add_mask.astype(mx.float32)
+    while add_mask.ndim < scores.ndim:
+        add_mask = mx.expand_dims(add_mask, axis=0)
+    return scores + add_mask
+
+
+@mx.compile
+def _group_expert_select(
+    gates,
+    e_score_correction_bias,
+    top_k,
+    n_group,
+    topk_group,
+    routed_scaling_factor,
+    norm_topk_prob,
+    score_function,
+):
+    in_type = gates.dtype
+    if score_function == "sigmoid":
+        scores = mx.sigmoid(gates.astype(mx.float32))
+    else:
+        scores = mx.softmax(gates.astype(mx.float32), axis=-1)
+
+    orig_scores = scores
+    if e_score_correction_bias is not None:
+        scores = scores + e_score_correction_bias
+    if n_group is not None and n_group > 1:
+        scores = mx.unflatten(scores, axis=-1, shape=(n_group, -1))
+        group_top2 = mx.topk(scores, 2, axis=-1)[0]
+        group_scores = group_top2.sum(axis=-1, keepdims=True)
+        k = n_group - topk_group
+        group_idx = mx.argpartition(group_scores, kth=k - 1, axis=-2)[..., :k, :]
+        scores = mx.put_along_axis(
+            scores, mx.stop_gradient(group_idx), mx.array(0.0, scores.dtype), axis=-2
+        )
+        scores = mx.flatten(scores, -2, -1)
+
+    inds = mx.argpartition(scores, kth=-top_k, axis=-1)[..., -top_k:]
+    selected_scores = mx.take_along_axis(scores, inds, axis=-1)
+    order = mx.argsort(-selected_scores, axis=-1)
+    inds = mx.take_along_axis(inds, order, axis=-1)
+    scores = mx.take_along_axis(orig_scores, inds, axis=-1)
+    if top_k > 1 and norm_topk_prob:
+        denominator = scores.sum(axis=-1, keepdims=True) + 1e-20
+        scores = scores / denominator
+    scores = scores * routed_scaling_factor
+    return inds, scores.astype(in_type)
+
+
+class MingBailingMoeGate(bailing_moe_impl.BailingMoeGate):
+    def __call__(self, x):
         logits = self.gate_proj(x.astype(mx.float32))
-        return bailing_moe_impl.group_expert_select(
+        return _group_expert_select(
             logits,
             self.expert_bias,
             self.top_k,
@@ -108,22 +164,28 @@ def _patch_bailing_moe_group_select() -> None:
             self.score_function,
         )
 
-    bailing_moe_impl.BailingMoeGate.__call__ = _torchlike_gate_call
 
-    # Shared experts in Ming's MoE stack are regular MLPs. Keeping this path
-    # in fp32 reduces rare bf16 outliers that compound across long decoding.
-    def _torchlike_mlp_call(self, x):
+class MingBailingMoeMLP(bailing_moe_impl.BailingMoeMLP):
+    def __call__(self, x) -> mx.array:
         x32 = x.astype(mx.float32)
         gate = self.gate_proj(x32)
         up = self.up_proj(x32)
         out = self.down_proj((gate * mx.sigmoid(gate)) * up)
         return out.astype(x.dtype)
 
-    bailing_moe_impl.BailingMoeMLP.__call__ = _torchlike_mlp_call
 
-    # Route+expert accumulation in fp32 to better match Torch GEMM accumulation
-    # behavior and reduce long-horizon drift from sparse MoE layers.
-    def _torchlike_sparse_moe_call(self, x):
+class MingBailingMoeSparseMoeBlock(bailing_moe_impl.BailingMoeSparseMoeBlock):
+    def __init__(self, args: BailingMoeModelArgs):
+        super().__init__(args)
+        self.gate = MingBailingMoeGate(args)
+        shared_dim = args.moe_shared_expert_intermediate_size or args.moe_intermediate_size
+        if args.num_shared_experts > 0 and args.moe_router_enable_shared_expert:
+            self.shared_experts = MingBailingMoeMLP(
+                args=args,
+                intermediate_size=shared_dim * args.num_shared_experts,
+            )
+
+    def __call__(self, x):
         in_dtype = x.dtype
         x32 = x.astype(mx.float32)
         topk_idx, topk_weight = self.gate(x32)
@@ -135,76 +197,9 @@ def _patch_bailing_moe_group_select() -> None:
             out = out + self.shared_experts(x32).astype(mx.float32)
         return out.astype(in_dtype)
 
-    bailing_moe_impl.BailingMoeSparseMoeBlock.__call__ = _torchlike_sparse_moe_call
 
-    def _repeat_kv_torchlike(x: mx.array, n_rep: int) -> mx.array:
-        if n_rep == 1:
-            return x
-        bsz, n_kv, seqlen, head_dim = x.shape
-        x = mx.expand_dims(x, axis=2)
-        x = mx.broadcast_to(x, (bsz, n_kv, n_rep, seqlen, head_dim))
-        return x.reshape(bsz, n_kv * n_rep, seqlen, head_dim)
-
-    def _apply_torchlike_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
-        # Match Torch BailingMoeRotaryEmbedding numerics:
-        # - inv_freq and positions are quantized to activation dtype for bf16 runs
-        # - freqs are built via outer(pos, inv_freq) in that quantized dtype
-        dims = min(int(dims), x.shape[-1])
-        if dims <= 0:
-            return x
-
-        x_rope = x[..., :dims]
-        x_pass = x[..., dims:]
-        seqlen = x.shape[2]
-        pos_dtype = x.dtype if x.dtype in (mx.float16, mx.bfloat16) else mx.float32
-        pos = mx.arange(offset, offset + seqlen, dtype=pos_dtype)
-        inv = 1.0 / (float(base) ** (mx.arange(0, dims, 2, dtype=mx.float32) / dims))
-        inv = inv.astype(pos_dtype)
-        freqs = mx.outer(pos, inv)
-        emb = mx.concatenate([freqs, freqs], axis=-1)
-        cos = mx.cos(emb).astype(x.dtype)[None, None, :, :]
-        sin = mx.sin(emb).astype(x.dtype)[None, None, :, :]
-
-        half = dims // 2
-        x1 = x_rope[..., :half]
-        x2 = x_rope[..., half:]
-        rotated = mx.concatenate([-x2, x1], axis=-1)
-        x_rope = (x_rope * cos) + (rotated * sin)
-        if dims < x.shape[-1]:
-            return mx.concatenate([x_rope, x_pass], axis=-1)
-        return x_rope
-
-    def _apply_torchlike_attention_mask(
-        scores: mx.array,
-        mask: Optional[Union[str, mx.array]],
-        q_len: int,
-        kv_len: int,
-        cache_offset: int,
-    ) -> mx.array:
-        if mask is None:
-            return scores
-
-        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
-        if isinstance(mask, str):
-            if mask != "causal":
-                raise ValueError(f"Unsupported attention mask spec: {mask}")
-            # Query i corresponds to absolute position cache_offset + i.
-            q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
-            k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
-            causal = q_pos >= k_pos
-            add = mx.where(causal, mx.array(0.0, dtype=mx.float32), neg_inf)
-            return scores + add[None, None, :, :]
-
-        add_mask = mask
-        if add_mask.dtype == mx.bool_:
-            add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
-        else:
-            add_mask = add_mask.astype(mx.float32)
-        while add_mask.ndim < scores.ndim:
-            add_mask = mx.expand_dims(add_mask, axis=0)
-        return scores + add_mask
-
-    def _torchlike_attention_call(
+class MingBailingMoeAttention(bailing_moe_impl.BailingMoeAttention):
+    def __call__(
         self,
         x: mx.array,
         mask: Optional[mx.array] = None,
@@ -216,7 +211,6 @@ def _patch_bailing_moe_group_select() -> None:
         q_size = self.num_attention_heads * self.head_dim
         kv_size = self.num_key_value_heads * self.head_dim
         q, k, v = mx.split(qkv, [q_size, q_size + kv_size], axis=-1)
-
         queries = q.reshape(bsz, seqlen, self.num_attention_heads, self.head_dim).transpose(
             0, 2, 1, 3
         )
@@ -234,38 +228,82 @@ def _patch_bailing_moe_group_select() -> None:
         cache_offset = cache.offset if cache is not None else 0
         rope_dims = getattr(self.rope, "dims", self.head_dim)
         rope_base = getattr(self.rope, "base", 10000.0)
-        queries = _apply_torchlike_rope(queries, rope_base, rope_dims, cache_offset)
-        keys = _apply_torchlike_rope(keys, rope_base, rope_dims, cache_offset)
-
+        queries = _apply_rope(queries, rope_base, rope_dims, cache_offset)
+        keys = _apply_rope(keys, rope_base, rope_dims, cache_offset)
         if cache is not None:
             keys, values = cache.update_and_fetch(keys, values)
 
         n_rep = self.num_attention_heads // self.num_key_value_heads
-        keys = _repeat_kv_torchlike(keys, n_rep)
-        values = _repeat_kv_torchlike(values, n_rep)
+        keys = _repeat_kv(keys, n_rep)
+        values = _repeat_kv(values, n_rep)
         kv_len = keys.shape[2]
 
-        # Mirror Torch eager path: bf16 matmul -> fp32 mask/softmax -> bf16 weights.
         scores = (queries * self.scale) @ mx.transpose(keys, (0, 1, 3, 2))
         scores = scores.astype(mx.float32)
-        scores = _apply_torchlike_attention_mask(scores, mask, seqlen, kv_len, cache_offset)
+        scores = _apply_attention_mask(scores, mask, seqlen, kv_len, cache_offset)
         attn = mx.softmax(scores, axis=-1).astype(queries.dtype)
         output = attn @ values
-
         output = output.transpose(0, 2, 1, 3).reshape(bsz, seqlen, -1)
         return self.dense(output)
 
-    bailing_moe_impl.BailingMoeAttention.__call__ = _torchlike_attention_call
 
-    bailing_moe_impl._ming_torchlike_group_select = True
+class MingBailingMoeDecoderLayer(bailing_moe_impl.BailingMoeDecoderLayer):
+    def __init__(self, args: BailingMoeModelArgs, layer_idx: int):
+        nn.Module.__init__(self)
+        self.attention = MingBailingMoeAttention(args)
+        self.mlp = (
+            MingBailingMoeSparseMoeBlock(args)
+            if args.num_experts is not None and layer_idx >= args.first_k_dense_replace
+            else MingBailingMoeMLP(args)
+        )
+        self.input_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(args.hidden_size, eps=args.rms_norm_eps)
 
 
-def _patch_qwen2_sliding_attention() -> None:
-    if getattr(qwen2_impl, "_ming_sliding_attention_patch", False):
-        return
+class MingBailingMoeBackbone(bailing_moe_impl.BailingMoeModel):
+    def __init__(self, args: BailingMoeModelArgs):
+        super().__init__(args)
+        self.layers = [
+            MingBailingMoeDecoderLayer(args, layer_idx=i)
+            for i in range(args.num_hidden_layers)
+        ]
 
-    original_attention_call = qwen2_impl.Attention.__call__
 
+class MingBailingMoeModel(BailingMoeModel):
+    def __init__(self, args: BailingMoeModelArgs):
+        super().__init__(args)
+        self.model = MingBailingMoeBackbone(args)
+
+
+def _resolve_qwen2_sliding_layers(
+    cfg_dict: Dict[str, Any], num_layers: int
+) -> List[Optional[int]]:
+    use_sliding = bool(cfg_dict.get("use_sliding_window", False))
+    sliding_window = int(cfg_dict.get("sliding_window", 0)) if use_sliding else 0
+    max_window_layers = int(cfg_dict.get("max_window_layers", num_layers))
+    layer_types = cfg_dict.get("layer_types")
+
+    per_layer: List[Optional[int]] = []
+    for idx in range(num_layers):
+        layer_sliding: Optional[int] = None
+        if sliding_window > 0:
+            if isinstance(layer_types, list) and idx < len(layer_types):
+                if layer_types[idx] == "sliding_attention":
+                    layer_sliding = sliding_window
+            elif idx >= max_window_layers:
+                layer_sliding = sliding_window
+        per_layer.append(layer_sliding)
+    return per_layer
+
+
+class MingQwen2Attention(qwen2_impl.Attention):
+    def __init__(self, args: Qwen2ModelArgs, sliding_window: Optional[int]):
+        super().__init__(args)
+        self.sliding_window = (
+            int(sliding_window) if sliding_window is not None and int(sliding_window) > 0 else None
+        )
+
+    @staticmethod
     def _build_sliding_additive_mask(
         mask: Optional[Union[str, mx.array]],
         q_len: int,
@@ -300,22 +338,20 @@ def _patch_qwen2_sliding_attention() -> None:
             add_mask = mx.expand_dims(add_mask, axis=0)
         return mx.minimum(add_mask, sw_add)
 
-    def _qwen2_attention_call(
+    def __call__(
         self,
         x: mx.array,
         mask: Optional[mx.array] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
-        sliding_window = getattr(self, "_ming_sliding_window", None)
-        if sliding_window is None or int(sliding_window) <= 0:
-            return original_attention_call(self, x, mask, cache)
+        if self.sliding_window is None:
+            return super().__call__(x, mask, cache)
 
-        B, L, _ = x.shape
+        bsz, seqlen, _ = x.shape
         queries, keys, values = self.q_proj(x), self.k_proj(x), self.v_proj(x)
-
-        queries = queries.reshape(B, L, self.n_heads, -1).transpose(0, 2, 1, 3)
-        keys = keys.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
-        values = values.reshape(B, L, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+        queries = queries.reshape(bsz, seqlen, self.n_heads, -1).transpose(0, 2, 1, 3)
+        keys = keys.reshape(bsz, seqlen, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
+        values = values.reshape(bsz, seqlen, self.n_kv_heads, -1).transpose(0, 2, 1, 3)
 
         cache_offset = cache.offset if cache is not None else 0
         if cache is not None:
@@ -326,42 +362,26 @@ def _patch_qwen2_sliding_attention() -> None:
             queries = self.rope(queries)
             keys = self.rope(keys)
 
-        attn_mask = _build_sliding_additive_mask(
+        attn_mask = self._build_sliding_additive_mask(
             mask=mask,
-            q_len=L,
+            q_len=seqlen,
             kv_len=keys.shape[2],
             cache_offset=cache_offset,
-            sliding_window=int(sliding_window),
+            sliding_window=self.sliding_window,
         )
         output = mx.fast.scaled_dot_product_attention(
-            queries,
-            keys,
-            values,
-            scale=self.scale,
-            mask=attn_mask,
+            queries, keys, values, scale=self.scale, mask=attn_mask
         )
-        output = output.transpose(0, 2, 1, 3).reshape(B, L, -1)
+        output = output.transpose(0, 2, 1, 3).reshape(bsz, seqlen, -1)
         return self.o_proj(output)
 
-    qwen2_impl.Attention.__call__ = _qwen2_attention_call
-    qwen2_impl._ming_sliding_attention_patch = True
 
-
-def _configure_qwen2_sliding_layers(model: Qwen2Model, cfg_dict: Dict[str, Any]) -> None:
-    use_sliding = bool(cfg_dict.get("use_sliding_window", False))
-    sliding_window = int(cfg_dict.get("sliding_window", 0)) if use_sliding else 0
-    max_window_layers = int(cfg_dict.get("max_window_layers", len(model.layers)))
-    layer_types = cfg_dict.get("layer_types")
-
-    for idx, layer in enumerate(model.layers):
-        layer_sliding = None
-        if sliding_window > 0:
-            if isinstance(layer_types, list) and idx < len(layer_types):
-                if layer_types[idx] == "sliding_attention":
-                    layer_sliding = sliding_window
-            elif idx >= max_window_layers:
-                layer_sliding = sliding_window
-        layer.self_attn._ming_sliding_window = layer_sliding
+class MingQwen2Model(Qwen2Model):
+    def __init__(self, args: Qwen2ModelArgs, cfg_dict: Dict[str, Any]):
+        super().__init__(args)
+        per_layer_sliding = _resolve_qwen2_sliding_layers(cfg_dict, len(self.layers))
+        for idx, sliding_window in enumerate(per_layer_sliding):
+            self.layers[idx].self_attn = MingQwen2Attention(args, sliding_window)
 
 
 class RotaryEmbedding(nn.Module):
@@ -756,7 +776,7 @@ class FlowLoss(nn.Module):
         temperature: float = 0.0,
         steps: int = 10,
     ) -> Tuple[mx.array, List[mx.array]]:
-        # Torch reference samples diffusion noise in float32 and integrates in float32.
+        # Match Torch path: sample diffusion noise in float32 and integrate in float32.
         noise = mx.random.normal((z.shape[0], self.z_channels, patch_size), dtype=mx.float32)
         sampled, trajectory = self.cfm.sample(
             noise=noise,
@@ -889,10 +909,8 @@ class Encoder(nn.Module):
         patch_size: int = -1,
     ):
         super().__init__()
-        _patch_qwen2_sliding_attention()
         cfg = Qwen2ModelArgs.from_dict(encoder_args)
-        self.encoder = Qwen2Model(cfg)
-        _configure_qwen2_sliding_layers(self.encoder, encoder_args)
+        self.encoder = MingQwen2Model(cfg, encoder_args)
         self.input_dim = input_dim
         self.hop_size = hop_size
         self.patch_size = patch_size
@@ -904,8 +922,7 @@ class Encoder(nn.Module):
             agg_cfg_dict = dict(encoder_args)
             agg_cfg_dict["num_hidden_layers"] = 4
             agg_cfg = Qwen2ModelArgs.from_dict(agg_cfg_dict)
-            self.aggregator = Qwen2Model(agg_cfg)
-            _configure_qwen2_sliding_layers(self.aggregator, agg_cfg_dict)
+            self.aggregator = MingQwen2Model(agg_cfg, agg_cfg_dict)
             self.cls_embed = mx.random.normal((1, 1, cfg.hidden_size)).astype(mx.float32)
 
     def get_frames(self, x: mx.array) -> mx.array:
@@ -958,20 +975,18 @@ class Decoder(nn.Module):
         patch_size: int = -1,
     ):
         super().__init__()
-        _patch_qwen2_sliding_attention()
         cfg = Qwen2ModelArgs.from_dict(decoder_args)
-        self.decoder = Qwen2Model(cfg)
-        _configure_qwen2_sliding_layers(self.decoder, decoder_args)
+        self.decoder = MingQwen2Model(cfg, decoder_args)
         self.fc1 = nn.Linear(latent_dim, cfg.hidden_size)
         self.patch_size = patch_size
         self.head = ISTFTHead(dim=cfg.hidden_size, n_fft=output_dim * 4, hop_length=output_dim)
 
     def _upsample(self, x: mx.array) -> mx.array:
         x_bc = x.transpose(0, 2, 1)
-        y_bc = self._torch_like_linear_upsample_1d(x_bc)
+        y_bc = self._linear_upsample_1d(x_bc)
         return y_bc.transpose(0, 2, 1)
 
-    def _torch_like_linear_upsample_1d(self, x_bc: mx.array) -> mx.array:
+    def _linear_upsample_1d(self, x_bc: mx.array) -> mx.array:
         import numpy as np
 
         # Match torch.nn.Upsample(mode="linear", align_corners=False) exactly.
@@ -1024,11 +1039,11 @@ class Decoder(nn.Module):
 
             if state["history_last"] is None:
                 inp = mx.concatenate([p, lookahead], axis=2)
-                up = self._torch_like_linear_upsample_1d(inp)
+                up = self._linear_upsample_1d(inp)
                 out_prev = up[:, :, : p.shape[2] * self.patch_size]
             else:
                 inp = mx.concatenate([state["history_last"], p, lookahead], axis=2)
-                up = self._torch_like_linear_upsample_1d(inp)
+                up = self._linear_upsample_1d(inp)
                 start = self.patch_size
                 end = start + p.shape[2] * self.patch_size
                 out_prev = up[:, :, start:end]
@@ -1043,7 +1058,7 @@ class Decoder(nn.Module):
             if history_last is None:
                 history_last = p[:, :, :1]
             inp = mx.concatenate([history_last, p], axis=2)
-            up = self._torch_like_linear_upsample_1d(inp)
+            up = self._linear_upsample_1d(inp)
             out_last = up[:, :, self.patch_size :]
             output_chunks.append(out_last.transpose(0, 2, 1))
             state = None
@@ -1164,9 +1179,8 @@ class Model(nn.Module):
         # mlx-lm bailing_moe currently does not support Ming's custom 3D RoPE type.
         # Keep this disabled so we can run inference and parity checks.
         llm_cfg["rope_scaling"] = None
-        _patch_bailing_moe_group_select()
         self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
-        self.model = BailingMoeModel(self.llm_args)
+        self.model = MingBailingMoeModel(self.llm_args)
 
         self.audio = AudioVAE(config.audio_tokenizer_config)
         self.latent_dim = int(config.audio_tokenizer_config["enc_kwargs"]["latent_dim"])
