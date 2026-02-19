@@ -273,27 +273,6 @@ class MingBailingMoeModel(BailingMoeModel):
         self.model = MingBailingMoeBackbone(args)
 
 
-def _resolve_qwen2_sliding_layers(
-    cfg_dict: Dict[str, Any], num_layers: int
-) -> List[Optional[int]]:
-    use_sliding = bool(cfg_dict.get("use_sliding_window", False))
-    sliding_window = int(cfg_dict.get("sliding_window", 0)) if use_sliding else 0
-    max_window_layers = int(cfg_dict.get("max_window_layers", num_layers))
-    layer_types = cfg_dict.get("layer_types")
-
-    per_layer: List[Optional[int]] = []
-    for idx in range(num_layers):
-        layer_sliding: Optional[int] = None
-        if sliding_window > 0:
-            if isinstance(layer_types, list) and idx < len(layer_types):
-                if layer_types[idx] == "sliding_attention":
-                    layer_sliding = sliding_window
-            elif idx >= max_window_layers:
-                layer_sliding = sliding_window
-        per_layer.append(layer_sliding)
-    return per_layer
-
-
 class MingQwen2Attention(qwen2_impl.Attention):
     def __init__(self, args: Qwen2ModelArgs, sliding_window: Optional[int]):
         super().__init__(args)
@@ -377,7 +356,22 @@ class MingQwen2Attention(qwen2_impl.Attention):
 class MingQwen2Model(Qwen2Model):
     def __init__(self, args: Qwen2ModelArgs, cfg_dict: Dict[str, Any]):
         super().__init__(args)
-        per_layer_sliding = _resolve_qwen2_sliding_layers(cfg_dict, len(self.layers))
+        use_sliding = bool(cfg_dict.get("use_sliding_window", False))
+        sliding_window = int(cfg_dict.get("sliding_window", 0)) if use_sliding else 0
+        max_window_layers = int(cfg_dict.get("max_window_layers", len(self.layers)))
+        layer_types = cfg_dict.get("layer_types")
+
+        per_layer_sliding: List[Optional[int]] = []
+        for idx in range(len(self.layers)):
+            layer_sliding: Optional[int] = None
+            if sliding_window > 0:
+                if isinstance(layer_types, list) and idx < len(layer_types):
+                    if layer_types[idx] == "sliding_attention":
+                        layer_sliding = sliding_window
+                elif idx >= max_window_layers:
+                    layer_sliding = sliding_window
+            per_layer_sliding.append(layer_sliding)
+
         for idx, sliding_window in enumerate(per_layer_sliding):
             self.layers[idx].self_attn = MingQwen2Attention(args, sliding_window)
 
