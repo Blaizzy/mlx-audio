@@ -9,7 +9,10 @@ import mlx.nn as nn
 from ..base import BaseModelArgs, GenerationResult, check_array_shape
 from .istftnet import Decoder
 from .modules import AlbertModelArgs, CustomAlbert, ProsodyPredictor, TextEncoder
-from .pipeline import KokoroPipeline
+try:
+    from .pipeline import KokoroPipeline
+except Exception:  # Optional dependency (misaki)
+    KokoroPipeline = None
 
 
 def sanitize_lstm_weights(key: str, state_dict: mx.array) -> dict:
@@ -248,6 +251,10 @@ class Model(nn.Module):
 
     def _get_pipeline(self, lang_code: str) -> KokoroPipeline:
         """Retrieves or creates a cached KokoroPipeline for the given language code."""
+        if KokoroPipeline is None:
+            raise ImportError(
+                "KokoroPipeline requires optional dependencies. Install misaki to use it."
+            )
         if lang_code not in self._pipelines:
             print(f"Creating new KokoroPipeline for language: {lang_code}")
             self._pipelines[lang_code] = KokoroPipeline(

@@ -27,6 +27,9 @@ MODEL_REMAPPING = {
     "vibevoice_streaming": "vibevoice",
     "chatterbox_turbo": "chatterbox_turbo",
     "soprano": "soprano",
+    "kitten": "kitten_tts",
+    "kitten_tts": "kitten_tts",
+    "kitten-tts": "kitten_tts",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]

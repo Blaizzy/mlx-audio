@@ -8,6 +8,7 @@ import numpy as np
 from mlx_audio.utils import istft, stft
 
 from ..base import check_array_shape
+from .quant import maybe_fake_quant
 from ..interpolate import interpolate
 
 
@@ -127,6 +128,7 @@ class ConvWeighted(nn.Module):
 
     def __call__(self, x, conv):
 
+        x = maybe_fake_quant(x, getattr(self, "activation_quant", False))
         weight = weight_norm(self.weight_v, self.weight_g, dim=0)
 
         if self.bias is not None:
@@ -331,6 +333,7 @@ class AdaIN1d(nn.Module):
         self.fc = nn.Linear(style_dim, num_features * 2)
 
     def __call__(self, x: mx.array, s: mx.array) -> mx.array:
+        s = maybe_fake_quant(s, getattr(self, "activation_quant", False))
         h = self.fc(s)
         h = mx.expand_dims(h, axis=2)  # Equivalent to view(..., 1)
         gamma, beta = mx.split(h, 2, axis=1)
@@ -371,13 +374,23 @@ class AdaINResBlock1(nn.Module):
         ]
         self.adain1 = [AdaIN1d(style_dim, channels) for _ in range(3)]
         self.adain2 = [AdaIN1d(style_dim, channels) for _ in range(3)]
-        self.alpha1 = [mx.ones((1, channels, 1)) for _ in range(len(self.convs1))]
-        self.alpha2 = [mx.ones((1, channels, 1)) for _ in range(len(self.convs2))]
+
+        # Trainable Snake1D parameters (match ONNX alpha1.{i}/alpha2.{i} names).
+        self.alpha1_0 = mx.ones((1, channels, 1))
+        self.alpha1_1 = mx.ones((1, channels, 1))
+        self.alpha1_2 = mx.ones((1, channels, 1))
+        self.alpha2_0 = mx.ones((1, channels, 1))
+        self.alpha2_1 = mx.ones((1, channels, 1))
+        self.alpha2_2 = mx.ones((1, channels, 1))
+        self._alpha1_names = ("alpha1_0", "alpha1_1", "alpha1_2")
+        self._alpha2_names = ("alpha2_0", "alpha2_1", "alpha2_2")
 
     def __call__(self, x: mx.array, s: mx.array) -> mx.array:
-        for c1, c2, n1, n2, a1, a2 in zip(
-            self.convs1, self.convs2, self.adain1, self.adain2, self.alpha1, self.alpha2
+        for idx, (c1, c2, n1, n2) in enumerate(
+            zip(self.convs1, self.convs2, self.adain1, self.adain2)
         ):
+            a1 = getattr(self, self._alpha1_names[idx])
+            a2 = getattr(self, self._alpha2_names[idx])
             xt = n1(x, s)
             xt = xt + (1 / a1) * (mx.sin(a1 * xt) ** 2)  # Snake1D
 
@@ -498,12 +511,10 @@ class MLXSTFT:
         reconstructed = []
 
         for batch_idx in range(magnitude.shape[0]):
-            # Unwrap phases for reconstruction
-            phase_cont = mlx_unwrap(phase[batch_idx], axis=1)
-
-            # Combine magnitude and phase
-            real_part = magnitude[batch_idx] * mx.cos(phase_cont)
-            imag_part = magnitude[batch_idx] * mx.sin(phase_cont)
+            # Combine magnitude and phase (phase is already in radians)
+            phase_frame = phase[batch_idx]
+            real_part = magnitude[batch_idx] * mx.cos(phase_frame)
+            imag_part = magnitude[batch_idx] * mx.sin(phase_frame)
             x_stft = real_part + 1j * imag_part
 
             # Inverse STFT
@@ -514,6 +525,7 @@ class MLXSTFT:
                 window=self.window,
                 center=True,
                 length=None,
+                normalized=True,
             )
 
             reconstructed.append(audio)
@@ -674,6 +686,9 @@ class SourceModuleHnNSF(nn.Module):
         """
         # source for harmonic branch
         sine_wavs, uv, _ = self.l_sin_gen(x)
+        sine_wavs = maybe_fake_quant(
+            sine_wavs, getattr(self.l_linear, "activation_quant", False)
+        )
         sine_merge = mx.tanh(self.l_linear(sine_wavs))
         # source for noise branch, in the same shape as uv
         noise = mx.random.normal(uv.shape) * self.sine_amp / 3
@@ -775,7 +790,10 @@ class Generator(nn.Module):
         har = har.swapaxes(2, 1)
         for i in range(self.num_upsamples):
             x = leaky_relu(x, negative_slope=0.1)
-            x_source = self.noise_convs[i](har)
+            har_q = maybe_fake_quant(
+                har, getattr(self.noise_convs[i], "activation_quant", False)
+            )
+            x_source = self.noise_convs[i](har_q)
             x_source = x_source.swapaxes(2, 1)
             x_source = self.noise_res[i](x_source, s)
 
@@ -802,6 +820,7 @@ class Generator(nn.Module):
         x = x.swapaxes(2, 1)
 
         spec = mx.exp(x[:, : self.post_n_fft // 2 + 1, :])
+        # ONNX applies sin to the phase slice before ISTFT.
         phase = mx.sin(x[:, self.post_n_fft // 2 + 1 :, :])
         result = self.stft.inverse(spec, phase)
         return result
@@ -878,7 +897,8 @@ class AdainResBlk1d(nn.Module):
         # Manually implement grouped ConvTranspose1d since MLX doesn't support groups
         x = x.swapaxes(2, 1)
         x = self.pool(x, mx.conv_transpose1d) if self.upsample_type != "none" else x
-        x = mx.pad(x, ((0, 0), (1, 0), (0, 0))) if self.upsample_type != "none" else x
+        # Match ConvTranspose output_padding=1 by padding the right side.
+        x = mx.pad(x, ((0, 0), (0, 1), (0, 0))) if self.upsample_type != "none" else x
         x = x.swapaxes(2, 1)
 
         x = x.swapaxes(2, 1)
