@@ -201,6 +201,17 @@ def load_weights(model_path: Path) -> dict:
     for wf in weight_files:
         weights.update(mx.load(wf))
 
+    # Compatibility: older KittenTTS exports used dot-form Snake alpha names
+    # (alpha1.0 / alpha2.0). Map them to the newer underscore format.
+    if any(".alpha1." in k or ".alpha2." in k for k in weights.keys()) and not any(
+        "alpha1_" in k or "alpha2_" in k for k in weights.keys()
+    ):
+        remapped = {}
+        for k, v in weights.items():
+            nk = k.replace(".alpha1.", ".alpha1_").replace(".alpha2.", ".alpha2_")
+            remapped[nk] = v
+        weights = remapped
+
     return weights
 
 
