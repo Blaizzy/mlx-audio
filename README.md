@@ -86,6 +86,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
 | **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/chatterbox-fp16](https://huggingface.co/mlx-community/chatterbox-fp16) |
 | **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
+| **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
 
 ### Speech-to-Text (STT)
 
@@ -172,6 +173,21 @@ audio = results[0].audio  # mx.array
 ```
 
 See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
+
+### Ming Omni TTS (BailingMM)
+
+```bash
+mlx_audio.tts.generate \
+    --model mlx-community/Ming-omni-tts-16.8B-A3B-bf16 \
+    --prompt "Please generate speech based on the following description.\n" \
+    --text "This is a quick Ming Omni test." \
+    --lang_code en \
+    --output_path audio_io \
+    --file_prefix ming_basic \
+    --verbose
+```
+
+See the [Ming Omni TTS README](mlx_audio/tts/models/bailingmm/README.md) for CLI and Python cookbook examples.
 
 ### CSM (Voice Cloning)
 
