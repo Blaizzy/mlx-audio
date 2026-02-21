@@ -161,7 +161,7 @@ def generate_audio(
 
         if stt_model is None and (ref_audio and ref_text is None):
             raise ValueError(
-                "STT model path or model instance must be provided when ref_text is given."
+                "STT model path or model instance must be provided when ref_text is missing."
             )
 
         if isinstance(model, str):
@@ -185,13 +185,10 @@ def generate_audio(
 
                 if "ref_text" in inspect.signature(model.generate).parameters:
                     print("Ref_text not found. Transcribing ref_audio...")
-                    from mlx_audio.stt.models.whisper import Model as Whisper
+                    from mlx_audio.stt import load as load_stt_model
 
-                    stt_model = (
-                        Whisper.from_pretrained(path_or_hf_repo=stt_model)
-                        if isinstance(stt_model, str)
-                        else stt_model
-                    )
+                    if isinstance(stt_model, str):
+                        stt_model = load_stt_model(stt_model)
                     ref_text = stt_model.generate(ref_audio).text
 
                     del stt_model

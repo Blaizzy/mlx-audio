@@ -470,7 +470,8 @@ class KokoroPipeline:
                     if not chunk.strip():
                         continue
 
-                    ps, _ = self.g2p(chunk)
+                    result = self.g2p(chunk)
+                    ps = result[0] if isinstance(result, tuple) else result
                     if not ps:
                         continue
                     elif len(ps) > 510:
