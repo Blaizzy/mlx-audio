@@ -152,9 +152,14 @@ def _discover_detection_hints(domain: str) -> dict:
         module_path = f"mlx_audio.{domain}.models.{model_type}"
         try:
             module = importlib.import_module(module_path)
+            has_model_entrypoint = hasattr(module, "Model")
+            has_model_config = hasattr(module, "ModelConfig")
 
             # Check for explicit detection hints
             if hasattr(module, "DETECTION_HINTS"):
+                if not has_model_entrypoint:
+                    # Bootstrap-only modules should not participate in autodetection.
+                    continue
                 model_hints = module.DETECTION_HINTS
                 if "config_keys" in model_hints:
                     hints["config_keys"][model_type] = set(model_hints["config_keys"])
@@ -168,15 +173,16 @@ def _discover_detection_hints(domain: str) -> dict:
                     )
             else:
                 # Infer from ModelConfig if available
-                if hasattr(module, "ModelConfig"):
+                if has_model_config:
                     config_keys = _get_config_keys(module.ModelConfig)
                     hints["config_keys"][model_type] = config_keys
 
                 # Use model_type as default path pattern
-                hints["path_patterns"][model_type] = {
-                    model_type,
-                    model_type.replace("_", ""),
-                }
+                if has_model_entrypoint:
+                    hints["path_patterns"][model_type] = {
+                        model_type,
+                        model_type.replace("_", ""),
+                    }
 
         except ImportError:
             continue
@@ -565,6 +571,11 @@ def convert(
 
     # Get model class and instantiate
     model_class = get_model_class(model_type, domain)
+    if not hasattr(model_class, "Model"):
+        raise ValueError(
+            f"Model module '{domain.value}.models.{model_type}' does not expose "
+            "a Model entry point yet."
+        )
 
     model_config = (
         model_class.ModelConfig.from_dict(config)

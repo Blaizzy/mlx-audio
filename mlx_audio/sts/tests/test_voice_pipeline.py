@@ -6,6 +6,19 @@ import pytest
 from mlx_audio.sts.voice_pipeline import VoicePipeline
 
 
+class _DummyVad:
+    def __init__(self, *, return_value=None, exc=None):
+        self._return_value = return_value
+        self._exc = exc
+        self.calls = []
+
+    def is_speech(self, frame, sample_rate):
+        self.calls.append((frame, sample_rate))
+        if self._exc is not None:
+            raise self._exc
+        return self._return_value
+
+
 class TestVoicePipeline:
     def test_initialization_default_params(self):
         """
@@ -110,48 +123,44 @@ class TestVoicePipeline:
         assert pipeline._is_silent(speech_audio_data_np) is np.False_
         assert pipeline._is_silent(speech_audio_data_bytes) is np.False_
 
-    @mock.patch("webrtcvad.Vad.is_speech")
-    def test_voice_activity_detection_vad_speech(self, mock_is_speech):
+    def test_voice_activity_detection_vad_speech(self):
         """
         Test that the voice activity detection returns True for speech frames.
         """
         pipeline = VoicePipeline()
-        mock_is_speech.return_value = True
+        pipeline.vad = _DummyVad(return_value=True)
         frame = b"\x00\x00" * (16000 * 30 // 1000)  # 30ms of silence at 16kHz, 16-bit
         assert pipeline._voice_activity_detection(frame) is True
-        mock_is_speech.assert_called_once_with(frame, pipeline.input_sample_rate)
+        assert pipeline.vad.calls == [(frame, pipeline.input_sample_rate)]
 
-    @mock.patch("webrtcvad.Vad.is_speech")
-    def test_voice_activity_detection_vad_silence(self, mock_is_speech):
+    def test_voice_activity_detection_vad_silence(self):
         """
         Test that the voice activity detection returns False for silent frames.
         """
         pipeline = VoicePipeline()
-        mock_is_speech.return_value = False
+        pipeline.vad = _DummyVad(return_value=False)
         frame = b"\x00\x00" * (16000 * 30 // 1000)
         assert pipeline._voice_activity_detection(frame) is False
-        mock_is_speech.assert_called_once_with(frame, pipeline.input_sample_rate)
+        assert pipeline.vad.calls == [(frame, pipeline.input_sample_rate)]
 
-    @mock.patch("webrtcvad.Vad.is_speech")
-    def test_voice_activity_detection_vad_error_fallback_silent(self, mock_is_speech):
+    def test_voice_activity_detection_vad_error_fallback_silent(self):
         """
         Test that the voice activity detection returns False for silent frames.
         """
         pipeline = VoicePipeline(silence_threshold=0.1)
-        mock_is_speech.side_effect = ValueError("VAD error")
+        pipeline.vad = _DummyVad(exc=ValueError("VAD error"))
 
         frame_np = np.full(480, 0.001, dtype=np.float32)
         frame_bytes = (frame_np * 32768.0).astype(np.int16).tobytes()
 
         assert pipeline._voice_activity_detection(frame_bytes) is False
-        mock_is_speech.assert_called_once_with(frame_bytes, pipeline.input_sample_rate)
+        assert pipeline.vad.calls == [(frame_bytes, pipeline.input_sample_rate)]
 
-    @mock.patch("webrtcvad.Vad.is_speech")
-    def test_voice_activity_detection_vad_error_fallback_speech(self, mock_is_speech):
+    def test_voice_activity_detection_vad_error_fallback_speech(self):
         pipeline = VoicePipeline(silence_threshold=0.01)
-        mock_is_speech.side_effect = ValueError("VAD error")
+        pipeline.vad = _DummyVad(exc=ValueError("VAD error"))
         frame_np = np.full(480, 0.5, dtype=np.float32)
         frame_bytes = (frame_np * 32768.0).astype(np.int16).tobytes()
 
         assert pipeline._voice_activity_detection(frame_bytes) is True
-        mock_is_speech.assert_called_once_with(frame_bytes, pipeline.input_sample_rate)
+        assert pipeline.vad.calls == [(frame_bytes, pipeline.input_sample_rate)]

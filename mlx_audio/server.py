@@ -23,7 +23,6 @@ from urllib.parse import unquote
 import mlx.core as mx
 import numpy as np
 import uvicorn
-import webrtcvad
 from fastapi import (
     FastAPI,
     File,
@@ -67,6 +66,43 @@ def sanitize_for_json(obj: Any) -> Any:
         return float(obj)
     else:
         return obj
+
+
+_RESERVED_MODEL_KWARGS = frozenset({"text", "input", "input_text"})
+
+
+def _reserved_model_kwargs_for_generate(signature: inspect.Signature) -> set[str]:
+    """Return kwargs that must not be passed via `model_kwargs`."""
+    reserved = set(_RESERVED_MODEL_KWARGS)
+    for parameter in signature.parameters.values():
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            reserved.add(parameter.name)
+            break
+    return reserved
+
+
+def _validate_reserved_model_kwargs(
+    *,
+    signature: inspect.Signature,
+    model_kwargs: Optional[dict[str, Any]],
+):
+    if not model_kwargs:
+        return
+    reserved_model_kwargs = _reserved_model_kwargs_for_generate(signature)
+    collisions = sorted(key for key in model_kwargs if key in reserved_model_kwargs)
+    if collisions:
+        collisions_csv = ", ".join(collisions)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "model_kwargs contains reserved generation arguments "
+                f"({collisions_csv}). Pass these as top-level request fields "
+                "instead."
+            ),
+        )
 
 
 MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
@@ -156,6 +192,17 @@ class SpeechRequest(BaseModel):
     model: str
     input: str
     instruct: str | None = None
+    input_type: str | None = None
+    tokens: int | None = None
+    duration_s: float | None = None
+    seconds: float | None = None
+    n_vq_for_inference: int | None = None
+    quality: str | None = None
+    sound_event: str | None = None
+    ambient_sound: str | None = None
+    language: str | None = None
+    preset: str | None = None
+    model_kwargs: dict[str, Any] | None = None
     voice: str | None = None
     speed: float | None = 1.0
     gender: str | None = "male"
@@ -167,9 +214,17 @@ class SpeechRequest(BaseModel):
     top_p: float | None = 0.95
     top_k: int | None = 40
     repetition_penalty: float | None = 1.0
+    repetition_window: int | None = None
     response_format: str | None = "mp3"
     stream: bool = False
     streaming_interval: float = 2.0
+    include_system_prompt: bool | None = None
+    reset_cache: bool | None = None
+    chunk_frames: int | None = None
+    overlap_frames: int | None = None
+    decode_chunk_duration: float | None = None
+    max_pending_frames: int | None = None
+    decode_kwargs: dict[str, Any] | None = None
     max_tokens: int = 1200
     verbose: bool = False
 
@@ -280,25 +335,65 @@ async def generate_audio(model, payload: SpeechRequest):
             ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
         )
 
-    for result in model.generate(
-        payload.input,
-        voice=payload.voice,
-        speed=payload.speed,
-        gender=payload.gender,
-        pitch=payload.pitch,
-        instruct=payload.instruct,
-        lang_code=payload.lang_code,
-        ref_audio=ref_audio,
-        ref_text=payload.ref_text,
-        temperature=payload.temperature,
-        top_p=payload.top_p,
-        top_k=payload.top_k,
-        repetition_penalty=payload.repetition_penalty,
-        stream=payload.stream,
-        streaming_interval=payload.streaming_interval,
-        max_tokens=payload.max_tokens,
-        verbose=payload.verbose,
-    ):
+    generate_kwargs = {
+        "voice": payload.voice,
+        "speed": payload.speed,
+        "gender": payload.gender,
+        "pitch": payload.pitch,
+        "instruct": payload.instruct,
+        "input_type": payload.input_type,
+        "tokens": payload.tokens,
+        "duration_s": (
+            payload.duration_s if payload.duration_s is not None else payload.seconds
+        ),
+        "n_vq_for_inference": payload.n_vq_for_inference,
+        "quality": payload.quality,
+        "sound_event": payload.sound_event,
+        "ambient_sound": payload.ambient_sound,
+        "language": payload.language,
+        "preset": payload.preset,
+        "lang_code": payload.lang_code,
+        "ref_audio": ref_audio,
+        "ref_text": payload.ref_text,
+        "temperature": payload.temperature,
+        "top_p": payload.top_p,
+        "top_k": payload.top_k,
+        "repetition_penalty": payload.repetition_penalty,
+        "repetition_window": payload.repetition_window,
+        "stream": payload.stream,
+        "streaming_interval": payload.streaming_interval,
+        "include_system_prompt": payload.include_system_prompt,
+        "reset_cache": payload.reset_cache,
+        "chunk_frames": payload.chunk_frames,
+        "overlap_frames": payload.overlap_frames,
+        "decode_chunk_duration": payload.decode_chunk_duration,
+        "max_pending_frames": payload.max_pending_frames,
+        "decode_kwargs": payload.decode_kwargs,
+        "max_tokens": payload.max_tokens,
+        "verbose": payload.verbose,
+    }
+
+    signature = inspect.signature(model.generate)
+    if payload.model_kwargs:
+        _validate_reserved_model_kwargs(
+            signature=signature,
+            model_kwargs=payload.model_kwargs,
+        )
+        generate_kwargs.update(payload.model_kwargs)
+    generate_kwargs = {k: v for k, v in generate_kwargs.items() if v is not None}
+
+    supports_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if not supports_var_kwargs:
+        generate_kwargs = {
+            key: value
+            for key, value in generate_kwargs.items()
+            if key in signature.parameters
+        }
+
+    for result in model.generate(payload.input, **generate_kwargs):
 
         if payload.stream:
             buffer = io.BytesIO()
@@ -327,6 +422,10 @@ async def generate_audio(model, payload: SpeechRequest):
 async def tts_speech(payload: SpeechRequest):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
+    _validate_reserved_model_kwargs(
+        signature=inspect.signature(model.generate),
+        model_kwargs=payload.model_kwargs,
+    )
     return StreamingResponse(
         generate_audio(model, payload),
         media_type=f"audio/{payload.response_format}",
@@ -599,16 +698,39 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
         stt_model = model_provider.load_model(model_name)
         print("STT model loaded successfully")
 
-        # Initialize WebRTC VAD for speech detection
-        vad = webrtcvad.Vad(
-            3
-        )  # Mode 3 is most aggressive (0-3, higher = more aggressive)
+        # Initialize WebRTC VAD for speech detection if available. When absent,
+        # fall back to a simple energy-based detector so `mlx-audio[server]`
+        # remains importable/runnable without STS extras.
+        vad = None
+        try:
+            import webrtcvad  # type: ignore
+
+            # Mode 3 is most aggressive (0-3, higher = more aggressive)
+            vad = webrtcvad.Vad(3)
+        except Exception as exc:
+            print(f"WebRTC VAD unavailable; falling back to energy detection: {exc}")
+
+        energy_threshold = float(config.get("vad_energy_threshold", 0.01))
+
+        def _frame_has_speech_energy(frame_int16: np.ndarray) -> bool:
+            frame_float = frame_int16.astype(np.float32) / 32768.0
+            energy = float(np.linalg.norm(frame_float) / np.sqrt(frame_float.size))
+            return energy >= energy_threshold
+
         # VAD requires specific frame sizes: 10ms, 20ms, or 30ms at 8kHz, 16kHz, 32kHz, or 48kHz
         vad_frame_duration_ms = 30  # 30ms frames
         vad_frame_size = int(sample_rate * vad_frame_duration_ms / 1000)
-        print(
-            f"VAD initialized: frame_size={vad_frame_size} samples ({vad_frame_duration_ms}ms at {sample_rate}Hz)"
-        )
+        if vad is None:
+            print(
+                "Energy detector initialized: "
+                f"threshold={energy_threshold}, "
+                f"frame_size={vad_frame_size} samples "
+                f"({vad_frame_duration_ms}ms at {sample_rate}Hz)"
+            )
+        else:
+            print(
+                f"VAD initialized: frame_size={vad_frame_size} samples ({vad_frame_duration_ms}ms at {sample_rate}Hz)"
+            )
 
         # Buffer for accumulating audio chunks with speech
         audio_buffer = []
@@ -654,18 +776,23 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     frame_end = frame_start + vad_frame_size
                     frame = audio_chunk_int16[frame_start:frame_end]
 
-                    # VAD requires exact frame size
+                    # VAD requires exact frame size.
                     if len(frame) == vad_frame_size:
-                        try:
-                            if vad.is_speech(frame.tobytes(), sample_rate):
+                        if vad is None:
+                            if _frame_has_speech_energy(frame):
                                 has_speech = True
                                 speech_frames += 1
-                        except (ValueError, OSError) as e:
-                            # If VAD fails (wrong sample rate or frame size), assume speech (conservative)
-                            # This can happen if sample rate doesn't match VAD requirements
-                            print(f"VAD error (assuming speech): {e}")
-                            has_speech = True
-                            speech_frames += 1
+                        else:
+                            try:
+                                if vad.is_speech(frame.tobytes(), sample_rate):
+                                    has_speech = True
+                                    speech_frames += 1
+                            except (ValueError, OSError) as e:
+                                # Wrong sample rate/frame size etc. Use energy fallback.
+                                print(f"VAD error (fallback to energy): {e}")
+                                if _frame_has_speech_energy(frame):
+                                    has_speech = True
+                                    speech_frames += 1
 
                 # Handle remaining samples that don't form a complete frame
                 # These will be processed in the next chunk

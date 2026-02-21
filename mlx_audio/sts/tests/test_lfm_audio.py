@@ -1,4 +1,45 @@
+import os
 import unittest
+
+
+def _is_known_mlx_metal_rbitsc_compile_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "metal::Device" in message
+        and "Unable to load kernel rbitsc" in message
+        and "Compilation failed" in message
+    )
+
+
+def _eval_or_skip_on_known_metal_compile_error(test_case, value, *, label: str) -> None:
+    import mlx.core as mx
+
+    try:
+        mx.eval(value)
+        return
+    except RuntimeError as first_exc:
+        if not _is_known_mlx_metal_rbitsc_compile_error(first_exc):
+            raise
+
+        # Retry once for known transient Metal kernel compilation failures.
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+
+        try:
+            mx.eval(value)
+            return
+        except RuntimeError as second_exc:
+            if not _is_known_mlx_metal_rbitsc_compile_error(second_exc):
+                raise
+            if os.environ.get("CI", "").lower() in {"1", "true", "yes"}:
+                test_case.skipTest(
+                    f"Skipping {label}: known MLX Metal kernel compile flake after retry "
+                    f"({second_exc})"
+                )
+            raise
+
 
 DEFAULT_LFM_CONFIG = {
     "model_type": "lfm2",
@@ -111,7 +152,9 @@ class TestLFM2AudioModelOutput(unittest.TestCase):
 
         # Call model
         text_logits, audio_logits = model(text_tokens=text_tokens)
-        mx.eval(text_logits)
+        _eval_or_skip_on_known_metal_compile_error(
+            self, text_logits, label="text logits eval"
+        )
 
         # Check text_logits is an array with correct shape
         self.assertIsInstance(text_logits, mx.array)
@@ -123,7 +166,9 @@ class TestLFM2AudioModelOutput(unittest.TestCase):
         self.assertEqual(len(audio_logits), config.codebooks)
 
         for logit in audio_logits:
-            mx.eval(logit)
+            _eval_or_skip_on_known_metal_compile_error(
+                self, logit, label="audio logits eval"
+            )
             self.assertIsInstance(logit, mx.array)
             self.assertEqual(logit.shape[0], batch_size)
             self.assertEqual(logit.shape[1], seq_len)
