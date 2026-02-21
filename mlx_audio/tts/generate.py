@@ -1,7 +1,8 @@
 import argparse
+import json
 import os
 import sys
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -13,6 +14,177 @@ from mlx_audio.utils import load_audio
 
 from .audio_player import AudioPlayer
 from .utils import load_model
+
+_MOSS_PRESET_ALIASES = {
+    "voicegenerator": "voice_generator",
+    "moss_voice_generator": "voice_generator",
+    "moss_voicegenerator": "voice_generator",
+    "moss_voice_design": "voice_generator",
+    "moss_sound_effect": "soundeffect",
+    "sound_effect": "soundeffect",
+    "moss_soundeffect": "soundeffect",
+}
+
+_MOSS_PRESET_TASKS = {
+    "moss_tts": "default_tts",
+    "moss_tts_local": "default_tts",
+    "ttsd": "ttsd",
+    "soundeffect": "soundeffect",
+    "voice_generator": "voice_generator",
+    "realtime": "realtime",
+}
+
+_TASK_DEFAULT_PRESETS = {
+    "ttsd": "ttsd",
+    "soundeffect": "soundeffect",
+    "voice_generator": "voice_generator",
+    "realtime": "realtime",
+}
+
+_REALTIME_ONLY_KWARGS = frozenset(
+    {
+        "chunk_frames",
+        "overlap_frames",
+        "decode_chunk_duration",
+        "max_pending_frames",
+        "repetition_window",
+    }
+)
+
+
+def _normalize_preset(preset: Optional[str]) -> Optional[str]:
+    if preset is None:
+        return None
+    normalized = str(preset).strip().lower().replace("-", "_")
+    return _MOSS_PRESET_ALIASES.get(normalized, normalized)
+
+
+def _normalize_model_type(model_type: Optional[str]) -> Optional[str]:
+    if model_type is None:
+        return None
+    return str(model_type).strip().lower().replace("-", "_")
+
+
+def _looks_like_moss_model(model: Optional[Union[str, nn.Module]]) -> bool:
+    if isinstance(model, str):
+        return "moss" in model.lower()
+    if model is None:
+        return False
+    model_type = _normalize_model_type(getattr(model, "model_type", None))
+    if model_type:
+        return "moss" in model_type
+    return "moss" in str(type(model)).lower()
+
+
+def _is_explicit_realtime_model(model: Optional[Union[str, nn.Module]]) -> bool:
+    if isinstance(model, str):
+        normalized = model.strip().lower().replace("-", "_")
+        return "moss_tts_realtime" in normalized or "moss/tts/realtime" in normalized
+    if model is None:
+        return False
+    model_type = _normalize_model_type(getattr(model, "model_type", None))
+    return model_type == "moss_tts_realtime"
+
+
+def _parse_model_kwargs_json(
+    model_kwargs_json: Optional[Union[str, dict[str, Any]]],
+) -> dict[str, Any]:
+    if model_kwargs_json is None:
+        return {}
+    parsed_kwargs = model_kwargs_json
+    if isinstance(parsed_kwargs, str):
+        try:
+            parsed_kwargs = json.loads(parsed_kwargs)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid --model_kwargs_json value: {exc.msg}") from exc
+    if not isinstance(parsed_kwargs, dict):
+        raise ValueError("--model_kwargs_json must decode to a JSON object")
+    return dict(parsed_kwargs)
+
+
+def _load_dialogue_speakers(
+    dialogue_speakers_json: Optional[str],
+) -> Optional[list[dict[str, Any]]]:
+    if dialogue_speakers_json is None:
+        return None
+    with open(dialogue_speakers_json, "r", encoding="utf-8") as f:
+        raw = json.load(f)
+    if not isinstance(raw, list):
+        raise ValueError("dialogue_speakers_json must contain a JSON list")
+    dialogue_speakers: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ValueError("Each dialogue_speakers item must be a JSON object")
+        dialogue_speakers.append(item)
+    return dialogue_speakers
+
+
+def _infer_gateway_task_and_preset(
+    *,
+    model: Optional[Union[str, nn.Module]],
+    preset: Optional[str],
+    dialogue_speakers: Optional[list[dict[str, Any]]],
+    sound_event: Optional[str],
+    ambient_sound: Optional[str],
+    instruct: Optional[str],
+    repetition_window: Optional[int],
+    passthrough_kwargs: dict[str, Any],
+) -> tuple[str, Optional[str]]:
+    normalized_preset = _normalize_preset(preset)
+    explicit_preset_task = _MOSS_PRESET_TASKS.get(normalized_preset)
+
+    explicit_realtime_marker = _is_explicit_realtime_model(model)
+    realtime_kwarg_marker = bool(_REALTIME_ONLY_KWARGS & set(passthrough_kwargs.keys()))
+    moss_hint = (
+        _looks_like_moss_model(model)
+        or normalized_preset in _MOSS_PRESET_TASKS
+        or bool(dialogue_speakers)
+        or bool(ambient_sound or sound_event)
+    )
+    realtime_marker = (
+        explicit_realtime_marker
+        or normalized_preset == "realtime"
+        or (moss_hint and (repetition_window is not None or realtime_kwarg_marker))
+    )
+
+    ttsd_marker = bool(dialogue_speakers) or normalized_preset == "ttsd"
+    soundeffect_marker = bool(ambient_sound or sound_event) or (
+        normalized_preset == "soundeffect"
+    )
+
+    moss_context = moss_hint or ttsd_marker or soundeffect_marker or realtime_marker
+    has_instruct = bool(str(instruct).strip()) if instruct is not None else False
+    voice_design_marker = normalized_preset == "voice_generator" or (
+        moss_context and has_instruct
+    )
+
+    inferred_task = "default_tts"
+    if realtime_marker:
+        inferred_task = "realtime"
+    elif ttsd_marker:
+        inferred_task = "ttsd"
+    elif soundeffect_marker:
+        inferred_task = "soundeffect"
+    elif voice_design_marker:
+        inferred_task = "voice_generator"
+
+    if (
+        explicit_preset_task is not None
+        and inferred_task != explicit_preset_task
+        and inferred_task != "default_tts"
+    ):
+        raise ValueError(
+            "Incompatible task markers: "
+            f"preset={preset!r} conflicts with inferred task '{inferred_task}'"
+        )
+
+    effective_preset = preset
+    if normalized_preset in _MOSS_PRESET_TASKS:
+        effective_preset = normalized_preset
+    elif inferred_task in _TASK_DEFAULT_PRESETS:
+        effective_preset = _TASK_DEFAULT_PRESETS[inferred_task]
+
+    return inferred_task, effective_preset
 
 
 def detect_speech_boundaries(
@@ -103,11 +275,23 @@ def hertz_to_mel(pitch: float) -> float:
 
 
 def generate_audio(
-    text: str,
+    text: Optional[str],
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
+    tokens: Optional[int] = None,
+    duration_s: Optional[float] = None,
+    seconds: Optional[float] = None,
+    n_vq_for_inference: Optional[int] = None,
     voice: str = "af_heart",
     instruct: Optional[str] = None,
+    quality: Optional[str] = None,
+    sound_event: Optional[str] = None,
+    ambient_sound: Optional[str] = None,
+    language: Optional[str] = None,
+    preset: Optional[str] = None,
+    model_kwargs_json: Optional[Union[str, dict[str, Any]]] = None,
+    dialogue_speakers_json: Optional[str] = None,
+    input_type: str = "text",
     speed: float = 1.0,
     lang_code: str = "en",
     cfg_scale: Optional[float] = None,
@@ -124,8 +308,18 @@ def generate_audio(
     play: bool = False,
     verbose: bool = True,
     temperature: float = 0.7,
+    seed: Optional[int] = None,
+    repetition_window: Optional[int] = None,
     stream: bool = False,
     streaming_interval: float = 2.0,
+    long_form: bool = False,
+    long_form_min_chars: int = 160,
+    long_form_target_chars: int = 320,
+    long_form_max_chars: int = 520,
+    long_form_prefix_audio_seconds: float = 2.0,
+    long_form_prefix_audio_max_tokens: int = 25,
+    long_form_prefix_text_chars: int = 0,
+    long_form_retry_attempts: int = 0,
     **kwargs,
 ) -> None:
     """
@@ -154,7 +348,15 @@ def generate_audio(
     - None: The function writes the generated audio to a file.
     """
     try:
-        play = play or stream
+        if seed is not None:
+            mx.random.seed(int(seed))
+
+        # Keep streaming generation usable in headless/non-interactive runs.
+        # Playback remains explicitly opt-in via --play.
+        play = bool(play)
+
+        if (text is None or text.strip() == "") and ambient_sound:
+            text = ambient_sound
 
         if model is None:
             raise ValueError("Model path or model instance must be provided.")
@@ -202,6 +404,24 @@ def generate_audio(
         if output_path:
             os.makedirs(output_path, exist_ok=True)
             file_prefix = os.path.join(output_path, file_prefix)
+        has_stream_output_sink = bool(output_path)
+        if stream and not play and not has_stream_output_sink:
+            raise ValueError(
+                "Streaming mode requires at least one sink: enable --play or provide --output_path."
+            )
+
+        parsed_model_kwargs_json = _parse_model_kwargs_json(model_kwargs_json)
+        dialogue_speakers = _load_dialogue_speakers(dialogue_speakers_json)
+        _, effective_preset = _infer_gateway_task_and_preset(
+            model=model,
+            preset=preset,
+            dialogue_speakers=dialogue_speakers,
+            sound_event=sound_event,
+            ambient_sound=ambient_sound,
+            instruct=instruct,
+            repetition_window=repetition_window,
+            passthrough_kwargs=kwargs,
+        )
 
         if instruct is not None:
             print(f"\033[94mInstruct:\033[0m {instruct}")
@@ -222,7 +442,18 @@ def generate_audio(
             ref_text=ref_text,
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
+            tokens=tokens,
+            duration_s=duration_s if duration_s is not None else seconds,
+            quality=quality,
+            sound_event=sound_event,
+            ambient_sound=ambient_sound,
+            language=language,
+            preset=effective_preset,
+            n_vq_for_inference=n_vq_for_inference,
+            dialogue_speakers=dialogue_speakers,
+            input_type=input_type,
             temperature=temperature,
+            repetition_window=repetition_window,
             max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
@@ -230,6 +461,25 @@ def generate_audio(
             instruct=instruct,
             **kwargs,
         )
+        gen_kwargs.update(parsed_model_kwargs_json)
+
+        if long_form:
+            gen_kwargs.update(
+                {
+                    "long_form": True,
+                    "long_form_min_chars": int(long_form_min_chars),
+                    "long_form_target_chars": int(long_form_target_chars),
+                    "long_form_max_chars": int(long_form_max_chars),
+                    "long_form_prefix_audio_seconds": float(
+                        long_form_prefix_audio_seconds
+                    ),
+                    "long_form_prefix_audio_max_tokens": int(
+                        long_form_prefix_audio_max_tokens
+                    ),
+                    "long_form_prefix_text_chars": int(long_form_prefix_text_chars),
+                    "long_form_retry_attempts": int(long_form_retry_attempts),
+                }
+            )
 
         results = model.generate(**gen_kwargs)
 
@@ -239,9 +489,20 @@ def generate_audio(
             if play:
                 player.queue_audio(result.audio)
 
-            if join_audio:
+            if join_audio and not stream:
                 audio_list.append(result.audio)
-            elif not stream:
+            if stream and has_stream_output_sink:
+                file_name = f"{file_prefix}_{i:03d}.{audio_format}"
+                audio_write(
+                    file_name,
+                    np.array(result.audio),
+                    result.sample_rate,
+                    format=audio_format,
+                )
+                print(
+                    f"✅ Stream chunk successfully generated and saved as: {file_name}"
+                )
+            elif not stream and not join_audio:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
                 audio_write(
                     file_name,
@@ -271,14 +532,18 @@ def generate_audio(
         if join_audio and not stream:
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
+            joined_file_name = f"{file_prefix}.{audio_format}"
             audio = mx.concatenate(audio_list, axis=0)
             audio_write(
-                f"{file_prefix}.{audio_format}",
+                joined_file_name,
                 audio,
                 model.sample_rate,
+                format=audio_format,
             )
             if verbose:
-                print(f"✅ Audio successfully generated and saving as: {file_name}")
+                print(
+                    f"✅ Audio successfully generated and saving as: {joined_file_name}"
+                )
 
         if play:
             player.wait_for_drain()
@@ -296,6 +561,11 @@ def generate_audio(
         traceback.print_exc()
 
 
+def generate_stream(text: Optional[str], **kwargs) -> None:
+    kwargs["stream"] = True
+    generate_audio(text=text, **kwargs)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate audio from text using TTS.")
     parser.add_argument(
@@ -309,6 +579,32 @@ def parse_args():
         type=int,
         default=1200,
         help="Maximum number of tokens to generate",
+    )
+    parser.add_argument(
+        "--tokens",
+        type=int,
+        default=None,
+        help="Target duration control for models that support token-based timing",
+    )
+    parser.add_argument(
+        "--duration_s",
+        "--seconds",
+        dest="duration_s",
+        type=float,
+        default=None,
+        help=(
+            "Convenience duration control in seconds (mapped to tokens at 12.5 Hz; "
+            "ignored when --tokens is provided)"
+        ),
+    )
+    parser.add_argument(
+        "--n_vq_for_inference",
+        type=int,
+        default=None,
+        help=(
+            "Local-only inference depth override (1..n_vq) for quality/performance "
+            "trade-offs"
+        ),
     )
     parser.add_argument(
         "--text",
@@ -327,6 +623,51 @@ def parse_args():
         type=str,
         default=None,
         help="Instruction for CustomVoice (emotion/style) or VoiceDesign (voice description)",
+    )
+    parser.add_argument(
+        "--quality", type=str, default=None, help="Quality hint for supported models"
+    )
+    parser.add_argument(
+        "--sound_event",
+        type=str,
+        default=None,
+        help="Sound event description for supported models",
+    )
+    parser.add_argument(
+        "--ambient_sound",
+        type=str,
+        default=None,
+        help="Ambient sound description for supported models",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        help="Language hint for supported models",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default=None,
+        help=(
+            "Variant sampling preset (MOSS family): moss_tts, moss_tts_local, "
+            "ttsd, voice_generator, soundeffect, realtime"
+        ),
+    )
+    parser.add_argument(
+        "--model_kwargs_json",
+        type=str,
+        default=None,
+        help="JSON object for advanced model.generate kwargs (escape hatch)",
+    )
+    parser.add_argument(
+        "--dialogue_speakers_json",
+        type=str,
+        default=None,
+        help=(
+            "Path to TTSD speaker schema JSON "
+            "(list of {speaker_id, ref_audio, ref_text/text})"
+        ),
     )
     parser.add_argument(
         "--exaggeration",
@@ -353,6 +694,13 @@ def parse_args():
     )
     parser.add_argument("--pitch", type=float, default=1.0, help="Pitch of the voice")
     parser.add_argument("--lang_code", type=str, default="en", help="Language code")
+    parser.add_argument(
+        "--input_type",
+        type=str,
+        default="text",
+        choices=["text", "pinyin", "ipa"],
+        help="Input representation for supported models",
+    )
     parser.add_argument(
         "--output_path", type=str, default=None, help="Directory path for output files"
     )
@@ -383,6 +731,12 @@ def parse_args():
     parser.add_argument(
         "--temperature", type=float, default=0.7, help="Temperature for the model"
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional random seed for reproducible sampling paths",
+    )
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
     parser.add_argument(
@@ -390,6 +744,15 @@ def parse_args():
         type=float,
         default=1.1,
         help="Repetition penalty for the model",
+    )
+    parser.add_argument(
+        "--repetition_window",
+        type=int,
+        default=None,
+        help=(
+            "Realtime repetition-history window size; <=0 disables windowing "
+            "and applies repetition penalty over full history"
+        ),
     )
     parser.add_argument(
         "--stream",
@@ -402,8 +765,58 @@ def parse_args():
         default=2.0,
         help="The time interval in seconds for streaming segments",
     )
+    parser.add_argument(
+        "--long_form",
+        action="store_true",
+        help="Enable segmented long-form generation for MOSS-TTS variants",
+    )
+    parser.add_argument(
+        "--long_form_min_chars",
+        type=int,
+        default=160,
+        help="Minimum per-segment text budget for long-form planning",
+    )
+    parser.add_argument(
+        "--long_form_target_chars",
+        type=int,
+        default=320,
+        help="Target per-segment text budget for long-form planning",
+    )
+    parser.add_argument(
+        "--long_form_max_chars",
+        type=int,
+        default=520,
+        help="Maximum per-segment text budget for long-form planning",
+    )
+    parser.add_argument(
+        "--long_form_prefix_audio_seconds",
+        type=float,
+        default=2.0,
+        help="Carry-forward tail duration (seconds) between long-form segments",
+    )
+    parser.add_argument(
+        "--long_form_prefix_audio_max_tokens",
+        type=int,
+        default=25,
+        help="Carry-forward tail budget in audio tokens (stricter cap wins)",
+    )
+    parser.add_argument(
+        "--long_form_prefix_text_chars",
+        type=int,
+        default=0,
+        help="Optional carry-forward text window size in characters",
+    )
+    parser.add_argument(
+        "--long_form_retry_attempts",
+        type=int,
+        default=0,
+        help="Retry attempts per long-form segment before failing",
+    )
 
     args = parser.parse_args()
+
+    if args.text is None and args.ambient_sound is not None:
+        args.text = args.ambient_sound
 
     if args.text is None:
         if not sys.stdin.isatty():

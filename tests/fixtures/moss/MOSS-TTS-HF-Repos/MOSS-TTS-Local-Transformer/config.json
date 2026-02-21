@@ -1,0 +1,8 @@
+{
+  "model_type": "moss_tts_delay",
+  "sampling_rate": 24000,
+  "audio_vocab_size": 1024,
+  "n_vq": 32,
+  "vocab_size": 155648,
+  "local_num_layers": 4
+}
