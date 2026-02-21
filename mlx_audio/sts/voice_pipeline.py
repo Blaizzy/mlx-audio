@@ -5,7 +5,6 @@ import logging
 import mlx.core as mx
 import numpy as np
 import sounddevice as sd
-import webrtcvad
 from mlx_lm.generate import generate as generate_text
 from mlx_lm.utils import load as load_llm
 
@@ -44,7 +43,16 @@ class VoicePipeline:
         self.llm_model = llm_model
         self.tts_model = tts_model
 
-        self.vad = webrtcvad.Vad(vad_mode)
+        self.vad = None
+        try:
+            import webrtcvad  # type: ignore
+
+            self.vad = webrtcvad.Vad(vad_mode)
+        except Exception as exc:
+            logger.warning(
+                "WebRTC VAD unavailable; falling back to energy-based detection: %s",
+                exc,
+            )
 
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
@@ -99,6 +107,8 @@ class VoicePipeline:
         return energy < self.silence_threshold
 
     def _voice_activity_detection(self, frame):
+        if self.vad is None:
+            return not self._is_silent(frame)
         try:
             return self.vad.is_speech(frame, self.input_sample_rate)
         except ValueError:
