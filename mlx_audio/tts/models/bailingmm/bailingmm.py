@@ -37,6 +37,17 @@ class ModelConfig(BaseModelArgs):
     ditar_config: Optional[dict] = None
     aggregator_config: Optional[dict] = None
     model_path: Optional[str] = None
+    
+
+    @classmethod
+    def from_dict(cls, config: dict) -> "ModelConfig":
+        return cls(
+            model_type=config.get("model_type", "ming_omni_tts"),
+            text_config=config.get("llm_config"),
+            audio_tokenizer_config=config.get("audio_tokenizer_config"),
+            ditar_config=config.get("ditar_config"),
+            aggregator_config=config.get("aggregator_config"),
+        )
 
 
 def _apply_rope(x: mx.array, base: float, dims: int, offset: int) -> mx.array:
