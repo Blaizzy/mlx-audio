@@ -89,12 +89,12 @@ def main():
     prev = -1
 
     for tk_id in seq:
-        val = int(tk_id) # Ensure native int/compatibility with arrays
-        
+        val = int(tk_id)  # Ensure native int/compatibility with arrays
+
         # Standard CTC rule: drop blanks, drop adjacent duplicates
         if val != prev and val != pad_id:
             collapsed.append(val)
-            
+
         prev = val
 
     # 4. Decode the cleaned list of IDs
