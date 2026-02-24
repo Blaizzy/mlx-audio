@@ -411,8 +411,6 @@ class DurationEncoder(nn.Module):
         return x.transpose(0, 2, 1)
 
 
-# https://github.com/yl4579/StyleTTS2/blob/main/Utils/PLBERT/util.py
-# TODO: Implement this in MLX
 
 
 @dataclass
