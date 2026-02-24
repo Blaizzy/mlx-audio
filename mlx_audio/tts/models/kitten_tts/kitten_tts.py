@@ -1,5 +1,5 @@
-import time
 import math
+import time
 from dataclasses import dataclass
 from numbers import Number
 from pathlib import Path
@@ -12,8 +12,8 @@ import numpy as np
 from ..base import BaseModelArgs, GenerationResult
 from .istftnet import AdainResBlk1d, ConvWeighted, Generator
 from .modules import AlbertEmbeddings, AlbertModelArgs, ProsodyPredictor, TextEncoder
-from .quant import maybe_fake_quant
 from .preprocess import TextPreprocessor
+from .quant import maybe_fake_quant
 
 
 def basic_english_tokenize(text: str) -> List[str]:
@@ -146,9 +146,7 @@ class KittenDecoder(nn.Module):
         )
         self.F0_conv = ConvWeighted(1, 1, kernel_size=3, stride=2, padding=1, groups=1)
         self.N_conv = ConvWeighted(1, 1, kernel_size=3, stride=2, padding=1, groups=1)
-        self.asr_res = [
-            ConvWeighted(dim_in, asr_res_dim, kernel_size=1, padding=0)
-        ]
+        self.asr_res = [ConvWeighted(dim_in, asr_res_dim, kernel_size=1, padding=0)]
         self.generator = Generator(style_dim=style_dim, **istftnet)
 
     def __call__(self, asr: mx.array, f0: mx.array, n: mx.array, s: mx.array):
@@ -253,7 +251,11 @@ class KittenAlbertLayer(nn.Module):
         )
         ffn_output = self.ffn(attention_output)
         x = ffn_output
-        ffn_output = 0.5 * x * (1.0 + mx.tanh(self._gelu_const * (x + self._gelu_const_2 * (x ** 3))))
+        ffn_output = (
+            0.5
+            * x
+            * (1.0 + mx.tanh(self._gelu_const * (x + self._gelu_const_2 * (x**3))))
+        )
         ffn_output = maybe_fake_quant(
             ffn_output, getattr(self, "activation_quant", False)
         )
@@ -291,7 +293,9 @@ class KittenAlbertEncoder(nn.Module):
         )
         hidden_states = self.embedding_hidden_mapping_in(hidden_states)
         for i in range(self.config.num_hidden_layers):
-            group_idx = int(i / (self.config.num_hidden_layers / self.config.num_hidden_groups))
+            group_idx = int(
+                i / (self.config.num_hidden_layers / self.config.num_hidden_groups)
+            )
             layer_group_output = self.albert_layer_groups[group_idx](
                 hidden_states, attention_mask
             )
@@ -337,7 +341,9 @@ class Model(nn.Module):
         self.speed_priors = config.speed_priors or {}
         self.voice_aliases = config.voice_aliases or {}
 
-        self.bert = KittenAlbert(AlbertModelArgs(vocab_size=config.n_token, **config.plbert))
+        self.bert = KittenAlbert(
+            AlbertModelArgs(vocab_size=config.n_token, **config.plbert)
+        )
         self.bert_encoder = nn.Linear(self.bert.config.hidden_size, config.hidden_dim)
         self.context_length = self.bert.config.max_position_embeddings
         self.predictor = KittenProsodyPredictor(
@@ -522,9 +528,7 @@ class Model(nn.Module):
 
         crossfade_samples = int(self.sample_rate * max(crossfade_ms, 0) / 1000)
         fade_out_samples = int(self.sample_rate * max(fade_out_ms, 0) / 1000)
-        tail_silence_samples = int(
-            self.sample_rate * max(tail_silence_ms, 0) / 1000
-        )
+        tail_silence_samples = int(self.sample_rate * max(tail_silence_ms, 0) / 1000)
 
         def _apply_tail(audio: mx.array):
             if audio is None:
@@ -556,7 +560,9 @@ class Model(nn.Module):
                                         if np.any(rms_norm[low_end + 1 :] > resume_rel):
                                             cut_frame = low_end + 1
                                             cut_idx = (
-                                                audio.shape[0] - tail_len + cut_frame * hop
+                                                audio.shape[0]
+                                                - tail_len
+                                                + cut_frame * hop
                                             )
                                             audio = audio[:cut_idx]
                                         break
@@ -595,7 +601,8 @@ class Model(nn.Module):
                     t = mx.arange(fade_len_i, dtype=audio.dtype) / fade_len_i
                     fade_curve = 1.0 - t
                     audio = mx.concatenate(
-                        [audio[:fade_start_i], audio[fade_start_i:] * fade_curve], axis=0
+                        [audio[:fade_start_i], audio[fade_start_i:] * fade_curve],
+                        axis=0,
                     )
             if tail_silence_samples > 0:
                 audio = mx.concatenate(
@@ -657,9 +664,7 @@ class Model(nn.Module):
             duration_secs = int(audio_duration_seconds % 60)
             duration_ms = int((audio_duration_seconds % 1) * 1000)
             duration_hours = int(audio_duration_seconds // 3600)
-            duration_str = (
-                f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
-            )
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
             yield GenerationResult(
                 audio=out_audio,
@@ -672,9 +677,7 @@ class Model(nn.Module):
                 prompt={
                     "tokens": token_count,
                     "tokens-per-sec": (
-                        round(token_count / segment_time, 2)
-                        if segment_time > 0
-                        else 0
+                        round(token_count / segment_time, 2) if segment_time > 0 else 0
                     ),
                 },
                 audio_samples={
@@ -709,9 +712,7 @@ class Model(nn.Module):
             duration_secs = int(audio_duration_seconds % 60)
             duration_ms = int((audio_duration_seconds % 1) * 1000)
             duration_hours = int(audio_duration_seconds // 3600)
-            duration_str = (
-                f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
-            )
+            duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
             yield GenerationResult(
                 audio=pending_audio,

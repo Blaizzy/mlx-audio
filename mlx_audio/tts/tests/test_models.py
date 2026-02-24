@@ -336,6 +336,67 @@ class TestKokoroPipeline(unittest.TestCase):
 
 
 @patch("importlib.resources.open_text", patched_open_text)
+class TestKittenTTSModel(unittest.TestCase):
+    def _config(self):
+        return {
+            "hidden_dim": 16,
+            "max_conv_dim": 16,
+            "max_dur": 10,
+            "n_layer": 1,
+            "n_mels": 80,
+            "n_token": 32,
+            "style_dim": 64,
+            "text_encoder_kernel_size": 3,
+            "asr_res_dim": 8,
+            "decoder_out_dim": 16,
+            "plbert": {
+                "num_hidden_layers": 1,
+                "num_attention_heads": 1,
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "max_position_embeddings": 32,
+                "embedding_size": 16,
+                "inner_group_num": 1,
+                "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0,
+                "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2,
+                "layer_norm_eps": 1e-12,
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3],
+                "upsample_rates": [2, 2],
+                "upsample_initial_channel": 32,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [4, 4],
+                "gen_istft_n_fft": 16,
+                "gen_istft_hop_size": 4,
+            },
+        }
+
+    def test_init(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+        self.assertIsInstance(model, nn.Module)
+        self.assertEqual(model.config.n_token, config["n_token"])
+
+    def test_sanitize_alpha_names(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+        weights = {
+            "decoder.generator.resblocks.0.alpha1.0": mx.ones((1, 1, 1)),
+            "decoder.generator.resblocks.0.alpha2.0": mx.ones((1, 1, 1)),
+        }
+        sanitized = model.sanitize(weights)
+        self.assertIn("decoder.generator.resblocks.0.alpha1_0", sanitized)
+        self.assertIn("decoder.generator.resblocks.0.alpha2_0", sanitized)
+        self.assertNotIn("decoder.generator.resblocks.0.alpha1.0", sanitized)
+
+
 class TestBarkModel(unittest.TestCase):
     @patch("mlx_audio.tts.models.bark.bark.BertTokenizer")
     def test_init(self, mock_tokenizer):

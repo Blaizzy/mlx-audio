@@ -5,10 +5,9 @@ from typing import List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-from .quant import maybe_fake_quant
-
 from ..base import BaseModelArgs
 from .istftnet import AdainResBlk1d, ConvWeighted
+from .quant import maybe_fake_quant
 
 
 class LinearNorm(nn.Module):
@@ -38,7 +37,6 @@ class TextEncoder(nn.Module):
                     nn.Dropout(0.2),
                 ]
             )
-        # MLX doesn't have built-in LSTM, so we'll implement a simplified version
         self.lstm = LSTM(channels, channels // 2)
 
     def __call__(self, x, input_lengths, m):
@@ -72,7 +70,6 @@ class TextEncoder(nn.Module):
 
 
 class AdaLayerNorm(nn.Module):
-    # Works fine in MLX
     def __init__(self, style_dim, channels, eps=1e-5):
         super().__init__()
         self.channels = channels
@@ -178,9 +175,7 @@ class LSTM(nn.Module):
         # Process sequence in forward direction (0 to seq_len-1)
         for idx in range(seq_len):
             ifgo = x_proj[..., idx, :]
-            h = maybe_fake_quant(
-                hidden, getattr(self, "activation_quant", False)
-            )
+            h = maybe_fake_quant(hidden, getattr(self, "activation_quant", False))
             ifgo = ifgo + h @ self.Wh_forward.T
 
             # Split gates
@@ -226,9 +221,7 @@ class LSTM(nn.Module):
         # Process sequence in backward direction (seq_len-1 to 0)
         for idx in range(seq_len - 1, -1, -1):
             ifgo = x_proj[..., idx, :]
-            h = maybe_fake_quant(
-                hidden, getattr(self, "activation_quant", False)
-            )
+            h = maybe_fake_quant(hidden, getattr(self, "activation_quant", False))
             ifgo = ifgo + h @ self.Wh_backward.T
 
             # Split gates
@@ -375,9 +368,7 @@ class ProsodyPredictor(nn.Module):
             F0 = block(F0, s)
 
         F0 = F0.swapaxes(2, 1)
-        F0_in = maybe_fake_quant(
-            F0, getattr(self.F0_proj, "activation_quant", False)
-        )
+        F0_in = maybe_fake_quant(F0, getattr(self.F0_proj, "activation_quant", False))
         F0 = self.F0_proj(F0_in)
         F0 = F0.swapaxes(2, 1)
 
@@ -386,9 +377,7 @@ class ProsodyPredictor(nn.Module):
         for block in self.N:
             N = block(N, s)
         N = N.swapaxes(2, 1)
-        N_in = maybe_fake_quant(
-            N, getattr(self.N_proj, "activation_quant", False)
-        )
+        N_in = maybe_fake_quant(N, getattr(self.N_proj, "activation_quant", False))
         N = self.N_proj(N_in)
         N = N.swapaxes(2, 1)
 
@@ -427,8 +416,6 @@ class DurationEncoder(nn.Module):
                 x_pad[:, :, : x.shape[-1]] = x
                 x = x_pad
         return x.transpose(0, 2, 1)
-
-
 
 
 @dataclass

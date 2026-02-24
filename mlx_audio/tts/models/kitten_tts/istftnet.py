@@ -8,8 +8,8 @@ import numpy as np
 from mlx_audio.utils import istft, stft
 
 from ..base import check_array_shape
-from .quant import maybe_fake_quant
 from ..interpolate import interpolate
+from .quant import maybe_fake_quant
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -972,14 +972,14 @@ class Decoder(nn.Module):
         x = self.encode(x, s)
         asr_res = self.asr_res[0](asr.swapaxes(2, 1), mx.conv1d).swapaxes(2, 1)
         res = True
-        for block in self.decode:  # Working in MLX
+        for block in self.decode:
             if res:
                 x = mx.concatenate([x, asr_res, F0, N], axis=1)
             x = block(x, s)
             # Check if this block has upsampling
             if hasattr(block, "upsample_type") and block.upsample_type != "none":
                 res = False
-        x = self.generator(x, s, F0_curve)  # Working in MLX
+        x = self.generator(x, s, F0_curve)
         return x
 
     def sanitize(self, key, weights):

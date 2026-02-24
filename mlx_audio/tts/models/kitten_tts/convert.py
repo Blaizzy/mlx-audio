@@ -2,21 +2,22 @@ import argparse
 import json
 import re
 from pathlib import Path
-from typing import Dict, Tuple, List
-
-import numpy as np
-import onnx
-from onnx import helper, numpy_helper
+from typing import Dict, List, Tuple
 
 import mlx.core as mx
+import numpy as np
+import onnx
+from huggingface_hub import hf_hub_download, snapshot_download
 from mlx.utils import tree_flatten
 from mlx_lm.utils import save_config, save_model
-from huggingface_hub import hf_hub_download, snapshot_download
+from onnx import helper, numpy_helper
 
 from .kitten_tts import Model, ModelConfig
 
 
-def _load_onnx(repo_id: str, token: str | None, revision: str | None) -> Tuple[Path, dict]:
+def _load_onnx(
+    repo_id: str, token: str | None, revision: str | None
+) -> Tuple[Path, dict]:
     snapshot_dir = snapshot_download(
         repo_id,
         revision=revision,
@@ -268,7 +269,10 @@ def _infer_config(model: onnx.ModelProto, base_config: dict) -> dict:
 
     gen_istft_hop_size = 5
     for node in model.graph.node:
-        if "stft.weight_forward_real" in " ".join(node.input) and node.op_type == "Conv":
+        if (
+            "stft.weight_forward_real" in " ".join(node.input)
+            and node.op_type == "Conv"
+        ):
             for attr in node.attribute:
                 if attr.name == "strides":
                     gen_istft_hop_size = int(onnx.helper.get_attribute_value(attr)[0])
@@ -281,7 +285,9 @@ def _infer_config(model: onnx.ModelProto, base_config: dict) -> dict:
             m = re.search(r"ups\.(\d+)", node.name)
             if m:
                 idx = int(m.group(1))
-                attrs = {a.name: onnx.helper.get_attribute_value(a) for a in node.attribute}
+                attrs = {
+                    a.name: onnx.helper.get_attribute_value(a) for a in node.attribute
+                }
                 upsample_nodes.append(
                     (idx, int(attrs["strides"][0]), int(attrs["kernel_shape"][0]))
                 )
@@ -610,7 +616,9 @@ def _weights_from_onnx(model: onnx.ModelProto, mlx_model: Model) -> Dict[str, mx
                 elif w.T.shape == expected:
                     w = w.T
                 else:
-                    raise ValueError(f"Shape mismatch for {target}: {w.shape} vs {expected}")
+                    raise ValueError(
+                        f"Shape mismatch for {target}: {w.shape} vs {expected}"
+                    )
             weights[target] = mx.array(w)
             continue
 

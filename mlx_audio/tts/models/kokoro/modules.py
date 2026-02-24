@@ -411,8 +411,6 @@ class DurationEncoder(nn.Module):
         return x.transpose(0, 2, 1)
 
 
-
-
 @dataclass
 class AlbertModelArgs(BaseModelArgs):
     num_hidden_layers: int
