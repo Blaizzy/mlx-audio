@@ -10,9 +10,9 @@ import mlx.nn as nn
 import numpy as np
 
 from ..base import BaseModelArgs, GenerationResult
-from ..kokoro.istftnet import AdainResBlk1d, ConvWeighted, Generator
-from ..kokoro.modules import AlbertEmbeddings, AlbertModelArgs, ProsodyPredictor, TextEncoder
-from ..kokoro.quant import maybe_fake_quant
+from .istftnet import AdainResBlk1d, ConvWeighted, Generator
+from .modules import AlbertEmbeddings, AlbertModelArgs, ProsodyPredictor, TextEncoder
+from .quant import maybe_fake_quant
 from .preprocess import TextPreprocessor
 
 
@@ -378,6 +378,18 @@ class Model(nn.Module):
                 continue
             if any(q == name or q.startswith(f"{name}.") for q in module_set):
                 setattr(module, "activation_quant", True)
+
+    def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        # Compatibility: older exports used dot-form Snake alpha names (alpha1.0 / alpha2.0).
+        if any(".alpha1." in k or ".alpha2." in k for k in weights.keys()) and not any(
+            "alpha1_" in k or "alpha2_" in k for k in weights.keys()
+        ):
+            remapped = {}
+            for k, v in weights.items():
+                nk = k.replace(".alpha1.", ".alpha1_").replace(".alpha2.", ".alpha2_")
+                remapped[nk] = v
+            return remapped
+        return weights
 
     @classmethod
     def post_load_hook(cls, model, model_path: Path):

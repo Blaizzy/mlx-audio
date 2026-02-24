@@ -5,6 +5,8 @@ from typing import List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 
+from .quant import maybe_fake_quant
+
 from ..base import BaseModelArgs
 from .istftnet import AdainResBlk1d, ConvWeighted
 
@@ -15,6 +17,7 @@ class LinearNorm(nn.Module):
         self.linear_layer = nn.Linear(in_dim, out_dim, bias=bias)
 
     def __call__(self, x):
+        x = maybe_fake_quant(x, getattr(self, "activation_quant", False))
         return self.linear_layer(x)
 
 
@@ -77,6 +80,7 @@ class AdaLayerNorm(nn.Module):
         self.fc = nn.Linear(style_dim, channels * 2)
 
     def __call__(self, x, s):
+        s = maybe_fake_quant(s, getattr(self, "activation_quant", False))
         h = self.fc(s)
         h = mx.reshape(h, (h.shape[0], h.shape[1], 1))
         gamma, beta = mx.split(h, 2, axis=1)
@@ -151,6 +155,7 @@ class LSTM(nn.Module):
 
     def _forward_direction(self, x, hidden=None, cell=None):
         """Process sequence in forward direction"""
+        x = maybe_fake_quant(x, getattr(self, "activation_quant", False))
         # Pre-compute input projections
         if self.bias_ih_forward is not None and self.bias_hh_forward is not None:
             x_proj = mx.addmm(
@@ -173,7 +178,10 @@ class LSTM(nn.Module):
         # Process sequence in forward direction (0 to seq_len-1)
         for idx in range(seq_len):
             ifgo = x_proj[..., idx, :]
-            ifgo = ifgo + hidden @ self.Wh_forward.T
+            h = maybe_fake_quant(
+                hidden, getattr(self, "activation_quant", False)
+            )
+            ifgo = ifgo + h @ self.Wh_forward.T
 
             # Split gates
             i, f, g, o = mx.split(ifgo, 4, axis=-1)
@@ -195,6 +203,7 @@ class LSTM(nn.Module):
 
     def _backward_direction(self, x, hidden=None, cell=None):
         """Process sequence in backward direction"""
+        x = maybe_fake_quant(x, getattr(self, "activation_quant", False))
         # Pre-compute input projections
         if self.bias_ih_backward is not None and self.bias_hh_backward is not None:
             x_proj = mx.addmm(
@@ -217,7 +226,10 @@ class LSTM(nn.Module):
         # Process sequence in backward direction (seq_len-1 to 0)
         for idx in range(seq_len - 1, -1, -1):
             ifgo = x_proj[..., idx, :]
-            ifgo = ifgo + hidden @ self.Wh_backward.T
+            h = maybe_fake_quant(
+                hidden, getattr(self, "activation_quant", False)
+            )
+            ifgo = ifgo + h @ self.Wh_backward.T
 
             # Split gates
             i, f, g, o = mx.split(ifgo, 4, axis=-1)
@@ -363,7 +375,10 @@ class ProsodyPredictor(nn.Module):
             F0 = block(F0, s)
 
         F0 = F0.swapaxes(2, 1)
-        F0 = self.F0_proj(F0)
+        F0_in = maybe_fake_quant(
+            F0, getattr(self.F0_proj, "activation_quant", False)
+        )
+        F0 = self.F0_proj(F0_in)
         F0 = F0.swapaxes(2, 1)
 
         # N prediction
@@ -371,7 +386,10 @@ class ProsodyPredictor(nn.Module):
         for block in self.N:
             N = block(N, s)
         N = N.swapaxes(2, 1)
-        N = self.N_proj(N)
+        N_in = maybe_fake_quant(
+            N, getattr(self.N_proj, "activation_quant", False)
+        )
+        N = self.N_proj(N_in)
         N = N.swapaxes(2, 1)
 
         return mx.squeeze(F0, axis=1), mx.squeeze(N, axis=1)

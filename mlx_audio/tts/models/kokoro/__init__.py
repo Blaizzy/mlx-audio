@@ -1,8 +1,4 @@
 from .kokoro import Model, ModelConfig
-
-try:
-    from .pipeline import KokoroPipeline
-except Exception:  # Optional dependency (misaki)
-    KokoroPipeline = None
+from .pipeline import KokoroPipeline
 
 __all__ = ["KokoroPipeline", "Model", "ModelConfig"]
