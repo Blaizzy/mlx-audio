@@ -850,7 +850,10 @@ class Qwen3ASRModel(nn.Module):
         return input_features, feature_attention_mask, num_audio_tokens
 
     def _build_prompt(
-        self, num_audio_tokens: int, language: str = "English"
+        self,
+        num_audio_tokens: int,
+        language: str = "English",
+        system_prompt: str | None = None,
     ) -> mx.array:
         """Build prompt with audio tokens."""
         supported = self.config.support_languages or []
@@ -859,8 +862,9 @@ class Qwen3ASRModel(nn.Module):
         # Match language (case-insensitive) against supported languages
         lang_name = supported_lower.get(language.lower(), language)
 
+        system_content = f"{system_prompt}\n" if system_prompt else ""
         prompt = (
-            f"<|im_start|>system\n<|im_end|>\n"
+            f"<|im_start|>system\n{system_content}<|im_end|>\n"
             f"<|im_start|>user\n<|audio_start|>{'<|audio_pad|>' * num_audio_tokens}<|audio_end|><|im_end|>\n"
             f"<|im_start|>assistant\nlanguage {lang_name}<asr_text>"
         )
@@ -878,6 +882,7 @@ class Qwen3ASRModel(nn.Module):
         language: str = "English",
         prefill_step_size: int = 2048,
         verbose: bool = False,
+        system_prompt: str | None = None,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         """Stream generate tokens from audio using mlx_lm generate_step."""
         from mlx_lm.generate import generate_step
@@ -890,7 +895,7 @@ class Qwen3ASRModel(nn.Module):
         input_features, feature_attention_mask, num_audio_tokens = (
             self._preprocess_audio(audio)
         )
-        input_ids = self._build_prompt(num_audio_tokens, language)
+        input_ids = self._build_prompt(num_audio_tokens, language, system_prompt)
         eos_token_ids = [151645, 151643]
 
         # Step 1: Encode audio features
@@ -981,6 +986,7 @@ class Qwen3ASRModel(nn.Module):
         language: str = "English",
         prefill_step_size: int = 2048,
         verbose: bool = False,
+        system_prompt: str | None = None,
     ) -> Tuple[str, int, int]:
         """Generate transcription for a single audio chunk.
 
@@ -998,11 +1004,14 @@ class Qwen3ASRModel(nn.Module):
             language=language,
             prefill_step_size=prefill_step_size,
             verbose=verbose,
+            system_prompt=system_prompt,
         ):
             if prompt_tokens == 0:
                 # Get prompt tokens from first iteration
                 _, _, num_audio_tokens = self._preprocess_audio(audio_chunk)
-                input_ids = self._build_prompt(num_audio_tokens, language)
+                input_ids = self._build_prompt(
+                    num_audio_tokens, language, system_prompt
+                )
                 prompt_tokens = input_ids.shape[1]
             generated_tokens.append(int(token))
 
@@ -1027,6 +1036,7 @@ class Qwen3ASRModel(nn.Module):
         min_chunk_duration: float = 1.0,
         verbose: bool = False,
         stream: bool = False,
+        system_prompt: str | None = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[str, None, None]]:
         """Generate transcription from audio.
@@ -1055,6 +1065,7 @@ class Qwen3ASRModel(nn.Module):
                 chunk_duration=chunk_duration,
                 min_chunk_duration=min_chunk_duration,
                 verbose=verbose,
+                system_prompt=system_prompt,
             )
 
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
@@ -1129,6 +1140,7 @@ class Qwen3ASRModel(nn.Module):
                 prefill_step_size=prefill_step_size,
                 verbose=verbose
                 and len(chunks) == 1,  # Only show inner progress for single chunk
+                system_prompt=system_prompt,
             )
             all_texts.append(text)
             total_prompt_tokens += prompt_toks
@@ -1188,6 +1200,7 @@ class Qwen3ASRModel(nn.Module):
         chunk_duration: float = 1200.0,
         min_chunk_duration: float = 1.0,
         verbose: bool = False,
+        system_prompt: str | None = None,
     ) -> Generator[StreamingResult, None, None]:
         """Stream transcription token-by-token from audio.
 
@@ -1263,7 +1276,7 @@ class Qwen3ASRModel(nn.Module):
 
             # Get prompt tokens for this chunk
             _, _, num_audio_tokens = self._preprocess_audio(chunk_audio)
-            input_ids = self._build_prompt(num_audio_tokens, language)
+            input_ids = self._build_prompt(num_audio_tokens, language, system_prompt)
             chunk_prompt_tokens = input_ids.shape[1]
             total_prompt_tokens += chunk_prompt_tokens
 
@@ -1275,6 +1288,7 @@ class Qwen3ASRModel(nn.Module):
                 language=language,
                 prefill_step_size=prefill_step_size,
                 verbose=verbose and len(chunks) == 1,
+                system_prompt=system_prompt,
             ):
                 text = self._tokenizer.decode([int(token)])
 
