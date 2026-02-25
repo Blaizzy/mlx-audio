@@ -1,0 +1,647 @@
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import mlx.core as mx
+import mlx.nn as nn
+
+from mlx_audio.tts.models.moss_tts.config import ModelConfig
+from mlx_audio.tts.models.moss_tts.local_model import MossTTSLocalModel
+from mlx_audio.tts.models.moss_tts.model import Model
+from mlx_audio.tts.models.moss_tts.processor import MossTTSProcessor
+from mlx_audio.tts.models.moss_tts.sampling import (
+    apply_repetition_penalty,
+    resolve_channel_sampling_configs,
+)
+
+
+def _tiny_local_config_dict():
+    return {
+        "model_type": "moss_tts_delay",
+        "language_config": {
+            "model_type": "qwen3",
+            "hidden_size": 16,
+            "num_hidden_layers": 2,
+            "intermediate_size": 32,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 4,
+            "max_position_embeddings": 128,
+            "rope_theta": 10000.0,
+            "rms_norm_eps": 1e-6,
+            "vocab_size": 64,
+            "tie_word_embeddings": True,
+            "attention_bias": False,
+        },
+        "n_vq": 2,
+        "audio_vocab_size": 16,
+        "audio_user_slot_token_id": 40,
+        "audio_assistant_gen_slot_token_id": 41,
+        "audio_assistant_delay_slot_token_id": 42,
+        "audio_start_token_id": 43,
+        "audio_end_token_id": 44,
+        "pad_token_id": 0,
+        "im_start_token_id": 1,
+        "im_end_token_id": 2,
+        "audio_pad_code": 16,
+        "sampling_rate": 24000,
+        "additional_mlp_ffn_hidden_size": 24,
+        "local_ffn_hidden_size": 24,
+        "local_hidden_size": 12,
+        "local_num_layers": 2,
+    }
+
+
+class _DummyTokenizer:
+    def __init__(self, special_id_to_token):
+        self.special_id_to_token = dict(special_id_to_token)
+        self.special_token_to_id = {v: k for k, v in special_id_to_token.items()}
+
+    def convert_ids_to_tokens(self, token_id):
+        return self.special_id_to_token.get(int(token_id), chr(97 + int(token_id) % 26))
+
+    def encode(self, text):
+        output = []
+        for char in text:
+            if char in self.special_token_to_id:
+                output.append(self.special_token_to_id[char])
+            else:
+                output.append((ord(char) % 20) + 3)
+        return output
+
+    def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=False):
+        joined = "".join(m["content"] for m in messages)
+        if add_generation_prompt:
+            joined = joined + "<assistant>"
+        return joined
+
+    def decode(self, token_ids):
+        chars = [self.convert_ids_to_tokens(token_id) for token_id in token_ids]
+        return "".join(chars)
+
+
+class _DummyAudioTokenizer:
+    def batch_encode(self, wav_list, num_quantizers=None):
+        n_q = int(num_quantizers or 2)
+        batch = len(wav_list)
+        codes = mx.zeros((n_q, batch, 2), dtype=mx.int32)
+        for b in range(batch):
+            for q in range(n_q):
+                codes[q, b, 0] = q + 1
+                codes[q, b, 1] = q + 2
+        lengths = mx.full((batch,), 2, dtype=mx.int32)
+        return SimpleNamespace(audio_codes=codes, audio_codes_lengths=lengths)
+
+    def decode(
+        self, audio_codes, return_dict=True, chunk_duration=8.0, num_quantizers=None
+    ):
+        if audio_codes.ndim == 2:
+            steps = int(audio_codes.shape[1])
+        else:
+            steps = int(audio_codes.shape[-1])
+        samples = steps * 10
+        audio = mx.linspace(0, 1, samples, dtype=mx.float32)[None, None, :]
+        lengths = mx.array([samples], dtype=mx.int32)
+        return SimpleNamespace(audio=audio, audio_lengths=lengths)
+
+
+def _build_dummy_processor(config: ModelConfig) -> MossTTSProcessor:
+    token_map = {
+        config.audio_user_slot_token_id: "§",
+        config.audio_assistant_gen_slot_token_id: "¤",
+        config.audio_assistant_delay_slot_token_id: "¦",
+        config.audio_start_token_id: "†",
+        config.audio_end_token_id: "‡",
+    }
+    tokenizer = _DummyTokenizer(token_map)
+    return MossTTSProcessor(
+        tokenizer=tokenizer,
+        audio_tokenizer=_DummyAudioTokenizer(),
+        model_config=config,
+    )
+
+
+class TestMossTTSLocalRuntime(unittest.TestCase):
+    def test_model_config_detects_local_vs_delay(self):
+        local = ModelConfig.from_dict(_tiny_local_config_dict())
+        self.assertTrue(local.is_local_variant)
+        local_transformer = local.local_transformer_config()
+        self.assertEqual(local_transformer.hidden_size, local.local_hidden_size)
+        self.assertEqual(local_transformer.head_dim, local.language_config.head_dim)
+
+        delay_payload = _tiny_local_config_dict()
+        delay_payload.pop("local_num_layers")
+        delay_payload.pop("local_hidden_size")
+        delay_payload.pop("local_ffn_hidden_size")
+        delay = ModelConfig.from_dict(delay_payload)
+        self.assertFalse(delay.is_local_variant)
+
+    def test_local_model_shape_contracts(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = MossTTSLocalModel(config)
+
+        input_ids = mx.zeros((1, 4, config.channels), dtype=mx.int32)
+        hidden = model(
+            input_ids, cache=model.make_cache(), n_vq_for_inference=config.n_vq
+        )
+        self.assertEqual(hidden.shape, (1, 4, config.hidden_size))
+
+        sampling = resolve_channel_sampling_configs(
+            config.channels,
+            default_temperature=1.0,
+            default_top_p=1.0,
+            default_top_k=0,
+            default_repetition_penalty=1.0,
+            do_samples=[False] * config.channels,
+        )
+        next_tokens = model.sample_next_channels(
+            hidden[:, -1, :],
+            input_ids,
+            sampling,
+            n_vq_for_inference=config.n_vq,
+        )
+        self.assertEqual(next_tokens.shape, (1, config.channels))
+
+    def test_local_sanitize_remaps_expected_prefixes(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+
+        weights = {
+            "model.language_model.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
+            "model.embedding_list.0.weight": mx.ones((8, 8)),
+            "local_transformer.layers.0.self_attn.q_proj.weight": mx.ones((4, 4)),
+            "speech_embedding_to_local_mlp.gate_proj.weight": mx.ones((4, 4)),
+            "local_to_speech_embedding_mlps.0.gate_proj.weight": mx.ones((4, 4)),
+            "layer_norm_before_lm_heads.0.weight": mx.ones((4,)),
+            "lm_heads.0.weight": mx.ones((4, 4)),
+            "model.language_model.embed_tokens.weight": mx.ones((4, 4)),
+            "foo.num_batches_tracked": mx.array(0),
+        }
+
+        sanitized = model.sanitize(weights)
+        self.assertIn("model.backbone.layers.0.self_attn.q_proj.weight", sanitized)
+        self.assertIn("model.embedding_list.0.weight", sanitized)
+        self.assertIn(
+            "model.local_transformer.layers.0.self_attn.q_proj.weight", sanitized
+        )
+        self.assertIn("model.speech_embedding_to_local_mlp.gate_proj.weight", sanitized)
+        self.assertIn(
+            "model.local_to_speech_embedding_mlps.0.gate_proj.weight", sanitized
+        )
+        self.assertIn("model.layer_norm_before_lm_heads.0.weight", sanitized)
+        self.assertIn("model.lm_heads.0.weight", sanitized)
+        self.assertNotIn("model.backbone.embed_tokens.weight", sanitized)
+        self.assertNotIn("foo.num_batches_tracked", sanitized)
+
+    def test_quant_predicate_blocks_sensitive_modules(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        self.assertFalse(
+            model.model_quant_predicate("model.embedding_list.0", nn.Embedding(2, 2))
+        )
+        self.assertFalse(
+            model.model_quant_predicate("model.lm_heads.0", nn.Linear(2, 2))
+        )
+        self.assertFalse(
+            model.model_quant_predicate(
+                "model.layer_norm_before_lm_heads.0",
+                nn.RMSNorm(2),
+            )
+        )
+        self.assertTrue(
+            model.model_quant_predicate("model.backbone.layers.0", nn.Linear(2, 2))
+        )
+
+    def test_processor_user_message_and_input_type_contract(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        processor = _build_dummy_processor(config)
+
+        msg = processor.build_user_message(
+            text="ni3 hao3",
+            reference=[mx.zeros((240,)), None],
+            instruction="warm",
+            tokens=32,
+            sound_event="speech",
+            ambient_sound="studio",
+            language="zh",
+            input_type="pinyin",
+        )
+        packed = processor.prepare_generation_inputs(
+            msg, n_vq=config.n_vq, apply_chat_template=False
+        )
+        self.assertEqual(packed["input_ids"].shape[0], 1)
+        self.assertEqual(packed["input_ids"].shape[2], 1 + config.n_vq)
+        self.assertEqual(
+            int(packed["input_ids"][0, -1, 0]), config.audio_start_token_id
+        )
+        self.assertIn("[S1]:", msg["content"])
+        self.assertIn("[S2]: None", msg["content"])
+        self.assertIn("Sound Event:\nspeech", msg["content"])
+        self.assertIn("Ambient Sound:\nstudio", msg["content"])
+
+        with self.assertRaises(ValueError):
+            processor.build_user_message(text="hello", input_type="kana")
+
+    def test_generate_streaming_smoke_with_stubbed_channel_sampler(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        generated = {"count": 0}
+
+        def fake_sample_next_channels(*args, **kwargs):
+            generated["count"] += 1
+            if generated["count"] < 4:
+                text_token = config.audio_assistant_gen_slot_token_id
+            else:
+                text_token = config.audio_end_token_id
+            return mx.array(
+                [[text_token, 1, 2]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model, "sample_next_channels", side_effect=fake_sample_next_channels
+        ):
+            results = list(
+                model.generate(
+                    text="hello",
+                    stream=True,
+                    streaming_interval=0.05,
+                    max_tokens=6,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertTrue(results[-1].is_final_chunk)
+        self.assertTrue(any(r.samples > 0 for r in results))
+
+    def test_repetition_penalty_handles_bfloat16_logits(self):
+        logits = mx.array([[1.5, -0.3, 0.9]], dtype=mx.bfloat16)
+        history = mx.array([[0, 2, 2]], dtype=mx.int32)
+
+        penalized = apply_repetition_penalty(logits, history, penalty=1.2)
+
+        self.assertEqual(penalized.shape, logits.shape)
+        self.assertEqual(penalized.dtype, logits.dtype)
+
+    def test_request_resolution_allows_instruct_with_ref_text(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+
+        request = model._resolve_generation_request(
+            text="hello",
+            ref_audio="ref.wav",
+            ref_text="greetings",
+            instruct="warm tone",
+        )
+        self.assertEqual(request.reference, ["ref.wav"])
+        self.assertIn("warm tone", request.instruction)
+        self.assertIn("Reference transcript: greetings", request.instruction)
+
+    def test_request_resolution_maps_duration_seconds_to_tokens(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+
+        request_from_duration = model._resolve_generation_request(
+            text="hello",
+            ref_audio=None,
+            ref_text=None,
+            instruct=None,
+            duration_s=2.0,
+        )
+        request_from_alias = model._resolve_generation_request(
+            text="hello",
+            ref_audio=None,
+            ref_text=None,
+            instruct=None,
+            seconds=2.0,
+        )
+        request_with_tokens = model._resolve_generation_request(
+            text="hello",
+            ref_audio=None,
+            ref_text=None,
+            instruct=None,
+            tokens=7,
+            duration_s=2.0,
+        )
+
+        self.assertEqual(request_from_duration.tokens, 25)
+        self.assertEqual(request_from_alias.tokens, 25)
+        self.assertEqual(request_with_tokens.tokens, 7)
+
+        with self.assertRaises(ValueError):
+            model._resolve_generation_request(
+                text="hello",
+                ref_audio=None,
+                ref_text=None,
+                instruct=None,
+                duration_s=0.0,
+            )
+
+    def test_local_generate_honors_explicit_token_budget_past_early_audio_end(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        generated = {"count": 0}
+        sequence = [
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_end_token_id,
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_assistant_gen_slot_token_id,
+            config.audio_assistant_gen_slot_token_id,
+        ]
+
+        def fake_sample_next_channels(*args, **kwargs):
+            idx = generated["count"]
+            generated["count"] += 1
+            text_token = sequence[min(idx, len(sequence) - 1)]
+            return mx.array(
+                [[text_token, 1, 2]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model,
+            "sample_next_channels",
+            side_effect=fake_sample_next_channels,
+        ):
+            results = list(
+                model.generate(
+                    text="hello",
+                    tokens=5,
+                    max_tokens=20,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertEqual(generated["count"], 5)
+        self.assertEqual(results[-1].token_count, 5)
+        self.assertGreater(results[-1].samples, 0)
+
+    def test_local_natural_stop_applies_min_audio_rows_guard(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        disallow_history = []
+
+        def fake_sample_next_channels(*args, **kwargs):
+            disallow = kwargs.get("disallow_text_token_ids") or []
+            disallow_history.append(tuple(int(value) for value in disallow))
+            if int(config.audio_end_token_id) in disallow:
+                text_token = config.audio_assistant_gen_slot_token_id
+            else:
+                text_token = config.audio_end_token_id
+            return mx.array(
+                [[text_token, 1, 2]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model,
+            "sample_next_channels",
+            side_effect=fake_sample_next_channels,
+        ):
+            results = list(
+                model.generate(
+                    text="hello",
+                    max_tokens=12,
+                    natural_stop_min_audio_rows=3,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertGreater(results[-1].samples, 0)
+        self.assertEqual(len(disallow_history), 4)
+        self.assertEqual(
+            disallow_history[:3],
+            [
+                (config.audio_end_token_id, config.im_end_token_id),
+                (config.audio_end_token_id, config.im_end_token_id),
+                (config.audio_end_token_id, config.im_end_token_id),
+            ],
+        )
+        self.assertEqual(disallow_history[3], ())
+
+    def test_local_generate_rejects_negative_natural_stop_guard(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    natural_stop_min_audio_rows=-1,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+    def test_local_natural_stop_auto_guard_scales_with_prompt_length(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        def _run_and_count_steps(prompt_text: str) -> int:
+            step_count = {"value": 0}
+
+            def fake_sample_next_channels(*args, **kwargs):
+                step_count["value"] += 1
+                disallow = kwargs.get("disallow_text_token_ids") or []
+                if int(config.audio_end_token_id) in disallow:
+                    text_token = config.audio_assistant_gen_slot_token_id
+                else:
+                    text_token = config.audio_end_token_id
+                return mx.array(
+                    [[text_token, 1, 2]],
+                    dtype=mx.int32,
+                )
+
+            with patch.object(
+                model.model,
+                "sample_next_channels",
+                side_effect=fake_sample_next_channels,
+            ):
+                list(
+                    model.generate(
+                        text=prompt_text,
+                        max_tokens=256,
+                        temperature=1.0,
+                        top_p=1.0,
+                        top_k=0,
+                        repetition_penalty=1.0,
+                        input_type="text",
+                    )
+                )
+            return int(step_count["value"])
+
+        short_steps = _run_and_count_steps("Hello world.")
+        long_steps = _run_and_count_steps(
+            "This is a much longer sentence designed to trigger a larger natural "
+            "stop guard budget during local decoding."
+        )
+
+        self.assertGreater(long_steps, short_steps)
+        self.assertGreaterEqual(short_steps, 2)
+
+    def test_local_generate_applies_preset_sampling_defaults(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        captured_defaults = {}
+
+        def capture_sampling_defaults(num_channels, **kwargs):
+            captured_defaults["temperature"] = kwargs["default_temperature"]
+            captured_defaults["top_p"] = kwargs["default_top_p"]
+            captured_defaults["top_k"] = kwargs["default_top_k"]
+            captured_defaults["repetition_penalty"] = kwargs[
+                "default_repetition_penalty"
+            ]
+            return resolve_channel_sampling_configs(num_channels, **kwargs)
+
+        with (
+            patch(
+                "mlx_audio.tts.models.moss_tts.model.resolve_channel_sampling_configs",
+                side_effect=capture_sampling_defaults,
+            ),
+            patch.object(model, "_generate_local", return_value=iter(())),
+        ):
+            list(
+                model.generate(
+                    text="hello",
+                    preset="moss_tts_local",
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+        self.assertEqual(captured_defaults["temperature"], 1.0)
+        self.assertEqual(captured_defaults["top_p"], 0.95)
+        self.assertEqual(captured_defaults["top_k"], 50)
+        self.assertEqual(captured_defaults["repetition_penalty"], 1.1)
+
+    def test_local_generate_honors_n_vq_for_inference_override(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        class _TracingAudioTokenizer(_DummyAudioTokenizer):
+            def __init__(self):
+                self.decode_num_quantizers = []
+
+            def decode(
+                self,
+                audio_codes,
+                return_dict=True,
+                chunk_duration=8.0,
+                num_quantizers=None,
+            ):
+                self.decode_num_quantizers.append(num_quantizers)
+                return super().decode(
+                    audio_codes,
+                    return_dict=return_dict,
+                    chunk_duration=chunk_duration,
+                    num_quantizers=num_quantizers,
+                )
+
+        tracing_audio_tokenizer = _TracingAudioTokenizer()
+        model.processor.audio_tokenizer = tracing_audio_tokenizer
+
+        generated = {"count": 0}
+
+        def fake_sample_next_channels(*args, **kwargs):
+            generated["count"] += 1
+            text_token = (
+                config.audio_assistant_gen_slot_token_id
+                if generated["count"] < 3
+                else config.audio_end_token_id
+            )
+            return mx.array(
+                [[text_token, 1, config.audio_pad_code]],
+                dtype=mx.int32,
+            )
+
+        with patch.object(
+            model.model,
+            "sample_next_channels",
+            side_effect=fake_sample_next_channels,
+        ) as sample_mock:
+            results = list(
+                model.generate(
+                    text="hello",
+                    max_tokens=6,
+                    temperature=1.0,
+                    top_p=1.0,
+                    top_k=0,
+                    repetition_penalty=1.0,
+                    input_type="text",
+                    n_vq_for_inference=1,
+                )
+            )
+
+        self.assertGreaterEqual(len(results), 1)
+        self.assertGreater(results[-1].samples, 0)
+        self.assertTrue(
+            all(
+                call.kwargs.get("n_vq_for_inference") == 1
+                for call in sample_mock.call_args_list
+            )
+        )
+        self.assertEqual(tracing_audio_tokenizer.decode_num_quantizers[-1], 1)
+
+    def test_local_generate_rejects_out_of_bounds_n_vq_for_inference(self):
+        config = ModelConfig.from_dict(_tiny_local_config_dict())
+        model = Model(config)
+        model.processor = _build_dummy_processor(config)
+        model.tokenizer = model.processor.tokenizer
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    n_vq_for_inference=0,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+        with self.assertRaises(ValueError):
+            list(
+                model.generate(
+                    text="hello",
+                    n_vq_for_inference=3,
+                    max_tokens=2,
+                    input_type="text",
+                )
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
