@@ -401,7 +401,7 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
-    tmp_path = f"/tmp/{time.time()}.mp3"
+    tmp_path = f"/tmp/{time.time()}.wav"
     audio_write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(payload.model)
@@ -553,7 +553,7 @@ async def _stream_transcription(
             }
         )
     else:
-        tmp_path = f"/tmp/realtime_{time.time()}.mp3"
+        tmp_path = f"/tmp/realtime_{time.time()}.wav"
         audio_write(tmp_path, audio_array, sample_rate)
         try:
             result = stt_model.generate(tmp_path, language=lang_arg, verbose=False)
