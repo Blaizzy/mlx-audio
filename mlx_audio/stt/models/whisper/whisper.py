@@ -717,8 +717,13 @@ class Model(nn.Module):
                 task=task,
             )
         else:
-            raise ValueError(
-                "Processor not found. Make sure the model was loaded with a HuggingFace processor."
+            # Fallback: 用内置 tiktoken tokenizer（兼容 MLX-only 模型）
+            from .tokenizer import get_tokenizer as _get_tokenizer
+            return _get_tokenizer(
+                multilingual=self.is_multilingual,
+                num_languages=self.num_languages,
+                language=language,
+                task=task,
             )
 
     def _prepare_audio(
