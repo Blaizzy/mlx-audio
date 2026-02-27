@@ -90,6 +90,28 @@ all = [
     "webrtcvad>=2.0.10",
 ]
 
+# App/dev server dependencies (API + STS + dev helpers)
+app = [
+    "tiktoken>=0.9.0",
+    "mistral-common[audio]",
+
+    "misaki>=0.9.4",
+    "num2words>=0.5.14",
+    "spacy>=3.8.4",
+    "phonemizer-fork>=3.3.2",
+    "espeakng-loader>=0.2.4",
+    "sentencepiece>=0.2.0",
+
+    "fastapi>=0.95.0",
+    "uvicorn>=0.22.0",
+    "python-multipart>=0.0.22",
+
+    "webrtcvad>=2.0.10",
+
+    "pytest>=7.0.0",
+    "pytest-asyncio>=1.0.0",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
@@ -104,6 +126,7 @@ dev = [
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
+"mlx_audio.dev" = "mlx_audio.dev:main"
 
 [project.urls]
 Homepage = "https://github.com/Blaizzy/mlx-audio"
@@ -129,6 +152,7 @@ mlx_audio = [
     "tts/*.css",
     "tts/**/*.json",
     "tts/static/**/*",
+    "ui/**/*",
 ]
 
 [tool.black]
