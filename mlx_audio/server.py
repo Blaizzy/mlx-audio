@@ -15,6 +15,7 @@ import os
 import subprocess
 import time
 import webbrowser
+from collections.abc import Iterator
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -343,22 +344,34 @@ def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
         result = stt_model.generate(tmp_path, **gen_kwargs)
 
         # Check if result is a generator (streaming mode)
-        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+        if isinstance(result, Iterator):
             accumulated_text = ""
             for chunk in result:
                 # Handle different chunk types (string tokens vs structured chunks)
                 if isinstance(chunk, str):
                     accumulated_text += chunk
                     chunk_data = {"text": chunk, "accumulated": accumulated_text}
+                elif isinstance(chunk, dict):
+                    text = chunk.get("text")
+                    if isinstance(text, str):
+                        accumulated_text += text
+                    chunk_data = dict(chunk)
+                    if isinstance(text, str):
+                        chunk_data.setdefault("accumulated", accumulated_text)
                 else:
                     # Structured chunk (e.g., Whisper streaming)
+                    text = getattr(chunk, "text", None)
+                    if isinstance(text, str):
+                        accumulated_text += text
                     chunk_data = {
-                        "text": chunk.text,
-                        "start": getattr(chunk, "start_time", None),
-                        "end": getattr(chunk, "end_time", None),
+                        "text": text,
+                        "start": getattr(chunk, "start_time", getattr(chunk, "start", None)),
+                        "end": getattr(chunk, "end_time", getattr(chunk, "end", None)),
                         "is_final": getattr(chunk, "is_final", None),
                         "language": getattr(chunk, "language", None),
                     }
+                    if isinstance(text, str):
+                        chunk_data["accumulated"] = accumulated_text
                 yield json.dumps(sanitize_for_json(chunk_data)) + "\n"
         else:
             # Not a generator, yield the full result
@@ -411,6 +424,14 @@ async def stt_transcriptions(
 
     # Filter kwargs to only include parameters the model's generate method accepts
     signature = inspect.signature(stt_model.generate)
+    # Map OpenAI-style stream flag to generation_stream when needed
+    if (
+        "generation_stream" in signature.parameters
+        and "stream" in gen_kwargs
+        and "stream" not in signature.parameters
+    ):
+        gen_kwargs["generation_stream"] = bool(gen_kwargs["stream"])
+        gen_kwargs.pop("stream", None)
     gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
 
     return StreamingResponse(

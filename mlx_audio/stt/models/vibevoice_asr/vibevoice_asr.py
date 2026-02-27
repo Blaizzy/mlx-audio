@@ -3,8 +3,9 @@
 import re
 import time
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -14,6 +15,29 @@ from tqdm import tqdm
 from ..base import STTOutput
 from .audio_encoder import AcousticTokenizerEncoder, SemanticTokenizerEncoder
 from .config import ModelConfig
+
+
+@dataclass
+class StreamingResult:
+    """Result object for streaming transcription.
+
+    Attributes:
+        text: Decoded text for this emission.
+        is_final: True if this is a final (committed) result, False if partial.
+        start_time: Start timestamp in seconds.
+        end_time: End timestamp in seconds.
+        language: Language of the transcription.
+        prompt_tokens: Total prompt tokens (only set on final result).
+        generation_tokens: Total generation tokens (only set on final result).
+    """
+
+    text: str
+    is_final: bool
+    start_time: float
+    end_time: float
+    language: str = "en"
+    prompt_tokens: int = 0
+    generation_tokens: int = 0
 
 
 class SpeechConnector(nn.Module):
@@ -649,8 +673,9 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         generation_stream: bool = False,
         verbose: bool = False,
+        stream: bool = False,
         **kwargs,
-    ) -> STTOutput:
+    ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
         """
         Generate transcription from audio.
 
@@ -671,11 +696,28 @@ class Model(nn.Module):
             prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             generation_stream: Enable streaming
             verbose: Print progress
+            stream: If True, return a generator that yields StreamingResult objects
 
         Returns:
-            STTOutput with transcription text and segments
+            STTOutput with transcription text and segments, or Generator[StreamingResult]
         """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        if stream:
+            return self.stream_transcribe(
+                audio,
+                context=context,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+                prefill_step_size=prefill_step_size,
+                verbose=verbose,
+            )
 
         start_time = time.time()
 
@@ -763,7 +805,7 @@ class Model(nn.Module):
         repetition_context_size: int = 100,
         prefill_step_size: int = 2048,
         verbose: bool = False,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[StreamingResult, None, None]:
         """
         Stream transcription token-by-token from audio.
 
@@ -785,7 +827,7 @@ class Model(nn.Module):
             verbose: Print progress
 
         Yields:
-            Decoded text chunks as they are generated.
+            StreamingResult objects with text, timing, and status information.
         """
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
@@ -817,6 +859,8 @@ class Model(nn.Module):
         )
 
         # Stream tokens
+        token_count = 0
+        total_prompt_tokens = input_ids.shape[1]
         for token, _ in self.stream_generate(
             input_ids=input_ids,
             speech_features=speech_features,
@@ -828,7 +872,30 @@ class Model(nn.Module):
             verbose=verbose,
         ):
             text = self.tokenizer.decode([token])
-            yield text
+            prev_progress = token_count / max(max_tokens, 1)
+            token_count += 1
+            curr_progress = min(token_count / max(max_tokens, 1), 1.0)
+
+            estimated_start = audio_duration * prev_progress
+            estimated_end = audio_duration * curr_progress
+
+            yield StreamingResult(
+                text=text,
+                is_final=False,
+                start_time=estimated_start,
+                end_time=estimated_end,
+                language="en",
+            )
+
+        yield StreamingResult(
+            text="",
+            is_final=True,
+            start_time=0.0,
+            end_time=audio_duration,
+            language="en",
+            prompt_tokens=total_prompt_tokens,
+            generation_tokens=token_count,
+        )
 
         mx.clear_cache()
 
