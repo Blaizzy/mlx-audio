@@ -877,7 +877,7 @@ class Model(nn.Module):
 
             # Streaming decode state — emit first chunk ASAP for minimal TTFB
             first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
-            subsequent_chunk_size = max(1, int(streaming_interval * 12.5))
+            subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
             stream_context_size = 10  # Overlap tokens for smooth transitions
             decoded_tokens = 0
             is_first_chunk = True
@@ -1349,7 +1349,7 @@ class Model(nn.Module):
 
         # Streaming decode state — emit first chunk ASAP for minimal TTFB
         first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
-        subsequent_chunk_size = max(1, int(streaming_interval * 12.5))
+        subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
         stream_context_size = 10  # Overlap tokens for smooth transitions
         decoded_tokens = 0
         is_first_chunk = True
@@ -1646,7 +1646,7 @@ class Model(nn.Module):
 
         # Streaming decode state — emit first chunk ASAP for minimal TTFB
         first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
-        subsequent_chunk_size = max(1, int(streaming_interval * 12.5))
+        subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
         stream_context_size = 10  # Overlap tokens for smooth transitions
         decoded_tokens = 0
         is_first_chunk = True
