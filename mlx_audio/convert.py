@@ -28,6 +28,7 @@ class Domain(str, Enum):
     TTS = "tts"
     STT = "stt"
     STS = "sts"
+    LID = "lid"
 
 
 @dataclass
@@ -94,6 +95,22 @@ DOMAIN_CONFIGS = {
         model = load_model("{repo}")
         # Usage depends on the specific STS model type
         # See model documentation for details
+        """,
+    ),
+    Domain.LID: DomainConfig(
+        name="LID",
+        tags=["audio-classification", "speech", "language-identification", "lid"],
+        cli_example="python -c \"from mlx_audio.lid import load; model = load('{repo}'); print(model.predict(audio))\"",
+        python_example="""
+        from mlx_audio.lid import load
+        from mlx_audio.lid.utils import normalize_audio, load_audio
+
+        model = load("{repo}")
+        audio = load_audio("path_to_audio.wav", sample_rate=16000)
+        audio = normalize_audio(audio)
+        results = model.predict(audio, top_k=5)
+        for lang, prob in results:
+            print(f"{lang}: {prob:.1%}")
         """,
     ),
 }
@@ -692,7 +709,7 @@ def configure_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-domain",
         type=str,
-        choices=["tts", "stt", "sts"],
+        choices=["tts", "stt", "sts", "lid"],
         default=None,
         help="Force model domain (auto-detected if not specified).",
     )
