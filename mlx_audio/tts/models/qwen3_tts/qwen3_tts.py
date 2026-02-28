@@ -971,7 +971,6 @@ class Model(nn.Module):
                     )
 
                 input_embeds = text_embed + codec_embed
-
                 mx.eval(input_embeds)
 
                 # Periodically clear cache to prevent memory buildup during long generation
@@ -995,8 +994,6 @@ class Model(nn.Module):
                     )
                     start_idx = decoded_tokens - context_tokens
                     codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                    if not is_first_chunk:
-                        mx.eval(codes_chunk)
 
                     # Use fast direct decode for small chunks, chunked for larger
                     if codes_chunk.shape[1] <= 16:
@@ -1038,8 +1035,6 @@ class Model(nn.Module):
                         is_streaming_chunk=True,
                     )
 
-                    if was_first:
-                        mx.clear_cache()
                     mx.clear_cache()
 
             pbar.close()
@@ -1442,8 +1437,6 @@ class Model(nn.Module):
                 )
                 start_idx = decoded_tokens - context_tokens
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                if not is_first_chunk:
-                    mx.eval(codes_chunk)
 
                 if codes_chunk.shape[1] <= 16:
                     audio_chunk = self._decode_chunk_direct(codes_chunk)
@@ -1748,8 +1741,6 @@ class Model(nn.Module):
                 )
                 start_idx = decoded_tokens - context_tokens
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                if not is_first_chunk:
-                    mx.eval(codes_chunk)
 
                 if codes_chunk.shape[1] <= 16:
                     audio_chunk = self._decode_chunk_direct(codes_chunk)
