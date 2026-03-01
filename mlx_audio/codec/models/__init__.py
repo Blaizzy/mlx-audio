@@ -1,4 +1,4 @@
-# pyright: reportPrivateLocalImportUsage=false
+# pyright: reportPrivateImportUsage=false
 
 from .descript import DAC
 from .ecapa_tdnn import EcapaTdnnBackbone

@@ -39,9 +39,10 @@ class Res2NetBlock(nn.Module):
         scale: int = 8,
     ):
         super().__init__()
-        assert (
-            channels % scale == 0
-        ), f"channels ({channels}) must be divisible by scale ({scale})"
+        if channels % scale != 0:
+            raise ValueError(
+                f"channels ({channels}) must be divisible by scale ({scale})"
+            )
         self.scale = scale
         hidden = channels // scale
         self.blocks = [

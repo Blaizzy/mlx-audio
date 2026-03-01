@@ -41,10 +41,10 @@ class TestEcapaTdnnConfig(unittest.TestCase):
         from mlx_audio.codec.models.ecapa_tdnn.config import EcapaTdnnConfig
 
         config = EcapaTdnnConfig(
-            input_size=60, channels=1024, embed_dim=256, global_context=False
+            input_size=60, channels=1024, embed_dim=256, global_context=True
         )
         self.assertEqual(config.channels, 1024)
-        self.assertFalse(config.global_context)
+        self.assertTrue(config.global_context)
 
 
 class TestTDNNBlock(unittest.TestCase):
