@@ -749,6 +749,85 @@ class Model(nn.Module):
         token = categorical_sampling(logits, temperature)
         return token[:, None]
 
+    def _sample_token_batch(
+        self,
+        logits: mx.array,
+        temperature: float = 0.9,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.05,
+        generated_tokens_per_seq: Optional[List[List[int]]] = None,
+        suppress_tokens: Optional[List[int]] = None,
+        eos_token_id: Optional[int] = None,
+        min_p: float = 0.0,
+    ) -> mx.array:
+        """Batched sampling from [batch, seq_len, vocab] logits. Returns [batch, 1]."""
+
+        logits = logits[:, -1, :]  # [batch, vocab]
+
+        # Suppress invalid tokens (batched)
+        if suppress_tokens:
+            suppress_idx = mx.array(suppress_tokens, dtype=mx.int32)
+            logits = mx.put_along_axis(
+                logits,
+                mx.broadcast_to(
+                    suppress_idx[None, :],
+                    (logits.shape[0], len(suppress_tokens)),
+                ),
+                mx.array(float("-inf"), logits.dtype),
+                axis=-1,
+            )
+
+        # Apply repetition penalty per sequence (builds lazy graph, no sync)
+        if generated_tokens_per_seq and repetition_penalty != 1.0:
+            for b, gen_tokens in enumerate(generated_tokens_per_seq):
+                if not gen_tokens:
+                    continue
+                unique_tokens = list(set(gen_tokens))
+                valid_tokens = [t for t in unique_tokens if t < logits.shape[-1]]
+                if not valid_tokens:
+                    continue
+                token_ids = mx.array(valid_tokens, dtype=mx.int32)
+                selected = logits[b : b + 1, :]
+                selected_logits = mx.take(selected, token_ids, axis=-1)
+                penalized = mx.where(
+                    selected_logits < 0,
+                    selected_logits * repetition_penalty,
+                    selected_logits / repetition_penalty,
+                )
+                row = mx.put_along_axis(
+                    selected, token_ids[None, :], penalized, axis=-1
+                )
+                logits = mx.concatenate(
+                    [logits[:b], row, logits[b + 1 :]], axis=0
+                )
+
+        # Greedy decoding
+        if temperature <= 0:
+            return mx.argmax(logits, axis=-1, keepdims=True)
+
+        # Preserve EOS logit before filtering
+        eos_logit = None
+        if eos_token_id is not None and eos_token_id < logits.shape[-1]:
+            eos_logit = logits[:, eos_token_id : eos_token_id + 1]  # [batch, 1]
+
+        if top_k > 0 and top_k < logits.shape[-1]:
+            logits = apply_top_k(logits, top_k)
+
+        if 0.0 < top_p < 1.0:
+            logits = apply_top_p(logits, top_p)
+
+        if min_p > 0.0:
+            logits = apply_min_p(logits, min_p)
+
+        # Restore EOS logit
+        if eos_logit is not None:
+            eos_idx = mx.full((logits.shape[0], 1), eos_token_id, dtype=mx.int32)
+            logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
+
+        tokens = categorical_sampling(logits, temperature)  # [batch]
+        return tokens[:, None]  # [batch, 1]
+
     def _decode_chunk(self, codes: mx.array, chunk_tokens: int = 100) -> mx.array:
         """Decode a chunk of codes to audio (chunked path for large sequences).
 
@@ -1302,8 +1381,13 @@ class Model(nn.Module):
         # Per-sequence state
         generated_codes = [[] for _ in range(batch_size)]  # per-seq code lists
         generated_token_ids = [[] for _ in range(batch_size)]  # for repetition penalty
-        trailing_indices = [0] * batch_size
         finished = mx.zeros((batch_size,), dtype=mx.bool_)
+
+        # Vectorized state
+        trailing_indices = mx.zeros((batch_size, 1), dtype=mx.int32)
+        batch_arange = mx.arange(batch_size)
+        max_trailing_len = trailing_text_hidden.shape[1]
+        eos_fill = mx.full((batch_size, 1), eos_token_id, dtype=mx.int32)
 
         # Suppress special tokens
         suppress_tokens = [
@@ -1335,49 +1419,38 @@ class Model(nn.Module):
                 attention_mask=attention_mask,
             )
 
-            # Sample first codebook token per sequence
-            # For batch repetition penalty, process per-sequence
-            next_tokens = []
-            for b in range(batch_size):
-                if bool(finished[b]):
-                    # Force EOS for finished sequences
-                    next_tokens.append(
-                        mx.array([[eos_token_id]])
-                    )
-                else:
-                    b_logits = logits[b : b + 1]  # [1, seq_len, vocab]
-                    tok = self._sample_token(
-                        b_logits,
-                        temperature=temperature,
-                        top_k=top_k,
-                        top_p=top_p,
-                        repetition_penalty=repetition_penalty,
-                        generated_tokens=(
-                            generated_token_ids[b]
-                            if generated_token_ids[b]
-                            else None
-                        ),
-                        suppress_tokens=suppress_tokens,
-                        eos_token_id=eos_token_id,
-                    )
-                    next_tokens.append(tok)  # [1, 1]
-
-            next_token_batch = mx.concatenate(
-                next_tokens, axis=0
+            # Batched sampling — no per-sequence bool()/int() calls
+            sampled_tokens = self._sample_token_batch(
+                logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                generated_tokens_per_seq=generated_token_ids,
+                suppress_tokens=suppress_tokens,
+                eos_token_id=eos_token_id,
             )  # [batch, 1]
 
-            # Check EOS per sequence and update state
-            for b in range(batch_size):
-                if bool(finished[b]):
-                    continue
-                token_id = int(next_token_batch[b, 0])
-                if token_id == eos_token_id:
-                    finished = finished.at[b].add(True)
-                else:
-                    generated_token_ids[b].append(token_id)
+            # Mask finished sequences to EOS (vectorized, no sync)
+            next_token_batch = mx.where(
+                finished[:, None], eos_fill, sampled_tokens
+            )  # [batch, 1]
 
-            # Check if all done
-            mx.eval(finished)
+            # Vectorized EOS detection (no sync)
+            newly_finished = next_token_batch[:, 0] == eos_token_id
+            finished = finished | newly_finished
+
+            # SYNC 1: eval finished + tokens together
+            mx.eval(finished, next_token_batch)
+
+            # Update repetition penalty state (CPU-side, uses already-eval'd data)
+            token_ids_cpu = next_token_batch[:, 0].tolist()
+            finished_cpu = finished.tolist()
+            for b in range(batch_size):
+                if not finished_cpu[b]:
+                    generated_token_ids[b].append(token_ids_cpu[b])
+
+            # SYNC 2: check if all done
             if bool(finished.all()):
                 break
 
@@ -1406,7 +1479,7 @@ class Model(nn.Module):
                     generation_step=code_idx,
                 )
 
-                next_code = self._sample_token(
+                next_code = self._sample_token_batch(
                     code_logits,
                     temperature=temperature,
                     top_k=top_k,
@@ -1417,27 +1490,34 @@ class Model(nn.Module):
             # Stack all codebook tokens: [batch, num_code_groups]
             all_codes = mx.concatenate(code_tokens, axis=1)
 
-            # Append codes to per-sequence lists (skip finished)
+            # Unconditional append — use finished_cpu to filter at decode time
             for b in range(batch_size):
-                if not bool(finished[b]):
+                if not finished_cpu[b]:
                     generated_codes[b].append(all_codes[b : b + 1])  # [1, num_code_groups]
 
             del code_cache
 
-            # Prepare next input embeddings (fully batched)
-            # Trailing text: gather per-sequence via index
-            text_embeds_list = []
-            for b in range(batch_size):
-                idx = trailing_indices[b]
-                if idx < trailing_text_hidden.shape[1]:
-                    text_embeds_list.append(
-                        trailing_text_hidden[b : b + 1, idx : idx + 1, :]
-                    )
-                    if not bool(finished[b]):
-                        trailing_indices[b] += 1
-                else:
-                    text_embeds_list.append(tts_pad_embed)
-            text_embeds = mx.concatenate(text_embeds_list, axis=0)  # [batch, 1, hidden]
+            # Vectorized trailing text gather
+            clamped_indices = mx.minimum(
+                trailing_indices[:, 0], max_trailing_len - 1
+            )  # [batch]
+            text_embeds = trailing_text_hidden[
+                batch_arange, clamped_indices, :
+            ][:, None, :]  # [batch, 1, hidden]
+
+            # Replace exhausted positions with pad embed
+            exhausted = clamped_indices >= max_trailing_len - 1  # [batch]
+            if bool(exhausted.any()):
+                pad_broadcast = mx.broadcast_to(
+                    tts_pad_embed, text_embeds.shape
+                )
+                text_embeds = mx.where(
+                    exhausted[:, None, None], pad_broadcast, text_embeds
+                )
+
+            # Advance trailing indices for non-finished sequences (vectorized)
+            advance = (~finished).astype(mx.int32)[:, None]
+            trailing_indices = trailing_indices + advance
 
             # Codec embedding: batched
             codec_embed = self.talker.get_input_embeddings()(
@@ -1450,6 +1530,8 @@ class Model(nn.Module):
                 )
 
             input_embeds = text_embeds + codec_embed  # [batch, 1, hidden]
+
+            # SYNC 3: prep for next forward pass
             mx.eval(input_embeds)
 
             # Extend attention_mask by one column of 1s
