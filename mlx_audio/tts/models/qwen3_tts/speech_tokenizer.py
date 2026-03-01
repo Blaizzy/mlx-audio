@@ -1109,6 +1109,10 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
                 audio = audio[:valid_samples]
             audios.append(audio)
 
+        # Free the full batch tensor now that slices are extracted
+        del wav_batch, batch_codes, codes_t
+        mx.clear_cache()
+
         return audios, audio_lengths
 
     def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 100):

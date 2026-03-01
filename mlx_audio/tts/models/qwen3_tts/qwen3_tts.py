@@ -1490,11 +1490,6 @@ class Model(nn.Module):
             # Stack all codebook tokens: [batch, num_code_groups]
             all_codes = mx.concatenate(code_tokens, axis=1)
 
-            # Unconditional append — use finished_cpu to filter at decode time
-            for b in range(batch_size):
-                if not finished_cpu[b]:
-                    generated_codes[b].append(all_codes[b : b + 1])  # [1, num_code_groups]
-
             del code_cache
 
             # Vectorized trailing text gather
@@ -1531,8 +1526,13 @@ class Model(nn.Module):
 
             input_embeds = text_embeds + codec_embed  # [batch, 1, hidden]
 
-            # SYNC 3: prep for next forward pass
-            mx.eval(input_embeds)
+            # SYNC 3: eval codes + next input together (single sync)
+            mx.eval(all_codes, input_embeds)
+
+            # Append materialized codes to per-sequence lists
+            for b in range(batch_size):
+                if not finished_cpu[b]:
+                    generated_codes[b].append(all_codes[b : b + 1])  # [1, num_code_groups]
 
             # Extend attention_mask by one column of 1s
             attention_mask = mx.concatenate(
@@ -1648,41 +1648,30 @@ class Model(nn.Module):
                     )
             return
 
-        # Non-streaming: batched decode all sequences at once
+        # Non-streaming: decode each sequence individually to limit peak memory
         elapsed_time = time.time() - start_time
 
-        # Build per-sequence code tensors
-        codes_list = []
-        seq_indices = []
         for b in range(batch_size):
             if not generated_codes[b]:
                 continue
             codes = mx.stack(
                 generated_codes[b], axis=1
             )  # [1, seq_len, num_code_groups]
-            codes_list.append(codes)
-            seq_indices.append(b)
 
-        if codes_list:
-            audios, audio_lengths = self.speech_tokenizer.batch_decode(codes_list)
+            audio = self._decode_chunk_direct(codes) if codes.shape[1] <= 16 else self._decode_chunk(codes)
 
-            for i, b in enumerate(seq_indices):
-                audio = audios[i]
-                mx.eval(audio)
-                duration_seconds = audio.shape[0] / self.sample_rate
-
-                yield BatchGenerationResult(
-                    audio=audio,
-                    sequence_idx=b,
-                    samples=audio.shape[0],
-                    sample_rate=self.sample_rate,
-                    token_count=len(generated_codes[b]),
-                    audio_duration=format_duration(duration_seconds),
-                    processing_time_seconds=elapsed_time,
-                    peak_memory_usage=mx.get_peak_memory() / 1e9,
-                )
-
-        mx.clear_cache()
+            duration_seconds = audio.shape[0] / self.sample_rate
+            yield BatchGenerationResult(
+                audio=audio,
+                sequence_idx=b,
+                samples=audio.shape[0],
+                sample_rate=self.sample_rate,
+                token_count=len(generated_codes[b]),
+                audio_duration=format_duration(duration_seconds),
+                processing_time_seconds=elapsed_time,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )
+            mx.clear_cache()
 
     def generate_custom_voice(
         self,
