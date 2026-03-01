@@ -1,5 +1,7 @@
 import unittest
 
+import mlx.core as mx
+
 
 class TestEcapaTdnnConfig(unittest.TestCase):
     def setUp(self):
@@ -38,3 +40,73 @@ class TestEcapaTdnnConfig(unittest.TestCase):
         )
         self.assertEqual(config.channels, 1024)
         self.assertFalse(config.global_context)
+
+
+class TestTDNNBlock(unittest.TestCase):
+    def test_output_shape(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import TDNNBlock
+
+        block = TDNNBlock(60, 1024, kernel_size=5)
+        x = mx.zeros((1, 100, 60))
+        out = block(x)
+        self.assertEqual(out.shape, (1, 100, 1024))
+
+    def test_dilation(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import TDNNBlock
+
+        block = TDNNBlock(1024, 1024, kernel_size=3, dilation=2)
+        x = mx.zeros((1, 100, 1024))
+        out = block(x)
+        self.assertEqual(out.shape, (1, 100, 1024))
+
+
+class TestRes2NetBlock(unittest.TestCase):
+    def test_output_shape(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import Res2NetBlock
+
+        block = Res2NetBlock(1024, kernel_size=3, dilation=2, scale=8)
+        x = mx.zeros((1, 100, 1024))
+        out = block(x)
+        self.assertEqual(out.shape, (1, 100, 1024))
+
+
+class TestSEBlock(unittest.TestCase):
+    def test_output_shape(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import SEBlock
+
+        block = SEBlock(1024, bottleneck=128)
+        x = mx.zeros((1, 100, 1024))
+        out = block(x)
+        self.assertEqual(out.shape, (1, 100, 1024))
+
+    def test_squeeze_excitation(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import SEBlock
+
+        block = SEBlock(1024, bottleneck=128)
+        x = mx.ones((1, 50, 1024))
+        out = block(x)
+        mx.eval(out)
+        self.assertFalse(mx.array_equal(x, out))
+
+
+class TestSERes2NetBlock(unittest.TestCase):
+    def test_output_shape(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import SERes2NetBlock
+
+        block = SERes2NetBlock(
+            1024, kernel_size=3, dilation=2, res2net_scale=8, se_channels=128
+        )
+        x = mx.zeros((1, 100, 1024))
+        out = block(x)
+        self.assertEqual(out.shape, (1, 100, 1024))
+
+    def test_residual_connection(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import SERes2NetBlock
+
+        block = SERes2NetBlock(
+            1024, kernel_size=3, dilation=2, res2net_scale=8, se_channels=128
+        )
+        x = mx.zeros((1, 100, 1024))
+        out = block(x)
+        mx.eval(out)
+        self.assertEqual(out.shape, x.shape)
