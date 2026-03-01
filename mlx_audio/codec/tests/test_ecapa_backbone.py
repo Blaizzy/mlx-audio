@@ -110,3 +110,83 @@ class TestSERes2NetBlock(unittest.TestCase):
         out = block(x)
         mx.eval(out)
         self.assertEqual(out.shape, x.shape)
+
+
+class TestAttentiveStatisticsPooling(unittest.TestCase):
+    def test_output_shape(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import (
+            AttentiveStatisticsPooling,
+        )
+
+        asp = AttentiveStatisticsPooling(
+            1024, attention_channels=128, global_context=False
+        )
+        x = mx.zeros((1, 100, 1024))
+        out = asp(x)
+        self.assertEqual(out.shape, (1, 2048))
+
+    def test_global_context(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import (
+            AttentiveStatisticsPooling,
+        )
+
+        asp = AttentiveStatisticsPooling(
+            1024, attention_channels=128, global_context=True
+        )
+        x = mx.zeros((1, 100, 1024))
+        out = asp(x)
+        self.assertEqual(out.shape, (1, 2048))
+
+    def test_global_context_changes_attention_input(self):
+        from mlx_audio.codec.models.ecapa_tdnn.ecapa_tdnn import (
+            AttentiveStatisticsPooling,
+        )
+
+        asp_no_gc = AttentiveStatisticsPooling(128, 64, global_context=False)
+        asp_gc = AttentiveStatisticsPooling(128, 64, global_context=True)
+        self.assertEqual(asp_no_gc.tdnn.conv.weight.shape[-1], 128)
+        self.assertEqual(asp_gc.tdnn.conv.weight.shape[-1], 128 * 3)
+
+
+class TestEcapaTdnnBackbone(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        self.Config = EcapaTdnnConfig
+        self.Backbone = EcapaTdnnBackbone
+
+    def test_output_shape_default_config(self):
+        config = self.Config()
+        model = self.Backbone(config)
+        x = mx.zeros((1, 100, 60))
+        out = model(x)
+        mx.eval(out)
+        self.assertEqual(out.shape, (1, config.embed_dim))
+
+    def test_output_shape_spark_config(self):
+        config = self.Config(
+            input_size=80, channels=512, embed_dim=192, global_context=True
+        )
+        model = self.Backbone(config)
+        x = mx.zeros((1, 200, 80))
+        out = model(x)
+        mx.eval(out)
+        self.assertEqual(out.shape, (1, 192))
+
+    def test_submodules_accessible(self):
+        config = self.Config()
+        model = self.Backbone(config)
+        self.assertTrue(hasattr(model, "blocks"))
+        self.assertTrue(hasattr(model, "mfa"))
+        self.assertTrue(hasattr(model, "asp"))
+        self.assertTrue(hasattr(model, "asp_bn"))
+        self.assertTrue(hasattr(model, "fc"))
+
+    def test_batch_dimension(self):
+        config = self.Config(input_size=60, channels=512, embed_dim=128)
+        model = self.Backbone(config)
+        x = mx.zeros((4, 50, 60))
+        out = model(x)
+        mx.eval(out)
+        self.assertEqual(out.shape[0], 4)
+        self.assertEqual(out.shape[1], 128)
