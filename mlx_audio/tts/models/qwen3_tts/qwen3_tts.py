@@ -1566,37 +1566,39 @@ class Model(nn.Module):
                     )
             return
 
-        # Non-streaming: decode each sequence independently
+        # Non-streaming: batched decode all sequences at once
         elapsed_time = time.time() - start_time
+
+        # Build per-sequence code tensors
+        codes_list = []
+        seq_indices = []
         for b in range(batch_size):
             if not generated_codes[b]:
                 continue
-
             codes = mx.stack(
                 generated_codes[b], axis=1
             )  # [1, seq_len, num_code_groups]
+            codes_list.append(codes)
+            seq_indices.append(b)
 
-            audio, audio_lengths = self.speech_tokenizer.decode(codes)
-            audio = audio[0]  # Remove batch dim
+        if codes_list:
+            audios, audio_lengths = self.speech_tokenizer.batch_decode(codes_list)
 
-            valid_len = int(audio_lengths[0])
-            if valid_len > 0 and valid_len < audio.shape[0]:
-                audio = audio[:valid_len]
+            for i, b in enumerate(seq_indices):
+                audio = audios[i]
+                mx.eval(audio)
+                duration_seconds = audio.shape[0] / self.sample_rate
 
-            mx.eval(audio)
-
-            duration_seconds = audio.shape[0] / self.sample_rate
-
-            yield BatchGenerationResult(
-                audio=audio,
-                sequence_idx=b,
-                samples=audio.shape[0],
-                sample_rate=self.sample_rate,
-                token_count=len(generated_codes[b]),
-                audio_duration=format_duration(duration_seconds),
-                processing_time_seconds=elapsed_time,
-                peak_memory_usage=mx.get_peak_memory() / 1e9,
-            )
+                yield BatchGenerationResult(
+                    audio=audio,
+                    sequence_idx=b,
+                    samples=audio.shape[0],
+                    sample_rate=self.sample_rate,
+                    token_count=len(generated_codes[b]),
+                    audio_duration=format_duration(duration_seconds),
+                    processing_time_seconds=elapsed_time,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                )
 
         mx.clear_cache()
 
