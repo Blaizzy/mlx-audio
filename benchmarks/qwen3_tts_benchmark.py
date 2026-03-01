@@ -11,6 +11,7 @@ Usage:
 
 import argparse
 import gc
+import os
 import statistics
 import time
 from dataclasses import dataclass, field
@@ -121,6 +122,7 @@ def run_trial(
     max_tokens: int = 4096,
     temperature: float = 0.9,
     sample_rate: int = 24000,
+    collect_audio: bool = False,
 ) -> TrialResult:
     """Run a single generation trial and collect metrics."""
     mx.clear_cache()
@@ -130,6 +132,7 @@ def run_trial(
     total_tokens = 0
     total_audio_samples = 0
     chunk_idx = 0
+    audio_chunks = [] if collect_audio else None
 
     mx.reset_peak_memory()
     gen_start = time.perf_counter()
@@ -155,6 +158,9 @@ def run_trial(
         samples = result.audio.shape[0] if result.audio is not None else 0
         tokens = result.token_count
 
+        if collect_audio and result.audio is not None:
+            audio_chunks.append(result.audio)
+
         chunk_metrics.append(
             ChunkMetrics(
                 chunk_idx=chunk_idx,
@@ -175,7 +181,7 @@ def run_trial(
     audio_duration_s = total_audio_samples / sample_rate if sample_rate > 0 else 0
     rtf = audio_duration_s / (total_time_ms / 1000) if total_time_ms > 0 else 0
 
-    return TrialResult(
+    trial = TrialResult(
         prompt_key=prompt_key,
         prompt_text=prompt_text,
         ttfb_ms=ttfb or 0.0,
@@ -187,6 +193,148 @@ def run_trial(
         chunk_metrics=chunk_metrics,
         peak_memory_gb=mx.get_peak_memory() / 1e9,
     )
+
+    if collect_audio and audio_chunks:
+        import numpy as np
+
+        trial._audio = np.concatenate(
+            [np.array(c, copy=False) for c in audio_chunks]
+        )
+        trial._sample_rate = sample_rate
+    return trial
+
+
+@dataclass
+class BatchTrialResult:
+    """Result from a single batch benchmark trial."""
+
+    batch_size: int
+    prompt_key: str
+    prompt_texts: List[str]
+    per_seq_ttfb_ms: List[float]  # TTFB per sequence in batch
+    total_time_ms: float
+    per_seq_tokens: List[int]
+    per_seq_audio_samples: List[int]
+    per_seq_audio_duration_s: List[float]
+    peak_memory_gb: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return sum(self.per_seq_tokens)
+
+    @property
+    def total_audio_duration_s(self) -> float:
+        return sum(self.per_seq_audio_duration_s)
+
+    @property
+    def tokens_per_second(self) -> float:
+        return (
+            self.total_tokens / (self.total_time_ms / 1000)
+            if self.total_time_ms > 0
+            else 0.0
+        )
+
+    @property
+    def avg_ttfb_ms(self) -> float:
+        return statistics.mean(self.per_seq_ttfb_ms) if self.per_seq_ttfb_ms else 0.0
+
+    @property
+    def throughput_ratio(self) -> float:
+        """Total audio duration / wall time."""
+        return (
+            self.total_audio_duration_s / (self.total_time_ms / 1000)
+            if self.total_time_ms > 0
+            else 0.0
+        )
+
+
+def run_batch_trial(
+    model,
+    prompt_key: str,
+    prompt_texts: List[str],
+    voice: str = "Chelsie",
+    streaming_interval: float = 2.0,
+    max_tokens: int = 4096,
+    temperature: float = 0.9,
+    sample_rate: int = 24000,
+    collect_audio: bool = False,
+) -> BatchTrialResult:
+    """Run a single batch generation trial and collect per-sequence metrics."""
+    mx.clear_cache()
+    gc.collect()
+
+    batch_size = len(prompt_texts)
+    per_seq_tokens = [0] * batch_size
+    per_seq_audio_samples = [0] * batch_size
+    per_seq_ttfb = [None] * batch_size
+    per_seq_audio_chunks = [[] for _ in range(batch_size)] if collect_audio else None
+
+    mx.reset_peak_memory()
+    gen_start = time.perf_counter()
+
+    voices = [voice] * batch_size
+
+    for result in model.batch_generate(
+        texts=prompt_texts,
+        voices=voices,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        stream=True,
+        streaming_interval=streaming_interval,
+    ):
+        now = time.perf_counter()
+        seq_idx = result.sequence_idx
+
+        if per_seq_ttfb[seq_idx] is None:
+            per_seq_ttfb[seq_idx] = (now - gen_start) * 1000
+
+        samples = result.audio.shape[0] if result.audio is not None else 0
+        per_seq_tokens[seq_idx] += result.token_count
+        per_seq_audio_samples[seq_idx] += samples
+
+        if collect_audio and result.audio is not None:
+            per_seq_audio_chunks[seq_idx].append(result.audio)
+
+    gen_end = time.perf_counter()
+    total_time_ms = (gen_end - gen_start) * 1000
+
+    per_seq_audio_duration_s = [
+        s / sample_rate if sample_rate > 0 else 0 for s in per_seq_audio_samples
+    ]
+
+    trial = BatchTrialResult(
+        batch_size=batch_size,
+        prompt_key=prompt_key,
+        prompt_texts=prompt_texts,
+        per_seq_ttfb_ms=[t or 0.0 for t in per_seq_ttfb],
+        total_time_ms=total_time_ms,
+        per_seq_tokens=per_seq_tokens,
+        per_seq_audio_samples=per_seq_audio_samples,
+        per_seq_audio_duration_s=per_seq_audio_duration_s,
+        peak_memory_gb=mx.get_peak_memory() / 1e9,
+    )
+
+    if collect_audio:
+        import numpy as np
+
+        trial._per_seq_audio = []
+        for chunks in per_seq_audio_chunks:
+            if chunks:
+                trial._per_seq_audio.append(
+                    np.concatenate([np.array(c, copy=False) for c in chunks])
+                )
+            else:
+                trial._per_seq_audio.append(np.array([], dtype=np.float32))
+        trial._sample_rate = sample_rate
+    return trial
+
+
+def save_wav(path: str, audio, sample_rate: int) -> None:
+    """Save a numpy audio array to a WAV file."""
+    import soundfile as sf
+
+    sf.write(path, audio, sample_rate)
+    print(f"  Saved: {path}")
 
 
 def summarize_trials(prompt_key: str, trials: List[TrialResult]) -> BenchmarkSummary:
@@ -345,6 +493,19 @@ def main():
         dest="warmup",
         help="Skip warmup generation",
     )
+    parser.add_argument(
+        "--batch-size",
+        nargs="+",
+        type=int,
+        default=None,
+        help="Batch sizes to benchmark (e.g., --batch-size 1 2 4). Runs batch_generate() comparison.",
+    )
+    parser.add_argument(
+        "--save-audio",
+        type=str,
+        default=None,
+        help="Directory to save audio from the last trial of each benchmark (e.g., --save-audio ./audio_out)",
+    )
 
     args = parser.parse_args()
 
@@ -400,6 +561,7 @@ def main():
 
         trials = []
         for trial_idx in range(args.num_trials):
+            is_last = trial_idx == args.num_trials - 1
             print(f"  Trial {trial_idx + 1}/{args.num_trials}...", end="", flush=True)
             result = run_trial(
                 model=model,
@@ -409,6 +571,7 @@ def main():
                 streaming_interval=args.streaming_interval,
                 max_tokens=args.max_tokens,
                 temperature=args.temperature,
+                collect_audio=bool(args.save_audio) and is_last,
             )
             trials.append(result)
             print(
@@ -418,6 +581,14 @@ def main():
 
             if args.verbose:
                 print_trial_detail(result)
+
+        # Save audio from last trial
+        if args.save_audio and hasattr(trials[-1], "_audio"):
+            os.makedirs(args.save_audio, exist_ok=True)
+            path = os.path.join(
+                args.save_audio, f"sequential_{prompt_key}.wav"
+            )
+            save_wav(path, trials[-1]._audio, trials[-1]._sample_rate)
 
         summary = summarize_trials(prompt_key, trials)
         all_summaries.append(summary)
@@ -438,6 +609,88 @@ def main():
                 f"{s.tokens_per_sec_avg:>8.1f} | {s.rtf_avg:>5.2f}x | {s.peak_memory_gb:>7.2f}"
             )
         print(f"{'='*70}")
+
+    # Batch benchmarking
+    if args.batch_size:
+        print(f"\n\n{'='*70}")
+        print(f"  Batch Generation Benchmark")
+        print(f"{'='*70}")
+
+        # Use the first prompt for batch benchmarking
+        prompt_key = list(prompt_map.keys())[0]
+        prompt_text = prompt_map[prompt_key]
+
+        batch_results = []
+
+        for bs in args.batch_size:
+            print(f"\n  Batch size: {bs}")
+            texts = [prompt_text] * bs
+
+            trials = []
+            for trial_idx in range(args.num_trials):
+                is_last = trial_idx == args.num_trials - 1
+                print(
+                    f"    Trial {trial_idx + 1}/{args.num_trials}...",
+                    end="",
+                    flush=True,
+                )
+                result = run_batch_trial(
+                    model=model,
+                    prompt_key=prompt_key,
+                    prompt_texts=texts,
+                    voice=voice,
+                    streaming_interval=args.streaming_interval,
+                    max_tokens=args.max_tokens,
+                    temperature=args.temperature,
+                    collect_audio=bool(args.save_audio) and is_last,
+                )
+                trials.append(result)
+                print(
+                    f" Total={result.total_time_ms:.0f}ms, "
+                    f"TPS={result.tokens_per_second:.1f}, "
+                    f"AvgTTFB={result.avg_ttfb_ms:.0f}ms, "
+                    f"Throughput={result.throughput_ratio:.2f}x, "
+                    f"Mem={result.peak_memory_gb:.2f}GB"
+                )
+
+            # Save audio from last trial
+            if args.save_audio and hasattr(trials[-1], "_per_seq_audio"):
+                os.makedirs(args.save_audio, exist_ok=True)
+                for seq_idx, audio in enumerate(trials[-1]._per_seq_audio):
+                    if len(audio) > 0:
+                        path = os.path.join(
+                            args.save_audio,
+                            f"batch{bs}_{prompt_key}_seq{seq_idx}.wav",
+                        )
+                        save_wav(path, audio, trials[-1]._sample_rate)
+
+            batch_results.append((bs, trials))
+
+        # Comparison table across batch sizes
+        if len(batch_results) > 1:
+            print(f"\n{'='*70}")
+            print(f"  Batch Size Comparison (prompt: '{prompt_key}')")
+            print(f"{'='*70}")
+            print(
+                f"  {'Batch':>5} | {'TotalTime(ms)':>13} | {'TPS':>8} | "
+                f"{'AvgTTFB(ms)':>11} | {'Throughput':>10} | {'Mem(GB)':>8}"
+            )
+            print(
+                f"  {'─'*5} | {'─'*13} | {'─'*8} | {'─'*11} | {'─'*10} | {'─'*8}"
+            )
+            for bs, trials in batch_results:
+                avg_time = statistics.mean([t.total_time_ms for t in trials])
+                avg_tps = statistics.mean([t.tokens_per_second for t in trials])
+                avg_ttfb = statistics.mean([t.avg_ttfb_ms for t in trials])
+                avg_throughput = statistics.mean(
+                    [t.throughput_ratio for t in trials]
+                )
+                peak_mem = max(t.peak_memory_gb for t in trials)
+                print(
+                    f"  {bs:>5} | {avg_time:>11.1f}ms | {avg_tps:>8.1f} | "
+                    f"{avg_ttfb:>9.1f}ms | {avg_throughput:>9.2f}x | {peak_mem:>7.2f}"
+                )
+            print(f"{'='*70}")
 
 
 if __name__ == "__main__":

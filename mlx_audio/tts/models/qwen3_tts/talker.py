@@ -443,6 +443,7 @@ class Qwen3TTSTalkerModel(nn.Module):
         position_ids: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
         cache: Optional[List[KVCache]] = None,
+        attention_mask: Optional[mx.array] = None,
     ) -> mx.array:
         batch, seq_len, _ = inputs_embeds.shape
 
@@ -451,20 +452,54 @@ class Qwen3TTSTalkerModel(nn.Module):
         if cache is not None and cache[0] is not None:
             offset = cache[0].offset
 
+        total_kv_len = offset + seq_len
+
         # Generate position ids if not provided
         if position_ids is None:
-            # 3D position for MRoPE: [3, batch, seq_len]
-            pos = mx.arange(offset, offset + seq_len)[None, :].astype(mx.int32)
-            pos = mx.broadcast_to(pos, (batch, seq_len))
-            position_ids = mx.stack([pos, pos, pos], axis=0)
+            if attention_mask is not None:
+                # Compute positions from attention_mask for left-padded batches
+                # attention_mask: [batch, total_kv_len] with 1=valid, 0=padding
+                pos = (mx.cumsum(attention_mask, axis=-1) - 1).astype(mx.int32)
+                pos = mx.maximum(pos, mx.zeros_like(pos))
+                if seq_len == 1:
+                    # Generation: take last position
+                    pos = pos[:, -1:]
+                else:
+                    # Prefill: take positions for current input tokens
+                    pos = pos[:, -seq_len:]
+                position_ids = mx.stack([pos, pos, pos], axis=0)  # [3, batch, seq_len]
+            else:
+                # 3D position for MRoPE: [3, batch, seq_len]
+                pos = mx.arange(offset, offset + seq_len)[None, :].astype(mx.int32)
+                pos = mx.broadcast_to(pos, (batch, seq_len))
+                position_ids = mx.stack([pos, pos, pos], axis=0)
 
         # Compute position embeddings
         position_embeddings = self.rotary_emb(inputs_embeds, position_ids)
 
-        # Create causal mask if not provided
-        if mask is None and seq_len > 1:
-            mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len)
-            mask = mask.astype(inputs_embeds.dtype)
+        # Create mask
+        if mask is None:
+            if attention_mask is not None:
+                if seq_len > 1:
+                    # Prefill: combined causal + padding mask
+                    # [batch, 1, seq_len, total_kv_len]
+                    causal = nn.MultiHeadAttention.create_additive_causal_mask(
+                        seq_len
+                    ).astype(inputs_embeds.dtype)
+                    # Expand padding mask: 0 -> -inf, 1 -> 0
+                    pad_mask = (1 - attention_mask[:, None, None, :].astype(inputs_embeds.dtype)) * -1e9
+                    # For prefill, attention_mask covers the full prefill length
+                    # Causal is [seq_len, seq_len], pad_mask is [batch, 1, 1, total_kv_len]
+                    # We need causal to be [1, 1, seq_len, seq_len] and pad_mask to align
+                    causal = causal[None, None, :, :]  # [1, 1, seq_len, seq_len]
+                    # Since offset=0 during prefill, total_kv_len == seq_len
+                    mask = causal + pad_mask
+                else:
+                    # Generation: padding-only mask [batch, 1, 1, total_kv_len]
+                    mask = (1 - attention_mask[:, None, None, :].astype(inputs_embeds.dtype)) * -1e9
+            elif seq_len > 1:
+                mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len)
+                mask = mask.astype(inputs_embeds.dtype)
 
         x = inputs_embeds
 
@@ -782,6 +817,7 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
         position_ids: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
         cache: Optional[List[KVCache]] = None,
+        attention_mask: Optional[mx.array] = None,
     ) -> Tuple[mx.array, mx.array]:
         """
         Forward pass for the talker model.
@@ -790,7 +826,9 @@ class Qwen3TTSTalkerForConditionalGeneration(nn.Module):
             logits: Logits for next token prediction
             hidden_states: Last hidden states
         """
-        hidden_states = self.model(inputs_embeds, position_ids, mask, cache)
+        hidden_states = self.model(
+            inputs_embeds, position_ids, mask, cache, attention_mask=attention_mask
+        )
         logits = self.codec_head(hidden_states)
         return logits, hidden_states
 
