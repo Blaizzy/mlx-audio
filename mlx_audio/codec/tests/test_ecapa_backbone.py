@@ -190,3 +190,15 @@ class TestEcapaTdnnBackbone(unittest.TestCase):
         mx.eval(out)
         self.assertEqual(out.shape[0], 4)
         self.assertEqual(out.shape[1], 128)
+
+
+class TestCodecReExports(unittest.TestCase):
+    def test_import_from_codec_models(self):
+        from mlx_audio.codec.models import EcapaTdnnBackbone
+
+        self.assertTrue(callable(EcapaTdnnBackbone))
+
+    def test_import_from_codec_top_level(self):
+        from mlx_audio.codec import EcapaTdnnBackbone
+
+        self.assertTrue(callable(EcapaTdnnBackbone))
