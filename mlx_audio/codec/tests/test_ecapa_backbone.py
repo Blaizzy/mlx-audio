@@ -209,3 +209,72 @@ class TestCodecReExports(unittest.TestCase):
         from mlx_audio.codec import EcapaTdnnBackbone
 
         self.assertTrue(callable(EcapaTdnnBackbone))
+
+
+class TestBackboneRegressionNumerics(unittest.TestCase):
+    def test_output_is_finite(self):
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
+        model = EcapaTdnnBackbone(config)
+        x = mx.random.normal((1, 100, 60))
+        out = model(x)
+        mx.eval(out)
+        self.assertTrue(mx.all(mx.isfinite(out)).item())
+
+    def test_output_is_nonzero(self):
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
+        model = EcapaTdnnBackbone(config)
+        x = mx.random.normal((2, 100, 60))
+        out = model(x)
+        mx.eval(out)
+        self.assertGreater(mx.abs(out).sum().item(), 0)
+
+    def test_different_inputs_give_different_outputs(self):
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
+        model = EcapaTdnnBackbone(config)
+        x1 = mx.random.normal((2, 100, 60))
+        x2 = mx.random.normal((2, 100, 60))
+        out1 = model(x1)
+        out2 = model(x2)
+        mx.eval(out1, out2)
+        self.assertFalse(mx.allclose(out1, out2).item())
+
+
+class TestLidBackboneIntegration(unittest.TestCase):
+    def test_lid_ecapa_uses_shared_backbone(self):
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone
+        from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+
+        config = ModelConfig()
+        model = EcapaTdnn(config)
+        self.assertIsInstance(model.embedding_model, EcapaTdnnBackbone)
+
+    def test_lid_forward_pass_unchanged(self):
+        from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+
+        config = ModelConfig(id2label={str(i): f"{i}: lang_{i}" for i in range(10)})
+        model = EcapaTdnn(config)
+        mel = mx.zeros((1, 100, 60))
+        out = model(mel)
+        mx.eval(out)
+        self.assertEqual(out.shape, (1, 10))
+
+    def test_lid_predict_unchanged(self):
+        from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+
+        config = ModelConfig(id2label={str(i): f"{i}: lang_{i}" for i in range(10)})
+        model = EcapaTdnn(config)
+        audio = mx.random.normal((16000,))
+        result = model.predict(audio, top_k=3)
+        self.assertEqual(len(result), 3)
+        for lang, prob in result:
+            self.assertIsInstance(lang, str)
+            self.assertIsInstance(prob, float)
