@@ -1,16 +1,15 @@
+# pyright: reportUnknownMemberType=false
+
 import unittest
 
 import mlx.core as mx
 
 
 class TestEcapaTdnnConfig(unittest.TestCase):
-    def setUp(self):
+    def test_default_values(self):
         from mlx_audio.codec.models.ecapa_tdnn.config import EcapaTdnnConfig
 
-        self.Config = EcapaTdnnConfig
-
-    def test_default_values(self):
-        config = self.Config()
+        config = EcapaTdnnConfig()
         self.assertEqual(config.input_size, 60)
         self.assertEqual(config.channels, 1024)
         self.assertEqual(config.embed_dim, 256)
@@ -22,20 +21,26 @@ class TestEcapaTdnnConfig(unittest.TestCase):
         self.assertEqual(config.global_context, False)
 
     def test_custom_values(self):
-        config = self.Config(channels=512, embed_dim=192, global_context=True)
+        from mlx_audio.codec.models.ecapa_tdnn.config import EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(channels=512, embed_dim=192, global_context=True)
         self.assertEqual(config.channels, 512)
         self.assertEqual(config.embed_dim, 192)
         self.assertTrue(config.global_context)
 
     def test_spark_preset(self):
-        config = self.Config(
+        from mlx_audio.codec.models.ecapa_tdnn.config import EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(
             input_size=80, channels=512, embed_dim=192, global_context=True
         )
         self.assertEqual(config.input_size, 80)
         self.assertTrue(config.global_context)
 
     def test_lid_preset(self):
-        config = self.Config(
+        from mlx_audio.codec.models.ecapa_tdnn.config import EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(
             input_size=60, channels=1024, embed_dim=256, global_context=False
         )
         self.assertEqual(config.channels, 1024)
@@ -149,33 +154,33 @@ class TestAttentiveStatisticsPooling(unittest.TestCase):
 
 
 class TestEcapaTdnnBackbone(unittest.TestCase):
-    def setUp(self):
+    def test_output_shape_default_config(self):
         from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
 
-        self.Config = EcapaTdnnConfig
-        self.Backbone = EcapaTdnnBackbone
-
-    def test_output_shape_default_config(self):
-        config = self.Config()
-        model = self.Backbone(config)
+        config = EcapaTdnnConfig()
+        model = EcapaTdnnBackbone(config)
         x = mx.zeros((1, 100, 60))
         out = model(x)
         mx.eval(out)
         self.assertEqual(out.shape, (1, config.embed_dim))
 
     def test_output_shape_spark_config(self):
-        config = self.Config(
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(
             input_size=80, channels=512, embed_dim=192, global_context=True
         )
-        model = self.Backbone(config)
+        model = EcapaTdnnBackbone(config)
         x = mx.zeros((1, 200, 80))
         out = model(x)
         mx.eval(out)
         self.assertEqual(out.shape, (1, 192))
 
     def test_submodules_accessible(self):
-        config = self.Config()
-        model = self.Backbone(config)
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        config = EcapaTdnnConfig()
+        model = EcapaTdnnBackbone(config)
         self.assertTrue(hasattr(model, "blocks"))
         self.assertTrue(hasattr(model, "mfa"))
         self.assertTrue(hasattr(model, "asp"))
@@ -183,8 +188,10 @@ class TestEcapaTdnnBackbone(unittest.TestCase):
         self.assertTrue(hasattr(model, "fc"))
 
     def test_batch_dimension(self):
-        config = self.Config(input_size=60, channels=512, embed_dim=128)
-        model = self.Backbone(config)
+        from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone, EcapaTdnnConfig
+
+        config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
+        model = EcapaTdnnBackbone(config)
         x = mx.zeros((4, 50, 60))
         out = model(x)
         mx.eval(out)
