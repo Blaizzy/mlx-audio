@@ -1644,8 +1644,15 @@ class Model(nn.Module):
                     )
             return
 
-        # Non-streaming: decode each sequence individually to limit peak memory
+        # Non-streaming: free generation state before decoding
         elapsed_time = time.time() - start_time
+        del cache, attention_mask, input_embeds, trailing_text_hidden
+        del tts_pad_embed, trailing_indices, finished, eos_fill
+        mx.clear_cache()
+
+        upsample = self.speech_tokenizer.decoder.total_upsample
+        decode_chunk = 15  # Balance decode speed vs memory
+        decode_ctx = 5
 
         for b in range(batch_size):
             if not generated_codes[b]:
@@ -1653,8 +1660,27 @@ class Model(nn.Module):
             codes = mx.stack(
                 generated_codes[b], axis=1
             )  # [1, seq_len, num_code_groups]
+            generated_codes[b] = []  # free per-seq code list
+            transposed = mx.transpose(codes, (0, 2, 1))  # [1, groups, time]
+            del codes
+            num_tokens = transposed.shape[-1]
 
-            audio = self._decode_chunk_direct(codes) if codes.shape[1] <= 16 else self._decode_chunk(codes)
+            # Decode in chunks with per-chunk eval (no clear_cache overhead)
+            audio_parts = []
+            start = 0
+            while start < num_tokens:
+                end = min(start + decode_chunk, num_tokens)
+                ctx = decode_ctx if start > decode_ctx else start
+                chunk = transposed[..., start - ctx : end]
+                wav = self.speech_tokenizer.decoder(chunk).squeeze(1)[0]
+                if ctx > 0:
+                    wav = wav[ctx * upsample :]
+                mx.eval(wav)
+                audio_parts.append(wav)
+                start = end
+
+            del transposed
+            audio = mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
 
             duration_seconds = audio.shape[0] / self.sample_rate
             yield BatchGenerationResult(
@@ -1662,11 +1688,12 @@ class Model(nn.Module):
                 sequence_idx=b,
                 samples=audio.shape[0],
                 sample_rate=self.sample_rate,
-                token_count=len(generated_codes[b]),
+                token_count=len(generated_token_ids[b]),
                 audio_duration=format_duration(duration_seconds),
                 processing_time_seconds=elapsed_time,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
+            del audio_parts, audio
             mx.clear_cache()
 
     def generate_custom_voice(
