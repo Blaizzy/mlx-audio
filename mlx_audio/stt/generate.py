@@ -3,6 +3,7 @@ import contextlib
 import inspect
 import json
 import os
+import sys
 import time
 from pprint import pprint
 from typing import List, Optional, Union
@@ -108,12 +109,20 @@ def format_vtt_timestamp(seconds: float) -> str:
 
 
 def save_as_txt(segments, output_path: str):
-    with open(f"{output_path}.txt", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.txt", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         f.write(segments.text)
 
 
 def save_as_srt(segments, output_path: str):
-    with open(f"{output_path}.srt", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.srt", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         if hasattr(segments, "sentences"):
             # Parakeet model (AlignedResult)
             for i, sentence in enumerate(segments.sentences, 1):
@@ -133,7 +142,11 @@ def save_as_srt(segments, output_path: str):
 
 
 def save_as_vtt(segments, output_path: str):
-    with open(f"{output_path}.vtt", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.vtt", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         f.write("WEBVTT\n\n")
         if hasattr(segments, "sentences"):
             sentences = segments.sentences
@@ -199,7 +212,11 @@ def save_as_json(segments, output_path: str):
             if "speaker_id" in s:
                 result["segments"][i]["speaker_id"] = s["speaker_id"]
 
-    with open(f"{output_path}.json", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.json", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
 
