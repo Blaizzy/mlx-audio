@@ -54,6 +54,76 @@ results = list(model.generate_voice_design(
 audio = results[0].audio  # mx.array
 ```
 
+## Streaming
+
+All generation methods support streaming via `stream=True`. Audio chunks are yielded as they're produced, enabling low-latency playback:
+
+```python
+from mlx_audio.tts.utils import load_model
+import soundfile as sf
+
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit")
+
+audio_chunks = []
+for result in model.generate(
+    text="Hello, how are you today?",
+    voice="serena",
+    stream=True,
+    streaming_interval=0.32,  # ~4 tokens at 12.5Hz
+):
+    audio_chunks.append(result.audio)
+    # Play or process each chunk here for low-latency output
+```
+
+The `streaming_interval` controls how frequently chunks are emitted (in seconds). Smaller values give lower latency but more overhead per chunk.
+
+## Batch Generation
+
+Generate multiple texts with different voices in a single batched forward pass. Near-linear throughput scaling with minimal memory overhead:
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit")
+
+texts = [
+    "Hello, how are you today?",
+    "The quick brown fox jumps over the lazy dog.",
+    "Artificial intelligence is transforming the world.",
+    "Good morning, welcome to the show!",
+]
+voices = ["serena", "vivian", "ryan", "aiden"]
+
+# Streaming: yields audio chunks per sequence as they're generated
+for result in model.batch_generate(
+    texts=texts,
+    voices=voices,
+    stream=True,
+    streaming_interval=0.32,
+):
+    audio_chunk = result.audio       # mx.array [samples]
+    seq_idx = result.sequence_idx    # which sequence (0-3)
+    is_done = result.is_final_chunk  # True on last chunk for this sequence
+
+# Non-streaming: yields one complete audio per sequence
+for result in model.batch_generate(
+    texts=texts,
+    voices=voices,
+    stream=False,
+):
+    audio = result.audio             # mx.array [samples]
+    seq_idx = result.sequence_idx
+```
+
+**Benchmark (6-bit, short prompt):**
+
+| Batch | TPS | Throughput | Avg TTFB | Memory |
+|-------|-----|------------|----------|--------|
+| 1 | 20.6 | 1.64x | 65.8ms | 3.89GB |
+| 2 | 33.5 | 2.68x | 83.4ms | 3.92GB |
+| 4 | 45.8 | 3.66x | 111.2ms | 3.99GB |
+| 8 | 59.6 | 4.77x | 161.8ms | 4.10GB |
+
 ## Available Models
 
 | Model | Method | Description |
