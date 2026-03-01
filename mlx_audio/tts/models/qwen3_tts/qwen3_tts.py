@@ -1418,6 +1418,7 @@ class Model(nn.Module):
                 cache=cache,
                 attention_mask=attention_mask,
             )
+            
 
             # Batched sampling — no per-sequence bool()/int() calls
             sampled_tokens = self._sample_token_batch(
@@ -1544,8 +1545,11 @@ class Model(nn.Module):
 
             pbar.update(1)
 
-            # Streaming: per-sequence chunk emission
+            # Streaming: decode ready chunks with single eval
             if stream:
+                ready = []
+                upsample = self.speech_tokenizer.decode_upsample_rate
+
                 for b in range(batch_size):
                     if not generated_codes[b]:
                         continue
@@ -1566,19 +1570,25 @@ class Model(nn.Module):
                             generated_codes[b][start_idx:], axis=1
                         )  # [1, chunk_len, num_code_groups]
 
-                        if codes_chunk.shape[1] <= 16:
-                            audio_chunk = self._decode_chunk_direct(codes_chunk)
-                        else:
-                            audio_chunk = self._decode_chunk(
-                                codes_chunk,
-                                chunk_tokens=subsequent_chunk_size,
-                            )
+                        # Build lazy audio (no eval yet)
+                        transposed = mx.transpose(
+                            codes_chunk, (0, 2, 1)
+                        )
+                        audio = self.speech_tokenizer.decoder(
+                            transposed
+                        ).squeeze(1)[0]
 
-                        if context_tokens > 0:
-                            samples_per_token = (
-                                self.speech_tokenizer.decode_upsample_rate
-                            )
-                            trim_samples = context_tokens * samples_per_token
+                        ready.append(
+                            (b, audio, context_tokens, new_tokens)
+                        )
+
+                if ready:
+                    # Single eval for all decoded audio
+                    mx.eval(*[r[1] for r in ready])
+
+                    for b, audio_chunk, ctx, new_tokens in ready:
+                        if ctx > 0:
+                            trim_samples = ctx * upsample
                             if trim_samples < audio_chunk.shape[0]:
                                 audio_chunk = audio_chunk[trim_samples:]
 
@@ -1594,19 +1604,24 @@ class Model(nn.Module):
                             audio_duration=format_duration(
                                 audio_chunk.shape[0] / self.sample_rate
                             ),
-                            processing_time_seconds=time.time() - start_time,
+                            processing_time_seconds=time.time()
+                            - start_time,
                             peak_memory_usage=mx.get_peak_memory() / 1e9,
                             is_streaming_chunk=True,
                         )
 
-                        mx.clear_cache()
+                    mx.clear_cache()
 
         pbar.close()
 
         # Emit remaining streaming chunks
         if stream:
+            upsample = self.speech_tokenizer.decode_upsample_rate
+            remaining = []
+
             for b in range(batch_size):
                 if generated_codes[b] and len(generated_codes[b]) > decoded_tokens[b]:
+                    new_tokens = len(generated_codes[b]) - decoded_tokens[b]
                     context_tokens = min(
                         stream_context_size, decoded_tokens[b]
                     )
@@ -1614,30 +1629,28 @@ class Model(nn.Module):
                     codes_chunk = mx.stack(
                         generated_codes[b][start_idx:], axis=1
                     )
-                    mx.eval(codes_chunk)
+                    transposed = mx.transpose(codes_chunk, (0, 2, 1))
+                    audio = self.speech_tokenizer.decoder(
+                        transposed
+                    ).squeeze(1)[0]
+                    remaining.append(
+                        (b, audio, context_tokens, new_tokens)
+                    )
 
-                    if codes_chunk.shape[1] <= 16:
-                        audio_chunk = self._decode_chunk_direct(codes_chunk)
-                    else:
-                        audio_chunk = self._decode_chunk(
-                            codes_chunk,
-                            chunk_tokens=subsequent_chunk_size,
-                        )
+            if remaining:
+                mx.eval(*[r[1] for r in remaining])
 
-                    if context_tokens > 0:
-                        samples_per_token = (
-                            self.speech_tokenizer.decode_upsample_rate
-                        )
-                        trim_samples = context_tokens * samples_per_token
+                for b, audio_chunk, ctx, new_tokens in remaining:
+                    if ctx > 0:
+                        trim_samples = ctx * upsample
                         if trim_samples < audio_chunk.shape[0]:
                             audio_chunk = audio_chunk[trim_samples:]
-
                     yield BatchGenerationResult(
                         audio=audio_chunk,
                         sequence_idx=b,
                         samples=audio_chunk.shape[0],
                         sample_rate=self.sample_rate,
-                        token_count=len(generated_codes[b]) - decoded_tokens[b],
+                        token_count=new_tokens,
                         audio_duration=format_duration(
                             audio_chunk.shape[0] / self.sample_rate
                         ),
