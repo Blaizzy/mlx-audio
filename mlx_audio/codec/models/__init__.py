@@ -1,5 +1,3 @@
-# pyright: reportPrivateImportUsage=false
-
 from .descript import DAC
 from .ecapa_tdnn import EcapaTdnnBackbone
 from .encodec import Encodec
