@@ -827,11 +827,14 @@ class Model(nn.Module):
         return tokens[:, None]  # [batch, 1]
 
     def _decode_chunk(self, codes: mx.array, chunk_tokens: int = 100) -> mx.array:
-        """Decode a chunk of codes to audio (chunked path for large sequences).
+        """Decode a chunk of codes to audio using the vocoder's chunked decode.
+
+        Uses streaming_decode which applies vocoder-level left context (25 tokens)
+        for smooth audio at chunk boundaries.
 
         Args:
             codes: [1, time, num_code_groups] codes to decode
-            chunk_tokens: Number of tokens per decode chunk (controls latency vs quality)
+            chunk_tokens: Number of tokens per vocoder sub-chunk (controls quality)
 
         Returns:
             audio: [samples] decoded audio waveform
@@ -842,30 +845,15 @@ class Model(nn.Module):
         ):
             audio_chunks.append(chunk)
 
-        audio = mx.concatenate(audio_chunks, axis=-1)[0]  # Remove batch dim
+        audio = mx.concatenate(audio_chunks, axis=-1)[0]
 
-        # Calculate valid length and trim
+        # Trim to valid length
         valid_len = int(
             (codes[..., 0] > 0).sum() * self.speech_tokenizer.decode_upsample_rate
         )
         if valid_len > 0 and valid_len < audio.shape[0]:
             audio = audio[:valid_len]
 
-        mx.eval(audio)
-        return audio
-
-    def _decode_chunk_direct(self, codes: mx.array) -> mx.array:
-        """Fast direct decode for small streaming chunks — bypasses chunked decode overhead.
-
-        Args:
-            codes: [1, time, num_code_groups] codes to decode
-
-        Returns:
-            audio: [samples] decoded audio waveform
-        """
-        transposed = mx.transpose(codes, (0, 2, 1))  # [1, groups, time]
-        audio = self.speech_tokenizer.decoder(transposed)  # [1, 1, samples]
-        audio = audio.squeeze(1)[0]  # -> [samples]
         mx.eval(audio)
         return audio
 
@@ -884,7 +872,7 @@ class Model(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
-        streaming_context_size: int = 10,
+        streaming_context_size: int = 25,
         top_k: int = 50,
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
@@ -1163,14 +1151,11 @@ class Model(nn.Module):
                     )
                     start_idx = decoded_tokens - context_tokens
                     codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
+                    mx.eval(codes_chunk)
 
-                    # Use fast direct decode for small chunks, chunked for larger
-                    if codes_chunk.shape[1] <= 16:
-                        audio_chunk = self._decode_chunk_direct(codes_chunk)
-                    else:
-                        audio_chunk = self._decode_chunk(
-                            codes_chunk, chunk_tokens=subsequent_chunk_size
-                        )
+                    audio_chunk = self._decode_chunk(
+                        codes_chunk, chunk_tokens=streaming_context_size
+                    )
 
                     # Trim the context overlap from audio (only yield new audio)
                     if context_tokens > 0:
@@ -1213,12 +1198,9 @@ class Model(nn.Module):
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
                 mx.eval(codes_chunk)
 
-                if codes_chunk.shape[1] <= 16:
-                    audio_chunk = self._decode_chunk_direct(codes_chunk)
-                else:
-                    audio_chunk = self._decode_chunk(
-                        codes_chunk, chunk_tokens=subsequent_chunk_size
-                    )
+                audio_chunk = self._decode_chunk(
+                    codes_chunk, chunk_tokens=streaming_context_size
+                )
 
                 # Trim the context overlap from audio (only yield new audio)
                 if context_tokens > 0:
@@ -1840,7 +1822,7 @@ class Model(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
-        streaming_context_size: int = 10,
+        streaming_context_size: int = 25,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech using ICL (In-Context Learning) voice cloning.
 
@@ -1989,13 +1971,11 @@ class Model(nn.Module):
                 )
                 start_idx = decoded_tokens - context_tokens
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
+                mx.eval(codes_chunk)
 
-                if codes_chunk.shape[1] <= 16:
-                    audio_chunk = self._decode_chunk_direct(codes_chunk)
-                else:
-                    audio_chunk = self._decode_chunk(
-                        codes_chunk, chunk_tokens=subsequent_chunk_size
-                    )
+                audio_chunk = self._decode_chunk(
+                    codes_chunk, chunk_tokens=streaming_context_size
+                )
 
                 if context_tokens > 0:
                     samples_per_token = self.speech_tokenizer.decode_upsample_rate
@@ -2037,12 +2017,9 @@ class Model(nn.Module):
             codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
             mx.eval(codes_chunk)
 
-            if codes_chunk.shape[1] <= 16:
-                audio_chunk = self._decode_chunk_direct(codes_chunk)
-            else:
-                audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=subsequent_chunk_size
-                )
+            audio_chunk = self._decode_chunk(
+                codes_chunk, chunk_tokens=streaming_context_size
+            )
 
             # Trim the context overlap from audio (only yield new audio)
             if context_tokens > 0:
@@ -2150,7 +2127,7 @@ class Model(nn.Module):
         verbose: bool,
         stream: bool = False,
         streaming_interval: float = 2.0,
-        streaming_context_size: int = 10,
+        streaming_context_size: int = 25,
     ) -> Generator[GenerationResult, None, None]:
         """Internal method for generation with instruct support."""
         if self.speech_tokenizer is None:
@@ -2295,13 +2272,11 @@ class Model(nn.Module):
                 )
                 start_idx = decoded_tokens - context_tokens
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
+                mx.eval(codes_chunk)
 
-                if codes_chunk.shape[1] <= 16:
-                    audio_chunk = self._decode_chunk_direct(codes_chunk)
-                else:
-                    audio_chunk = self._decode_chunk(
-                        codes_chunk, chunk_tokens=subsequent_chunk_size
-                    )
+                audio_chunk = self._decode_chunk(
+                    codes_chunk, chunk_tokens=streaming_context_size
+                )
 
                 if context_tokens > 0:
                     samples_per_token = self.speech_tokenizer.decode_upsample_rate
@@ -2343,12 +2318,9 @@ class Model(nn.Module):
             codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
             mx.eval(codes_chunk)
 
-            if codes_chunk.shape[1] <= 16:
-                audio_chunk = self._decode_chunk_direct(codes_chunk)
-            else:
-                audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=subsequent_chunk_size
-                )
+            audio_chunk = self._decode_chunk(
+                codes_chunk, chunk_tokens=streaming_context_size
+            )
 
             # Trim the context overlap from audio (only yield new audio)
             if context_tokens > 0:
