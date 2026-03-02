@@ -1,5 +1,3 @@
-# pyright: reportMissingTypeStubs=false, reportUnannotatedClassAttribute=false, reportImplicitOverride=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
-
 import mlx.core as mx
 import mlx.nn as nn
 
