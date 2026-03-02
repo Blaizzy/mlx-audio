@@ -1,5 +1,3 @@
-# pyright: reportUnknownMemberType=false
-
 import unittest
 
 import mlx.core as mx
