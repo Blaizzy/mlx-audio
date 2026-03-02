@@ -249,18 +249,18 @@ class TestLidBackboneIntegration(unittest.TestCase):
     def test_lid_ecapa_uses_shared_backbone(self):
         from mlx_audio.codec.models.ecapa_tdnn import EcapaTdnnBackbone
         from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
-        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import ECAPA_TDNN
 
         config = ModelConfig()
-        model = EcapaTdnn(config)
+        model = ECAPA_TDNN(config)
         self.assertIsInstance(model.embedding_model, EcapaTdnnBackbone)
 
     def test_lid_forward_pass_unchanged(self):
         from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
-        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import ECAPA_TDNN
 
         config = ModelConfig(id2label={str(i): f"{i}: lang_{i}" for i in range(10)})
-        model = EcapaTdnn(config)
+        model = ECAPA_TDNN(config)
         mel = mx.zeros((1, 100, 60))
         out = model(mel)
         mx.eval(out)
@@ -268,10 +268,10 @@ class TestLidBackboneIntegration(unittest.TestCase):
 
     def test_lid_predict_unchanged(self):
         from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
-        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import ECAPA_TDNN
 
         config = ModelConfig(id2label={str(i): f"{i}: lang_{i}" for i in range(10)})
-        model = EcapaTdnn(config)
+        model = ECAPA_TDNN(config)
         audio = mx.random.normal((16000,))
         result = model.predict(audio, top_k=3)
         self.assertEqual(len(result), 3)

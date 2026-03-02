@@ -293,10 +293,10 @@ class TestEcapaTdnnConfig(unittest.TestCase):
 class TestEcapaTdnnModel(unittest.TestCase):
     def setUp(self):
         from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
-        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import ECAPA_TDNN
 
         self.ModelConfig = ModelConfig
-        self.Model = EcapaTdnn
+        self.Model = ECAPA_TDNN
         self.config = ModelConfig(
             channels=64,
             res2net_scale=2,
@@ -354,9 +354,9 @@ class TestEcapaTdnnModel(unittest.TestCase):
 class TestEcapaTdnnSanitize(unittest.TestCase):
     def setUp(self):
         from mlx_audio.lid.models.ecapa_tdnn.config import ModelConfig
-        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import EcapaTdnn
+        from mlx_audio.lid.models.ecapa_tdnn.ecapa_tdnn import ECAPA_TDNN
 
-        self.model = EcapaTdnn(
+        self.model = ECAPA_TDNN(
             ModelConfig(
                 channels=64,
                 res2net_scale=2,
@@ -450,7 +450,7 @@ class TestEcapaTdnnExports(unittest.TestCase):
         from mlx_audio.lid.models.ecapa_tdnn import DETECTION_HINTS
 
         self.assertIn("res2net_scale", DETECTION_HINTS["config_keys"])
-        self.assertIn("EcapaTdnn", DETECTION_HINTS["architectures"])
+        self.assertIn("ECAPA_TDNN", DETECTION_HINTS["architectures"])
 
 
 if __name__ == "__main__":

@@ -77,11 +77,11 @@ class EcapaClassifier(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class EcapaTdnn(nn.Module):
+class ECAPA_TDNN(nn.Module):
     """ECAPA-TDNN for spoken language identification.
 
     Architecture:
-        Mel spectrogram → EcapaTdnnEmbedding → EcapaClassifier → log-probs
+        Mel spectrogram → EcapaTdnnBackbone → EcapaClassifier → log-probs
 
     Args:
         config: ``ModelConfig`` with ECAPA-TDNN hyper-parameters.
