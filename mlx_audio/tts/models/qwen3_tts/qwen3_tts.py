@@ -469,7 +469,9 @@ class Model(nn.Module):
             padded_embeds.append(padded)
             mask_rows.append(mask_row)
 
-        input_embeds = mx.concatenate(padded_embeds, axis=0)  # [batch, max_prefill, hidden]
+        input_embeds = mx.concatenate(
+            padded_embeds, axis=0
+        )  # [batch, max_prefill, hidden]
         attention_mask = mx.concatenate(mask_rows, axis=0)  # [batch, max_prefill]
 
         # Right-pad trailing_text_hidden with pad_embed values
@@ -482,9 +484,7 @@ class Model(nn.Module):
             pad_len = max_trailing - trail_len
             if pad_len > 0:
                 # Pad with tts_pad_embed so exhausted text naturally produces pad embeds
-                pad_fill = mx.broadcast_to(
-                    shared_pad_embed, (1, pad_len, hidden_size)
-                )
+                pad_fill = mx.broadcast_to(shared_pad_embed, (1, pad_len, hidden_size))
                 padded = mx.concatenate([trailing, pad_fill], axis=1)
             else:
                 padded = trailing
@@ -798,9 +798,7 @@ class Model(nn.Module):
                 row = mx.put_along_axis(
                     selected, token_ids[None, :], penalized, axis=-1
                 )
-                logits = mx.concatenate(
-                    [logits[:b], row, logits[b + 1 :]], axis=0
-                )
+                logits = mx.concatenate([logits[:b], row, logits[b + 1 :]], axis=0)
 
         # Greedy decoding
         if temperature <= 0:
@@ -1420,7 +1418,6 @@ class Model(nn.Module):
                 cache=cache,
                 attention_mask=attention_mask,
             )
-            
 
             # Batched sampling — no per-sequence bool()/int() calls
             sampled_tokens = self._sample_token_batch(
@@ -1473,7 +1470,9 @@ class Model(nn.Module):
                 else:
                     code_embed = self.talker.code_predictor.codec_embedding[
                         code_idx - 1
-                    ](code_tokens[-1])  # [batch, 1, hidden]
+                    ](
+                        code_tokens[-1]
+                    )  # [batch, 1, hidden]
                     code_input = code_embed
 
                 code_logits, code_cache, _ = self.talker.code_predictor(
@@ -1499,16 +1498,14 @@ class Model(nn.Module):
             clamped_indices = mx.minimum(
                 trailing_indices[:, 0], max_trailing_len - 1
             )  # [batch]
-            text_embeds = trailing_text_hidden[
-                batch_arange, clamped_indices, :
-            ][:, None, :]  # [batch, 1, hidden]
+            text_embeds = trailing_text_hidden[batch_arange, clamped_indices, :][
+                :, None, :
+            ]  # [batch, 1, hidden]
 
             # Replace exhausted positions with pad embed
             exhausted = clamped_indices >= max_trailing_len - 1  # [batch]
             if bool(exhausted.any()):
-                pad_broadcast = mx.broadcast_to(
-                    tts_pad_embed, text_embeds.shape
-                )
+                pad_broadcast = mx.broadcast_to(tts_pad_embed, text_embeds.shape)
                 text_embeds = mx.where(
                     exhausted[:, None, None], pad_broadcast, text_embeds
                 )
@@ -1522,10 +1519,9 @@ class Model(nn.Module):
                 next_token_batch
             )  # [batch, 1, hidden]
             for j, code in enumerate(code_tokens[1:]):
-                codec_embed = (
-                    codec_embed
-                    + self.talker.code_predictor.codec_embedding[j](code)
-                )
+                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
+                    j
+                ](code)
 
             input_embeds = text_embeds + codec_embed  # [batch, 1, hidden]
 
@@ -1535,7 +1531,9 @@ class Model(nn.Module):
             # Append materialized codes to per-sequence lists
             for b in range(batch_size):
                 if not finished_cpu[b]:
-                    generated_codes[b].append(all_codes[b : b + 1])  # [1, num_code_groups]
+                    generated_codes[b].append(
+                        all_codes[b : b + 1]
+                    )  # [1, num_code_groups]
 
             # Extend attention_mask by one column of 1s
             attention_mask = mx.concatenate(
@@ -1554,9 +1552,7 @@ class Model(nn.Module):
                         continue
                     new_tokens = len(generated_codes[b]) - decoded_tokens[b]
                     chunk_size = (
-                        first_chunk_size
-                        if is_first_chunk[b]
-                        else subsequent_chunk_size
+                        first_chunk_size if is_first_chunk[b] else subsequent_chunk_size
                     )
                     if new_tokens >= chunk_size:
                         context_tokens = (
@@ -1610,9 +1606,7 @@ class Model(nn.Module):
                     remaining_tokens = len(generated_codes[b]) - decoded_tokens[b]
                     context_tokens = min(streaming_context_size, decoded_tokens[b])
                     start_idx = decoded_tokens[b] - context_tokens
-                    codes_chunk = mx.stack(
-                        generated_codes[b][start_idx:], axis=1
-                    )
+                    codes_chunk = mx.stack(generated_codes[b][start_idx:], axis=1)
                     transposed = mx.transpose(codes_chunk, (0, 2, 1))
                     audio_chunk = self.speech_tokenizer.decoder.chunked_decode(
                         transposed
@@ -1622,8 +1616,7 @@ class Model(nn.Module):
                     # Trim context audio
                     if context_tokens > 0:
                         trim_samples = (
-                            context_tokens
-                            * self.speech_tokenizer.decode_upsample_rate
+                            context_tokens * self.speech_tokenizer.decode_upsample_rate
                         )
                         if trim_samples < audio_chunk.shape[0]:
                             audio_chunk = audio_chunk[trim_samples:]
@@ -1680,7 +1673,9 @@ class Model(nn.Module):
                 start = end
 
             del transposed
-            audio = mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
+            audio = (
+                mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
+            )
 
             duration_seconds = audio.shape[0] / self.sample_rate
             yield BatchGenerationResult(
@@ -2198,7 +2193,7 @@ class Model(nn.Module):
         # Streaming decode state — emit first chunk ASAP for minimal TTFB
         first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
         subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
-  
+
         decoded_tokens = 0
         is_first_chunk = True
 

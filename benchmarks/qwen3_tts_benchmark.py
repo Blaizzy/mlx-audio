@@ -197,9 +197,7 @@ def run_trial(
     if collect_audio and audio_chunks:
         import numpy as np
 
-        trial._audio = np.concatenate(
-            [np.array(c, copy=False) for c in audio_chunks]
-        )
+        trial._audio = np.concatenate([np.array(c, copy=False) for c in audio_chunks])
         trial._sample_rate = sample_rate
     return trial
 
@@ -585,9 +583,7 @@ def main():
         # Save audio from last trial
         if args.save_audio and hasattr(trials[-1], "_audio"):
             os.makedirs(args.save_audio, exist_ok=True)
-            path = os.path.join(
-                args.save_audio, f"sequential_{prompt_key}.wav"
-            )
+            path = os.path.join(args.save_audio, f"sequential_{prompt_key}.wav")
             save_wav(path, trials[-1]._audio, trials[-1]._sample_rate)
 
         summary = summarize_trials(prompt_key, trials)
@@ -675,16 +671,12 @@ def main():
                 f"  {'Batch':>5} | {'TotalTime(ms)':>13} | {'TPS':>8} | "
                 f"{'AvgTTFB(ms)':>11} | {'Throughput':>10} | {'Mem(GB)':>8}"
             )
-            print(
-                f"  {'─'*5} | {'─'*13} | {'─'*8} | {'─'*11} | {'─'*10} | {'─'*8}"
-            )
+            print(f"  {'─'*5} | {'─'*13} | {'─'*8} | {'─'*11} | {'─'*10} | {'─'*8}")
             for bs, trials in batch_results:
                 avg_time = statistics.mean([t.total_time_ms for t in trials])
                 avg_tps = statistics.mean([t.tokens_per_second for t in trials])
                 avg_ttfb = statistics.mean([t.avg_ttfb_ms for t in trials])
-                avg_throughput = statistics.mean(
-                    [t.throughput_ratio for t in trials]
-                )
+                avg_throughput = statistics.mean([t.throughput_ratio for t in trials])
                 peak_mem = max(t.peak_memory_gb for t in trials)
                 print(
                     f"  {bs:>5} | {avg_time:>11.1f}ms | {avg_tps:>8.1f} | "
