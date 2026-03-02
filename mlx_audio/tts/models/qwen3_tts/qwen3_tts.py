@@ -1050,7 +1050,6 @@ class Model(nn.Module):
             first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
             subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
             decoded_tokens = 0
-            is_first_chunk = True
 
             for step in range(max_tokens):
                 # Forward pass through talker
@@ -1153,13 +1152,13 @@ class Model(nn.Module):
                 # Streaming: decode and yield audio chunks during generation
                 new_tokens = len(generated_codes) - decoded_tokens
                 chunk_size = (
-                    first_chunk_size if is_first_chunk else subsequent_chunk_size
+                    first_chunk_size if decoded_tokens == 0 else subsequent_chunk_size
                 )
                 if stream and new_tokens >= chunk_size:
                     # Context overlap: none for first chunk, limited for subsequent
                     context_tokens = (
                         0
-                        if is_first_chunk
+                        if decoded_tokens == 0
                         else min(streaming_context_size, decoded_tokens)
                     )
                     start_idx = decoded_tokens - context_tokens
@@ -1181,8 +1180,6 @@ class Model(nn.Module):
                             audio_chunk = audio_chunk[trim_samples:]
 
                     decoded_tokens = len(generated_codes)
-                    was_first = is_first_chunk
-                    is_first_chunk = False
 
                     yield GenerationResult(
                         audio=audio_chunk,
@@ -1401,7 +1398,6 @@ class Model(nn.Module):
         # Match vocoder's left_context_size for clean chunk boundaries
         streaming_context_size = 5
         decoded_tokens = [0] * batch_size
-        is_first_chunk = [True] * batch_size
 
         pbar = tqdm(
             total=max_tokens,
@@ -1552,12 +1548,14 @@ class Model(nn.Module):
                         continue
                     new_tokens = len(generated_codes[b]) - decoded_tokens[b]
                     chunk_size = (
-                        first_chunk_size if is_first_chunk[b] else subsequent_chunk_size
+                        first_chunk_size
+                        if decoded_tokens[b] == 0
+                        else subsequent_chunk_size
                     )
                     if new_tokens >= chunk_size:
                         context_tokens = (
                             0
-                            if is_first_chunk[b]
+                            if decoded_tokens[b] == 0
                             else min(streaming_context_size, decoded_tokens[b])
                         )
                         start_idx = decoded_tokens[b] - context_tokens
@@ -1581,7 +1579,6 @@ class Model(nn.Module):
                                 audio_chunk = audio_chunk[trim_samples:]
 
                         decoded_tokens[b] = len(generated_codes[b])
-                        is_first_chunk[b] = False
 
                         yield BatchGenerationResult(
                             audio=audio_chunk,
@@ -1899,7 +1896,6 @@ class Model(nn.Module):
         first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
         subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
         decoded_tokens = 0
-        is_first_chunk = True
 
         for step in range(effective_max_tokens):
             # Forward pass through talker
@@ -1982,10 +1978,14 @@ class Model(nn.Module):
 
             # Streaming: decode and yield audio chunks during generation
             new_tokens = len(generated_codes) - decoded_tokens
-            chunk_size = first_chunk_size if is_first_chunk else subsequent_chunk_size
+            chunk_size = (
+                first_chunk_size if decoded_tokens == 0 else subsequent_chunk_size
+            )
             if stream and new_tokens >= chunk_size:
                 context_tokens = (
-                    0 if is_first_chunk else min(streaming_context_size, decoded_tokens)
+                    0
+                    if decoded_tokens == 0
+                    else min(streaming_context_size, decoded_tokens)
                 )
                 start_idx = decoded_tokens - context_tokens
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
@@ -2004,8 +2004,6 @@ class Model(nn.Module):
                         audio_chunk = audio_chunk[trim_samples:]
 
                 decoded_tokens = len(generated_codes)
-                was_first = is_first_chunk
-                is_first_chunk = False
 
                 yield GenerationResult(
                     audio=audio_chunk,
@@ -2195,7 +2193,6 @@ class Model(nn.Module):
         subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
 
         decoded_tokens = 0
-        is_first_chunk = True
 
         # Create progress bar for token generation
         pbar = tqdm(
@@ -2287,10 +2284,14 @@ class Model(nn.Module):
 
             # Streaming: decode and yield audio chunks during generation
             new_tokens = len(generated_codes) - decoded_tokens
-            chunk_size = first_chunk_size if is_first_chunk else subsequent_chunk_size
+            chunk_size = (
+                first_chunk_size if decoded_tokens == 0 else subsequent_chunk_size
+            )
             if stream and new_tokens >= chunk_size:
                 context_tokens = (
-                    0 if is_first_chunk else min(streaming_context_size, decoded_tokens)
+                    0
+                    if decoded_tokens == 0
+                    else min(streaming_context_size, decoded_tokens)
                 )
                 start_idx = decoded_tokens - context_tokens
                 codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
@@ -2309,8 +2310,6 @@ class Model(nn.Module):
                         audio_chunk = audio_chunk[trim_samples:]
 
                 decoded_tokens = len(generated_codes)
-                was_first = is_first_chunk
-                is_first_chunk = False
 
                 yield GenerationResult(
                     audio=audio_chunk,
