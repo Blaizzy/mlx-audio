@@ -1098,9 +1098,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
         mx.eval(wav_batch)
 
         # Compute per-sequence valid lengths and trim
-        audio_lengths = [
-            int(sl) * self.decode_upsample_rate for sl in seq_lens
-        ]
+        audio_lengths = [int(sl) * self.decode_upsample_rate for sl in seq_lens]
 
         audios = []
         for b, valid_samples in enumerate(audio_lengths):
@@ -1109,7 +1107,6 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
                 audio = audio[:valid_samples]
             audios.append(audio)
 
-        # Free the full batch tensor now that slices are extracted
         del wav_batch, batch_codes, codes_t
         mx.clear_cache()
 
