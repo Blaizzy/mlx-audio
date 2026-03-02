@@ -1154,7 +1154,7 @@ class Model(nn.Module):
                     mx.eval(codes_chunk)
 
                     audio_chunk = self._decode_chunk(
-                        codes_chunk, chunk_tokens=streaming_context_size
+                        codes_chunk, chunk_tokens=subsequent_chunk_size
                     )
 
                     # Trim the context overlap from audio (only yield new audio)
@@ -1199,7 +1199,7 @@ class Model(nn.Module):
                 mx.eval(codes_chunk)
 
                 audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=streaming_context_size
+                    codes_chunk, chunk_tokens=subsequent_chunk_size
                 )
 
                 # Trim the context overlap from audio (only yield new audio)
@@ -1974,7 +1974,7 @@ class Model(nn.Module):
                 mx.eval(codes_chunk)
 
                 audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=streaming_context_size
+                    codes_chunk, chunk_tokens=subsequent_chunk_size
                 )
 
                 if context_tokens > 0:
@@ -2018,7 +2018,7 @@ class Model(nn.Module):
             mx.eval(codes_chunk)
 
             audio_chunk = self._decode_chunk(
-                codes_chunk, chunk_tokens=streaming_context_size
+                codes_chunk, chunk_tokens=subsequent_chunk_size
             )
 
             # Trim the context overlap from audio (only yield new audio)
@@ -2275,7 +2275,7 @@ class Model(nn.Module):
                 mx.eval(codes_chunk)
 
                 audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=streaming_context_size
+                    codes_chunk, chunk_tokens=subsequent_chunk_size
                 )
 
                 if context_tokens > 0:
@@ -2319,7 +2319,7 @@ class Model(nn.Module):
             mx.eval(codes_chunk)
 
             audio_chunk = self._decode_chunk(
-                codes_chunk, chunk_tokens=streaming_context_size
+                codes_chunk, chunk_tokens=subsequent_chunk_size
             )
 
             # Trim the context overlap from audio (only yield new audio)
