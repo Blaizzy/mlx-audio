@@ -2468,6 +2468,11 @@ class Model(nn.Module):
                         print("  Initialized encoder codebooks")
 
                 model.load_speech_tokenizer(speech_tokenizer)
+
+                # Compile the vocoder decoder
+                model.speech_tokenizer.decoder = mx.compile(
+                    model.speech_tokenizer.decoder
+                )
                 print(f"Loaded speech tokenizer from {speech_tokenizer_path}")
             except Exception as e:
                 print(f"Warning: Could not load speech tokenizer: {e}")
