@@ -1375,6 +1375,11 @@ class Model(nn.Module):
         )
         mx.eval(input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask)
 
+        # For bs=1 there's no left-padding so attention_mask is all 1s;
+        # dropping it lets the talker skip O(N^2) mask construction each step.
+        if batch_size == 1:
+            attention_mask = None
+
         # Initialize cache
         cache = self.talker.make_cache()
 
@@ -1401,6 +1406,9 @@ class Model(nn.Module):
         # Match vocoder's left_context_size for clean chunk boundaries
         streaming_context_size = 25
         decoded_tokens = [0] * batch_size
+
+        # Create code_cache once and reset in-place each step
+        code_cache = self.talker.code_predictor.make_cache()
 
         pbar = tqdm(
             total=max_tokens,
@@ -1439,24 +1447,14 @@ class Model(nn.Module):
             newly_finished = next_token_batch[:, 0] == eos_token_id
             finished = finished | newly_finished
 
-            # SYNC 1: eval finished + tokens together
-            mx.eval(finished, next_token_batch)
-
-            # Update repetition penalty state (CPU-side, uses already-eval'd data)
-            token_ids_cpu = next_token_batch[:, 0].tolist()
-            finished_cpu = finished.tolist()
-            for b in range(batch_size):
-                if not finished_cpu[b]:
-                    generated_token_ids[b].append(token_ids_cpu[b])
-
-            # SYNC 2: check if all done
-            if bool(finished.all()):
-                break
-
             # Generate remaining codebook tokens with code predictor (batched)
             code_tokens = [next_token_batch]  # each is [batch, 1]
             code_hidden = hidden[:, -1:, :]  # [batch, 1, hidden]
-            code_cache = self.talker.code_predictor.make_cache()
+            # Reset code_cache in-place (avoid make_cache() allocation each step)
+            for c in code_cache:
+                c.keys = None
+                c.values = None
+                c.offset = 0
 
             for code_idx in range(config.num_code_groups - 1):
                 if code_idx == 0:
@@ -1491,8 +1489,6 @@ class Model(nn.Module):
             # Stack all codebook tokens: [batch, num_code_groups]
             all_codes = mx.concatenate(code_tokens, axis=1)
 
-            del code_cache
-
             # Vectorized trailing text gather
             clamped_indices = mx.minimum(
                 trailing_indices[:, 0], max_trailing_len - 1
@@ -1501,13 +1497,10 @@ class Model(nn.Module):
                 :, None, :
             ]  # [batch, 1, hidden]
 
-            # Replace exhausted positions with pad embed
+            # Replace exhausted positions with pad embed (unconditional, no sync)
             exhausted = clamped_indices >= max_trailing_len - 1  # [batch]
-            if bool(exhausted.any()):
-                pad_broadcast = mx.broadcast_to(tts_pad_embed, text_embeds.shape)
-                text_embeds = mx.where(
-                    exhausted[:, None, None], pad_broadcast, text_embeds
-                )
+            pad_broadcast = mx.broadcast_to(tts_pad_embed, text_embeds.shape)
+            text_embeds = mx.where(exhausted[:, None, None], pad_broadcast, text_embeds)
 
             # Advance trailing indices for non-finished sequences (vectorized)
             advance = (~finished).astype(mx.int32)[:, None]
@@ -1524,20 +1517,26 @@ class Model(nn.Module):
 
             input_embeds = text_embeds + codec_embed  # [batch, 1, hidden]
 
-            # SYNC 3: eval codes + next input together (single sync)
-            mx.eval(all_codes, input_embeds)
+            # SINGLE SYNC per step: eval codes, next input, and finished together
+            mx.eval(all_codes, input_embeds, finished)
 
-            # Append materialized codes to per-sequence lists
+            # CPU-side checks on already-eval'd data
+            finished_cpu = finished.tolist()
+            if all(finished_cpu):
+                break
+            token_ids_cpu = next_token_batch[:, 0].tolist()
             for b in range(batch_size):
                 if not finished_cpu[b]:
+                    generated_token_ids[b].append(token_ids_cpu[b])
                     generated_codes[b].append(
                         all_codes[b : b + 1]
                     )  # [1, num_code_groups]
 
-            # Extend attention_mask by one column of 1s
-            attention_mask = mx.concatenate(
-                [attention_mask, mx.ones((batch_size, 1))], axis=1
-            )
+            # Extend attention_mask by one column of 1s (skipped for bs=1)
+            if attention_mask is not None:
+                attention_mask = mx.concatenate(
+                    [attention_mask, mx.ones((batch_size, 1))], axis=1
+                )
 
             if step > 0 and step % 50 == 0:
                 mx.clear_cache()
