@@ -1021,8 +1021,9 @@ class Model(nn.Module):
 
             # Initialize cache using mlx_lm's KVCache
             cache = self.talker.make_cache()
+            code_cache = self.talker.code_predictor.make_cache()
             generated_codes = []
-            generated_token_ids = []  # O(1) append, avoids O(n²) int() sync
+            generated_token_ids = []
             config = self.config.talker_config
             eos_token_id = config.codec_eos_token_id
             trailing_idx = 0
@@ -1037,6 +1038,7 @@ class Model(nn.Module):
             # Streaming decode state — emit first chunk ASAP for minimal TTFB
             streaming_chunk_size = max(1, int(streaming_interval * 12.5))
             decoded_tokens = 0
+            chunks_yielded = 0
 
             for step in range(max_tokens):
                 # Forward pass through talker
@@ -1059,41 +1061,35 @@ class Model(nn.Module):
                     eos_token_id=eos_token_id,
                 )
 
-                # Check for EOS
-                token_id = int(next_token[0, 0])
-                if token_id == eos_token_id:
-                    break
-                generated_token_ids.append(token_id)
+                # Lazy EOS check — defer sync to batch with input_embeds eval
+                is_eos = next_token[0, 0] == eos_token_id
 
                 # Generate remaining codebook tokens with code predictor
                 code_tokens = [next_token]
                 code_hidden = hidden[:, -1:, :]
-                code_cache = self.talker.code_predictor.make_cache()
+
+                # Reset code cache (reuse allocation instead of make_cache/del)
+                for c in code_cache:
+                    c.keys = None
+                    c.values = None
+                    c.offset = 0
 
                 for code_idx in range(config.num_code_groups - 1):
                     if code_idx == 0:
-                        # Prefill: concatenate [hidden_state, code_0_embed] as sequence
-                        # This matches PyTorch where inputs_embeds.shape[1] > 1
                         code_0_embed = self.talker.get_input_embeddings()(next_token)
-                        code_input = mx.concatenate(
-                            [code_hidden, code_0_embed], axis=1
-                        )  # [1, 2, hidden]
+                        code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
                     else:
-                        # Generation: just pass embedding of previous code token
-                        # The KV cache provides context from previous positions
                         code_embed = self.talker.code_predictor.codec_embedding[
                             code_idx - 1
                         ](code_tokens[-1])
-                        code_input = code_embed  # [1, 1, hidden]
+                        code_input = code_embed
 
-                    # Code predictor forward
                     code_logits, code_cache, _ = self.talker.code_predictor(
                         code_input,
                         cache=code_cache,
                         generation_step=code_idx,
                     )
 
-                    # Sample
                     next_code = self._sample_token(
                         code_logits,
                         temperature=temperature,
@@ -1103,13 +1099,9 @@ class Model(nn.Module):
                     code_tokens.append(next_code)
 
                 # Stack all codebook tokens
-                all_codes = mx.concatenate(code_tokens, axis=1)  # [1, num_code_groups]
-                generated_codes.append(all_codes)
-
-                del code_cache
+                all_codes = mx.concatenate(code_tokens, axis=1)
 
                 # Prepare next input
-                # Add trailing text if available
                 if trailing_idx < trailing_text_hidden.shape[1]:
                     text_embed = trailing_text_hidden[
                         :, trailing_idx : trailing_idx + 1, :
@@ -1118,7 +1110,6 @@ class Model(nn.Module):
                 else:
                     text_embed = tts_pad_embed
 
-                # Codec embedding for next step
                 codec_embed = self.talker.get_input_embeddings()(next_token)
                 for i, code in enumerate(code_tokens[1:]):
                     codec_embed = (
@@ -1127,7 +1118,15 @@ class Model(nn.Module):
                     )
 
                 input_embeds = text_embed + codec_embed
-                mx.eval(input_embeds)
+
+                # Single sync point — evaluate input_embeds and EOS check together
+                mx.eval(input_embeds, is_eos)
+
+                if is_eos.item():
+                    break
+
+                generated_token_ids.append(int(next_token[0, 0]))
+                generated_codes.append(all_codes)
 
                 # Periodically clear cache to prevent memory buildup during long generation
                 if step > 0 and step % 50 == 0:
@@ -1844,8 +1843,9 @@ class Model(nn.Module):
 
         # Initialize cache
         cache = self.talker.make_cache()
+        code_cache = self.talker.code_predictor.make_cache()
         generated_codes = []
-        generated_token_ids = []  # O(1) append, avoids O(n²) int() sync
+        generated_token_ids = []
         config = self.config.talker_config
         eos_token_id = config.codec_eos_token_id
         suppress_tokens = [
@@ -1883,16 +1883,18 @@ class Model(nn.Module):
                 eos_token_id=eos_token_id,
             )
 
-            # Check for EOS
-            token_id = int(next_token[0, 0])
-            if token_id == eos_token_id:
-                break
-            generated_token_ids.append(token_id)
+            # Lazy EOS check — defer sync to batch with input_embeds eval
+            is_eos = next_token[0, 0] == eos_token_id
 
             # Generate remaining codebook tokens with code predictor
             code_tokens = [next_token]
             code_hidden = hidden[:, -1:, :]
-            code_cache = self.talker.code_predictor.make_cache()
+
+            # Reset code cache (reuse allocation instead of make_cache/del)
+            for c in code_cache:
+                c.keys = None
+                c.values = None
+                c.offset = 0
 
             for code_idx in range(config.num_code_groups - 1):
                 if code_idx == 0:
@@ -1920,9 +1922,6 @@ class Model(nn.Module):
 
             # Stack all codebook tokens
             all_codes = mx.concatenate(code_tokens, axis=1)
-            generated_codes.append(all_codes)
-
-            del code_cache
 
             # Prepare next input
             if trailing_idx < trailing_text_hidden.shape[1]:
@@ -1938,7 +1937,15 @@ class Model(nn.Module):
                 ](code)
 
             input_embeds = text_embed + codec_embed
-            mx.eval(input_embeds)
+
+            # Single sync point — evaluate input_embeds and EOS check together
+            mx.eval(input_embeds, is_eos)
+
+            if is_eos.item():
+                break
+
+            generated_token_ids.append(int(next_token[0, 0]))
+            generated_codes.append(all_codes)
 
             # Periodically clear cache to prevent memory buildup during long generation
             if step > 0 and step % 50 == 0:
@@ -2139,8 +2146,9 @@ class Model(nn.Module):
 
         # Initialize cache
         cache = self.talker.make_cache()
+        code_cache = self.talker.code_predictor.make_cache()
         generated_codes = []
-        generated_token_ids = []  # O(1) append, avoids O(n²) int() sync
+        generated_token_ids = []
         config = self.config.talker_config
         eos_token_id = config.codec_eos_token_id
         suppress_tokens = [
@@ -2179,16 +2187,18 @@ class Model(nn.Module):
                 eos_token_id=eos_token_id,
             )
 
-            # Check for EOS
-            token_id = int(next_token[0, 0])
-            if token_id == eos_token_id:
-                break
-            generated_token_ids.append(token_id)
+            # Lazy EOS check — defer sync to batch with input_embeds eval
+            is_eos = next_token[0, 0] == eos_token_id
 
             # Generate remaining codebook tokens with code predictor
             code_tokens = [next_token]
             code_hidden = hidden[:, -1:, :]
-            code_cache = self.talker.code_predictor.make_cache()
+
+            # Reset code cache (reuse allocation instead of make_cache/del)
+            for c in code_cache:
+                c.keys = None
+                c.values = None
+                c.offset = 0
 
             for code_idx in range(config.num_code_groups - 1):
                 if code_idx == 0:
@@ -2216,9 +2226,6 @@ class Model(nn.Module):
 
             # Stack all codebook tokens
             all_codes = mx.concatenate(code_tokens, axis=1)
-            generated_codes.append(all_codes)
-
-            del code_cache
 
             # Prepare next input
             if trailing_idx < trailing_text_hidden.shape[1]:
@@ -2234,7 +2241,15 @@ class Model(nn.Module):
                 ](code)
 
             input_embeds = text_embed + codec_embed
-            mx.eval(input_embeds)
+
+            # Single sync point — evaluate input_embeds and EOS check together
+            mx.eval(input_embeds, is_eos)
+
+            if is_eos.item():
+                break
+
+            generated_token_ids.append(int(next_token[0, 0]))
+            generated_codes.append(all_codes)
 
             # Periodically clear cache to prevent memory buildup during long generation
             if step > 0 and step % 50 == 0:
