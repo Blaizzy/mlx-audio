@@ -1140,7 +1140,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
             )
             codes_chunk = codes[..., start_index - context_size : end_index]
             wav_chunk = self.decoder(codes_chunk)
-            wav_chunk = wav_chunk[..., context_size * self.decoder.total_upsample :]
+            wav_chunk = wav_chunk[..., context_size * self.decode_upsample_rate :]
             wav_chunk = wav_chunk.squeeze(1)
 
             # Evaluate immediately to free computation graph
