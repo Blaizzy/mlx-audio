@@ -826,22 +826,25 @@ class Model(nn.Module):
         tokens = categorical_sampling(logits, temperature)  # [batch]
         return tokens[:, None]  # [batch, 1]
 
-    def _decode_chunk(self, codes: mx.array) -> mx.array:
+    def _decode_chunk(self, codes: mx.array, chunk_tokens: int = 300) -> mx.array:
         """Decode a chunk of codes to audio using the vocoder.
 
-        Uses streaming_decode with chunk_tokens=300 (matching the reference
-        implementation's chunk_size=300) so that short inputs (<300 tokens)
+        Uses streaming_decode with chunk_tokens (default 300, matching the
+        reference implementation's chunk_size=300) so that short inputs
         are decoded in a single pass while long inputs are properly chunked
         with left_context_size=25 for quality.
 
         Args:
             codes: [1, time, num_code_groups] codes to decode
+            chunk_tokens: number of tokens per decode chunk (default 300)
 
         Returns:
             audio: [samples] decoded audio waveform
         """
         audio_chunks = []
-        for chunk in self.speech_tokenizer.streaming_decode(codes, chunk_tokens=300):
+        for chunk in self.speech_tokenizer.streaming_decode(
+            codes, chunk_tokens=chunk_tokens
+        ):
             audio_chunks.append(chunk)
 
         audio = mx.concatenate(audio_chunks, axis=-1)[0]
