@@ -1,5 +1,6 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+from functools import partial
 from typing import Dict, List, Optional, Tuple
 
 import mlx.core as mx
@@ -9,22 +10,6 @@ from mlx_lm.models.cache import KVCache
 from .config import Qwen3TTSTalkerCodePredictorConfig, Qwen3TTSTalkerConfig
 
 
-class RMSNorm(nn.Module):
-    """RMS Layer Normalization."""
-
-    def __init__(self, dims: int, eps: float = 1e-6):
-        super().__init__()
-        self.weight = mx.ones((dims,))
-        self.eps = eps
-
-    def __call__(self, x: mx.array) -> mx.array:
-        # Cast to float32 for stability
-        x_float = x.astype(mx.float32)
-        variance = mx.mean(x_float**2, axis=-1, keepdims=True)
-        x_normed = x_float * mx.rsqrt(variance + self.eps)
-        return (self.weight * x_normed).astype(x.dtype)
-
-
 def rotate_half(x: mx.array) -> mx.array:
     """Rotates half the hidden dims of the input."""
     x1 = x[..., : x.shape[-1] // 2]
@@ -32,6 +17,7 @@ def rotate_half(x: mx.array) -> mx.array:
     return mx.concatenate([-x2, x1], axis=-1)
 
 
+@mx.compile
 def apply_rotary_pos_emb(
     q: mx.array,
     k: mx.array,
@@ -49,6 +35,7 @@ def apply_rotary_pos_emb(
     return q_embed, k_embed
 
 
+@mx.compile
 def apply_multimodal_rotary_pos_emb(
     q: mx.array,
     k: mx.array,
@@ -274,8 +261,8 @@ class TalkerAttention(nn.Module):
         )
 
         # QK normalization (like Qwen3)
-        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
     def __call__(
         self,
@@ -325,6 +312,11 @@ class TalkerAttention(nn.Module):
         return self.o_proj(output)
 
 
+@partial(mx.compile, shapeless=True)
+def swiglu(gate, x):
+    return nn.silu(gate) * x
+
+
 class TalkerMLP(nn.Module):
     """MLP with SwiGLU activation."""
 
@@ -338,7 +330,7 @@ class TalkerMLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
 
     def __call__(self, x: mx.array) -> mx.array:
-        return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
+        return self.down_proj(swiglu(self.gate_proj(x), self.up_proj(x)))
 
 
 class ResizeMLP(nn.Module):
@@ -378,8 +370,8 @@ class TalkerDecoderLayer(nn.Module):
 
         self.self_attn = TalkerAttention(config, layer_idx)
         self.mlp = TalkerMLP(config)
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(
+        self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
 
@@ -423,7 +415,7 @@ class Qwen3TTSTalkerModel(nn.Module):
         self.layers = [
             TalkerDecoderLayer(config, i) for i in range(config.num_hidden_layers)
         ]
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # Rotary embeddings with MRoPE section from config
         mrope_section = None
@@ -541,8 +533,8 @@ class CodePredictorAttention(nn.Module):
             bias=config.attention_bias,
         )
 
-        self.q_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
-        self.k_norm = RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.q_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
+        self.k_norm = nn.RMSNorm(self.head_dim, eps=config.rms_norm_eps)
 
     def __call__(
         self,
@@ -602,7 +594,7 @@ class CodePredictorMLP(nn.Module):
         )
 
     def __call__(self, x: mx.array) -> mx.array:
-        return self.down_proj(nn.silu(self.gate_proj(x)) * self.up_proj(x))
+        return self.down_proj(swiglu(self.gate_proj(x), self.up_proj(x)))
 
 
 class CodePredictorDecoderLayer(nn.Module):
@@ -612,8 +604,8 @@ class CodePredictorDecoderLayer(nn.Module):
         super().__init__()
         self.self_attn = CodePredictorAttention(config, layer_idx)
         self.mlp = CodePredictorMLP(config)
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(
+        self.input_layernorm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.post_attention_layernorm = nn.RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
 
@@ -660,7 +652,7 @@ class CodePredictorModel(nn.Module):
             CodePredictorDecoderLayer(config, i)
             for i in range(config.num_hidden_layers)
         ]
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm = nn.RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         # Rotary embeddings
         self.rotary_emb = RotaryEmbedding(

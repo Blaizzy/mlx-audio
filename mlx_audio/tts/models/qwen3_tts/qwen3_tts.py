@@ -27,7 +27,7 @@ from .config import (
 )
 from .speaker_encoder import Qwen3TTSSpeakerEncoder
 from .speech_tokenizer import Qwen3TTSSpeechTokenizer
-from .talker import Qwen3TTSTalkerForConditionalGeneration, RMSNorm
+from .talker import Qwen3TTSTalkerForConditionalGeneration
 
 
 def mel_spectrogram(
