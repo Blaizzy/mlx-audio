@@ -1049,6 +1049,69 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
 
         return wav, audio_lengths
 
+    def batch_decode(
+        self, codes_list: list[mx.array]
+    ) -> tuple[list[mx.array], list[int]]:
+        """
+        Decode a list of variable-length code sequences in a single batched pass.
+
+        Pads codes to the longest sequence, decodes the full batch through the
+        vocoder, then trims each output to its valid length.
+
+        Args:
+            codes_list: List of code arrays, each [1, time_i, num_quantizers]
+                        (or [time_i, num_quantizers]). Sequences may have
+                        different lengths.
+
+        Returns:
+            audios:  List of [samples_i] arrays, one per input sequence.
+            lengths: List of valid sample counts per sequence.
+        """
+        if not codes_list:
+            return [], []
+
+        # Normalize to 3-D: [1, time, Q]
+        normed = []
+        for c in codes_list:
+            if c.ndim == 2:
+                c = c[None]  # [time, Q] -> [1, time, Q]
+            normed.append(c)
+
+        seq_lens = [c.shape[1] for c in normed]
+        max_len = max(seq_lens)
+        num_q = normed[0].shape[2]
+
+        # Pad with 0 (silence code) to equalize lengths
+        padded = []
+        for c in normed:
+            pad_len = max_len - c.shape[1]
+            if pad_len > 0:
+                padding = mx.zeros((1, pad_len, num_q), dtype=c.dtype)
+                c = mx.concatenate([c, padding], axis=1)
+            padded.append(c)
+
+        batch_codes = mx.concatenate(padded, axis=0)  # [batch, max_len, Q]
+
+        # Transpose to [batch, Q, max_len] and decode
+        codes_t = mx.transpose(batch_codes, (0, 2, 1))
+        wav_batch = self.decoder.chunked_decode(codes_t).squeeze(1)  # [batch, samples]
+        mx.eval(wav_batch)
+
+        # Compute per-sequence valid lengths and trim
+        audio_lengths = [int(sl) * self.decode_upsample_rate for sl in seq_lens]
+
+        audios = []
+        for b, valid_samples in enumerate(audio_lengths):
+            audio = wav_batch[b]
+            if valid_samples > 0 and valid_samples < audio.shape[0]:
+                audio = audio[:valid_samples]
+            audios.append(audio)
+
+        del wav_batch, batch_codes, codes_t
+        mx.clear_cache()
+
+        return audios, audio_lengths
+
     def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 100):
         """
         Decode audio codes to waveform in a streaming fashion.
@@ -1077,7 +1140,7 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
             )
             codes_chunk = codes[..., start_index - context_size : end_index]
             wav_chunk = self.decoder(codes_chunk)
-            wav_chunk = wav_chunk[..., context_size * self.decoder.total_upsample :]
+            wav_chunk = wav_chunk[..., context_size * self.decode_upsample_rate :]
             wav_chunk = wav_chunk.squeeze(1)
 
             # Evaluate immediately to free computation graph
