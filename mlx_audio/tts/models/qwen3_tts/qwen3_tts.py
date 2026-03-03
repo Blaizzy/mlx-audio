@@ -205,6 +205,45 @@ class Model(nn.Module):
         ]
         return not any(pattern in path for pattern in skip_patterns)
 
+    def _fused_codec_embed(self, code_tokens_list: list) -> mx.array:
+        """Vectorized multi-codebook embedding: N lookups + (N-1) adds → 1 gather + 1 sum.
+
+        Args:
+            code_tokens_list: List of C token arrays, each [B, T]. First element
+                uses the main codec_embedding, rest use code_predictor embeddings.
+
+        Returns:
+            Summed embedding [B, T, D].
+        """
+        C = len(code_tokens_list)
+        main_weight = self.talker.get_input_embeddings().weight  # [V1, D]
+        cp_weights = [emb.weight for emb in self.talker.code_predictor.codec_embedding]
+        weights = [main_weight] + cp_weights[: C - 1]
+
+        # Pad to common vocab size if embeddings differ (e.g. talker=3072, code_predictor=2048)
+        max_v = max(w.shape[0] for w in weights)
+        D = main_weight.shape[1]
+        padded = []
+        for w in weights:
+            if w.shape[0] < max_v:
+                pad = mx.zeros((max_v - w.shape[0], D), dtype=w.dtype)
+                w = mx.concatenate([w, pad], axis=0)
+            padded.append(w)
+
+        all_weights = mx.stack(padded)  # [C, V, D]
+
+        token_ids = mx.stack(code_tokens_list, axis=-1)  # [B, T, C]
+        B, T, _ = token_ids.shape
+
+        offsets = mx.arange(C) * max_v  # [C]
+        flat_ids = token_ids + offsets  # [B, T, C] broadcast
+
+        flat_weights = all_weights.reshape(-1, D)  # [C*V, D]
+        gathered = flat_weights[flat_ids.reshape(-1)]  # [B*T*C, D]
+        gathered = gathered.reshape(B, T, C, -1)  # [B, T, C, D]
+
+        return gathered.sum(axis=2)  # [B, T, D]
+
     def extract_speaker_embedding(
         self,
         audio: mx.array,
@@ -579,14 +618,9 @@ class Model(nn.Module):
 
         # 5. Build codec_embed: codec_bos + sum_of_all_codebook_embeddings(ref_codes)
         # ref_codes shape: [1, 16, ref_time]
-        first_cb_codes = ref_codes[:, 0, :]  # [1, ref_time]
-        ref_codec_embed = self.talker.get_input_embeddings()(first_cb_codes)
-        for i in range(config.num_code_groups - 1):
-            cb_codes = ref_codes[:, i + 1, :]
-            ref_codec_embed = (
-                ref_codec_embed
-                + self.talker.code_predictor.codec_embedding[i](cb_codes)
-            )
+        ref_codec_embed = self._fused_codec_embed(
+            [ref_codes[:, g, :] for g in range(config.num_code_groups)]
+        )
 
         # Prepend codec_bos
         codec_bos_embed = self.talker.get_input_embeddings()(
@@ -1110,12 +1144,7 @@ class Model(nn.Module):
                 else:
                     text_embed = tts_pad_embed
 
-                codec_embed = self.talker.get_input_embeddings()(next_token)
-                for i, code in enumerate(code_tokens[1:]):
-                    codec_embed = (
-                        codec_embed
-                        + self.talker.code_predictor.codec_embedding[i](code)
-                    )
+                codec_embed = self._fused_codec_embed(code_tokens)
 
                 input_embeds = text_embed + codec_embed
 
@@ -1511,13 +1540,7 @@ class Model(nn.Module):
             trailing_indices = trailing_indices + advance
 
             # Codec embedding: batched
-            codec_embed = self.talker.get_input_embeddings()(
-                next_token_batch
-            )  # [batch, 1, hidden]
-            for j, code in enumerate(code_tokens[1:]):
-                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
-                    j
-                ](code)
+            codec_embed = self._fused_codec_embed(code_tokens)  # [batch, 1, hidden]
 
             input_embeds = text_embeds + codec_embed  # [batch, 1, hidden]
 
@@ -1955,11 +1978,7 @@ class Model(nn.Module):
             else:
                 text_embed = tts_pad_embed
 
-            codec_embed = self.talker.get_input_embeddings()(next_token)
-            for i, code in enumerate(code_tokens[1:]):
-                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
-                    i
-                ](code)
+            codec_embed = self._fused_codec_embed(code_tokens)
 
             input_embeds = text_embed + codec_embed
 
@@ -2282,11 +2301,7 @@ class Model(nn.Module):
             else:
                 text_embed = tts_pad_embed
 
-            codec_embed = self.talker.get_input_embeddings()(next_token)
-            for i, code in enumerate(code_tokens[1:]):
-                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
-                    i
-                ](code)
+            codec_embed = self._fused_codec_embed(code_tokens)
 
             input_embeds = text_embed + codec_embed
 
