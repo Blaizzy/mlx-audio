@@ -84,3 +84,17 @@ class GenerationResult:
     peak_memory_usage: float
     is_streaming_chunk: bool = False
     is_final_chunk: bool = False
+
+
+@dataclass
+class BatchGenerationResult:
+    audio: mx.array  # [samples] decoded audio for one sequence
+    sequence_idx: int  # which sequence in the batch
+    samples: int
+    sample_rate: int
+    token_count: int
+    audio_duration: str
+    processing_time_seconds: float
+    peak_memory_usage: float
+    is_streaming_chunk: bool = False
+    is_final_chunk: bool = False
