@@ -1035,8 +1035,7 @@ class Model(nn.Module):
             ]
 
             # Streaming decode state — emit first chunk ASAP for minimal TTFB
-            first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
-            subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
+            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
             decoded_tokens = 0
 
             for step in range(max_tokens):
@@ -1139,10 +1138,7 @@ class Model(nn.Module):
 
                 # Streaming: decode and yield audio chunks during generation
                 new_tokens = len(generated_codes) - decoded_tokens
-                chunk_size = (
-                    first_chunk_size if decoded_tokens == 0 else subsequent_chunk_size
-                )
-                if stream and new_tokens >= chunk_size:
+                if stream and new_tokens >= streaming_chunk_size:
                     # Context overlap: none for first chunk, limited for subsequent
                     context_tokens = (
                         0
@@ -1154,7 +1150,7 @@ class Model(nn.Module):
                     mx.eval(codes_chunk)
 
                     audio_chunk = self._decode_chunk(
-                        codes_chunk, chunk_tokens=subsequent_chunk_size
+                        codes_chunk, chunk_tokens=streaming_context_size
                     )
 
                     # Trim the context overlap from audio (only yield new audio)
@@ -1199,7 +1195,7 @@ class Model(nn.Module):
                 mx.eval(codes_chunk)
 
                 audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=subsequent_chunk_size
+                    codes_chunk, chunk_tokens=streaming_context_size
                 )
 
                 # Trim the context overlap from audio (only yield new audio)
@@ -1375,8 +1371,7 @@ class Model(nn.Module):
         ]
 
         # Streaming state
-        first_chunk_size = 1
-        subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
+        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
         # Match vocoder's left_context_size for clean chunk boundaries
         streaming_context_size = 5
         decoded_tokens = [0] * batch_size
@@ -1529,12 +1524,7 @@ class Model(nn.Module):
                     if not generated_codes[b]:
                         continue
                     new_tokens = len(generated_codes[b]) - decoded_tokens[b]
-                    chunk_size = (
-                        first_chunk_size
-                        if decoded_tokens[b] == 0
-                        else subsequent_chunk_size
-                    )
-                    if new_tokens >= chunk_size:
+                    if new_tokens >= streaming_chunk_size:
                         context_tokens = (
                             0
                             if decoded_tokens[b] == 0
@@ -1874,9 +1864,7 @@ class Model(nn.Module):
             leave=False,
         )
 
-        # Streaming decode state — emit first chunk ASAP for minimal TTFB
-        first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
-        subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
+        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
         decoded_tokens = 0
 
         for step in range(effective_max_tokens):
@@ -1960,10 +1948,7 @@ class Model(nn.Module):
 
             # Streaming: decode and yield audio chunks during generation
             new_tokens = len(generated_codes) - decoded_tokens
-            chunk_size = (
-                first_chunk_size if decoded_tokens == 0 else subsequent_chunk_size
-            )
-            if stream and new_tokens >= chunk_size:
+            if stream and new_tokens >= streaming_chunk_size:
                 context_tokens = (
                     0
                     if decoded_tokens == 0
@@ -1974,7 +1959,7 @@ class Model(nn.Module):
                 mx.eval(codes_chunk)
 
                 audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=subsequent_chunk_size
+                    codes_chunk, chunk_tokens=streaming_context_size
                 )
 
                 if context_tokens > 0:
@@ -2018,7 +2003,7 @@ class Model(nn.Module):
             mx.eval(codes_chunk)
 
             audio_chunk = self._decode_chunk(
-                codes_chunk, chunk_tokens=subsequent_chunk_size
+                codes_chunk, chunk_tokens=streaming_context_size
             )
 
             # Trim the context overlap from audio (only yield new audio)
@@ -2165,9 +2150,7 @@ class Model(nn.Module):
         ]
         trailing_idx = 0
 
-        # Streaming decode state — emit first chunk ASAP for minimal TTFB
-        first_chunk_size = 1  # 1 token = ~80ms audio, emit immediately
-        subsequent_chunk_size = max(4, int(streaming_interval * 12.5))
+        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
 
         decoded_tokens = 0
 
@@ -2261,10 +2244,7 @@ class Model(nn.Module):
 
             # Streaming: decode and yield audio chunks during generation
             new_tokens = len(generated_codes) - decoded_tokens
-            chunk_size = (
-                first_chunk_size if decoded_tokens == 0 else subsequent_chunk_size
-            )
-            if stream and new_tokens >= chunk_size:
+            if stream and new_tokens >= streaming_chunk_size:
                 context_tokens = (
                     0
                     if decoded_tokens == 0
@@ -2275,7 +2255,7 @@ class Model(nn.Module):
                 mx.eval(codes_chunk)
 
                 audio_chunk = self._decode_chunk(
-                    codes_chunk, chunk_tokens=subsequent_chunk_size
+                    codes_chunk, chunk_tokens=streaming_context_size
                 )
 
                 if context_tokens > 0:
@@ -2319,7 +2299,7 @@ class Model(nn.Module):
             mx.eval(codes_chunk)
 
             audio_chunk = self._decode_chunk(
-                codes_chunk, chunk_tokens=subsequent_chunk_size
+                codes_chunk, chunk_tokens=streaming_context_size
             )
 
             # Trim the context overlap from audio (only yield new audio)
