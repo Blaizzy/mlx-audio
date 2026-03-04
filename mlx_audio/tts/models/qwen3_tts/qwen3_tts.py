@@ -1037,14 +1037,11 @@ class Model(nn.Module):
                 if i != eos_token_id
             ]
 
-            # Streaming decode state — emit first chunk ASAP for minimal TTFB
-            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
-            decoded_tokens = 0
-            chunks_yielded = 0
-            chunk_start_time = time.time()
-
-            # Initialize incremental decoder state for streaming
+            # Initialize streaming state
             if stream:
+                streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+                decoded_tokens = 0
+                chunk_start_time = time.time()
                 self.speech_tokenizer.decoder.reset_streaming_state()
 
             for step in range(max_tokens):
@@ -1885,12 +1882,11 @@ class Model(nn.Module):
             leave=False,
         )
 
-        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
-        decoded_tokens = 0
-        chunk_start_time = time.time()
-
-        # Initialize incremental decoder state for streaming
+        # Initialize streaming state
         if stream:
+            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+            decoded_tokens = 0
+            chunk_start_time = time.time()
             self.speech_tokenizer.decoder.reset_streaming_state()
 
         for step in range(effective_max_tokens):
@@ -2191,13 +2187,11 @@ class Model(nn.Module):
         ]
         trailing_idx = 0
 
-        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
-
-        decoded_tokens = 0
-        chunk_start_time = time.time()
-
-        # Initialize incremental decoder state for streaming
+        # Initialize streaming state
         if stream:
+            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+            decoded_tokens = 0
+            chunk_start_time = time.time()
             self.speech_tokenizer.decoder.reset_streaming_state()
 
         # Create progress bar for token generation
