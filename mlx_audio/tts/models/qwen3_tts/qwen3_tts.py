@@ -1043,6 +1043,10 @@ class Model(nn.Module):
             chunks_yielded = 0
             chunk_start_time = time.time()
 
+            # Initialize incremental decoder state for streaming
+            if stream:
+                self.speech_tokenizer.decoder.reset_streaming_state()
+
             for step in range(max_tokens):
                 # Forward pass through talker
                 logits, hidden = self.talker(
@@ -1138,27 +1142,21 @@ class Model(nn.Module):
                 # Update progress bar
                 pbar.update(1)
 
-                # Streaming: decode and yield audio chunks during generation
+                # Streaming: incrementally decode only new tokens
                 new_tokens = len(generated_codes) - decoded_tokens
                 if stream and new_tokens >= streaming_chunk_size:
-                    # Context overlap: none for first chunk, limited for subsequent
-                    context_tokens = (
-                        0
-                        if decoded_tokens == 0
-                        else min(streaming_context_size, decoded_tokens)
+                    # Stack only the NEW codes (no context overlap needed)
+                    codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                    # [1, new_tokens, num_code_groups] → [1, num_code_groups, new_tokens]
+                    codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                    mx.eval(codes_for_decoder)
+
+                    # Incremental decode: conv buffers + transformer KV cache
+                    wav = self.speech_tokenizer.decoder.streaming_step(
+                        codes_for_decoder
                     )
-                    start_idx = decoded_tokens - context_tokens
-                    codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                    mx.eval(codes_chunk)
-
-                    audio_chunk = self._decode_chunk(codes_chunk)
-
-                    # Trim the context overlap from audio (only yield new audio)
-                    if context_tokens > 0:
-                        samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                        trim_samples = context_tokens * samples_per_token
-                        if trim_samples < audio_chunk.shape[0]:
-                            audio_chunk = audio_chunk[trim_samples:]
+                    audio_chunk = wav.squeeze(1)[0]  # [samples]
+                    mx.eval(audio_chunk)
 
                     decoded_tokens = len(generated_codes)
 
@@ -1203,19 +1201,14 @@ class Model(nn.Module):
 
             # Yield any remaining tokens
             if stream and len(generated_codes) > decoded_tokens:
-                context_tokens = min(streaming_context_size, decoded_tokens)
-                start_idx = decoded_tokens - context_tokens
-                codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                mx.eval(codes_chunk)
+                # Incrementally decode remaining tokens
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
-
-                # Trim the context overlap from audio (only yield new audio)
-                if context_tokens > 0:
-                    samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                    trim_samples = context_tokens * samples_per_token
-                    if trim_samples < audio_chunk.shape[0]:
-                        audio_chunk = audio_chunk[trim_samples:]
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
 
                 new_tokens = len(generated_codes) - decoded_tokens
 
@@ -1253,6 +1246,8 @@ class Model(nn.Module):
                 continue  # Skip non-streaming yield
 
             if stream:
+                # Reset streaming state after each segment
+                self.speech_tokenizer.decoder.reset_streaming_state()
                 continue  # All tokens already streamed
 
             if not generated_codes:
@@ -1894,6 +1889,10 @@ class Model(nn.Module):
         decoded_tokens = 0
         chunk_start_time = time.time()
 
+        # Initialize incremental decoder state for streaming
+        if stream:
+            self.speech_tokenizer.decoder.reset_streaming_state()
+
         for step in range(effective_max_tokens):
             # Forward pass through talker
             logits, hidden = self.talker(input_embeds, cache=cache)
@@ -1980,25 +1979,16 @@ class Model(nn.Module):
 
             pbar.update(1)
 
-            # Streaming: decode and yield audio chunks during generation
+            # Streaming: incrementally decode only new tokens
             new_tokens = len(generated_codes) - decoded_tokens
             if stream and new_tokens >= streaming_chunk_size:
-                context_tokens = (
-                    0
-                    if decoded_tokens == 0
-                    else min(streaming_context_size, decoded_tokens)
-                )
-                start_idx = decoded_tokens - context_tokens
-                codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                mx.eval(codes_chunk)
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
-
-                if context_tokens > 0:
-                    samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                    trim_samples = context_tokens * samples_per_token
-                    if trim_samples < audio_chunk.shape[0]:
-                        audio_chunk = audio_chunk[trim_samples:]
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
 
                 decoded_tokens = len(generated_codes)
 
@@ -2040,20 +2030,13 @@ class Model(nn.Module):
 
         # Yield any remaining tokens
         if stream and len(generated_codes) > decoded_tokens:
-            # Include context from previous tokens for smooth transitions
-            context_tokens = min(streaming_context_size, decoded_tokens)
-            start_idx = decoded_tokens - context_tokens
-            codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-            mx.eval(codes_chunk)
+            codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+            codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+            mx.eval(codes_for_decoder)
 
-            audio_chunk = self._decode_chunk(codes_chunk)
-
-            # Trim the context overlap from audio (only yield new audio)
-            if context_tokens > 0:
-                samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                trim_samples = context_tokens * samples_per_token
-                if trim_samples < audio_chunk.shape[0]:
-                    audio_chunk = audio_chunk[trim_samples:]
+            wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+            audio_chunk = wav.squeeze(1)[0]
+            mx.eval(audio_chunk)
 
             new_tokens = len(generated_codes) - decoded_tokens
 
@@ -2089,6 +2072,7 @@ class Model(nn.Module):
             return  # Skip non-streaming yield
 
         if stream:
+            self.speech_tokenizer.decoder.reset_streaming_state()
             return  # All tokens already streamed
 
         if not generated_codes:
@@ -2212,6 +2196,10 @@ class Model(nn.Module):
         decoded_tokens = 0
         chunk_start_time = time.time()
 
+        # Initialize incremental decoder state for streaming
+        if stream:
+            self.speech_tokenizer.decoder.reset_streaming_state()
+
         # Create progress bar for token generation
         pbar = tqdm(
             total=effective_max_tokens,
@@ -2307,25 +2295,16 @@ class Model(nn.Module):
 
             pbar.update(1)
 
-            # Streaming: decode and yield audio chunks during generation
+            # Streaming: incrementally decode only new tokens
             new_tokens = len(generated_codes) - decoded_tokens
             if stream and new_tokens >= streaming_chunk_size:
-                context_tokens = (
-                    0
-                    if decoded_tokens == 0
-                    else min(streaming_context_size, decoded_tokens)
-                )
-                start_idx = decoded_tokens - context_tokens
-                codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                mx.eval(codes_chunk)
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
-
-                if context_tokens > 0:
-                    samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                    trim_samples = context_tokens * samples_per_token
-                    if trim_samples < audio_chunk.shape[0]:
-                        audio_chunk = audio_chunk[trim_samples:]
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
 
                 decoded_tokens = len(generated_codes)
 
@@ -2367,20 +2346,13 @@ class Model(nn.Module):
 
         # Yield any remaining tokens for streaming mode
         if stream and len(generated_codes) > decoded_tokens:
-            # Include context from previous tokens for smooth transitions
-            context_tokens = min(streaming_context_size, decoded_tokens)
-            start_idx = decoded_tokens - context_tokens
-            codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-            mx.eval(codes_chunk)
+            codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+            codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+            mx.eval(codes_for_decoder)
 
-            audio_chunk = self._decode_chunk(codes_chunk)
-
-            # Trim the context overlap from audio (only yield new audio)
-            if context_tokens > 0:
-                samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                trim_samples = context_tokens * samples_per_token
-                if trim_samples < audio_chunk.shape[0]:
-                    audio_chunk = audio_chunk[trim_samples:]
+            wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+            audio_chunk = wav.squeeze(1)[0]
+            mx.eval(audio_chunk)
 
             new_tokens = len(generated_codes) - decoded_tokens
 
@@ -2413,9 +2385,11 @@ class Model(nn.Module):
                 is_streaming_chunk=True,
                 is_final_chunk=True,
             )
+            self.speech_tokenizer.decoder.reset_streaming_state()
             return  # Skip non-streaming yield
 
         if stream:
+            self.speech_tokenizer.decoder.reset_streaming_state()
             return  # All tokens already streamed
 
         if not generated_codes:

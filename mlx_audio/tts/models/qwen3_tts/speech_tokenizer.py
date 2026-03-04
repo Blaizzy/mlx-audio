@@ -50,6 +50,8 @@ class CausalConv1d(nn.Module):
         effective_kernel = (kernel_size - 1) * dilation + 1
         self.padding = effective_kernel - stride
 
+        self._buffer = None  # Streaming state buffer
+
         self.conv = nn.Conv1d(
             in_channels,
             out_channels,
@@ -65,6 +67,20 @@ class CausalConv1d(nn.Module):
         if self.padding > 0:
             x = mx.pad(x, [(0, 0), (self.padding, 0), (0, 0)])
         return self.conv(x)
+
+    def step(self, x: mx.array) -> mx.array:
+        """Incremental streaming step using internal buffer."""
+        if self.padding > 0:
+            if self._buffer is not None:
+                x = mx.concatenate([self._buffer, x], axis=1)
+            else:
+                x = mx.pad(x, [(0, 0), (self.padding, 0), (0, 0)])
+            self._buffer = x[:, -self.padding :, :]
+        return self.conv(x)
+
+    def reset_state(self):
+        """Reset streaming buffer."""
+        self._buffer = None
 
 
 class CausalTransposeConv1d(nn.Module):
@@ -133,6 +149,17 @@ class ConvNeXtBlock(nn.Module):
         # x: [batch, time, channels] (NLC format)
         residual = x
         x = self.dwconv(x)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = nn.gelu(x)
+        x = self.pwconv2(x)
+        x = self.gamma * x
+        return residual + x
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming step — uses dwconv buffer."""
+        residual = x
+        x = self.dwconv.step(x)
         x = self.norm(x)
         x = self.pwconv1(x)
         x = nn.gelu(x)
@@ -379,7 +406,9 @@ class DecoderTransformer(nn.Module):
         position_embeddings = self.rotary_emb(x, position_ids)
 
         if mask is None and seq_len > 1:
-            mask = nn.MultiHeadAttention.create_additive_causal_mask(seq_len)
+            total_len = offset + seq_len
+            mask = nn.MultiHeadAttention.create_additive_causal_mask(total_len)
+            mask = mask[-seq_len:]  # Only query positions need masking rows
             mask = mask.astype(x.dtype)
 
         for i, layer in enumerate(self.layers):
@@ -586,6 +615,15 @@ class DecoderResidualUnit(nn.Module):
         x = self.conv2(x)
         return x + residual
 
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming step — uses conv buffers."""
+        residual = x
+        x = self.act1(x)
+        x = self.conv1.step(x)
+        x = self.act2(x)
+        x = self.conv2.step(x)
+        return x + residual
+
 
 class DecoderBlockUpsample(nn.Module):
     """Upsample layer wrapper for decoder block.
@@ -603,6 +641,7 @@ class DecoderBlockUpsample(nn.Module):
         )
         # Trim from the right for causal behavior (matches Encodec/DAC/Mimi)
         self.trim_right = kernel_size - upsample_rate
+        self._overflow = None  # Overlap-add buffer for streaming
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [batch, time, channels] (NLC format)
@@ -610,6 +649,28 @@ class DecoderBlockUpsample(nn.Module):
         if self.trim_right > 0:
             x = x[:, : -self.trim_right, :]
         return x
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming step with overlap-add for ConvTranspose1d.
+
+        Each token's transposed output overlaps with its neighbor by trim_right
+        samples. The trimmed right overflow from chunk N is added to the start
+        of chunk N+1's output.
+        """
+        y = self.conv(x)
+        if self._overflow is not None:
+            ov_len = self._overflow.shape[1]
+            y = mx.concatenate(
+                [y[:, :ov_len, :] + self._overflow, y[:, ov_len:, :]], axis=1
+            )
+        if self.trim_right > 0:
+            self._overflow = y[:, -self.trim_right :, :]
+            y = y[:, : -self.trim_right, :]
+        return y
+
+    def reset_state(self):
+        """Reset overlap-add buffer."""
+        self._overflow = None
 
 
 class DecoderBlock(nn.Module):
@@ -641,6 +702,14 @@ class DecoderBlock(nn.Module):
             x = layer(x)
         return x
 
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming step — snake is stateless, upsample and residual units use buffers."""
+        x = self.block[0](x)  # SnakeBeta (stateless)
+        x = self.block[1].step(x)  # DecoderBlockUpsample (overlap-add)
+        for unit in self.block[2:]:  # DecoderResidualUnits
+            x = unit.step(x)
+        return x
+
 
 class DecoderInitialConv(nn.Module):
     """Wrapper for initial decoder conv to match PyTorch weight structure.
@@ -653,11 +722,26 @@ class DecoderInitialConv(nn.Module):
         super().__init__()
         self.conv = nn.Conv1d(latent_dim, decoder_dim, kernel_size, padding=0)
         self.kernel_size = kernel_size
+        self._buffer = None
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [batch, time, channels] (NLC format)
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
         return self.conv(x)
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming step using internal buffer."""
+        padding = self.kernel_size - 1
+        if padding > 0:
+            if self._buffer is not None:
+                x = mx.concatenate([self._buffer, x], axis=1)
+            else:
+                x = mx.pad(x, [(0, 0), (padding, 0), (0, 0)])
+            self._buffer = x[:, -padding:, :]
+        return self.conv(x)
+
+    def reset_state(self):
+        self._buffer = None
 
 
 class DecoderOutputSnake(nn.Module):
@@ -695,11 +779,26 @@ class DecoderOutputConv(nn.Module):
         super().__init__()
         self.conv = nn.Conv1d(channels, 1, kernel_size, padding=0)
         self.kernel_size = kernel_size
+        self._buffer = None
 
     def __call__(self, x: mx.array) -> mx.array:
         # x: [batch, time, channels] (NLC format)
         x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
         return self.conv(x)
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming step using internal buffer."""
+        padding = self.kernel_size - 1
+        if padding > 0:
+            if self._buffer is not None:
+                x = mx.concatenate([self._buffer, x], axis=1)
+            else:
+                x = mx.pad(x, [(0, 0), (padding, 0), (0, 0)])
+            self._buffer = x[:, -padding:, :]
+        return self.conv(x)
+
+    def reset_state(self):
+        self._buffer = None
 
 
 class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
@@ -711,6 +810,9 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
         self.total_upsample = int(
             np.prod(config.upsample_rates + config.upsampling_ratios)
         )
+
+        # Streaming state
+        self._transformer_cache = None
 
         # Transformer
         self.pre_transformer = DecoderTransformer(config)
@@ -793,6 +895,56 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
         # Convert back to NCL for output
         wav = mx.transpose(wav, (0, 2, 1))  # [batch, 1, samples]
 
+        return mx.clip(wav, -1.0, 1.0)
+
+    def reset_streaming_state(self):
+        """Reset all conv buffers, overflow state, and transformer KV cache."""
+        self._transformer_cache = None
+        for _, m in self.named_modules():
+            if hasattr(m, "reset_state"):
+                m.reset_state()
+
+    def streaming_step(self, codes: mx.array) -> mx.array:
+        """Incrementally decode new codes using conv buffers and transformer KV cache.
+
+        Processes only the new tokens, maintaining state from previous calls.
+        Must call reset_streaming_state() before starting a new stream.
+
+        Args:
+            codes: [batch, num_quantizers, new_time] — only the NEW codes
+
+        Returns:
+            audio: [batch, 1, new_samples]
+        """
+        # Initialize transformer KV cache on first call
+        if self._transformer_cache is None:
+            self._transformer_cache = self.pre_transformer.make_cache()
+
+        # Dequantize: [batch, codebook_dim, time] (NCL)
+        hidden = self.quantizer.decode(codes)
+        # Convert to NLC
+        hidden = mx.transpose(hidden, (0, 2, 1))
+
+        # Pre-conv with buffer
+        hidden = self.pre_conv.step(hidden)
+
+        # Transformer with KV cache
+        hidden = self.pre_transformer(hidden, cache=self._transformer_cache)
+
+        # Upsampling: transpose conv (stateless) + ConvNeXtBlock (buffered)
+        for upsample_layers in self.upsample:
+            hidden = upsample_layers[0](hidden)  # CausalTransposeConv1d
+            hidden = upsample_layers[1].step(hidden)  # ConvNeXtBlock
+
+        # Decoder pipeline
+        wav = self.decoder[0].step(hidden)  # DecoderInitialConv
+        for block in self.decoder[1:-2]:  # DecoderBlocks
+            wav = block.step(wav)
+        wav = self.decoder[-2](wav)  # DecoderOutputSnake (stateless)
+        wav = self.decoder[-1].step(wav)  # DecoderOutputConv
+
+        # Convert back to NCL for output
+        wav = mx.transpose(wav, (0, 2, 1))
         return mx.clip(wav, -1.0, 1.0)
 
     def chunked_decode(
