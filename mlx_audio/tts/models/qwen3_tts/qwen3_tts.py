@@ -1140,8 +1140,11 @@ class Model(nn.Module):
                 pbar.update(1)
 
                 # Streaming: incrementally decode only new tokens
-                new_tokens = len(generated_codes) - decoded_tokens
-                if stream and new_tokens >= streaming_chunk_size:
+                if (
+                    stream
+                    and len(generated_codes) - decoded_tokens >= streaming_chunk_size
+                ):
+                    new_tokens = len(generated_codes) - decoded_tokens
                     # Stack only the NEW codes (no context overlap needed)
                     codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
                     # [1, new_tokens, num_code_groups] → [1, num_code_groups, new_tokens]
@@ -1976,8 +1979,8 @@ class Model(nn.Module):
             pbar.update(1)
 
             # Streaming: incrementally decode only new tokens
-            new_tokens = len(generated_codes) - decoded_tokens
-            if stream and new_tokens >= streaming_chunk_size:
+            if stream and len(generated_codes) - decoded_tokens >= streaming_chunk_size:
+                new_tokens = len(generated_codes) - decoded_tokens
                 codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
                 codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
                 mx.eval(codes_for_decoder)
@@ -2290,8 +2293,8 @@ class Model(nn.Module):
             pbar.update(1)
 
             # Streaming: incrementally decode only new tokens
-            new_tokens = len(generated_codes) - decoded_tokens
-            if stream and new_tokens >= streaming_chunk_size:
+            if stream and len(generated_codes) - decoded_tokens >= streaming_chunk_size:
+                new_tokens = len(generated_codes) - decoded_tokens
                 codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
                 codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
                 mx.eval(codes_for_decoder)
