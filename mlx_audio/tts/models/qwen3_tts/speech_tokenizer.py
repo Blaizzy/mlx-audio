@@ -111,8 +111,6 @@ class SnakeBeta(nn.Module):
     """Snake activation with learnable alpha and beta parameters.
 
     SnakeBeta(x) = x + (1/beta) * sin^2(x * alpha)
-    NLC format: alpha/beta broadcast naturally on last dim.
-    Call freeze_snake_params() after weight load to precompute exp values.
     """
 
     def __init__(self, channels: int, alpha: float = 1.0):
@@ -121,14 +119,8 @@ class SnakeBeta(nn.Module):
         self.alpha = mx.zeros((channels,))
         self.beta = mx.zeros((channels,))
         self.eps = 1e-9
-        # Precomputed values (set by freeze_snake_params after weight load)
-        self._exp_alpha = None
-        self._inv_beta = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, time, channels] (NLC format) — broadcasts on last dim
-        if self._exp_alpha is not None:
-            return x + self._inv_beta * mx.power(mx.sin(x * self._exp_alpha), 2)
         alpha = mx.exp(self.alpha)
         beta = mx.exp(self.beta)
         return x + (1.0 / (beta + self.eps)) * mx.power(mx.sin(x * alpha), 2)
@@ -750,13 +742,8 @@ class DecoderOutputSnake(nn.Module):
         self.alpha = mx.zeros((channels,))
         self.beta = mx.zeros((channels,))
         self.eps = 1e-9
-        self._exp_alpha = None
-        self._inv_beta = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, time, channels] (NLC format) — broadcasts on last dim
-        if self._exp_alpha is not None:
-            return x + self._inv_beta * mx.power(mx.sin(x * self._exp_alpha), 2)
         alpha = mx.exp(self.alpha)
         beta = mx.exp(self.beta)
         return x + (1.0 / (beta + self.eps)) * mx.power(mx.sin(x * alpha), 2)
