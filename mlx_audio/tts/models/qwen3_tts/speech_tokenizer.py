@@ -135,7 +135,7 @@ class SnakeBeta(nn.Module):
 
 
 class ConvNeXtBlock(nn.Module):
-    """ConvNeXt block for feature processing. NLC format throughout."""
+    """ConvNeXt block for feature processing."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -157,7 +157,6 @@ class ConvNeXtBlock(nn.Module):
         return residual + x
 
     def step(self, x: mx.array) -> mx.array:
-        """Streaming step — uses dwconv buffer."""
         residual = x
         x = self.dwconv.step(x)
         x = self.norm(x)
@@ -651,12 +650,7 @@ class DecoderBlockUpsample(nn.Module):
         return x
 
     def step(self, x: mx.array) -> mx.array:
-        """Streaming step with overlap-add for ConvTranspose1d.
-
-        Each token's transposed output overlaps with its neighbor by trim_right
-        samples. The trimmed right overflow from chunk N is added to the start
-        of chunk N+1's output.
-        """
+        """Streaming step with overlap-add for ConvTranspose1d."""
         y = self.conv(x)
         if self._overflow is not None:
             ov_len = self._overflow.shape[1]
