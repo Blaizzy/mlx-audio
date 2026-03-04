@@ -29,20 +29,11 @@ from .config import (
 )
 
 
-class DepthwiseConvWeight(nn.Module):
-    """Container for depthwise conv weights to match PyTorch key structure."""
-
-    def __init__(self, out_channels: int, kernel_size: int, in_per_group: int):
-        super().__init__()
-        # Weight shape: [out_channels, kernel, in_per_group] = [channels, kernel, 1] for depthwise
-        self.weight = mx.zeros((out_channels, kernel_size, in_per_group))
-        self.bias = mx.zeros((out_channels,))
-
-
 class CausalConv1d(nn.Module):
     """Causal 1D convolution with proper padding.
 
-    Supports grouped convolutions for depthwise convs.
+    Supports grouped convolutions via nn.Conv1d(groups=...).
+    All data flows in NLC format [batch, time, channels].
     """
 
     def __init__(
@@ -55,80 +46,29 @@ class CausalConv1d(nn.Module):
         groups: int = 1,
     ):
         super().__init__()
-        self.groups = groups
-        self.in_channels = in_channels
-        self.out_channels = out_channels
         self.stride = stride
-        self.kernel_size_val = kernel_size
-        self.kernel_size = (kernel_size - 1) * dilation + 1
-        self.dilation = dilation
-        self.padding = self.kernel_size - self.stride
+        effective_kernel = (kernel_size - 1) * dilation + 1
+        self.padding = effective_kernel - stride
 
-        if groups == 1:
-            # Regular convolution
-            self.conv = nn.Conv1d(
-                in_channels,
-                out_channels,
-                kernel_size,
-                stride=stride,
-                padding=0,
-                dilation=dilation,
-            )
-        else:
-            # Grouped/depthwise convolution - implement manually
-            # Use a wrapper Module to hold weight/bias with matching key structure
-            # Weight shape after MLX transpose: [out_channels, kernel, in_channels/groups]
-            # For depthwise: [channels, kernel, 1]
-            in_per_group = in_channels // groups
-            self.conv = DepthwiseConvWeight(out_channels, kernel_size, in_per_group)
-
-    def _get_extra_padding(self, length: int) -> int:
-        n_frames = (length - self.kernel_size + self.padding) / self.stride + 1
-        ideal_length = (math.ceil(n_frames) - 1) * self.stride + (
-            self.kernel_size - self.padding
+        self.conv = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=0,
+            dilation=dilation,
+            groups=groups,
         )
-        return int(ideal_length - length)
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time] (NCL format)
-        extra_padding = self._get_extra_padding(x.shape[-1])
-        # Pad on the left (causal) - padding is on time dimension (last)
-        x = mx.pad(x, [(0, 0), (0, 0), (self.padding, extra_padding)])
-
-        if self.groups == 1:
-            # MLX Conv1d expects [batch, time, channels] (NLC format)
-            x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
-            x = self.conv(x)
-            x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-            return x
-        else:
-            # Depthwise convolution: apply each filter to its corresponding channel
-            # x: [batch, channels, time], weight: [channels, kernel, 1]
-            batch, channels, time = x.shape
-            kernel_size = self.conv.weight.shape[1]
-
-            # Use einsum for efficient depthwise conv
-            # Extract sliding windows: [batch, channels, time - kernel + 1, kernel]
-            output_time = time - kernel_size + 1
-            # Create windows using indexing
-            windows = mx.stack(
-                [x[..., i : i + output_time] for i in range(kernel_size)], axis=-1
-            )  # [batch, channels, output_time, kernel]
-
-            # Apply weights: weight is [channels, kernel, 1] -> squeeze to [channels, kernel]
-            w = self.conv.weight.squeeze(-1)  # [channels, kernel]
-
-            # Multiply and sum: [batch, channels, output_time, kernel] * [channels, kernel] -> [batch, channels, output_time]
-            out = mx.sum(windows * w[None, :, None, :], axis=-1)
-
-            # Add bias
-            out = out + self.conv.bias[None, :, None]
-
-            return out
+        # x: [batch, time, channels] (NLC format)
+        if self.padding > 0:
+            x = mx.pad(x, [(0, 0), (self.padding, 0), (0, 0)])
+        return self.conv(x)
 
 
 class CausalTransposeConv1d(nn.Module):
-    """Causal transposed 1D convolution for upsampling."""
+    """Causal transposed 1D convolution for upsampling. NLC format."""
 
     def __init__(
         self,
@@ -141,18 +81,13 @@ class CausalTransposeConv1d(nn.Module):
         self.conv = nn.ConvTranspose1d(
             in_channels, out_channels, kernel_size, stride=stride, padding=0
         )
-        # Trim from the right for causal behavior (matches Encodec/DAC/Mimi)
         self.trim_right = kernel_size - stride
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time] (NCL format)
-        # MLX ConvTranspose1d expects [batch, time, channels] (NLC format)
-        x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
+        # x: [batch, time, channels] (NLC format)
         x = self.conv(x)
-        x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-        # Trim from right for causal behavior
         if self.trim_right > 0:
-            x = x[..., : -self.trim_right]
+            x = x[:, : -self.trim_right, :]
         return x
 
 
@@ -160,6 +95,8 @@ class SnakeBeta(nn.Module):
     """Snake activation with learnable alpha and beta parameters.
 
     SnakeBeta(x) = x + (1/beta) * sin^2(x * alpha)
+    NLC format: alpha/beta broadcast naturally on last dim.
+    Call freeze_snake_params() after weight load to precompute exp values.
     """
 
     def __init__(self, channels: int, alpha: float = 1.0):
@@ -168,16 +105,21 @@ class SnakeBeta(nn.Module):
         self.alpha = mx.zeros((channels,))
         self.beta = mx.zeros((channels,))
         self.eps = 1e-9
+        # Precomputed values (set by freeze_snake_params after weight load)
+        self._exp_alpha = None
+        self._inv_beta = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time]
-        alpha = mx.exp(self.alpha)[None, :, None]
-        beta = mx.exp(self.beta)[None, :, None]
+        # x: [batch, time, channels] (NLC format) — broadcasts on last dim
+        if self._exp_alpha is not None:
+            return x + self._inv_beta * mx.power(mx.sin(x * self._exp_alpha), 2)
+        alpha = mx.exp(self.alpha)
+        beta = mx.exp(self.beta)
         return x + (1.0 / (beta + self.eps)) * mx.power(mx.sin(x * alpha), 2)
 
 
 class ConvNeXtBlock(nn.Module):
-    """ConvNeXt block for feature processing."""
+    """ConvNeXt block for feature processing. NLC format throughout."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -188,15 +130,14 @@ class ConvNeXtBlock(nn.Module):
         self.gamma = mx.ones((dim,)) * 1e-6
 
     def __call__(self, x: mx.array) -> mx.array:
+        # x: [batch, time, channels] (NLC format)
         residual = x
         x = self.dwconv(x)
-        x = mx.transpose(x, (0, 2, 1))  # [B, T, C]
         x = self.norm(x)
         x = self.pwconv1(x)
         x = nn.gelu(x)
         x = self.pwconv2(x)
         x = self.gamma * x
-        x = mx.transpose(x, (0, 2, 1))  # [B, C, T]
         return residual + x
 
 
@@ -664,14 +605,10 @@ class DecoderBlockUpsample(nn.Module):
         self.trim_right = kernel_size - upsample_rate
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time] (NCL format)
-        # MLX ConvTranspose1d expects [batch, time, channels] (NLC format)
-        x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
+        # x: [batch, time, channels] (NLC format)
         x = self.conv(x)
-        x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-        # Trim from right for causal behavior
         if self.trim_right > 0:
-            x = x[..., : -self.trim_right]
+            x = x[:, : -self.trim_right, :]
         return x
 
 
@@ -709,30 +646,25 @@ class DecoderInitialConv(nn.Module):
     """Wrapper for initial decoder conv to match PyTorch weight structure.
 
     PyTorch key: decoder.decoder.0.conv.{weight,bias}
-    Note: Uses nn.Conv1d directly, not CausalConv1d wrapper.
+    NLC format throughout.
     """
 
     def __init__(self, latent_dim: int, decoder_dim: int, kernel_size: int = 7):
         super().__init__()
-        # Note: Causal padding handled inline
         self.conv = nn.Conv1d(latent_dim, decoder_dim, kernel_size, padding=0)
         self.kernel_size = kernel_size
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time] (NCL format)
-        # Causal padding (left pad on time dimension)
-        x = mx.pad(x, [(0, 0), (0, 0), (self.kernel_size - 1, 0)])
-        # MLX Conv1d expects [batch, time, channels] (NLC format)
-        x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
-        x = self.conv(x)
-        x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-        return x
+        # x: [batch, time, channels] (NLC format)
+        x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
+        return self.conv(x)
 
 
 class DecoderOutputSnake(nn.Module):
     """Output SnakeBeta layer - decoder.decoder[5].
 
     PyTorch key: decoder.decoder.5.{alpha, beta}
+    NLC format: alpha/beta broadcast on last dim.
     """
 
     def __init__(self, channels: int):
@@ -740,10 +672,15 @@ class DecoderOutputSnake(nn.Module):
         self.alpha = mx.zeros((channels,))
         self.beta = mx.zeros((channels,))
         self.eps = 1e-9
+        self._exp_alpha = None
+        self._inv_beta = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        alpha = mx.exp(self.alpha).reshape(1, -1, 1)
-        beta = mx.exp(self.beta).reshape(1, -1, 1)
+        # x: [batch, time, channels] (NLC format) — broadcasts on last dim
+        if self._exp_alpha is not None:
+            return x + self._inv_beta * mx.power(mx.sin(x * self._exp_alpha), 2)
+        alpha = mx.exp(self.alpha)
+        beta = mx.exp(self.beta)
         return x + (1.0 / (beta + self.eps)) * mx.power(mx.sin(x * alpha), 2)
 
 
@@ -751,6 +688,7 @@ class DecoderOutputConv(nn.Module):
     """Output conv layer - decoder.decoder[6].
 
     PyTorch key: decoder.decoder.6.conv.{weight, bias}
+    NLC format throughout.
     """
 
     def __init__(self, channels: int, kernel_size: int = 7):
@@ -759,14 +697,9 @@ class DecoderOutputConv(nn.Module):
         self.kernel_size = kernel_size
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time] (NCL format)
-        # Causal padding (left pad on time dimension)
-        x = mx.pad(x, [(0, 0), (0, 0), (self.kernel_size - 1, 0)])
-        # MLX Conv1d expects [batch, time, channels] (NLC format)
-        x = mx.transpose(x, (0, 2, 1))  # NCL -> NLC
-        x = self.conv(x)
-        x = mx.transpose(x, (0, 2, 1))  # NLC -> NCL
-        return x
+        # x: [batch, time, channels] (NLC format)
+        x = mx.pad(x, [(0, 0), (self.kernel_size - 1, 0), (0, 0)])
+        return self.conv(x)
 
 
 class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
@@ -836,28 +769,29 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
                 f"Expected {self.config.num_quantizers} layers of codes, got {codes.shape[1]}"
             )
 
-        # Dequantize
-        hidden = self.quantizer.decode(codes)  # [batch, codebook_dim, time]
+        # Dequantize: [batch, codebook_dim, time] (NCL)
+        hidden = self.quantizer.decode(codes)
+        # Convert to NLC for the entire decoder pipeline
+        hidden = mx.transpose(hidden, (0, 2, 1))  # [batch, time, codebook_dim]
 
-        # Pre-conv and transpose for transformer
-        hidden = self.pre_conv(hidden)  # [batch, latent_dim, time]
-        hidden = mx.transpose(hidden, (0, 2, 1))  # [batch, time, latent_dim]
+        # Pre-conv (NLC throughout)
+        hidden = self.pre_conv(hidden)  # [batch, time, latent_dim]
 
-        # Transformer (no caching needed for decoder-only inference)
+        # Transformer (already expects NLC)
         hidden = self.pre_transformer(hidden)
 
-        # Back to conv format
-        hidden = mx.transpose(hidden, (0, 2, 1))  # [batch, latent_dim, time]
-
-        # Upsampling
+        # Upsampling (NLC throughout)
         for upsample_layers in self.upsample:
             for layer in upsample_layers:
                 hidden = layer(hidden)
 
-        # Decoder
+        # Decoder (NLC throughout)
         wav = hidden
         for decoder_layer in self.decoder:
             wav = decoder_layer(wav)
+
+        # Convert back to NCL for output
+        wav = mx.transpose(wav, (0, 2, 1))  # [batch, 1, samples]
 
         return mx.clip(wav, -1.0, 1.0)
 
