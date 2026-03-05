@@ -1037,11 +1037,12 @@ class Model(nn.Module):
                 if i != eos_token_id
             ]
 
-            # Streaming decode state — emit first chunk ASAP for minimal TTFB
-            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
-            decoded_tokens = 0
-            chunks_yielded = 0
-            chunk_start_time = time.time()
+            # Initialize streaming state
+            if stream:
+                streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+                decoded_tokens = 0
+                chunk_start_time = time.time()
+                self.speech_tokenizer.decoder.reset_streaming_state()
 
             for step in range(max_tokens):
                 # Forward pass through talker
@@ -1138,27 +1139,24 @@ class Model(nn.Module):
                 # Update progress bar
                 pbar.update(1)
 
-                # Streaming: decode and yield audio chunks during generation
-                new_tokens = len(generated_codes) - decoded_tokens
-                if stream and new_tokens >= streaming_chunk_size:
-                    # Context overlap: none for first chunk, limited for subsequent
-                    context_tokens = (
-                        0
-                        if decoded_tokens == 0
-                        else min(streaming_context_size, decoded_tokens)
+                # Streaming: incrementally decode only new tokens
+                if (
+                    stream
+                    and len(generated_codes) - decoded_tokens >= streaming_chunk_size
+                ):
+                    new_tokens = len(generated_codes) - decoded_tokens
+                    # Stack only the NEW codes (no context overlap needed)
+                    codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                    # [1, new_tokens, num_code_groups] → [1, num_code_groups, new_tokens]
+                    codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                    mx.eval(codes_for_decoder)
+
+                    # Incremental decode: conv buffers + transformer KV cache
+                    wav = self.speech_tokenizer.decoder.streaming_step(
+                        codes_for_decoder
                     )
-                    start_idx = decoded_tokens - context_tokens
-                    codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                    mx.eval(codes_chunk)
-
-                    audio_chunk = self._decode_chunk(codes_chunk)
-
-                    # Trim the context overlap from audio (only yield new audio)
-                    if context_tokens > 0:
-                        samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                        trim_samples = context_tokens * samples_per_token
-                        if trim_samples < audio_chunk.shape[0]:
-                            audio_chunk = audio_chunk[trim_samples:]
+                    audio_chunk = wav.squeeze(1)[0]  # [samples]
+                    mx.eval(audio_chunk)
 
                     decoded_tokens = len(generated_codes)
 
@@ -1201,59 +1199,56 @@ class Model(nn.Module):
 
             pbar.close()
 
-            # Yield any remaining tokens
-            if stream and len(generated_codes) > decoded_tokens:
-                context_tokens = min(streaming_context_size, decoded_tokens)
-                start_idx = decoded_tokens - context_tokens
-                codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                mx.eval(codes_chunk)
-
-                audio_chunk = self._decode_chunk(codes_chunk)
-
-                # Trim the context overlap from audio (only yield new audio)
-                if context_tokens > 0:
-                    samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                    trim_samples = context_tokens * samples_per_token
-                    if trim_samples < audio_chunk.shape[0]:
-                        audio_chunk = audio_chunk[trim_samples:]
-
-                new_tokens = len(generated_codes) - decoded_tokens
-
-                chunk_elapsed = time.time() - chunk_start_time
-                chunk_audio_dur = audio_chunk.shape[0] / self.sample_rate
-                chunk_rtf = chunk_audio_dur / chunk_elapsed if chunk_elapsed > 0 else 0
-
-                yield GenerationResult(
-                    audio=audio_chunk,
-                    samples=audio_chunk.shape[0],
-                    sample_rate=self.sample_rate,
-                    segment_idx=segment_idx,
-                    token_count=new_tokens,
-                    audio_duration=format_duration(chunk_audio_dur),
-                    real_time_factor=chunk_rtf,
-                    prompt={
-                        "tokens": new_tokens,
-                        "tokens-per-sec": (
-                            new_tokens / chunk_elapsed if chunk_elapsed > 0 else 0
-                        ),
-                    },
-                    audio_samples={
-                        "samples": audio_chunk.shape[0],
-                        "samples-per-sec": (
-                            audio_chunk.shape[0] / chunk_elapsed
-                            if chunk_elapsed > 0
-                            else 0
-                        ),
-                    },
-                    processing_time_seconds=chunk_elapsed,
-                    peak_memory_usage=mx.get_peak_memory() / 1e9,
-                    is_streaming_chunk=True,
-                    is_final_chunk=True,
-                )
-                continue  # Skip non-streaming yield
-
+            # Yield any remaining tokens and clean up streaming state
             if stream:
-                continue  # All tokens already streamed
+                if len(generated_codes) > decoded_tokens:
+                    codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                    codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                    mx.eval(codes_for_decoder)
+
+                    wav = self.speech_tokenizer.decoder.streaming_step(
+                        codes_for_decoder
+                    )
+                    audio_chunk = wav.squeeze(1)[0]
+                    mx.eval(audio_chunk)
+
+                    new_tokens = len(generated_codes) - decoded_tokens
+
+                    chunk_elapsed = time.time() - chunk_start_time
+                    chunk_audio_dur = audio_chunk.shape[0] / self.sample_rate
+                    chunk_rtf = (
+                        chunk_audio_dur / chunk_elapsed if chunk_elapsed > 0 else 0
+                    )
+
+                    yield GenerationResult(
+                        audio=audio_chunk,
+                        samples=audio_chunk.shape[0],
+                        sample_rate=self.sample_rate,
+                        segment_idx=segment_idx,
+                        token_count=new_tokens,
+                        audio_duration=format_duration(chunk_audio_dur),
+                        real_time_factor=chunk_rtf,
+                        prompt={
+                            "tokens": new_tokens,
+                            "tokens-per-sec": (
+                                new_tokens / chunk_elapsed if chunk_elapsed > 0 else 0
+                            ),
+                        },
+                        audio_samples={
+                            "samples": audio_chunk.shape[0],
+                            "samples-per-sec": (
+                                audio_chunk.shape[0] / chunk_elapsed
+                                if chunk_elapsed > 0
+                                else 0
+                            ),
+                        },
+                        processing_time_seconds=chunk_elapsed,
+                        peak_memory_usage=mx.get_peak_memory() / 1e9,
+                        is_streaming_chunk=True,
+                        is_final_chunk=True,
+                    )
+                self.speech_tokenizer.decoder.reset_streaming_state()
+                continue
 
             if not generated_codes:
                 continue
@@ -1890,9 +1885,12 @@ class Model(nn.Module):
             leave=False,
         )
 
-        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
-        decoded_tokens = 0
-        chunk_start_time = time.time()
+        # Initialize streaming state
+        if stream:
+            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+            decoded_tokens = 0
+            chunk_start_time = time.time()
+            self.speech_tokenizer.decoder.reset_streaming_state()
 
         for step in range(effective_max_tokens):
             # Forward pass through talker
@@ -1980,25 +1978,16 @@ class Model(nn.Module):
 
             pbar.update(1)
 
-            # Streaming: decode and yield audio chunks during generation
-            new_tokens = len(generated_codes) - decoded_tokens
-            if stream and new_tokens >= streaming_chunk_size:
-                context_tokens = (
-                    0
-                    if decoded_tokens == 0
-                    else min(streaming_context_size, decoded_tokens)
-                )
-                start_idx = decoded_tokens - context_tokens
-                codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                mx.eval(codes_chunk)
+            # Streaming: incrementally decode only new tokens
+            if stream and len(generated_codes) - decoded_tokens >= streaming_chunk_size:
+                new_tokens = len(generated_codes) - decoded_tokens
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
-
-                if context_tokens > 0:
-                    samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                    trim_samples = context_tokens * samples_per_token
-                    if trim_samples < audio_chunk.shape[0]:
-                        audio_chunk = audio_chunk[trim_samples:]
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
 
                 decoded_tokens = len(generated_codes)
 
@@ -2038,58 +2027,52 @@ class Model(nn.Module):
 
         pbar.close()
 
-        # Yield any remaining tokens
-        if stream and len(generated_codes) > decoded_tokens:
-            # Include context from previous tokens for smooth transitions
-            context_tokens = min(streaming_context_size, decoded_tokens)
-            start_idx = decoded_tokens - context_tokens
-            codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-            mx.eval(codes_chunk)
-
-            audio_chunk = self._decode_chunk(codes_chunk)
-
-            # Trim the context overlap from audio (only yield new audio)
-            if context_tokens > 0:
-                samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                trim_samples = context_tokens * samples_per_token
-                if trim_samples < audio_chunk.shape[0]:
-                    audio_chunk = audio_chunk[trim_samples:]
-
-            new_tokens = len(generated_codes) - decoded_tokens
-
-            chunk_elapsed = time.time() - chunk_start_time
-            chunk_audio_dur = audio_chunk.shape[0] / self.sample_rate
-            chunk_rtf = chunk_audio_dur / chunk_elapsed if chunk_elapsed > 0 else 0
-
-            yield GenerationResult(
-                audio=audio_chunk,
-                samples=audio_chunk.shape[0],
-                sample_rate=self.sample_rate,
-                segment_idx=0,
-                token_count=new_tokens,
-                audio_duration=format_duration(chunk_audio_dur),
-                real_time_factor=chunk_rtf,
-                prompt={
-                    "tokens": new_tokens,
-                    "tokens-per-sec": (
-                        new_tokens / chunk_elapsed if chunk_elapsed > 0 else 0
-                    ),
-                },
-                audio_samples={
-                    "samples": audio_chunk.shape[0],
-                    "samples-per-sec": (
-                        audio_chunk.shape[0] / chunk_elapsed if chunk_elapsed > 0 else 0
-                    ),
-                },
-                processing_time_seconds=chunk_elapsed,
-                peak_memory_usage=mx.get_peak_memory() / 1e9,
-                is_streaming_chunk=True,
-                is_final_chunk=True,
-            )
-            return  # Skip non-streaming yield
-
+        # Yield any remaining tokens and clean up streaming state
         if stream:
-            return  # All tokens already streamed
+            if len(generated_codes) > decoded_tokens:
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
+
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
+
+                new_tokens = len(generated_codes) - decoded_tokens
+
+                chunk_elapsed = time.time() - chunk_start_time
+                chunk_audio_dur = audio_chunk.shape[0] / self.sample_rate
+                chunk_rtf = chunk_audio_dur / chunk_elapsed if chunk_elapsed > 0 else 0
+
+                yield GenerationResult(
+                    audio=audio_chunk,
+                    samples=audio_chunk.shape[0],
+                    sample_rate=self.sample_rate,
+                    segment_idx=0,
+                    token_count=new_tokens,
+                    audio_duration=format_duration(chunk_audio_dur),
+                    real_time_factor=chunk_rtf,
+                    prompt={
+                        "tokens": new_tokens,
+                        "tokens-per-sec": (
+                            new_tokens / chunk_elapsed if chunk_elapsed > 0 else 0
+                        ),
+                    },
+                    audio_samples={
+                        "samples": audio_chunk.shape[0],
+                        "samples-per-sec": (
+                            audio_chunk.shape[0] / chunk_elapsed
+                            if chunk_elapsed > 0
+                            else 0
+                        ),
+                    },
+                    processing_time_seconds=chunk_elapsed,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    is_streaming_chunk=True,
+                    is_final_chunk=True,
+                )
+            self.speech_tokenizer.decoder.reset_streaming_state()
+            return
 
         if not generated_codes:
             return
@@ -2207,10 +2190,12 @@ class Model(nn.Module):
         ]
         trailing_idx = 0
 
-        streaming_chunk_size = max(1, int(streaming_interval * 12.5))
-
-        decoded_tokens = 0
-        chunk_start_time = time.time()
+        # Initialize streaming state
+        if stream:
+            streaming_chunk_size = max(1, int(streaming_interval * 12.5))
+            decoded_tokens = 0
+            chunk_start_time = time.time()
+            self.speech_tokenizer.decoder.reset_streaming_state()
 
         # Create progress bar for token generation
         pbar = tqdm(
@@ -2307,25 +2292,16 @@ class Model(nn.Module):
 
             pbar.update(1)
 
-            # Streaming: decode and yield audio chunks during generation
-            new_tokens = len(generated_codes) - decoded_tokens
-            if stream and new_tokens >= streaming_chunk_size:
-                context_tokens = (
-                    0
-                    if decoded_tokens == 0
-                    else min(streaming_context_size, decoded_tokens)
-                )
-                start_idx = decoded_tokens - context_tokens
-                codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-                mx.eval(codes_chunk)
+            # Streaming: incrementally decode only new tokens
+            if stream and len(generated_codes) - decoded_tokens >= streaming_chunk_size:
+                new_tokens = len(generated_codes) - decoded_tokens
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
 
-                audio_chunk = self._decode_chunk(codes_chunk)
-
-                if context_tokens > 0:
-                    samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                    trim_samples = context_tokens * samples_per_token
-                    if trim_samples < audio_chunk.shape[0]:
-                        audio_chunk = audio_chunk[trim_samples:]
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
 
                 decoded_tokens = len(generated_codes)
 
@@ -2365,58 +2341,52 @@ class Model(nn.Module):
 
         pbar.close()
 
-        # Yield any remaining tokens for streaming mode
-        if stream and len(generated_codes) > decoded_tokens:
-            # Include context from previous tokens for smooth transitions
-            context_tokens = min(streaming_context_size, decoded_tokens)
-            start_idx = decoded_tokens - context_tokens
-            codes_chunk = mx.stack(generated_codes[start_idx:], axis=1)
-            mx.eval(codes_chunk)
-
-            audio_chunk = self._decode_chunk(codes_chunk)
-
-            # Trim the context overlap from audio (only yield new audio)
-            if context_tokens > 0:
-                samples_per_token = self.speech_tokenizer.decode_upsample_rate
-                trim_samples = context_tokens * samples_per_token
-                if trim_samples < audio_chunk.shape[0]:
-                    audio_chunk = audio_chunk[trim_samples:]
-
-            new_tokens = len(generated_codes) - decoded_tokens
-
-            chunk_elapsed = time.time() - chunk_start_time
-            chunk_audio_dur = audio_chunk.shape[0] / self.sample_rate
-            chunk_rtf = chunk_audio_dur / chunk_elapsed if chunk_elapsed > 0 else 0
-
-            yield GenerationResult(
-                audio=audio_chunk,
-                samples=audio_chunk.shape[0],
-                sample_rate=self.sample_rate,
-                segment_idx=0,
-                token_count=new_tokens,
-                audio_duration=format_duration(chunk_audio_dur),
-                real_time_factor=chunk_rtf,
-                prompt={
-                    "tokens": new_tokens,
-                    "tokens-per-sec": (
-                        new_tokens / chunk_elapsed if chunk_elapsed > 0 else 0
-                    ),
-                },
-                audio_samples={
-                    "samples": audio_chunk.shape[0],
-                    "samples-per-sec": (
-                        audio_chunk.shape[0] / chunk_elapsed if chunk_elapsed > 0 else 0
-                    ),
-                },
-                processing_time_seconds=chunk_elapsed,
-                peak_memory_usage=mx.get_peak_memory() / 1e9,
-                is_streaming_chunk=True,
-                is_final_chunk=True,
-            )
-            return  # Skip non-streaming yield
-
+        # Yield any remaining tokens and clean up streaming state
         if stream:
-            return  # All tokens already streamed
+            if len(generated_codes) > decoded_tokens:
+                codes_chunk = mx.stack(generated_codes[decoded_tokens:], axis=1)
+                codes_for_decoder = mx.transpose(codes_chunk, (0, 2, 1))
+                mx.eval(codes_for_decoder)
+
+                wav = self.speech_tokenizer.decoder.streaming_step(codes_for_decoder)
+                audio_chunk = wav.squeeze(1)[0]
+                mx.eval(audio_chunk)
+
+                new_tokens = len(generated_codes) - decoded_tokens
+
+                chunk_elapsed = time.time() - chunk_start_time
+                chunk_audio_dur = audio_chunk.shape[0] / self.sample_rate
+                chunk_rtf = chunk_audio_dur / chunk_elapsed if chunk_elapsed > 0 else 0
+
+                yield GenerationResult(
+                    audio=audio_chunk,
+                    samples=audio_chunk.shape[0],
+                    sample_rate=self.sample_rate,
+                    segment_idx=0,
+                    token_count=new_tokens,
+                    audio_duration=format_duration(chunk_audio_dur),
+                    real_time_factor=chunk_rtf,
+                    prompt={
+                        "tokens": new_tokens,
+                        "tokens-per-sec": (
+                            new_tokens / chunk_elapsed if chunk_elapsed > 0 else 0
+                        ),
+                    },
+                    audio_samples={
+                        "samples": audio_chunk.shape[0],
+                        "samples-per-sec": (
+                            audio_chunk.shape[0] / chunk_elapsed
+                            if chunk_elapsed > 0
+                            else 0
+                        ),
+                    },
+                    processing_time_seconds=chunk_elapsed,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    is_streaming_chunk=True,
+                    is_final_chunk=True,
+                )
+            self.speech_tokenizer.decoder.reset_streaming_state()
+            return
 
         if not generated_codes:
             return
