@@ -1586,8 +1586,7 @@ class Model(nn.Module):
         first_layer = self.model.model.layers[0] if self.model.model.layers else None
         first_attention = getattr(first_layer, "attention", None)
         use_mrope = bool(
-            first_attention is not None
-            and getattr(first_attention, "use_mrope", False)
+            first_attention is not None and getattr(first_attention, "use_mrope", False)
         )
         position_ids = None
         if use_mrope:
@@ -1598,8 +1597,7 @@ class Model(nn.Module):
             position_ids = mx.stack([pos, pos, pos], axis=0)
 
         is_moe_backbone = bool(
-            self.model.model.layers
-            and hasattr(self.model.model.layers[0], "attention")
+            self.model.model.layers and hasattr(self.model.model.layers[0], "attention")
         )
         for layer, layer_cache in zip(self.model.model.layers, cache):
             if is_moe_backbone:
