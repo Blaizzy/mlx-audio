@@ -3333,6 +3333,52 @@ class TestBailingMMModel(unittest.TestCase):
         self.assertLess(diff[:4].max(), 1e-6)
         self.assertGreater(diff[4:].max(), 1e-6)
 
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.FlowLoss")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.Aggregator")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.AudioVAE")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.MingBailingMoeModel")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.MingQwen2ForCausalLM")
+    def test_init_uses_dense_qwen2_backbone_when_moe_fields_missing(
+        self,
+        mock_qwen2_lm,
+        mock_moe_lm,
+        mock_audio_vae,
+        _mock_aggregator,
+        _mock_flowloss,
+    ):
+        from mlx_audio.tts.models.bailingmm.bailingmm import Model
+
+        audio = MagicMock()
+        audio.sample_rate = 24000
+        mock_audio_vae.return_value = audio
+
+        config = {
+            "model_type": "dense",
+            "llm_config": {
+                "model_type": "qwen2",
+                "hidden_size": 896,
+                "num_hidden_layers": 24,
+                "intermediate_size": 4864,
+                "num_attention_heads": 14,
+                "num_key_value_heads": 2,
+                "rms_norm_eps": 1e-6,
+                "vocab_size": 151936,
+                "rope_theta": 1_000_000.0,
+            },
+            "audio_tokenizer_config": {
+                "sample_rate": 24000,
+                "enc_kwargs": {"latent_dim": 64},
+            },
+            "ditar_config": {"patch_size": 8},
+            "aggregator_config": {},
+        }
+
+        model = Model(config)
+
+        mock_qwen2_lm.assert_called_once()
+        mock_moe_lm.assert_not_called()
+        self.assertEqual(model.llm_args.model_type, "qwen2")
+
     @patch(
         "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
         return_value=0.0,

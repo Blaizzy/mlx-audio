@@ -584,6 +584,41 @@ class MingQwen2Model(Qwen2Model):
         for idx, sliding_window in enumerate(per_layer_sliding):
             self.layers[idx].self_attn = MingQwen2Attention(args, sliding_window)
 
+    @property
+    def word_embeddings(self):
+        # Keep naming parity with BailingMoeModel for shared caller code.
+        return self.embed_tokens
+
+
+class MingQwen2ForCausalLM(nn.Module):
+    def __init__(self, args: Qwen2ModelArgs, cfg_dict: Dict[str, Any]):
+        super().__init__()
+        self.args = args
+        self.model_type = args.model_type
+        self.model = MingQwen2Model(args, cfg_dict)
+        if not args.tie_word_embeddings:
+            self.lm_head = nn.Linear(args.hidden_size, args.vocab_size, bias=False)
+
+    def __call__(
+        self,
+        inputs: mx.array,
+        cache=None,
+        input_embeddings: Optional[mx.array] = None,
+    ):
+        out = self.model(inputs, cache, input_embeddings)
+        if self.args.tie_word_embeddings:
+            out = self.model.embed_tokens.as_linear(out)
+        else:
+            out = self.lm_head(out)
+        return out
+
+    def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        if self.args.tie_word_embeddings:
+            weights.pop("lm_head.weight", None)
+        return {
+            k: v for k, v in weights.items() if "self_attn.rotary_emb.inv_freq" not in k
+        }
+
 
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim: int, base: float = 10000.0):
@@ -1391,8 +1426,12 @@ class Model(nn.Module):
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
         llm_cfg = dict(config.text_config)
-        self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
-        self.model = MingBailingMoeModel(self.llm_args)
+        if self._is_moe_llm_config(llm_cfg):
+            self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
+            self.model = MingBailingMoeModel(self.llm_args)
+        else:
+            self.llm_args = Qwen2ModelArgs.from_dict(llm_cfg)
+            self.model = MingQwen2ForCausalLM(self.llm_args, llm_cfg)
 
         self.audio = AudioVAE(config.audio_tokenizer_config)
         self.latent_dim = int(config.audio_tokenizer_config["enc_kwargs"]["latent_dim"])
@@ -1420,7 +1459,19 @@ class Model(nn.Module):
 
     @property
     def layers(self):
-        return self.model.layers
+        return self.model.model.layers
+
+    @staticmethod
+    def _is_moe_llm_config(llm_cfg: Dict[str, Any]) -> bool:
+        moe_keys = (
+            "moe_intermediate_size",
+            "num_experts",
+            "num_shared_experts",
+            "norm_topk_prob",
+            "num_experts_per_tok",
+            "first_k_dense_replace",
+        )
+        return all(llm_cfg.get(k) is not None for k in moe_keys)
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         # First sanitize the LLM shard with mlx-lm's bailing_moe remapping.
@@ -1532,9 +1583,11 @@ class Model(nn.Module):
     ) -> mx.array:
         h = inputs_embeds
         mask = create_attention_mask(h, cache[0] if cache else None)
+        first_layer = self.model.model.layers[0] if self.model.model.layers else None
+        first_attention = getattr(first_layer, "attention", None)
         use_mrope = bool(
-            self.model.model.layers
-            and getattr(self.model.model.layers[0].attention, "use_mrope", False)
+            first_attention is not None
+            and getattr(first_attention, "use_mrope", False)
         )
         position_ids = None
         if use_mrope:
@@ -1544,8 +1597,15 @@ class Model(nn.Module):
             pos = mx.broadcast_to(pos, (h.shape[0], seq_len))
             position_ids = mx.stack([pos, pos, pos], axis=0)
 
+        is_moe_backbone = bool(
+            self.model.model.layers
+            and hasattr(self.model.model.layers[0], "attention")
+        )
         for layer, layer_cache in zip(self.model.model.layers, cache):
-            h = layer(h, mask, layer_cache, position_ids=position_ids)
+            if is_moe_backbone:
+                h = layer(h, mask, layer_cache, position_ids=position_ids)
+            else:
+                h = layer(h, mask, layer_cache)
         return self.model.model.norm(h)
 
     def sample(
@@ -1739,7 +1799,9 @@ class Model(nn.Module):
                 print(f"[WARN] campplus ONNX conversion failed: {e}")
                 raise e
 
-        model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        model.tokenizer = AutoTokenizer.from_pretrained(
+            str(model_path), trust_remote_code=False
+        )
         return model
 
     @classmethod
