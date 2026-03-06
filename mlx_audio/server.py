@@ -401,7 +401,8 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
-    tmp_path = f"/tmp/{time.time()}.mp3"
+    _, ext = os.path.splitext(file.filename)
+    tmp_path = f"/tmp/{time.time()}.{ext if ext else 'mp3'}"
     audio_write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(payload.model)
@@ -634,7 +635,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
             # Receive message
             try:
                 message = await websocket.receive()
-            except:
+            except Exception:
                 break
 
             if "bytes" in message:
@@ -795,7 +796,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     data = json.loads(message["text"])
                     if data.get("action") == "stop":
                         break
-                except:
+                except Exception:
                     pass
 
     except WebSocketDisconnect:
@@ -803,12 +804,12 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
     except Exception as e:
         try:
             await websocket.send_json({"error": str(e), "status": "error"})
-        except:
+        except Exception:
             pass
     finally:
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
 
 
