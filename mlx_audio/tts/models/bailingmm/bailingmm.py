@@ -37,7 +37,6 @@ class ModelConfig(BaseModelArgs):
     ditar_config: Optional[dict] = None
     aggregator_config: Optional[dict] = None
     model_path: Optional[str] = None
-    
 
     @classmethod
     def from_dict(cls, config: dict) -> "ModelConfig":
