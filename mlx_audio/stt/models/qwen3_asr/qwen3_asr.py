@@ -855,8 +855,8 @@ class Qwen3ASRModel(nn.Module):
     ) -> str:
         """Extract language from text."""
         if "<asr_text>" in text and text.startswith("language "):
-            return text[len("language "):text.find("<asr_text>")].strip()
-        return "English"
+            return text[len("language "):text.find("<asr_text>")].strip(), text[text.find("<asr_text>") + len("<asr_text>"):]
+        return "English", text
 
     def _build_prompt(
         self,
@@ -1160,13 +1160,14 @@ class Qwen3ASRModel(nn.Module):
                 and len(chunks) == 1,  # Only show inner progress for single chunk
                 system_prompt=system_prompt,
             )
+
+            if language is None:
+                language, text = self.extract_language(text)
+
             all_texts.append(text)
             total_prompt_tokens += prompt_toks
             total_generation_tokens += gen_toks
             remaining_tokens -= gen_toks
-
-            if language is None:
-                language = self.extract_language(text)
 
             # Create segment for this chunk
             segments.append(
@@ -1317,7 +1318,7 @@ class Qwen3ASRModel(nn.Module):
                 text = self._tokenizer.decode([int(token)])
                 if i <= 2:
                     language_accumulator += text
-                    language = self.extract_language(language_accumulator)
+                    language, _ = self.extract_language(language_accumulator)
                     continue
 
                 # Estimate timing based on token position within chunk
