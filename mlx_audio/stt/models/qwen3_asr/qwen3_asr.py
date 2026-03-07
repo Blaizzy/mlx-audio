@@ -855,7 +855,10 @@ class Qwen3ASRModel(nn.Module):
     ) -> str:
         """Extract language from text."""
         if "<asr_text>" in text and text.startswith("language "):
-            return text[len("language "):text.find("<asr_text>")].strip(), text[text.find("<asr_text>") + len("<asr_text>"):]
+            return (
+                text[len("language ") : text.find("<asr_text>")].strip(),
+                text[text.find("<asr_text>") + len("<asr_text>") :],
+            )
         return "English", text
 
     def _build_prompt(
@@ -1279,8 +1282,6 @@ class Qwen3ASRModel(nn.Module):
             else None
         )
 
-        
-
         # Track token counts across chunks
         total_prompt_tokens = 0
         total_generation_tokens = 0
@@ -1305,16 +1306,18 @@ class Qwen3ASRModel(nn.Module):
             chunk_prompt_tokens = input_ids.shape[1]
             total_prompt_tokens += chunk_prompt_tokens
 
-            for i, (token, _) in enumerate(self.stream_generate(
-                chunk_audio,
-                max_tokens=remaining_tokens,
-                sampler=sampler,
-                logits_processors=logits_processors,
-                language=language,
-                prefill_step_size=prefill_step_size,
-                verbose=verbose and len(chunks) == 1,
-                system_prompt=system_prompt,
-            )):
+            for i, (token, _) in enumerate(
+                self.stream_generate(
+                    chunk_audio,
+                    max_tokens=remaining_tokens,
+                    sampler=sampler,
+                    logits_processors=logits_processors,
+                    language=language,
+                    prefill_step_size=prefill_step_size,
+                    verbose=verbose and len(chunks) == 1,
+                    system_prompt=system_prompt,
+                )
+            ):
                 text = self._tokenizer.decode([int(token)])
                 if i <= 2:
                     language_accumulator += text
