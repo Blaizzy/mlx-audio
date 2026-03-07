@@ -226,7 +226,12 @@ def convert(
 
     # Define base quantization requirements
     def base_quant_requirements(p, m):
-        return model_quant_predicate(p, m)
+        return (
+            hasattr(m, "weight")
+            and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
+            and hasattr(m, "to_quantized")
+            and model_quant_predicate(p, m)
+        )
 
     # Combine with user-provided predicate if available
     if quant_predicate is None:
