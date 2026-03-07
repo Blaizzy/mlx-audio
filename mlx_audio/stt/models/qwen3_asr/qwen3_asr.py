@@ -1286,6 +1286,7 @@ class Qwen3ASRModel(nn.Module):
         total_prompt_tokens = 0
         total_generation_tokens = 0
         remaining_tokens = max_tokens
+
         language_accumulator = ""
 
         # Process each chunk and stream tokens
@@ -1319,9 +1320,11 @@ class Qwen3ASRModel(nn.Module):
                 )
             ):
                 text = self._tokenizer.decode([int(token)])
-                if i <= 2:
+
+                if language is None and i <= 2:
                     language_accumulator += text
-                    language, _ = self.extract_language(language_accumulator)
+                    if "<asr_text>" in language_accumulator:
+                        language, _ = self.extract_language(language_accumulator)
                     continue
 
                 # Estimate timing based on token position within chunk
