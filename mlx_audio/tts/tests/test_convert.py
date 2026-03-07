@@ -34,8 +34,9 @@ class TestConvert(unittest.TestCase):
             hf_path="dummy_hf",
             mlx_path="dummy_mlx",
             quantize=False,
-            q_group_size=64,
-            q_bits=4,
+            q_group_size=None,
+            q_bits=None,
+            q_mode="affine",
             quant_predicate=None,
             dtype="float16",
             upload_repo=None,
@@ -64,6 +65,7 @@ class TestConvert(unittest.TestCase):
             quantize=True,
             q_group_size=128,
             q_bits=8,
+            q_mode="affine",
             quant_predicate=None,
             dtype=None,  # Default dtype is None
             upload_repo=None,
@@ -108,6 +110,7 @@ class TestConvert(unittest.TestCase):
             quantize=True,
             q_group_size=100,
             q_bits=4,
+            q_mode="affine",
             quant_predicate=None,
             dtype=None,  # Default dtype is None
             upload_repo=None,
@@ -129,8 +132,9 @@ class TestConvert(unittest.TestCase):
                     hf_path="dummy_hf",
                     mlx_path="mlx_model",  # Default mlx_path
                     quantize=False,  # Default quantize
-                    q_group_size=64,  # Default q_group_size
-                    q_bits=4,  # Default q_bits
+                    q_group_size=None,  # Default q_group_size
+                    q_bits=None,  # Default q_bits
+                    q_mode="affine",
                     quant_predicate=recipe,
                     dtype=None,  # Default dtype is None
                     upload_repo=None,  # Default upload_repo
@@ -150,8 +154,9 @@ class TestConvert(unittest.TestCase):
             hf_path="dummy_hf",
             mlx_path="mlx_model",  # Default mlx_path
             quantize=False,
-            q_group_size=64,
-            q_bits=4,
+            q_group_size=None,
+            q_bits=None,
+            q_mode="affine",
             quant_predicate=None,
             dtype=None,  # Default dtype is None
             upload_repo=None,
@@ -170,11 +175,32 @@ class TestConvert(unittest.TestCase):
             hf_path="dummy_hf",
             mlx_path="mlx_model",  # Default mlx_path
             quantize=False,
-            q_group_size=64,
-            q_bits=4,
+            q_group_size=None,
+            q_bits=None,
+            q_mode="affine",
             quant_predicate=None,
             dtype=None,  # Default dtype is None
             upload_repo="my/repo",
+            revision=None,
+            dequantize=False,
+            model_domain=None,
+        )
+
+    def test_q_mode_argument(self):
+        test_args = ["--hf-path", "dummy_hf", "--quantize", "--q-mode", "mxfp4"]
+        with patch.object(sys, "argv", ["convert.py"] + test_args):
+            main()
+
+        self.convert_mock.assert_called_once_with(
+            hf_path="dummy_hf",
+            mlx_path="mlx_model",
+            quantize=True,
+            q_group_size=None,
+            q_bits=None,
+            q_mode="mxfp4",
+            quant_predicate=None,
+            dtype=None,
+            upload_repo=None,
             revision=None,
             dequantize=False,
             model_domain=None,

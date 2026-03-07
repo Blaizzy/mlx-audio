@@ -20,6 +20,7 @@ from mlx.utils import tree_flatten
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
+QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
 
 
 class Domain(str, Enum):
@@ -533,13 +534,14 @@ def convert(
     hf_path: str,
     mlx_path: str = "mlx_model",
     quantize: bool = False,
-    q_group_size: int = 64,
-    q_bits: int = 4,
+    q_group_size: Optional[int] = None,
+    q_bits: Optional[int] = None,
     dtype: Optional[str] = None,
     upload_repo: Optional[str] = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     quant_predicate: Optional[str] = None,
+    q_mode: str = "affine",
     model_domain: Optional[str] = None,
 ):
     """
@@ -552,13 +554,14 @@ def convert(
         hf_path: Path to the Hugging Face model or repo ID.
         mlx_path: Path to save the MLX model.
         quantize: Whether to quantize the model.
-        q_group_size: Group size for quantization.
-        q_bits: Bits per weight for quantization.
+        q_group_size: Group size for quantization. Uses mode defaults when None.
+        q_bits: Bits per weight for quantization. Uses mode defaults when None.
         dtype: Data type for weights (float16, bfloat16, float32).
         upload_repo: Hugging Face repo to upload the converted model.
         revision: Model revision to download.
         dequantize: Whether to dequantize a quantized model.
         quant_predicate: Mixed-bit quantization recipe.
+        q_mode: Quantization mode (affine, mxfp4, nvfp4, mxfp8).
         model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
     """
     from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
@@ -614,7 +617,12 @@ def convert(
         final_predicate = build_quant_predicate(model, quant_predicate)
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
-            model, config, q_group_size, q_bits, quant_predicate=final_predicate
+            model,
+            config,
+            q_group_size,
+            q_bits,
+            mode=q_mode,
+            quant_predicate=final_predicate,
         )
 
     if dequantize:
@@ -665,14 +673,21 @@ def configure_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--q-group-size",
         type=int,
-        default=64,
-        help="Group size for quantization.",
+        default=None,
+        help="Group size for quantization (mode default if omitted).",
     )
     parser.add_argument(
         "--q-bits",
         type=int,
-        default=4,
-        help="Bits per weight for quantization.",
+        default=None,
+        help="Bits per weight for quantization (mode default if omitted).",
+    )
+    parser.add_argument(
+        "--q-mode",
+        choices=QUANT_MODES,
+        type=str,
+        default="affine",
+        help="Quantization mode.",
     )
     parser.add_argument(
         "--quant-predicate",
