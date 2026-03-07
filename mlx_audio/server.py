@@ -530,18 +530,22 @@ async def _stream_transcription(
     legacy ``{"text": ..., "is_partial": ...}`` format.
     """
     supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
-    lang_arg = language if language and language != "Detect" else None
 
     if supports_stream and streaming:
         result_iter = stt_model.generate(
-            audio_array, stream=True, language=lang_arg, verbose=False
+            audio_array, stream=True, language=language, verbose=False
         )
         accumulated = ""
+        detected_language = language
         for chunk in result_iter:
             delta = (
                 chunk if isinstance(chunk, str) else getattr(chunk, "text", str(chunk))
             )
             accumulated += delta
+            # Pick up detected language from streaming results
+            chunk_lang = getattr(chunk, "language", None)
+            if chunk_lang and detected_language is None:
+                detected_language = chunk_lang
             await websocket.send_json({"type": "delta", "delta": delta})
 
         await websocket.send_json(
@@ -549,7 +553,7 @@ async def _stream_transcription(
                 "type": "complete",
                 "text": accumulated,
                 "segments": None,
-                "language": lang_arg,
+                "language": detected_language,
                 "is_partial": is_partial,
             }
         )
@@ -557,7 +561,7 @@ async def _stream_transcription(
         tmp_path = f"/tmp/realtime_{time.time()}.mp3"
         audio_write(tmp_path, audio_array, sample_rate)
         try:
-            result = stt_model.generate(tmp_path, language=lang_arg, verbose=False)
+            result = stt_model.generate(tmp_path, language=language, verbose=False)
             segments = (
                 sanitize_for_json(result.segments)
                 if hasattr(result, "segments") and result.segments

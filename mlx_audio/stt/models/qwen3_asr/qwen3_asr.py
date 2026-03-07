@@ -849,24 +849,45 @@ class Qwen3ASRModel(nn.Module):
 
         return input_features, feature_attention_mask, num_audio_tokens
 
+    def extract_language(
+        self,
+        text: str,
+    ) -> str:
+        """Extract language from text."""
+        if "<asr_text>" in text and text.startswith("language "):
+            return (
+                text[len("language ") : text.find("<asr_text>")].strip(),
+                text[text.find("<asr_text>") + len("<asr_text>") :],
+            )
+        return "English", text
+
     def _build_prompt(
         self,
         num_audio_tokens: int,
-        language: str = "English",
+        language: Optional[str] = None,
         system_prompt: str | None = None,
     ) -> mx.array:
-        """Build prompt with audio tokens."""
-        supported = self.config.support_languages or []
-        supported_lower = {lang.lower(): lang for lang in supported}
+        """Build prompt with audio tokens.
 
-        # Match language (case-insensitive) against supported languages
-        lang_name = supported_lower.get(language.lower(), language)
-
+        When language is None, the model will auto-detect the language
+        by outputting 'language {detected}<asr_text>{text}'.
+        """
         system_content = f"{system_prompt}\n" if system_prompt else ""
+
+        if language is not None:
+            supported = self.config.support_languages or []
+            supported_lower = {lang.lower(): lang for lang in supported}
+            # Match language (case-insensitive) against supported languages
+            lang_name = supported_lower.get(language.lower(), language)
+            assistant_prefix = f"language {lang_name}<asr_text>"
+        else:
+
+            assistant_prefix = ""
+
         prompt = (
             f"<|im_start|>system\n{system_content}<|im_end|>\n"
             f"<|im_start|>user\n<|audio_start|>{'<|audio_pad|>' * num_audio_tokens}<|audio_end|><|im_end|>\n"
-            f"<|im_start|>assistant\nlanguage {lang_name}<asr_text>"
+            f"<|im_start|>assistant\n{assistant_prefix}"
         )
 
         input_ids = self._tokenizer.encode(prompt, return_tensors="np")
@@ -879,7 +900,7 @@ class Qwen3ASRModel(nn.Module):
         max_tokens: int = 8192,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
         logits_processors: Optional[List[Callable]] = None,
-        language: str = "English",
+        language: Optional[str] = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         system_prompt: str | None = None,
@@ -983,7 +1004,7 @@ class Qwen3ASRModel(nn.Module):
         max_tokens: int = 8192,
         sampler: Optional[Callable] = None,
         logits_processors: Optional[List[Callable]] = None,
-        language: str = "English",
+        language: Optional[str] = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         system_prompt: str | None = None,
@@ -1030,7 +1051,7 @@ class Qwen3ASRModel(nn.Module):
         min_tokens_to_keep: int = 1,
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
-        language: str = "English",
+        language: Optional[str] = None,
         prefill_step_size: int = 2048,
         chunk_duration: float = 1200.0,
         min_chunk_duration: float = 1.0,
@@ -1142,6 +1163,10 @@ class Qwen3ASRModel(nn.Module):
                 and len(chunks) == 1,  # Only show inner progress for single chunk
                 system_prompt=system_prompt,
             )
+
+            if language is None:
+                language, text = self.extract_language(text)
+
             all_texts.append(text)
             total_prompt_tokens += prompt_toks
             total_generation_tokens += gen_toks
@@ -1151,6 +1176,7 @@ class Qwen3ASRModel(nn.Module):
             segments.append(
                 {
                     "text": text,
+                    "language": language,
                     "start": offset_sec,
                     "end": offset_sec + actual_chunk_duration,
                 }
@@ -1167,6 +1193,7 @@ class Qwen3ASRModel(nn.Module):
         return STTOutput(
             text=full_text,
             segments=segments,
+            language=[segment["language"] for segment in segments],
             prompt_tokens=total_prompt_tokens,
             generation_tokens=total_generation_tokens,
             total_tokens=total_prompt_tokens + total_generation_tokens,
@@ -1195,7 +1222,7 @@ class Qwen3ASRModel(nn.Module):
         min_tokens_to_keep: int = 1,
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
-        language: str = "English",
+        language: Optional[str] = None,
         prefill_step_size: int = 2048,
         chunk_duration: float = 1200.0,
         min_chunk_duration: float = 1.0,
@@ -1205,6 +1232,7 @@ class Qwen3ASRModel(nn.Module):
         """Stream transcription token-by-token from audio.
 
         Automatically chunks long audio and streams tokens from each chunk sequentially.
+        When language is None, the model auto-detects the language.
 
         Yields:
             StreamingResult objects with text, timing, and status information.
@@ -1254,13 +1282,12 @@ class Qwen3ASRModel(nn.Module):
             else None
         )
 
-        # Normalize language code for output
-        lang_code = language[:2].lower() if language else "en"
-
         # Track token counts across chunks
         total_prompt_tokens = 0
         total_generation_tokens = 0
         remaining_tokens = max_tokens
+
+        language_accumulator = ""
 
         # Process each chunk and stream tokens
         chunk_iter = tqdm(
@@ -1280,17 +1307,25 @@ class Qwen3ASRModel(nn.Module):
             chunk_prompt_tokens = input_ids.shape[1]
             total_prompt_tokens += chunk_prompt_tokens
 
-            for token, _ in self.stream_generate(
-                chunk_audio,
-                max_tokens=remaining_tokens,
-                sampler=sampler,
-                logits_processors=logits_processors,
-                language=language,
-                prefill_step_size=prefill_step_size,
-                verbose=verbose and len(chunks) == 1,
-                system_prompt=system_prompt,
+            for i, (token, _) in enumerate(
+                self.stream_generate(
+                    chunk_audio,
+                    max_tokens=remaining_tokens,
+                    sampler=sampler,
+                    logits_processors=logits_processors,
+                    language=language,
+                    prefill_step_size=prefill_step_size,
+                    verbose=verbose and len(chunks) == 1,
+                    system_prompt=system_prompt,
+                )
             ):
                 text = self._tokenizer.decode([int(token)])
+
+                if language is None and i <= 2:
+                    language_accumulator += text
+                    if "<asr_text>" in language_accumulator:
+                        language, _ = self.extract_language(language_accumulator)
+                    continue
 
                 # Estimate timing based on token position within chunk
                 # This is approximate since we don't have word-level alignment
@@ -1306,7 +1341,7 @@ class Qwen3ASRModel(nn.Module):
                     is_final=False,
                     start_time=estimated_start,
                     end_time=estimated_end,
-                    language=lang_code,
+                    language=language,
                 )
 
             # Update token counts
@@ -1319,7 +1354,7 @@ class Qwen3ASRModel(nn.Module):
                 is_final=is_last_chunk or remaining_tokens <= 0,
                 start_time=offset_sec,
                 end_time=offset_sec + actual_chunk_duration,
-                language=lang_code,
+                language=language,
                 prompt_tokens=total_prompt_tokens,
                 generation_tokens=total_generation_tokens,
             )
