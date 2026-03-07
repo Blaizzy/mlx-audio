@@ -531,10 +531,14 @@ async def _stream_transcription(
     """
     supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
     lang_arg = language if language and language != "Detect" else None
+    # Only pass language kwarg when explicitly set — otherwise let the model
+    # use its own default (e.g. Qwen3-ASR defaults to "English").  Passing
+    # None explicitly overrides the default and crashes models that expect a str.
+    lang_kwargs = {"language": lang_arg} if lang_arg is not None else {}
 
     if supports_stream and streaming:
         result_iter = stt_model.generate(
-            audio_array, stream=True, language=lang_arg, verbose=False
+            audio_array, stream=True, **lang_kwargs, verbose=False
         )
         accumulated = ""
         for chunk in result_iter:
@@ -557,7 +561,7 @@ async def _stream_transcription(
         tmp_path = f"/tmp/realtime_{time.time()}.mp3"
         audio_write(tmp_path, audio_array, sample_rate)
         try:
-            result = stt_model.generate(tmp_path, language=lang_arg, verbose=False)
+            result = stt_model.generate(tmp_path, **lang_kwargs, verbose=False)
             segments = (
                 sanitize_for_json(result.segments)
                 if hasattr(result, "segments") and result.segments
