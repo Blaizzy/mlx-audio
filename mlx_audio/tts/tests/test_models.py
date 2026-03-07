@@ -3370,7 +3370,7 @@ class TestBailingMMModel(unittest.TestCase):
                 "enc_kwargs": {"latent_dim": 64},
             },
             "ditar_config": {"patch_size": 8},
-            "aggregator_config": {},
+            "aggregator_config": {"depth": 1},
         }
 
         model = Model(config)
