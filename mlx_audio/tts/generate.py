@@ -107,11 +107,13 @@ def generate_audio(
     model: Optional[Union[str, nn.Module]] = None,
     max_tokens: int = 1200,
     voice: str = "af_heart",
+    prompt: Optional[str] = None,
     instruct: Optional[str] = None,
     speed: float = 1.0,
     lang_code: str = "en",
     cfg_scale: Optional[float] = None,
     ddpm_steps: Optional[int] = None,
+    sigma: Optional[float] = None,
     ref_audio: Optional[str] = None,
     ref_text: Optional[str] = None,
     stt_model: Optional[
@@ -126,6 +128,7 @@ def generate_audio(
     temperature: float = 0.7,
     stream: bool = False,
     streaming_interval: float = 2.0,
+    use_zero_spk_emb: bool = False,
     **kwargs,
 ) -> None:
     """
@@ -228,8 +231,13 @@ def generate_audio(
             stream=stream,
             streaming_interval=streaming_interval,
             instruct=instruct,
+            use_zero_spk_emb=use_zero_spk_emb,
             **kwargs,
         )
+        if prompt is not None:
+            gen_kwargs["prompt"] = prompt
+        if sigma is not None:
+            gen_kwargs["sigma"] = sigma
 
         results = model.generate(**gen_kwargs)
 
@@ -323,6 +331,12 @@ def parse_args():
         help="Voice/speaker name (e.g., Chelsie, Ethan, Vivian for Qwen3-TTS)",
     )
     parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="Optional model-specific prompt prefix.",
+    )
+    parser.add_argument(
         "--instruct",
         type=str,
         default=None,
@@ -382,6 +396,17 @@ def parse_args():
     )
     parser.add_argument(
         "--temperature", type=float, default=0.7, help="Temperature for the model"
+    )
+    parser.add_argument(
+        "--sigma",
+        type=float,
+        default=None,
+        help="Optional model-specific sigma value (e.g., Ming Omni).",
+    )
+    parser.add_argument(
+        "--use_zero_spk_emb",
+        action="store_true",
+        help="Optional model-specific zero speaker embedding mode (e.g., Ming Omni).",
     )
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
