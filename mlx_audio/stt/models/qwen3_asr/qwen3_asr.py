@@ -1165,11 +1165,14 @@ class Qwen3ASRModel(nn.Module):
             total_generation_tokens += gen_toks
             remaining_tokens -= gen_toks
 
+            if language is None:
+                language = self.extract_language(text)
+
             # Create segment for this chunk
             segments.append(
                 {
                     "text": text,
-                    "language": self.extract_language(text),
+                    "language": language,
                     "start": offset_sec,
                     "end": offset_sec + actual_chunk_duration,
                 }
