@@ -198,14 +198,15 @@ def convert(
     hf_path: str,
     mlx_path: str = "mlx_model",
     quantize: bool = False,
-    q_group_size: int = 64,
-    q_bits: int = 4,
+    q_group_size: Optional[int] = None,
+    q_bits: Optional[int] = None,
     dtype: str = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
+    q_mode: str = "affine",
 ):
     from mlx_lm.convert import mixed_quant_predicate_builder
     from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
@@ -224,12 +225,7 @@ def convert(
 
     # Define base quantization requirements
     def base_quant_requirements(p, m):
-        return (
-            hasattr(m, "weight")
-            and m.weight.shape[-1] % 64 == 0  # Skip layers not divisible by 64
-            and hasattr(m, "to_quantized")
-            and model_quant_predicate(p, m)
-        )
+        return model_quant_predicate(p, m)
 
     # Combine with user-provided predicate if available
     if quant_predicate is None:
@@ -256,7 +252,12 @@ def convert(
         print("[INFO] Quantizing")
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
-            model, config, q_group_size, q_bits, quant_predicate=quant_predicate
+            model,
+            config,
+            q_group_size,
+            q_bits,
+            mode=q_mode,
+            quant_predicate=quant_predicate,
         )
 
     if dequantize:

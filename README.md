@@ -447,6 +447,13 @@ python -m mlx_audio.convert \
     --q-bits 4 \
     --upload-repo username/Kokoro-82M-4bit (optional: if you want to upload the model to Hugging Face)
 
+# Convert with MXFP4 quantization
+python -m mlx_audio.convert \
+    --hf-path prince-canuma/Kokoro-82M \
+    --mlx-path ./Kokoro-82M-mxfp4 \
+    --quantize \
+    --q-mode mxfp4
+
 # Convert with specific dtype (bfloat16)
 python -m mlx_audio.convert \
     --hf-path prince-canuma/Kokoro-82M \
@@ -461,8 +468,9 @@ python -m mlx_audio.convert \
 | `--hf-path` | Source Hugging Face model or local path |
 | `--mlx-path` | Output directory for converted model |
 | `-q, --quantize` | Enable quantization |
-| `--q-bits` | Bits per weight (4, 6, or 8) |
-| `--q-group-size` | Group size for quantization (default: 64) |
+| `--q-bits` | Bits per weight (optional, defaults depend on `--q-mode`) |
+| `--q-group-size` | Group size for quantization (optional, defaults depend on `--q-mode`) |
+| `--q-mode` | Quantization mode: `affine`, `mxfp4`, `mxfp8`, `nvfp4` |
 | `--dtype` | Weight dtype: `float16`, `bfloat16`, `float32` |
 | `--upload-repo` | Upload converted model to HF Hub |
 

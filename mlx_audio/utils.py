@@ -221,13 +221,14 @@ def apply_quantization(
     quantization = config.get("quantization", None)
     if quantization is None:
         return
+    group_size = quantization.get("group_size", 64)
 
     def get_class_predicate(p, m):
         # Skip layers without quantization capability
         if not hasattr(m, "to_quantized"):
             return False
-        # Skip layers not divisible by 64
-        if hasattr(m, "weight") and m.weight.size % 64 != 0:
+        # Skip layers not divisible by configured group size
+        if hasattr(m, "weight") and m.weight.shape[-1] % group_size != 0:
             return False
         # Use model-specific predicate if available
         if model_quant_predicate is not None:
@@ -244,7 +245,7 @@ def apply_quantization(
 
     nn.quantize(
         model,
-        group_size=quantization["group_size"],
+        group_size=group_size,
         bits=quantization["bits"],
         mode=quantization.get("mode", "affine"),
         class_predicate=get_class_predicate,
