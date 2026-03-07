@@ -853,7 +853,10 @@ class Model(nn.Module):
 
         if stream:
             return self.generate_streaming(
-                audio, chunk_duration=chunk_duration, language=language, task=task,
+                audio,
+                chunk_duration=chunk_duration,
+                language=language,
+                task=task,
             )
 
         decode_options.pop("max_tokens", None)
