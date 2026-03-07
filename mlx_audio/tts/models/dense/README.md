@@ -4,13 +4,13 @@ This implementation powers `model_type: "dense"` for Ming Omni TTS in MLX-Audio.
 
 ## Supported model
 
-- `inclusionAI/Ming-omni-tts-0.5B`
+- `mlx-community/Ming-omni-tts-0.5B-bf16`
 
 ## Run with CLI
 
 ```bash
 uv run mlx_audio.tts.generate \
-  --model inclusionAI/Ming-omni-tts-0.5B \
+  --model mlx-community/Ming-omni-tts-0.5B-bf16 \
   --text "Simply put, this was equivalent to handing over the consumer market to competitors." \
   --ref_audio /Users/prince_canuma/Downloads/conversational_a.wav \
   --instruct "Speak quickly, with medium pitch and higher volume." \
@@ -32,7 +32,7 @@ import numpy as np
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.tts.utils import load_model
 
-model = load_model("inclusionAI/Ming-omni-tts-0.5B")
+model = load_model("mlx-community/Ming-omni-tts-0.5B-bf16")
 
 result = next(
     model.generate(
