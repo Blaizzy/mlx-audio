@@ -460,7 +460,12 @@ def build_quant_predicate(
     model_quant_predicate = getattr(model, "model_quant_predicate", lambda p, m: True)
 
     def base_requirements(path: str, module) -> bool:
-        return model_quant_predicate(path, module)
+        return (
+            hasattr(module, "weight")
+            and module.weight.shape[-1] % 64 == 0
+            and hasattr(module, "to_quantized")
+            and model_quant_predicate(path, module)
+        )
 
     if not quant_predicate_name:
         return base_requirements
