@@ -263,6 +263,7 @@ async def remove_model(model_name: str):
 async def generate_audio(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
+    ref_text = payload.ref_text
     audio_chunks = []
     sample_rate = None
     if ref_audio and isinstance(ref_audio, str):
@@ -280,6 +281,15 @@ async def generate_audio(model, payload: SpeechRequest):
             ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
         )
 
+    if ref_text and isinstance(ref_text, str) and os.path.exists(ref_text):
+        try:
+            with open(ref_text, encoding="utf-8") as fh:
+                ref_text = fh.read()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Reference text file unreadable: {ref_text}: {exc}"
+            ) from exc
+
     for result in model.generate(
         payload.input,
         voice=payload.voice,
@@ -289,7 +299,7 @@ async def generate_audio(model, payload: SpeechRequest):
         instruct=payload.instruct,
         lang_code=payload.lang_code,
         ref_audio=ref_audio,
-        ref_text=payload.ref_text,
+        ref_text=ref_text,
         temperature=payload.temperature,
         top_p=payload.top_p,
         top_k=payload.top_k,

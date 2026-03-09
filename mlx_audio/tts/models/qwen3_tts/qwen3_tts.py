@@ -936,29 +936,6 @@ class Model(nn.Module):
             )
             return
 
-                if tts_model_type == "custom_voice":
-            if not voice:
-                raise ValueError(
-                    "CustomVoice model requires 'voice' (speaker name) "
-                    "(e.g., 'Chelsie', 'Ethan', 'Vivian')"
-                )
-            yield from self.generate_custom_voice(
-                text=text,
-                speaker=voice,
-                language=lang_code,
-                instruct=instruct,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                verbose=verbose,
-                stream=stream,
-                streaming_interval=streaming_interval,
-            )
-            return
-
-        # Base model generation
         if self.speech_tokenizer is None:
             raise ValueError("Speech tokenizer not loaded")
 
@@ -988,6 +965,30 @@ class Model(nn.Module):
                 streaming_interval=streaming_interval,
             )
             return
+
+        if tts_model_type == "custom_voice":
+            if not voice:
+                raise ValueError(
+                    "CustomVoice model requires 'voice' (speaker name) "
+                    "(e.g., 'Chelsie', 'Ethan', 'Vivian')"
+                )
+            yield from self.generate_custom_voice(
+                text=text,
+                speaker=voice,
+                language=lang_code,
+                instruct=instruct,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                verbose=verbose,
+                stream=stream,
+                streaming_interval=streaming_interval,
+            )
+            return
+
+        # Base model generation
 
         # Split text into segments
         if split_pattern:
