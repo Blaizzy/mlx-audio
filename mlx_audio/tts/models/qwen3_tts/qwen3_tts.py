@@ -936,7 +936,7 @@ class Model(nn.Module):
             )
             return
 
-        if tts_model_type == "custom_voice":
+                if tts_model_type == "custom_voice":
             if not voice:
                 raise ValueError(
                     "CustomVoice model requires 'voice' (speaker name) "
