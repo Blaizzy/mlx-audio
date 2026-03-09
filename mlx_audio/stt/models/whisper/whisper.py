@@ -12,7 +12,6 @@ from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 import tqdm
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_unflatten
@@ -509,24 +508,28 @@ class Model(nn.Module):
         )
         # use the last half among the decoder layers for time alignment by default;
         # to use a specific set of heads, see `set_alignment_heads()` below.
-        all_heads = np.zeros(
-            (self.dims.n_text_layer, self.dims.n_text_head), dtype=bool
-        )
-        all_heads[self.dims.n_text_layer // 2 :] = True
-        self._alignment_heads = mx.array(np.asarray(all_heads.nonzero()).T)
+        # Build alignment head pairs for the last half of decoder layers
+        pairs = []
+        for layer in range(self.dims.n_text_layer // 2, self.dims.n_text_layer):
+            for head in range(self.dims.n_text_head):
+                pairs.append([layer, head])
+        self._alignment_heads = mx.array(pairs)
 
-    def set_alignment_heads(self, dump: Union[bytes, np.ndarray]):
-        if isinstance(dump, np.ndarray):
-            self._alignment_heads = mx.array(dump)
+    def set_alignment_heads(self, dump: Union[bytes, mx.array]):
+        if isinstance(dump, mx.array):
+            self._alignment_heads = dump
         elif isinstance(dump, bytes):
-            array = np.frombuffer(
-                gzip.decompress(base64.b85decode(dump)), dtype=bool
-            ).copy()
-            mask = array.reshape(self.dims.n_text_layer, self.dims.n_text_head)
-            self._alignment_heads = mx.array(np.asarray(mask.nonzero()).T)
+            raw = gzip.decompress(base64.b85decode(dump))
+            mask = [b != 0 for b in raw]
+            pairs = []
+            for i in range(self.dims.n_text_layer):
+                for j in range(self.dims.n_text_head):
+                    if mask[i * self.dims.n_text_head + j]:
+                        pairs.append([i, j])
+            self._alignment_heads = mx.array(pairs)
         else:
             raise ValueError(
-                f"Invalid type for `dump`: {type(dump)}. Expected a np.ndarray or base85-encoded bytes containing"
+                f"Invalid type for `dump`: {type(dump)}. Expected an mx.array or base85-encoded bytes containing"
                 " alignment_head information"
             )
 
@@ -722,7 +725,7 @@ class Model(nn.Module):
             )
 
     def _prepare_audio(
-        self, audio: Union[str, np.ndarray, mx.array], padding: int = N_SAMPLES
+        self, audio: Union[str, mx.array], padding: int = N_SAMPLES
     ) -> Tuple[mx.array, int]:
         """Prepare audio for transcription.
 
@@ -767,7 +770,7 @@ class Model(nn.Module):
 
     def generate(
         self,
-        audio: Union[str, np.ndarray, mx.array],
+        audio: Union[str, mx.array],
         *,
         verbose: Optional[bool] = None,
         language: Optional[str] = None,
@@ -793,7 +796,7 @@ class Model(nn.Module):
 
         Parameters
         ----------
-        audio: Union[str, np.ndarray, mx.array]
+        audio: Union[str, mx.array]
             The path to the audio file to open, or the audio waveform
 
         verbose: bool
@@ -1004,7 +1007,7 @@ class Model(nn.Module):
                     decode_options["prompt"] = all_tokens[prompt_reset_since:]
                     result: DecodingResult = decode_with_fallback(mel_segment)
 
-                    tokens = np.array(result.tokens)
+                    tokens = mx.array(result.tokens)
 
                     if no_speech_threshold is not None:
                         # no voice activity check
@@ -1055,13 +1058,16 @@ class Model(nn.Module):
                         True,
                     ]
 
-                    consecutive = np.where(
-                        np.logical_and(timestamp_tokens[:-1], timestamp_tokens[1:])
-                    )[0]
-                    consecutive += 1
+                    # Find consecutive timestamp tokens
+                    ts_list = timestamp_tokens.tolist()
+                    consecutive = [
+                        i + 1
+                        for i in range(len(ts_list) - 1)
+                        if ts_list[i] and ts_list[i + 1]
+                    ]
                     if len(consecutive) > 0:
                         # if the output contains two consecutive timestamp tokens
-                        slices = consecutive.tolist()
+                        slices = consecutive
                         if single_timestamp_ending:
                             slices.append(len(tokens))
 
@@ -1098,7 +1104,10 @@ class Model(nn.Module):
                             seek += last_timestamp_pos * input_stride
                     else:
                         duration = segment_duration
-                        timestamps = tokens[timestamp_tokens.nonzero()[0]]
+                        ts_indices = mx.array([i for i, v in enumerate(ts_list) if v])
+                        timestamps = (
+                            tokens[ts_indices] if len(ts_indices) > 0 else mx.array([])
+                        )
                         if (
                             len(timestamps) > 0
                             and timestamps[-1].item() != tokenizer.timestamp_begin
@@ -1316,9 +1325,7 @@ class Model(nn.Module):
         if language is None:
             # Get mel for first chunk to detect language
             first_chunk = audio[: int(chunk_duration * SAMPLE_RATE)]
-            mel_detect = log_mel_spectrogram(
-                np.array(first_chunk), n_mels=self.dims.n_mels
-            )
+            mel_detect = log_mel_spectrogram(first_chunk, n_mels=self.dims.n_mels)
             language = self._detect_language(mel_detect)
 
         # Configure streaming
@@ -1335,7 +1342,7 @@ class Model(nn.Module):
             chunk = audio[start:end]
             is_last = end >= total_samples
 
-            mel = log_mel_spectrogram(np.array(chunk), n_mels=self.dims.n_mels)
+            mel = log_mel_spectrogram(chunk, n_mels=self.dims.n_mels)
             result = decoder.decode_chunk(mel, is_last=is_last)
 
             # Add progress info

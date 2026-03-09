@@ -5,7 +5,6 @@ from dataclasses import dataclass, field, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import mlx.core as mx
-import numpy as np
 from mlx.utils import tree_map
 
 from .audio import CHUNK_LENGTH
@@ -60,7 +59,6 @@ def detect_language(
     logits += mask
     language_tokens = mx.argmax(logits, axis=-1)
     language_token_probs = mx.softmax(logits, axis=-1)
-    language_token_probs = np.array(language_token_probs)
     language_probs = [
         {
             c: language_token_probs[i, j].item()
@@ -155,10 +153,10 @@ class DecodingResult:
     language_probs: Optional[Dict[str, float]] = None
     tokens: List[int] = field(default_factory=list)
     text: str = ""
-    avg_logprob: float = np.nan
-    no_speech_prob: float = np.nan
-    temperature: float = np.nan
-    compression_ratio: float = np.nan
+    avg_logprob: float = float("nan")
+    no_speech_prob: float = float("nan")
+    temperature: float = float("nan")
+    compression_ratio: float = float("nan")
 
 
 class Inference:
@@ -231,7 +229,10 @@ class MaximumLikelihoodRanker(SequenceRanker):
 
         # get the sequence with the highest score
         lengths = [[len(t) for t in s] for s in tokens]
-        return [np.argmax(scores(p, l)) for p, l in zip(sum_logprobs, lengths)]
+        return [
+            int(mx.argmax(mx.array(scores(p, l))).item())
+            for p, l in zip(sum_logprobs, lengths)
+        ]
 
 
 class TokenDecoder:
@@ -348,9 +349,10 @@ class LogitFilter:
 class SuppressBlank(LogitFilter):
     def __init__(self, tokenizer, sample_begin: int, n_vocab: int):
         self.sample_begin = sample_begin
-        mask = np.zeros(n_vocab, np.float32)
-        mask[tokenizer.encode(" ") + [tokenizer.eot]] = -np.inf
-        self.mask = mx.array(mask)
+        mask = mx.zeros(n_vocab, dtype=mx.float32)
+        indices = tokenizer.encode(" ") + [tokenizer.eot]
+        mask[indices] = -mx.inf
+        self.mask = mask
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
         if tokens.shape[1] == self.sample_begin:
@@ -360,9 +362,9 @@ class SuppressBlank(LogitFilter):
 
 class SuppressTokens(LogitFilter):
     def __init__(self, suppress_tokens: Sequence[int], n_vocab: int):
-        mask = np.zeros(n_vocab, np.float32)
-        mask[list(suppress_tokens)] = -np.inf
-        self.mask = mx.array(mask)
+        mask = mx.zeros(n_vocab, dtype=mx.float32)
+        mask[list(suppress_tokens)] = -mx.inf
+        self.mask = mask
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
         return logits + self.mask
@@ -380,15 +382,15 @@ class ApplyTimestampRules(LogitFilter):
         self.max_initial_timestamp_index = max_initial_timestamp_index
 
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
-        mask = np.zeros(logits.shape, np.float32)
+        mask = mx.zeros(logits.shape, dtype=mx.float32)
         # suppress <|notimestamps|> which is handled by without_timestamps
         if self.tokenizer.no_timestamps is not None:
-            mask[:, self.tokenizer.no_timestamps] = -np.inf
+            mask[:, self.tokenizer.no_timestamps] = -mx.inf
 
         ## timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
-        tokens = tokens.tolist()
-        for k in range(len(tokens)):
-            seq = tokens[k][self.sample_begin :]
+        tokens_list = tokens.tolist()
+        for k in range(len(tokens_list)):
+            seq = tokens_list[k][self.sample_begin :]
             last_was_timestamp = (
                 len(seq) >= 1 and seq[-1] >= self.tokenizer.timestamp_begin
             )
@@ -398,9 +400,9 @@ class ApplyTimestampRules(LogitFilter):
 
             if last_was_timestamp:
                 if penultimate_was_timestamp:  # has to be non-timestamp
-                    mask[k, self.tokenizer.timestamp_begin :] = -np.inf
+                    mask[k, self.tokenizer.timestamp_begin :] = -mx.inf
                 else:  # cannot be normal text tokens
-                    mask[k, : self.tokenizer.eot] = -np.inf
+                    mask[k, : self.tokenizer.eot] = -mx.inf
 
             timestamps = [
                 i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
@@ -411,21 +413,20 @@ class ApplyTimestampRules(LogitFilter):
                 last_timestamp = timestamps[-1]
                 if not last_timestamp or penultimate_was_timestamp:
                     last_timestamp += 1
-                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -np.inf
+                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -mx.inf
 
-        if len(tokens[0]) == self.sample_begin:
+        if len(tokens_list[0]) == self.sample_begin:
             # suppress generating non-timestamp tokens at the beginning
-            mask[:, : self.tokenizer.timestamp_begin] = -np.inf
+            mask[:, : self.tokenizer.timestamp_begin] = -mx.inf
 
             # apply the `max_initial_timestamp` option
             if self.max_initial_timestamp_index is not None:
                 last_allowed = (
                     self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
                 )
-                mask[:, last_allowed + 1 :] = -np.inf
+                mask[:, last_allowed + 1 :] = -mx.inf
 
         # if sum of probability over timestamps is above any other token, sample timestamp
-        mask = mx.array(mask)
         logprobs = logits - mx.logsumexp(logits, axis=-1)
         timestamp_logprob = logprobs[:, self.tokenizer.timestamp_begin :].logsumexp(
             axis=-1, keepdims=True
@@ -569,7 +570,7 @@ class DecodingTask:
 
         return audio_features
 
-    def _detect_language(self, audio_features: mx.array, tokens: np.array):
+    def _detect_language(self, audio_features: mx.array, tokens: mx.array):
         languages = [self.options.language] * audio_features.shape[0]
         lang_probs = None
 
@@ -580,7 +581,7 @@ class DecodingTask:
             languages = [max(probs, key=probs.get) for probs in lang_probs]
             if self.options.language is None:
                 # write language tokens
-                tokens[:, self.sot_index + 1] = np.array(lang_tokens)
+                tokens[:, self.sot_index + 1] = lang_tokens
 
         return languages, lang_probs
 

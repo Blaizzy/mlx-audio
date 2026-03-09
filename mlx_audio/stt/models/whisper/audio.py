@@ -3,7 +3,6 @@
 from typing import Union
 
 import mlx.core as mx
-import numpy as np
 
 from mlx_audio.stt.utils import load_audio
 from mlx_audio.utils import hanning, mel_filters, stft
@@ -39,7 +38,7 @@ def pad_or_trim(array, length: int = N_SAMPLES, *, axis: int = -1):
 
 
 def log_mel_spectrogram(
-    audio: Union[str, np.ndarray],
+    audio: Union[str, mx.array],
     n_mels: int = 80,
     padding: int = 0,
 ):
@@ -48,8 +47,8 @@ def log_mel_spectrogram(
 
     Parameters
     ----------
-    audio: Union[str, np.ndarray, mx.array], shape = (*)
-        The path to audio or either a NumPy or mlx array containing the audio waveform in 16 kHz
+    audio: Union[str, mx.array], shape = (*)
+        The path to audio or an mlx array containing the audio waveform in 16 kHz
 
     n_mels: int
         The number of Mel-frequency filters, only 80 is supported
