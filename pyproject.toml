@@ -99,11 +99,19 @@ dev = [
     "pre-commit>=3.7.0",
 ]
 
+# Evaluation dependencies
+evals = [
+    "datasets>=4.0.0",
+    "google-generativeai>=0.8.0",
+    "openai>=1.0.0",
+]
+
 [project.scripts]
 "mlx_audio.convert" = "mlx_audio.convert:main"
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
+"mlx_audio.evals.instruct_tts_eval" = "mlx_audio.evals.instruct_tts_eval:main"
 
 [project.urls]
 Homepage = "https://github.com/Blaizzy/mlx-audio"
