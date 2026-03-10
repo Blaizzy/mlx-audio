@@ -408,6 +408,8 @@ class Model(nn.Module):
         texts: List[str],
         language: str = "auto",
         speakers: Optional[List[Optional[str]]] = None,
+        ref_audio: Optional[mx.array] = None,
+        ref_text: Optional[str] = None,
         instructs: Optional[List[Optional[str]]] = None,
     ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
         """Prepare batched inputs for batch generation.
@@ -439,6 +441,8 @@ class Model(nn.Module):
                 texts[i],
                 language=language,
                 speaker=speaker,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
                 instruct=instruct,
             )
             per_seq_embeds.append(embeds)  # [1, seq_len_i, hidden]
@@ -1309,6 +1313,8 @@ class Model(nn.Module):
         self,
         texts: List[str],
         voices: Optional[List[Optional[str]]] = None,
+        ref_audio: Optional[Union[str, mx.array]] = None,
+        ref_text: Optional[str] = None,
         instructs: Optional[List[Optional[str]]] = None,
         temperature: float = 0.9,
         lang_code: str = "auto",
@@ -1340,6 +1346,10 @@ class Model(nn.Module):
         Yields:
             BatchGenerationResult objects with generated audio per sequence
         """
+        # Load reference audio if provided (handles file paths and mx.array)
+        if ref_audio is not None:
+            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
         if self.speech_tokenizer is None:
             raise ValueError("Speech tokenizer not loaded")
 
@@ -1365,6 +1375,8 @@ class Model(nn.Module):
                 texts,
                 language=lang_code,
                 speakers=voices,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
                 instructs=instructs,
             )
         )
