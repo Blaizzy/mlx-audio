@@ -2,12 +2,12 @@ import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Generator, List, Optional, Tuple, Union
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
+from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
 from mlx_lm.models.granite import Model as GraniteLM
 from mlx_lm.models.granite import ModelArgs as GraniteModelArgs
@@ -37,13 +37,7 @@ class StreamingResult:
     generation_tokens: int = 0
 
 
-# ============================================================
-# Conformer Encoder Components
-# ============================================================
-
-
 class BatchNorm1d(nn.Module):
-    """Inference-only BatchNorm1d operating on (B, L, C) tensors."""
 
     def __init__(self, num_features: int, eps: float = 1e-5):
         super().__init__()
@@ -78,8 +72,6 @@ class ConformerFeedForward(nn.Module):
 
 
 class ConformerAttention(nn.Module):
-    """Conformer attention with Shaw's relative positional embeddings
-    and block-wise attention (context_size chunking)."""
 
     def __init__(self, config: EncoderConfig):
         super().__init__()
@@ -110,22 +102,17 @@ class ConformerAttention(nn.Module):
         kv = self.to_kv(x)
         k, v = mx.split(kv, 2, axis=-1)
 
-        # Reshape to blocks: (B, num_blocks, context_size, num_heads, dim_head)
         q = q.reshape(B, num_blocks, self.context_size, self.num_heads, -1)
         k = k.reshape(B, num_blocks, self.context_size, self.num_heads, -1)
         v = v.reshape(B, num_blocks, self.context_size, self.num_heads, -1)
 
-        # Transpose to (B, M, H, C, D)
         q = q.transpose(0, 1, 3, 2, 4)
         k = k.transpose(0, 1, 3, 2, 4)
         v = v.transpose(0, 1, 3, 2, 4)
 
-        # Shaw's relative positional embedding
-        rel_pos_emb = self.rel_pos_emb(attention_dists)  # (C, C, D)
+        rel_pos_emb = self.rel_pos_emb(attention_dists)
 
-        # Positional attention: einsum("bmhcd,crd->bmhcr", q, rel_pos_emb)
         C = self.context_size
-        D = self.dim_head
         pos_attn = (
             mx.sum(
                 q[:, :, :, :, None, :] * rel_pos_emb[None, None, None, :, :, :],
@@ -135,10 +122,9 @@ class ConformerAttention(nn.Module):
         )
 
         if remainder > 0:
-            # Mask invalid positions in the last block
             row_valid = mx.arange(C)[:, None] < remainder
             col_valid = mx.arange(C)[None, :] < remainder
-            mask = ~(row_valid & col_valid)  # True = masked
+            mask = ~(row_valid & col_valid)
             mask_value = mx.array(mx.finfo(pos_attn.dtype).min)
             pos_attn_last = mx.where(
                 mask[None, None, None], mask_value, pos_attn[:, -1:, :, :, :]
@@ -147,12 +133,11 @@ class ConformerAttention(nn.Module):
                 [pos_attn[:, :-1, :, :, :], pos_attn_last], axis=1
             )
 
-        # Standard attention with positional bias
         attn_weights = (q @ k.transpose(0, 1, 2, 4, 3)) * self.scale + pos_attn
         attn_weights = mx.softmax(attn_weights, axis=-1)
 
-        out = attn_weights @ v  # (B, M, H, C, D)
-        out = out.transpose(0, 1, 3, 2, 4)  # (B, M, C, H, D)
+        out = attn_weights @ v
+        out = out.transpose(0, 1, 3, 2, 4)
         out = out.reshape(B, -1, self.num_heads * self.dim_head)
         out = out[:, :N, :]
         out = self.to_out(out)
@@ -160,7 +145,6 @@ class ConformerAttention(nn.Module):
 
 
 class DepthWiseConv1d(nn.Module):
-    """Padded depthwise 1D convolution."""
 
     def __init__(self, chan_in: int, chan_out: int, kernel_size: int):
         super().__init__()
@@ -177,7 +161,6 @@ class DepthWiseConv1d(nn.Module):
 
 
 class ConformerConvModule(nn.Module):
-    """Conformer conv module: LN → Conv1d(up,2x) → GLU → DWConv → SiLU(BN) → Conv1d(down)."""
 
     def __init__(self, config: EncoderConfig):
         super().__init__()
@@ -191,9 +174,7 @@ class ConformerConvModule(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.norm(x)
-        # MLX Conv1d works with (B, L, C) natively
         x = self.up_conv(x)
-        # GLU: split channels, multiply by sigmoid
         x1, x2 = mx.split(x, 2, axis=-1)
         x = x1 * mx.sigmoid(x2)
         x = self.depth_conv(x)
@@ -203,7 +184,6 @@ class ConformerConvModule(nn.Module):
 
 
 class ConformerBlock(nn.Module):
-    """Conformer block: 0.5*FF1 + Attn + Conv + 0.5*FF2 + LN."""
 
     def __init__(self, config: EncoderConfig):
         super().__init__()
@@ -223,7 +203,6 @@ class ConformerBlock(nn.Module):
 
 
 class CTCEncoder(nn.Module):
-    """Conformer CTC encoder with mid-layer CTC feedback."""
 
     def __init__(self, config: EncoderConfig):
         super().__init__()
@@ -235,7 +214,6 @@ class CTCEncoder(nn.Module):
         self.num_layers = config.num_layers
         self._attention_dists = None
 
-        # Precompute clamped relative positional encoding distances
         seq = mx.arange(config.context_size)
         relpos_dist = seq[:, None] - seq[None, :]
         self._attention_dists = (
@@ -251,11 +229,6 @@ class CTCEncoder(nn.Module):
                 x_mid = self.out(x)
                 x = x + self.out_mid(mx.softmax(x_mid, axis=-1))
         return x
-
-
-# ============================================================
-# QFormer Projector Components
-# ============================================================
 
 
 class QFormerMultiHeadAttention(nn.Module):
@@ -295,7 +268,6 @@ class QFormerMultiHeadAttention(nn.Module):
 
 
 class QFormerSelfOutput(nn.Module):
-    """Post-norm residual: dense + LayerNorm(out + residual)."""
 
     def __init__(self, hidden_size: int, eps: float = 1e-12):
         super().__init__()
@@ -309,7 +281,6 @@ class QFormerSelfOutput(nn.Module):
 
 
 class QFormerAttention(nn.Module):
-    """Multi-head attention + output projection with post-norm residual."""
 
     def __init__(
         self,
@@ -332,7 +303,6 @@ class QFormerAttention(nn.Module):
 
 
 class QFormerIntermediate(nn.Module):
-    """FFN up-projection with GELU."""
 
     def __init__(self, hidden_size: int, intermediate_size: int):
         super().__init__()
@@ -343,7 +313,6 @@ class QFormerIntermediate(nn.Module):
 
 
 class QFormerOutput(nn.Module):
-    """FFN down-projection with post-norm residual."""
 
     def __init__(self, intermediate_size: int, hidden_size: int, eps: float = 1e-12):
         super().__init__()
@@ -357,7 +326,6 @@ class QFormerOutput(nn.Module):
 
 
 class QFormerLayer(nn.Module):
-    """QFormer layer: self-attention + cross-attention + FFN."""
 
     def __init__(self, config: ProjectorConfig):
         super().__init__()
@@ -414,8 +382,6 @@ class QFormerModel(nn.Module):
 
 
 class EncoderProjector(nn.Module):
-    """Q-Former based projector that windows encoder output, runs cross-attention
-    with learned queries, and projects to LLM hidden size."""
 
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -441,7 +407,6 @@ class EncoderProjector(nn.Module):
 
         hidden_states = hidden_states.reshape(B * nblocks, self.window_size, D)
 
-        # Expand query to match batch
         query = mx.broadcast_to(
             self.query, (B * nblocks, self.num_queries, self.hidden_size)
         )
@@ -453,23 +418,13 @@ class EncoderProjector(nn.Module):
         return query_proj
 
 
-# ============================================================
-# Top-level Model
-# ============================================================
-
-
 class Model(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
 
-        # Audio encoder (Conformer)
         self.encoder = CTCEncoder(config.encoder_config)
-
-        # Projector (QFormer)
         self.projector = EncoderProjector(config)
-
-        # Language model (Granite)
         text_args = GraniteModelArgs.from_dict(
             config.text_config.__dict__
             if hasattr(config.text_config, "__dict__")
@@ -525,21 +480,15 @@ class Model(nn.Module):
     def model_quant_predicate(self, p: str, m: nn.Module) -> bool:
         return not (p.startswith("encoder") or p.startswith("projector"))
 
-    # ------------------------------------------------------------------
-    # Weight sanitization
-    # ------------------------------------------------------------------
-
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         already_converted = any("scales" in k for k in weights)
 
         sanitized = {}
         for k, v in weights.items():
-            # Skip BatchNorm tracking counter
             if "num_batches_tracked" in k:
                 continue
 
-            # Conv1d weights: PyTorch (O, I, K) → MLX (O, K, I)
             if (
                 not already_converted
                 and any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
@@ -550,10 +499,6 @@ class Model(nn.Module):
 
             sanitized[k] = v
         return sanitized
-
-    # ------------------------------------------------------------------
-    # Post-load hook
-    # ------------------------------------------------------------------
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
@@ -571,22 +516,9 @@ class Model(nn.Module):
 
         return model
 
-    # ------------------------------------------------------------------
-    # Feature extraction
-    # ------------------------------------------------------------------
-
     def _extract_features(
         self, audio: Union[mx.array, np.ndarray]
     ) -> Tuple[mx.array, int]:
-        """Compute mel features from raw audio waveform.
-
-        Matches torchaudio.transforms.MelSpectrogram with:
-            sample_rate=16000, n_fft=512, win_length=400, hop_length=160, n_mels=80
-
-        Returns:
-            input_features: mx.array of shape (1, encoder_length, 160)
-            num_audio_tokens: int - number of projected audio tokens
-        """
         from mlx_audio.dsp import hanning, mel_filters, stft
 
         n_fft = 512
@@ -600,8 +532,6 @@ class Model(nn.Module):
         else:
             audio_1d = mx.array(audio.flatten(), dtype=mx.float32)
 
-        # Periodic Hann window, center-padded to n_fft
-        # (dsp.py right-pads, so we pre-pad manually)
         win = hanning(win_length, periodic=True)
         pad_left = (n_fft - win_length) // 2
         pad_right = n_fft - win_length - pad_left
@@ -609,7 +539,6 @@ class Model(nn.Module):
             [mx.zeros((pad_left,)), win, mx.zeros((pad_right,))]
         )
 
-        # STFT with center padding and reflect mode
         spec = stft(
             audio_1d,
             n_fft=n_fft,
@@ -619,51 +548,33 @@ class Model(nn.Module):
             pad_mode="reflect",
         )
 
-        # Power spectrum → mel filterbank
-        power = mx.abs(spec) ** 2  # (num_frames, n_fft//2+1)
-        mel_fb = mel_filters(
-            sample_rate, n_fft, n_mels, mel_scale="htk"
-        )  # (n_mels, n_freqs)
-        mel_spec = power @ mel_fb.T  # (num_frames, n_mels)
+        power = mx.abs(spec) ** 2
+        mel_fb = mel_filters(sample_rate, n_fft, n_mels, mel_scale="htk")
+        mel_spec = power @ mel_fb.T
 
-        # Log mel + normalization (matches GraniteSpeechFeatureExtractor)
         logmel = mx.log10(mx.clip(mel_spec, 1e-10, None))
         mx_val = mx.max(logmel)
         logmel = mx.maximum(logmel, mx_val - 8.0) / 4.0 + 1.0
 
-        # Remove last frame if odd
         if logmel.shape[0] % 2 == 1:
             logmel = logmel[:-1]
 
-        # Stack pairs: (time//2, 160)
         encoder_input = logmel.reshape(-1, 2 * n_mels)
 
-        # Compute number of projected audio tokens
         encoder_length = encoder_input.shape[0]
         nblocks = math.ceil(encoder_length / self.config.window_size)
         num_audio_tokens = nblocks * (
             self.config.window_size // self.config.downsample_rate
         )
 
-        # Add batch dimension
-        input_features = encoder_input[None, :, :]  # (1, encoder_length, 160)
+        input_features = encoder_input[None, :, :]
         return input_features, num_audio_tokens
-
-    # ------------------------------------------------------------------
-    # Prompt building
-    # ------------------------------------------------------------------
 
     def _build_prompt(
         self,
         num_audio_tokens: int,
         user_prompt: str = None,
     ) -> mx.array:
-        """Build tokenized prompt with audio placeholder tokens.
-
-        Uses the chat template format expected by the model:
-            USER: <|audio|>×N + user_prompt
-            ASSISTANT:
-        """
         if user_prompt is None:
             user_prompt = "can you transcribe the speech into a written format?"
 
@@ -685,21 +596,11 @@ class Model(nn.Module):
     def _build_inputs_embeds(
         self, input_ids: mx.array, audio_features: mx.array
     ) -> mx.array:
-        """Replace audio token embeddings with projected audio features.
-
-        Args:
-            input_ids: (L,) token ids
-            audio_features: (1, num_audio_tokens, hidden_size) projected features
-        """
         is_audio = input_ids == self.audio_token_id
         llm_ids = mx.where(is_audio, 0, input_ids)
 
-        inputs_embeds = self.language_model.model.embed_tokens(
-            llm_ids[None]
-        )  # (1, L, D)
+        inputs_embeds = self.language_model.model.embed_tokens(llm_ids[None])
 
-        # Replace audio positions with audio features using numpy indexing
-        # Cast to float32 for numpy compatibility (bfloat16 not supported)
         is_audio_np = np.array(is_audio)
         audio_positions = np.where(is_audio_np)[0]
 
@@ -711,10 +612,6 @@ class Model(nn.Module):
         embeds_np[0, audio_positions[:num_audio]] = audio_np[0, :num_audio]
 
         return mx.array(embeds_np).astype(orig_dtype)
-
-    # ------------------------------------------------------------------
-    # Generation
-    # ------------------------------------------------------------------
 
     def generate(
         self,
@@ -734,23 +631,6 @@ class Model(nn.Module):
         stream: bool = False,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        """Generate text from audio input.
-
-        Args:
-            audio: Audio input (file path, mx.array, or numpy array)
-            max_tokens: Maximum tokens to generate
-            temperature: Sampling temperature (0 = greedy)
-            top_p: Nucleus sampling threshold
-            prompt: Custom user prompt (overrides language)
-            language: Target language name or code (e.g. "French", "fr").
-                      Sets the prompt to "Translate the speech to {language}."
-                      If None, defaults to transcription.
-            verbose: Print timing information
-            stream: If True, yield tokens as they are generated
-
-        Returns:
-            STTOutput with transcription, or generator if stream=True
-        """
         if prompt is None and language is not None:
             lang_name = LANGUAGE_CODES.get(language.lower(), language)
             prompt = f"Translate the speech to {lang_name}."
@@ -775,24 +655,20 @@ class Model(nn.Module):
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        # 1. Load and preprocess audio
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
 
-        # 2. Encode audio
         if verbose:
             print("Encoding audio...")
         audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
-        # 3. Build prompt and input embeddings
         prompt_ids = self._build_prompt(num_audio_tokens, prompt)
         inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
         mx.eval(inputs_embeds)
 
         prompt_tokens = len(prompt_ids)
 
-        # 4. Generate
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
             repetition_penalty=repetition_penalty,
@@ -852,7 +728,6 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
-        """Stream tokens as they are generated."""
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
@@ -909,7 +784,6 @@ class Model(nn.Module):
         )
 
     def _load_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
-        """Load audio from various input types."""
         if isinstance(audio, str):
             from mlx_audio.stt.utils import load_audio
 
