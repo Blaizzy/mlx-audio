@@ -18,6 +18,7 @@ MODEL_REMAPPING = {
     "canary": "canary",
     "moonshine": "moonshine",
     "mms": "mms",
+    "granite_speech": "granite_speech",
 }
 
 
