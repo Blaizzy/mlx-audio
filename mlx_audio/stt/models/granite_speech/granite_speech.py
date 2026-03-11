@@ -531,6 +531,8 @@ class Model(nn.Module):
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        already_converted = any("scales" in k for k in weights)
+
         sanitized = {}
         for k, v in weights.items():
             # Skip BatchNorm tracking counter
@@ -539,7 +541,8 @@ class Model(nn.Module):
 
             # Conv1d weights: PyTorch (O, I, K) → MLX (O, K, I)
             if (
-                any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
+                not already_converted
+                and any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
                 and "weight" in k
                 and len(v.shape) == 3
             ):
