@@ -233,11 +233,12 @@ class CTCEncoder(nn.Module):
         self.out = nn.Linear(config.hidden_dim, config.output_dim)
         self.out_mid = nn.Linear(config.output_dim, config.hidden_dim)
         self.num_layers = config.num_layers
+        self._attention_dists = None
 
         # Precompute clamped relative positional encoding distances
         seq = mx.arange(config.context_size)
         relpos_dist = seq[:, None] - seq[None, :]
-        self.attention_dists = (
+        self._attention_dists = (
             mx.clip(relpos_dist, -config.context_size, config.context_size)
             + config.max_pos_emb
         )
@@ -245,7 +246,7 @@ class CTCEncoder(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         x = self.input_linear(x)
         for idx, layer in enumerate(self.layers, start=1):
-            x = layer(x, attention_dists=self.attention_dists)
+            x = layer(x, attention_dists=self._attention_dists)
             if idx == self.num_layers // 2:
                 x_mid = self.out(x)
                 x = x + self.out_mid(mx.softmax(x_mid, axis=-1))
@@ -665,10 +666,15 @@ class Model(nn.Module):
 
         audio_placeholder = "<|audio|>" * num_audio_tokens
         content = f"{audio_placeholder}{user_prompt}"
-        chat = [{"role": "user", "content": content}]
-        prompt_str = self._tokenizer.apply_chat_template(
-            chat, tokenize=False, add_generation_prompt=True
-        )
+
+        if getattr(self._tokenizer, "chat_template", None):
+            chat = [{"role": "user", "content": content}]
+            prompt_str = self._tokenizer.apply_chat_template(
+                chat, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            prompt_str = f"USER: {content}\nASSISTANT:"
+
         prompt_ids = self._tokenizer.encode(prompt_str)
 
         return mx.array(prompt_ids)
