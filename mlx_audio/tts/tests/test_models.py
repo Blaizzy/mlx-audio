@@ -616,14 +616,14 @@ class TestLlamaModel(unittest.TestCase):
             "layer_types": ["full_attention"] * 28,
         }
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_init(self, mock_tokenizer):
         """Test LlamaModel initialization."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
 
         # Mock the tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         # Create a minimal config
         config = ModelConfig(**self._default_config)
@@ -634,14 +634,22 @@ class TestLlamaModel(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_generate(self, mock_tokenizer):
         """Test generate method."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+
+        def mock_tokenize(text, return_tensors=None):
+            result = MagicMock()
+            result.input_ids = mx.array([[1, 2, 3, 4]], dtype=mx.int64)
+            return result
+
+        mock_tokenizer_instance.side_effect = mock_tokenize
+        mock_tokenizer_instance.__call__ = mock_tokenize
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         config = ModelConfig(**self._default_config)
         model = Model(config)
@@ -651,7 +659,7 @@ class TestLlamaModel(unittest.TestCase):
         self.assertEqual(input_ids.shape[0], 2)
 
         logits = model(input_ids)
-        self.assertEqual(logits.shape, (2, 9, config.vocab_size))
+        self.assertEqual(logits.shape, (2, input_ids.shape[1], config.vocab_size))
 
         # Verify batched input creation with reference audio
         input_ids, input_mask = model.prepare_input_ids(
@@ -660,16 +668,16 @@ class TestLlamaModel(unittest.TestCase):
         self.assertEqual(input_ids.shape[0], 2)
 
         logits = model(input_ids)
-        self.assertEqual(logits.shape, (2, 22, config.vocab_size))
+        self.assertEqual(logits.shape, (2, input_ids.shape[1], config.vocab_size))
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_sanitize(self, mock_tokenizer):
         """Test sanitize method."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         # Create a config with tie_word_embeddings=True
         config = ModelConfig(
@@ -918,14 +926,14 @@ class TestOuteTTSModel(unittest.TestCase):
             "vocab_size": 134400,
         }
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_init(self, mock_tokenizer):
         """Test initialization."""
         from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
 
         # Mock the tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         # Create a minimal config
         config = ModelConfig(**self._default_config)
@@ -936,14 +944,14 @@ class TestOuteTTSModel(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_generate(self, mock_tokenizer):
         """Test generate method."""
         from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         config = ModelConfig(**self._default_config)
         model = Model(config)
