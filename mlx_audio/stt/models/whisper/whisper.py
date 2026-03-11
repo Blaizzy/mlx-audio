@@ -967,10 +967,8 @@ class Model(nn.Module):
         else:
             initial_prompt_tokens = []
 
-        def new_segment(
-            *, start: float, end: float, tokens: mx.array, result: DecodingResult
-        ):
-            tokens = tokens.tolist()
+        def new_segment(*, start: float, end: float, tokens, result: DecodingResult):
+            tokens = list(tokens)
             text_tokens = [token for token in tokens if token < tokenizer.eot]
             return {
                 "seek": seek,
@@ -1007,7 +1005,7 @@ class Model(nn.Module):
                     decode_options["prompt"] = all_tokens[prompt_reset_since:]
                     result: DecodingResult = decode_with_fallback(mel_segment)
 
-                    tokens = mx.array(result.tokens)
+                    tokens = result.tokens
 
                     if no_speech_threshold is not None:
                         # no voice activity check
@@ -1052,18 +1050,18 @@ class Model(nn.Module):
                     def next_words_segment(segments: List[dict]) -> Optional[dict]:
                         return next((s for s in segments if s["words"]), None)
 
-                    timestamp_tokens = tokens >= tokenizer.timestamp_begin
-                    single_timestamp_ending = timestamp_tokens[-2:].tolist() == [
-                        False,
-                        True,
-                    ]
+                    timestamp_tokens = [t >= tokenizer.timestamp_begin for t in tokens]
+                    single_timestamp_ending = (
+                        len(timestamp_tokens) >= 2
+                        and not timestamp_tokens[-2]
+                        and timestamp_tokens[-1]
+                    )
 
                     # Find consecutive timestamp tokens
-                    ts_list = timestamp_tokens.tolist()
                     consecutive = [
                         i + 1
-                        for i in range(len(ts_list) - 1)
-                        if ts_list[i] and ts_list[i + 1]
+                        for i in range(len(timestamp_tokens) - 1)
+                        if timestamp_tokens[i] and timestamp_tokens[i + 1]
                     ]
                     if len(consecutive) > 0:
                         # if the output contains two consecutive timestamp tokens
@@ -1075,10 +1073,10 @@ class Model(nn.Module):
                         for current_slice in slices:
                             sliced_tokens = tokens[last_slice:current_slice]
                             start_timestamp_pos = (
-                                sliced_tokens[0].item() - tokenizer.timestamp_begin
+                                sliced_tokens[0] - tokenizer.timestamp_begin
                             )
                             end_timestamp_pos = (
-                                sliced_tokens[-1].item() - tokenizer.timestamp_begin
+                                sliced_tokens[-1] - tokenizer.timestamp_begin
                             )
                             current_segments.append(
                                 new_segment(
@@ -1098,23 +1096,21 @@ class Model(nn.Module):
                         else:
                             # otherwise, ignore the unfinished segment and seek to the last timestamp
                             last_timestamp_pos = (
-                                tokens[last_slice - 1].item()
-                                - tokenizer.timestamp_begin
+                                tokens[last_slice - 1] - tokenizer.timestamp_begin
                             )
                             seek += last_timestamp_pos * input_stride
                     else:
                         duration = segment_duration
-                        ts_indices = mx.array([i for i, v in enumerate(ts_list) if v])
-                        timestamps = (
-                            tokens[ts_indices] if len(ts_indices) > 0 else mx.array([])
-                        )
+                        ts_values = [
+                            tokens[i] for i, v in enumerate(timestamp_tokens) if v
+                        ]
                         if (
-                            len(timestamps) > 0
-                            and timestamps[-1].item() != tokenizer.timestamp_begin
+                            len(ts_values) > 0
+                            and ts_values[-1] != tokenizer.timestamp_begin
                         ):
                             # no consecutive timestamps but it has a timestamp; use the last one.
                             last_timestamp_pos = (
-                                timestamps[-1].item() - tokenizer.timestamp_begin
+                                ts_values[-1] - tokenizer.timestamp_begin
                             )
                             duration = last_timestamp_pos * time_precision
 

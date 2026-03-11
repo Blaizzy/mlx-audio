@@ -376,70 +376,151 @@ class ApplyTimestampRules(LogitFilter):
         tokenizer,
         sample_begin: int,
         max_initial_timestamp_index: Optional[int],
+        n_vocab: int,
     ):
         self.tokenizer = tokenizer
         self.sample_begin = sample_begin
         self.max_initial_timestamp_index = max_initial_timestamp_index
 
+        ts_begin = tokenizer.timestamp_begin
+        self._ts_begin = ts_begin
+
+        # Pre-compute index array for vectorized ops
+        indices = mx.arange(n_vocab)
+
+        # Pre-compute base mask (suppress no_timestamps token)
+        base = mx.zeros(n_vocab, dtype=mx.float32)
+        if tokenizer.no_timestamps is not None:
+            base[tokenizer.no_timestamps] = -mx.inf
+
+        # Pre-compute component masks using vectorized ops (no index assignment)
+        suppress_ts = mx.where(indices >= ts_begin, mx.array(-mx.inf), mx.array(0.0))
+        suppress_text = mx.where(
+            indices < tokenizer.eot, mx.array(-mx.inf), mx.array(0.0)
+        )
+
+        # Pre-compute combined masks for each case (created once, reused every step)
+        self._mask_base = base
+        self._mask_suppress_ts = base + suppress_ts
+        self._mask_suppress_text = base + suppress_text
+
+        # Initial mask: suppress non-timestamps + optionally limit max initial timestamp
+        initial = mx.where(indices < ts_begin, mx.array(-mx.inf), mx.array(0.0))
+        if max_initial_timestamp_index is not None:
+            last_allowed = ts_begin + max_initial_timestamp_index
+            initial = mx.where(indices > last_allowed, mx.array(-mx.inf), initial)
+        self._mask_initial = base + initial
+
+        # For dynamic timestamp suppression
+        self._indices = indices
+
+        # Evaluate all pre-computed masks eagerly
+        mx.eval(
+            self._mask_base,
+            self._mask_suppress_ts,
+            self._mask_suppress_text,
+            self._mask_initial,
+            self._indices,
+        )
+
+        # Incremental token cache (avoids full .tolist() per decode step)
+        self._cached_seq = None
+        self._cached_ts_positions = None
+
     def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
-        mask = mx.zeros(logits.shape, dtype=mx.float32)
-        # suppress <|notimestamps|> which is handled by without_timestamps
-        if self.tokenizer.no_timestamps is not None:
-            mask[:, self.tokenizer.no_timestamps] = -mx.inf
+        n_batch = logits.shape[0]
+        seq_len = tokens.shape[1]
 
-        ## timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
-        tokens_list = tokens.tolist()
-        for k in range(len(tokens_list)):
-            seq = tokens_list[k][self.sample_begin :]
-            last_was_timestamp = (
-                len(seq) >= 1 and seq[-1] >= self.tokenizer.timestamp_begin
-            )
-            penultimate_was_timestamp = (
-                len(seq) < 2 or seq[-2] >= self.tokenizer.timestamp_begin
-            )
+        if n_batch == 1:
+            # Fast path: incremental token caching
+            if (
+                self._cached_seq is not None
+                and seq_len == len(self._cached_seq) + self.sample_begin + 1
+            ):
+                # Only sync the new token (avoids full .tolist())
+                new_tok = int(tokens[0, -1].item())
+                self._cached_seq.append(new_tok)
+                if new_tok > self._ts_begin:
+                    self._cached_ts_positions.append(len(self._cached_seq) - 1)
+            else:
+                # Full reset (first call or unexpected sequence change)
+                full_tokens = tokens[0].tolist()
+                self._cached_seq = full_tokens[self.sample_begin :]
+                self._cached_ts_positions = [
+                    i for i, v in enumerate(self._cached_seq) if v > self._ts_begin
+                ]
 
-            if last_was_timestamp:
-                if penultimate_was_timestamp:  # has to be non-timestamp
-                    mask[k, self.tokenizer.timestamp_begin :] = -mx.inf
-                else:  # cannot be normal text tokens
-                    mask[k, : self.tokenizer.eot] = -mx.inf
+            seq = self._cached_seq
 
-            timestamps = [
-                i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
-            ]
-            if len(timestamps) > 0:
-                # timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
-                # also force each segment to have a nonzero length, to prevent infinite looping
-                last_timestamp = timestamps[-1]
-                if not last_timestamp or penultimate_was_timestamp:
-                    last_timestamp += 1
-                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -mx.inf
+            if seq_len == self.sample_begin:
+                mask = self._mask_initial
+            else:
+                last_was_ts = len(seq) >= 1 and seq[-1] >= self._ts_begin
+                penult_was_ts = len(seq) < 2 or seq[-2] >= self._ts_begin
 
-        if len(tokens_list[0]) == self.sample_begin:
-            # suppress generating non-timestamp tokens at the beginning
-            mask[:, : self.tokenizer.timestamp_begin] = -mx.inf
+                if last_was_ts and penult_was_ts:
+                    mask = self._mask_suppress_ts
+                elif last_was_ts:
+                    mask = self._mask_suppress_text
+                else:
+                    mask = self._mask_base
 
-            # apply the `max_initial_timestamp` option
-            if self.max_initial_timestamp_index is not None:
-                last_allowed = (
-                    self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
-                )
-                mask[:, last_allowed + 1 :] = -mx.inf
+                # Dynamic: suppress timestamps that would go backwards
+                if self._cached_ts_positions:
+                    last_ts = self._cached_ts_positions[-1]
+                    if not last_ts or penult_was_ts:
+                        last_ts += 1
+                    threshold = self._ts_begin + last_ts
+                    dyn = mx.where(
+                        (self._indices >= self._ts_begin) & (self._indices < threshold),
+                        mx.array(-mx.inf),
+                        mx.array(0.0),
+                    )
+                    mask = mask + dyn
 
-        # if sum of probability over timestamps is above any other token, sample timestamp
+            mask = mask[None, :]
+        else:
+            # Batch > 1 fallback
+            tokens_list = tokens.tolist()
+            mask = mx.zeros(logits.shape, dtype=mx.float32)
+            if self.tokenizer.no_timestamps is not None:
+                mask[:, self.tokenizer.no_timestamps] = -mx.inf
+
+            for k in range(n_batch):
+                seq = tokens_list[k][self.sample_begin :]
+                last_was_ts = len(seq) >= 1 and seq[-1] >= self._ts_begin
+                penult_was_ts = len(seq) < 2 or seq[-2] >= self._ts_begin
+                if last_was_ts:
+                    if penult_was_ts:
+                        mask[k, self._ts_begin :] = -mx.inf
+                    else:
+                        mask[k, : self.tokenizer.eot] = -mx.inf
+                ts_positions = [i for i, v in enumerate(seq) if v > self._ts_begin]
+                if ts_positions:
+                    last_ts = ts_positions[-1]
+                    if not last_ts or penult_was_ts:
+                        last_ts += 1
+                    mask[k, self._ts_begin : self._ts_begin + last_ts] = -mx.inf
+
+            if len(tokens_list[0]) == self.sample_begin:
+                mask[:, : self._ts_begin] = -mx.inf
+                if self.max_initial_timestamp_index is not None:
+                    last_allowed = self._ts_begin + self.max_initial_timestamp_index
+                    mask[:, last_allowed + 1 :] = -mx.inf
+
+        # Timestamp probability check via slice assignment on a copy
+        masked_logits = logits + mask
         logprobs = logits - mx.logsumexp(logits, axis=-1)
-        timestamp_logprob = logprobs[:, self.tokenizer.timestamp_begin :].logsumexp(
+        timestamp_logprob = logprobs[:, self._ts_begin :].logsumexp(
             axis=-1, keepdims=True
         )
-        max_text_token_logprob = logprobs[:, : self.tokenizer.timestamp_begin].max(
-            axis=-1, keepdims=True
-        )
-        mask[:, : self.tokenizer.timestamp_begin] = mx.where(
-            timestamp_logprob > max_text_token_logprob,
+        max_text_logprob = logprobs[:, : self._ts_begin].max(axis=-1, keepdims=True)
+        masked_logits[:, : self._ts_begin] = mx.where(
+            timestamp_logprob > max_text_logprob,
             -mx.inf,
-            mask[:, : self.tokenizer.timestamp_begin],
+            masked_logits[:, : self._ts_begin],
         )
-        return logits + mask
+        return masked_logits
 
 
 class DecodingTask:
@@ -503,7 +584,10 @@ class DecodingTask:
                 )
             self.logit_filters.append(
                 ApplyTimestampRules(
-                    tokenizer, self.sample_begin, max_initial_timestamp_index
+                    tokenizer,
+                    self.sample_begin,
+                    max_initial_timestamp_index,
+                    model.dims.n_vocab,
                 )
             )
 
