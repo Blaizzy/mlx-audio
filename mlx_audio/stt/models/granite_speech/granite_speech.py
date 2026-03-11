@@ -16,6 +16,15 @@ from mlx_audio.stt.models.base import STTOutput
 
 from .config import EncoderConfig, ModelConfig, ProjectorConfig
 
+LANGUAGE_CODES = {
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "pt": "Portuguese",
+    "ja": "Japanese",
+}
+
 
 @dataclass
 class StreamingResult:
@@ -710,25 +719,33 @@ class Model(nn.Module):
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
         prompt: str = None,
+        language: str = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,
-    ) -> Union[STTOutput, Generator[str, None, None]]:
+    ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
         """Generate text from audio input.
 
         Args:
-            audio: Audio input (file path, mx.array, or numpy array at 16kHz)
+            audio: Audio input (file path, mx.array, or numpy array)
             max_tokens: Maximum tokens to generate
             temperature: Sampling temperature (0 = greedy)
             top_p: Nucleus sampling threshold
-            prompt: Custom user prompt (default: transcription)
+            prompt: Custom user prompt (overrides language)
+            language: Target language name or code (e.g. "French", "fr").
+                      Sets the prompt to "Translate the speech to {language}."
+                      If None, defaults to transcription.
             verbose: Print timing information
             stream: If True, yield tokens as they are generated
 
         Returns:
             STTOutput with transcription, or generator if stream=True
         """
+        if prompt is None and language is not None:
+            lang_name = LANGUAGE_CODES.get(language.lower(), language)
+            prompt = f"Translate the speech to {lang_name}."
+
         if stream:
             return self._stream_generate(
                 audio,
