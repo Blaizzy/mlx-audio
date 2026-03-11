@@ -1,5 +1,6 @@
 import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Generator, List, Optional, Tuple, Union
 
@@ -14,6 +15,18 @@ from mlx_lm.models.granite import ModelArgs as GraniteModelArgs
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import EncoderConfig, ModelConfig, ProjectorConfig
+
+
+@dataclass
+class StreamingResult:
+    text: str
+    is_final: bool
+    start_time: float
+    end_time: float
+    language: str = "en"
+    prompt_tokens: int = 0
+    generation_tokens: int = 0
+
 
 # ============================================================
 # Conformer Encoder Components
@@ -812,7 +825,7 @@ class Model(nn.Module):
         prompt: str = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
-    ) -> Generator[str, None, None]:
+    ) -> Generator[StreamingResult, None, None]:
         """Stream tokens as they are generated."""
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
@@ -827,6 +840,8 @@ class Model(nn.Module):
         inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
         mx.eval(inputs_embeds)
 
+        prompt_token_count = len(prompt_ids)
+
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
             repetition_penalty=repetition_penalty,
@@ -834,8 +849,9 @@ class Model(nn.Module):
         )
 
         eos_token_id = self._tokenizer.eos_token_id
+        gen_tokens = 0
 
-        for token, logprobs in generate_step(
+        for token, _ in generate_step(
             prompt=prompt_ids,
             input_embeddings=inputs_embeds.squeeze(0),
             model=self,
@@ -846,8 +862,25 @@ class Model(nn.Module):
         ):
             if token == eos_token_id:
                 break
+            gen_tokens += 1
             text = self._tokenizer.decode([token], skip_special_tokens=True)
-            yield text
+            yield StreamingResult(
+                text=text,
+                is_final=False,
+                start_time=0.0,
+                end_time=0.0,
+                prompt_tokens=prompt_token_count,
+                generation_tokens=gen_tokens,
+            )
+
+        yield StreamingResult(
+            text="",
+            is_final=True,
+            start_time=0.0,
+            end_time=0.0,
+            prompt_tokens=prompt_token_count,
+            generation_tokens=gen_tokens,
+        )
 
     def _load_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
         """Load audio from various input types."""
