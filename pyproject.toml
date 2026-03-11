@@ -21,9 +21,9 @@ requires-python = ">=3.10"
 dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
-    "huggingface_hub>=0.27.0",
-    "transformers==5.0.0rc3",
-    "mlx-lm==0.30.5",
+    "huggingface_hub>=1.0",
+    "transformers>=5.0.0",
+    "mlx-lm==0.31.1",
     "tqdm>=4.67.1",
     "sounddevice==0.5.3",
     "miniaudio>=1.61",
