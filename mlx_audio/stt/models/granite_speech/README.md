@@ -1,12 +1,14 @@
 # Granite Speech
 
-MLX implementation of IBM's Granite Speech, a speech-to-text model that combines a CTC Conformer encoder with a Granite LLM decoder via a BLIP-2 QFormer projector. Beyond transcription, the model supports audio understanding tasks via custom prompts.
+MLX implementation of IBM's Granite Speech, a speech-to-text model that combines a CTC Conformer encoder with a Granite LLM decoder via a BLIP-2 QFormer projector. Supports ASR (transcription) and AST (speech translation).
 
 ## Available Models
 
 | Model | Parameters | Description |
 |-------|------------|-------------|
-| [ibm-granite/granite-4.0-1b-speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | ~1B | Speech recognition and understanding |
+| [ibm-granite/granite-4.0-1b-speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | ~1B | Speech recognition and translation |
+
+**Supported Languages:** English, French, German, Spanish, Portuguese, Japanese
 
 ## CLI Usage
 
@@ -22,7 +24,7 @@ mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.w
 
 # Custom prompt via gen-kwargs
 mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output \
-    --gen-kwargs '{"prompt": "Summarize the following audio."}'
+    --gen-kwargs '{"prompt": "Translate the speech to French."}'
 
 # Output formats: txt, srt, vtt, json
 mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output --format json
@@ -30,43 +32,45 @@ mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.w
 
 ## Python Usage
 
-### Transcription
+### ASR (Transcription)
 
 ```python
 from mlx_audio.stt import load
 
 model = load("ibm-granite/granite-4.0-1b-speech")
 
-# Basic transcription
+# Basic transcription (default prompt)
 result = model.generate("audio.wav")
 print(result.text)
 
 # With custom prompt
-result = model.generate("audio.wav", prompt="Transcribe the following audio.")
+result = model.generate("audio.wav", prompt="Translate the speech to text.")
 print(result.text)
 ```
 
-### Audio Understanding (AST)
+### AST (Speech Translation)
 
-The model supports audio understanding tasks through custom prompts:
+The model supports bidirectional speech translation via custom prompts:
 
 ```python
 from mlx_audio.stt import load
 
 model = load("ibm-granite/granite-4.0-1b-speech")
 
-# Summarization
-result = model.generate("audio.wav", prompt="Summarize the following audio.")
+# Translate speech to French
+result = model.generate("audio.wav", prompt="Translate the speech to French.")
 print(result.text)
 
-# Question answering
-result = model.generate("audio.wav", prompt="What is being discussed in the audio?")
+# Translate speech to Spanish
+result = model.generate("audio.wav", prompt="Translate the speech to Spanish.")
 print(result.text)
 
-# Topic extraction
-result = model.generate("audio.wav", prompt="What are the main topics covered in this audio?")
+# Translate speech to German
+result = model.generate("audio.wav", prompt="Translate the speech to German.")
 print(result.text)
 ```
+
+> **Note:** If the model receives an unfamiliar prompt, it falls back to transcription as the default mode.
 
 ### Streaming
 
@@ -89,7 +93,7 @@ result = model.generate(
     top_p=1.0,
     top_k=0,
     repetition_penalty=None,
-    prompt="Transcribe the following audio.",
+    prompt="Translate the speech to text.",
     prefill_step_size=2048,
     verbose=True,          # print timing info
 )
@@ -116,11 +120,11 @@ Granite Speech processes audio at its **original sample rate** without resamplin
 STTOutput(
     text="Full transcription text",
     segments=[],
-    prompt_tokens=207,
-    generation_tokens=43,
-    total_tokens=250,
-    total_time=1.04,
-    prompt_tps=199.0,
-    generation_tps=41.2,
+    prompt_tokens=154,
+    generation_tokens=42,
+    total_tokens=196,
+    total_time=0.95,
+    prompt_tps=162.1,
+    generation_tps=44.2,
 )
 ```

@@ -634,14 +634,19 @@ class Model(nn.Module):
     ) -> mx.array:
         """Build tokenized prompt with audio placeholder tokens.
 
-        Matches the GraniteSpeechProcessor format:
-            <|audio|>×N + user_prompt
+        Uses the chat template format expected by the model:
+            USER: <|audio|>×N + user_prompt
+            ASSISTANT:
         """
         if user_prompt is None:
-            user_prompt = "Transcribe the following audio."
+            user_prompt = "can you transcribe the speech into a written format?"
 
         audio_placeholder = "<|audio|>" * num_audio_tokens
-        prompt_str = f"{audio_placeholder}{user_prompt}"
+        content = f"{audio_placeholder}{user_prompt}"
+        chat = [{"role": "user", "content": content}]
+        prompt_str = self._tokenizer.apply_chat_template(
+            chat, tokenize=False, add_generation_prompt=True
+        )
         prompt_ids = self._tokenizer.encode(prompt_str)
 
         return mx.array(prompt_ids)
