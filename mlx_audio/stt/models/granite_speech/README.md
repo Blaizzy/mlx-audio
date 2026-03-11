@@ -22,9 +22,11 @@ mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.w
 # Streaming output
 mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output --stream
 
-# Custom prompt via gen-kwargs
-mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output \
-    --gen-kwargs '{"prompt": "Translate the speech to French."}'
+# Translate to French using language flag
+mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output --language fr
+
+# Translate using full language name
+mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output --language Portuguese
 
 # Output formats: txt, srt, vtt, json
 mlx_audio.stt.generate --model ibm-granite/granite-4.0-1b-speech --audio audio.wav --output-path output --format json
@@ -50,22 +52,26 @@ print(result.text)
 
 ### AST (Speech Translation)
 
-The model supports bidirectional speech translation via custom prompts:
+Use the `language` parameter to translate speech. Accepts full names or codes (`fr`, `de`, `es`, `pt`, `ja`):
 
 ```python
 from mlx_audio.stt import load
 
 model = load("ibm-granite/granite-4.0-1b-speech")
 
-# Translate speech to French
-result = model.generate("audio.wav", prompt="Translate the speech to French.")
+# Translate speech to French (using language code)
+result = model.generate("audio.wav", language="fr")
 print(result.text)
 
-# Translate speech to Spanish
-result = model.generate("audio.wav", prompt="Translate the speech to Spanish.")
+# Translate speech to Spanish (using full name)
+result = model.generate("audio.wav", language="Spanish")
 print(result.text)
 
-# Translate speech to German
+# Translate speech to Portuguese
+result = model.generate("audio.wav", language="pt")
+print(result.text)
+
+# Or use a custom prompt directly
 result = model.generate("audio.wav", prompt="Translate the speech to German.")
 print(result.text)
 ```
