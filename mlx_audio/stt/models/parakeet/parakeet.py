@@ -183,7 +183,7 @@ class Model(nn.Module):
         *,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: Optional[float] = None,
-        overlap_duration: float = 15.0,
+        overlap_duration: Optional[float] = None,
         chunk_callback: Optional[Callable] = None,
         stream: bool = False,
         **kwargs,
@@ -194,8 +194,11 @@ class Model(nn.Module):
         Args:
             audio: Path to audio file (str/Path), or audio waveform (mx.array)
             dtype: Data type for processing
-            chunk_duration: If provided, splits audio into chunks of this length for processing
-            overlap_duration: Overlap between chunks (only used when chunking)
+            chunk_duration: Optional chunk duration in seconds. Defaults to no
+                chunking for non-streaming and 5.0s for streaming.
+            overlap_duration: Optional overlap between chunks in seconds.
+                Defaults to 15.0s for non-streaming chunking and 1.0s for
+                streaming.
             chunk_callback: A function to call back when chunk is processed, called with (current_position, total_position)
             stream: If True, yields streaming results instead of returning final result
 
@@ -208,17 +211,11 @@ class Model(nn.Module):
         verbose = kwargs.pop("verbose", False)
 
         if stream:
-            if chunk_duration is None:
-                chunk_duration = 5.0  # Default chunk duration for stream_generate
-            if (
-                overlap_duration == 15.0
-            ):  # Assume default value, use streaming-appropriate default
-                overlap_duration = 1.0
             return self.stream_generate(
                 audio,
                 dtype=dtype,
-                chunk_duration=chunk_duration,
-                overlap_duration=overlap_duration,
+                chunk_duration=5.0 if chunk_duration is None else chunk_duration,
+                overlap_duration=1.0 if overlap_duration is None else overlap_duration,
                 verbose=verbose,
                 **kwargs,
             )
@@ -234,6 +231,14 @@ class Model(nn.Module):
 
         if chunk_duration is None:
             return self.decode_chunk(audio_data, verbose)
+
+        overlap_duration = 15.0 if overlap_duration is None else overlap_duration
+
+        if overlap_duration >= chunk_duration:
+            raise ValueError(
+                f"overlap_duration ({overlap_duration}s) must be less than "
+                f"chunk_duration ({chunk_duration}s)."
+            )
 
         audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
 
@@ -335,14 +340,15 @@ class Model(nn.Module):
             # mx.array input
             audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
 
-        if overlap_duration > chunk_duration:
-            raise ValueError(
-                f"overlap_duration ({overlap_duration}s) cannot be greater than chunk_duration ({chunk_duration}s)."
-            )
-
         sample_rate = self.preprocessor_config.sample_rate
         total_samples = len(audio_data)
         audio_duration = total_samples / sample_rate
+
+        if overlap_duration >= chunk_duration:
+            raise ValueError(
+                f"overlap_duration ({overlap_duration}s) must be less than "
+                f"chunk_duration ({chunk_duration}s)."
+            )
 
         chunk_samples = int(chunk_duration * sample_rate)
         overlap_samples = int(overlap_duration * sample_rate)
