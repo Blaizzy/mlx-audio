@@ -408,43 +408,68 @@ class Model(nn.Module):
         texts: List[str],
         language: str = "auto",
         speakers: Optional[List[Optional[str]]] = None,
-        ref_audio: Optional[mx.array] = None,
-        ref_text: Optional[str] = None,
         instructs: Optional[List[Optional[str]]] = None,
-    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
+        ref_audios: Optional[List[Optional[mx.array]]] = None,
+        ref_texts: Optional[List[Optional[str]]] = None,
+    ) -> Tuple[mx.array, mx.array, mx.array, mx.array, List[Optional[mx.array]]]:
         """Prepare batched inputs for batch generation.
 
-        Calls _prepare_generation_inputs() per sequence, then left-pads input_embeds,
-        right-pads trailing_text_hidden, and builds an attention mask.
+        Calls _prepare_generation_inputs() or _prepare_icl_generation_inputs() per
+        sequence, then left-pads input_embeds, right-pads trailing_text_hidden,
+        and builds an attention mask.
 
         Args:
             texts: List of texts to synthesize
             language: Language code
             speakers: Optional list of speaker names (one per text)
             instructs: Optional list of instruct strings (one per text)
+            ref_audios: Optional list of reference audio arrays for ICL voice cloning
+            ref_texts: Optional list of reference text transcripts for ICL voice cloning
 
         Returns:
             input_embeds: [batch, max_prefill_len, hidden_size] left-padded
             trailing_text_hidden: [batch, max_trailing_len, hidden_size] right-padded with pad_embed
             tts_pad_embed: [1, 1, hidden_size] shared pad embedding
             attention_mask: [batch, max_prefill_len] binary (1=valid, 0=padding)
+            per_seq_ref_codes: List of ref_codes per sequence (None for non-ICL sequences)
         """
         batch_size = len(texts)
         per_seq_embeds = []
         per_seq_trailing = []
+        per_seq_ref_codes = []
         shared_pad_embed = None
 
         for i in range(batch_size):
             speaker = speakers[i] if speakers else None
             instruct = instructs[i] if instructs else None
-            embeds, trailing, pad_embed = self._prepare_generation_inputs(
-                texts[i],
-                language=language,
-                speaker=speaker,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-                instruct=instruct,
-            )
+            r_audio = ref_audios[i] if ref_audios else None
+            r_text = ref_texts[i] if ref_texts else None
+
+            if (
+                r_audio is not None
+                and r_text is not None
+                and self.speech_tokenizer is not None
+                and self.speech_tokenizer.has_encoder
+            ):
+                embeds, trailing, pad_embed, ref_codes = (
+                    self._prepare_icl_generation_inputs(
+                        texts[i],
+                        ref_audio=r_audio,
+                        ref_text=r_text,
+                        language=language,
+                    )
+                )
+                per_seq_ref_codes.append(ref_codes)
+            else:
+                embeds, trailing, pad_embed = self._prepare_generation_inputs(
+                    texts[i],
+                    language=language,
+                    speaker=speaker,
+                    ref_audio=r_audio,
+                    instruct=instruct,
+                )
+                per_seq_ref_codes.append(None)
+
             per_seq_embeds.append(embeds)  # [1, seq_len_i, hidden]
             per_seq_trailing.append(trailing)  # [1, trailing_len_i, hidden]
             if shared_pad_embed is None:
@@ -498,7 +523,7 @@ class Model(nn.Module):
             padded_trailing, axis=0
         )  # [batch, max_trailing, hidden]
 
-        return input_embeds, trailing_text_hidden, shared_pad_embed, attention_mask
+        return input_embeds, trailing_text_hidden, shared_pad_embed, attention_mask, per_seq_ref_codes
 
     def _prepare_icl_generation_inputs(
         self,
@@ -1313,9 +1338,9 @@ class Model(nn.Module):
         self,
         texts: List[str],
         voices: Optional[List[Optional[str]]] = None,
-        ref_audio: Optional[Union[str, mx.array]] = None,
-        ref_text: Optional[str] = None,
         instructs: Optional[List[Optional[str]]] = None,
+        ref_audios: Optional[List[Optional[Union[str, mx.array]]]] = None,
+        ref_texts: Optional[List[Optional[str]]] = None,
         temperature: float = 0.9,
         lang_code: str = "auto",
         max_tokens: int = 4096,
@@ -1333,6 +1358,10 @@ class Model(nn.Module):
             texts: List of input texts to synthesize
             voices: Optional list of speaker names (one per text, or None for default)
             instructs: Optional list of instruct strings (one per text)
+            ref_audios: Optional list of reference audio for ICL voice cloning
+                (file paths or mx.array, one per text)
+            ref_texts: Optional list of reference text transcripts for ICL voice cloning
+                (one per text)
             temperature: Sampling temperature
             lang_code: Language code
             max_tokens: Maximum tokens per sequence
@@ -1346,10 +1375,6 @@ class Model(nn.Module):
         Yields:
             BatchGenerationResult objects with generated audio per sequence
         """
-        # Load reference audio if provided (handles file paths and mx.array)
-        if ref_audio is not None:
-            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
-
         if self.speech_tokenizer is None:
             raise ValueError("Speech tokenizer not loaded")
 
@@ -1365,22 +1390,42 @@ class Model(nn.Module):
                 f"voices length ({len(voices)}) must match texts length ({batch_size})"
             )
 
+        # Normalize ref_audios/ref_texts to lists and load audio files
+        if ref_audios is not None:
+            if len(ref_audios) != batch_size:
+                raise ValueError(
+                    f"ref_audios length ({len(ref_audios)}) must match texts length ({batch_size})"
+                )
+            ref_audios = [
+                load_audio(a, sample_rate=self.sample_rate) if isinstance(a, str) else a
+                for a in ref_audios
+            ]
+        if ref_texts is not None:
+            if len(ref_texts) != batch_size:
+                raise ValueError(
+                    f"ref_texts length ({len(ref_texts)}) must match texts length ({batch_size})"
+                )
+
         start_time = time.time()
         config = self.config.talker_config
         eos_token_id = config.codec_eos_token_id
 
         # Prepare batched inputs
-        input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask = (
+        input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask, per_seq_ref_codes = (
             self._prepare_batch_inputs(
                 texts,
                 language=lang_code,
                 speakers=voices,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
                 instructs=instructs,
+                ref_audios=ref_audios,
+                ref_texts=ref_texts,
             )
         )
         mx.eval(input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask)
+
+        # ICL needs stronger repetition penalty to prevent degeneration
+        if any(rc is not None for rc in per_seq_ref_codes):
+            repetition_penalty = max(repetition_penalty, 1.5)
 
         # For bs=1 there's no left-padding so attention_mask is all 1s;
         # dropping it lets the talker skip O(N^2) mask construction each step.
@@ -1394,6 +1439,17 @@ class Model(nn.Module):
         generated_codes = [[] for _ in range(batch_size)]  # per-seq code lists
         generated_token_ids = [[] for _ in range(batch_size)]  # for repetition penalty
         finished = mx.zeros((batch_size,), dtype=mx.bool_)
+
+        # Per-sequence max token caps for ICL (prevents runaway generation)
+        per_seq_max_tokens = []
+        for i in range(batch_size):
+            if per_seq_ref_codes[i] is not None:
+                target_token_count = len(self.tokenizer.encode(texts[i]))
+                per_seq_max_tokens.append(
+                    min(max_tokens, max(75, target_token_count * 6))
+                )
+            else:
+                per_seq_max_tokens.append(max_tokens)
 
         # Vectorized state
         trailing_indices = mx.zeros((batch_size, 1), dtype=mx.int32)
@@ -1539,6 +1595,12 @@ class Model(nn.Module):
                         all_codes[b : b + 1]
                     )  # [1, num_code_groups]
 
+            # Mark sequences that exceeded their per-sequence token cap
+            exceeded = mx.array(
+                [len(generated_codes[b]) >= per_seq_max_tokens[b] for b in range(batch_size)]
+            )
+            finished = finished | exceeded
+
             # Extend attention_mask by one column of 1s (skipped for bs=1)
             if attention_mask is not None:
                 attention_mask = mx.concatenate(
@@ -1644,40 +1706,36 @@ class Model(nn.Module):
         del tts_pad_embed, trailing_indices, finished, eos_fill
         mx.clear_cache()
 
-        upsample = self.speech_tokenizer.decoder.total_upsample
-        decode_chunk = 15  # Balance decode speed vs memory
-        decode_ctx = 5
-
         for b in range(batch_size):
             if not generated_codes[b]:
                 continue
-            codes = mx.stack(
+            gen_codes = mx.stack(
                 generated_codes[b], axis=1
             )  # [1, seq_len, num_code_groups]
             generated_codes[b] = []  # free per-seq code list
-            transposed = mx.transpose(codes, (0, 2, 1))  # [1, groups, time]
+
+            # ICL: prepend ref_codes for joint decoding
+            ref_codes = per_seq_ref_codes[b] if per_seq_ref_codes else None
+            ref_len = 0
+            if ref_codes is not None:
+                ref_len = ref_codes.shape[2]
+                ref_codes_t = mx.transpose(ref_codes, (0, 2, 1))
+                gen_codes = mx.concatenate([ref_codes_t, gen_codes], axis=1)
+
+            # Transpose to [1, groups, time] and decode
+            total_len = gen_codes.shape[1]
+            codes = mx.transpose(gen_codes, (0, 2, 1))
+            del gen_codes
+            audio = self.speech_tokenizer.decoder.chunked_decode(codes).squeeze(1)[0]
             del codes
-            num_tokens = transposed.shape[-1]
 
-            # Decode in chunks with per-chunk eval (no clear_cache overhead)
-            audio_parts = []
-            start = 0
-            while start < num_tokens:
-                end = min(start + decode_chunk, num_tokens)
-                ctx = decode_ctx if start > decode_ctx else start
-                chunk = transposed[..., start - ctx : end]
-                wav = self.speech_tokenizer.decoder(chunk).squeeze(1)[0]
-                if ctx > 0:
-                    wav = wav[ctx * upsample :]
-                mx.eval(wav)
-                audio_parts.append(wav)
-                start = end
+            # ICL: proportionally trim reference audio portion
+            if ref_len > 0:
+                cut = int(ref_len / max(total_len, 1) * audio.shape[0])
+                if cut > 0 and cut < audio.shape[0]:
+                    audio = audio[cut:]
 
-            del transposed
-            audio = (
-                mx.concatenate(audio_parts) if len(audio_parts) > 1 else audio_parts[0]
-            )
-
+            mx.eval(audio)
             duration_seconds = audio.shape[0] / self.sample_rate
             yield BatchGenerationResult(
                 audio=audio,
@@ -1689,7 +1747,7 @@ class Model(nn.Module):
                 processing_time_seconds=elapsed_time,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
-            del audio_parts, audio
+            del audio
             mx.clear_cache()
 
     def generate_custom_voice(
