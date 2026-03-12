@@ -365,6 +365,10 @@ def base_load_model(
     if model_type is None:
         model_type = model_name[0].lower() if model_name is not None else None
 
+    # Override model_type for TADA models (config says "llama" but it's TADA)
+    if model_type == "llama" and "acoustic_dim" in config:
+        model_type = "tada"
+
     model_class, model_type = get_model_class(
         model_type=model_type,
         model_name=model_name,
