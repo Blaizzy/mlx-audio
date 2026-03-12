@@ -54,7 +54,10 @@ tts = [
 server = [
     "fastapi>=0.95.0",
     "uvicorn>=0.22.0",
-    "python-multipart>=0.0.22"
+    "python-multipart>=0.0.22",
+
+    "webrtcvad>=2.0.10",
+    "setuptools<81",
 ]
 
 # STS (Speech-to-Speech) requires both STT and TTS + additional deps
@@ -70,6 +73,7 @@ sts = [
     "sentencepiece>=0.2.0",
     
     "webrtcvad>=2.0.10",
+    "setuptools<81",
 ]
 
 # Full installation (all features)
@@ -86,8 +90,10 @@ all = [
 
     "fastapi>=0.95.0",
     "uvicorn>=0.22.0",
+    "python-multipart>=0.0.22",
 
     "webrtcvad>=2.0.10",
+    "setuptools<81",
 ]
 
 # Development dependencies
