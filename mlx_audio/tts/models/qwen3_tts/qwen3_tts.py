@@ -1001,9 +1001,14 @@ class Model(nn.Module):
         for segment_idx, segment_text in enumerate(segments):
             start_time = time.time()
 
+            # Cap max_tokens based on segment text length to prevent runaway generation.
+            # Same formula as ICL mode: at 12.5 Hz, factor of 6 gives ~50% margin.
+            target_token_count = len(self.tokenizer.encode(segment_text))
+            effective_max_tokens = min(max_tokens, max(75, target_token_count * 6))
+
             # Create progress bar for token generation
             pbar = tqdm(
-                total=max_tokens,
+                total=effective_max_tokens,
                 desc=f"Segment {segment_idx + 1}/{len(segments)}",
                 unit="tokens",
                 disable=not verbose,
@@ -1044,7 +1049,7 @@ class Model(nn.Module):
                 chunk_start_time = time.time()
                 self.speech_tokenizer.decoder.reset_streaming_state()
 
-            for step in range(max_tokens):
+            for step in range(effective_max_tokens):
                 # Forward pass through talker
                 logits, hidden = self.talker(
                     input_embeds,
