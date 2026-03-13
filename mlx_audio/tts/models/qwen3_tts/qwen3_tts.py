@@ -523,7 +523,13 @@ class Model(nn.Module):
             padded_trailing, axis=0
         )  # [batch, max_trailing, hidden]
 
-        return input_embeds, trailing_text_hidden, shared_pad_embed, attention_mask, per_seq_ref_codes
+        return (
+            input_embeds,
+            trailing_text_hidden,
+            shared_pad_embed,
+            attention_mask,
+            per_seq_ref_codes,
+        )
 
     def _prepare_icl_generation_inputs(
         self,
@@ -1411,15 +1417,19 @@ class Model(nn.Module):
         eos_token_id = config.codec_eos_token_id
 
         # Prepare batched inputs
-        input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask, per_seq_ref_codes = (
-            self._prepare_batch_inputs(
-                texts,
-                language=lang_code,
-                speakers=voices,
-                instructs=instructs,
-                ref_audios=ref_audios,
-                ref_texts=ref_texts,
-            )
+        (
+            input_embeds,
+            trailing_text_hidden,
+            tts_pad_embed,
+            attention_mask,
+            per_seq_ref_codes,
+        ) = self._prepare_batch_inputs(
+            texts,
+            language=lang_code,
+            speakers=voices,
+            instructs=instructs,
+            ref_audios=ref_audios,
+            ref_texts=ref_texts,
         )
         mx.eval(input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask)
 
@@ -1597,7 +1607,10 @@ class Model(nn.Module):
 
             # Mark sequences that exceeded their per-sequence token cap
             exceeded = mx.array(
-                [len(generated_codes[b]) >= per_seq_max_tokens[b] for b in range(batch_size)]
+                [
+                    len(generated_codes[b]) >= per_seq_max_tokens[b]
+                    for b in range(batch_size)
+                ]
             )
             finished = finished | exceeded
 
