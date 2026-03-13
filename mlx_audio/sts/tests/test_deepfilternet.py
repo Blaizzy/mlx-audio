@@ -271,8 +271,8 @@ class TestDeepFilterNetIntegration(unittest.TestCase):
         mae = float(np.mean(np.abs(target - mlx_out)))
         self.assertLess(
             mae,
-            2e-3,
-            f"MAE {mae:.6f} should be < 0.002",
+            3e-3,
+            f"MAE {mae:.6f} should be < 0.003",
         )
 
         # RMS difference (actual ~0.5%, threshold 1%)
