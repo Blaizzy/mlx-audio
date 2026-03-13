@@ -505,11 +505,11 @@ Looking for Swift/iOS support? Check out [mlx-audio-swift](https://github.com/Bl
 - Python 3.10+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
-- **ffmpeg** (required for MP3/FLAC audio encoding)
+- **ffmpeg** (required for MP3/FLAC/OGG/Opus/Vorbis audio encoding)
 
 ### Installing ffmpeg
 
-ffmpeg is required for saving audio in MP3 or FLAC format. Install it using:
+ffmpeg is required for saving audio in MP3, FLAC, OGG, Opus, or Vorbis format. Install it using:
 
 ```bash
 # macOS (using Homebrew)
