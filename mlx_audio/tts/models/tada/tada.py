@@ -1135,11 +1135,6 @@ class Model(nn.Module):
             if leading_samples > 0 and leading_samples < wav_flat.shape[0]:
                 wav_flat = wav_flat[leading_samples:]
 
-        # Peak normalize
-        peak = mx.max(mx.abs(wav_flat))
-        if peak > 0:
-            wav_flat = wav_flat * (0.95 / peak)
-
         return wav_flat
 
     # ========================================================================
