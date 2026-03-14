@@ -159,6 +159,8 @@ class MLXAceStepConditionEncoder(nn.Module):
         )
         self.lyric_encoder = MLXAceStepLyricEncoder(config)
         # Note: Timbre Encoder is omitted for pure Text-to-Audio (we supply dummy vectors)
+        # But we load the pre-computed empty token embedding
+        self.empty_timbre_token = mx.zeros((1, 1, config.hidden_size))
 
     def __call__(
         self,
@@ -182,4 +184,22 @@ class MLXAceStepConditionEncoder(nn.Module):
             lyric_attention_mask,
             text_attention_mask,
         )
+        
+        # PyTorch ACE-Step always includes at least 1 empty timbre token! 
+        # Without it, the dimensions mismatch and generation quality degrades.
+        # We pre-computed this token during conversion!
+        if hasattr(self, "empty_timbre_token"):
+            empty_timbre = mx.broadcast_to(self.empty_timbre_token, (encoder_hidden_states.shape[0], 1, encoder_hidden_states.shape[-1]))
+        else:
+            empty_timbre = mx.zeros((encoder_hidden_states.shape[0], 1, encoder_hidden_states.shape[-1]))
+            
+        empty_mask = mx.ones((encoder_hidden_states.shape[0], 1), dtype=encoder_attention_mask.dtype)
+        
+        encoder_hidden_states, encoder_attention_mask = pack_sequences(
+            empty_timbre,
+            encoder_hidden_states,
+            empty_mask,
+            encoder_attention_mask,
+        )
+        
         return encoder_hidden_states, encoder_attention_mask
