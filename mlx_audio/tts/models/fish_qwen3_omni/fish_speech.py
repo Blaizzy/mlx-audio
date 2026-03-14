@@ -27,7 +27,6 @@ from .tokenizer import IM_END_TOKEN, FishTokenizer
 RAS_WIN_SIZE = 10
 RAS_HIGH_TEMP = 1.0
 RAS_HIGH_TOP_P = 0.9
-RAS_MAX_RETRY = 4
 
 
 @dataclass
@@ -337,7 +336,6 @@ class DualARTransformer(nn.Module):
         return self.fast_output(x[:, -1])
 
 
-@mx.compile
 def _sample_logits(
     logits: mx.array, temperature: float, top_p: float, top_k: int
 ) -> mx.array:
@@ -476,30 +474,33 @@ class Model(nn.Module):
             raise ValueError("Semantic logits bias is not initialized.")
 
         biased_logits = logits + self.semantic_logit_bias.astype(logits.dtype)
-        normal = _sample_logits(
+
+        # Sample both normal and high-temp tokens in a single pass, matching the
+        # official PyTorch implementation's single-fallback RAS pattern (no retry loop).
+        normal_token = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        mx.eval(normal)
+        high_token = _sample_logits(
+            biased_logits,
+            temperature=RAS_HIGH_TEMP,
+            top_p=RAS_HIGH_TOP_P,
+            top_k=top_k,
+        )
+        mx.eval(normal_token, high_token)
 
-        for _ in range(RAS_MAX_RETRY):
-            token_value = int(normal[0].item())
-            if token_value not in previous_semantic_tokens:
-                return normal
-            if not (
-                self.config.semantic_start_token_id
-                <= token_value
-                <= self.config.semantic_end_token_id
-            ):
-                return normal
-            normal = _sample_logits(
-                biased_logits,
-                temperature=RAS_HIGH_TEMP,
-                top_p=RAS_HIGH_TOP_P,
-                top_k=top_k,
-            )
-            mx.eval(normal)
-
-        return normal
+        # RAS: if the normal token repeats within the window AND is semantic,
+        # use the high-temp fallback instead.  If the high-temp token also
+        # repeats, it is accepted as-is (exactly one fallback attempt).
+        token_value = int(normal_token[0].item())
+        in_window = token_value in previous_semantic_tokens
+        is_semantic = (
+            self.config.semantic_start_token_id
+            <= token_value
+            <= self.config.semantic_end_token_id
+        )
+        if in_window and is_semantic:
+            return high_token
+        return normal_token
 
     def _generate_codes_for_batch(
         self,
@@ -536,13 +537,8 @@ class Model(nn.Module):
         previous_semantic_tokens: list[int] = []
         generated_steps = []
         im_end_id = self.tokenizer.get_token_id(IM_END_TOKEN)
-        text_token_count = len(self.tokenizer.encode(batch_text))
-        semantic_token_budget = min(
-            max_new_tokens,
-            max(32, text_token_count * 12),
-        )
 
-        for _ in range(semantic_token_budget):
+        for _ in range(max_new_tokens):
             semantic_token = self._sample_semantic(
                 logits=logits,
                 previous_semantic_tokens=previous_semantic_tokens,
@@ -561,6 +557,9 @@ class Model(nn.Module):
             semantic_code = (
                 semantic_token - self.config.semantic_start_token_id
             ).astype(mx.int32)
+            semantic_code = mx.clip(
+                semantic_code, 0, self.config.audio_decoder_config.vocab_size - 1
+            )
             previous_codebooks = semantic_code[:, None]
             fast_cache = self.model.make_fast_cache()
             fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
@@ -729,7 +728,7 @@ class Model(nn.Module):
             model.tokenizer.vocab_size,
             model.config.text_config.vocab_size,
         )
-        semantic_bias = mx.full((1, vocab_size), -1e9, dtype=mx.float32)
+        semantic_bias = mx.full((1, vocab_size), float("-inf"), dtype=mx.float32)
         semantic_bias[
             :,
             model.config.semantic_start_token_id : model.config.semantic_end_token_id
