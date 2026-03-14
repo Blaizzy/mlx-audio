@@ -54,7 +54,8 @@ tts = [
 server = [
     "fastapi>=0.95.0",
     "uvicorn>=0.22.0",
-    "python-multipart>=0.0.22"
+    "python-multipart>=0.0.22",
+    "websockets>=10.4",
 ]
 
 # STS (Speech-to-Speech) requires both STT and TTS + additional deps
@@ -86,6 +87,7 @@ all = [
 
     "fastapi>=0.95.0",
     "uvicorn>=0.22.0",
+    "websockets>=10.4",
 
     "webrtcvad>=2.0.10",
 ]

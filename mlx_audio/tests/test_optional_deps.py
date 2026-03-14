@@ -37,6 +37,15 @@ def extract_package_name(req: str) -> str:
     return match.group(1).lower() if match else req.lower()
 
 
+def has_websocket_support(reqs: list[str]) -> bool:
+    """Return True when requirements include a websocket-capable server stack."""
+    normalized = [req.lower() for req in reqs]
+    return any(
+        "uvicorn[standard]" in req or req.startswith("websockets") or req.startswith("wsproto")
+        for req in normalized
+    )
+
+
 def get_package_manager() -> str:
     """Detect available package manager (uv preferred, fallback to pip)."""
     if shutil.which("uv"):
@@ -101,6 +110,18 @@ class TestOptionalDeps:
         dep_names = [extract_package_name(r) for r in server_deps]
         assert "fastapi" in dep_names, f"fastapi not in server deps: {dep_names}"
         assert "uvicorn" in dep_names, f"uvicorn not in server deps: {dep_names}"
+        assert has_websocket_support(
+            server_deps
+        ), f"server deps lack websocket support: {server_deps}"
+
+    def test_all_extra_includes_websocket_support(self):
+        """Verify [all] extra includes websocket support for realtime STT."""
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        all_deps = [r for r in requires if 'extra == "all"' in r]
+        assert has_websocket_support(
+            all_deps
+        ), f"all deps lack websocket support: {all_deps}"
 
     def test_dev_extra_defined(self):
         """Verify [dev] extra contains expected deps."""
