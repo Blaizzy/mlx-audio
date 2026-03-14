@@ -15,7 +15,7 @@ class AceStepDiTConfig:
     rms_norm_eps: float = 1e-6
     attention_bias: bool = False
     in_channels: int = 192
-    audio_acoustic_hidden_dim: int = 128
+    audio_acoustic_hidden_dim: int = 64
     patch_size: int = 2
     sliding_window: int = 128
     layer_types: List[str] = field(default_factory=lambda: ["cross", "self"] * 12)
@@ -34,11 +34,11 @@ class AceStepDiTConfig:
 @dataclass
 class AceStepVAEConfig:
     encoder_hidden_size: int = 128
-    downsampling_ratios: List[int] = field(default_factory=lambda: [2, 4, 4, 8])
-    channel_multiples: List[int] = field(default_factory=lambda: [1, 2, 4, 8])
+    downsampling_ratios: List[int] = field(default_factory=lambda: [2, 4, 4, 6, 10])
+    channel_multiples: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16])
     decoder_channels: int = 128
-    decoder_input_channels: int = 128
-    audio_channels: int = 1
+    decoder_input_channels: int = 64
+    audio_channels: int = 2
 
     @classmethod
     def from_dict(cls, params: dict):

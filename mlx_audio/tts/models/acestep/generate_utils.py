@@ -229,8 +229,8 @@ def mlx_generate_diffusion(
     )
 
     bsz = src_latents_shape[0]
-    T = src_latents_shape[1]
-    C = src_latents_shape[2]
+    T = src_latents_shape[2]
+    C = src_latents_shape[1]
 
     # ---- CFG setup ----
     do_cfg = guidance_scale > 1.0 and null_condition_emb_np is not None
