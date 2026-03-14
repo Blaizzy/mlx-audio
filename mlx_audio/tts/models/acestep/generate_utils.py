@@ -16,18 +16,50 @@ logger = logging.getLogger(__name__)
 VALID_SHIFTS = [1.0, 2.0, 3.0]
 
 VALID_TIMESTEPS = [
-    1.0, 0.9545454545454546, 0.9333333333333333, 0.9, 0.875,
-    0.8571428571428571, 0.8333333333333334, 0.7692307692307693, 0.75,
-    0.6666666666666666, 0.6428571428571429, 0.625, 0.5454545454545454,
-    0.5, 0.4, 0.375, 0.3, 0.25, 0.2222222222222222, 0.125,
+    1.0,
+    0.9545454545454546,
+    0.9333333333333333,
+    0.9,
+    0.875,
+    0.8571428571428571,
+    0.8333333333333334,
+    0.7692307692307693,
+    0.75,
+    0.6666666666666666,
+    0.6428571428571429,
+    0.625,
+    0.5454545454545454,
+    0.5,
+    0.4,
+    0.375,
+    0.3,
+    0.25,
+    0.2222222222222222,
+    0.125,
 ]
 
 SHIFT_TIMESTEPS = {
     1.0: [1.0, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125],
-    2.0: [1.0, 0.9333333333333333, 0.8571428571428571, 0.7692307692307693,
-          0.6666666666666666, 0.5454545454545454, 0.4, 0.2222222222222222],
-    3.0: [1.0, 0.9545454545454546, 0.9, 0.8333333333333334, 0.75,
-          0.6428571428571429, 0.5, 0.3],
+    2.0: [
+        1.0,
+        0.9333333333333333,
+        0.8571428571428571,
+        0.7692307692307693,
+        0.6666666666666666,
+        0.5454545454545454,
+        0.4,
+        0.2222222222222222,
+    ],
+    3.0: [
+        1.0,
+        0.9545454545454546,
+        0.9,
+        0.8333333333333334,
+        0.75,
+        0.6428571428571429,
+        0.5,
+        0.3,
+    ],
 }
 
 
@@ -59,12 +91,16 @@ def get_timestep_schedule(
         while ts_list and ts_list[-1] == 0:
             ts_list.pop()
         if len(ts_list) < 1:
-            logger.warning("timesteps empty after removing zeros; using default shift=%s", shift)
+            logger.warning(
+                "timesteps empty after removing zeros; using default shift=%s", shift
+            )
         else:
             if len(ts_list) > 20:
                 logger.warning("timesteps length=%d > 20; truncating", len(ts_list))
                 ts_list = ts_list[:20]
-            mapped = [min(VALID_TIMESTEPS, key=lambda x, t=t: abs(x - t)) for t in ts_list]
+            mapped = [
+                min(VALID_TIMESTEPS, key=lambda x, t=t: abs(x - t)) for t in ts_list
+            ]
             t_schedule_list = mapped
 
     if t_schedule_list is None and infer_steps is not None and infer_steps > 0:
@@ -77,7 +113,9 @@ def get_timestep_schedule(
         original_shift = shift
         shift = min(VALID_SHIFTS, key=lambda x: abs(x - shift))
         if original_shift != shift:
-            logger.warning("shift=%.2f rounded to nearest valid shift=%.1f", original_shift, shift)
+            logger.warning(
+                "shift=%.2f rounded to nearest valid shift=%.1f", original_shift, shift
+            )
         t_schedule_list = SHIFT_TIMESTEPS[shift]
 
     return t_schedule_list
@@ -106,10 +144,14 @@ def _mlx_apg_forward(
 
     if norm_threshold > 0:
         diff_norm = mx.sqrt((diff * diff).sum(axis=proj_axis, keepdims=True))
-        scale_factor = mx.minimum(mx.ones_like(diff_norm), norm_threshold / (diff_norm + 1e-8))
+        scale_factor = mx.minimum(
+            mx.ones_like(diff_norm), norm_threshold / (diff_norm + 1e-8)
+        )
         diff = diff * scale_factor
 
-    v1 = pred_cond / (mx.sqrt((pred_cond * pred_cond).sum(axis=proj_axis, keepdims=True)) + 1e-8)
+    v1 = pred_cond / (
+        mx.sqrt((pred_cond * pred_cond).sum(axis=proj_axis, keepdims=True)) + 1e-8
+    )
     parallel = (diff * v1).sum(axis=proj_axis, keepdims=True) * v1
     orthogonal = diff - parallel
 
@@ -166,6 +208,7 @@ def mlx_generate_diffusion(
         Dict with ``"target_latents"`` (numpy) and ``"time_costs"`` dict.
     """
     import mlx.core as mx
+
     from .dit import MLXCrossAttentionCache
 
     time_costs = {}
@@ -174,8 +217,16 @@ def mlx_generate_diffusion(
     enc_hs = mx.array(encoder_hidden_states_np)
     ctx = mx.array(context_latents_np)
 
-    enc_hs_nc = mx.array(encoder_hidden_states_non_cover_np) if encoder_hidden_states_non_cover_np is not None else None
-    ctx_nc = mx.array(context_latents_non_cover_np) if context_latents_non_cover_np is not None else None
+    enc_hs_nc = (
+        mx.array(encoder_hidden_states_non_cover_np)
+        if encoder_hidden_states_non_cover_np is not None
+        else None
+    )
+    ctx_nc = (
+        mx.array(context_latents_non_cover_np)
+        if context_latents_non_cover_np is not None
+        else None
+    )
 
     bsz = src_latents_shape[0]
     T = src_latents_shape[1]
@@ -220,11 +271,16 @@ def mlx_generate_diffusion(
     # ---- Prepare decoder step (compiled or plain with KV cache) ----
     _compiled_step = None
     if compile_model:
+
         def _raw_step(xt, t, tr, enc, ctx):
             vt, _ = mlx_decoder(
-                hidden_states=xt, timestep=t, timestep_r=tr,
-                encoder_hidden_states=enc, context_latents=ctx,
-                cache=None, use_cache=False,
+                hidden_states=xt,
+                timestep=t,
+                timestep_r=tr,
+                encoder_hidden_states=enc,
+                context_latents=ctx,
+                cache=None,
+                use_cache=False,
             )
             return vt
 
@@ -242,7 +298,9 @@ def mlx_generate_diffusion(
     diff_start = time.time()
     _switched_to_non_cover = False
 
-    for step_idx in tqdm(range(num_steps), desc="MLX DiT diffusion", disable=disable_tqdm):
+    for step_idx in tqdm(
+        range(num_steps), desc="MLX DiT diffusion", disable=disable_tqdm
+    ):
         current_t = t_schedule_list[step_idx]
 
         # Switch to non-cover conditions when appropriate
@@ -279,7 +337,9 @@ def mlx_generate_diffusion(
             pred_uncond = vt[bsz:]
             apply_cfg = cfg_interval_start <= current_t <= cfg_interval_end
             if apply_cfg:
-                vt = _mlx_apg_forward(pred_cond, pred_uncond, guidance_scale, momentum_state)
+                vt = _mlx_apg_forward(
+                    pred_cond, pred_uncond, guidance_scale, momentum_state
+                )
             else:
                 vt = pred_cond
 
@@ -307,7 +367,9 @@ def mlx_generate_diffusion(
     total_end = time.time()
 
     time_costs["diffusion_time_cost"] = diff_end - diff_start
-    time_costs["diffusion_per_step_time_cost"] = time_costs["diffusion_time_cost"] / max(num_steps, 1)
+    time_costs["diffusion_per_step_time_cost"] = time_costs[
+        "diffusion_time_cost"
+    ] / max(num_steps, 1)
     time_costs["total_time_cost"] = total_end - total_start
 
     result_np = np.array(xt)

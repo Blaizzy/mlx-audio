@@ -8,10 +8,10 @@ from typing import Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 
-
 # ---------------------------------------------------------------------------
 # Utility helpers
 # ---------------------------------------------------------------------------
+
 
 def _rotate_half(x: mx.array) -> mx.array:
     """Rotate the last dimension by splitting in half and swapping with negation."""
@@ -59,6 +59,7 @@ def _create_sliding_window_mask(
 # Rotary Position Embedding
 # ---------------------------------------------------------------------------
 
+
 class MLXRotaryEmbedding(nn.Module):
     """Pre-computes and caches cos/sin tables for rotary position embeddings."""
 
@@ -88,6 +89,7 @@ class MLXRotaryEmbedding(nn.Module):
 # Cross-Attention KV Cache
 # ---------------------------------------------------------------------------
 
+
 class MLXCrossAttentionCache:
     """Simple KV cache for cross-attention layers.
 
@@ -115,6 +117,7 @@ class MLXCrossAttentionCache:
 # ---------------------------------------------------------------------------
 # Core Layers
 # ---------------------------------------------------------------------------
+
 
 class MLXSwiGLUMLP(nn.Module):
     """SwiGLU MLP (equivalent to Qwen3MLP): gate * silu(gate_proj) * up_proj."""
@@ -154,15 +157,23 @@ class MLXAttention(nn.Module):
         self.num_kv_heads = num_key_value_heads
         self.head_dim = head_dim
         self.n_rep = num_attention_heads // num_key_value_heads
-        self.scale = head_dim ** -0.5
+        self.scale = head_dim**-0.5
         self.layer_idx = layer_idx
         self.is_cross_attention = is_cross_attention
         self.sliding_window = sliding_window
 
-        self.q_proj = nn.Linear(hidden_size, num_attention_heads * head_dim, bias=attention_bias)
-        self.k_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=attention_bias)
-        self.v_proj = nn.Linear(hidden_size, num_key_value_heads * head_dim, bias=attention_bias)
-        self.o_proj = nn.Linear(num_attention_heads * head_dim, hidden_size, bias=attention_bias)
+        self.q_proj = nn.Linear(
+            hidden_size, num_attention_heads * head_dim, bias=attention_bias
+        )
+        self.k_proj = nn.Linear(
+            hidden_size, num_key_value_heads * head_dim, bias=attention_bias
+        )
+        self.v_proj = nn.Linear(
+            hidden_size, num_key_value_heads * head_dim, bias=attention_bias
+        )
+        self.o_proj = nn.Linear(
+            num_attention_heads * head_dim, hidden_size, bias=attention_bias
+        )
 
         self.q_norm = nn.RMSNorm(head_dim, eps=rms_norm_eps)
         self.k_norm = nn.RMSNorm(head_dim, eps=rms_norm_eps)
@@ -173,7 +184,7 @@ class MLXAttention(nn.Module):
         if n_rep == 1:
             return x
         B, n_kv, L, D = x.shape
-        x = mx.expand_dims(x, axis=2)                  # [B, n_kv, 1, L, D]
+        x = mx.expand_dims(x, axis=2)  # [B, n_kv, 1, L, D]
         x = mx.broadcast_to(x, (B, n_kv, n_rep, L, D))
         return x.reshape(B, n_kv * n_rep, L, D)
 
@@ -202,9 +213,11 @@ class MLXAttention(nn.Module):
                 k = self.k_proj(encoder_hidden_states)
                 k = self.k_norm(k.reshape(B, enc_L, self.num_kv_heads, self.head_dim))
                 k = k.transpose(0, 2, 1, 3)
-                v = self.v_proj(encoder_hidden_states).reshape(
-                    B, enc_L, self.num_kv_heads, self.head_dim
-                ).transpose(0, 2, 1, 3)
+                v = (
+                    self.v_proj(encoder_hidden_states)
+                    .reshape(B, enc_L, self.num_kv_heads, self.head_dim)
+                    .transpose(0, 2, 1, 3)
+                )
                 if cache is not None and use_cache:
                     cache.update(k, v, self.layer_idx)
         else:
@@ -212,9 +225,11 @@ class MLXAttention(nn.Module):
             k = self.k_proj(hidden_states)
             k = self.k_norm(k.reshape(B, L, self.num_kv_heads, self.head_dim))
             k = k.transpose(0, 2, 1, 3)
-            v = self.v_proj(hidden_states).reshape(
-                B, L, self.num_kv_heads, self.head_dim
-            ).transpose(0, 2, 1, 3)
+            v = (
+                self.v_proj(hidden_states)
+                .reshape(B, L, self.num_kv_heads, self.head_dim)
+                .transpose(0, 2, 1, 3)
+            )
 
             # Apply RoPE to self-attention Q,K
             if position_cos_sin is not None:
@@ -238,6 +253,7 @@ class MLXAttention(nn.Module):
 # ---------------------------------------------------------------------------
 # DiT Layer
 # ---------------------------------------------------------------------------
+
 
 class MLXDiTLayer(nn.Module):
     """A single DiT transformer layer with AdaLN modulation.
@@ -352,10 +368,13 @@ class MLXDiTLayer(nn.Module):
 # Timestep Embedding
 # ---------------------------------------------------------------------------
 
+
 class MLXTimestepEmbedding(nn.Module):
     """Sinusoidal timestep embedding followed by MLP."""
 
-    def __init__(self, in_channels: int = 256, time_embed_dim: int = 2048, scale: float = 1000.0):
+    def __init__(
+        self, in_channels: int = 256, time_embed_dim: int = 2048, scale: float = 1000.0
+    ):
         super().__init__()
         self.in_channels = in_channels
         self.scale = scale
@@ -366,7 +385,9 @@ class MLXTimestepEmbedding(nn.Module):
         self.act2 = nn.SiLU()
         self.time_proj = nn.Linear(time_embed_dim, time_embed_dim * 6, bias=True)
 
-    def _sinusoidal_embedding(self, t: mx.array, dim: int, max_period: int = 10000) -> mx.array:
+    def _sinusoidal_embedding(
+        self, t: mx.array, dim: int, max_period: int = 10000
+    ) -> mx.array:
         """Create sinusoidal timestep embeddings.
 
         Args:
@@ -378,8 +399,7 @@ class MLXTimestepEmbedding(nn.Module):
         t = t * self.scale
         half = dim // 2
         freqs = mx.exp(
-            -math.log(max_period)
-            * mx.arange(half).astype(mx.float32) / half
+            -math.log(max_period) * mx.arange(half).astype(mx.float32) / half
         )
         args = t[:, None].astype(mx.float32) * freqs[None, :]
         embedding = mx.concatenate([mx.cos(args), mx.sin(args)], axis=-1)
@@ -409,6 +429,7 @@ class MLXTimestepEmbedding(nn.Module):
 # ---------------------------------------------------------------------------
 # Full DiT Decoder
 # ---------------------------------------------------------------------------
+
 
 class MLXDiTDecoder(nn.Module):
     """Native MLX implementation of AceStepDiTModel (the diffusion transformer decoder).
@@ -466,8 +487,12 @@ class MLXDiTDecoder(nn.Module):
         )
 
         # Timestep embeddings (two: t and t-r)
-        self.time_embed = MLXTimestepEmbedding(in_channels=256, time_embed_dim=inner_dim)
-        self.time_embed_r = MLXTimestepEmbedding(in_channels=256, time_embed_dim=inner_dim)
+        self.time_embed = MLXTimestepEmbedding(
+            in_channels=256, time_embed_dim=inner_dim
+        )
+        self.time_embed_r = MLXTimestepEmbedding(
+            in_channels=256, time_embed_dim=inner_dim
+        )
 
         # Condition embedder
         self.condition_embedder = nn.Linear(inner_dim, inner_dim, bias=True)
@@ -540,7 +565,7 @@ class MLXDiTDecoder(nn.Module):
         # Timestep embeddings
         temb_t, proj_t = self.time_embed(timestep)
         temb_r, proj_r = self.time_embed_r(timestep - timestep_r)
-        temb = temb_t + temb_r          # [B, D]
+        temb = temb_t + temb_r  # [B, D]
         timestep_proj = proj_t + proj_r  # [B, 6, D]
 
         # Concatenate context with hidden states: [B, T, C_ctx + 64] -> [B, T, in_channels]
@@ -581,7 +606,9 @@ class MLXDiTDecoder(nn.Module):
 
         # Process through transformer layers
         for layer in self.layers:
-            self_attn_mask = sliding_mask if layer.layer_type == "sliding_attention" else None
+            self_attn_mask = (
+                sliding_mask if layer.layer_type == "sliding_attention" else None
+            )
             hidden_states = layer(
                 hidden_states,
                 position_cos_sin=(cos, sin),
@@ -616,7 +643,9 @@ class MLXDiTDecoder(nn.Module):
             num_hidden_layers=config.num_hidden_layers,
             num_attention_heads=config.num_attention_heads,
             num_key_value_heads=config.num_key_value_heads,
-            head_dim=getattr(config, "head_dim", config.hidden_size // config.num_attention_heads),
+            head_dim=getattr(
+                config, "head_dim", config.hidden_size // config.num_attention_heads
+            ),
             rms_norm_eps=config.rms_norm_eps,
             attention_bias=config.attention_bias,
             in_channels=config.in_channels,

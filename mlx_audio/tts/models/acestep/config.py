@@ -1,7 +1,8 @@
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 
 from ..base import BaseModelArgs
+
 
 @dataclass
 class AceStepDiTConfig:
@@ -20,14 +21,15 @@ class AceStepDiTConfig:
     layer_types: List[str] = field(default_factory=lambda: ["cross", "self"] * 12)
     rope_theta: float = 1000000.0
     max_position_embeddings: int = 32768
-    
+
     # Extra config needed by ConditionEncoder
     text_hidden_dim: int = 1536  # Qwen3-1.7B default hidden size
     num_lyric_encoder_hidden_layers: int = 4
-    
+
     @classmethod
     def from_dict(cls, params: dict):
         return cls(**{k: v for k, v in params.items() if k in cls.__dataclass_fields__})
+
 
 @dataclass
 class AceStepVAEConfig:
@@ -37,10 +39,11 @@ class AceStepVAEConfig:
     decoder_channels: int = 128
     decoder_input_channels: int = 128
     audio_channels: int = 1
-    
+
     @classmethod
     def from_dict(cls, params: dict):
         return cls(**{k: v for k, v in params.items() if k in cls.__dataclass_fields__})
+
 
 @dataclass
 class AceStepConfig(BaseModelArgs):
@@ -48,14 +51,20 @@ class AceStepConfig(BaseModelArgs):
     dit_config: AceStepDiTConfig = field(default_factory=AceStepDiTConfig)
     vae_config: AceStepVAEConfig = field(default_factory=AceStepVAEConfig)
     lm_repo: str = "ACE-Step/acestep-5Hz-lm-1.7B"
-    
+
     @classmethod
     def from_dict(cls, params: dict):
-        dit_params = {k: v for k, v in params.items() if k in AceStepDiTConfig.__dataclass_fields__}
-        dit_config = AceStepDiTConfig.from_dict(dit_params) if dit_params else AceStepDiTConfig()
-        
+        dit_params = {
+            k: v
+            for k, v in params.items()
+            if k in AceStepDiTConfig.__dataclass_fields__
+        }
+        dit_config = (
+            AceStepDiTConfig.from_dict(dit_params) if dit_params else AceStepDiTConfig()
+        )
+
         vae_config = AceStepVAEConfig()
         if "vae_config" in params:
             vae_config = AceStepVAEConfig.from_dict(params["vae_config"])
-            
+
         return cls(dit_config=dit_config, vae_config=vae_config)

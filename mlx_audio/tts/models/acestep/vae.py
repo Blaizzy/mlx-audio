@@ -7,8 +7,8 @@
 # All operations use MLX channels-last (NLC) convention internally.
 # The public encode/decode API accepts and returns NLC arrays.
 
-import math
 import logging
+import math
 from typing import List, Optional, Tuple
 
 import mlx.core as mx
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Snake1d Activation
 # ---------------------------------------------------------------------------
+
 
 class MLXSnake1d(nn.Module):
     """Snake activation: x + (1/beta) * sin(alpha * x)^2.
@@ -59,6 +60,7 @@ class MLXSnake1d(nn.Module):
 # Residual Unit
 # ---------------------------------------------------------------------------
 
+
 class MLXOobleckResidualUnit(nn.Module):
     """Two weight-normalised Conv1d layers (k=7 dilated + k=1) wrapped with
     Snake1d activations and a residual skip connection."""
@@ -90,6 +92,7 @@ class MLXOobleckResidualUnit(nn.Module):
 # ---------------------------------------------------------------------------
 # Encoder / Decoder Blocks
 # ---------------------------------------------------------------------------
+
 
 class MLXOobleckEncoderBlock(nn.Module):
     """3 residual units (dilations 1, 3, 9) -> Snake -> strided Conv1d down."""
@@ -145,6 +148,7 @@ class MLXOobleckDecoderBlock(nn.Module):
 # ---------------------------------------------------------------------------
 # Encoder / Decoder
 # ---------------------------------------------------------------------------
+
 
 class MLXOobleckEncoder(nn.Module):
     """Oobleck Encoder: Conv1d -> N encoder blocks -> Snake -> Conv1d."""
@@ -233,6 +237,7 @@ class MLXOobleckDecoder(nn.Module):
 # ---------------------------------------------------------------------------
 # Full VAE
 # ---------------------------------------------------------------------------
+
 
 class MLXAutoEncoderOobleck(nn.Module):
     """Pure-MLX re-implementation of ``diffusers.AutoencoderOobleck``.
