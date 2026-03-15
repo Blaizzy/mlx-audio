@@ -27,7 +27,6 @@ from .tokenizer import IM_END_TOKEN, FishTokenizer
 RAS_WIN_SIZE = 10
 RAS_HIGH_TEMP = 1.0
 RAS_HIGH_TOP_P = 0.9
-RAS_MAX_RETRY = 4
 
 
 @dataclass
@@ -479,27 +478,22 @@ class Model(nn.Module):
         normal = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        mx.eval(normal)
+        high_temp = _sample_logits(
+            biased_logits,
+            temperature=RAS_HIGH_TEMP,
+            top_p=RAS_HIGH_TOP_P,
+            top_k=top_k,
+        )
+        mx.eval(normal, high_temp)
 
-        for _ in range(RAS_MAX_RETRY):
-            token_value = int(normal[0].item())
-            if token_value not in previous_semantic_tokens:
-                return normal
-            if not (
-                self.config.semantic_start_token_id
-                <= token_value
-                <= self.config.semantic_end_token_id
-            ):
-                return normal
-            normal = _sample_logits(
-                biased_logits,
-                temperature=RAS_HIGH_TEMP,
-                top_p=RAS_HIGH_TOP_P,
-                top_k=top_k,
-            )
-            mx.eval(normal)
-
-        return normal
+        token_value = int(normal[0].item())
+        should_use_high = (
+            token_value in previous_semantic_tokens
+            and self.config.semantic_start_token_id
+            <= token_value
+            <= self.config.semantic_end_token_id
+        )
+        return high_temp if should_use_high else normal
 
     def _generate_codes_for_batch(
         self,
@@ -561,6 +555,9 @@ class Model(nn.Module):
             semantic_code = (
                 semantic_token - self.config.semantic_start_token_id
             ).astype(mx.int32)
+            semantic_code = mx.clip(
+                semantic_code, 0, self.config.audio_decoder_config.vocab_size - 1
+            )
             previous_codebooks = semantic_code[:, None]
             fast_cache = self.model.make_fast_cache()
             fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
@@ -620,7 +617,7 @@ class Model(nn.Module):
         repetition_penalty: float = 1.2,
         stream: bool = False,
         speed: float = 1.0,
-        chunk_length: int = 200,
+        chunk_length: int = 300,
         verbose: bool = True,
         **kwargs,
     ):
