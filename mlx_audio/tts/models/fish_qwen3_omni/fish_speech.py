@@ -407,6 +407,14 @@ class Model(nn.Module):
     def model_type(self) -> str:
         return "fish_speech"
 
+    @classmethod
+    def model_quant_predicate(cls, path: str, module) -> bool:
+        import mlx.nn as nn
+        return (
+            not isinstance(module, nn.Embedding)
+            and "fast_" not in path
+        )
+
     def load_weights(self, weights, strict: bool = True):
         remapped = []
         for key, value in weights:
@@ -418,6 +426,9 @@ class Model(nn.Module):
     def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         remapped = {}
         for key, value in weights.items():
+            if key.startswith("model."):
+                remapped[key] = value
+                continue
             if key.startswith("text_model.model."):
                 new_key = key[len("text_model.model.") :]
             elif key.startswith("audio_decoder."):
