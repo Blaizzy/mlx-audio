@@ -197,20 +197,22 @@ def save_as_json(segments, output_path: str):
     else:
         result = {
             "text": segments.text,
-            "segments": [
-                {
-                    "text": s["text"],
-                    "start": s["start"],
-                    "end": s["end"],
-                    "duration": s["end"] - s["start"],
-                }
-                for s in segments.segments
-            ],
+            "segments": [],
         }
-        # Add speaker_id only if it exists
-        for i, s in enumerate(segments.segments):
+        for s in segments.segments:
+            seg = {
+                "text": s["text"],
+                "start": s["start"],
+                "end": s["end"],
+                "duration": s["end"] - s["start"],
+            }
+            # Add word-level timestamps if available
+            if "words" in s and s["words"]:
+                seg["words"] = s["words"]
+            # Add speaker_id if available
             if "speaker_id" in s:
-                result["segments"][i]["speaker_id"] = s["speaker_id"]
+                seg["speaker_id"] = s["speaker_id"]
+            result["segments"].append(seg)
 
     with (
         open(f"{output_path}.json", "w", encoding="utf-8")

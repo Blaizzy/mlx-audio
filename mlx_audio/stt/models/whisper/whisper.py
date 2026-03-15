@@ -515,8 +515,14 @@ class Model(nn.Module):
         all_heads[self.dims.n_text_layer // 2 :] = True
         self._alignment_heads = mx.array(np.asarray(all_heads.nonzero()).T)
 
-    def set_alignment_heads(self, dump: Union[bytes, np.ndarray]):
-        if isinstance(dump, np.ndarray):
+    @property
+    def alignment_heads(self) -> mx.array:
+        return self._alignment_heads
+
+    def set_alignment_heads(self, dump: Union[bytes, np.ndarray, list]):
+        if isinstance(dump, list):
+            self._alignment_heads = mx.array(dump)
+        elif isinstance(dump, np.ndarray):
             self._alignment_heads = mx.array(dump)
         elif isinstance(dump, bytes):
             array = np.frombuffer(
@@ -526,7 +532,7 @@ class Model(nn.Module):
             self._alignment_heads = mx.array(np.asarray(mask.nonzero()).T)
         else:
             raise ValueError(
-                f"Invalid type for `dump`: {type(dump)}. Expected a np.ndarray or base85-encoded bytes containing"
+                f"Invalid type for `dump`: {type(dump)}. Expected a list, np.ndarray or base85-encoded bytes containing"
                 " alignment_head information"
             )
 
@@ -695,6 +701,19 @@ class Model(nn.Module):
             model._processor = None
             warnings.warn(f"Could not load WhisperProcessor: {e}.")
 
+        # Load alignment heads from generation_config.json for word-level timestamps
+        gen_config_path = Path(model_path) / "generation_config.json"
+        if gen_config_path.exists():
+            try:
+                with open(gen_config_path, "r") as f:
+                    gen_config = json.load(f)
+                if "alignment_heads" in gen_config:
+                    model.set_alignment_heads(gen_config["alignment_heads"])
+            except Exception as e:
+                warnings.warn(
+                    f"Could not load alignment_heads from generation_config.json: {e}."
+                )
+
         return model
 
     def get_tokenizer(self, language: str = None, task: str = "transcribe"):
@@ -781,6 +800,7 @@ class Model(nn.Module):
         no_speech_threshold: Optional[float] = 0.6,
         condition_on_previous_text: bool = True,
         initial_prompt: Optional[str] = None,
+        return_timestamps: bool = True,
         word_timestamps: bool = False,
         prepend_punctuations: str = "\"'“¿([{-",
         append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
@@ -818,6 +838,10 @@ class Model(nn.Module):
             if True, the previous output of the model is provided as a prompt for the next window;
             disabling may make the text inconsistent across windows, but the model becomes less prone to
             getting stuck in a failure loop, such as repetition looping or timestamps going out of sync.
+
+        return_timestamps: bool
+            Extract segment-level timestamps. Each segment will include start and end times in seconds.
+            When False, the model decodes without timestamps and returns a single segment.
 
         word_timestamps: bool
             Extract word-level timestamps using the cross-attention pattern and dynamic time warping,
@@ -859,8 +883,13 @@ class Model(nn.Module):
                 task=task,
             )
 
+        # word_timestamps implies return_timestamps
+        if word_timestamps:
+            return_timestamps = True
+
         decode_options.pop("max_tokens", None)
         decode_options.pop("generation_stream", None)
+        decode_options["without_timestamps"] = not return_timestamps
         # Use shared audio preparation
         mel, content_frames = self._prepare_audio(audio)
         content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
