@@ -338,12 +338,21 @@ class Model(nn.Module):
         top_p: float = 0.9,
         repetition_penalty: float = 1.1,
         pad_token_id: int = -1,
+        text_only_logits: Optional[mx.array] = None,
+        text_only_logit_scale: float = 0.0,
     ) -> mx.array:
         token_logits = logits[:, -1, :]
 
         if pad_token_id >= 0:
             token_logits = token_logits.at[:, pad_token_id].add(
                 mx.array(float("-inf")) - token_logits[:, pad_token_id]
+            )
+
+        # Blend text-only logits (after pad suppression, matching PyTorch order)
+        if text_only_logits is not None and text_only_logit_scale > 0.0:
+            scale = text_only_logit_scale
+            token_logits = (text_only_logits[:, -1, :] * scale + token_logits) / (
+                scale + 1
             )
 
         if repetition_penalty != 1.0:
@@ -647,6 +656,8 @@ class Model(nn.Module):
         time_schedule: str = "logsnr",
         num_transition_steps: int = 5,
         max_tokens: int = 1024,
+        speed_up_factor: Optional[float] = None,
+        text_only_logit_scale: float = 0.0,
         verbose: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
@@ -663,6 +674,10 @@ class Model(nn.Module):
             noise_temperature: Initial noise scaling
             num_flow_matching_steps: Number of ODE steps
             max_tokens: Maximum generation steps
+            speed_up_factor: If set, re-runs generation with time durations
+                scaled by 1/factor for speed control (>1 = faster, <1 = slower)
+            text_only_logit_scale: Scale for blending text-only logits with main
+                logits during token sampling (0 = disabled)
 
         Yields:
             GenerationResult with audio and metadata
@@ -825,6 +840,8 @@ class Model(nn.Module):
             noise_temperature=noise_temperature,
             num_flow_matching_steps=num_flow_matching_steps,
             time_schedule=time_schedule,
+            speed_up_factor=speed_up_factor,
+            text_only_logit_scale=text_only_logit_scale,
             verbose=verbose,
             has_prompt_audio=has_prompt_audio,
             num_prompt_features=(
@@ -888,10 +905,12 @@ class Model(nn.Module):
         noise_temperature: float,
         num_flow_matching_steps: int,
         time_schedule: str,
-        verbose: bool,
-        has_prompt_audio: bool,
-        num_prompt_features: int,
-        num_transition_steps: int,
+        speed_up_factor: Optional[float] = None,
+        text_only_logit_scale: float = 0.0,
+        verbose: bool = False,
+        has_prompt_audio: bool = False,
+        num_prompt_features: int = 0,
+        num_transition_steps: int = 5,
         num_extra_steps: int = 0,
         prefix_len: int = 0,
     ) -> Optional[mx.array]:
@@ -912,6 +931,16 @@ class Model(nn.Module):
             )
         except Exception:
             pass
+
+        # Negative conditioning: match PyTorch default (negative_step_output)
+        # When CFG is active, run a double batch with text-masked negative input
+        tokenizer = self._tokenizer
+        need_neg_batch = acoustic_cfg_scale != 1.0
+        use_text_only_logit_scale = text_only_logit_scale > 0.0
+        if need_neg_batch:
+            start_header_id = tokenizer.convert_tokens_to_ids("<|start_header_id|>")
+            end_header_id = tokenizer.convert_tokens_to_ids("<|end_header_id|>")
+            eot_id = tokenizer.convert_tokens_to_ids("<|eot_id|>")
 
         # Determine prefill length
         prompt_len = input_ids.shape[1]
@@ -956,7 +985,30 @@ class Model(nn.Module):
                 prefill_len,
             )
 
-            hidden, cache = self.model(inputs_embeds=inputs_embeds_prefill)
+            # Double batch for negative conditioning during prefill
+            if need_neg_batch:
+                combined_embeds = mx.concatenate(
+                    [inputs_embeds_prefill, inputs_embeds_prefill], axis=0
+                )
+            else:
+                combined_embeds = inputs_embeds_prefill
+
+            # Add text-only batch element (same text tokens, zero acoustic/masks/timing)
+            if use_text_only_logit_scale:
+                text_only_prefill = (
+                    self.model.embed_tokens(input_ids[:, :prefill_len])
+                    + self.acoustic_proj(
+                        mx.zeros((B, prefill_len, self.config.acoustic_dim))
+                    )
+                    + self.acoustic_mask_emb(mx.zeros((B, prefill_len), dtype=mx.int32))
+                    + self.time_start_embed(mx.zeros((B, prefill_len), dtype=mx.int32))
+                    + self.time_end_embed(mx.zeros((B, prefill_len), dtype=mx.int32))
+                )
+                combined_embeds = mx.concatenate(
+                    [combined_embeds, text_only_prefill], axis=0
+                )
+
+            hidden, cache = self.model(inputs_embeds=combined_embeds)
             mx.eval(hidden, *[c for pair in cache for c in pair])
 
             n_prefill_frames = prefill_len - shift
@@ -994,20 +1046,116 @@ class Model(nn.Module):
             # Only compute logits when generating beyond input tokens
             need_logits = num_extra_steps > 0 and step >= input_ids.shape[1] - 1
 
-            hidden, logits, cache = self.forward_one_step(
-                input_slice,
-                acoustic_features,
-                acoustic_masks,
-                time_len_before,
-                time_len_after,
-                cache=cache,
-                compute_logits=need_logits,
-            )
-            mx.eval(hidden)
-            if cache:
-                mx.eval(*[c for pair in cache for c in pair])
-
-            cond = hidden
+            if need_neg_batch:
+                # Create negative input: replace text tokens with pad, keep structural
+                is_structural = (
+                    (input_slice == start_header_id)
+                    | (input_slice == end_header_id)
+                    | (input_slice == eot_id)
+                )
+                neg_input_slice = mx.where(
+                    is_structural,
+                    input_slice,
+                    mx.full(input_slice.shape, pad_token_id, dtype=input_slice.dtype),
+                )
+                combined_input = mx.concatenate([input_slice, neg_input_slice], axis=0)
+                combined_acoustic = mx.concatenate(
+                    [acoustic_features, acoustic_features], axis=0
+                )
+                combined_masks = mx.concatenate(
+                    [acoustic_masks, acoustic_masks], axis=0
+                )
+                combined_time_before = mx.concatenate(
+                    [time_len_before, time_len_before], axis=0
+                )
+                combined_time_after = mx.concatenate(
+                    [time_len_after, time_len_after], axis=0
+                )
+                if use_text_only_logit_scale:
+                    combined_input = mx.concatenate(
+                        [combined_input, input_slice], axis=0
+                    )
+                    combined_acoustic = mx.concatenate(
+                        [combined_acoustic, mx.zeros_like(acoustic_features)],
+                        axis=0,
+                    )
+                    combined_masks = mx.concatenate(
+                        [combined_masks, mx.zeros_like(acoustic_masks)], axis=0
+                    )
+                    combined_time_before = mx.concatenate(
+                        [combined_time_before, mx.zeros_like(time_len_before)],
+                        axis=0,
+                    )
+                    combined_time_after = mx.concatenate(
+                        [combined_time_after, mx.zeros_like(time_len_after)],
+                        axis=0,
+                    )
+                hidden, logits, cache = self.forward_one_step(
+                    combined_input,
+                    combined_acoustic,
+                    combined_masks,
+                    combined_time_before,
+                    combined_time_after,
+                    cache=cache,
+                    compute_logits=need_logits,
+                )
+                mx.eval(hidden)
+                if cache:
+                    mx.eval(*[c for pair in cache for c in pair])
+                neg_cond = hidden[B : 2 * B]
+                cond = hidden[:B]
+                text_only_logits = (
+                    logits[-B:]
+                    if (logits is not None and use_text_only_logit_scale)
+                    else None
+                )
+                logits = logits[:B] if logits is not None else None
+            else:
+                if use_text_only_logit_scale:
+                    combined_input = mx.concatenate([input_slice, input_slice], axis=0)
+                    combined_acoustic = mx.concatenate(
+                        [acoustic_features, mx.zeros_like(acoustic_features)],
+                        axis=0,
+                    )
+                    combined_masks = mx.concatenate(
+                        [acoustic_masks, mx.zeros_like(acoustic_masks)], axis=0
+                    )
+                    combined_time_before = mx.concatenate(
+                        [time_len_before, mx.zeros_like(time_len_before)], axis=0
+                    )
+                    combined_time_after = mx.concatenate(
+                        [time_len_after, mx.zeros_like(time_len_after)], axis=0
+                    )
+                    hidden, logits, cache = self.forward_one_step(
+                        combined_input,
+                        combined_acoustic,
+                        combined_masks,
+                        combined_time_before,
+                        combined_time_after,
+                        cache=cache,
+                        compute_logits=need_logits,
+                    )
+                    mx.eval(hidden)
+                    if cache:
+                        mx.eval(*[c for pair in cache for c in pair])
+                    cond = hidden[:B]
+                    text_only_logits = logits[-B:] if logits is not None else None
+                    logits = logits[:B] if logits is not None else None
+                else:
+                    hidden, logits, cache = self.forward_one_step(
+                        input_slice,
+                        acoustic_features,
+                        acoustic_masks,
+                        time_len_before,
+                        time_len_after,
+                        cache=cache,
+                        compute_logits=need_logits,
+                    )
+                    mx.eval(hidden)
+                    if cache:
+                        mx.eval(*[c for pair in cache for c in pair])
+                    cond = hidden
+                    text_only_logits = None
 
             # Flow matching to generate acoustic features + duration
             total_dim = self.config.acoustic_dim + self.time_dim
@@ -1044,6 +1192,8 @@ class Model(nn.Module):
                         top_p=top_p,
                         repetition_penalty=repetition_penalty,
                         pad_token_id=pad_token_id,
+                        text_only_logits=text_only_logits,
+                        text_only_logit_scale=text_only_logit_scale,
                     )
                     input_ids = mx.concatenate(
                         [input_ids, next_token.astype(mx.int32)], axis=1
@@ -1098,6 +1248,50 @@ class Model(nn.Module):
         # Add trailing time
         if last_time_before is not None:
             all_time_before.append(last_time_before)
+
+        # If speed_up_factor is set, re-run with scaled durations (two-pass)
+        if speed_up_factor is not None and all_time_before:
+            first_pass_time = mx.concatenate(all_time_before, axis=1)
+            scaled_time = mx.round(
+                first_pass_time.astype(mx.float32) / speed_up_factor
+            ).astype(mx.int32)
+
+            # Build prompt_time tensors for second pass
+            # Index 0 is unused padding; indices 1..N map to steps shift..end
+            second_pass_time_before = mx.concatenate(
+                [mx.zeros_like(scaled_time[:, :1]), scaled_time], axis=1
+            )
+            # time_after[i] = time_before[i+1], last position = 1
+            second_pass_time_after = mx.concatenate(
+                [scaled_time, mx.ones_like(scaled_time[:, :1])], axis=1
+            )
+
+            return self._generate_loop(
+                input_ids=input_ids,
+                prompt_acoustic_features=prompt_acoustic_features,
+                prompt_acoustic_masks=prompt_acoustic_masks,
+                prompt_time_before=second_pass_time_before,
+                prompt_time_after=second_pass_time_after,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                acoustic_cfg_scale=acoustic_cfg_scale,
+                duration_cfg_scale=duration_cfg_scale,
+                cfg_schedule=cfg_schedule,
+                noise_temperature=noise_temperature,
+                num_flow_matching_steps=num_flow_matching_steps,
+                time_schedule=time_schedule,
+                speed_up_factor=None,
+                text_only_logit_scale=text_only_logit_scale,
+                verbose=verbose,
+                has_prompt_audio=has_prompt_audio,
+                num_prompt_features=num_prompt_features,
+                num_transition_steps=num_transition_steps,
+                num_extra_steps=num_extra_steps,
+                prefix_len=prefix_len,
+            )
 
         # Stack features and decode
         acoustic_features_all = mx.concatenate(all_acoustic_features, axis=1)
