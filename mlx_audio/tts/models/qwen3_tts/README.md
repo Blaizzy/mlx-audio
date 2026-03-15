@@ -4,7 +4,9 @@ Alibaba's state-of-the-art multilingual TTS with three model variants.
 
 ## Voice Cloning
 
-Clone any voice using a reference audio sample. Provide the wav file and its transcript:
+Clone any voice using a reference audio sample. Provide the wav file and its exact transcript as a literal string (not a file path):
+
+> **Note:** Voice cloning is only supported on the **Base** models. Do not provide a `voice` (speaker name) when using `ref_audio` and `ref_text`, as it will cause a configuration conflict.
 
 ```python
 from mlx_audio.tts.utils import load_model
