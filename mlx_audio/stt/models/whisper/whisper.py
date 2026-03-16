@@ -1000,8 +1000,8 @@ class Model(nn.Module):
             text_tokens = [token for token in tokens if token < tokenizer.eot]
             return {
                 "seek": seek,
-                "start": start,
-                "end": end,
+                "start": float(start),
+                "end": float(end),
                 "text": tokenizer.decode(text_tokens),
                 "tokens": tokens,
                 "temperature": result.temperature,
