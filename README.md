@@ -1,3 +1,5 @@
+<a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy%2Fmlx-audio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
 # MLX-Audio
 
 The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
@@ -81,28 +83,49 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
-| **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-bf16](https://huggingface.co/mlx-community/Dia-1.6B-bf16) |
-| **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-0.2-500M](https://huggingface.co/mlx-community/OuteTTS-0.2-500M) |
-| **Spark** | SparkTTS model | EN, ZH | [mlx-community/SparkTTS-0.5B-bf16](https://huggingface.co/mlx-community/SparkTTS-0.5B-bf16) |
-| **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/Chatterbox-bf16](https://huggingface.co/mlx-community/Chatterbox-bf16) |
-| **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-bf16](https://huggingface.co/mlx-community/Soprano-bf16) |
+| **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
+| **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
+| **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
+| **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/chatterbox-fp16](https://huggingface.co/mlx-community/chatterbox-fp16) |
+| **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
+| **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
+| **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
 
 ### Speech-to-Text (STT)
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
-| **Parakeet** | NVIDIA's accurate STT | EN | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
+| **Distil-Whisper** | Distilled fast Whisper variants | EN | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
+| **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
+| **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
+| **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
+| **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
+| **Canary** | NVIDIA's multilingual ASR with translation | 25 EU + RU, UK | [README](mlx_audio/stt/models/canary/README.md) |
+| **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
+| **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
+| **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+
+
+### Voice Activity Detection / Speaker Diarization (VAD)
+
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **Sortformer v1** | NVIDIA's end-to-end speaker diarization (up to 4 speakers) | Language-agnostic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
+| **Sortformer v2.1** | NVIDIA's streaming speaker diarization with AOSC compression | Language-agnostic | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32) |
+
+See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API details, streaming examples, and model conversion.
 
 ### Speech-to-Speech (STS)
 
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
-| **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit)
+| **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
+| **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
 
 ## Model Examples
 
@@ -160,6 +183,21 @@ audio = results[0].audio  # mx.array
 
 See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
 
+### Ming Omni TTS (BailingMM)
+
+```bash
+mlx_audio.tts.generate \
+    --model mlx-community/Ming-omni-tts-16.8B-A3B-bf16 \
+    --prompt "Please generate speech based on the following description.\n" \
+    --text "This is a quick Ming Omni test." \
+    --lang_code en \
+    --output_path audio_io \
+    --file_prefix ming_basic \
+    --verbose
+```
+
+See the [Ming Omni TTS README](mlx_audio/tts/models/bailingmm/README.md) for CLI and Python cookbook examples, and the [Ming Omni Dense README](mlx_audio/tts/models/dense/README.md) for the `mlx-community/Ming-omni-tts-0.5B-bf16` workflow.
+
 ### CSM (Voice Cloning)
 
 Clone any voice using a reference audio sample:
@@ -183,6 +221,27 @@ result = generate_transcription(
 )
 print(result.text)
 ```
+
+### Qwen3-ASR & ForcedAligner
+
+Alibaba's multilingual speech models for transcription and word-level alignment.
+
+```python
+from mlx_audio.stt import load
+
+# Speech recognition
+model = load("mlx-community/Qwen3-ASR-0.6B-8bit")
+result = model.generate("audio.wav", language="English")
+print(result.text)
+
+# Word-level forced alignment
+aligner = load("mlx-community/Qwen3-ForcedAligner-0.6B-8bit")
+result = aligner.generate("audio.wav", text="I have a dream", language="English")
+for item in result:
+    print(f"[{item.start_time:.2f}s - {item.end_time:.2f}s] {item.text}")
+```
+
+See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
 
 ### VibeVoice-ASR
 
@@ -244,6 +303,88 @@ python -m mlx_audio.stt.generate \
     --max-tokens 8192 \
     --context "MLX, Apple Silicon, PyTorch, Transformer" \
     --verbose
+```
+
+### Parakeet (Multilingual STT)
+
+NVIDIA's high-accuracy speech-to-text model. Parakeet v3 supports 25 European languages.
+
+```python
+from mlx_audio.stt.utils import load
+
+# Load the multilingual v3 model
+model = load("mlx-community/parakeet-tdt-0.6b-v3")
+
+# Transcribe audio
+result = model.generate("audio.wav")
+print(f"Text: {result.text}")
+
+# Access word-level timestamps
+for sentence in result.sentences:
+    print(f"[{sentence.start:.2f}s - {sentence.end:.2f}s] {sentence.text}")
+```
+
+**Streaming transcription:**
+
+```python
+for chunk in model.generate("long_audio.wav", stream=True):
+    print(chunk.text, end="", flush=True)
+```
+
+**Supported languages (v3):**
+Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, German, Greek, Hungarian, Italian, Latvian, Lithuanian, Maltese, Polish, Portuguese, Romanian, Slovak, Slovenian, Spanish, Swedish, Russian, Ukrainian
+
+**CLI usage:**
+
+```bash
+python -m mlx_audio.stt.generate \
+    --model mlx-community/parakeet-tdt-0.6b-v3 \
+    --audio speech.wav \
+    --output-path output \
+    --format json \
+    --verbose
+```
+
+### Voxtral Realtime
+
+Mistral's 4B parameter streaming speech-to-text model, optimized for low-latency transcription.
+
+Available variants: [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit) (smaller/faster) | [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) (full precision)
+
+```python
+from mlx_audio.stt.utils import load
+
+# Use 4bit for faster inference, fp16 for full precision
+model = load("mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit")
+
+# Transcribe audio
+result = model.generate("audio.wav")
+print(result.text)
+
+# Streaming transcription
+for chunk in model.generate("audio.wav", stream=True):
+    print(chunk, end="", flush=True)
+
+# Adjust transcription delay (lower = faster but less accurate)
+result = model.generate("audio.wav", transcription_delay_ms=240)
+```
+
+### MedASR (Medical Transcription)
+
+Specialized model for medical terms and dictation.
+
+```python
+from mlx_audio.stt.utils import load, transcribe
+
+model = load("mlx-community/medasr")
+result = transcribe("medical_dictation.wav", model=model)
+print(result["text"])
+```
+
+**Live Transcription Example:**
+```bash
+# Continuous live transcription with VAD
+python examples/medasr_live.py
 ```
 
 ### SAM-Audio (Source Separation)
@@ -331,6 +472,13 @@ python -m mlx_audio.convert \
     --q-bits 4 \
     --upload-repo username/Kokoro-82M-4bit (optional: if you want to upload the model to Hugging Face)
 
+# Convert with MXFP4 quantization
+python -m mlx_audio.convert \
+    --hf-path prince-canuma/Kokoro-82M \
+    --mlx-path ./Kokoro-82M-mxfp4 \
+    --quantize \
+    --q-mode mxfp4
+
 # Convert with specific dtype (bfloat16)
 python -m mlx_audio.convert \
     --hf-path prince-canuma/Kokoro-82M \
@@ -345,8 +493,9 @@ python -m mlx_audio.convert \
 | `--hf-path` | Source Hugging Face model or local path |
 | `--mlx-path` | Output directory for converted model |
 | `-q, --quantize` | Enable quantization |
-| `--q-bits` | Bits per weight (4, 6, or 8) |
-| `--q-group-size` | Group size for quantization (default: 64) |
+| `--q-bits` | Bits per weight (optional, defaults depend on `--q-mode`) |
+| `--q-group-size` | Group size for quantization (optional, defaults depend on `--q-mode`) |
+| `--q-mode` | Quantization mode: `affine`, `mxfp4`, `mxfp8`, `nvfp4` |
 | `--dtype` | Weight dtype: `float16`, `bfloat16`, `float32` |
 | `--upload-repo` | Upload converted model to HF Hub |
 
@@ -359,11 +508,11 @@ Looking for Swift/iOS support? Check out [mlx-audio-swift](https://github.com/Bl
 - Python 3.10+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
-- **ffmpeg** (required for MP3/FLAC audio encoding)
+- **ffmpeg** (required for MP3/FLAC/OGG/Opus/Vorbis audio encoding)
 
 ### Installing ffmpeg
 
-ffmpeg is required for saving audio in MP3 or FLAC format. Install it using:
+ffmpeg is required for saving audio in MP3, FLAC, OGG, Opus, or Vorbis format. Install it using:
 
 ```bash
 # macOS (using Homebrew)

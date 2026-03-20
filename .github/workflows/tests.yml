@@ -93,6 +93,8 @@ jobs:
             path: mlx_audio/sts/tests
           - name: Codec
             path: mlx_audio/codec/tests
+          - name: VAD
+            path: mlx_audio/vad/tests
 
     steps:
       - uses: actions/checkout@v6

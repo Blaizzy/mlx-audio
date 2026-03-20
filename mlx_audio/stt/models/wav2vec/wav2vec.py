@@ -71,6 +71,7 @@ class ModelConfig(BaseModelArgs):
     pad_token_id: int = 0
     bos_token_id: int = 1
     eos_token_id: int = 2
+    adapter_attn_dim: Optional[int] = None
 
 
 class Wav2Vec2NoLayerNormConvLayer(nn.Module):
@@ -416,6 +417,22 @@ class Wav2Vec2FeedForward(nn.Module):
         return hidden_states
 
 
+class Wav2Vec2AttnAdapterLayer(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.norm = nn.LayerNorm(config.hidden_size)
+        self.linear_1 = nn.Linear(config.hidden_size, config.adapter_attn_dim)
+        self.act_fn = nn.ReLU()
+        self.linear_2 = nn.Linear(config.adapter_attn_dim, config.hidden_size)
+
+    def __call__(self, hidden_states):
+        hidden_states = self.norm(hidden_states)
+        hidden_states = self.linear_1(hidden_states)
+        hidden_states = self.act_fn(hidden_states)
+        hidden_states = self.linear_2(hidden_states)
+        return hidden_states
+
+
 class Wav2Vec2EncoderLayer(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -464,6 +481,11 @@ class Wav2Vec2EncoderLayerStableLayerNorm(nn.Module):
             config.hidden_size, eps=config.layer_norm_eps
         )
 
+        if getattr(config, "adapter_attn_dim", None) is not None:
+            self.adapter_layer = Wav2Vec2AttnAdapterLayer(config)
+        else:
+            self.adapter_layer = None
+
     def __call__(
         self,
         hidden_states: mx.array,
@@ -477,6 +499,9 @@ class Wav2Vec2EncoderLayerStableLayerNorm(nn.Module):
         hidden_states = hidden_states + self.feed_forward(
             self.final_layer_norm(hidden_states)
         )
+
+        if self.adapter_layer is not None:
+            hidden_states = hidden_states + self.adapter_layer(hidden_states)
 
         outputs = (hidden_states,)
 

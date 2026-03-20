@@ -28,11 +28,12 @@ class DecoderConfig(BaseModelArgs):
 
     # Decoder config
     decoder_num_layers: int = 8
-    decoder_dim: int = 512
-    decoder_intermediate_dim: int = 1536
+    decoder_dim: int = 768
+    decoder_intermediate_dim: int = 2304
     hop_length: int = 512
     n_fft: int = 2048
     upscale: int = 4
+    input_kernel: int = 1
     dw_kernel: int = 3
 
     token_size: int = 2048  # Samples per audio token
@@ -43,10 +44,17 @@ class DecoderConfig(BaseModelArgs):
 class ModelConfig(Qwen3ModelConfig):
     sample_rate: int = 32000
     decoder_config: DecoderConfig = None
+    model_path: str = None
 
     def __post_init__(self):
         if self.decoder_config is None:
             self.decoder_config = DecoderConfig()
+
+        # Set decoder config based on model version
+        if self.model_path and "soprano-1.1" not in self.model_path.lower():
+            self.decoder_config.decoder_dim = 512
+            self.decoder_config.decoder_intermediate_dim = 1536
+            self.decoder_config.input_kernel = 3
 
 
 class SopranoModel(Qwen3Model):
@@ -92,6 +100,7 @@ class Model(nn.Module):
             hop_length=self.config.decoder_config.hop_length,
             n_fft=self.config.decoder_config.n_fft,
             upscale=self.config.decoder_config.upscale,
+            input_kernel=self.config.decoder_config.input_kernel,
             dw_kernel=self.config.decoder_config.dw_kernel,
         )
 
@@ -170,11 +179,16 @@ class Model(nn.Module):
 
     def sanitize(self, weights: dict) -> dict:
         sanitized = {}
+
         for k, v in weights.items():
             k = k.replace("model.", "") if k.startswith("model.") else k
-            if k.startswith("decoder."):  # decoder weights are always fp32
+
+            if k.startswith("decoder."):  # Decoder weights are always fp32
                 if not v.dtype == mx.uint32:
                     v = v.astype(mx.float32)
+            elif not k.startswith("language_model."):
+                k = f"language_model.{k}"
+
             sanitized[k] = v
 
         return sanitized

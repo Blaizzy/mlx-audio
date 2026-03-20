@@ -9,7 +9,6 @@ import numpy as np
 from mlx.utils import tree_map
 
 from .audio import CHUNK_LENGTH
-from .tokenizer import Tokenizer, get_tokenizer
 
 
 def compression_ratio(text) -> float:
@@ -18,7 +17,7 @@ def compression_ratio(text) -> float:
 
 
 def detect_language(
-    model: "Whisper", mel: mx.array, tokenizer: Tokenizer = None
+    model: "Whisper", mel: mx.array, tokenizer=None
 ) -> Tuple[mx.array, List[dict]]:
     """
     Detect the spoken language in the audio, and return them as list of strings, along with the ids
@@ -33,9 +32,7 @@ def detect_language(
         list of dictionaries containing the probability distribution over all languages.
     """
     if tokenizer is None:
-        tokenizer = get_tokenizer(
-            model.is_multilingual, num_languages=model.num_languages
-        )
+        tokenizer = model.get_tokenizer()
     if (
         tokenizer.language is None
         or tokenizer.language_token not in tokenizer.sot_sequence
@@ -79,9 +76,7 @@ def detect_language(
     return language_tokens, language_probs
 
 
-def get_suppress_tokens(
-    tokenizer: Tokenizer, suppress_tokens: str = "-1"
-) -> Tuple[int, ...]:
+def get_suppress_tokens(tokenizer, suppress_tokens: str = "-1") -> Tuple[int, ...]:
     """Build suppress tokens list for decoding.
 
     Args:
@@ -351,7 +346,7 @@ class LogitFilter:
 
 
 class SuppressBlank(LogitFilter):
-    def __init__(self, tokenizer: Tokenizer, sample_begin: int, n_vocab: int):
+    def __init__(self, tokenizer, sample_begin: int, n_vocab: int):
         self.sample_begin = sample_begin
         mask = np.zeros(n_vocab, np.float32)
         mask[tokenizer.encode(" ") + [tokenizer.eot]] = -np.inf
@@ -376,7 +371,7 @@ class SuppressTokens(LogitFilter):
 class ApplyTimestampRules(LogitFilter):
     def __init__(
         self,
-        tokenizer: Tokenizer,
+        tokenizer,
         sample_begin: int,
         max_initial_timestamp_index: Optional[int],
     ):
@@ -456,13 +451,8 @@ class DecodingTask:
         self.model = model
 
         language = options.language or "en"
-        tokenizer = get_tokenizer(
-            model.is_multilingual,
-            num_languages=model.num_languages,
-            language=language,
-            task=options.task,
-        )
-        self.tokenizer: Tokenizer = tokenizer
+        tokenizer = model.get_tokenizer(language=language, task=options.task)
+        self.tokenizer = tokenizer
         self.options: DecodingOptions = self._verify_options(options)
 
         self.n_group: int = options.beam_size or options.best_of or 1
@@ -643,7 +633,7 @@ class DecodingTask:
     def run(self, mel: mx.array) -> List[DecodingResult]:
         self.inference.reset()
         self.decoder.reset()
-        tokenizer: Tokenizer = self.tokenizer
+        tokenizer = self.tokenizer
         n_audio: int = mel.shape[0]
 
         audio_features: mx.array = self._get_audio_features(mel)  # encoder forward pass

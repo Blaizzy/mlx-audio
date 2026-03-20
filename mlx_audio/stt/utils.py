@@ -10,9 +10,17 @@ from mlx_audio.utils import base_load_model, get_model_path, load_config
 SAMPLE_RATE = 16000
 
 MODEL_REMAPPING = {
+    "fireredasr2": "fireredasr2",
     "glm": "glmasr",
+    "sensevoice": "sensevoice",
     "voxtral": "voxtral",
+    "voxtral_realtime": "voxtral_realtime",
     "vibevoice": "vibevoice_asr",
+    "qwen3_asr": "qwen3_asr",
+    "canary": "canary",
+    "moonshine": "moonshine",
+    "mms": "mms",
+    "granite_speech": "granite_speech",
 }
 
 

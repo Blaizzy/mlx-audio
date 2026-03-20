@@ -3,8 +3,9 @@ import contextlib
 import inspect
 import json
 import os
+import sys
 import time
-from operator import rshift
+from pprint import pprint
 from typing import List, Optional, Union
 
 import mlx.core as mx
@@ -41,7 +42,7 @@ def parse_args():
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=128,
+        default=8192,
         help="Maximum number of new tokens to generate",
     )
     parser.add_argument(
@@ -73,6 +74,24 @@ def parse_args():
         default=None,
         help="Context string with hotwords or metadata to guide transcription",
     )
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=2048,
+        help="Prefill step size (default: 2048)",
+    )
+    parser.add_argument(
+        "--gen-kwargs",
+        type=json.loads,
+        default=None,
+        help="Additional generate kwargs as JSON (e.g. '{\"min_chunk_duration\": 1.0}')",
+    )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default="",
+        help="Text to align (for forced alignment models)",
+    )
     return parser.parse_args()
 
 
@@ -89,51 +108,60 @@ def format_vtt_timestamp(seconds: float) -> str:
     return format_timestamp(seconds).replace(",", ".")
 
 
+def _get_cues(segments):
+    """Extract unified cues from any model's output (Parakeet or Whisper).
+
+    Uses word-level cues when available, otherwise falls back to segment-level.
+    """
+    if hasattr(segments, "sentences"):
+        return [
+            {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
+        ]
+    cues = []
+    for s in segments.segments:
+        cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
+        if "words" in s and s["words"]:
+            for w in s["words"]:
+                cues.append({"start": w["start"], "end": w["end"], "text": w["word"]})
+    return cues
+
+
 def save_as_txt(segments, output_path: str):
-    with open(f"{output_path}.txt", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.txt", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         f.write(segments.text)
 
 
 def save_as_srt(segments, output_path: str):
-    with open(f"{output_path}.srt", "w", encoding="utf-8") as f:
-        if hasattr(segments, "sentences"):
-            # Parakeet model (AlignedResult)
-            for i, sentence in enumerate(segments.sentences, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_timestamp(sentence.start)} --> {format_timestamp(sentence.end)}\n"
-                )
-                f.write(f"{sentence.text}\n\n")
-        else:
-            # Whisper model
-            for i, segment in enumerate(segments.segments, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\n"
-                )
-                f.write(f"{segment['text']}\n\n")
+    with (
+        open(f"{output_path}.srt", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
+        for i, cue in enumerate(_get_cues(segments), 1):
+            f.write(f"{i}\n")
+            f.write(
+                f"{format_timestamp(cue['start'])} --> {format_timestamp(cue['end'])}\n"
+            )
+            f.write(f"{cue['text']}\n\n")
 
 
 def save_as_vtt(segments, output_path: str):
-    with open(f"{output_path}.vtt", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.vtt", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         f.write("WEBVTT\n\n")
-        if hasattr(segments, "sentences"):
-            sentences = segments.sentences
-
-            for i, sentence in enumerate(sentences, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_vtt_timestamp(sentence.start)} --> {format_vtt_timestamp(sentence.end)}\n"
-                )
-                f.write(f"{sentence.text}\n\n")
-        else:
-            sentences = segments.segments
-            for i, token in enumerate(sentences, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_vtt_timestamp(token['start'])} --> {format_vtt_timestamp(token['end'])}\n"
-                )
-                f.write(f"{token['text']}\n\n")
+        for i, cue in enumerate(_get_cues(segments), 1):
+            f.write(f"{i}\n")
+            f.write(
+                f"{format_vtt_timestamp(cue['start'])} --> {format_vtt_timestamp(cue['end'])}\n"
+            )
+            f.write(f"{cue['text']}\n\n")
 
 
 def save_as_json(segments, output_path: str):
@@ -166,22 +194,28 @@ def save_as_json(segments, output_path: str):
     else:
         result = {
             "text": segments.text,
-            "segments": [
-                {
-                    "text": s["text"],
-                    "start": s["start"],
-                    "end": s["end"],
-                    "duration": s["end"] - s["start"],
-                }
-                for s in segments.segments
-            ],
+            "segments": [],
         }
-        # Add speaker_id only if it exists
-        for i, s in enumerate(segments.segments):
+        for s in segments.segments:
+            seg = {
+                "text": s["text"],
+                "start": s["start"],
+                "end": s["end"],
+                "duration": s["end"] - s["start"],
+            }
+            # Add word-level timestamps if available
+            if "words" in s and s["words"]:
+                seg["words"] = s["words"]
+            # Add speaker_id if available
             if "speaker_id" in s:
-                result["segments"][i]["speaker_id"] = s["speaker_id"]
+                seg["speaker_id"] = s["speaker_id"]
+            result["segments"].append(seg)
 
-    with open(f"{output_path}.json", "w", encoding="utf-8") as f:
+    with (
+        open(f"{output_path}.json", "w", encoding="utf-8")
+        if output_path != "-"
+        else contextlib.nullcontext(sys.stdout)
+    ) as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
 
 
@@ -235,6 +269,7 @@ def generate_transcription(
     output_path: str = "transcript",
     format: str = "txt",
     verbose: bool = False,
+    text: str = "",
     **kwargs,
 ):
     """Generate transcriptions from audio files.
@@ -245,6 +280,7 @@ def generate_transcription(
         output_path: Path to save the output.
         format: Output format (txt, srt, vtt, or json).
         verbose: Verbose output.
+        text: Text to align (for forced alignment models).
         **kwargs: Additional arguments for the model's generate method.
 
     Returns:
@@ -266,7 +302,15 @@ def generate_transcription(
         print(f"\033[94mAudio path:\033[0m {audio}")
         print(f"\033[94mOutput path:\033[0m {output_path}")
         print(f"\033[94mFormat:\033[0m {format}")
-        print("\033[94mTranscription:\033[0m")
+
+    # Handle gen_kwargs (additional generate parameters as JSON)
+    gen_kwargs = kwargs.pop("gen_kwargs", None)
+    if gen_kwargs:
+        kwargs.update(gen_kwargs)
+
+    # Add text to kwargs if provided (for forced alignment)
+    if text:
+        kwargs["text"] = text
 
     signature = inspect.signature(model.generate)
     kwargs = {k: v for k, v in kwargs.items() if k in signature.parameters}
@@ -275,6 +319,8 @@ def generate_transcription(
         all_segments = []
         accumulated_text = ""
         language = "en"
+        prompt_tokens = 0
+        generation_tokens = 0
         for result in model.generate(audio, verbose=verbose, **kwargs):
             segment_dict = {
                 "text": result.text,
@@ -288,15 +334,40 @@ def generate_transcription(
             accumulated_text += result.text
             language = result.language
 
+            # Extract token counts from results (final result has cumulative totals)
+            if hasattr(result, "prompt_tokens") and result.prompt_tokens > 0:
+                prompt_tokens = result.prompt_tokens
+            if hasattr(result, "generation_tokens") and result.generation_tokens > 0:
+                generation_tokens = result.generation_tokens
+
+        stream_end_time = time.time()
+        stream_duration = stream_end_time - start_time
         segments = STTOutput(
             text=accumulated_text.strip(),
             segments=all_segments,
             language=language,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+            total_tokens=prompt_tokens + generation_tokens,
+            total_time=stream_duration,
+            prompt_tps=prompt_tokens / stream_duration if stream_duration > 0 else 0,
+            generation_tps=(
+                generation_tokens / stream_duration if stream_duration > 0 else 0
+            ),
         )
     else:
         segments = model.generate(
             audio, verbose=verbose, generation_stream=generation_stream, **kwargs
         )
+
+    if verbose:
+        if hasattr(segments, "text"):
+            print("\033[94mTranscription:\033[0m\n")
+            print(f"{segments.text[:500]}...\n")
+
+        if hasattr(segments, "segments") and segments.segments is not None:
+            print("\033[94mSegments:\033[0m\n")
+            pprint(segments.segments[:3] + ["..."])
 
     end_time = time.time()
 

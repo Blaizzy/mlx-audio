@@ -3,7 +3,7 @@
 This module provides functions for reading and writing audio files.
 - Reading: Uses miniaudio to support WAV, MP3, FLAC, and Vorbis formats.
            Uses ffmpeg for M4A/AAC format support.
-- Writing: Uses miniaudio for WAV/FLAC and ffmpeg for MP3 encoding.
+- Writing: Uses miniaudio for WAV and ffmpeg for MP3, FLAC, OGG, Opus, and Vorbis encoding.
 """
 
 import io
@@ -193,17 +193,17 @@ def read(
         Tuple of (audio_data, sample_rate).
         audio_data is a numpy array with shape (samples,) for mono or (samples, channels) for multi-channel.
     """
-    # Check if this is an M4A file that needs ffmpeg
+    # Check if this is a file that needs ffmpeg
     use_ffmpeg = False
     if isinstance(file, (str, Path)):
         ext = Path(file).suffix.lstrip(".").lower()
-        if ext in ("m4a", "aac"):
+        if ext in ("m4a", "aac", "ogg", "opus"):
             use_ffmpeg = True
     elif isinstance(file, io.BytesIO):
         file.seek(0)
         header = file.read(12)
         file.seek(0)
-        if header[4:8] == b"ftyp":
+        if header[4:8] == b"ftyp" or header[:4] == b"OggS":
             use_ffmpeg = True
 
     if use_ffmpeg:
@@ -323,7 +323,7 @@ def _encode_ffmpeg(
         samplerate: Sample rate in Hz
         nchannels: Number of channels
         output: Output file path or BytesIO object
-        format: Output format (mp3, flac, etc.)
+        format: Output format (mp3, flac, ogg, opus, vorbis, etc.)
         bitrate: Audio bitrate for lossy formats (default: 128k)
     """
     ffmpeg_path = _get_ffmpeg_path()
@@ -351,6 +351,17 @@ def _encode_ffmpeg(
     # Add format-specific options
     if format == "mp3":
         cmd.extend(["-b:a", bitrate])
+    elif format == "opus":
+        cmd.extend(["-c:a", "libopus", "-b:a", bitrate])
+    elif format in ("ogg", "vorbis"):
+        # Use FLAC codec in OGG container for maximum compatibility
+        # Native vorbis encoder has limitations (experimental, stereo-only)
+        # FLAC in OGG provides lossless compression and works with any channels
+        cmd.extend(["-c:a", "flac"])
+
+    # Map format to output container format
+    if format == "vorbis":
+        format = "ogg"  # Vorbis uses OGG container
 
     cmd.extend(["-f", format])
 
@@ -389,11 +400,12 @@ def write(
         data: Audio data as numpy array. Shape can be (samples,) for mono
               or (samples, channels) for multi-channel.
         samplerate: Sample rate in Hz.
-        format: Output format. Supports 'wav', 'flac', 'mp3'. If None, inferred from file extension.
+        format: Output format. Supports 'wav', 'flac', 'mp3', 'ogg', 'opus', 'vorbis'.
+                If None, inferred from file extension.
 
     Note:
-        WAV and FLAC use miniaudio for encoding.
-        MP3 uses ffmpeg (must be installed: brew install ffmpeg).
+        WAV uses miniaudio for encoding.
+        MP3, FLAC, OGG, Opus, and Vorbis use ffmpeg (must be installed: brew install ffmpeg).
     """
     import miniaudio
 
@@ -427,17 +439,24 @@ def write(
     # Get number of channels
     if data.ndim == 1:
         nchannels = 1
+        samples_flat = data
     else:
         nchannels = data.shape[1]
+        samples_flat = data.flatten()
 
-    if format == "wav":
-        import array
-
+    if format == "pcm" or format == "raw":
         # Flatten for miniaudio (interleaved)
-        if data.ndim == 1:
-            samples_flat = data
+        pcm_bytes = samples_flat.tobytes()
+
+        if isinstance(file, io.BytesIO):
+            file.write(pcm_bytes)
+            file.seek(0)
         else:
-            samples_flat = data.flatten()
+            with open(file, "wb") as f:
+                f.write(pcm_bytes)
+
+    elif format == "wav":
+        import array
 
         # Convert to array.array for miniaudio
         samples_array = array.array("h", samples_flat.tolist())
@@ -469,7 +488,7 @@ def write(
         else:
             miniaudio.wav_write_file(str(file), sound)
 
-    elif format in ("flac", "mp3"):
+    elif format in ("flac", "mp3", "ogg", "opus", "vorbis"):
         # Check for ffmpeg early to provide a clear error message
         if not _check_ffmpeg_available():
             import warnings

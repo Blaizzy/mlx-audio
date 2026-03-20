@@ -8,7 +8,8 @@ from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
-from huggingface_hub import snapshot_download
+
+from mlx_audio.utils import get_model_path
 
 from .config import DACVAEConfig
 
@@ -43,7 +44,7 @@ def load_audio(audio_path: str, target_sr: int = 48000) -> Tuple[np.ndarray, int
         audio, sr = audio_read(audio_path)
     except ImportError:
         pass
-    except Exception as e:
+    except Exception:
         # miniaudio failed, try librosa
         pass
 
@@ -204,26 +205,29 @@ class SAMAudioProcessor:
         self.audio_sampling_rate = audio_sampling_rate
 
     @classmethod
-    def from_pretrained(cls, model_name_or_path: str) -> "SAMAudioProcessor":
+    def from_pretrained(
+        cls,
+        model_name_or_path: Union[str, Path],
+        revision: Optional[str] = None,
+        force_download: bool = False,
+    ) -> "SAMAudioProcessor":
         """
         Load processor from pretrained model.
 
         Args:
             model_name_or_path: HuggingFace model ID or local path
+            revision: Optional HuggingFace revision (branch, tag, or commit)
+            force_download: Force re-download even if cached
 
         Returns:
             Configured processor
         """
         # Download or locate model
-        if Path(model_name_or_path).exists():
-            model_path = Path(model_name_or_path)
-        else:
-            model_path = Path(
-                snapshot_download(
-                    repo_id=model_name_or_path,
-                    allow_patterns=["*.json"],
-                )
-            )
+        model_path = get_model_path(
+            str(model_name_or_path),
+            revision=revision,
+            force_download=force_download,
+        )
 
         # Load config
         config_path = model_path / "config.json"

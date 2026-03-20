@@ -1,5 +1,8 @@
 import importlib.resources
+import importlib.util
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
@@ -12,6 +15,52 @@ from misaki import en
 def patched_open_text(package, resource):
     """Replacement for deprecated open_text using files() API"""
     return importlib.resources.files(package).joinpath(resource).open("r")
+
+
+class FakeTokenizer:
+    def __init__(self):
+        self.semantic_begin_id = 1000
+        self._next = 1
+
+    def encode(self, text):
+        token = self._next
+        self._next += 1
+        return [token]
+
+
+def tiny_config():
+    from mlx_audio.tts.models.fish_qwen3_omni.config import ModelConfig
+
+    return ModelConfig.from_dict(
+        {
+            "semantic_start_token_id": 1000,
+            "semantic_end_token_id": 1007,
+            "text_config": {
+                "vocab_size": 32,
+                "n_layer": 1,
+                "n_head": 2,
+                "dim": 8,
+                "intermediate_size": 16,
+                "n_local_heads": 1,
+                "head_dim": 4,
+                "norm_eps": 1e-6,
+                "max_seq_len": 64,
+                "attention_qk_norm": True,
+            },
+            "audio_decoder_config": {
+                "vocab_size": 8,
+                "n_layer": 1,
+                "n_head": 2,
+                "dim": 8,
+                "intermediate_size": 16,
+                "n_local_heads": 1,
+                "head_dim": 4,
+                "num_codebooks": 2,
+                "norm_eps": 1e-6,
+                "max_seq_len": 3,
+            },
+        }
+    )
 
 
 # Apply the patch at the module level
@@ -336,6 +385,67 @@ class TestKokoroPipeline(unittest.TestCase):
 
 
 @patch("importlib.resources.open_text", patched_open_text)
+class TestKittenTTSModel(unittest.TestCase):
+    def _config(self):
+        return {
+            "hidden_dim": 16,
+            "max_conv_dim": 16,
+            "max_dur": 10,
+            "n_layer": 1,
+            "n_mels": 80,
+            "n_token": 32,
+            "style_dim": 64,
+            "text_encoder_kernel_size": 3,
+            "asr_res_dim": 8,
+            "decoder_out_dim": 16,
+            "plbert": {
+                "num_hidden_layers": 1,
+                "num_attention_heads": 1,
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "max_position_embeddings": 32,
+                "embedding_size": 16,
+                "inner_group_num": 1,
+                "num_hidden_groups": 1,
+                "hidden_dropout_prob": 0.0,
+                "attention_probs_dropout_prob": 0.0,
+                "type_vocab_size": 2,
+                "layer_norm_eps": 1e-12,
+            },
+            "istftnet": {
+                "resblock_kernel_sizes": [3, 3],
+                "upsample_rates": [2, 2],
+                "upsample_initial_channel": 32,
+                "resblock_dilation_sizes": [[1, 3, 5], [1, 3, 5]],
+                "upsample_kernel_sizes": [4, 4],
+                "gen_istft_n_fft": 16,
+                "gen_istft_hop_size": 4,
+            },
+        }
+
+    def test_init(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+        self.assertIsInstance(model, nn.Module)
+        self.assertEqual(model.config.n_token, config["n_token"])
+
+    def test_sanitize_alpha_names(self):
+        from mlx_audio.tts.models.kitten_tts.kitten_tts import Model, ModelConfig
+
+        config = self._config()
+        model = Model(ModelConfig.from_dict(config))
+        weights = {
+            "decoder.generator.resblocks.0.alpha1.0": mx.ones((1, 1, 1)),
+            "decoder.generator.resblocks.0.alpha2.0": mx.ones((1, 1, 1)),
+        }
+        sanitized = model.sanitize(weights)
+        self.assertIn("decoder.generator.resblocks.0.alpha1_0", sanitized)
+        self.assertIn("decoder.generator.resblocks.0.alpha2_0", sanitized)
+        self.assertNotIn("decoder.generator.resblocks.0.alpha1.0", sanitized)
+
+
 class TestBarkModel(unittest.TestCase):
     @patch("mlx_audio.tts.models.bark.bark.BertTokenizer")
     def test_init(self, mock_tokenizer):
@@ -552,14 +662,14 @@ class TestLlamaModel(unittest.TestCase):
             "layer_types": ["full_attention"] * 28,
         }
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_init(self, mock_tokenizer):
         """Test LlamaModel initialization."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
 
         # Mock the tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         # Create a minimal config
         config = ModelConfig(**self._default_config)
@@ -570,14 +680,22 @@ class TestLlamaModel(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_generate(self, mock_tokenizer):
         """Test generate method."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+
+        def mock_tokenize(text, return_tensors=None):
+            result = MagicMock()
+            result.input_ids = mx.array([[1, 2, 3, 4]], dtype=mx.int64)
+            return result
+
+        mock_tokenizer_instance.side_effect = mock_tokenize
+        mock_tokenizer_instance.__call__ = mock_tokenize
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         config = ModelConfig(**self._default_config)
         model = Model(config)
@@ -587,7 +705,7 @@ class TestLlamaModel(unittest.TestCase):
         self.assertEqual(input_ids.shape[0], 2)
 
         logits = model(input_ids)
-        self.assertEqual(logits.shape, (2, 9, config.vocab_size))
+        self.assertEqual(logits.shape, (2, input_ids.shape[1], config.vocab_size))
 
         # Verify batched input creation with reference audio
         input_ids, input_mask = model.prepare_input_ids(
@@ -596,16 +714,16 @@ class TestLlamaModel(unittest.TestCase):
         self.assertEqual(input_ids.shape[0], 2)
 
         logits = model(input_ids)
-        self.assertEqual(logits.shape, (2, 22, config.vocab_size))
+        self.assertEqual(logits.shape, (2, input_ids.shape[1], config.vocab_size))
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_sanitize(self, mock_tokenizer):
         """Test sanitize method."""
         from mlx_audio.tts.models.llama.llama import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         # Create a config with tie_word_embeddings=True
         config = ModelConfig(
@@ -854,14 +972,14 @@ class TestOuteTTSModel(unittest.TestCase):
             "vocab_size": 134400,
         }
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_init(self, mock_tokenizer):
         """Test initialization."""
         from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
 
         # Mock the tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         # Create a minimal config
         config = ModelConfig(**self._default_config)
@@ -872,14 +990,14 @@ class TestOuteTTSModel(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
-    @patch("transformers.LlamaTokenizer")
+    @patch("transformers.AutoTokenizer")
     def test_generate(self, mock_tokenizer):
         """Test generate method."""
         from mlx_audio.tts.models.outetts.outetts import Model, ModelConfig
 
         # Mock tokenizer instance
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer.return_value = mock_tokenizer_instance
+        mock_tokenizer.from_pretrained.return_value = mock_tokenizer_instance
 
         config = ModelConfig(**self._default_config)
         model = Model(config)
@@ -1562,11 +1680,12 @@ class TestSoprano(unittest.TestCase):
 
         config = DecoderConfig()
         self.assertEqual(config.decoder_num_layers, 8)
-        self.assertEqual(config.decoder_dim, 512)
-        self.assertEqual(config.decoder_intermediate_dim, 1536)
+        self.assertEqual(config.decoder_dim, 768)
+        self.assertEqual(config.decoder_intermediate_dim, 2304)
         self.assertEqual(config.hop_length, 512)
         self.assertEqual(config.n_fft, 2048)
         self.assertEqual(config.upscale, 4)
+        self.assertEqual(config.input_kernel, 1)
         self.assertEqual(config.dw_kernel, 3)
         self.assertEqual(config.token_size, 2048)
         self.assertEqual(config.receptive_field, 4)
@@ -1660,8 +1779,8 @@ class TestSoprano(unittest.TestCase):
 
         sanitized = model.sanitize(weights)
 
-        self.assertIn("embed_tokens.weight", sanitized)
-        self.assertIn("layers.0.input_layernorm.weight", sanitized)
+        self.assertIn("language_model.embed_tokens.weight", sanitized)
+        self.assertIn("language_model.layers.0.input_layernorm.weight", sanitized)
         self.assertIn("decoder.backbone.weight", sanitized)
         self.assertNotIn("model.embed_tokens.weight", sanitized)
 
@@ -1680,7 +1799,7 @@ class TestSoprano(unittest.TestCase):
         sanitized = model.sanitize(weights)
 
         self.assertEqual(sanitized["decoder.backbone.weight"].dtype, mx.float32)
-        self.assertEqual(sanitized["lm_head.weight"].dtype, mx.bfloat16)
+        self.assertEqual(sanitized["language_model.lm_head.weight"].dtype, mx.bfloat16)
 
     def test_format_duration(self):
         """Test _format_duration helper method."""
@@ -1786,6 +1905,7 @@ class TestSoprano(unittest.TestCase):
             hop_length=512,
             n_fft=2048,
             upscale=4,
+            input_kernel=1,
             dw_kernel=3,
         )
 
@@ -1796,7 +1916,6 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(decoder.hop_length, 512)
         self.assertEqual(decoder.n_fft, 2048)
         self.assertEqual(decoder.upscale, 4)
-        self.assertEqual(decoder.dw_kernel, 3)
 
     def test_decoder_default_intermediate_dim(self):
         """Test default intermediate_dim calculation."""
@@ -3166,6 +3285,281 @@ class TestQwen3TTSStreamingDecode(unittest.TestCase):
 
         # streaming_interval=0.1 -> 1 token (minimum)
         self.assertEqual(max(1, int(0.1 * 12.5)), 1)
+
+
+@patch("importlib.resources.open_text", patched_open_text)
+class TestBailingMMModel(unittest.TestCase):
+    HAS_ONNX = importlib.util.find_spec("onnx") is not None
+
+    @staticmethod
+    def _build_dummy_onnx(path: Path):
+        import onnx
+        from onnx import helper, numpy_helper
+
+        expected = {
+            "linear.weight": np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32),
+            "linear.bias": np.array([0.1, -0.2], dtype=np.float32),
+        }
+        initializers = [
+            numpy_helper.from_array(array, name=name)
+            for name, array in expected.items()
+        ]
+        graph = helper.make_graph(
+            nodes=[],
+            name="dummy_campplus",
+            inputs=[],
+            outputs=[],
+            initializer=initializers,
+        )
+        model = helper.make_model(graph, producer_name="mlx-audio-tests")
+        onnx.save(model, path.as_posix())
+        return expected
+
+    def _make_minimal_bailingmm_model(self):
+        from mlx_audio.tts.models.bailingmm.bailingmm import Model
+
+        model = Model.__new__(Model)
+        model.tokenizer = MagicMock()
+        model.tokenizer.encode.return_value = [1, 2, 3]
+        model.audio = MagicMock()
+        model.audio.sample_rate = 24000
+        return model
+
+    def test_convert_campplus_onnx_to_safetensors_allclose(self):
+        if not self.HAS_ONNX:
+            self.skipTest("onnx is required for campplus conversion test.")
+
+        from safetensors.numpy import load_file
+
+        from mlx_audio.tts.models.bailingmm import convert_campplus_onnx_to_safetensors
+
+        with TemporaryDirectory() as tmpdir:
+            onnx_path = Path(tmpdir) / "campplus.onnx"
+            expected = self._build_dummy_onnx(onnx_path)
+
+            safetensors_path = convert_campplus_onnx_to_safetensors(
+                onnx_path=onnx_path,
+                output_path=Path(tmpdir) / "campplus.safetensors",
+                verify_allclose=True,
+            )
+
+            converted = load_file(str(safetensors_path))
+            self.assertEqual(set(converted.keys()), set(expected.keys()))
+            for key in expected:
+                self.assertTrue(
+                    np.allclose(expected[key], converted[key], rtol=1e-5, atol=1e-6)
+                )
+
+    def test_qwen2_sliding_window_attention_applies_after_window_boundary(self):
+        from mlx_lm.models.base import create_attention_mask
+        from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
+
+        from mlx_audio.tts.models.bailingmm.bailingmm import MingQwen2Model
+
+        args = Qwen2ModelArgs(
+            model_type="qwen2",
+            hidden_size=32,
+            num_hidden_layers=2,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            rms_norm_eps=1e-6,
+            vocab_size=1,
+            rope_theta=1_000_000.0,
+        )
+        model = MingQwen2Model(
+            args,
+            {
+                "use_sliding_window": True,
+                "sliding_window": 4,
+                "max_window_layers": 0,
+            },
+        )
+
+        x = mx.random.normal((1, 8, 32), dtype=mx.float32)
+        mask = create_attention_mask(x, None)
+
+        y_sliding = model.layers[0](x, mask, None)
+        model.layers[0].self_attn.sliding_window = None
+        y_full = model.layers[0](x, mask, None)
+
+        diff = np.abs(np.array(y_sliding) - np.array(y_full)).mean(axis=-1)[0]
+        self.assertLess(diff[:4].max(), 1e-6)
+        self.assertGreater(diff[4:].max(), 1e-6)
+
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.FlowLoss")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.Aggregator")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.AudioVAE")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.MingBailingMoeModel")
+    @patch("mlx_audio.tts.models.bailingmm.bailingmm.MingQwen2ForCausalLM")
+    def test_init_uses_dense_qwen2_backbone_when_moe_fields_missing(
+        self,
+        mock_qwen2_lm,
+        mock_moe_lm,
+        mock_audio_vae,
+        _mock_aggregator,
+        _mock_flowloss,
+    ):
+        from mlx_audio.tts.models.bailingmm.bailingmm import Model
+
+        audio = MagicMock()
+        audio.sample_rate = 24000
+        mock_audio_vae.return_value = audio
+
+        config = {
+            "model_type": "dense",
+            "llm_config": {
+                "model_type": "qwen2",
+                "hidden_size": 896,
+                "num_hidden_layers": 24,
+                "intermediate_size": 4864,
+                "num_attention_heads": 14,
+                "num_key_value_heads": 2,
+                "rms_norm_eps": 1e-6,
+                "vocab_size": 151936,
+                "rope_theta": 1_000_000.0,
+            },
+            "audio_tokenizer_config": {
+                "sample_rate": 24000,
+                "enc_kwargs": {"latent_dim": 64},
+            },
+            "ditar_config": {"patch_size": 8},
+            "aggregator_config": {"depth": 1},
+        }
+
+        model = Model(config)
+
+        mock_qwen2_lm.assert_called_once()
+        mock_moe_lm.assert_not_called()
+        self.assertEqual(model.llm_args.model_type, "qwen2")
+
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
+        return_value=0.0,
+    )
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.time.perf_counter",
+        side_effect=[0.0, 1.0],
+    )
+    def test_generate_keeps_trailing_samples(
+        self, _mock_perf_counter, _mock_peak_memory
+    ):
+        model = self._make_minimal_bailingmm_model()
+
+        latent = mx.zeros((1, 1, 64), dtype=mx.float32)
+        model.sample = MagicMock(return_value=iter([(latent, True)]))
+
+        # Torch path does not apply a trailing low-energy trim pass.
+        chunk = mx.array([[0.25, 0.15, 0.0, 0.0, 0.0]], dtype=mx.float32)
+        model.audio.decode.return_value = (chunk, (None, None, None), None)
+
+        result = next(model.generate(text="hello", max_tokens=1))
+        np.testing.assert_allclose(np.array(result.audio), np.array(chunk)[0], atol=0)
+
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
+        return_value=0.0,
+    )
+    @patch(
+        "mlx_audio.tts.models.bailingmm.bailingmm.time.perf_counter",
+        side_effect=[0.0, 1.0],
+    )
+    def test_generate_concatenates_all_decode_chunks(
+        self, _mock_perf_counter, _mock_peak_memory
+    ):
+        import mlx_audio.tts.models.bailingmm.bailingmm as bailingmm_module
+
+        model = self._make_minimal_bailingmm_model()
+
+        latent = mx.zeros((1, 1, 64), dtype=mx.float32)
+        model.sample = MagicMock(return_value=iter([(latent, False), (latent, True)]))
+        chunk1 = mx.array([[0.1, 0.2]], dtype=mx.float32)
+        chunk2 = mx.zeros((1, 0), dtype=mx.float32)
+        model.audio.decode.side_effect = [
+            (chunk1, (None, None, None), None),
+            (chunk2, (None, None, None), None),
+        ]
+
+        observed = {}
+        original_concat = bailingmm_module.mx.concatenate
+
+        def _concat_spy(items, axis=0):
+            observed["num_chunks"] = len(items)
+            return original_concat(items, axis=axis)
+
+        with patch(
+            "mlx_audio.tts.models.bailingmm.bailingmm.mx.concatenate",
+            side_effect=_concat_spy,
+        ):
+            result = next(model.generate(text="hello", max_tokens=2))
+
+        self.assertEqual(observed.get("num_chunks"), 2)
+        np.testing.assert_allclose(np.array(result.audio), np.array(chunk1)[0], atol=0)
+
+
+class TestFishSpeechPrompt(unittest.TestCase):
+    def test_encode_for_inference_places_vq_codes_in_correct_rows(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.prompt import (
+            Conversation,
+            Message,
+            TextPart,
+            VQPart,
+        )
+
+        tokenizer = FakeTokenizer()
+        conversation = Conversation(
+            [
+                Message(
+                    role="user",
+                    parts=[
+                        TextPart("hello"),
+                        VQPart(mx.array([[1, 2], [3, 4]], dtype=mx.int32)),
+                        TextPart("world"),
+                    ],
+                    add_im_start=False,
+                    add_im_end=False,
+                )
+            ]
+        )
+
+        values = conversation.encode_for_inference(tokenizer, num_codebooks=2)
+        self.assertEqual(tuple(values.shape), (3, 4))
+        self.assertEqual(values[0].tolist(), [1, 1001, 1002, 2])
+        self.assertEqual(values[1].tolist(), [0, 1, 2, 0])
+        self.assertEqual(values[2].tolist(), [0, 3, 4, 0])
+
+
+class TestFishSpeechModel(unittest.TestCase):
+    def test_model_type_remapping_uses_config_value(self):
+        from mlx_audio.tts.utils import get_model_and_args
+
+        module, model_type = get_model_and_args("fish_qwen3_omni", ["s2", "pro"])
+        self.assertEqual(model_type, "fish_qwen3_omni")
+        self.assertTrue(hasattr(module, "Model"))
+
+    def test_sanitize_remaps_upstream_keys(self):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+
+        model = Model(tiny_config())
+        weights = {
+            "text_model.model.embeddings.weight": mx.zeros((4, 4)),
+            "audio_decoder.embeddings.weight": mx.zeros((4, 4)),
+            "audio_decoder.layers.0.attention.wqkv.weight": mx.zeros((4, 4)),
+            "audio_decoder.codebook_embeddings.weight": mx.zeros((4, 4)),
+        }
+
+        sanitized = model.sanitize(weights)
+
+        self.assertIn("model.embeddings.weight", sanitized)
+        self.assertIn("model.fast_embeddings.weight", sanitized)
+        self.assertIn("model.fast_layers.0.attention.wqkv.weight", sanitized)
+        self.assertIn("model.codebook_embeddings.weight", sanitized)
+
+    def test_config_from_dict_handles_upstream_nested_shape(self):
+        config = tiny_config()
+        self.assertEqual(config.text_config.n_layer, 1)
+        self.assertEqual(config.audio_decoder_config.num_codebooks, 2)
+        self.assertEqual(config.semantic_start_token_id, 1000)
 
 
 if __name__ == "__main__":

@@ -1,51 +1,55 @@
 # Copyright © 2023 Apple Inc.
+# -*- coding: utf-8 -*-
 
 import itertools
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List
 
 import mlx.core as mx
-import numba
 import numpy as np
-from scipy import signal
 
 from .audio import HOP_LENGTH, SAMPLE_RATE, TOKENS_PER_SECOND
-from .tokenizer import Tokenizer
 
 if TYPE_CHECKING:
     from .model import Whisper
 
 
-def median_filter(x: np.ndarray, filter_width: int):
+def median_filter(x: mx.array, filter_width: int) -> mx.array:
     """Apply a median filter of width `filter_width` along the last dimension of `x`"""
     pad_width = filter_width // 2
     if x.shape[-1] <= pad_width:
-        # F.pad requires the padding width to be smaller than the input dimension
         return x
 
     if (ndim := x.ndim) <= 2:
-        # `F.pad` does not support 1D or 2D inputs for reflect padding but supports 3D and 4D
         x = x[None, None, :]
 
     assert (
         filter_width > 0 and filter_width % 2 == 1
     ), "`filter_width` should be an odd number"
 
-    x = np.pad(x, ((0, 0), (0, 0), (pad_width, pad_width)), mode="reflect")
+    # Reflect-pad along the last dimension using numpy (MLX lacks reflect pad)
+    x_np = np.pad(
+        np.array(x),
+        ((0, 0), (0, 0), (pad_width, pad_width)),
+        mode="reflect",
+    )
 
-    # todo: more efficient version in mlx
-    result = signal.medfilt(x.astype(np.float32), kernel_size=(1, 1, filter_width))[
-        ..., pad_width:-pad_width
-    ]
+    # Sliding window median using numpy (no scipy dependency)
+    result = np.empty(
+        x_np.shape[:-1] + (x_np.shape[-1] - 2 * pad_width,), dtype=np.float32
+    )
+    for i in range(result.shape[-1]):
+        result[..., i] = np.median(
+            x_np[..., i : i + filter_width].astype(np.float32), axis=-1
+        )
 
     if ndim <= 2:
         result = result[0, 0]
 
-    return result
+    return mx.array(result)
 
 
-@numba.jit(nopython=True)
-def backtrace(trace: np.ndarray):
+def _backtrace(trace: np.ndarray):
     i = trace.shape[0] - 1
     j = trace.shape[1] - 1
     trace[0, :] = 2
@@ -69,11 +73,11 @@ def backtrace(trace: np.ndarray):
     return result[::-1, :].T
 
 
-@numba.jit(nopython=True, parallel=True)
-def dtw_cpu(x: np.ndarray):
+def dtw(x: np.ndarray) -> np.ndarray:
+    """Dynamic Time Warping using numpy (sequential DP)."""
     N, M = x.shape
-    cost = np.ones((N + 1, M + 1), dtype=np.float32) * np.inf
-    trace = -np.ones((N + 1, M + 1), dtype=np.float32)
+    cost = np.full((N + 1, M + 1), np.inf, dtype=np.float32)
+    trace = np.full((N + 1, M + 1), -1.0, dtype=np.float32)
 
     cost[0, 0] = 0
     for j in range(1, M + 1):
@@ -92,12 +96,7 @@ def dtw_cpu(x: np.ndarray):
             cost[i, j] = x[i - 1, j - 1] + c
             trace[i, j] = t
 
-    return backtrace(trace)
-
-
-def dtw(x: np.ndarray) -> np.ndarray:
-    # todo: more efficient version in mlx
-    return dtw_cpu(x)
+    return _backtrace(trace)
 
 
 @dataclass
@@ -111,7 +110,7 @@ class WordTiming:
 
 def find_alignment(
     model: "Whisper",
-    tokenizer: Tokenizer,
+    tokenizer,
     text_tokens: List[int],
     mel: mx.array,
     num_frames: int,
@@ -150,9 +149,9 @@ def find_alignment(
     mean = mx.mean(weights, axis=-2, keepdims=True)
     std = mx.var(weights, axis=-2, keepdims=True, ddof=0).sqrt()
     weights = (weights - mean) / std
-    weights = median_filter(np.array(weights), medfilt_width)
+    weights = median_filter(weights, medfilt_width)
 
-    matrix = weights.mean(axis=0)
+    matrix = np.array(mx.mean(weights, axis=0))
     matrix = matrix[len(tokenizer.sot_sequence) : -1]
     text_indices, time_indices = dtw(-matrix)
 
@@ -221,11 +220,11 @@ def add_word_timestamps(
     *,
     segments: List[dict],
     model: "Whisper",
-    tokenizer: Tokenizer,
+    tokenizer,
     mel: mx.array,
     num_frames: int,
-    prepend_punctuations: str = "\"'“¿([{-",
-    append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
+    prepend_punctuations: str = "\"'\u201c\u00bf([{-",
+    append_punctuations: str = "\"'.\u3002,\uff0c!\uff01?\uff1f:\uff1a\u201d)]\u007d\u3001",
     last_speech_timestamp: float,
     **kwargs,
 ):
@@ -273,8 +272,8 @@ def add_word_timestamps(
                 words.append(
                     dict(
                         word=timing.word,
-                        start=round(time_offset + timing.start, 2),
-                        end=round(time_offset + timing.end, 2),
+                        start=float(round(time_offset + timing.start, 2)),
+                        end=float(round(time_offset + timing.end, 2)),
                         probability=float(timing.probability),
                     )
                 )

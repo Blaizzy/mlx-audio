@@ -27,6 +27,10 @@ MODEL_REMAPPING = {
     "vibevoice_streaming": "vibevoice",
     "chatterbox_turbo": "chatterbox_turbo",
     "soprano": "soprano",
+    "bailingmm": "bailingmm",
+    "kitten": "kitten_tts",
+    "echo_tts": "echo_tts",
+    "fish_qwen3_omni": "fish_qwen3_omni",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
@@ -196,14 +200,15 @@ def convert(
     hf_path: str,
     mlx_path: str = "mlx_model",
     quantize: bool = False,
-    q_group_size: int = 64,
-    q_bits: int = 4,
+    q_group_size: Optional[int] = None,
+    q_bits: Optional[int] = None,
     dtype: str = None,
     upload_repo: str = None,
     revision: Optional[str] = None,
     dequantize: bool = False,
     trust_remote_code: bool = True,
     quant_predicate: Optional[str] = None,
+    q_mode: str = "affine",
 ):
     from mlx_lm.convert import mixed_quant_predicate_builder
     from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
@@ -254,7 +259,12 @@ def convert(
         print("[INFO] Quantizing")
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
-            model, config, q_group_size, q_bits, quant_predicate=quant_predicate
+            model,
+            config,
+            q_group_size,
+            q_bits,
+            mode=q_mode,
+            quant_predicate=quant_predicate,
         )
 
     if dequantize:

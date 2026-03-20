@@ -30,24 +30,26 @@ from .decoding import DecodingOptions, DecodingResult
 from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .timing import add_word_timestamps
-from .tokenizer import LANGUAGES, TO_LANGUAGE_CODE, get_tokenizer
+from .tokenizer import LANGUAGES, TO_LANGUAGE_CODE
 
 
 class HFTokenizerWrapper:
     """
     Wrapper around HuggingFace WhisperTokenizer that provides a compatible interface
-    with the tiktoken-based Tokenizer class.
+    for Whisper decoding.
     """
 
     def __init__(
         self,
         hf_tokenizer,
         multilingual: bool = True,
+        num_languages: int = 99,
         language: str = None,
         task: str = "transcribe",
     ):
         self.hf_tokenizer = hf_tokenizer
         self.multilingual = multilingual
+        self.num_languages = num_languages
         self.language = language or "en"
         self.task = task or "transcribe"
 
@@ -63,7 +65,17 @@ class HFTokenizerWrapper:
         """Decode token ids to text."""
         if hasattr(tokens, "tolist"):
             tokens = tokens.tolist()
-        return self.hf_tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens)
+        # Filter out timestamp tokens for regular decode
+        filtered = [t for t in tokens if t < self.timestamp_begin]
+        return self.hf_tokenizer.decode(
+            filtered, skip_special_tokens=skip_special_tokens
+        )
+
+    def decode_with_timestamps(self, tokens, **kwargs) -> str:
+        """Decode tokens including timestamp tokens."""
+        if hasattr(tokens, "tolist"):
+            tokens = tokens.tolist()
+        return self.hf_tokenizer.decode(tokens, skip_special_tokens=False)
 
     @property
     def eot(self) -> int:
@@ -73,13 +85,17 @@ class HFTokenizerWrapper:
     @property
     def timestamp_begin(self) -> int:
         """First timestamp token id."""
-        # Whisper timestamp tokens start at <|0.00|>
         return self.hf_tokenizer.convert_tokens_to_ids("<|0.00|>")
 
     @property
     def sot(self) -> int:
         """Start of transcript token."""
         return self.hf_tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+
+    @property
+    def sot_lm(self) -> int:
+        """Start of language model token."""
+        return self.hf_tokenizer.convert_tokens_to_ids("<|startoflm|>")
 
     @property
     def no_timestamps(self) -> int:
@@ -119,11 +135,104 @@ class HFTokenizerWrapper:
         return (self.sot,)
 
     @property
+    def sot_sequence_including_notimestamps(self) -> Tuple[int, ...]:
+        """Start of transcript sequence including notimestamps token."""
+        return tuple(list(self.sot_sequence) + [self.no_timestamps])
+
+    @property
     def task_token(self) -> int:
         """Task token (transcribe or translate)."""
         if self.task == "translate":
             return self.translate
         return self.transcribe
+
+    @property
+    def all_language_tokens(self) -> Tuple[int, ...]:
+        """All language token ids."""
+        result = []
+        for lang in list(LANGUAGES.keys())[: self.num_languages]:
+            token_id = self.hf_tokenizer.convert_tokens_to_ids(f"<|{lang}|>")
+            if token_id != self.hf_tokenizer.unk_token_id:
+                result.append(token_id)
+        return tuple(result)
+
+    @property
+    def all_language_codes(self) -> Tuple[str, ...]:
+        """All language codes."""
+        return tuple(list(LANGUAGES.keys())[: self.num_languages])
+
+    @property
+    def non_speech_tokens(self) -> Tuple[int, ...]:
+        """Tokens to suppress to avoid non-speech annotations."""
+        import string
+
+        symbols = list('"#()*+/:;<=>@[\\]^_`{|}~「」『』')
+        symbols += (
+            "<< >> <<< >>> -- --- -( -[ (' (\" (( )) ((( ))) [[ ]] {{ }} ♪♪ ♪♪♪".split()
+        )
+
+        miscellaneous = set("♩♪♫♬♭♮♯")
+
+        result = {self.encode(" -")[0], self.encode(" '")[0]}
+        for symbol in symbols + list(miscellaneous):
+            for tokens in [self.encode(symbol), self.encode(" " + symbol)]:
+                if len(tokens) == 1 or symbol in miscellaneous:
+                    result.add(tokens[0])
+
+        return tuple(sorted(result))
+
+    def split_to_word_tokens(self, tokens: List[int]):
+        """Split tokens into words."""
+        if self.language in {"zh", "ja", "th", "lo", "my", "yue"}:
+            return self._split_tokens_on_unicode(tokens)
+        return self._split_tokens_on_spaces(tokens)
+
+    def _split_tokens_on_unicode(self, tokens: List[int]):
+        """Split tokens at unicode boundaries."""
+        decoded_full = self.decode_with_timestamps(tokens)
+        replacement_char = "\ufffd"
+
+        words = []
+        word_tokens = []
+        current_tokens = []
+        unicode_offset = 0
+
+        for token in tokens:
+            current_tokens.append(token)
+            decoded = self.decode_with_timestamps(current_tokens)
+
+            if (
+                replacement_char not in decoded
+                or decoded_full[unicode_offset + decoded.index(replacement_char)]
+                == replacement_char
+            ):
+                words.append(decoded)
+                word_tokens.append(current_tokens)
+                current_tokens = []
+                unicode_offset += len(decoded)
+
+        return words, word_tokens
+
+    def _split_tokens_on_spaces(self, tokens: List[int]):
+        """Split tokens at space boundaries."""
+        import string
+
+        subwords, subword_tokens_list = self._split_tokens_on_unicode(tokens)
+        words = []
+        word_tokens = []
+
+        for subword, subword_tokens in zip(subwords, subword_tokens_list):
+            special = subword_tokens[0] >= self.eot
+            with_space = subword.startswith(" ")
+            punctuation = subword.strip() in string.punctuation
+            if special or with_space or punctuation or len(words) == 0:
+                words.append(subword)
+                word_tokens.append(subword_tokens)
+            else:
+                words[-1] = words[-1] + subword
+                word_tokens[-1].extend(subword_tokens)
+
+        return words, word_tokens
 
 
 def _format_timestamp(seconds: float):
@@ -406,8 +515,14 @@ class Model(nn.Module):
         all_heads[self.dims.n_text_layer // 2 :] = True
         self._alignment_heads = mx.array(np.asarray(all_heads.nonzero()).T)
 
-    def set_alignment_heads(self, dump: Union[bytes, np.ndarray]):
-        if isinstance(dump, np.ndarray):
+    @property
+    def alignment_heads(self) -> mx.array:
+        return self._alignment_heads
+
+    def set_alignment_heads(self, dump: Union[bytes, np.ndarray, list]):
+        if isinstance(dump, list):
+            self._alignment_heads = mx.array(dump)
+        elif isinstance(dump, np.ndarray):
             self._alignment_heads = mx.array(dump)
         elif isinstance(dump, bytes):
             array = np.frombuffer(
@@ -417,7 +532,7 @@ class Model(nn.Module):
             self._alignment_heads = mx.array(np.asarray(mask.nonzero()).T)
         else:
             raise ValueError(
-                f"Invalid type for `dump`: {type(dump)}. Expected a np.ndarray or base85-encoded bytes containing"
+                f"Invalid type for `dump`: {type(dump)}. Expected a list, np.ndarray or base85-encoded bytes containing"
                 " alignment_head information"
             )
 
@@ -550,7 +665,8 @@ class Model(nn.Module):
         for wf in wf:
             weights.update(mx.load(wf))
 
-        model = Model(model_args, dtype)
+        model = cls(model_args, dtype)
+        model = cls.post_load_hook(model, model_path)
 
         if quantization is not None:
             class_predicate = (
@@ -582,20 +698,27 @@ class Model(nn.Module):
             processor = WhisperProcessor.from_pretrained(str(model_path))
             model._processor = processor
         except Exception as e:
-            # Fallback: processor not available, will use tiktoken-based tokenizer
             model._processor = None
-            warnings.warn(
-                f"Could not load WhisperProcessor: {e}. Using tiktoken tokenizer."
-            )
+            warnings.warn(f"Could not load WhisperProcessor: {e}.")
+
+        # Load alignment heads from generation_config.json for word-level timestamps
+        gen_config_path = Path(model_path) / "generation_config.json"
+        if gen_config_path.exists():
+            try:
+                with open(gen_config_path, "r") as f:
+                    gen_config = json.load(f)
+                if "alignment_heads" in gen_config:
+                    model.set_alignment_heads(gen_config["alignment_heads"])
+            except Exception as e:
+                warnings.warn(
+                    f"Could not load alignment_heads from generation_config.json: {e}."
+                )
 
         return model
 
     def get_tokenizer(self, language: str = None, task: str = "transcribe"):
         """
         Get a tokenizer for the current model configuration.
-
-        If a HuggingFace processor was loaded, wraps it to provide a compatible interface.
-        Otherwise falls back to the tiktoken-based tokenizer.
 
         Args:
             language: Language code (e.g., "en", "ja"). If None, uses "en" for multilingual.
@@ -608,16 +731,13 @@ class Model(nn.Module):
             return HFTokenizerWrapper(
                 self._processor.tokenizer,
                 multilingual=self.is_multilingual,
+                num_languages=self.num_languages,
                 language=language,
                 task=task,
             )
         else:
-            # Fallback to tiktoken-based tokenizer
-            return get_tokenizer(
-                self.is_multilingual,
-                num_languages=self.num_languages,
-                language=language,
-                task=task,
+            raise ValueError(
+                "Processor not found. Make sure the model was loaded with a HuggingFace processor."
             )
 
     def _prepare_audio(
@@ -669,6 +789,8 @@ class Model(nn.Module):
         audio: Union[str, np.ndarray, mx.array],
         *,
         verbose: Optional[bool] = None,
+        language: Optional[str] = None,
+        task: str = "transcribe",
         chunk_duration: float = 1.0,
         stream: bool = False,
         generation_stream: bool = False,
@@ -678,6 +800,7 @@ class Model(nn.Module):
         no_speech_threshold: Optional[float] = 0.6,
         condition_on_previous_text: bool = True,
         initial_prompt: Optional[str] = None,
+        return_timestamps: bool = True,
         word_timestamps: bool = False,
         prepend_punctuations: str = "\"'“¿([{-",
         append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
@@ -716,6 +839,10 @@ class Model(nn.Module):
             disabling may make the text inconsistent across windows, but the model becomes less prone to
             getting stuck in a failure loop, such as repetition looping or timestamps going out of sync.
 
+        return_timestamps: bool
+            Extract segment-level timestamps. Each segment will include start and end times in seconds.
+            When False, the model decodes without timestamps and returns a single segment.
+
         word_timestamps: bool
             Extract word-level timestamps using the cross-attention pattern and dynamic time warping,
             and include the timestamps for each word in each segment.
@@ -750,11 +877,19 @@ class Model(nn.Module):
 
         if stream:
             return self.generate_streaming(
-                audio, chunk_duration=chunk_duration, **decode_options
+                audio,
+                chunk_duration=chunk_duration,
+                language=language,
+                task=task,
             )
+
+        # word_timestamps implies return_timestamps
+        if word_timestamps:
+            return_timestamps = True
 
         decode_options.pop("max_tokens", None)
         decode_options.pop("generation_stream", None)
+        decode_options["without_timestamps"] = not return_timestamps
         # Use shared audio preparation
         mel, content_frames = self._prepare_audio(audio)
         content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
@@ -769,12 +904,12 @@ class Model(nn.Module):
                 make_safe = lambda x: x
 
         # Use shared language detection
-        language = self._detect_language(mel, language=decode_options.get("language"))
-        if decode_options.get("language") is None:
-            if verbose:
-                print(f"Detected language: {LANGUAGES[language].title()}")
+        detected = language is None
+        language = self._detect_language(mel, language=language)
+        if detected and verbose:
+            print(f"Detected language: {LANGUAGES[language].title()}")
         decode_options["language"] = language
-        task: str = decode_options.get("task", "transcribe")
+        decode_options["task"] = task
         tokenizer = self.get_tokenizer(language=language, task=task)
 
         if isinstance(clip_timestamps, str):
@@ -865,8 +1000,8 @@ class Model(nn.Module):
             text_tokens = [token for token in tokens if token < tokenizer.eot]
             return {
                 "seek": seek,
-                "start": start,
-                "end": end,
+                "start": float(start),
+                "end": float(end),
                 "text": tokenizer.decode(text_tokens),
                 "tokens": tokens,
                 "temperature": result.temperature,
