@@ -36,6 +36,27 @@ from mlx_audio.stt.utils import load_audio
 from mlx_audio.utils import from_dict
 
 
+def _is_multilingual_parakeet_v3(vocabulary: list[str] | None) -> bool:
+    if not vocabulary or "<|predict_lang|>" not in vocabulary:
+        return False
+    language_tokens = [
+        token
+        for token in vocabulary
+        if token.startswith("<|")
+        and token.endswith("|>")
+        and len(token) == 6
+        and token[2:4].isalpha()
+    ]
+    return len(language_tokens) >= 20
+
+
+def _is_non_english_language_hint(language: str | None) -> bool:
+    if language is None:
+        return False
+    hint = language.strip().lower()
+    return hint not in {"", "auto", "english", "en"}
+
+
 @dataclass
 class PreprocessArgs:
     sample_rate: int
@@ -160,7 +181,35 @@ class Model(nn.Module):
 
         self.preprocessor_config = preprocess_args
 
-    def decode(self, mel: mx.array) -> list[AlignedResult]:
+    def _resolve_multilingual_chunking(
+        self,
+        audio_length_seconds: float,
+        chunk_duration: float | None,
+        overlap_duration: float,
+        language: str | None,
+    ) -> tuple[float | None, float]:
+        vocabulary = getattr(self, "vocabulary", None)
+        if not _is_multilingual_parakeet_v3(vocabulary):
+            return chunk_duration, overlap_duration
+        if not _is_non_english_language_hint(language):
+            return chunk_duration, overlap_duration
+        if chunk_duration is None:
+            return chunk_duration, overlap_duration
+        if audio_length_seconds <= 30:
+            return chunk_duration, overlap_duration
+
+        # Parakeet v3 drifts into English on larger windows for non-English
+        # inputs. Keep multilingual windows short enough to preserve language
+        # consistency when the caller provides a non-English language hint.
+        target_chunk = 5.0
+        target_overlap = 1.0
+
+        if chunk_duration is None or chunk_duration > target_chunk:
+            return target_chunk, target_overlap
+
+        return chunk_duration, overlap_duration
+
+    def decode(self, mel: mx.array, *, language: str | None = None) -> list[AlignedResult]:
         """
         Decode mel spectrograms to produce transcriptions with the Parakeet model.
         Handles batches and single input. Uses greedy decoding.
@@ -169,10 +218,14 @@ class Model(nn.Module):
         raise NotImplementedError
 
     def decode_chunk(
-        self, audio_data: mx.array, verbose: bool = False
+        self,
+        audio_data: mx.array,
+        verbose: bool = False,
+        *,
+        language: str | None = None,
     ) -> AlignedResult:
         mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
-        result = self.decode(mel)[0]
+        result = self.decode(mel, language=language)[0]
         if verbose:
             print(result.text)
         return result
@@ -186,6 +239,7 @@ class Model(nn.Module):
         overlap_duration: Optional[float] = None,
         chunk_callback: Optional[Callable] = None,
         stream: bool = False,
+        language: str | None = None,
         **kwargs,
     ) -> AlignedResult | Generator[StreamingResult, None, None]:
         """
@@ -217,6 +271,7 @@ class Model(nn.Module):
                 chunk_duration=5.0 if chunk_duration is None else chunk_duration,
                 overlap_duration=1.0 if overlap_duration is None else overlap_duration,
                 verbose=verbose,
+                language=language,
                 **kwargs,
             )
 
@@ -228,9 +283,13 @@ class Model(nn.Module):
         else:
             # mx.array input
             audio_data = audio.astype(dtype) if audio.dtype != dtype else audio
+        audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
+        chunk_duration, overlap_duration = self._resolve_multilingual_chunking(
+            audio_length_seconds, chunk_duration, overlap_duration, language
+        )
 
         if chunk_duration is None:
-            return self.decode_chunk(audio_data, verbose)
+            return self.decode_chunk(audio_data, verbose, language=language)
 
         overlap_duration = 15.0 if overlap_duration is None else overlap_duration
 
@@ -240,10 +299,8 @@ class Model(nn.Module):
                 f"chunk_duration ({chunk_duration}s)."
             )
 
-        audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
-
         if audio_length_seconds <= chunk_duration:
-            return self.decode_chunk(audio_data, verbose)
+            return self.decode_chunk(audio_data, verbose, language=language)
 
         chunk_samples = int(chunk_duration * self.preprocessor_config.sample_rate)
         overlap_samples = int(overlap_duration * self.preprocessor_config.sample_rate)
@@ -262,7 +319,7 @@ class Model(nn.Module):
             chunk_audio = audio_data[start:end]
             chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
 
-            chunk_result = self.decode(chunk_mel)[0]
+            chunk_result = self.decode(chunk_mel, language=language)[0]
 
             chunk_offset = start / self.preprocessor_config.sample_rate
             for sentence in chunk_result.sentences:
@@ -311,6 +368,7 @@ class Model(nn.Module):
         chunk_duration: float = 5.0,
         overlap_duration: float = 1.0,
         verbose: bool = False,
+        language: str | None = None,
         **kwargs,
     ) -> Generator[StreamingResult, None, None]:
         """
@@ -368,7 +426,7 @@ class Model(nn.Module):
             chunk_audio = audio_data[start:end]
             chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
 
-            chunk_result = self.decode(chunk_mel)[0]
+            chunk_result = self.decode(chunk_mel, language=language)[0]
 
             # Adjust timestamps for chunk offset
             chunk_offset = start / sample_rate
@@ -525,7 +583,7 @@ class ParakeetTDT(Model):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
-    def decode(self, mel: mx.array) -> list[AlignedResult]:
+    def decode(self, mel: mx.array, *, language: str | None = None) -> list[AlignedResult]:
         """
         Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
@@ -632,7 +690,7 @@ class ParakeetRNNT(Model):
         self.decoder = PredictNetwork(args.decoder)
         self.joint = JointNetwork(args.joint)
 
-    def decode(self, mel: mx.array) -> list[AlignedResult]:
+    def decode(self, mel: mx.array, *, language: str | None = None) -> list[AlignedResult]:
         """
         Generate with skip token logic for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]
@@ -726,7 +784,7 @@ class ParakeetCTC(Model):
         self.encoder = Conformer(args.encoder)
         self.decoder = ConvASRDecoder(args.decoder)
 
-    def decode(self, mel: mx.array) -> list[AlignedResult]:
+    def decode(self, mel: mx.array, *, language: str | None = None) -> list[AlignedResult]:
         """
         Generate with CTC decoding for the Parakeet model, handling batches and single input. Uses greedy decoding.
         mel: [batch, sequence, mel_dim] or [sequence, mel_dim]

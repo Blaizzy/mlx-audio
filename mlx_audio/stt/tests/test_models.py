@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 
 
@@ -435,6 +436,162 @@ class TestParakeetModel(unittest.TestCase):
         )  # d_model is correct for ConformerArgs
         self.assertEqual(model.vocabulary, dummy_vocabulary)
         self.assertEqual(model.durations, [0, 1, 2, 3])
+
+    def test_multilingual_v3_detection_requires_predict_lang_and_language_tokens(self):
+        from mlx_audio.stt.models.parakeet.parakeet import _is_multilingual_parakeet_v3
+
+        multilingual_vocab = ["<unk>", "<|predict_lang|>"] + [
+            f"<|{code}|>"
+            for code in (
+                "en",
+                "es",
+                "fr",
+                "de",
+                "it",
+                "pt",
+                "nl",
+                "ru",
+                "uk",
+                "pl",
+                "ro",
+                "hu",
+                "bg",
+                "hr",
+                "cs",
+                "da",
+                "et",
+                "fi",
+                "el",
+                "lv",
+            )
+        ]
+        english_only_vocab = ["<unk>", "<|en|>"]
+
+        self.assertTrue(_is_multilingual_parakeet_v3(multilingual_vocab))
+        self.assertFalse(_is_multilingual_parakeet_v3(english_only_vocab))
+
+    def test_multilingual_chunking_clamps_non_english_hint(self):
+        from mlx_audio.stt.models.parakeet.audio import PreprocessArgs
+        from mlx_audio.stt.models.parakeet.parakeet import Model
+
+        class DummyParakeetModel(Model):
+            def __new__(cls):
+                return nn.Module.__new__(cls)
+
+            def __init__(self):
+                super().__init__(
+                    PreprocessArgs(
+                        sample_rate=16000,
+                        normalize="per_feature",
+                        window_size=0.02,
+                        window_stride=0.01,
+                        window="hann",
+                        features=80,
+                        n_fft=512,
+                        dither=1e-5,
+                    )
+                )
+                self.vocabulary = ["<unk>", "<|predict_lang|>"] + [
+                    f"<|{code}|>"
+                    for code in (
+                        "en",
+                        "es",
+                        "fr",
+                        "de",
+                        "it",
+                        "pt",
+                        "nl",
+                        "ru",
+                        "uk",
+                        "pl",
+                        "ro",
+                        "hu",
+                        "bg",
+                        "hr",
+                        "cs",
+                        "da",
+                        "et",
+                        "fi",
+                        "el",
+                        "lv",
+                    )
+                ]
+
+            def decode(self, mel: mx.array, *, language: str | None = None):
+                return []
+
+        model = DummyParakeetModel()
+        chunk, overlap = model._resolve_multilingual_chunking(
+            audio_length_seconds=403.0,
+            chunk_duration=120.0,
+            overlap_duration=15.0,
+            language="spanish",
+        )
+
+        self.assertEqual(chunk, 5.0)
+        self.assertEqual(overlap, 1.0)
+
+    def test_multilingual_chunking_preserves_english_and_auto(self):
+        from mlx_audio.stt.models.parakeet.audio import PreprocessArgs
+        from mlx_audio.stt.models.parakeet.parakeet import Model
+
+        class DummyParakeetModel(Model):
+            def __new__(cls):
+                return nn.Module.__new__(cls)
+
+            def __init__(self):
+                super().__init__(
+                    PreprocessArgs(
+                        sample_rate=16000,
+                        normalize="per_feature",
+                        window_size=0.02,
+                        window_stride=0.01,
+                        window="hann",
+                        features=80,
+                        n_fft=512,
+                        dither=1e-5,
+                    )
+                )
+                self.vocabulary = ["<unk>", "<|predict_lang|>"] + [
+                    f"<|{code}|>"
+                    for code in (
+                        "en",
+                        "es",
+                        "fr",
+                        "de",
+                        "it",
+                        "pt",
+                        "nl",
+                        "ru",
+                        "uk",
+                        "pl",
+                        "ro",
+                        "hu",
+                        "bg",
+                        "hr",
+                        "cs",
+                        "da",
+                        "et",
+                        "fi",
+                        "el",
+                        "lv",
+                    )
+                ]
+
+            def decode(self, mel: mx.array, *, language: str | None = None):
+                return []
+
+        model = DummyParakeetModel()
+
+        for hint in (None, "auto", "english", "en"):
+            chunk, overlap = model._resolve_multilingual_chunking(
+                audio_length_seconds=403.0,
+                chunk_duration=120.0,
+                overlap_duration=15.0,
+                language=hint,
+            )
+            self.assertEqual(chunk, 120.0)
+            self.assertEqual(overlap, 15.0)
 
 
 class TestGLMASRModel(unittest.TestCase):
