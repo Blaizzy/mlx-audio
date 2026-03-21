@@ -163,15 +163,15 @@ class Model(nn.Module):
 
         # Load silence latent - try turbo subdirectory first, then root
         silence_path = model_path / "acestep-v15-turbo" / "silence_latent.pt"
-        if not silence_path.exists():
+        if not Path(str(silence_path).replace(".pt", ".npy")).exists():
             silence_path = model_path / "silence_latent.pt"
 
-        if silence_path.exists():
-            import torch
+        if Path(str(silence_path).replace(".pt", ".npy")).exists():
+            import numpy as np
 
-            silence_pt = torch.load(silence_path, map_location="cpu", weights_only=True)
-            silence_pt = silence_pt.transpose(1, 2)  # [1, 64, T] -> [1, T, 64]
-            model.silence_latent = mx.array(silence_pt.numpy())
+            silence_pt = np.load(str(silence_path).replace(".pt", ".npy"))
+            silence_pt = silence_pt.transpose(0, 2, 1)  # [1, 64, T] -> [1, T, 64]
+            model.silence_latent = mx.array(silence_pt)
         else:
             model.silence_latent = mx.zeros((1, 3000, 64))
 
