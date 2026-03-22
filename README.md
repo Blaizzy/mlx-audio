@@ -1,4 +1,7 @@
 <a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy%2Fmlx-audio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+  <a href="https://gitcgr.com/Blaizzy/mlx-audio">
+    <img src="https://gitcgr.com/badge/Blaizzy/mlx-audio.svg" alt="gitcgr" />
+  </a>
 
 # MLX-Audio
 
