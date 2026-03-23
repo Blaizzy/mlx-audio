@@ -9,7 +9,7 @@ from typing import Any, Dict, Generator, List, Optional, Sequence, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.sample_utils import apply_top_k, apply_top_p
+from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
 from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
 from mlx_audio.tts.models.base import GenerationResult
@@ -151,85 +151,6 @@ def _suppress_token_ids(logits: mx.array, token_ids: List[int]) -> mx.array:
         mx.array(float("-inf"), dtype=logits.dtype),
         axis=-1,
     )
-
-
-def _apply_repetition_penalty(
-    logits: mx.array, prev_tokens: mx.array, penalty: float
-) -> mx.array:
-    if penalty == 1.0:
-        return logits
-    if prev_tokens.size == 0:
-        return logits
-
-    vocab_size = int(logits.shape[-1])
-    prev_np = np.array(prev_tokens).reshape(-1)
-    if prev_np.size == 0:
-        return logits
-
-    unique_np = np.unique(prev_np)
-    unique_np = unique_np[(unique_np >= 0) & (unique_np < vocab_size)]
-    if unique_np.size == 0:
-        return logits
-
-    unique = mx.array(unique_np.astype(np.int32))
-
-    selected = mx.take(logits, unique, axis=-1)
-    penalized = mx.where(selected > 0, selected / penalty, selected * penalty)
-    return mx.put_along_axis(logits, unique[None, :], penalized, axis=-1)
-
-
-def sample_token(
-    logits: mx.array,
-    top_p: float = 1.0,
-    top_k: int = 0,
-    do_sample: bool = True,
-    prev_tokens: Optional[mx.array] = None,
-    repetition_penalty: float = 1.0,
-    temperature: float = 1.0,
-) -> mx.array:
-    if logits.ndim < 1:
-        raise ValueError("logits must have at least 1 dimension")
-
-    vocab_size = int(logits.shape[-1])
-    if not do_sample or temperature <= 0:
-        return mx.argmax(logits, axis=-1).astype(mx.int32)
-
-    if prev_tokens is not None and repetition_penalty != 1.0:
-        if logits.ndim == 2:
-            logits = _apply_repetition_penalty(logits, prev_tokens, repetition_penalty)
-        elif logits.ndim == 3:
-            b, h, _ = logits.shape
-            out = []
-            for head_idx in range(int(h)):
-                prev_h = prev_tokens[..., head_idx]
-                out.append(
-                    _apply_repetition_penalty(
-                        logits[:, head_idx, :], prev_h, repetition_penalty
-                    )
-                )
-            logits = mx.stack(out, axis=1)
-        else:
-            flat = logits.reshape(-1, vocab_size)
-            logits = _apply_repetition_penalty(
-                flat, prev_tokens, repetition_penalty
-            ).reshape(logits.shape)
-
-    scaled = logits
-    if temperature != 1.0:
-        scaled = scaled * (1.0 / float(temperature))
-
-    original_shape = scaled.shape
-    flat = scaled.reshape(-1, vocab_size)
-    flat = nn.log_softmax(flat, axis=-1)
-
-    if top_p is not None and 0.0 < float(top_p) < 1.0:
-        flat = apply_top_p(flat, float(top_p))
-    if top_k is not None and int(top_k) > 0 and int(top_k) < vocab_size:
-        flat = apply_top_k(flat, int(top_k))
-        # flat = nn.log_softmax(flat, axis=-1)
-
-    tokens = mx.random.categorical(flat).astype(mx.int32)
-    return tokens.reshape(original_shape[:-1]).astype(mx.int32)
 
 
 def _format_duration(seconds: float) -> str:
@@ -878,12 +799,26 @@ class Model(nn.Module):
         if batch_size != 1:
             raise ValueError("moss_tts_delay generate currently supports batch_size=1")
 
-        text_do_sample = text_temperature > 0
-        audio_do_sample = temperature > 0
-        if not text_do_sample:
-            text_temperature = 1.0
-        if not audio_do_sample:
-            temperature = 1.0
+        text_sampler = make_sampler(
+            temp=text_temperature if text_temperature > 0 else 0.0,
+            top_p=text_top_p,
+            top_k=text_top_k,
+        )
+        # NOTE: min_p is intentionally excluded here. a) MOSS-TTS never uses it; b) apply_min_p hard-codes
+        # 2D indexing (sorted_logprobs[:, 0:1]) and silently produces wrong
+        # results on the 3D (batch, n_heads, vocab) tensors used for batched
+        # tail-head sampling below.  Do NOT pass min_p to this sampler.
+        audio_sampler = make_sampler(
+            temp=temperature if temperature > 0 else 0.0,
+            top_p=top_p,
+            top_k=top_k,
+        )
+        audio_logits_processors = make_logits_processors(
+            repetition_penalty=(
+                repetition_penalty if repetition_penalty != 1.0 else None
+            ),
+            repetition_context_size=max_tokens,
+        )
 
         current_input_ids = input_ids
         current_attention_mask = attention_mask
@@ -1038,13 +973,7 @@ class Model(nn.Module):
                 # Not in delay phase → sample text freely from the model
                 sampling_text_mask = (~is_stopping) & ~delay_active
                 if bool(sampling_text_mask.item()):
-                    sampled_text = sample_token(
-                        masked_text_logits,
-                        top_p=text_top_p,
-                        top_k=text_top_k,
-                        do_sample=text_do_sample,
-                        temperature=text_temperature,
-                    )
+                    sampled_text = text_sampler(masked_text_logits).astype(mx.int32)
                     next_text_token = mx.where(
                         sampling_text_mask, sampled_text, next_text_token
                     )
@@ -1113,15 +1042,9 @@ class Model(nn.Module):
                             generated_start=generated_start,
                             vq_idx=0,
                         )
-                        sampled0 = sample_token(
-                            vq0_logits,
-                            top_p=top_p,
-                            top_k=top_k,
-                            do_sample=audio_do_sample,
-                            prev_tokens=prev0,
-                            repetition_penalty=repetition_penalty,
-                            temperature=temperature,
-                        )
+                        for processor in audio_logits_processors:
+                            vq0_logits = processor(prev0[0], vq0_logits)
+                        sampled0 = audio_sampler(vq0_logits).astype(mx.int32)
                         next_audio_tokens[0, 0] = sampled0[0]
 
                     active_tail_heads = [h for h in selected_audio_heads if h > 0]
@@ -1134,32 +1057,29 @@ class Model(nn.Module):
                             raise ValueError(
                                 f"audio head vocab mismatch: got {tail_logits.shape[-1]}, expected {audio_vq_vocab}"
                             )
-                        tail_shape = tail_logits.shape
+                        ts = tail_logits.shape
                         tail_logits = _suppress_token_ids(
-                            tail_logits.reshape(-1, int(tail_shape[-1])),
-                            [pad_code],
-                        ).reshape(tail_shape)
+                            tail_logits.reshape(-1, ts[-1]), [pad_code]
+                        ).reshape(ts)
 
-                        tail_prev = mx.stack(
-                            [
-                                _get_generated_audio_history(
+                        # Repetition penalty per head: the mlx_lm processor
+                        # indexes logits[:, tokens] assuming 2D (batch, vocab),
+                        # and each codebook head has its own token history.
+                        if audio_logits_processors:
+                            slices = []
+                            for i, head_idx in enumerate(active_tail_heads):
+                                h_slice = tail_logits[:, i, :]
+                                h_prev = _get_generated_audio_history(
                                     generation_ids,
                                     generated_start=generated_start,
-                                    vq_idx=h,
+                                    vq_idx=head_idx,
                                 )
-                                for h in active_tail_heads
-                            ],
-                            axis=-1,
-                        )
-                        sampled_tail = sample_token(
-                            tail_logits,
-                            top_p=top_p,
-                            top_k=top_k,
-                            do_sample=audio_do_sample,
-                            prev_tokens=tail_prev,
-                            repetition_penalty=repetition_penalty,
-                            temperature=temperature,
-                        )
+                                for processor in audio_logits_processors:
+                                    h_slice = processor(h_prev[0], h_slice)
+                                slices.append(h_slice)
+                            tail_logits = mx.stack(slices, axis=1)
+
+                        sampled_tail = audio_sampler(tail_logits).astype(mx.int32)
                         for i, head_idx in enumerate(active_tail_heads):
                             next_audio_tokens[0, int(head_idx)] = sampled_tail[0, i]
 
@@ -1290,3 +1210,16 @@ class Model(nn.Module):
             is_streaming_chunk=False,
             is_final_chunk=True,
         )
+
+
+MossTTS = Model
+
+_pkg_name = __name__.rsplit(".", 1)[0]
+try:
+    import sys
+
+    _pkg = sys.modules.get(_pkg_name)
+    if _pkg is not None and not hasattr(_pkg, "MossTTS"):
+        setattr(_pkg, "MossTTS", MossTTS)
+except Exception:
+    pass

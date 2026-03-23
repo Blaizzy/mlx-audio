@@ -21,7 +21,6 @@ from mlx.utils import tree_flatten
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
 QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
-QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
 
 
 class Domain(str, Enum):
@@ -617,7 +616,6 @@ def convert(
     revision: Optional[str] = None,
     dequantize: bool = False,
     quant_predicate: Optional[str] = None,
-    q_mode: str = "affine",
     model_domain: Optional[str] = None,
 ):
     """

@@ -81,12 +81,7 @@ class _Attention(nn.Module):
             else None
         )
 
-        scores = (q @ k.transpose(0, 1, 3, 2)) * self.scale
-        if mask is not None:
-            scores = scores + mask
-
-        attn = mx.softmax(scores, axis=-1)
-        out = attn @ v
+        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
         out = out.transpose(0, 2, 1, 3).reshape(B, T, self.d_model)
         out = self.out_projs[0](out)
 

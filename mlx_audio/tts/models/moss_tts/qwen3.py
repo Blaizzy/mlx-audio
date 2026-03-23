@@ -14,13 +14,6 @@ def _get(cfg: Dict[str, Any], key: str, default: Any) -> Any:
     return default if v is None else v
 
 
-def create_additive_causal_mask(N: int, offset: int = 0) -> mx.array:
-    rinds = mx.arange(offset + N)
-    linds = mx.arange(offset, offset + N) if offset else rinds
-    mask = linds[:, None] < rinds[None]
-    return mask * -1e9
-
-
 class Qwen3Attention(nn.Module):
     def __init__(self, config: Dict[str, Any], layer_idx: int):
         super().__init__()
@@ -194,19 +187,7 @@ class Qwen3Model(nn.Module):
         if cache is not None and cache[0] is not None:
             offset = cache[0].offset
 
-        attn_mask: Optional[Any] = None
-        use_native_causal = attention_mask is None
-        if not use_native_causal and (S > 1 or offset > 0):
-            attn_mask = create_additive_causal_mask(S, offset=offset).astype(
-                inputs_embeds.dtype
-            )
-
-        if use_native_causal:
-            if S > 1:
-                attn_mask = "causal"
-            else:
-                attn_mask = None
-
+        attn_mask: Optional[mx.array] = None
         if attention_mask is not None:
             key_len = offset + S
             key_mask = attention_mask
@@ -223,10 +204,17 @@ class Qwen3Model(nn.Module):
             pad_mask = (~key_mask.astype(mx.bool_)).astype(inputs_embeds.dtype) * -1e9
             pad_mask = pad_mask.reshape(B, 1, 1, key_len)
 
-            if attn_mask is None:
-                attn_mask = pad_mask
+            if S > 1:
+                causal = nn.MultiHeadAttention.create_additive_causal_mask(S).astype(
+                    inputs_embeds.dtype
+                )
+                attn_mask = causal[None, None, :, :] + pad_mask
             else:
-                attn_mask = attn_mask.reshape(1, 1, S, key_len) + pad_mask
+                attn_mask = pad_mask
+        elif S > 1:
+            attn_mask = nn.MultiHeadAttention.create_additive_causal_mask(S).astype(
+                inputs_embeds.dtype
+            )
 
         x = inputs_embeds
         for i, layer in enumerate(self.layers):
