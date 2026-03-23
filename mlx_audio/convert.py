@@ -11,7 +11,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 from pathlib import Path
 from textwrap import dedent
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import mlx.core as mx
 from huggingface_hub import snapshot_download
@@ -20,6 +20,7 @@ from mlx.utils import tree_flatten
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
+QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
 QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
 
 
@@ -30,6 +31,7 @@ class Domain(str, Enum):
     STT = "stt"
     STS = "sts"
     LID = "lid"
+    CODEC = "codec"
 
 
 @dataclass
@@ -111,6 +113,17 @@ DOMAIN_CONFIGS = {
         results = model.predict(audio, top_k=5)
         for lang, prob in results:
             print(f"{lang}: {prob:.1%}")
+        """,
+    ),
+    Domain.CODEC: DomainConfig(
+        name="CODEC",
+        tags=["audio-codec", "speech", "audio tokenizer", "codec"],
+        cli_example="python -c \"from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer; model = MossAudioTokenizer.from_pretrained('{repo}')\"",
+        python_example="""
+        from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
+
+        model = MossAudioTokenizer.from_pretrained("{repo}")
+        result = model.decode(audio_codes)
         """,
     ),
 }
@@ -433,12 +446,15 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: Domain):
 
     try:
         card = ModelCard.load(hf_path)
-        card.data.tags = tags if card.data.tags is None else card.data.tags + tags
-        card.data.library_name = "mlx-audio"
+        existing_tags = getattr(card.data, "tags", None)
+        setattr(
+            card.data, "tags", tags if existing_tags is None else existing_tags + tags
+        )
+        setattr(card.data, "library_name", "mlx-audio")
     except Exception:
         card = ModelCard("")
-        card.data.tags = tags
-        card.data.library_name = "mlx-audio"
+        setattr(card.data, "tags", tags)
+        setattr(card.data, "library_name", "mlx-audio")
 
     card.text = readme_content
     card.save(path / "README.md")
@@ -453,27 +469,81 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: Domain):
     print(f"[INFO] Upload complete! See https://huggingface.co/{upload_repo}")
 
 
+def resolve_quant_args(
+    q_group_size: Optional[int],
+    q_bits: Optional[int],
+    q_mode: str,
+) -> tuple[int, int]:
+    mode_defaults = {
+        "affine": (64, 4),
+        "mxfp4": (32, 4),
+        "nvfp4": (16, 4),
+        "mxfp8": (32, 8),
+    }
+    if q_mode not in mode_defaults:
+        raise ValueError(f"Unsupported quantization mode: {q_mode}")
+    default_group_size, default_bits = mode_defaults[q_mode]
+    return q_group_size or default_group_size, q_bits or default_bits
+
+
 def build_quant_predicate(
-    model, quant_predicate_name: Optional[str] = None
-) -> Callable[[str, any], bool]:
+    model,
+    q_group_size: int,
+    quant_predicate_name: Optional[str] = None,
+) -> Callable[[str, Any], bool]:
     """Build the quantization predicate function."""
     model_quant_predicate = getattr(model, "model_quant_predicate", lambda p, m: True)
 
     def base_requirements(path: str, module) -> bool:
         return (
             hasattr(module, "weight")
-            and module.weight.shape[-1] % 64 == 0
+            and module.weight.shape[-1] % q_group_size == 0
             and hasattr(module, "to_quantized")
             and model_quant_predicate(path, module)
+            and not _is_moss_tts_export_exempt(path)
         )
 
     if not quant_predicate_name:
         return base_requirements
 
+    mixed_predicate = _build_mixed_recipe_predicate(
+        quant_predicate_name=quant_predicate_name,
+        model=model,
+        q_group_size=q_group_size,
+    )
+    return lambda p, m: base_requirements(p, m) and bool(mixed_predicate(p, m))
+
+
+def _is_moss_tts_export_exempt(path: str) -> bool:
+    return path == "language_model.embed_tokens" or path.startswith("lm_heads.")
+
+
+def _build_mixed_recipe_predicate(
+    quant_predicate_name: str,
+    model: Any,
+    q_group_size: int,
+) -> Callable[[str, Any], bool]:
     from mlx_lm.convert import mixed_quant_predicate_builder
 
-    mixed_predicate = mixed_quant_predicate_builder(quant_predicate_name, model)
-    return lambda p, m: base_requirements(p, m) and mixed_predicate(p, m)
+    recipe_model = model
+    prefix = ""
+    if hasattr(model, "language_model") and not hasattr(model, "layers"):
+        recipe_model = model.language_model
+        prefix = "language_model."
+
+    mixed_predicate: Any = mixed_quant_predicate_builder(
+        quant_predicate_name, recipe_model, q_group_size
+    )
+
+    if not prefix:
+        return lambda p, m: bool(mixed_predicate(p, m))
+
+    def wrapped(path: str, module: Any) -> bool:
+        if not path.startswith(prefix):
+            return False
+        return bool(mixed_predicate(path[len(prefix) :], module))
+
+    return wrapped
 
 
 def copy_model_files(source: Path, dest: Path):
@@ -523,9 +593,14 @@ def load_weights(model_path: Path) -> dict:
 
     weights = {}
     for wf in weight_files:
-        if "tokenizer" in wf:
+        if "tokenizer" in Path(wf).name:
             continue
-        weights.update(mx.load(wf))
+        loaded = mx.load(wf)
+        if isinstance(loaded, tuple):
+            loaded = loaded[0]
+        if not isinstance(loaded, dict):
+            raise TypeError(f"Unexpected weight payload type from {wf}: {type(loaded)}")
+        weights.update(loaded)
 
     return weights
 
@@ -536,6 +611,7 @@ def convert(
     quantize: bool = False,
     q_group_size: Optional[int] = None,
     q_bits: Optional[int] = None,
+    q_mode: str = "affine",
     dtype: Optional[str] = None,
     upload_repo: Optional[str] = None,
     revision: Optional[str] = None,
@@ -554,8 +630,9 @@ def convert(
         hf_path: Path to the Hugging Face model or repo ID.
         mlx_path: Path to save the MLX model.
         quantize: Whether to quantize the model.
-        q_group_size: Group size for quantization. Uses mode defaults when None.
-        q_bits: Bits per weight for quantization. Uses mode defaults when None.
+        q_group_size: Group size for quantization. Defaults depend on q_mode. Uses mode defaults when None.
+        q_bits: Bits per weight for quantization. Defaults depend on q_mode.
+        q_mode: Quantization mode (affine, mxfp4, nvfp4, mxfp8). Uses mode defaults when None.
         dtype: Data type for weights (float16, bfloat16, float32).
         upload_repo: Hugging Face repo to upload the converted model.
         revision: Model revision to download.
@@ -585,15 +662,12 @@ def convert(
     # Get model class and instantiate
     model_class = get_model_class(model_type, domain)
 
-    model_config = (
-        model_class.ModelConfig.from_dict(config)
-        if hasattr(model_class, "ModelConfig")
-        else config
-    )
-
-    # Handle model_path attribute if needed
-    if hasattr(model_config, "model_path"):
-        model_config.model_path = model_path
+    if hasattr(model_class, "ModelConfig"):
+        model_config = model_class.ModelConfig.from_dict(config)
+        if hasattr(model_config, "model_path"):
+            setattr(model_config, "model_path", model_path)
+    else:
+        model_config = config
 
     # Load and process weights
     weights = load_weights(model_path)
@@ -614,13 +688,18 @@ def convert(
 
     # Handle quantization/dequantization
     if quantize:
-        final_predicate = build_quant_predicate(model, quant_predicate)
+        resolved_q_group_size, resolved_q_bits = resolve_quant_args(
+            q_group_size, q_bits, q_mode
+        )
+        final_predicate = build_quant_predicate(
+            model, resolved_q_group_size, quant_predicate
+        )
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
             model,
             config,
-            q_group_size,
-            q_bits,
+            resolved_q_group_size,
+            resolved_q_bits,
             mode=q_mode,
             quant_predicate=final_predicate,
         )
@@ -631,19 +710,19 @@ def convert(
         weights = dict(tree_flatten(model.parameters()))
 
     # Create output directory and copy files
-    mlx_path = Path(mlx_path)
-    mlx_path.mkdir(parents=True, exist_ok=True)
-    copy_model_files(model_path, mlx_path)
+    output_path = Path(mlx_path)
+    output_path.mkdir(parents=True, exist_ok=True)
+    copy_model_files(model_path, output_path)
 
     # Save model weights and config
-    save_model(mlx_path, model, donate_model=True)
+    save_model(output_path, model, donate_model=True)
     config["model_type"] = model_type
-    save_config(config, config_path=mlx_path / "config.json")
+    save_config(config, config_path=output_path / "config.json")
 
-    print(f"[INFO] Conversion complete! Model saved to {mlx_path}")
+    print(f"[INFO] Conversion complete! Model saved to {output_path}")
 
     if upload_repo:
-        upload_to_hub(mlx_path, upload_repo, hf_path, domain)
+        upload_to_hub(output_path, upload_repo, hf_path, domain)
 
 
 def configure_parser() -> argparse.ArgumentParser:
@@ -674,20 +753,20 @@ def configure_parser() -> argparse.ArgumentParser:
         "--q-group-size",
         type=int,
         default=None,
-        help="Group size for quantization (mode default if omitted).",
+        help="Group size for quantization. Defaults depend on --q-mode.",
     )
     parser.add_argument(
         "--q-bits",
         type=int,
         default=None,
-        help="Bits per weight for quantization (mode default if omitted).",
+        help="Bits per weight for quantization. Defaults depend on --q-mode.",
     )
     parser.add_argument(
         "--q-mode",
         choices=QUANT_MODES,
         type=str,
         default="affine",
-        help="Quantization mode.",
+        help="Quantization mode to use when --quantize is enabled.",
     )
     parser.add_argument(
         "--quant-predicate",
@@ -723,7 +802,7 @@ def configure_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-domain",
         type=str,
-        choices=["tts", "stt", "sts", "lid"],
+        choices=["tts", "stt", "sts", "lid", "codec"],
         default=None,
         help="Force model domain (auto-detected if not specified).",
     )
