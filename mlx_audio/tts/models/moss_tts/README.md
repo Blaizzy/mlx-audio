@@ -15,7 +15,7 @@ This integration is intended for local conversion and local inference on Apple S
 
 - A working Python environment (this repo supports uv).
 - HuggingFace model weights are available locally. You can download the pre-quantized 8-bit weights from Hugging Face: `mlx-community/MOSS-TTS-8B-8bit`  
-(<https://huggingface.co/mlx-community/MOSS-TTS-8B-8bit>), it has been quantized into 8bit already
+(<https://huggingface.co/mlx-community/MOSS-TTS-8B-8bit>)
 - Codec weights are available locally. You can download the weights directly from Hugging Face: `OpenMOSS-Team/MOSS-Audio-Tokenizer`  
 (<https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer>).
 
