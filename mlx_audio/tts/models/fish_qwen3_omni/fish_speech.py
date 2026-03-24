@@ -472,30 +472,39 @@ class Model(nn.Module):
         top_p: float,
         top_k: int,
         temperature: float,
-    ) -> mx.array:
+    ) -> tuple[mx.array, int]:
+        """Sample a semantic token with Repetition Aware Sampling (RAS).
+
+        Returns the sampled token and its integer value. Only computes
+        the high-temperature resample when a repetition is actually
+        detected, avoiding a redundant second sample on every step.
+        """
         if self.semantic_logit_bias is None:
             raise ValueError("Semantic logits bias is not initialized.")
 
         biased_logits = logits + self.semantic_logit_bias.astype(logits.dtype)
-        normal = _sample_logits(
+        semantic_token = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        high_temp = _sample_logits(
-            biased_logits,
-            temperature=RAS_HIGH_TEMP,
-            top_p=RAS_HIGH_TOP_P,
-            top_k=top_k,
-        )
-        mx.eval(normal, high_temp)
+        mx.eval(semantic_token)
+        token_value = int(semantic_token[0].item())
 
-        token_value = int(normal[0].item())
-        should_use_high = (
+        if (
             token_value in previous_semantic_tokens
             and self.config.semantic_start_token_id
             <= token_value
             <= self.config.semantic_end_token_id
-        )
-        return high_temp if should_use_high else normal
+        ):
+            semantic_token = _sample_logits(
+                biased_logits,
+                temperature=RAS_HIGH_TEMP,
+                top_p=RAS_HIGH_TOP_P,
+                top_k=top_k,
+            )
+            mx.eval(semantic_token)
+            token_value = int(semantic_token[0].item())
+
+        return semantic_token, token_value
 
     def _generate_codes_for_batch(
         self,
@@ -539,15 +548,13 @@ class Model(nn.Module):
         )
 
         for _ in range(semantic_token_budget):
-            semantic_token = self._sample_semantic(
+            semantic_token, semantic_token_id = self._sample_semantic(
                 logits=logits,
                 previous_semantic_tokens=previous_semantic_tokens,
                 top_p=top_p,
                 top_k=top_k,
                 temperature=temperature,
             )
-            mx.eval(semantic_token)
-            semantic_token_id = int(semantic_token[0].item())
             if semantic_token_id == im_end_id:
                 break
 
