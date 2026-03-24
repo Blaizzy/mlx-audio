@@ -1,89 +1,11 @@
-# Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
-
 import math
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
 
 
-class Snake1d(nn.Module):
-
-    def __init__(self, channels: int, logscale: bool = True):
-        super().__init__()
-        self.alpha = mx.zeros((1, channels, 1))
-        self.beta = mx.zeros((1, channels, 1))
-        self.logscale = logscale
-
-    def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time]
-        # Apply exp() to alpha/beta when logscale=True (matches diffusers)
-        alpha = mx.exp(self.alpha) if self.logscale else self.alpha
-        beta = mx.exp(self.beta) if self.logscale else self.beta
-        return x + (1.0 / (beta + 1e-9)) * mx.power(mx.sin(alpha * x), 2)
-
-
-class WeightNormConv1d(nn.Module):
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        padding: int = 0,
-        dilation: int = 1,
-        bias: bool = True,
-    ):
-        super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.padding = padding
-        self.dilation = dilation
-
-        # Weight normalization: W = g * V / ||V||
-        self.weight_g = mx.ones((out_channels, 1, 1))
-        self.weight_v = (
-            mx.random.normal((out_channels, in_channels, kernel_size)) * 0.02
-        )
-
-        if bias:
-            self.bias = mx.zeros((out_channels,))
-        else:
-            self.bias = None
-
-    def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time]
-        # Compute normalized weight
-        norm = mx.sqrt(mx.sum(self.weight_v**2, axis=(1, 2), keepdims=True) + 1e-12)
-        weight = self.weight_g * self.weight_v / norm
-
-        # Transpose for MLX conv: [batch, time, channels]
-        x = x.transpose(0, 2, 1)
-
-        # MLX conv1d expects weight as [out, kernel, in]
-        weight_mlx = weight.transpose(0, 2, 1)
-
-        # Apply convolution
-        y = mx.conv1d(
-            x,
-            weight_mlx,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-        )
-
-        # Add bias
-        if self.bias is not None:
-            y = y + self.bias
-
-        # Transpose back: [batch, channels, time]
-        return y.transpose(0, 2, 1)
-
-
-class WeightNormConvTranspose1d(nn.Module):
+class FastConvTranspose1d(nn.Module):
 
     def __init__(
         self,
@@ -100,60 +22,37 @@ class WeightNormConvTranspose1d(nn.Module):
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
-
-        self.weight_g = mx.ones((in_channels, 1, 1))
-        self.weight_v = (
-            mx.random.normal((in_channels, out_channels, kernel_size)) * 0.02
-        )
-
+        # Weight stored as [in_ch, out_ch, K] for efficient matmul
+        self.weight = mx.zeros((in_channels, out_channels, kernel_size))
         if bias:
             self.bias = mx.zeros((out_channels,))
-        else:
-            self.bias = None
 
     def __call__(self, x: mx.array) -> mx.array:
-        # x: [batch, channels, time]
-        batch_size, in_ch, in_len = x.shape
+        # x: [B, L, in_ch] (NLC)
+        batch_size, in_len, _ = x.shape
 
-        # Compute normalized weight: [in, out, kernel]
-        norm = mx.sqrt(mx.sum(self.weight_v**2, axis=(1, 2), keepdims=True) + 1e-12)
-        weight = self.weight_g * self.weight_v / norm
+        # [in_ch, out_ch, K] -> [in_ch, out_ch * K]
+        w = self.weight.reshape(self.in_channels, self.out_channels * self.kernel_size)
 
-        # Transposed conv1d output length: (in_len - 1) * stride + kernel_size
-        # After removing 2*padding, final length is: (in_len - 1) * stride + kernel_size - 2*padding
+        # [B, L, in_ch] @ [in_ch, out_ch * K] -> [B, L, out_ch * K]
+        y = x @ w
 
-        # x: [batch, in_ch, in_len] -> [batch, in_len, in_ch]
-        x_t = x.transpose(0, 2, 1)
-
-        # weight: [in_ch, out_ch, kernel] -> [in_ch, out_ch * kernel]
-        weight_reshaped = weight.reshape(
-            self.in_channels, self.out_channels * self.kernel_size
-        )
-
-        # Compute: [batch, in_len, out_ch * kernel]
-        y = x_t @ weight_reshaped
-
-        # Reshape to [batch, in_len, out_ch, kernel]
+        # [B, L, out_ch, K]
         y = y.reshape(batch_size, in_len, self.out_channels, self.kernel_size)
 
-        # Transpose: [batch, out_ch, in_len, kernel]
+        # [B, out_ch, L, K]
         y = y.transpose(0, 2, 1, 3)
 
-        # Full output length before padding removal
         full_out_len = (in_len - 1) * self.stride + self.kernel_size
-
         overlap = self.kernel_size - self.stride
 
-        # Split kernel contributions
-        first_part = y[:, :, :, : self.stride]  # [batch, out_ch, in_len, stride]
-        second_part = y[:, :, :, self.stride :]  # [batch, out_ch, in_len, overlap]
-
-        # Flatten: [batch, out_ch, in_len * stride]
+        first_part = y[:, :, :, : self.stride]
         first_flat = first_part.reshape(
             batch_size, self.out_channels, in_len * self.stride
         )
 
         if overlap > 0:
+            second_part = y[:, :, :, self.stride :]
             second_flat = second_part.reshape(
                 batch_size, self.out_channels, in_len * overlap
             )
@@ -165,8 +64,6 @@ class WeightNormConvTranspose1d(nn.Module):
                 ],
                 axis=2,
             )
-
-            # Pad second_flat at the start (no overlap before first input)
             second_padded = mx.concatenate(
                 [
                     mx.zeros(
@@ -177,250 +74,186 @@ class WeightNormConvTranspose1d(nn.Module):
                 axis=2,
             )
 
-            # Trim to match full_out_len
             first_padded = first_padded[:, :, :full_out_len]
             second_padded = second_padded[:, :, :full_out_len]
-
             output = first_padded + second_padded
         else:
             output = first_flat
 
-        # Trim padding
         if self.padding > 0:
             end_idx = full_out_len - self.padding
             output = output[:, :, self.padding : end_idx]
 
-        # Add bias
-        if self.bias is not None:
+        if "bias" in self:
             output = output + self.bias[None, :, None]
 
-        return output
+        # [B, out_ch, L_out] -> [B, L_out, out_ch] (NLC)
+        return output.transpose(0, 2, 1)
+
+
+class Snake1d(nn.Module):
+
+    def __init__(self, channels: int, logscale: bool = True):
+        super().__init__()
+        self.alpha = mx.zeros(channels)
+        self.beta = mx.zeros(channels)
+        self.logscale = logscale
+
+    def __call__(self, x: mx.array) -> mx.array:
+        alpha = mx.exp(self.alpha) if self.logscale else self.alpha
+        beta = mx.exp(self.beta) if self.logscale else self.beta
+        return x + mx.reciprocal(beta + 1e-9) * mx.power(mx.sin(alpha * x), 2)
 
 
 class ResidualUnit(nn.Module):
 
-    def __init__(self, channels: int, kernel_size: int = 7, dilation: int = 1):
+    def __init__(self, dimension: int = 16, dilation: int = 1):
         super().__init__()
-        self.snake1 = Snake1d(channels)
-        self.conv1 = WeightNormConv1d(
-            channels,
-            channels,
-            kernel_size,
-            padding=(kernel_size - 1) * dilation // 2,
-            dilation=dilation,
+        pad = ((7 - 1) * dilation) // 2
+        self.snake1 = Snake1d(dimension)
+        self.conv1 = nn.Conv1d(
+            dimension, dimension, kernel_size=7, dilation=dilation, padding=pad
         )
-        self.snake2 = Snake1d(channels)
-        self.conv2 = WeightNormConv1d(channels, channels, 1)
+        self.snake2 = Snake1d(dimension)
+        self.conv2 = nn.Conv1d(dimension, dimension, kernel_size=1)
 
-    def __call__(self, x: mx.array) -> mx.array:
-        y = self.snake1(x)
-        y = self.conv1(y)
-        y = self.snake2(y)
-        y = self.conv2(y)
-        # Handle potential padding mismatch
-        padding = (x.shape[-1] - y.shape[-1]) // 2
+    def __call__(self, hidden_state: mx.array) -> mx.array:
+        output = self.conv1(self.snake1(hidden_state))
+        output = self.conv2(self.snake2(output))
+        padding = (hidden_state.shape[1] - output.shape[1]) // 2
         if padding > 0:
-            x = x[..., padding:-padding]
-        return x + y
+            hidden_state = hidden_state[:, padding:-padding, :]
+        return hidden_state + output
 
 
 class EncoderBlock(nn.Module):
-    """Encoder block for Oobleck VAE."""
 
-    def __init__(self, in_channels: int, out_channels: int, stride: int):
+    def __init__(self, input_dim: int, output_dim: int, stride: int = 1):
         super().__init__()
-        self.res_unit1 = ResidualUnit(in_channels, dilation=1)
-        self.res_unit2 = ResidualUnit(in_channels, dilation=3)
-        self.res_unit3 = ResidualUnit(in_channels, dilation=9)
-        self.snake1 = Snake1d(in_channels)
-        self.conv1 = WeightNormConv1d(
-            in_channels,
-            out_channels,
-            kernel_size=stride * 2,
+        self.res_unit1 = ResidualUnit(input_dim, dilation=1)
+        self.res_unit2 = ResidualUnit(input_dim, dilation=3)
+        self.res_unit3 = ResidualUnit(input_dim, dilation=9)
+        self.snake1 = Snake1d(input_dim)
+        self.conv1 = nn.Conv1d(
+            input_dim,
+            output_dim,
+            kernel_size=2 * stride,
             stride=stride,
             padding=math.ceil(stride / 2),
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-        x = self.res_unit1(x)
-        x = self.res_unit2(x)
-        x = self.res_unit3(x)
-        x = self.snake1(x)
-        x = self.conv1(x)
-        return x
-
-
-class OobleckEncoder(nn.Module):
-    """Oobleck VAE Encoder for encoding audio to latents.
-
-    The encoder outputs 2*latent_dim channels representing mean and scale
-    of a diagonal Gaussian distribution.
-    """
-
-    def __init__(
-        self,
-        audio_channels: int = 2,
-        channels: int = 128,
-        latent_channels: int = 128,  # Output channels (mean + scale)
-        channel_multiples: List[int] = None,
-        downsampling_ratios: List[int] = None,
-    ):
-        super().__init__()
-
-        if channel_multiples is None:
-            channel_multiples = [1, 2, 4, 8, 16]
-        if downsampling_ratios is None:
-            downsampling_ratios = [2, 4, 4, 6, 10]
-
-        self.audio_channels = audio_channels
-        self.channels = channels
-        self.latent_channels = latent_channels
-
-        # Input convolution
-        self.conv1 = WeightNormConv1d(
-            audio_channels, channels, kernel_size=7, padding=3
-        )
-
-        # Encoder blocks
-        channel_multiples_with_1 = [1] + channel_multiples
-        self.block = []
-        for i, stride in enumerate(downsampling_ratios):
-            in_ch = channels * channel_multiples_with_1[i]
-            out_ch = channels * channel_multiples_with_1[i + 1]
-            self.block.append(EncoderBlock(in_ch, out_ch, stride))
-
-        # Output layers - output encoder_hidden_size channels (mean + scale)
-        d_model = channels * channel_multiples[-1]
-        self.snake1 = Snake1d(d_model)
-        self.conv2 = WeightNormConv1d(
-            d_model, latent_channels, kernel_size=3, padding=1
-        )
-
-    def __call__(self, x: mx.array) -> mx.array:
-        """Encode audio to latent parameters (mean and scale).
-
-        Args:
-            x: Audio tensor of shape [batch, channels, samples] or [batch, samples, channels]
-
-        Returns:
-            Latent parameters of shape [batch, latent_channels, time]
-            where latent_channels = 2 * latent_dim (mean + scale)
-        """
-        # Ensure channels-first format
-        if x.shape[-1] == self.audio_channels:
-            x = x.transpose(0, 2, 1)  # [batch, samples, ch] -> [batch, ch, samples]
-
-        x = self.conv1(x)
-
-        for block in self.block:
-            x = block(x)
-
-        x = self.snake1(x)
-        x = self.conv2(x)
-
-        return x
+    def __call__(self, hidden_state: mx.array) -> mx.array:
+        hidden_state = self.res_unit1(hidden_state)
+        hidden_state = self.res_unit2(hidden_state)
+        hidden_state = self.snake1(self.res_unit3(hidden_state))
+        hidden_state = self.conv1(hidden_state)
+        return hidden_state
 
 
 class DecoderBlock(nn.Module):
 
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        stride: int,
-    ):
+    def __init__(self, input_dim: int, output_dim: int, stride: int = 1):
         super().__init__()
-        # Snake activation before transposed conv
-        self.snake1 = Snake1d(in_channels)
-
-        # Transposed conv for upsampling
-        self.conv_t1 = WeightNormConvTranspose1d(
-            in_channels,
-            out_channels,
-            kernel_size=stride * 2,
+        self.snake1 = Snake1d(input_dim)
+        self.conv_t1 = FastConvTranspose1d(
+            input_dim,
+            output_dim,
+            kernel_size=2 * stride,
             stride=stride,
             padding=stride // 2,
         )
+        self.res_unit1 = ResidualUnit(output_dim, dilation=1)
+        self.res_unit2 = ResidualUnit(output_dim, dilation=3)
+        self.res_unit3 = ResidualUnit(output_dim, dilation=9)
 
-        # Residual units with different dilations
-        self.res_unit1 = ResidualUnit(out_channels, dilation=1)
-        self.res_unit2 = ResidualUnit(out_channels, dilation=3)
-        self.res_unit3 = ResidualUnit(out_channels, dilation=9)
+    def __call__(self, hidden_state: mx.array) -> mx.array:
+        hidden_state = self.snake1(hidden_state)
+        hidden_state = self.conv_t1(hidden_state)
+        hidden_state = self.res_unit1(hidden_state)
+        hidden_state = self.res_unit2(hidden_state)
+        hidden_state = self.res_unit3(hidden_state)
+        return hidden_state
 
-    def __call__(self, x: mx.array) -> mx.array:
-        x = self.snake1(x)
-        x = self.conv_t1(x)
-        x = self.res_unit1(x)
-        x = self.res_unit2(x)
-        x = self.res_unit3(x)
-        return x
+
+class OobleckEncoder(nn.Module):
+
+    def __init__(
+        self,
+        encoder_hidden_size: int,
+        audio_channels: int,
+        downsampling_ratios: List[int],
+        channel_multiples: List[int],
+    ):
+        super().__init__()
+        cm = [1] + list(channel_multiples)
+
+        self.conv1 = nn.Conv1d(
+            audio_channels, encoder_hidden_size, kernel_size=7, padding=3
+        )
+
+        self.block = []
+        for i, stride in enumerate(downsampling_ratios):
+            self.block.append(
+                EncoderBlock(
+                    input_dim=encoder_hidden_size * cm[i],
+                    output_dim=encoder_hidden_size * cm[i + 1],
+                    stride=stride,
+                )
+            )
+
+        d_model = encoder_hidden_size * cm[-1]
+        self.snake1 = Snake1d(d_model)
+        self.conv2 = nn.Conv1d(d_model, encoder_hidden_size, kernel_size=3, padding=1)
+
+    def __call__(self, hidden_state: mx.array) -> mx.array:
+        hidden_state = self.conv1(hidden_state)
+        for module in self.block:
+            hidden_state = module(hidden_state)
+        hidden_state = self.snake1(hidden_state)
+        hidden_state = self.conv2(hidden_state)
+        return hidden_state
 
 
 class OobleckDecoder(nn.Module):
 
     def __init__(
         self,
-        input_channels: int = 64,
-        channels: int = 128,
-        audio_channels: int = 2,
-        channel_multiples: List[int] = None,
-        downsampling_ratios: List[int] = None,
+        channels: int,
+        input_channels: int,
+        audio_channels: int,
+        upsampling_ratios: List[int],
+        channel_multiples: List[int],
     ):
         super().__init__()
+        strides = upsampling_ratios
+        cm = [1] + list(channel_multiples)
 
-        if channel_multiples is None:
-            channel_multiples = [1, 2, 4, 8, 16]
-        if downsampling_ratios is None:
-            downsampling_ratios = [2, 4, 4, 6, 10]
+        self.conv1 = nn.Conv1d(
+            input_channels, channels * cm[-1], kernel_size=7, padding=3
+        )
 
-        self.input_channels = input_channels
-        self.channels = channels
-        self.audio_channels = audio_channels
-
-        # Reverse for decoder (upsampling)
-        channel_multiples = list(reversed(channel_multiples))
-        downsampling_ratios = list(reversed(downsampling_ratios))
-
-        # Input convolution (named conv1 to match PyTorch weights)
-        in_ch = input_channels
-        out_ch = channels * channel_multiples[0]
-        self.conv1 = WeightNormConv1d(in_ch, out_ch, kernel_size=7, padding=3)
-
-        # Decoder blocks
         self.block = []
-        for i, (mult, stride) in enumerate(zip(channel_multiples, downsampling_ratios)):
-            in_ch = channels * mult
-            out_ch = (
-                channels * channel_multiples[i + 1]
-                if i + 1 < len(channel_multiples)
-                else channels
+        for i, stride in enumerate(strides):
+            self.block.append(
+                DecoderBlock(
+                    input_dim=channels * cm[len(strides) - i],
+                    output_dim=channels * cm[len(strides) - i - 1],
+                    stride=stride,
+                )
             )
-            self.block.append(DecoderBlock(in_ch, out_ch, stride))
 
-        # Output layers (named snake1/conv2 to match PyTorch weights)
         self.snake1 = Snake1d(channels)
-        self.conv2 = WeightNormConv1d(
+        self.conv2 = nn.Conv1d(
             channels, audio_channels, kernel_size=7, padding=3, bias=False
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-
-        # Ensure channels-first format
-        if x.shape[-1] == self.input_channels:
-            x = x.transpose(0, 2, 1)  # [batch, time, ch] -> [batch, ch, time]
-
-        x = self.conv1(x)
-
-        for block in self.block:
-            x = block(x)
-
-        x = self.snake1(x)
-        x = self.conv2(x)
-
-        # Note: PyTorch's Oobleck decoder does NOT apply tanh
-        # The audio values should already be in a reasonable range
-
-        return x
+    def __call__(self, hidden_state: mx.array) -> mx.array:
+        hidden_state = self.conv1(hidden_state)
+        for layer in self.block:
+            hidden_state = layer(hidden_state)
+        hidden_state = self.snake1(hidden_state)
+        hidden_state = self.conv2(hidden_state)
+        return hidden_state
 
 
 class AutoencoderOobleck(nn.Module):
@@ -428,19 +261,18 @@ class AutoencoderOobleck(nn.Module):
     def __init__(
         self,
         audio_channels: int = 2,
-        channel_multiples: List[int] = None,
+        channel_multiples: Optional[List[int]] = None,
         decoder_channels: int = 128,
         decoder_input_channels: int = 64,
-        downsampling_ratios: List[int] = None,
+        downsampling_ratios: Optional[List[int]] = None,
         encoder_hidden_size: int = 128,
         sampling_rate: int = 48000,
     ):
         super().__init__()
-
-        if channel_multiples is None:
-            channel_multiples = [1, 2, 4, 8, 16]
         if downsampling_ratios is None:
             downsampling_ratios = [2, 4, 4, 6, 10]
+        if channel_multiples is None:
+            channel_multiples = [1, 2, 4, 8, 16]
 
         self.sampling_rate = sampling_rate
         self.hop_length = math.prod(downsampling_ratios)
@@ -448,112 +280,102 @@ class AutoencoderOobleck(nn.Module):
         self.latent_channels = decoder_input_channels
         self.encoder_hidden_size = encoder_hidden_size
 
-        # Encoder for audio-to-latent conversion
-        # Output encoder_hidden_size channels (mean + scale = 2 * latent_dim)
         self.encoder = OobleckEncoder(
+            encoder_hidden_size=encoder_hidden_size,
             audio_channels=audio_channels,
-            channels=decoder_channels,  # Match decoder's internal channel width
-            latent_channels=encoder_hidden_size,  # 128 = 64 mean + 64 scale
-            channel_multiples=channel_multiples,
             downsampling_ratios=downsampling_ratios,
+            channel_multiples=channel_multiples,
         )
-
-        # Decoder for latent-to-audio conversion
         self.decoder = OobleckDecoder(
-            input_channels=decoder_input_channels,
             channels=decoder_channels,
+            input_channels=decoder_input_channels,
             audio_channels=audio_channels,
+            upsampling_ratios=downsampling_ratios[::-1],
             channel_multiples=channel_multiples,
-            downsampling_ratios=downsampling_ratios,
         )
 
     def encode(self, audio: mx.array, sample: bool = True) -> mx.array:
-        """Encode audio to latent representation.
+        # audio: [B, channels, samples] -> NLC [B, samples, channels]
+        if audio.shape[1] == self.audio_channels and audio.shape[-1] != self.audio_channels:
+            audio = audio.transpose(0, 2, 1)
 
-        The encoder outputs a diagonal Gaussian distribution (mean + log_scale).
-        By default, this returns the mean (deterministic sampling).
-
-        Args:
-            audio: Audio tensor of shape [batch, channels, samples]
-                   or [batch, samples, channels]
-            sample: If True, return mean (deterministic). If False, return
-                    both mean and scale as a tuple.
-
-        Returns:
-            Latent tensor of shape [batch, time, latent_dim] (if sample=True)
-            or tuple of (mean, scale) tensors (if sample=False)
-        """
-        # Encode to latent parameters: [batch, encoder_hidden_size, time]
-        latent_params = self.encoder(audio)
-
-        # Split into mean and log_scale (each latent_channels/2 = 64 dimensions)
-        # Shape: [batch, 128, time] -> [batch, 64, time] + [batch, 64, time]
-        mean, log_scale = mx.split(latent_params, 2, axis=1)
+        h = self.encoder(audio)
+        mean, _scale = mx.split(h, 2, axis=-1)
 
         if sample:
-            # Return mean (deterministic sampling, equivalent to mode)
-            # Transpose to [batch, time, latent_dim] for consistency
-            return mean.transpose(0, 2, 1)
-        else:
-            # Return distribution parameters
-            scale = mx.exp(log_scale)
-            return mean.transpose(0, 2, 1), scale.transpose(0, 2, 1)
+            return mean
+        scale = mx.exp(_scale)
+        return mean, scale
 
     def decode(self, latents: mx.array) -> mx.array:
-        """Decode latents to audio.
+        # latents: [B, T, latent_dim] NLC from ace_step.py
+        audio_nlc = self.decoder(latents)
+        # -> [B, channels, samples] for ace_step.py
+        return audio_nlc.transpose(0, 2, 1)
 
-        Args:
-            latents: Latent tensor of shape [batch, time, latent_dim]
-                     or [batch, latent_dim, time]
-
-        Returns:
-            Audio tensor of shape [batch, channels, samples]
-        """
-        return self.decoder(latents)
+    @staticmethod
+    def _fuse_weight_norm(g: mx.array, v: mx.array) -> mx.array:
+        v_flat = v.reshape(v.shape[0], -1)
+        norm = mx.sqrt(mx.sum(v_flat * v_flat, axis=1, keepdims=True)).reshape(g.shape)
+        return g * v / (norm + 1e-9)
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        """Convert PyTorch VAE weights to MLX format."""
         sanitized = {}
+        processed = set()
+        all_keys = sorted(weights.keys())
 
-        for key, value in weights.items():
-            new_key = key
+        for key in all_keys:
+            if key in processed:
+                continue
 
-            # Handle weight normalization - weight_v needs transposition
-            # PyTorch Conv1d: [out, in, kernel]
-            # MLX expects: [out, in, kernel] for weight_v (we transpose in forward)
-            if "weight_v" in key and len(value.shape) == 3:
-                # Keep as [out, in, kernel] - we'll handle in forward pass
-                pass
+            if key.endswith(".weight_g"):
+                base = key[: -len(".weight_g")]
+                v_key = base + ".weight_v"
+                if v_key not in weights:
+                    processed.add(key)
+                    continue
 
-            # Snake alpha/beta should be [1, channels, 1]
-            if "snake" in key and ("alpha" in key or "beta" in key):
-                if len(value.shape) == 1:
-                    value = value[None, :, None]
+                w = AutoencoderOobleck._fuse_weight_norm(weights[key], weights[v_key])
 
-            sanitized[new_key] = value
+                if "conv_t1" in base:
+                    # FastConvTranspose1d stores [in, out, K] — keep as-is
+                    pass
+                else:
+                    # Conv1d: PT [out, in, K] -> MLX [out, K, in]
+                    w = w.transpose(0, 2, 1)
+
+                sanitized[base + ".weight"] = w
+                processed.add(key)
+                processed.add(v_key)
+                continue
+
+            if key.endswith(".weight_v"):
+                continue
+
+            if key.endswith(".alpha") or key.endswith(".beta"):
+                sanitized[key] = weights[key].squeeze()
+                processed.add(key)
+                continue
+
+            sanitized[key] = weights[key]
+            processed.add(key)
 
         return sanitized
 
     def load_weights(self, weights: Dict[str, mx.array], strict: bool = False):
-        """Load weights into the model."""
         from mlx.utils import tree_unflatten
 
-        # Sanitize all weights
-        sanitized_weights = self.sanitize(weights)
+        sanitized = self.sanitize(weights)
 
-        # Load decoder weights
         decoder_weights = {
-            k: v for k, v in sanitized_weights.items() if k.startswith("decoder.")
+            k: v for k, v in sanitized.items() if k.startswith("decoder.")
         }
         if decoder_weights:
-            nested = tree_unflatten(list(decoder_weights.items()))
-            self.update(nested)
+            self.update(tree_unflatten(list(decoder_weights.items())))
 
-        # Load encoder weights if available
         encoder_weights = {
-            k: v for k, v in sanitized_weights.items() if k.startswith("encoder.")
+            k: v for k, v in sanitized.items() if k.startswith("encoder.")
         }
         if encoder_weights:
-            nested = tree_unflatten(list(encoder_weights.items()))
-            self.update(nested)
+            self.update(tree_unflatten(list(encoder_weights.items())))

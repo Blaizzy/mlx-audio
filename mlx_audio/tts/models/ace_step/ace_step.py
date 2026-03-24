@@ -27,6 +27,7 @@ from .modules import make_cache
 
 
 class Model(nn.Module):
+    custom_loading = True
 
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -54,6 +55,12 @@ class Model(nn.Module):
         # Optional 5Hz Language Model (lazy loaded)
         self._lm = None
         self._lm_config = None
+
+        # LoRA state
+        self._lora_loaded = False
+        self._lora_path = None
+        self._lora_scale = 1.0
+        self._base_decoder_weights = None
 
     @property
     def sample_rate(self) -> int:
@@ -154,11 +161,24 @@ class Model(nn.Module):
                 sampling_rate=vae_config.get("sampling_rate", 48000),
             )
 
-            weights_path = model_path / "vae" / "diffusion_pytorch_model.safetensors"
-            if weights_path.exists():
-                weights = mx.load(str(weights_path))
-                model.vae.load_weights(weights, strict=False)
+            mlx_weights_path = model_path / "vae" / "mlx_weights.safetensors"
+            pt_weights_path = model_path / "vae" / "diffusion_pytorch_model.safetensors"
 
+            if mlx_weights_path.exists():
+                from mlx.utils import tree_unflatten
+
+                weights = mx.load(str(mlx_weights_path))
+                model.vae.update(tree_unflatten(list(weights.items())))
+            elif pt_weights_path.exists():
+                weights = mx.load(str(pt_weights_path))
+                sanitized = AutoencoderOobleck.sanitize(weights)
+                model.vae.load_weights(weights, strict=False)
+                try:
+                    mx.save_safetensors(str(mlx_weights_path), sanitized)
+                except Exception:
+                    pass
+
+            model._compiled_vae_decode = mx.compile(model.vae.decode)
             model._sample_rate = vae_config.get("sampling_rate", 48000)
 
         # Load silence latent - try turbo subdirectory first, then root
@@ -508,6 +528,169 @@ class Model(nn.Module):
 
         return lm_hints
 
+    def load_lora(
+        self, lora_path: str, scale: float = 1.0, verbose: bool = True
+    ) -> str:
+        """Load a LoRA adapter into the decoder via weight fusion.
+
+        Fuses LoRA weights directly into decoder parameters:
+        W_new = W_base + scale * (alpha/r) * B @ A
+
+        Args:
+            lora_path: Path to the LoRA adapter directory containing
+                       adapter_config.json and adapter_model.safetensors
+            scale: LoRA influence scale (0.0 to 1.0+, default 1.0)
+            verbose: Whether to print progress
+
+        Returns:
+            Status message
+        """
+        import os
+        import re
+
+        from mlx.utils import tree_flatten, tree_unflatten
+
+        lora_path = str(lora_path).strip()
+        if not os.path.exists(lora_path):
+            return f"LoRA path not found: {lora_path}"
+
+        config_file = os.path.join(lora_path, "adapter_config.json")
+        if not os.path.exists(config_file):
+            return f"adapter_config.json not found in {lora_path}"
+
+        # Load adapter config
+        with open(config_file) as f:
+            adapter_config = json.load(f)
+
+        lora_alpha = adapter_config.get("lora_alpha", 1)
+        lora_r = adapter_config.get("r", 1)
+        use_rslora = adapter_config.get("use_rslora", False)
+        target_modules = adapter_config.get("target_modules", [])
+
+        if use_rslora:
+            base_scaling = lora_alpha / math.sqrt(lora_r)
+        else:
+            base_scaling = lora_alpha / lora_r
+
+        effective_scaling = base_scaling * scale
+
+        if verbose:
+            print(f"Loading LoRA from {lora_path}")
+            print(f"  rank={lora_r}, alpha={lora_alpha}, targets={target_modules}")
+            print(f"  base_scaling={base_scaling:.4f}, lora_scale={scale}, effective={effective_scaling:.4f}")
+
+        # Find and load adapter weights
+        weights_file = os.path.join(lora_path, "adapter_model.safetensors")
+        if not os.path.exists(weights_file):
+            weights_file = os.path.join(lora_path, "adapter_model.bin")
+        if not os.path.exists(weights_file):
+            return f"No adapter weights found in {lora_path}"
+
+        lora_weights = mx.load(weights_file)
+
+        # Back up base decoder weights before first LoRA application
+        if self._base_decoder_weights is None:
+            if verbose:
+                print("Backing up base decoder weights...")
+            self._base_decoder_weights = {
+                k: mx.array(v) for k, v in dict(tree_flatten(self.decoder.parameters())).items()
+            }
+        else:
+            # Restore base weights before applying new LoRA
+            if verbose:
+                print("Restoring base decoder weights before applying new LoRA...")
+            self.decoder.update(tree_unflatten(list(self._base_decoder_weights.items())))
+
+        # Get current decoder parameters
+        decoder_params = dict(tree_flatten(self.decoder.parameters()))
+
+        # Fuse LoRA: W_new = W_base + effective_scaling * (B @ A)
+        applied = 0
+        skipped = 0
+        weight_updates = {}
+
+        for key in sorted(lora_weights.keys()):
+            if not key.endswith(".lora_A.weight"):
+                continue
+
+            b_key = key.replace(".lora_A.weight", ".lora_B.weight")
+            if b_key not in lora_weights:
+                skipped += 1
+                continue
+
+            # Map PEFT key to decoder parameter key
+            # PEFT: base_model.model.layers.0.self_attn.q_proj.lora_A.weight
+            # Decoder: layers.0.self_attn.q_proj.weight
+            base = key.replace(".lora_A.weight", "")
+            base = re.sub(r"^base_model\.model\.", "", base)
+            param_key = f"{base}.weight"
+
+            if param_key not in decoder_params:
+                if verbose:
+                    print(f"  SKIP {param_key} (not found in decoder)")
+                skipped += 1
+                continue
+
+            A = lora_weights[key]    # [r, in_features]
+            B = lora_weights[b_key]  # [out_features, r]
+            W = decoder_params[param_key]
+
+            # Verify shape compatibility
+            delta = (B @ A).astype(W.dtype)
+            if delta.shape != W.shape:
+                if verbose:
+                    print(f"  SKIP {param_key}: shape mismatch delta={delta.shape} vs W={W.shape}")
+                skipped += 1
+                continue
+
+            weight_updates[param_key] = W + effective_scaling * delta
+            applied += 1
+
+        if not weight_updates:
+            return f"No matching LoRA weights found (skipped={skipped})"
+
+        # Apply fused weights directly to decoder (bypasses Model.sanitize)
+        self.decoder.update(tree_unflatten(list(weight_updates.items())))
+        mx.eval(self.decoder.parameters())
+
+        self._lora_loaded = True
+        self._lora_path = lora_path
+        self._lora_scale = scale
+
+        if verbose:
+            print(f"LoRA applied: {applied} layers fused, {skipped} skipped")
+
+        return f"LoRA loaded: {applied} layers, scale={scale}"
+
+    def unload_lora(self, verbose: bool = True) -> str:
+        """Unload LoRA adapter and restore base decoder weights.
+
+        Returns:
+            Status message
+        """
+        from mlx.utils import tree_unflatten
+
+        if not self._lora_loaded:
+            return "No LoRA loaded"
+
+        if self._base_decoder_weights is None:
+            return "No base weights backup found"
+
+        if verbose:
+            print("Restoring base decoder weights...")
+
+        self.decoder.update(tree_unflatten(list(self._base_decoder_weights.items())))
+        mx.eval(self.decoder.parameters())
+
+        self._lora_loaded = False
+        self._lora_path = None
+        self._lora_scale = 1.0
+
+        if verbose:
+            print("Base decoder restored")
+
+        return "LoRA unloaded, base decoder restored"
+
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """Convert PyTorch weights to MLX format.
@@ -782,35 +965,14 @@ class Model(nn.Module):
         fix_nfe: int = 8,
         infer_method: str = "ode",
         shift: float = 3.0,
-        guidance_scale: float = 15.0,
-        guidance_interval: float = 0.5,
-        omega_scale: float = 10.0,
-        cfg_type: str = "apg",
         lm_hints_25hz: Optional[mx.array] = None,
+        **kwargs,
     ) -> Dict:
-        """Generate audio latents.
+        """Generate audio latents via single-pass diffusion (turbo model).
 
-        Args:
-            text_hidden_states: Text embeddings
-            text_attention_mask: Text attention mask
-            lyric_hidden_states: Lyric embeddings
-            lyric_attention_mask: Lyric attention mask
-            refer_audio_acoustic_hidden_states_packed: Reference audio features
-            refer_audio_order_mask: Reference audio order mask
-            src_latents: Source latents
-            chunk_masks: Chunk masks
-            is_covers: Cover song flags
-            silence_latent: Silence latent for padding
-            attention_mask: Attention mask
-            seed: Random seed
-            fix_nfe: Number of function evaluations (steps)
-            infer_method: Inference method ('ode' or 'sde')
-            shift: Timestep schedule shift
-            guidance_scale: Classifier-free guidance scale (default 15.0)
-            guidance_interval: Fraction of steps where guidance is applied (0.5 = middle 50%)
-            omega_scale: Granularity scale for variance control (default 10.0)
-            cfg_type: CFG type ('cfg' for standard, 'apg' for Adaptive Projected Gradient)
-            lm_hints_25hz: Optional pre-computed LM hints at 25Hz rate
+        The turbo model was distilled without CFG, so no guidance is applied.
+        Any guidance_scale/cfg_type kwargs are accepted but ignored (matching
+        the original PyTorch turbo model behavior).
 
         Returns:
             Dictionary with 'target_latents' and 'time_costs'
@@ -886,21 +1048,6 @@ class Model(nn.Module):
             )
         )
 
-        # Prepare null (unconditional) embeddings for CFG
-        do_cfg = guidance_scale != 1.0 and guidance_scale != 0.0
-        if do_cfg:
-            # Encode zeros through the encoder (same as PyTorch)
-            null_cond, _ = self.encoder(
-                text_hidden_states=mx.zeros_like(text_hidden_states),
-                text_attention_mask=text_attention_mask,
-                lyric_hidden_states=mx.zeros_like(lyric_hidden_states),
-                lyric_attention_mask=lyric_attention_mask,
-                refer_audio_acoustic_hidden_states_packed=mx.zeros_like(
-                    refer_audio_acoustic_hidden_states_packed
-                ),
-                refer_audio_order_mask=refer_audio_order_mask,
-            )
-
         end_time = time.time()
         time_costs["encoder_time_cost"] = end_time - start_time
         start_time = end_time
@@ -910,33 +1057,18 @@ class Model(nn.Module):
         batch_size = context_latents.shape[0]
         dtype = context_latents.dtype
 
-        # Timestep schedule for turbo model
         num_steps = len(t_schedule_list)
-
-        # Calculate guidance interval bounds
-        # guidance_interval=0.5 means guidance applied from 25% to 75% of steps
-        guidance_start = int(num_steps * (1 - guidance_interval) / 2)
-        guidance_end = int(num_steps * (1 + guidance_interval) / 2)
-
-        # APG momentum buffer (running average for momentum-based guidance)
-        apg_momentum = 0.0
-        apg_momentum_coef = -0.75  # Momentum coefficient from PyTorch reference
-
         xt = noise
 
-        # Cross-attention caches: K,V computed on first step, reused for all subsequent steps
-        # Each cache auto-populates when first accessed, then returns cached values
+        # Cross-attention cache: K,V computed on first step, reused thereafter
         num_layers = len(self.decoder.layers)
-        cond_cache = make_cache(num_layers)
-        uncond_cache = make_cache(num_layers) if do_cfg else None
+        cache = make_cache(num_layers)
 
         for step_idx in range(num_steps):
             current_sigma = t_schedule_list[step_idx]
             t_curr = mx.full((batch_size,), current_sigma, dtype=dtype)
 
-            # Predict velocity with conditions
-            # Cache auto-populates on first call, reuses on subsequent calls
-            vt_cond = self.decoder(
+            vt = self.decoder(
                 hidden_states=xt,
                 timestep=t_curr,
                 timestep_r=t_curr,
@@ -944,90 +1076,17 @@ class Model(nn.Module):
                 encoder_hidden_states=encoder_hidden_states,
                 encoder_attention_mask=encoder_attention_mask,
                 context_latents=context_latents,
-                cache=cond_cache,
+                cache=cache,
             )
 
-            # Check if we should apply guidance at this step
-            apply_guidance = do_cfg and guidance_start <= step_idx < guidance_end
-
-            if apply_guidance:
-                # Predict velocity without conditions (null)
-                vt_uncond = self.decoder(
-                    hidden_states=xt,
-                    timestep=t_curr,
-                    timestep_r=t_curr,
-                    attention_mask=attention_mask,
-                    encoder_hidden_states=null_cond,
-                    encoder_attention_mask=encoder_attention_mask,
-                    context_latents=context_latents,
-                    cache=uncond_cache,
-                )
-
-                if cfg_type == "apg":
-                    # Adaptive Projected Gradient (APG) guidance
-                    # Projects diff onto orthogonal component of vt_cond
-                    # PyTorch base model uses dims=[1] (time dimension) for [B, T, C]
-                    diff = vt_cond - vt_uncond
-
-                    # Apply momentum
-                    apg_momentum = apg_momentum_coef * apg_momentum + diff
-                    diff = apg_momentum
-
-                    # Norm thresholding over time dimension (axis=1)
-                    norm_threshold = 2.5
-                    diff_norm = mx.linalg.norm(diff, axis=1, keepdims=True)
-                    scale_factor = mx.minimum(
-                        mx.ones_like(diff_norm), norm_threshold / (diff_norm + 1e-8)
-                    )
-                    diff = diff * scale_factor
-
-                    # Project over time dimension (axis=1) like PyTorch
-                    # Use float32 for numerical stability
-                    diff_f32 = diff.astype(mx.float32)
-                    vt_cond_f32 = vt_cond.astype(mx.float32)
-
-                    # Normalize vt_cond over time dimension (axis=1)
-                    vt_cond_normalized = vt_cond_f32 / (
-                        mx.linalg.norm(vt_cond_f32, axis=1, keepdims=True) + 1e-8
-                    )
-
-                    # Parallel component: projection of diff onto vt_cond direction
-                    diff_parallel = (
-                        mx.sum(diff_f32 * vt_cond_normalized, axis=1, keepdims=True)
-                        * vt_cond_normalized
-                    )
-
-                    # Orthogonal component
-                    diff_orthogonal = diff_f32 - diff_parallel
-
-                    # APG uses only the orthogonal component (eta=0 by default)
-                    normalized_update = diff_orthogonal.astype(vt_cond.dtype)
-
-                    # Apply APG formula
-                    vt = vt_cond + (guidance_scale - 1) * normalized_update
-                else:
-                    # Standard CFG formula: v = v_uncond + scale * (v_cond - v_uncond)
-                    vt = vt_uncond + guidance_scale * (vt_cond - vt_uncond)
-            else:
-                vt = vt_cond
-
-            # Update x_t using Euler integration
-            # Turbo model uses simple Euler: xt = xt - vt * dt
-            next_t = (
-                t_schedule_list[step_idx + 1]
-                if step_idx + 1 < len(t_schedule_list)
-                else 0.0
-            )
-
-            # On final step, directly compute x0 from noise
             if step_idx == num_steps - 1:
                 xt = self.get_x0_from_noise(xt, vt, t_curr)
             elif infer_method == "sde":
-                # Stochastic: predict clean, then renoise
                 pred_clean = self.get_x0_from_noise(xt, vt, t_curr)
+                next_t = t_schedule_list[step_idx + 1]
                 xt = self.renoise(pred_clean, next_t)
-            else:  # ode
-                # Turbo model Euler: dx/dt = -v, so x_{t+1} = x_t - v_t * dt
+            else:
+                next_t = t_schedule_list[step_idx + 1]
                 dt = current_sigma - next_t
                 xt = xt - vt * dt
 
@@ -1060,6 +1119,10 @@ class Model(nn.Module):
         cfg_type: str = "apg",
         vocal_language: str = "unknown",
         verbose: bool = True,
+        # Music metadata
+        bpm: Optional[int] = None,
+        keyscale: Optional[str] = None,
+        timesignature: Optional[str] = None,
         # Task parameters
         task_type: str = "text2music",
         source_audio: Optional[mx.array] = None,
@@ -1184,7 +1247,9 @@ class Model(nn.Module):
 
         # Prepare text embeddings with task-specific instruction
         # Format: SFT_GEN_PROMPT with instruction, caption, and metas
-        text_hidden, text_mask = self._prepare_text_embeddings(text, duration=duration)
+        text_hidden, text_mask = self._prepare_text_embeddings(
+            text, duration=duration, bpm=bpm, keyscale=keyscale, timesignature=timesignature
+        )
         lyric_hidden, lyric_mask = self._prepare_lyric_embeddings(
             lyrics, language=vocal_language
         )
@@ -1287,8 +1352,7 @@ class Model(nn.Module):
             print("Decoding audio...")
 
         decode_start = time.time()
-        latents_f32 = target_latents.astype(mx.float32)
-        audio = self.vae.decode(latents_f32)
+        audio = self._compiled_vae_decode(target_latents)
         mx.eval(audio)
         decode_time = time.time() - decode_start
 
@@ -1297,7 +1361,7 @@ class Model(nn.Module):
             print(f"Audio shape: {audio.shape}")
 
         # Format output: [batch, channels, samples] -> [samples, channels]
-        audio = audio[0]
+        audio = audio[0].astype(mx.float32)
         audio = mx.clip(audio, -1.0, 1.0)
         audio = mx.transpose(audio)  # [channels, samples] -> [samples, channels]
         num_samples = audio.shape[0]
