@@ -9,17 +9,19 @@ At a high level, the integration looks like this:
 
 ## Run MOSS-TTS locally
 
-This integration is designed for local conversion and local inference (Apple Silicon).
+This integration is intended for local conversion and local inference on Apple Silicon.
 
 ### Prerequisites
 
 - A working Python environment (this repo supports uv).
-- HuggingFace model weights are available locally. You can download the weights directly from Hugging Face: `OpenMOSS-Team/MOSS-TTS`  
-(<https://huggingface.co/OpenMOSS-Team/MOSS-TTS>).
+- HuggingFace model weights are available locally. You can download the pre-quantized 8-bit weights from Hugging Face: `mlx-community/MOSS-TTS-8B-8bit`  
+(<https://huggingface.co/mlx-community/MOSS-TTS-8B-8bit>), it has been quantized into 8bit already
 - Codec weights are available locally. You can download the weights directly from Hugging Face: `OpenMOSS-Team/MOSS-Audio-Tokenizer`  
 (<https://huggingface.co/OpenMOSS-Team/MOSS-Audio-Tokenizer>).
 
-### Convert the backbone to MLX 8bit
+### (Optional) Convert the backbone to MLX 8bit
+
+If you want to perform the conversion yourself, first download the weights from [this official link](https://huggingface.co/OpenMOSS-Team/MOSS-TTS), then run the following command to convert them to an 8-bit quantized MLX version.
 
 ```bash
 uv run python -m mlx_audio.convert \
@@ -40,12 +42,10 @@ You can download the weights directly from Hugging Face: `OpenMOSS-Team/MOSS-Aud
 
 By default, MOSS-TTS looks for this directory in the following locations:
 
-1. `<moss_tts_model_dir>/moss-audio-tokenizer-full/`
+1. `<moss_tts_model_weights_dir>/moss-audio-tokenizer-full/`
 2. `./moss-audio-tokenizer-full/` (fallback)
 
 Only one valid directory is needed. You may also choose to download the weights directly into either of these paths.
-
-If the directory contains **decoder-only weights** (that is, no `encoder.*` files), normal TTS generation will still work. However, `ref_audio` voice cloning requires the encoder and will fail in this setup.
 
 ### Generate audio (CLI)
 
