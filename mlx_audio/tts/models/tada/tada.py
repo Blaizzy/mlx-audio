@@ -1635,13 +1635,15 @@ def _align_text_tokens(
         best_t = start + np.argmax(token_scores[i, start:end])
         positions[i] = best_t
 
-    # Map CTC positions to codec frame positions
-    token_positions = ctc_to_codec[positions]
+    # Map CTC positions to codec frame positions (0-indexed)
+    codec_positions = ctc_to_codec[positions]
 
-    # Create token masks
+    # Create token masks at 0-indexed positions
     token_masks = np.zeros(num_frames, dtype=np.int64)
-    for pos in token_positions:
+    for pos in codec_positions:
         if 0 <= pos < num_frames:
             token_masks[pos] = 1
 
-    return token_positions, token_masks
+    # Return 1-indexed positions (matches reference aligner convention:
+    # encoder gathers at positions-1, which must land on masked frames)
+    return codec_positions + 1, token_masks
