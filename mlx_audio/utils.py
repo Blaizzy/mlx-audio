@@ -88,6 +88,7 @@ DEFAULT_ALLOW_PATTERNS = [
     "*.jsonl",
     "*.yaml",
     "*.npz",
+    "*.pth",
 ]
 
 
