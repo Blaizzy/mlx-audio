@@ -762,19 +762,11 @@ class Model(nn.Module):
 
             # Compute time gaps from token positions
             token_positions = prompt.token_positions
-            audio_feat_len = mx.ceil(prompt.audio_len / prompt.sample_rate * 50).astype(
-                mx.int32
-            )
 
-            # Compute time gaps
+            # Compute time gaps (match reference _build_inputs: no audio_feat_len)
             tp = np.array(token_positions[0])
-            n_tokens = len(tp)
-            time_gaps = np.zeros(n_tokens + 1, dtype=np.int64)
-            tp_with_end = np.append(tp, int(audio_feat_len[0].item()))
-            tp_padded = np.insert(tp_with_end, 0, 1)
-            raw_gaps = np.clip(
-                tp_padded[1:] - tp_padded[:-1], 0, self.config.num_time_classes - 1
-            )
+            tp_padded = np.insert(tp, 0, 1)
+            raw_gaps = np.clip(tp - tp_padded[:-1], 0, self.config.num_time_classes - 1)
             time_gaps = np.insert(raw_gaps, 0, 0)
 
             prompt_time_before = mx.array(time_gaps[:-1], dtype=mx.int32).reshape(1, -1)
@@ -818,6 +810,35 @@ class Model(nn.Module):
                     mx.ones_like(prompt_acoustic_masks[:, :1]),
                 ],
                 axis=-1,
+            )
+
+        # Mask prompt text tokens for prefill (reference: _build_inputs)
+        # LLM should not see raw text in the prompt region — only structural tokens
+        if has_prompt_audio and prompt_acoustic_features is not None:
+            pad_token_id = self._tokenizer.convert_tokens_to_ids(
+                "<|finetune_right_pad_id|>"
+            )
+            prompt_token_len = prompt_acoustic_features.shape[1]
+            prompt_ids = input_ids[:, :prompt_token_len]
+            is_start = prompt_ids == start_header
+            is_end = prompt_ids == end_header
+            header_depth = mx.cumsum(is_start.astype(mx.int32), axis=1) - mx.cumsum(
+                is_end.astype(mx.int32), axis=1
+            )
+            in_header = (header_depth > 0) | is_start | is_end
+            is_structural = (
+                in_header
+                | (prompt_ids == eot_id)
+                | (prompt_ids == bos_id)
+                | (prompt_ids == 128001)
+            )
+            masked_prompt = mx.where(
+                is_structural,
+                prompt_ids,
+                mx.full(prompt_ids.shape, pad_token_id, dtype=mx.int32),
+            )
+            input_ids = mx.concatenate(
+                [masked_prompt, input_ids[:, prompt_token_len:]], axis=1
             )
 
         # Run autoregressive generation
@@ -950,14 +971,19 @@ class Model(nn.Module):
             #   acoustic_features[:, n_prefill_frames-1] must be valid
             #   time_before[:, n_prefill_frames] must be valid
             # where n_prefill_frames = prefill_len - shift = n_max + 1
-            n_ac = min(prompt_len - shift - 1, prompt_acoustic_features.shape[1] - 1)
+            n_ac = min(prompt_len - shift - 1, prompt_acoustic_features.shape[1])
             n_t = 0
             if prompt_time_before is not None:
                 n_t = min(
                     prompt_len - shift - 1,
-                    prompt_time_before.shape[1] - 2,
+                    prompt_time_before.shape[1] - 1,
                 )
-            n_max = min(n_ac, n_t) if n_ac > 0 and n_t > 0 else 0
+            n_frames_cap = (
+                max(0, prompt_time_before.shape[1] - 2)
+                if prompt_time_before is not None
+                else 0
+            )
+            n_max = min(n_ac, n_t, n_frames_cap) if n_ac > 0 and n_t > 0 else 0
             if n_max > 0:
                 prefill_len = min(prompt_len, shift + n_max + 1)
 
