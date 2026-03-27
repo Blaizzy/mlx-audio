@@ -239,7 +239,6 @@ class Model(nn.Module):
                 speech, t_curr, cond, neg_cond, a_cfg, d_cfg
             )
             speech = speech + dt * velocity
-            mx.eval(speech)
             t_curr = t_span[i]
 
         return speech
@@ -1125,9 +1124,7 @@ class Model(nn.Module):
                     cache=cache,
                     compute_logits=need_logits,
                 )
-                mx.eval(hidden)
-                if cache:
-                    mx.eval(*[c for pair in cache for c in pair])
+                mx.eval(hidden, *[c for pair in cache for c in pair] if cache else [])
                 neg_cond = hidden[B : 2 * B]
                 cond = hidden[:B]
                 text_only_logits = (
