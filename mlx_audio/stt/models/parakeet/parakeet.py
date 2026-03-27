@@ -37,28 +37,6 @@ from mlx_audio.utils import from_dict
 
 
 @dataclass
-class PreprocessArgs:
-    sample_rate: int
-    normalize: str
-    window_size: float
-    window_stride: float
-    window: str
-    features: int
-    n_fft: int
-    dither: float
-    pad_to: int = 0
-    pad_value: float = 0
-
-    @property
-    def win_length(self) -> int:
-        return int(self.window_size * self.sample_rate)
-
-    @property
-    def hop_length(self) -> int:
-        return int(self.window_stride * self.sample_rate)
-
-
-@dataclass
 class TDTDecodingArgs:
     model_type: str
     durations: list[int]
@@ -183,7 +161,7 @@ class Model(nn.Module):
         *,
         dtype: mx.Dtype = mx.bfloat16,
         chunk_duration: Optional[float] = None,
-        overlap_duration: float = 15.0,
+        overlap_duration: Optional[float] = None,
         chunk_callback: Optional[Callable] = None,
         stream: bool = False,
         **kwargs,
@@ -194,8 +172,11 @@ class Model(nn.Module):
         Args:
             audio: Path to audio file (str/Path), or audio waveform (mx.array)
             dtype: Data type for processing
-            chunk_duration: If provided, splits audio into chunks of this length for processing
-            overlap_duration: Overlap between chunks (only used when chunking)
+            chunk_duration: Optional chunk duration in seconds. Defaults to no
+                chunking for non-streaming and 5.0s for streaming.
+            overlap_duration: Optional overlap between chunks in seconds.
+                Defaults to 15.0s for non-streaming chunking and 1.0s for
+                streaming.
             chunk_callback: A function to call back when chunk is processed, called with (current_position, total_position)
             stream: If True, yields streaming results instead of returning final result
 
@@ -211,8 +192,8 @@ class Model(nn.Module):
             return self.stream_generate(
                 audio,
                 dtype=dtype,
-                chunk_duration=chunk_duration,
-                overlap_duration=overlap_duration,
+                chunk_duration=5.0 if chunk_duration is None else chunk_duration,
+                overlap_duration=1.0 if overlap_duration is None else overlap_duration,
                 verbose=verbose,
                 **kwargs,
             )
@@ -228,6 +209,14 @@ class Model(nn.Module):
 
         if chunk_duration is None:
             return self.decode_chunk(audio_data, verbose)
+
+        overlap_duration = 15.0 if overlap_duration is None else overlap_duration
+
+        if overlap_duration >= chunk_duration:
+            raise ValueError(
+                f"overlap_duration ({overlap_duration}s) must be less than "
+                f"chunk_duration ({chunk_duration}s)."
+            )
 
         audio_length_seconds = len(audio_data) / self.preprocessor_config.sample_rate
 
@@ -332,6 +321,12 @@ class Model(nn.Module):
         sample_rate = self.preprocessor_config.sample_rate
         total_samples = len(audio_data)
         audio_duration = total_samples / sample_rate
+
+        if overlap_duration >= chunk_duration:
+            raise ValueError(
+                f"overlap_duration ({overlap_duration}s) must be less than "
+                f"chunk_duration ({chunk_duration}s)."
+            )
 
         chunk_samples = int(chunk_duration * sample_rate)
         overlap_samples = int(overlap_duration * sample_rate)
@@ -562,22 +557,23 @@ class ParakeetTDT(Model):
                 decision = mx.argmax(joint_output[0, 0, :, len(self.vocabulary) + 1 :])
 
                 if pred_token != len(self.vocabulary):
-                    hypothesis.append(
-                        AlignedToken(
-                            int(pred_token),
-                            start=time
-                            * self.encoder_config.subsampling_factor
-                            / self.preprocessor_config.sample_rate
-                            * self.preprocessor_config.hop_length,  # hop
-                            duration=self.durations[int(decision)]
-                            * self.encoder_config.subsampling_factor
-                            / self.preprocessor_config.sample_rate
-                            * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
-                        )
-                    )
                     last_token = int(pred_token)
                     decoder_hidden = proposed_decoder_hidden
+                    if not tokenizer.is_special_token(last_token, self.vocabulary):
+                        hypothesis.append(
+                            AlignedToken(
+                                last_token,
+                                start=time
+                                * self.encoder_config.subsampling_factor
+                                / self.preprocessor_config.sample_rate
+                                * self.preprocessor_config.hop_length,
+                                duration=self.durations[int(decision)]
+                                * self.encoder_config.subsampling_factor
+                                / self.preprocessor_config.sample_rate
+                                * self.preprocessor_config.hop_length,
+                                text=tokenizer.decode([last_token], self.vocabulary),
+                            )
+                        )
 
                 time += self.durations[int(decision)]
                 new_symbols += 1
@@ -664,22 +660,23 @@ class ParakeetRNNT(Model):
                 pred_token = mx.argmax(joint_output)
 
                 if pred_token != len(self.vocabulary):
-                    hypothesis.append(
-                        AlignedToken(
-                            int(pred_token),
-                            start=time
-                            * self.encoder_config.subsampling_factor
-                            / self.preprocessor_config.sample_rate
-                            * self.preprocessor_config.hop_length,  # hop
-                            duration=1
-                            * self.encoder_config.subsampling_factor
-                            / self.preprocessor_config.sample_rate
-                            * self.preprocessor_config.hop_length,  # hop
-                            text=tokenizer.decode([int(pred_token)], self.vocabulary),
-                        )
-                    )
                     last_token = int(pred_token)
                     decoder_hidden = proposed_decoder_hidden
+                    if not tokenizer.is_special_token(last_token, self.vocabulary):
+                        hypothesis.append(
+                            AlignedToken(
+                                last_token,
+                                start=time
+                                * self.encoder_config.subsampling_factor
+                                / self.preprocessor_config.sample_rate
+                                * self.preprocessor_config.hop_length,
+                                duration=1
+                                * self.encoder_config.subsampling_factor
+                                / self.preprocessor_config.sample_rate
+                                * self.preprocessor_config.hop_length,
+                                text=tokenizer.decode([last_token], self.vocabulary),
+                            )
+                        )
 
                     new_symbols += 1
                     if self.max_symbols is not None and self.max_symbols <= new_symbols:
@@ -742,7 +739,9 @@ class ParakeetCTC(Model):
                 if token_idx == prev_token:
                     continue
 
-                if prev_token != -1:
+                if prev_token != -1 and not tokenizer.is_special_token(
+                    prev_token, self.vocabulary
+                ):
                     token_start_time = (
                         token_boundaries[-1][0]
                         * self.encoder_config.subsampling_factor
@@ -771,7 +770,9 @@ class ParakeetCTC(Model):
                 token_boundaries.append((t, None))
                 prev_token = token_idx
 
-            if prev_token != -1:
+            if prev_token != -1 and not tokenizer.is_special_token(
+                prev_token, self.vocabulary
+            ):
                 last_non_blank = features_len - 1
                 for t in range(features_len - 1, token_boundaries[-1][0], -1):
                     if int(best_tokens[t]) != len(self.vocabulary):

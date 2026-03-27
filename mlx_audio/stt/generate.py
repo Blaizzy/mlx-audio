@@ -108,6 +108,24 @@ def format_vtt_timestamp(seconds: float) -> str:
     return format_timestamp(seconds).replace(",", ".")
 
 
+def _get_cues(segments):
+    """Extract unified cues from any model's output (Parakeet or Whisper).
+
+    Uses word-level cues when available, otherwise falls back to segment-level.
+    """
+    if hasattr(segments, "sentences"):
+        return [
+            {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
+        ]
+    cues = []
+    for s in segments.segments:
+        cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
+        if "words" in s and s["words"]:
+            for w in s["words"]:
+                cues.append({"start": w["start"], "end": w["end"], "text": w["word"]})
+    return cues
+
+
 def save_as_txt(segments, output_path: str):
     with (
         open(f"{output_path}.txt", "w", encoding="utf-8")
@@ -123,22 +141,12 @@ def save_as_srt(segments, output_path: str):
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
-        if hasattr(segments, "sentences"):
-            # Parakeet model (AlignedResult)
-            for i, sentence in enumerate(segments.sentences, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_timestamp(sentence.start)} --> {format_timestamp(sentence.end)}\n"
-                )
-                f.write(f"{sentence.text}\n\n")
-        else:
-            # Whisper model
-            for i, segment in enumerate(segments.segments, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_timestamp(segment['start'])} --> {format_timestamp(segment['end'])}\n"
-                )
-                f.write(f"{segment['text']}\n\n")
+        for i, cue in enumerate(_get_cues(segments), 1):
+            f.write(f"{i}\n")
+            f.write(
+                f"{format_timestamp(cue['start'])} --> {format_timestamp(cue['end'])}\n"
+            )
+            f.write(f"{cue['text']}\n\n")
 
 
 def save_as_vtt(segments, output_path: str):
@@ -148,23 +156,12 @@ def save_as_vtt(segments, output_path: str):
         else contextlib.nullcontext(sys.stdout)
     ) as f:
         f.write("WEBVTT\n\n")
-        if hasattr(segments, "sentences"):
-            sentences = segments.sentences
-
-            for i, sentence in enumerate(sentences, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_vtt_timestamp(sentence.start)} --> {format_vtt_timestamp(sentence.end)}\n"
-                )
-                f.write(f"{sentence.text}\n\n")
-        else:
-            sentences = segments.segments
-            for i, token in enumerate(sentences, 1):
-                f.write(f"{i}\n")
-                f.write(
-                    f"{format_vtt_timestamp(token['start'])} --> {format_vtt_timestamp(token['end'])}\n"
-                )
-                f.write(f"{token['text']}\n\n")
+        for i, cue in enumerate(_get_cues(segments), 1):
+            f.write(f"{i}\n")
+            f.write(
+                f"{format_vtt_timestamp(cue['start'])} --> {format_vtt_timestamp(cue['end'])}\n"
+            )
+            f.write(f"{cue['text']}\n\n")
 
 
 def save_as_json(segments, output_path: str):
@@ -197,20 +194,22 @@ def save_as_json(segments, output_path: str):
     else:
         result = {
             "text": segments.text,
-            "segments": [
-                {
-                    "text": s["text"],
-                    "start": s["start"],
-                    "end": s["end"],
-                    "duration": s["end"] - s["start"],
-                }
-                for s in segments.segments
-            ],
+            "segments": [],
         }
-        # Add speaker_id only if it exists
-        for i, s in enumerate(segments.segments):
+        for s in segments.segments:
+            seg = {
+                "text": s["text"],
+                "start": s["start"],
+                "end": s["end"],
+                "duration": s["end"] - s["start"],
+            }
+            # Add word-level timestamps if available
+            if "words" in s and s["words"]:
+                seg["words"] = s["words"]
+            # Add speaker_id if available
             if "speaker_id" in s:
-                result["segments"][i]["speaker_id"] = s["speaker_id"]
+                seg["speaker_id"] = s["speaker_id"]
+            result["segments"].append(seg)
 
     with (
         open(f"{output_path}.json", "w", encoding="utf-8")

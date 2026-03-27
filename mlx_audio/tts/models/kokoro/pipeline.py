@@ -181,6 +181,7 @@ class KokoroPipeline:
     """
 
     def load_voice(self, voice: str, delimiter: str = ",") -> mx.array:
+        voice = str(voice)  # Ensure string type (handles float from API)
         if voice in self.voices:
             return self.voices[voice]
         logging.debug(f"Loading voice: {voice}")

@@ -522,7 +522,7 @@ async def _stream_transcription(
     """Handle both streaming and non-streaming model inference over WebSocket.
 
     Streaming models (whose generate() accepts a ``stream`` parameter) receive
-    the numpy array directly and yield token deltas sent as
+    the audio as an ``mx.array`` and yield token deltas sent as
     ``{"type": "delta", "delta": "..."}`` messages, followed by a
     ``{"type": "complete", ...}`` message.
 
@@ -533,7 +533,7 @@ async def _stream_transcription(
 
     if supports_stream and streaming:
         result_iter = stt_model.generate(
-            audio_array, stream=True, language=language, verbose=False
+            mx.array(audio_array), stream=True, language=language, verbose=False
         )
         accumulated = ""
         detected_language = language

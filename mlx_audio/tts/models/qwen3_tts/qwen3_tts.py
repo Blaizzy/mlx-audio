@@ -2072,6 +2072,7 @@ class Model(nn.Module):
                     is_final_chunk=True,
                 )
             self.speech_tokenizer.decoder.reset_streaming_state()
+            mx.clear_cache()
             return
 
         if not generated_codes:
@@ -2386,6 +2387,7 @@ class Model(nn.Module):
                     is_final_chunk=True,
                 )
             self.speech_tokenizer.decoder.reset_streaming_state()
+            mx.clear_cache()
             return
 
         if not generated_codes:

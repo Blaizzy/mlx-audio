@@ -87,8 +87,6 @@ DEFAULT_ALLOW_PATTERNS = [
     "*.txt",
     "*.jsonl",
     "*.yaml",
-    "*.wav",
-    "*.pth",
     "*.npz",
 ]
 
@@ -170,8 +168,8 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     if config_file.exists():
         with open(config_file, encoding="utf-8") as f:
             return json.load(f)
-    else:
-        raise FileNotFoundError(f"Config not found at {model_path}")
+
+    raise FileNotFoundError(f"Config not found at {model_path}")
 
 
 def load_weights(model_path: Path) -> dict:

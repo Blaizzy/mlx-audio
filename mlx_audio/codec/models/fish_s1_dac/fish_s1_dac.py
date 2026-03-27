@@ -1247,17 +1247,20 @@ class DAC(nn.Module):
                 config = json.load(f)
         dac = build_ae(**config)
 
+        converted_codec_path = path / "codec.safetensors"
         mlx_weights_path = path / "model.safetensors"
         torch_weights_path = path / "pytorch_model.safetensors"
-        if mlx_weights_path.exists():
-            weights = mx.load(mlx_weights_path.as_posix())
+        if converted_codec_path.exists():
+            weights = dac.sanitize(mx.load(converted_codec_path.as_posix()))
+        elif mlx_weights_path.exists():
+            weights = dac.sanitize(mx.load(mlx_weights_path.as_posix()))
         elif torch_weights_path.exists():
             weights = mx.load(torch_weights_path.as_posix())
             weights = dac.sanitize(weights)
         else:
             raise FileNotFoundError(
                 f"No codec weights found at {path}. Expected one of: "
-                f"{mlx_weights_path.name}, {torch_weights_path.name}."
+                f"{converted_codec_path.name}, {mlx_weights_path.name}, {torch_weights_path.name}."
             )
 
         dac.load_weights(list(weights.items()), strict=False)

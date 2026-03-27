@@ -30,6 +30,9 @@ MODEL_REMAPPING = {
     "bailingmm": "bailingmm",
     "kitten": "kitten_tts",
     "echo_tts": "echo_tts",
+    "fish_qwen3_omni": "fish_qwen3_omni",
+    "irodori_tts": "irodori_tts",
+    "voxtral_tts": "voxtral_tts",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
