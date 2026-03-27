@@ -766,17 +766,11 @@ class Model(nn.Module):
             # Compute time gaps (match reference _build_inputs: no audio_feat_len)
             tp = np.array(token_positions[0])
             tp_padded = np.insert(tp, 0, 1)
-            raw_gaps = np.clip(
-                tp - tp_padded[:-1], 0, self.config.num_time_classes - 1
-            )
+            raw_gaps = np.clip(tp - tp_padded[:-1], 0, self.config.num_time_classes - 1)
             time_gaps = np.insert(raw_gaps, 0, 0)
 
-            prompt_time_before = mx.array(
-                time_gaps[:-1], dtype=mx.int32
-            ).reshape(1, -1)
-            prompt_time_after = mx.array(
-                time_gaps[1:], dtype=mx.int32
-            ).reshape(1, -1)
+            prompt_time_before = mx.array(time_gaps[:-1], dtype=mx.int32).reshape(1, -1)
+            prompt_time_after = mx.array(time_gaps[1:], dtype=mx.int32).reshape(1, -1)
 
             # Pad for prefix tokens
             prompt_acoustic_features = mx.pad(
@@ -828,9 +822,9 @@ class Model(nn.Module):
             prompt_ids = input_ids[:, :prompt_token_len]
             is_start = prompt_ids == start_header
             is_end = prompt_ids == end_header
-            header_depth = mx.cumsum(
-                is_start.astype(mx.int32), axis=1
-            ) - mx.cumsum(is_end.astype(mx.int32), axis=1)
+            header_depth = mx.cumsum(is_start.astype(mx.int32), axis=1) - mx.cumsum(
+                is_end.astype(mx.int32), axis=1
+            )
             in_header = (header_depth > 0) | is_start | is_end
             is_structural = (
                 in_header
@@ -984,9 +978,11 @@ class Model(nn.Module):
                     prompt_len - shift - 1,
                     prompt_time_before.shape[1] - 1,
                 )
-            n_frames_cap = max(
-                0, prompt_time_before.shape[1] - 2
-            ) if prompt_time_before is not None else 0
+            n_frames_cap = (
+                max(0, prompt_time_before.shape[1] - 2)
+                if prompt_time_before is not None
+                else 0
+            )
             n_max = min(n_ac, n_t, n_frames_cap) if n_ac > 0 and n_t > 0 else 0
             if n_max > 0:
                 prefill_len = min(prompt_len, shift + n_max + 1)
