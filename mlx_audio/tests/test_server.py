@@ -1,5 +1,6 @@
 import functools
 import io
+from typing import Any, Callable, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import mlx.core as mx
@@ -136,6 +137,73 @@ def test_tts_speech(client, mock_model_provider):
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
 
 
+def test_tts_speech_accepts_conversation_payload(client, mock_model_provider):
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    payload = {
+        "model": "test_tts_model",
+        "mode": "continuation",
+        "conversation": [
+            {"role": "user", "text": "prefix and continuation", "language": "en"},
+            {"role": "assistant", "audio_codes_list": ["prefix.wav"]},
+        ],
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+    assert response.status_code == 200
+
+    mock_model_provider.load_model.assert_called_once_with("test_tts_model")
+    mock_tts_model.generate.assert_called_once()
+
+    args, kwargs = mock_tts_model.generate.call_args
+    assert args == (None,)
+    assert kwargs.get("conversation") == payload["conversation"]
+    assert kwargs.get("mode") == payload["mode"]
+    assert kwargs.get("ref_audio") is None
+
+
+def test_tts_speech_rejects_text_and_conversation_together(client, mock_model_provider):
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    payload = {
+        "model": "test_tts_model",
+        "input": "Hello world",
+        "conversation": [{"role": "user", "text": "hello"}],
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "Provide either `input` text or `conversation`, not both."
+    )
+    mock_tts_model.generate.assert_not_called()
+
+
+def test_tts_speech_rejects_mode_without_conversation(client, mock_model_provider):
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    payload = {
+        "model": "test_tts_model",
+        "input": "Hello world",
+        "mode": "continuation",
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 400
+    assert (
+        response.json()["detail"]
+        == "`mode` is only supported when `conversation` is provided."
+    )
+    mock_tts_model.generate.assert_not_called()
+
+
 def test_stt_transcriptions(client, mock_model_provider):
     # Test that the stt_transcriptions endpoint returns a 200 status code
     mock_stt_model = MagicMock()
@@ -227,8 +295,9 @@ def _trackable(fn):
         calls.append((args, kwargs))
         return fn(*args, **kwargs)
 
-    wrapper.call_args_list = calls
-    return wrapper
+    tracked = cast(Callable[..., Any], wrapper)
+    setattr(tracked, "call_args_list", calls)
+    return tracked
 
 
 def _ws_send_audio_and_collect(
@@ -360,12 +429,12 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have legacy-format messages (no 'type' field), not delta/complete
     deltas = [m for m in messages if m.get("type") == "delta"]
     completes = [m for m in messages if m.get("type") == "complete"]
-    assert (
-        len(deltas) == 0
-    ), f"Expected no delta messages when streaming disabled, got: {deltas}"
-    assert (
-        len(completes) == 0
-    ), f"Expected no complete messages when streaming disabled, got: {completes}"
+    assert len(deltas) == 0, (
+        f"Expected no delta messages when streaming disabled, got: {deltas}"
+    )
+    assert len(completes) == 0, (
+        f"Expected no complete messages when streaming disabled, got: {completes}"
+    )
 
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]

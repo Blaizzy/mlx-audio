@@ -24,6 +24,7 @@ import mlx.core as mx
 import numpy as np
 import uvicorn
 import webrtcvad
+from mlx_audio.audio_io import sf_read, sf_write
 from fastapi import (
     FastAPI,
     File,
@@ -41,6 +42,9 @@ from pydantic import BaseModel
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.utils import load_model
+
+
+SpeechConversation = List[Dict[str, Any]]
 
 
 def sanitize_for_json(obj: Any) -> Any:
@@ -74,10 +78,10 @@ MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
 class ModelProvider:
     def __init__(self):
-        self.models: Dict[str, Dict[str, Any]] = {}
+        self.models: Dict[str, Any] = {}
         self.lock = asyncio.Lock()
 
-    def load_model(self, model_name: str):
+    def load_model(self, model_name: str) -> Any:
         if model_name not in self.models:
             self.models[model_name] = load_model(model_name)
 
@@ -99,7 +103,6 @@ app = FastAPI()
 
 
 def int_or_float(value):
-
     try:
         return int(value)
     except ValueError:
@@ -110,11 +113,12 @@ def int_or_float(value):
 
 
 def calculate_default_workers(workers: int = 2) -> int:
+    cpu_count = os.cpu_count() or workers
     if num_workers_env := os.getenv("MLX_AUDIO_NUM_WORKERS"):
         try:
             workers = int(num_workers_env)
         except ValueError:
-            workers = max(1, int(os.cpu_count() * float(num_workers_env)))
+            workers = max(1, int(cpu_count * float(num_workers_env)))
     return workers
 
 
@@ -154,7 +158,9 @@ setup_cors(app, default_origins)
 # Request schemas for OpenAI-compatible endpoints
 class SpeechRequest(BaseModel):
     model: str
-    input: str
+    input: str | SpeechConversation | None = None
+    conversation: SpeechConversation | None = None
+    mode: str = "generation"
     instruct: str | None = None
     voice: str | None = None
     speed: float | None = 1.0
@@ -172,6 +178,50 @@ class SpeechRequest(BaseModel):
     streaming_interval: float = 2.0
     max_tokens: int = 1200
     verbose: bool = False
+
+
+def _resolve_speech_request_input(
+    payload: SpeechRequest,
+) -> tuple[str | None, SpeechConversation | None]:
+    conversation = payload.conversation
+    input_value = payload.input
+
+    if conversation is None and isinstance(input_value, list):
+        conversation = input_value
+        input_value = None
+
+    if conversation is not None and input_value is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either `input` text or `conversation`, not both.",
+        )
+
+    if conversation is not None:
+        if payload.mode not in {"generation", "continuation"}:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported mode: {payload.mode!r}.",
+            )
+        if not isinstance(conversation, list) or len(conversation) == 0:
+            raise HTTPException(
+                status_code=400,
+                detail="`conversation` must be a non-empty list of messages.",
+            )
+        return None, conversation
+
+    if payload.mode != "generation":
+        raise HTTPException(
+            status_code=400,
+            detail="`mode` is only supported when `conversation` is provided.",
+        )
+
+    if not isinstance(input_value, str) or not input_value.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either `input` text or `conversation`.",
+        )
+
+    return input_value, None
 
 
 class TranscriptionRequest(BaseModel):
@@ -260,36 +310,32 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-async def generate_audio(model, payload: SpeechRequest):
-    # Load reference audio if provided
+def _prepare_tts_generate_iter(model, payload: SpeechRequest):
+    text_input, conversation_input = _resolve_speech_request_input(payload)
     ref_audio = payload.ref_audio
-    audio_chunks = []
-    sample_rate = None
-    if ref_audio and isinstance(ref_audio, str):
+    if conversation_input is None and ref_audio and isinstance(ref_audio, str):
         if not os.path.exists(ref_audio):
             raise HTTPException(
                 status_code=400, detail=f"Reference audio file not found: {ref_audio}"
             )
-        # Import load_audio from generate module
         from mlx_audio.tts.generate import load_audio
 
-        # Determine if volume normalization is needed
         normalize = hasattr(model, "model_type") and model.model_type == "spark"
-
         ref_audio = load_audio(
             ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
         )
 
-    for result in model.generate(
-        payload.input,
+    generate_kwargs = dict(
         voice=payload.voice,
         speed=payload.speed,
         gender=payload.gender,
         pitch=payload.pitch,
         instruct=payload.instruct,
         lang_code=payload.lang_code,
-        ref_audio=ref_audio,
-        ref_text=payload.ref_text,
+        ref_audio=ref_audio if conversation_input is None else None,
+        ref_text=payload.ref_text if conversation_input is None else None,
+        conversation=conversation_input,
+        mode=payload.mode,
         temperature=payload.temperature,
         top_p=payload.top_p,
         top_k=payload.top_k,
@@ -298,18 +344,35 @@ async def generate_audio(model, payload: SpeechRequest):
         streaming_interval=payload.streaming_interval,
         max_tokens=payload.max_tokens,
         verbose=payload.verbose,
-    ):
+    )
 
-        if payload.stream:
-            buffer = io.BytesIO()
-            audio_write(
-                buffer, result.audio, result.sample_rate, format=payload.response_format
-            )
-            yield buffer.getvalue()
-        else:
-            audio_chunks.append(result.audio)
-            if sample_rate is None:
-                sample_rate = result.sample_rate
+    try:
+        return model.generate(text_input, **generate_kwargs)
+    except (FileNotFoundError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def generate_audio(generate_iter, payload: SpeechRequest, model):
+    audio_chunks = []
+    sample_rate = None
+
+    try:
+        for result in generate_iter:
+            if payload.stream:
+                buffer = io.BytesIO()
+                audio_write(
+                    buffer,
+                    result.audio,
+                    result.sample_rate,
+                    format=payload.response_format,
+                )
+                yield buffer.getvalue()
+            else:
+                audio_chunks.append(result.audio)
+                if sample_rate is None:
+                    sample_rate = result.sample_rate
+    except (FileNotFoundError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if payload.stream:
         return
@@ -319,7 +382,17 @@ async def generate_audio(model, payload: SpeechRequest):
 
     concatenated_audio = np.concatenate(audio_chunks)
     buffer = io.BytesIO()
-    audio_write(buffer, concatenated_audio, sample_rate, format=payload.response_format)
+    resolved_sample_rate = (
+        int(sample_rate)
+        if sample_rate is not None
+        else int(getattr(model, "sample_rate", 24000))
+    )
+    audio_write(
+        buffer,
+        concatenated_audio,
+        resolved_sample_rate,
+        format=payload.response_format,
+    )
     yield buffer.getvalue()
 
 
@@ -327,8 +400,9 @@ async def generate_audio(model, payload: SpeechRequest):
 async def tts_speech(payload: SpeechRequest):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
+    generate_iter = _prepare_tts_generate_iter(model, payload)
     return StreamingResponse(
-        generate_audio(model, payload),
+        generate_audio(generate_iter, payload, model),
         media_type=f"audio/{payload.response_format}",
         headers={
             "Content-Disposition": f"attachment; filename=speech.{payload.response_format}"
@@ -401,7 +475,7 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
-    _, ext = os.path.splitext(file.filename)
+    _, ext = os.path.splitext(file.filename or "")
     tmp_path = f"/tmp/{time.time()}.{ext if ext else 'mp3'}"
     audio_write(tmp_path, audio, sr)
 
@@ -450,12 +524,12 @@ async def audio_separations(
     # Read uploaded file
     data = await file.read()
     tmp = io.BytesIO(data)
-    audio, sr = sf.read(tmp, always_2d=False)
+    audio, sr = sf_read(tmp, always_2d=False)
     tmp.close()
 
     # Save to temp file for processor
     tmp_path = f"/tmp/separation_{time.time()}.wav"
-    sf.write(tmp_path, audio, sr)
+    sf_write(tmp_path, audio, sr)
 
     try:
         # Load model and processor
@@ -473,11 +547,13 @@ async def audio_separations(
         # Calculate step_size from steps
         step_size = 2 / (steps * 2)  # e.g., 16 steps -> 2/32 = 0.0625
         ode_opt = {"method": method, "step_size": step_size}
+        batch_audios = [str(item) for item in list(batch.audios or [])]
+        batch_descriptions = list(batch.descriptions or [])
 
         # Separate audio
         result = SAM_MODEL.separate_long(
-            audios=batch.audios,
-            descriptions=batch.descriptions,
+            audios=batch_audios,
+            descriptions=batch_descriptions,
             anchor_ids=batch.anchor_ids,
             anchor_alignment=batch.anchor_alignment,
             ode_opt=ode_opt,
@@ -494,7 +570,7 @@ async def audio_separations(
         # Encode as base64 WAV
         def audio_to_base64(audio_array, sr):
             buffer = io.BytesIO()
-            sf.write(buffer, audio_array, sr, format="wav")
+            sf_write(buffer, audio_array, sr, format="wav")
             buffer.seek(0)
             return base64.b64encode(buffer.read()).decode("utf-8")
 
@@ -688,7 +764,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     if len(audio_buffer) % (sample_rate * 2) < len(audio_chunk_float):
                         # Log every ~2 seconds of buffer
                         print(
-                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)} samples ({len(audio_buffer)/sample_rate:.2f}s)"
+                            f"Speech detected ({speech_frames}/{num_frames} frames): buffer {len(audio_buffer)} samples ({len(audio_buffer) / sample_rate:.2f}s)"
                         )
                 else:
                     silence_skip_count += 1
@@ -713,7 +789,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     ):
                         should_process_initial = True
                         print(
-                            f"Processing initial chunk for real-time feedback: {initial_chunk_size/sample_rate:.2f}s, total buffer: {len(audio_buffer)/sample_rate:.2f}s"
+                            f"Processing initial chunk for real-time feedback: {initial_chunk_size / sample_rate:.2f}s, total buffer: {len(audio_buffer) / sample_rate:.2f}s"
                         )
                     # Process if we have enough silence after speech (end of utterance)
                     elif (
@@ -722,13 +798,13 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     ):
                         should_process_final = True
                         print(
-                            f"Processing due to silence gap: {time_since_last_speech:.2f}s silence, buffer: {len(audio_buffer)/sample_rate:.2f}s"
+                            f"Processing due to silence gap: {time_since_last_speech:.2f}s silence, buffer: {len(audio_buffer) / sample_rate:.2f}s"
                         )
                     # Or if buffer is getting too large (continuous speech)
                     elif len(audio_buffer) >= max_chunk_size:
                         should_process_final = True
                         print(
-                            f"Processing due to max buffer size: {len(audio_buffer)/sample_rate:.2f}s"
+                            f"Processing due to max buffer size: {len(audio_buffer) / sample_rate:.2f}s"
                         )
 
                 # Process initial chunk for real-time feedback
@@ -781,7 +857,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                         initial_chunk_processed = False
                         last_process_time = current_time
                         print(
-                            f"Processed final chunk: {process_size} samples ({process_size/sample_rate:.2f}s), buffer cleared"
+                            f"Processed final chunk: {process_size} samples ({process_size / sample_rate:.2f}s), buffer cleared"
                         )
 
                     except Exception as e:
@@ -942,7 +1018,7 @@ def main():
 
     args = parser.parse_args()
     if isinstance(args.workers, float):
-        args.workers = max(1, int(os.cpu_count() * args.workers))
+        args.workers = max(1, int((os.cpu_count() or 1) * args.workers))
 
     setup_cors(app, args.allowed_origins)
 

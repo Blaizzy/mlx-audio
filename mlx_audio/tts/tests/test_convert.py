@@ -2,7 +2,15 @@ import sys  # Import sys to patch argv
 import unittest
 from unittest.mock import MagicMock, patch
 
-from mlx_audio.convert import configure_parser, main
+import mlx.nn as nn
+
+from mlx_audio.convert import (
+    _is_moss_tts_export_exempt,
+    build_quant_predicate,
+    configure_parser,
+    main,
+    resolve_quant_args,
+)
 
 
 class TestConvert(unittest.TestCase):
@@ -37,6 +45,9 @@ class TestConvert(unittest.TestCase):
             q_group_size=None,
             q_bits=None,
             q_mode="affine",
+            q_group_size=None,
+            q_bits=None,
+            q_mode="affine",
             quant_predicate=None,
             dtype="float16",
             upload_repo=None,
@@ -65,6 +76,7 @@ class TestConvert(unittest.TestCase):
             quantize=True,
             q_group_size=128,
             q_bits=8,
+            q_mode="affine",
             q_mode="affine",
             quant_predicate=None,
             dtype=None,  # Default dtype is None
@@ -103,21 +115,21 @@ class TestConvert(unittest.TestCase):
             ):
                 main()
 
-        # Verify the mock was called (even though it raised an error)
-        self.convert_mock.assert_called_once_with(
-            hf_path="dummy_hf",
-            mlx_path="mlx_model",
-            quantize=True,
-            q_group_size=100,
-            q_bits=4,
-            q_mode="affine",
-            quant_predicate=None,
-            dtype=None,  # Default dtype is None
-            upload_repo=None,
-            revision=None,
-            dequantize=False,
-            model_domain=None,
-        )
+                # Verify the mock was called (even though it raised an error)
+                self.convert_mock.assert_called_once_with(
+                    hf_path="dummy_hf",
+                    mlx_path="mlx_model",
+                    quantize=True,
+                    q_group_size=100,
+                    q_bits=4,
+                    q_mode="affine",
+                    quant_predicate=None,
+                    dtype=None,  # Default dtype is None
+                    upload_repo=None,
+                    revision=None,
+                    dequantize=False,
+                    model_domain=None,
+                )
 
     def test_quantization_recipes(self):
         for recipe in ["mixed_2_6", "mixed_3_6", "mixed_4_6"]:
@@ -132,8 +144,8 @@ class TestConvert(unittest.TestCase):
                     hf_path="dummy_hf",
                     mlx_path="mlx_model",  # Default mlx_path
                     quantize=False,  # Default quantize
-                    q_group_size=None,  # Default q_group_size
-                    q_bits=None,  # Default q_bits
+                    q_group_size=None,
+                    q_bits=None,
                     q_mode="affine",
                     quant_predicate=recipe,
                     dtype=None,  # Default dtype is None
@@ -186,8 +198,14 @@ class TestConvert(unittest.TestCase):
             model_domain=None,
         )
 
-    def test_q_mode_argument(self):
-        test_args = ["--hf-path", "dummy_hf", "--quantize", "--q-mode", "mxfp4"]
+    def test_quantized_conversion_with_q_mode(self):
+        test_args = [
+            "--hf-path",
+            "dummy_hf",
+            "--quantize",
+            "--q-mode",
+            "mxfp8",
+        ]
         with patch.object(sys, "argv", ["convert.py"] + test_args):
             main()
 
@@ -197,13 +215,53 @@ class TestConvert(unittest.TestCase):
             quantize=True,
             q_group_size=None,
             q_bits=None,
-            q_mode="mxfp4",
+            q_mode="mxfp8",
             quant_predicate=None,
             dtype=None,
             upload_repo=None,
             revision=None,
             dequantize=False,
             model_domain=None,
+        )
+
+    def test_resolve_quant_args_uses_mode_defaults(self):
+        self.assertEqual(resolve_quant_args(None, None, "affine"), (64, 4))
+        self.assertEqual(resolve_quant_args(None, None, "mxfp8"), (32, 8))
+        self.assertEqual(resolve_quant_args(128, 6, "affine"), (128, 6))
+
+    def test_build_quant_predicate_uses_group_size_and_model_predicate(self):
+        class DummyModel:
+            def model_quant_predicate(self, path, module):
+                _ = module
+                return not path.startswith("skip")
+
+        pred = build_quant_predicate(DummyModel(), 32)
+
+        allowed = nn.Linear(32, 64, bias=False)
+        disallowed = nn.Linear(48, 64, bias=False)
+
+        self.assertTrue(pred("language_model.layers.0.self_attn.q_proj", allowed))
+        self.assertFalse(pred("skip.layer", allowed))
+        self.assertFalse(pred("language_model.layers.0.self_attn.q_proj", disallowed))
+
+    def test_build_quant_predicate_excludes_moss_tts_embedding_and_heads(self):
+        class DummyModel:
+            def model_quant_predicate(self, path, module):
+                _ = (path, module)
+                return True
+
+        pred = build_quant_predicate(DummyModel(), 32)
+        allowed = nn.Linear(32, 64, bias=False)
+
+        self.assertFalse(pred("language_model.embed_tokens", allowed))
+        self.assertFalse(pred("lm_heads.0", allowed))
+        self.assertTrue(pred("language_model.layers.0.self_attn.q_proj", allowed))
+
+    def test_is_moss_tts_export_exempt(self):
+        self.assertTrue(_is_moss_tts_export_exempt("language_model.embed_tokens"))
+        self.assertTrue(_is_moss_tts_export_exempt("lm_heads.12"))
+        self.assertFalse(
+            _is_moss_tts_export_exempt("language_model.layers.0.self_attn.q_proj")
         )
 
 
