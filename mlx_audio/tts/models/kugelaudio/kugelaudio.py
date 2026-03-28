@@ -16,7 +16,7 @@ from ..vibevoice.acoustic_tokenizer import AcousticTokenizer
 from ..vibevoice.diffusion_head import DiffusionHead
 from ..vibevoice.language_model import Qwen2Model, SpeechConnector
 from .config import ModelConfig
-from .scheduler import DPMSolverMultistepScheduler
+from .scheduler import SDEDPMSolverMultistepScheduler
 
 # Special token IDs (repurposed from Qwen2.5 vision tokens)
 SPEECH_START_ID = 151652
@@ -79,15 +79,11 @@ class Model(nn.Module):
         # Diffusion head for speech latent prediction
         self.prediction_head = DiffusionHead(diffusion_cfg)
 
-        # Noise scheduler
-        algorithm_type = getattr(
-            diffusion_cfg, "ddpm_algorithm_type", "sde-dpmsolver++"
-        )
-        self.noise_scheduler = DPMSolverMultistepScheduler(
+        # Noise scheduler (SDE-DPM-Solver++ stochastic variant)
+        self.noise_scheduler = SDEDPMSolverMultistepScheduler(
             num_train_timesteps=diffusion_cfg.ddpm_num_steps,
             beta_schedule=diffusion_cfg.ddpm_beta_schedule,
             prediction_type=diffusion_cfg.prediction_type,
-            algorithm_type=algorithm_type,
         )
         self.ddpm_inference_steps = diffusion_cfg.ddpm_num_inference_steps
 
@@ -141,20 +137,17 @@ class Model(nn.Module):
                 mx.eval(speech)
             return speech
 
-        # With CFG — batched forward pass
+        # With CFG — batched prediction head, single scheduler step
         neg_condition = neg_condition.astype(mx.float32)
         combined_condition = mx.concatenate([condition, neg_condition], axis=0)
         n = condition.shape[0]
 
-        speech = mx.random.normal((combined_condition.shape[0], vae_dim)).astype(
-            mx.float32
-        )
+        speech = mx.random.normal((n, vae_dim)).astype(mx.float32)
         prev_x0 = None
 
         for t in self.noise_scheduler.timesteps:
-            # Use positive half for both branches
-            half = speech[:n]
-            combined_speech = mx.concatenate([half, half], axis=0)
+            # Duplicate speech for both cond/uncond branches through prediction head
+            combined_speech = mx.concatenate([speech, speech], axis=0)
 
             t_batch = mx.broadcast_to(t, (combined_speech.shape[0],))
             eps = self.prediction_head(
@@ -162,17 +155,16 @@ class Model(nn.Module):
             )
             eps = eps.astype(mx.float32)
 
-            # Apply CFG
+            # Apply CFG on the (n,) guided result only
             cond_eps, uncond_eps = eps[:n], eps[n:]
             guided_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-            full_eps = mx.concatenate([guided_eps, guided_eps], axis=0)
 
-            result = self.noise_scheduler.step(full_eps, t, speech, prev_x0=prev_x0)
+            result = self.noise_scheduler.step(guided_eps, t, speech, prev_x0=prev_x0)
             speech = result.prev_sample
             prev_x0 = result.x0_pred
             mx.eval(speech)
 
-        return speech[:n]
+        return speech
 
     def _build_prompt_tokens(self, text: str) -> list[int]:
         """Build the token sequence for generation."""
@@ -203,12 +195,22 @@ class Model(nn.Module):
         if self.tokenizer is None:
             raise RuntimeError("Tokenizer not loaded — was post_load_hook called?")
 
-        inference_steps = (
-            ddpm_steps if ddpm_steps is not None else self.ddpm_inference_steps
-        )
         prev_steps = self.ddpm_inference_steps
-        self.ddpm_inference_steps = inference_steps
+        if ddpm_steps is not None:
+            self.ddpm_inference_steps = ddpm_steps
 
+        try:
+            yield from self._generate_impl(text, cfg_scale, max_tokens, verbose)
+        finally:
+            self.ddpm_inference_steps = prev_steps
+
+    def _generate_impl(
+        self,
+        text: str,
+        cfg_scale: float,
+        max_tokens: int,
+        verbose: bool,
+    ) -> Generator[GenerationResult, None, None]:
         start_time = time.perf_counter()
 
         # Build prompt
@@ -319,7 +321,7 @@ class Model(nn.Module):
 
         if not all_speech_latents:
             yield GenerationResult(
-                audio=mx.zeros((1,)),
+                audio=mx.zeros((0,)),
                 samples=0,
                 sample_rate=self.sample_rate,
                 segment_idx=0,
@@ -331,7 +333,6 @@ class Model(nn.Module):
                 processing_time_seconds=elapsed,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
-            self.ddpm_inference_steps = prev_steps
             return
 
         # Batch-decode all latents at once (avoids click artifacts)
@@ -361,10 +362,12 @@ class Model(nn.Module):
         duration_s = n_samples / self.sample_rate
         rtf = elapsed / duration_s if duration_s > 0 else 0
 
-        duration_mins = int(duration_s // 60)
-        duration_secs = int(duration_s % 60)
+        duration_hours = int(duration_s // 3600)
+        remaining_s = duration_s % 3600
+        duration_mins = int(remaining_s // 60)
+        duration_secs = int(remaining_s % 60)
         duration_ms = int((duration_s % 1) * 1000)
-        duration_str = f"00:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
+        duration_str = f"{duration_hours:02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
         yield GenerationResult(
             audio=audio,
@@ -387,8 +390,6 @@ class Model(nn.Module):
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
         )
-
-        self.ddpm_inference_steps = prev_steps
 
     def sanitize(self, weights: dict) -> dict:
         """Convert PyTorch HuggingFace weights to MLX format."""
@@ -434,6 +435,13 @@ class Model(nn.Module):
                     if new_key not in target_shapes:
                         continue
                 else:
+                    # Preserve quantization metadata (scales, biases)
+                    # even if not in model parameters
+                    if any(
+                        suffix in new_key
+                        for suffix in [".scales", ".biases", ".group_size", ".bits"]
+                    ):
+                        new_weights[new_key] = v
                     continue
 
             target_shape = target_shapes.get(new_key)
