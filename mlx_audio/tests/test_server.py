@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,7 +15,7 @@ pytest.importorskip("multipart", reason="python-multipart is required for server
 
 from fastapi.testclient import TestClient
 
-from mlx_audio.server import app
+from mlx_audio.server import _inference_lock, app
 
 
 @pytest.fixture
@@ -370,3 +371,67 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]
     assert len(text_msgs) >= 1, f"Expected legacy text message, got: {messages}"
+
+
+# ---------------------------------------------------------------------------
+# Inference lock tests
+# ---------------------------------------------------------------------------
+
+
+def test_inference_lock_exists():
+    # _inference_lock must be an asyncio.Lock so concurrent GPU access is serialised
+    assert isinstance(_inference_lock, asyncio.Lock)
+
+
+def test_tts_acquires_inference_lock(client, mock_model_provider):
+    # generate_audio must acquire _inference_lock so concurrent requests cannot
+    # interleave MLX/Metal GPU calls (Metal assertion: "A command encoder is
+    # already encoding to this command buffer")
+    mock_tts_model = MagicMock()
+    mock_tts_model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+    mock_model_provider.load_model = MagicMock(return_value=mock_tts_model)
+
+    mock_lock = MagicMock()
+    mock_lock.__aenter__ = AsyncMock(return_value=None)
+    mock_lock.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("mlx_audio.server._inference_lock", mock_lock):
+        response = client.post(
+            "/v1/audio/speech",
+            json={"model": "test_tts_model", "input": "Hello world"},
+        )
+
+    assert response.status_code == 200
+    mock_lock.__aenter__.assert_called_once()
+    mock_lock.__aexit__.assert_called_once()
+
+
+def test_stt_acquires_inference_lock(client, mock_model_provider):
+    # stt_transcriptions must acquire _inference_lock for the same reason.
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(
+        return_value={"text": "This is a test transcription."}
+    )
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    sample_rate = 16000
+    t = np.linspace(0, 1, sample_rate, endpoint=False)
+    audio_data = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+    buf = io.BytesIO()
+    audio_write(buf, audio_data, sample_rate, format="mp3")
+    buf.seek(0)
+
+    mock_lock = MagicMock()
+    mock_lock.__aenter__ = AsyncMock(return_value=None)
+    mock_lock.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("mlx_audio.server._inference_lock", mock_lock):
+        response = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("test.mp3", buf, "audio/mp3")},
+            data={"model": "test_stt_model"},
+        )
+
+    assert response.status_code == 200
+    mock_lock.__aenter__.assert_called_once()
+    mock_lock.__aexit__.assert_called_once()
