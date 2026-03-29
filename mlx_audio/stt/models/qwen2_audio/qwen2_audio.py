@@ -369,7 +369,7 @@ class Model(nn.Module):
 
     def _build_prompt(
         self,
-        num_audio_tokens: int,
+        audio_tokens_list: List[int],
         user_prompt: str = None,
     ) -> mx.array:
         if user_prompt is None:
@@ -377,11 +377,18 @@ class Model(nn.Module):
 
         tokenizer = self._processor.tokenizer
 
-        # Build the audio placeholder: <|audio_bos|> + N x <|AUDIO|> + <|audio_eos|>
-        audio_content = (
-            "<|audio_bos|>" + "<|AUDIO|>" * num_audio_tokens + "<|audio_eos|>"
-        )
-        content = audio_content + user_prompt
+        # Build one "Audio N: <|audio_bos|>...<|audio_eos|>" line per audio,
+        # matching the format produced by Qwen2AudioProcessor.apply_chat_template.
+        audio_parts = []
+        for i, num_tokens in enumerate(audio_tokens_list, 1):
+            part = (
+                f"Audio {i}: <|audio_bos|>"
+                + "<|AUDIO|>" * num_tokens
+                + "<|audio_eos|>"
+            )
+            audio_parts.append(part)
+
+        content = "\n".join(audio_parts) + "\n" + user_prompt
 
         chat = [{"role": "user", "content": content}]
         prompt_str = tokenizer.apply_chat_template(
@@ -392,8 +399,12 @@ class Model(nn.Module):
         return mx.array(prompt_ids)
 
     def _build_inputs_embeds(
-        self, input_ids: mx.array, audio_features: mx.array
+        self, input_ids: mx.array, audio_features_list: List[mx.array]
     ) -> mx.array:
+        # Concatenate all per-audio features along the sequence dimension so
+        # the contiguous block of <|AUDIO|> tokens in the prompt maps correctly.
+        audio_features = mx.concatenate(audio_features_list, axis=1)  # (1, total, D)
+
         audio_token_id = self.audio_token_id
         is_audio = input_ids == audio_token_id
         llm_ids = mx.where(is_audio, 0, input_ids)
@@ -412,7 +423,7 @@ class Model(nn.Module):
 
         return mx.array(embeds_np).astype(orig_dtype)
 
-    def _load_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
+    def _load_single_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
         if isinstance(audio, str):
             from mlx_audio.stt.utils import load_audio
 
@@ -421,18 +432,19 @@ class Model(nn.Module):
             return mx.array(audio, dtype=mx.float32)
         elif isinstance(audio, mx.array):
             return audio
-        elif isinstance(audio, list):
-            audio_item = audio[0]
-            if isinstance(audio_item, str):
-                from mlx_audio.stt.utils import load_audio
-
-                return load_audio(audio_item)
-            return mx.array(np.array(audio_item), dtype=mx.float32)
         raise TypeError(f"Unsupported audio type: {type(audio)}")
+
+    def _load_audio(
+        self, audio: Union[str, mx.array, np.ndarray, List]
+    ) -> List[mx.array]:
+        """Load one or more audio inputs, always returning a list."""
+        if isinstance(audio, list):
+            return [self._load_single_audio(a) for a in audio]
+        return [self._load_single_audio(audio)]
 
     def generate(
         self,
-        audio: Union[str, mx.array, np.ndarray],
+        audio: Union[str, mx.array, np.ndarray, List],
         *,
         max_tokens: int = 4096,
         temperature: float = 0.0,
@@ -468,16 +480,22 @@ class Model(nn.Module):
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        audio_data = self._load_audio(audio)
-        input_features, num_audio_tokens = self._extract_features(audio_data)
+        audio_list = self._load_audio(audio)
 
         if verbose:
-            print("Encoding audio...")
-        audio_features = self.get_audio_features(input_features)
-        mx.eval(audio_features)
+            print(f"Encoding {len(audio_list)} audio file(s)...")
 
-        prompt_ids = self._build_prompt(num_audio_tokens, prompt)
-        inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
+        features_list: List[mx.array] = []
+        tokens_list: List[int] = []
+        for audio_data in audio_list:
+            input_features, num_audio_tokens = self._extract_features(audio_data)
+            audio_features = self.get_audio_features(input_features)
+            mx.eval(audio_features)
+            features_list.append(audio_features)
+            tokens_list.append(num_audio_tokens)
+
+        prompt_ids = self._build_prompt(tokens_list, prompt)
+        inputs_embeds = self._build_inputs_embeds(prompt_ids, features_list)
         mx.eval(inputs_embeds)
 
         prompt_tokens = len(prompt_ids)
@@ -528,7 +546,7 @@ class Model(nn.Module):
 
     def _stream_generate(
         self,
-        audio: Union[str, mx.array, np.ndarray],
+        audio: Union[str, mx.array, np.ndarray, List],
         *,
         max_tokens: int = 4096,
         temperature: float = 0.0,
@@ -544,14 +562,19 @@ class Model(nn.Module):
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        audio_data = self._load_audio(audio)
-        input_features, num_audio_tokens = self._extract_features(audio_data)
+        audio_list = self._load_audio(audio)
 
-        audio_features = self.get_audio_features(input_features)
-        mx.eval(audio_features)
+        features_list: List[mx.array] = []
+        tokens_list: List[int] = []
+        for audio_data in audio_list:
+            input_features, num_audio_tokens = self._extract_features(audio_data)
+            audio_features = self.get_audio_features(input_features)
+            mx.eval(audio_features)
+            features_list.append(audio_features)
+            tokens_list.append(num_audio_tokens)
 
-        prompt_ids = self._build_prompt(num_audio_tokens, prompt)
-        inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
+        prompt_ids = self._build_prompt(tokens_list, prompt)
+        inputs_embeds = self._build_inputs_embeds(prompt_ids, features_list)
         mx.eval(inputs_embeds)
 
         prompt_token_count = len(prompt_ids)
