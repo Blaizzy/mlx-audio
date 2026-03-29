@@ -6,10 +6,7 @@ import unittest
 import mlx.core as mx
 from mlx.utils import tree_flatten
 
-from mlx_audio.tts.models.kugelaudio.config import (
-    DiffusionHeadConfig,
-    ModelConfig,
-)
+from mlx_audio.tts.models.kugelaudio.config import DiffusionHeadConfig, ModelConfig
 from mlx_audio.tts.models.kugelaudio.kugelaudio import (
     SPEECH_DIFFUSION_ID,
     VALID_SPEECH_TOKENS,

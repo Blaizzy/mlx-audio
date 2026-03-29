@@ -6,9 +6,7 @@ from typing import Optional, Union
 import mlx.core as mx
 
 from ..vibevoice.scheduler import DPMSolverMultistepScheduler as BaseDPMSolver
-from ..vibevoice.scheduler import (
-    SchedulerOutput,
-)
+from ..vibevoice.scheduler import SchedulerOutput
 
 
 class SDEDPMSolverMultistepScheduler(BaseDPMSolver):
