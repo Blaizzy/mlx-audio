@@ -33,12 +33,16 @@ class StreamingResult:
 # ---------------------------------------------------------------------------
 
 
-def sinusoids(length: int, channels: int) -> mx.array:
+def sinusoids(
+    length: int, channels: int, dtype: mx.Dtype = mx.float32
+) -> mx.array:
     max_timescale = 10000
     log_timescale = math.log(max_timescale) / (channels // 2 - 1)
     inv_timescales = mx.exp(-log_timescale * mx.arange(channels // 2))
     scaled_time = mx.arange(length)[:, None] * inv_timescales[None, :]
-    return mx.concatenate([mx.sin(scaled_time), mx.cos(scaled_time)], axis=1)
+    return mx.concatenate(
+        [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
+    ).astype(dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +74,8 @@ class Qwen2AudioEncoderAttention(nn.Module):
         v = v.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
 
         attn = (q * self.scale) @ k.transpose(0, 1, 3, 2)
-        attn = mx.softmax(attn, axis=-1)
+        attn_dtype = attn.dtype
+        attn = mx.softmax(attn.astype(mx.float32), axis=-1).astype(attn_dtype)
         out = (attn @ v).transpose(0, 2, 1, 3).reshape(B, T, self.embed_dim)
         return self.out_proj(out)
 
@@ -124,7 +129,9 @@ class Qwen2AudioEncoder(nn.Module):
 
     @property
     def embed_positions(self) -> mx.array:
-        return self._embed_positions
+        # Cast stored float32 sinusoids to the loaded weight dtype at use-time
+        # so positional embeddings never upcast the encoder activations.
+        return self._embed_positions.astype(self.conv1.weight.dtype)
 
     def __call__(self, input_features: mx.array) -> mx.array:
         # input_features: (B, n_mels, T) -> transpose to (B, T, n_mels) for Conv1d
@@ -227,7 +234,9 @@ class Model(nn.Module):
     def get_audio_features(self, input_features: mx.array) -> mx.array:
         encoder_output = self.audio_tower(input_features)
         projected = self.multi_modal_projector(encoder_output)
-        return projected
+        # Guarantee output matches LM embedding dtype (free no-op when already correct).
+        lm_dtype = self.language_model.model.embed_tokens.weight.dtype
+        return projected.astype(lm_dtype)
 
     def model_quant_predicate(self, p: str, m: nn.Module) -> bool:
         return not (
@@ -355,8 +364,12 @@ class Model(nn.Module):
         log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
         log_mel = (log_mel + 4.0) / 4.0
 
-        # Shape: (1, n_mels, T) for encoder
-        mel_tensor = mx.array(log_mel.T[np.newaxis], dtype=mx.float32)
+        # Shape: (1, n_mels, T) for encoder.
+        # Use the encoder's weight dtype so the forward pass stays in one dtype.
+        # Numpy doesn't have bfloat16, so we always compute the mel in float32
+        # and convert when crossing into MLX.
+        model_dtype = self.audio_tower.conv1.weight.dtype
+        mel_tensor = mx.array(log_mel.T[np.newaxis], dtype=model_dtype)
 
         # Compute number of audio tokens after encoder processing
         mel_len = mel_tensor.shape[2]  # T dimension
@@ -401,27 +414,42 @@ class Model(nn.Module):
     def _build_inputs_embeds(
         self, input_ids: mx.array, audio_features_list: List[mx.array]
     ) -> mx.array:
-        # Concatenate all per-audio features along the sequence dimension so
-        # the contiguous block of <|AUDIO|> tokens in the prompt maps correctly.
-        audio_features = mx.concatenate(audio_features_list, axis=1)  # (1, total, D)
+        # Concatenate all per-audio features: (1, total_audio_tokens, D)
+        audio_features = mx.concatenate(audio_features_list, axis=1)
 
-        audio_token_id = self.audio_token_id
-        is_audio = input_ids == audio_token_id
-        llm_ids = mx.where(is_audio, 0, input_ids)
+        # Embed text tokens (audio positions get a dummy embedding — replaced below)
+        is_audio = input_ids == self.audio_token_id
+        text_ids = mx.where(is_audio, 0, input_ids)
+        text_embeds = self.language_model.model.embed_tokens(text_ids[None])  # (1, seq, D)
 
-        inputs_embeds = self.language_model.model.embed_tokens(llm_ids[None])
+        # Cast audio features to embedding dtype — zero-cost if they already match
+        # (with fix 3+4 they will be bfloat16; this is a safety net for other configs)
+        audio_features = audio_features.astype(text_embeds.dtype)
 
+        # Use numpy only for index arithmetic — no tensor data crosses into numpy.
+        # Walk the sequence finding contiguous text/audio runs; splice in MLX slices.
         is_audio_np = np.array(is_audio)
-        audio_positions = np.where(is_audio_np)[0]
+        seq_len = len(is_audio_np)
+        segments: List[mx.array] = []
+        audio_offset = 0
+        i = 0
+        while i < seq_len:
+            if not is_audio_np[i]:
+                j = i + 1
+                while j < seq_len and not is_audio_np[j]:
+                    j += 1
+                segments.append(text_embeds[:, i:j, :])
+                i = j
+            else:
+                j = i + 1
+                while j < seq_len and is_audio_np[j]:
+                    j += 1
+                n = j - i
+                segments.append(audio_features[:, audio_offset : audio_offset + n, :])
+                audio_offset += n
+                i = j
 
-        orig_dtype = inputs_embeds.dtype
-        embeds_np = np.array(inputs_embeds.astype(mx.float32))
-        audio_np = np.array(audio_features.astype(mx.float32))
-
-        num_audio = min(len(audio_positions), audio_np.shape[1])
-        embeds_np[0, audio_positions[:num_audio]] = audio_np[0, :num_audio]
-
-        return mx.array(embeds_np).astype(orig_dtype)
+        return mx.concatenate(segments, axis=1)
 
     def _load_single_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
         if isinstance(audio, str):
