@@ -58,7 +58,18 @@ mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --p
 
 # Save to a specific directory
 mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --output_path ./my_audio  --lang_code a
+
+# Stream audio during generation
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --lang_code a
+
+# Stream audio during generation and save it to disk
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --save --lang_code a
+
+# Join multiple generated segments into one file
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text $'Hello!\nHow are you?' --join_audio --lang_code a
 ```
+
+By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
 ### Python API
 
