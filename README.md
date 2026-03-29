@@ -119,6 +119,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
 | **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+| **Qwen2-Audio** | Alibaba's multimodal audio understanding (ASR, captioning, emotion, translation) | Multiple | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
 
 
 ### Voice Activity Detection / Speaker Diarization (VAD)

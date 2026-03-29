@@ -22,6 +22,7 @@ MODEL_REMAPPING = {
     "moonshine": "moonshine",
     "mms": "mms",
     "granite_speech": "granite_speech",
+    "qwen2_audio": "qwen2_audio",
 }
 
 
