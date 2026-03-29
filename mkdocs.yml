@@ -1,0 +1,110 @@
+site_name: MLX Audio
+site_url: https://blaizzy.github.io/mlx-audio/
+site_description: MLX-powered audio models for Apple Silicon — TTS, STT, STS, and VAD
+repo_url: https://github.com/Blaizzy/mlx-audio
+repo_name: Blaizzy/mlx-audio
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            show_source: false
+            show_root_heading: true
+            heading_level: 3
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.snippets
+  - tables
+  - attr_list
+  - md_in_html
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - getting-started/index.md
+    - Installation: getting-started/installation.md
+    - "Quick Start: CLI": getting-started/quickstart-cli.md
+    - "Quick Start: Python": getting-started/quickstart-python.md
+  - Models:
+    - models/index.md
+    - Text-to-Speech:
+      - models/tts/index.md
+      - Kokoro: models/tts/kokoro.md
+      - Qwen3-TTS: models/tts/qwen3-tts.md
+      - Voxtral TTS: models/tts/voxtral-tts.md
+      - CSM: models/tts/csm.md
+      - Dia: models/tts/dia.md
+      - Chatterbox: models/tts/chatterbox.md
+    - Speech-to-Text:
+      - models/stt/index.md
+      - Whisper: models/stt/whisper.md
+      - Parakeet: models/stt/parakeet.md
+      - Voxtral Realtime: models/stt/voxtral-realtime.md
+    - Speech-to-Speech: models/sts/index.md
+    - Voice Activity Detection: models/vad/index.md
+  - Guides:
+    - guides/index.md
+    - Streaming Audio: guides/streaming.md
+    - Voice Cloning: guides/voice-cloning.md
+    - Quantization: guides/quantization.md
+    - Web UI & API Server: guides/web-ui-api-server.md
+  - API Reference:
+    - api-reference/index.md
+    - TTS: api-reference/tts.md
+    - STT: api-reference/stt.md
+    - Audio I/O: api-reference/audio-io.md
+  - Contributing:
+    - contributing/index.md
+    - Dev Setup: contributing/dev-setup.md
+    - Adding a Model: contributing/adding-a-model.md
+    - Architecture: contributing/architecture.md

@@ -44,4 +44,4 @@ output/
 # uv
 .build
 claude.md
-.claude/
+.claude/site/
