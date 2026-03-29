@@ -626,6 +626,13 @@ class Model(nn.Module):
         chunk_idx = 0
         # Convert streaming_interval (seconds) to frames (1 frame = 80 ms)
         frames_per_chunk = max(1, int(streaming_interval / 0.08))
+        # Context frames for overlap-add decoding.  The codec decoder uses
+        # sliding-window attention with windows up to 16 (at the final stage).
+        # Including context frames from the previous chunk ensures smooth
+        # transitions without boundary artifacts.
+        context_frames = 16
+        # Each codec frame produces 1920 samples (8x upsample × 240 patch)
+        samples_per_frame = 1920
 
         for i in tqdm(range(max_tokens), disable=not verbose):
             h = hidden[:, -1, :]  # (1, dim)
@@ -658,11 +665,20 @@ class Model(nn.Module):
 
             # Streaming: yield chunk when buffer is full
             if stream and len(all_codes) - yielded_frames >= frames_per_chunk:
+                # Include context frames from earlier in the sequence so the
+                # codec decoder's sliding-window attention has proper context,
+                # avoiding boundary artifacts between chunks.
+                ctx_start = max(0, yielded_frames - context_frames)
                 chunk_codes = mx.concatenate(
-                    all_codes[yielded_frames:], axis=1
+                    all_codes[ctx_start:], axis=1
                 )
-                chunk_waveform = self.audio_tokenizer.decode(chunk_codes)
-                chunk_waveform = chunk_waveform.squeeze(0)
+                full_waveform = self.audio_tokenizer.decode(chunk_codes)
+                full_waveform = full_waveform.squeeze(0)
+
+                # Trim the context portion — keep only new audio
+                ctx_used = yielded_frames - ctx_start
+                trim_samples = ctx_used * samples_per_frame
+                chunk_waveform = full_waveform[trim_samples:]
 
                 chunk_samples = chunk_waveform.shape[0]
                 chunk_duration = chunk_samples / self.config.sample_rate
@@ -706,9 +722,13 @@ class Model(nn.Module):
         # Final chunk: decode remaining frames (or all frames if not streaming)
         remaining = len(all_codes) - yielded_frames
         if stream and yielded_frames > 0 and remaining > 0:
-            # Only decode un-yielded remainder
-            final_codes = mx.concatenate(all_codes[yielded_frames:], axis=1)
-            waveform = self.audio_tokenizer.decode(final_codes).squeeze(0)
+            # Decode remainder with context for smooth transition
+            ctx_start = max(0, yielded_frames - context_frames)
+            final_codes = mx.concatenate(all_codes[ctx_start:], axis=1)
+            full_waveform = self.audio_tokenizer.decode(final_codes).squeeze(0)
+            ctx_used = yielded_frames - ctx_start
+            trim_samples = ctx_used * samples_per_frame
+            waveform = full_waveform[trim_samples:]
         elif stream and yielded_frames > 0 and remaining == 0:
             # Everything already yielded — emit a zero-length final marker
             waveform = mx.zeros((0,))
