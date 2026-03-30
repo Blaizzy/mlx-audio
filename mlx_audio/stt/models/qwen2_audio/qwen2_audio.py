@@ -408,28 +408,25 @@ class Model(nn.Module):
     def get_input_embeddings(
         self, input_ids: mx.array, audio_features_list: List[mx.array]
     ) -> mx.array:
-        # Concatenate all per-audio features: (1, total_audio_tokens, D)
+
         audio_features = mx.concatenate(audio_features_list, axis=1)
 
-        # Embed all tokens (audio positions get a dummy embedding — replaced below)
+
         is_audio = input_ids == self.audio_token_id
         text_ids = mx.where(is_audio, 0, input_ids)
         text_embeds = self.language_model.model.embed_tokens(
             text_ids[None]
         )  # (1, seq, D)
 
-        # Cast audio features to embedding dtype — zero-cost if they already match.
         audio_features = audio_features.astype(text_embeds.dtype)
 
-        # Build a full-size audio embedding tensor aligned to the text positions.
-        # audio_indices maps each audio token position to its index in audio_features.
+
         audio_mask = is_audio.astype(mx.int32)
         audio_indices = mx.cumsum(audio_mask) - 1  # 0-based index per audio token
-        # Clamp to valid range for non-audio positions (value doesn't matter, will be masked)
+    
         audio_indices = mx.clip(audio_indices, 0, audio_features.shape[1] - 1)
         audio_embeds = audio_features[:, audio_indices, :]  # (1, seq, D)
 
-        # Select: audio embeddings where is_audio, text embeddings elsewhere
         mask_3d = is_audio[None, :, None]  # (1, seq, 1)
         return mx.where(mask_3d, audio_embeds, text_embeds)
 
