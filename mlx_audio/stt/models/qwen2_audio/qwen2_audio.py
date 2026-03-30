@@ -411,7 +411,7 @@ class Model(nn.Module):
         prompt_ids = tokenizer.encode(prompt_str)
         return mx.array(prompt_ids)
 
-    def _build_inputs_embeds(
+    def get_input_embeddings(
         self, input_ids: mx.array, audio_features_list: List[mx.array]
     ) -> mx.array:
         # Concatenate all per-audio features: (1, total_audio_tokens, D)
@@ -523,7 +523,7 @@ class Model(nn.Module):
             tokens_list.append(num_audio_tokens)
 
         prompt_ids = self._build_prompt(tokens_list, prompt)
-        inputs_embeds = self._build_inputs_embeds(prompt_ids, features_list)
+        inputs_embeds = self.get_input_embeddings(prompt_ids, features_list)
         mx.eval(inputs_embeds)
 
         prompt_tokens = len(prompt_ids)
@@ -602,7 +602,7 @@ class Model(nn.Module):
             tokens_list.append(num_audio_tokens)
 
         prompt_ids = self._build_prompt(tokens_list, prompt)
-        inputs_embeds = self._build_inputs_embeds(prompt_ids, features_list)
+        inputs_embeds = self.get_input_embeddings(prompt_ids, features_list)
         mx.eval(inputs_embeds)
 
         prompt_token_count = len(prompt_ids)
