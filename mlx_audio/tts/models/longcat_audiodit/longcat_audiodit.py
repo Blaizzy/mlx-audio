@@ -131,6 +131,10 @@ class Model(nn.Module):
         # WAV-VAE
         self.vae = AudioDiTVae(config.vae_config)
 
+    def model_quant_predicate(self, p, m):
+        """Skip quantization for VAE (conv-based codec)."""
+        return not p.startswith("vae")
+
     @property
     def sample_rate(self) -> int:
         return self.config.sampling_rate
