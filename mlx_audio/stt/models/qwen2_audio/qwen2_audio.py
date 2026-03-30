@@ -421,16 +421,21 @@ class Model(nn.Module):
         # Cast audio features to embedding dtype — zero-cost if they already match.
         audio_features = audio_features.astype(text_embeds.dtype)
 
-        # Find contiguous run boundaries in O(seq_len) numpy; no tensor data crosses.
-        is_audio_np = np.array(is_audio)
-        changes = np.where(np.diff(is_audio_np.astype(np.int8)))[0] + 1
-        run_boundaries = np.concatenate([[0], changes, [len(is_audio_np)]])
+        is_audio_int = is_audio.astype(mx.int32)
+        diff = is_audio_int[1:] - is_audio_int[:-1]  # +1: text→audio, -1: audio→text
+        mx.eval(is_audio_int, diff)
+
+        is_audio_flags = is_audio_int.tolist()   # list[int], length seq_len
+        diff_list = diff.tolist()                # list[int], length seq_len-1
+        seq_len = len(is_audio_flags)
+
+        changes = [i + 1 for i, d in enumerate(diff_list) if d != 0]
+        run_boundaries = [0] + changes + [seq_len]
 
         segments: List[mx.array] = []
         audio_offset = 0
         for start, end in zip(run_boundaries[:-1], run_boundaries[1:]):
-            start, end = int(start), int(end)
-            if is_audio_np[start]:
+            if is_audio_flags[start]:
                 n = end - start
                 segments.append(audio_features[:, audio_offset : audio_offset + n, :])
                 audio_offset += n
