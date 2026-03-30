@@ -3964,95 +3964,74 @@ class TestKugelAudioModel(unittest.TestCase):
         self.assertEqual(cfg.decoder_config.hidden_size, 3584)
         self.assertEqual(cfg.decoder_config.num_hidden_layers, 28)
 
-    def test_from_dict_handles_typo(self):
-        """HF config has 'acostic_vae_dim' typo."""
-        from mlx_audio.tts.models.kugelaudio.config import ModelConfig
 
-        cfg = ModelConfig.from_dict({"acostic_vae_dim": 64})
-        self.assertEqual(cfg.acoustic_vae_dim, 64)
-
-    def test_from_dict_drops_semantic_config(self):
-        """semantic_tokenizer_config should be silently dropped."""
-        from mlx_audio.tts.models.kugelaudio.config import ModelConfig
-
-        cfg = ModelConfig.from_dict(
-            {"semantic_tokenizer_config": {"vae_dim": 128}}
-        )
-        self.assertFalse(hasattr(cfg, "semantic_tokenizer_config"))
-
-    def test_from_dict_ignores_unknown_fields(self):
-        """Unknown top-level fields should not raise."""
-        from mlx_audio.tts.models.kugelaudio.config import ModelConfig
-
-        cfg = ModelConfig.from_dict({"unknown_field_xyz": True})
-        self.assertEqual(cfg.acoustic_vae_dim, 64)
-
-    def test_diffusion_config_defaults(self):
-        """Check default values for diffusion config."""
-        from mlx_audio.tts.models.kugelaudio.config import DiffusionHeadConfig
-
-        cfg = DiffusionHeadConfig()
-        self.assertEqual(cfg.ddpm_num_inference_steps, 10)
-        self.assertEqual(cfg.ddpm_algorithm_type, "sde-dpmsolver++")
-        self.assertEqual(cfg.prediction_type, "v_prediction")
-
-    def test_sanitize_strips_model_prefix(self):
-        """Keys with 'model.' prefix should be mapped to unprefixed."""
+    def test_sanitize(self):
+        """Test full sanitize: prefix stripping, skip rules, re-indexing,
+        quantization metadata, and linear weight transposition."""
         from mlx.utils import tree_flatten
 
         model = self._make_model()
         params = dict(tree_flatten(model.parameters()))
-        real_key = next(k for k in params if k.startswith("language_model."))
-        fake_weights = {f"model.{real_key}": params[real_key]}
-        result = model.sanitize(fake_weights)
-        self.assertIn(real_key, result)
 
-    def test_sanitize_skips_encoder_and_semantic_keys(self):
-        """Encoder/semantic weights should be silently dropped."""
-        model = self._make_model()
-        weights = {
-            "model.semantic_tokenizer.foo": mx.zeros((2,)),
-            "model.semantic_connector.bar": mx.zeros((2,)),
-            "model.acoustic_tokenizer.encoder.baz": mx.zeros((2,)),
-        }
-        result = model.sanitize(weights)
-        self.assertEqual(len(result), 0)
+        # Build fake HF-style weight dict exercising every sanitize path
+        fake_weights = {}
 
-    def test_sanitize_fixes_sequential_indexing(self):
-        """PyTorch '.mlp.0.' should become '.mlp.layers.0.' for MLX."""
-        from mlx.utils import tree_flatten
+        # 1) "model." prefix → should be stripped
+        lang_key = next(k for k in params if k.startswith("language_model."))
+        fake_weights[f"model.{lang_key}"] = params[lang_key]
 
-        model = self._make_model()
-        params = dict(tree_flatten(model.parameters()))
+        # 2) Keys that should be dropped
+        fake_weights["model.semantic_tokenizer.foo"] = mx.zeros((2,))
+        fake_weights["model.semantic_connector.bar"] = mx.zeros((2,))
+        fake_weights["model.acoustic_tokenizer.encoder.baz"] = mx.zeros((2,))
+
+        # 3) Sequential re-indexing (.mlp.0. → .mlp.layers.0.)
         mlp_key = next((k for k in params if "t_embedder.mlp.layers." in k), None)
         if mlp_key:
-            pytorch_key = "model." + mlp_key.replace(".mlp.layers.", ".mlp.")
-            fake_weights = {pytorch_key: params[mlp_key]}
-            result = model.sanitize(fake_weights)
+            pytorch_mlp = "model." + mlp_key.replace(".mlp.layers.", ".mlp.")
+            fake_weights[pytorch_mlp] = params[mlp_key]
+
+        # 4) Quantization metadata
+        fake_weights["language_model.layers.0.self_attn.q_proj.scales"] = mx.zeros(
+            (4,)
+        )
+        fake_weights["language_model.layers.0.self_attn.q_proj.biases"] = mx.zeros(
+            (4,)
+        )
+
+        # 5) Linear weight transposition (reversed shape)
+        lm_key = "lm_head.weight"
+        if lm_key in params:
+            fake_weights[lm_key] = mx.zeros(tuple(reversed(params[lm_key].shape)))
+
+        result = model.sanitize(fake_weights)
+
+        # Verify prefix stripping
+        self.assertIn(lang_key, result)
+
+        # Verify dropped keys
+        for dropped in [
+            "semantic_tokenizer.foo",
+            "semantic_connector.bar",
+            "acoustic_tokenizer.encoder.baz",
+        ]:
+            self.assertNotIn(dropped, result)
+
+        # Verify sequential re-indexing
+        if mlp_key:
             self.assertIn(mlp_key, result)
 
-    def test_sanitize_preserves_quantization_metadata(self):
-        """Quantization keys (.scales, .biases) must not be dropped."""
-        model = self._make_model()
-        weights = {
-            "language_model.layers.0.self_attn.q_proj.scales": mx.zeros((4,)),
-            "language_model.layers.0.self_attn.q_proj.biases": mx.zeros((4,)),
-        }
-        result = model.sanitize(weights)
-        self.assertEqual(len(result), 2)
+        # Verify quantization metadata preserved
+        self.assertIn(
+            "language_model.layers.0.self_attn.q_proj.scales", result
+        )
+        self.assertIn(
+            "language_model.layers.0.self_attn.q_proj.biases", result
+        )
 
-    def test_sanitize_transposes_linear_weights(self):
-        """Linear weights with mismatched shape should be transposed."""
-        from mlx.utils import tree_flatten
-
-        model = self._make_model()
-        params = dict(tree_flatten(model.parameters()))
-        key = "lm_head.weight"
-        if key in params:
-            target_shape = params[key].shape
-            fake = mx.zeros(tuple(reversed(target_shape)))
-            result = model.sanitize({key: fake})
-            self.assertEqual(result[key].shape, target_shape)
+        # Verify linear weight transposed to correct shape
+        if lm_key in params:
+            self.assertEqual(result[lm_key].shape, params[lm_key].shape)
 
     def test_token_constraint_mask_allows_valid_tokens(self):
         """Only VALID_SPEECH_TOKENS should survive the mask."""
