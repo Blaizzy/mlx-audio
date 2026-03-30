@@ -91,7 +91,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
-| **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
+| **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16), [8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit), [6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit), [4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
@@ -151,6 +151,9 @@ Kokoro is a fast, multilingual TTS model with 54 voice presets.
 from mlx_audio.tts.utils import load_model
 
 model = load_model("mlx-community/Kokoro-82M-bf16")
+# Or use a quantized variant for lower memory usage:
+# model = load_model("mlx-community/Kokoro-82M-8bit")
+# model = load_model("mlx-community/Kokoro-82M-4bit")
 
 # Generate with different voices
 for result in model.generate(
