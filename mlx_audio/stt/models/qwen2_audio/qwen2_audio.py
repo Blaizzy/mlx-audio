@@ -28,7 +28,6 @@ class StreamingResult:
     generation_tokens: int = 0
 
 
-
 def sinusoids(length: int, channels: int, dtype: mx.Dtype = mx.float32) -> mx.array:
     max_timescale = 10000
     log_timescale = math.log(max_timescale) / (channels // 2 - 1)
@@ -37,7 +36,6 @@ def sinusoids(length: int, channels: int, dtype: mx.Dtype = mx.float32) -> mx.ar
     return mx.concatenate([mx.sin(scaled_time), mx.cos(scaled_time)], axis=1).astype(
         dtype
     )
-
 
 
 class Qwen2AudioEncoderAttention(nn.Module):
@@ -63,9 +61,7 @@ class Qwen2AudioEncoderAttention(nn.Module):
         k = k.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
 
-        out = mx.fast.scaled_dot_product_attention(
-            q, k, v, scale=self.scale
-        )
+        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale)
         out = out.transpose(0, 2, 1, 3).reshape(B, T, self.embed_dim)
         return self.out_proj(out)
 
@@ -144,7 +140,6 @@ class Qwen2AudioEncoder(nn.Module):
         return x
 
 
-
 class Qwen2AudioMultiModalProjector(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
@@ -156,7 +151,6 @@ class Qwen2AudioMultiModalProjector(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         return self.linear(x)
-
 
 
 class Model(nn.Module):
@@ -340,7 +334,7 @@ class Model(nn.Module):
 
         windowed = frames * self._mel_window[np.newaxis, :]
         spec = np.fft.rfft(windowed, n=n_fft)
-    
+
         power = spec.real**2 + spec.imag**2
 
         mel_spec = power @ self._mel_filterbank.T  # (n_frames, n_mels)
@@ -349,7 +343,6 @@ class Model(nn.Module):
         log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
         log_mel = (log_mel + 4.0) / 4.0
 
- 
         model_dtype = self.audio_tower.conv1.weight.dtype
         mel_tensor = mx.array(log_mel.T[np.newaxis], dtype=model_dtype)
 
