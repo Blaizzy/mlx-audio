@@ -10,6 +10,7 @@ from mlx_audio.utils import base_load_model, get_model_path, load_config
 SAMPLE_RATE = 16000
 
 MODEL_REMAPPING = {
+    "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
     "sensevoice": "sensevoice",

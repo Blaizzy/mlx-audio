@@ -58,7 +58,18 @@ mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --p
 
 # Save to a specific directory
 mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --output_path ./my_audio  --lang_code a
+
+# Stream audio during generation
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --lang_code a
+
+# Stream audio during generation and save it to disk
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --save --lang_code a
+
+# Join multiple generated segments into one file
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text $'Hello!\nHow are you?' --join_audio --lang_code a
 ```
+
+By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
 ### Python API
 
@@ -90,6 +101,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
 | **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
+| **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
 
 ### Speech-to-Text (STT)
 
@@ -344,6 +356,21 @@ python -m mlx_audio.stt.generate \
     --format json \
     --verbose
 ```
+
+### Voxtral TTS
+
+Mistral's 4B multilingual text-to-speech with 20 voice presets across 9 languages.
+
+```python
+from mlx_audio.tts.utils import load
+
+model = load("mlx-community/Voxtral-4B-TTS-2603-mlx-bf16")
+
+for result in model.generate(text="Hello, how are you today?", voice="casual_male"):
+    print(result.audio_duration)
+```
+
+Voices: `casual_male`, `casual_female`, `cheerful_female`, `neutral_male`, `neutral_female`, `fr_male`, `fr_female`, `es_male`, `es_female`, `de_male`, `de_female`, `it_male`, `it_female`, `pt_male`, `pt_female`, `nl_male`, `nl_female`, `ar_male`, `hi_male`, `hi_female`
 
 ### Voxtral Realtime
 

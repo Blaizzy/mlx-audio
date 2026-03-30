@@ -1194,6 +1194,7 @@ sts = [
 ]
 stt = [
     { name = "mistral-common", extra = ["audio"] },
+    { name = "sentencepiece" },
     { name = "tiktoken" },
 ]
 tts = [
@@ -1241,6 +1242,7 @@ requires-dist = [
     { name = "python-multipart", marker = "extra == 'server'", specifier = ">=0.0.22" },
     { name = "sentencepiece", marker = "extra == 'all'", specifier = ">=0.2.0" },
     { name = "sentencepiece", marker = "extra == 'sts'", specifier = ">=0.2.0" },
+    { name = "sentencepiece", marker = "extra == 'stt'", specifier = ">=0.2.0" },
     { name = "sentencepiece", marker = "extra == 'tts'", specifier = ">=0.2.0" },
     { name = "setuptools", marker = "extra == 'all'", specifier = "<81" },
     { name = "setuptools", marker = "extra == 'sts'", specifier = "<81" },

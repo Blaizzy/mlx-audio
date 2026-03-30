@@ -303,6 +303,41 @@ class TestParakeetModel(unittest.TestCase):
                 overlap_duration=5.0,
             )
 
+    def test_log_mel_spectrogram_shape_and_params(self):
+        """Verify log_mel_spectrogram output shape and NeMo-aligned parameters."""
+        from mlx_audio.stt.models.parakeet.audio import (
+            PreprocessArgs,
+            log_mel_spectrogram,
+        )
+
+        args = PreprocessArgs(
+            sample_rate=16000,
+            normalize="per_feature",
+            window_size=0.025,
+            window_stride=0.01,
+            window="hann",
+            features=80,
+            n_fft=512,
+            dither=0.0,
+        )
+
+        duration_s = 0.5
+        audio = mx.random.normal((int(16000 * duration_s),))
+        mel = log_mel_spectrogram(audio, args)
+
+        # Shape: [1, time_frames, n_mels]
+        self.assertEqual(mel.ndim, 3)
+        self.assertEqual(mel.shape[0], 1)
+        self.assertEqual(mel.shape[2], 80)
+        self.assertGreater(mel.shape[1], 0)
+
+        # Output should be normalized (mean ≈ 0 per feature)
+        per_feat_mean = np.abs(np.array(mx.mean(mel, axis=1)))
+        self.assertTrue(np.all(per_feat_mean < 1.0))
+
+        # Verify configurable log_zero_guard_value default
+        self.assertAlmostEqual(args.log_zero_guard_value, 2**-24, places=15)
+
     @patch("mlx.nn.Module.load_weights")
     @patch("mlx_audio.stt.models.parakeet.parakeet.hf_hub_download")
     @patch("mlx_audio.stt.models.parakeet.parakeet.json.load")
