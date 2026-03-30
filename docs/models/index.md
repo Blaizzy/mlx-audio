@@ -2,6 +2,12 @@
 
 MLX Audio supports a wide range of audio models across four categories, all optimized for Apple Silicon.
 
+Many hosted MLX checkpoints referenced in these docs live under
+[mlx-community](https://huggingface.co/mlx-community) on Hugging Face, the shared org
+for ready-to-use MLX model weights across projects like `mlx-lm`, `mlx-vlm`, and
+`mlx-audio`. If you are adding a new model, prefer publishing it there when possible
+so users can find MLX models in one consistent place.
+
 ## Text-to-Speech (TTS)
 
 Generate natural-sounding speech from text. Multiple models with multilingual support, voice cloning, and style control.

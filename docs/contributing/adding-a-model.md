@@ -175,6 +175,18 @@ python -m mlx_audio.convert \
     --dtype bfloat16
 ```
 
+### Publish to Hugging Face
+
+If you plan to share the converted model, prefer publishing it on the
+[mlx-community](https://huggingface.co/mlx-community) organization on Hugging Face.
+It is the shared home for ready-to-use MLX weights across projects like `mlx-lm`,
+`mlx-vlm`, `mlx-swift-examples`, and `mlx-audio`, so publishing there keeps MLX-native
+checkpoints discoverable in one place.
+
+If you cannot publish directly to `mlx-community`, use your own namespace first and
+link it from the docs. We should still encourage new model contributors to be part of
+the `mlx-community` org when possible.
+
 ### Test
 
 Write a basic test:
@@ -200,7 +212,8 @@ pytest mlx_audio/tts/tests/test_my_model.py
 1. Add a model page in `docs/models/tts/` (or `stt/`).
 2. Add the page to the `nav` section in `mkdocs.yml`.
 3. Optionally add a `README.md` inside your model directory for model-specific details.
-4. Make sure your PR includes the docs change. The docs workflow will fail if model files change without a matching docs update.
+4. If the model is published on Hugging Face, prefer an `mlx-community/...` repo when available and link that repo from the docs.
+5. Make sure your PR includes the docs change. The docs workflow will fail if model files change without a matching docs update.
 
 ## Checklist
 
@@ -209,6 +222,7 @@ pytest mlx_audio/tts/tests/test_my_model.py
 - [ ] `generate()` method yields `GenerationResult` objects
 - [ ] Model type registered in `MODEL_REMAPPING` (if needed)
 - [ ] Weights converted to MLX `.safetensors` format
+- [ ] Hugging Face repo chosen and linked in docs (`mlx-community/...` preferred)
 - [ ] Basic test written and passing
 - [ ] Documentation page added
 - [ ] PR submitted with a clear description
