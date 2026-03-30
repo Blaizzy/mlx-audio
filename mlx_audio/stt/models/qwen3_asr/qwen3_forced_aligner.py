@@ -9,7 +9,12 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from .qwen3_asr import AudioEncoder, TextModel, _get_feat_extract_output_lengths
+from .qwen3_asr import (
+    AudioEncoder,
+    TextModel,
+    _get_feat_extract_output_lengths,
+    split_audio_into_chunks,
+)
 
 
 class ForceAlignProcessor:
@@ -243,6 +248,26 @@ class ForceAlignProcessor:
 
         return [int(res) for res in result]
 
+    def tokenize_by_language(self, text: str, language: str) -> List[str]:
+        """Tokenize text using the appropriate language-specific tokenizer.
+
+        Args:
+            text: The text to tokenize.
+            language: Language name (e.g., "Chinese", "Japanese", "Korean", "English").
+
+        Returns:
+            List of word/token strings.
+        """
+        lang = language.lower()
+        if lang == "japanese":
+            return self.tokenize_japanese(text)
+        elif lang == "korean":
+            return self.tokenize_korean(text)
+        elif lang == "chinese":
+            return self.tokenize_chinese_mixed(text)
+        else:
+            return self.tokenize_space_lang(text)
+
     def encode_timestamp(self, text: str, language: str) -> Tuple[List[str], str]:
         """Tokenize text and create input with timestamp tokens.
 
@@ -253,17 +278,7 @@ class ForceAlignProcessor:
         Returns:
             Tuple of (word_list, input_text with timestamp tokens).
         """
-        language = language.lower()
-
-        if language == "japanese":
-            word_list = self.tokenize_japanese(text)
-        elif language == "korean":
-            word_list = self.tokenize_korean(text)
-        elif language == "chinese":
-            word_list = self.tokenize_chinese_mixed(text)
-        else:
-            # Space-separated languages (English, etc.)
-            word_list = self.tokenize_space_lang(text)
+        word_list = self.tokenize_by_language(text, language)
 
         # Build input text with timestamp tokens between words
         input_text = "<timestamp><timestamp>".join(word_list) + "<timestamp><timestamp>"
@@ -634,11 +649,153 @@ class ForcedAlignerModel(nn.Module):
 
         return input_features, feature_attention_mask, num_audio_tokens
 
+    def _generate_single(
+        self,
+        audio_np: np.ndarray,
+        text: str,
+        language: str,
+    ) -> ForcedAlignResult:
+        """Run forced alignment for a single audio/text pair.
+
+        Args:
+            audio_np: Audio waveform as numpy array (16kHz mono).
+            text: Transcript for alignment.
+            language: Language name (e.g., "Chinese", "English").
+
+        Returns:
+            ForcedAlignResult with word-level timestamps.
+        """
+        input_features, feature_attention_mask, num_audio_tokens = (
+            self._preprocess_audio(audio_np)
+        )
+
+        word_list, aligner_input_text = self.aligner_processor.encode_timestamp(
+            text, language
+        )
+
+        # Expand single audio_pad placeholder to match actual token count
+        aligner_input_text = aligner_input_text.replace(
+            "<|audio_pad|>", "<|audio_pad|>" * num_audio_tokens
+        )
+
+        input_ids = self._tokenizer.encode(
+            aligner_input_text, return_tensors="np", add_special_tokens=False
+        )
+        input_ids = mx.array(input_ids)
+
+        logits = self(
+            input_ids,
+            input_features=input_features,
+            feature_attention_mask=feature_attention_mask,
+        )
+        mx.eval(logits)
+
+        output_ids = mx.argmax(logits, axis=-1)
+
+        timestamp_token_id = self.config.timestamp_token_id
+        timestamp_segment_time = self.config.timestamp_segment_time
+
+        input_ids_flat = input_ids[0] if input_ids.ndim > 1 else input_ids
+        output_ids_flat = output_ids[0] if output_ids.ndim > 1 else output_ids
+
+        # Convert to numpy for boolean indexing (not supported in MLX)
+        input_ids_np = np.array(input_ids_flat)
+        output_ids_np = np.array(output_ids_flat)
+
+        timestamp_mask = input_ids_np == timestamp_token_id
+        masked_output = output_ids_np[timestamp_mask]
+        timestamp_ms = masked_output * timestamp_segment_time
+
+        timestamp_output = self.aligner_processor.parse_timestamp(
+            word_list, timestamp_ms
+        )
+
+        items = []
+        for it in timestamp_output:
+            items.append(
+                ForcedAlignItem(
+                    text=str(it["text"]),
+                    start_time=round(it["start_time"] / 1000.0, 3),
+                    end_time=round(it["end_time"] / 1000.0, 3),
+                )
+            )
+
+        return ForcedAlignResult(items=items)
+
+    def _generate_chunked(
+        self,
+        audio_np: np.ndarray,
+        text: str,
+        language: str,
+        chunk_duration: float,
+    ) -> ForcedAlignResult:
+        """Run forced alignment on long audio by splitting into chunks.
+
+        Splits both audio and text proportionally, aligns each chunk
+        independently, then merges results with corrected time offsets.
+
+        Args:
+            audio_np: Audio waveform as numpy array (16kHz mono).
+            text: Full transcript for alignment.
+            language: Language name (e.g., "Chinese", "English").
+            chunk_duration: Maximum chunk duration in seconds.
+
+        Returns:
+            ForcedAlignResult with word-level timestamps spanning full audio.
+        """
+        sr = self.sample_rate
+        total_audio_duration = len(audio_np) / sr
+
+        chunks = split_audio_into_chunks(
+            audio_np, sr, chunk_duration=chunk_duration
+        )
+
+        all_words = self.aligner_processor.tokenize_by_language(text, language)
+        total_words = len(all_words)
+        words_per_sec = total_words / total_audio_duration if total_audio_duration > 0 else 0
+
+        word_offset = 0
+        all_items: List[ForcedAlignItem] = []
+
+        for chunk_idx, (chunk_wav, offset_sec) in enumerate(chunks):
+            is_last_chunk = chunk_idx == len(chunks) - 1
+
+            if is_last_chunk:
+                chunk_words = all_words[word_offset:]
+            else:
+                chunk_actual_duration = len(chunk_wav) / sr
+                num_words = round(words_per_sec * chunk_actual_duration)
+                num_words = min(num_words, total_words - word_offset)
+                if num_words == 0 and word_offset < total_words:
+                    num_words = 1
+                chunk_words = all_words[word_offset : word_offset + num_words]
+
+            if not chunk_words:
+                continue
+
+            chunk_text = " ".join(chunk_words)
+            chunk_result = self._generate_single(chunk_wav, chunk_text, language)
+
+            for item in chunk_result.items:
+                all_items.append(
+                    ForcedAlignItem(
+                        text=item.text,
+                        start_time=round(item.start_time + offset_sec, 3),
+                        end_time=round(item.end_time + offset_sec, 3),
+                    )
+                )
+
+            word_offset += len(chunk_words)
+            mx.clear_cache()
+
+        return ForcedAlignResult(items=all_items)
+
     def generate(
         self,
         audio: Union[str, mx.array, np.ndarray, List[Union[str, mx.array, np.ndarray]]],
         text: Union[str, List[str]],
         language: Union[str, List[str]] = "English",
+        chunk_duration: float = 120.0,
         **kwargs,
     ) -> Union[ForcedAlignResult, List[ForcedAlignResult]]:
         """Run forced alignment for audio and text.
@@ -647,6 +804,9 @@ class ForcedAlignerModel(nn.Module):
             audio: Audio input(s) - file path, array, or list of these.
             text: Transcript(s) for alignment.
             language: Language(s) for each sample (e.g., "Chinese", "English", "Japanese", "Korean").
+            chunk_duration: Maximum chunk duration in seconds. Audio longer than
+                this is split into chunks and aligned separately. Set to 0 to
+                disable chunking. Default: 120.0.
             **kwargs: Additional arguments (ignored, for API compatibility).
 
         Returns:
@@ -675,9 +835,7 @@ class ForcedAlignerModel(nn.Module):
 
         results: List[ForcedAlignResult] = []
 
-        # Process each sample
         for audio_input, txt, lang in zip(audios, texts, languages):
-            # Load audio if needed
             if isinstance(audio_input, str):
                 audio_input = load_audio(audio_input)
             audio_np = (
@@ -686,73 +844,13 @@ class ForcedAlignerModel(nn.Module):
                 else audio_input
             )
 
-            # Preprocess audio
-            input_features, feature_attention_mask, num_audio_tokens = (
-                self._preprocess_audio(audio_np)
-            )
+            duration = len(audio_np) / self.sample_rate
+            if chunk_duration > 0 and duration > chunk_duration:
+                result = self._generate_chunked(audio_np, txt, lang, chunk_duration)
+            else:
+                result = self._generate_single(audio_np, txt, lang)
 
-            # Encode text with timestamp tokens
-            word_list, aligner_input_text = self.aligner_processor.encode_timestamp(
-                txt, lang
-            )
-
-            # Replace single audio_pad with correct number
-            aligner_input_text = aligner_input_text.replace(
-                "<|audio_pad|>", "<|audio_pad|>" * num_audio_tokens
-            )
-
-            # Tokenize input
-            input_ids = self._tokenizer.encode(
-                aligner_input_text, return_tensors="np", add_special_tokens=False
-            )
-            input_ids = mx.array(input_ids)
-
-            # Forward pass
-            logits = self(
-                input_ids,
-                input_features=input_features,
-                feature_attention_mask=feature_attention_mask,
-            )
-            mx.eval(logits)
-
-            # Get predicted tokens
-            output_ids = mx.argmax(logits, axis=-1)
-
-            # Extract timestamps at timestamp token positions
-            timestamp_token_id = self.config.timestamp_token_id
-            timestamp_segment_time = self.config.timestamp_segment_time
-
-            input_ids_flat = input_ids[0] if input_ids.ndim > 1 else input_ids
-            output_ids_flat = output_ids[0] if output_ids.ndim > 1 else output_ids
-
-            # Convert to numpy for boolean indexing (not supported in MLX)
-            input_ids_np = np.array(input_ids_flat)
-            output_ids_np = np.array(output_ids_flat)
-
-            # Find positions where input has timestamp token
-            timestamp_mask = input_ids_np == timestamp_token_id
-            masked_output = output_ids_np[timestamp_mask]
-
-            # Convert to milliseconds
-            timestamp_ms = masked_output * timestamp_segment_time
-
-            # Parse timestamps
-            timestamp_output = self.aligner_processor.parse_timestamp(
-                word_list, timestamp_ms
-            )
-
-            # Convert to seconds
-            items = []
-            for it in timestamp_output:
-                items.append(
-                    ForcedAlignItem(
-                        text=str(it["text"]),
-                        start_time=round(it["start_time"] / 1000.0, 3),
-                        end_time=round(it["end_time"] / 1000.0, 3),
-                    )
-                )
-
-            results.append(ForcedAlignResult(items=items))
+            results.append(result)
 
             # Clear cache between samples
             mx.clear_cache()
