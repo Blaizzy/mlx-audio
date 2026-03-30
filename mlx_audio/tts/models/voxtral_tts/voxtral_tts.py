@@ -669,9 +669,7 @@ class Model(nn.Module):
                 # codec decoder's sliding-window attention has proper context,
                 # avoiding boundary artifacts between chunks.
                 ctx_start = max(0, yielded_frames - context_frames)
-                chunk_codes = mx.concatenate(
-                    all_codes[ctx_start:], axis=1
-                )
+                chunk_codes = mx.concatenate(all_codes[ctx_start:], axis=1)
                 full_waveform = self.audio_tokenizer.decode(chunk_codes)
                 full_waveform = full_waveform.squeeze(0)
 
@@ -761,17 +759,11 @@ class Model(nn.Module):
             ),
             prompt={
                 "tokens": (
-                    remaining
-                    if stream and yielded_frames > 0
-                    else len(all_codes)
+                    remaining if stream and yielded_frames > 0 else len(all_codes)
                 ),
                 "tokens-per-sec": (
                     round(
-                        (
-                            remaining
-                            if stream and yielded_frames > 0
-                            else len(all_codes)
-                        )
+                        (remaining if stream and yielded_frames > 0 else len(all_codes))
                         / processing_time,
                         2,
                     )
