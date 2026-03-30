@@ -209,12 +209,20 @@ class FlowMatchingAudioTransformer(nn.Module):
         n_steps = args.n_denoising_steps
         timesteps = [i / (n_steps - 1) for i in range(n_steps)]
 
+        llm_uncond = mx.zeros_like(llm_output)
         for step in range(n_steps - 1):
             t_val = timesteps[step]
             dt = timesteps[step + 1] - t_val
             t = mx.full((B,), t_val)
-            v_cond = self._predict_velocity(x_t, t, llm_output)
-            v_uncond = self._predict_velocity(x_t, t, mx.zeros_like(llm_output))
+
+            # Batch conditional and unconditional velocity predictions
+            # into a single forward pass (B=2) through the acoustic transformer
+            x_t_batch = mx.concatenate([x_t, x_t], axis=0)
+            t_batch = mx.concatenate([t, t], axis=0)
+            llm_batch = mx.concatenate([llm_output, llm_uncond], axis=0)
+            v_both = self._predict_velocity(x_t_batch, t_batch, llm_batch)
+            v_cond, v_uncond = v_both[:B], v_both[B:]
+
             v = args.cfg_alpha * v_cond + (1.0 - args.cfg_alpha) * v_uncond
             x_t = x_t + v * dt
 
