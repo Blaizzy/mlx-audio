@@ -33,16 +33,14 @@ class StreamingResult:
 # ---------------------------------------------------------------------------
 
 
-def sinusoids(
-    length: int, channels: int, dtype: mx.Dtype = mx.float32
-) -> mx.array:
+def sinusoids(length: int, channels: int, dtype: mx.Dtype = mx.float32) -> mx.array:
     max_timescale = 10000
     log_timescale = math.log(max_timescale) / (channels // 2 - 1)
     inv_timescales = mx.exp(-log_timescale * mx.arange(channels // 2))
     scaled_time = mx.arange(length)[:, None] * inv_timescales[None, :]
-    return mx.concatenate(
-        [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
-    ).astype(dtype)
+    return mx.concatenate([mx.sin(scaled_time), mx.cos(scaled_time)], axis=1).astype(
+        dtype
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -393,9 +391,7 @@ class Model(nn.Module):
         audio_parts = []
         for i, num_tokens in enumerate(audio_tokens_list, 1):
             part = (
-                f"Audio {i}: <|audio_bos|>"
-                + "<|AUDIO|>" * num_tokens
-                + "<|audio_eos|>"
+                f"Audio {i}: <|audio_bos|>" + "<|AUDIO|>" * num_tokens + "<|audio_eos|>"
             )
             audio_parts.append(part)
 
@@ -418,7 +414,9 @@ class Model(nn.Module):
         # Embed text tokens (audio positions get a dummy embedding — replaced below)
         is_audio = input_ids == self.audio_token_id
         text_ids = mx.where(is_audio, 0, input_ids)
-        text_embeds = self.language_model.model.embed_tokens(text_ids[None])  # (1, seq, D)
+        text_embeds = self.language_model.model.embed_tokens(
+            text_ids[None]
+        )  # (1, seq, D)
 
         # Cast audio features to embedding dtype — zero-cost if they already match.
         audio_features = audio_features.astype(text_embeds.dtype)
