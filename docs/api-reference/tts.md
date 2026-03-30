@@ -6,6 +6,15 @@ The primary entry points for loading TTS models.
 
 ### `mlx_audio.tts.utils`
 
+Example:
+
+```python
+from mlx_audio.tts import load
+
+model = load("mlx-community/outetts-0.3-500M-bf16")
+audio = model.generate("Hello world!")
+```
+
 ::: mlx_audio.tts.utils.load
     options:
       show_source: false

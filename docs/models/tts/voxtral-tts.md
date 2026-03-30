@@ -30,6 +30,38 @@ Mistral's 4B parameter multilingual text-to-speech model with 20 expressive voic
         print(result.audio_duration)
     ```
 
+## Streaming
+
+Voxtral TTS supports chunked streaming output for lower-latency playback.
+
+=== "CLI"
+
+    ```bash
+    python -m mlx_audio.tts.generate \
+        --model mlx-community/Voxtral-4B-TTS-2603-mlx-bf16 \
+        --text "Streaming speech from Voxtral TTS." \
+        --voice casual_male \
+        --stream \
+        --streaming_interval 1.5 \
+        --play
+    ```
+
+=== "Python"
+
+    ```python
+    from mlx_audio.tts.utils import load
+
+    model = load("mlx-community/Voxtral-4B-TTS-2603-mlx-bf16")
+
+    for result in model.generate(
+        text="Streaming speech from Voxtral TTS.",
+        voice="casual_male",
+        stream=True,
+        streaming_interval=1.5,
+    ):
+        print(result.is_streaming_chunk, result.is_final_chunk)
+    ```
+
 ## Available Voices
 
 ### English

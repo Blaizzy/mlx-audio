@@ -4,6 +4,15 @@
 
 ### `mlx_audio.stt.utils`
 
+Example:
+
+```python
+from mlx_audio.stt import load
+
+model = load("mlx-community/whisper-tiny-asr-fp16")
+result = model.generate(audio)
+```
+
 ::: mlx_audio.stt.utils.load
     options:
       show_source: false

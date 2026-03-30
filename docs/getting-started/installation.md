@@ -33,6 +33,7 @@ mlx-audio ships optional dependency groups so you only install what you need:
 | `tts` | Text-to-speech dependencies |
 | `stt` | Speech-to-text dependencies |
 | `sts` | Speech-to-speech dependencies |
+| `docs` | MkDocs and API reference tooling |
 | `all` | Everything (TTS + STT + STS) |
 | `dev` | Development and testing tools |
 
@@ -47,6 +48,9 @@ pip install "mlx-audio[stt]"
 
 # Everything
 pip install "mlx-audio[all]"
+
+# Documentation tooling
+pip install "mlx-audio[docs]"
 ```
 
 ## Development Setup
@@ -57,6 +61,12 @@ Clone the repository and install in editable mode with dev dependencies:
 git clone https://github.com/Blaizzy/mlx-audio.git
 cd mlx-audio
 pip install -e ".[dev]"
+```
+
+If you are working on the docs site, use:
+
+```bash
+pip install -e ".[dev,docs]"
 ```
 
 ## ffmpeg

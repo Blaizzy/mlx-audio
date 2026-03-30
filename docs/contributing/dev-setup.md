@@ -26,6 +26,12 @@ Install in editable mode with the development extras:
 pip install -e ".[dev]"
 ```
 
+For docs work, include the docs extra too:
+
+```bash
+pip install -e ".[dev,docs]"
+```
+
 ### Using uv
 
 If you use [uv](https://github.com/astral-sh/uv) for project management:
@@ -34,7 +40,15 @@ If you use [uv](https://github.com/astral-sh/uv) for project management:
 uv sync
 ```
 
-This installs all dependencies (core, dev, and optional groups) from `pyproject.toml`.
+This installs the project plus the default development group. Extras are opt-in:
+
+```bash
+# Include docs tooling
+uv sync --extra docs
+
+# Include every optional extra
+uv sync --all-extras
+```
 
 ### Optional Extras
 
@@ -50,8 +64,11 @@ pip install -e ".[stt]"
 # API server dependencies
 pip install -e ".[server]"
 
+# Docs tooling
+pip install -e ".[docs]"
+
 # Everything
-pip install -e ".[dev,tts,stt,server]"
+pip install -e ".[dev,docs,tts,stt,server]"
 ```
 
 ## Running Tests
@@ -141,7 +158,7 @@ mlx_audio.tts.generate \
 
 ```bash
 # Install docs dependencies
-pip install mkdocs-material mkdocstrings[python]
+pip install -e ".[docs]"
 
 # Serve docs locally
 mkdocs serve
@@ -150,4 +167,4 @@ mkdocs serve
 mkdocs build
 ```
 
-The docs site will be available at `http://localhost:8000`.
+The docs site will be available at `http://127.0.0.1:8000`.

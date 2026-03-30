@@ -82,6 +82,7 @@ nav:
       - Kokoro: models/tts/kokoro.md
       - Qwen3-TTS: models/tts/qwen3-tts.md
       - Voxtral TTS: models/tts/voxtral-tts.md
+      - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
       - Dia: models/tts/dia.md
       - Chatterbox: models/tts/chatterbox.md
@@ -90,6 +91,7 @@ nav:
       - Whisper: models/stt/whisper.md
       - Parakeet: models/stt/parakeet.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
+      - Qwen2-Audio: models/stt/qwen2-audio.md
     - Speech-to-Speech: models/sts/index.md
     - Voice Activity Detection: models/vad/index.md
   - Guides:

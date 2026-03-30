@@ -200,6 +200,7 @@ pytest mlx_audio/tts/tests/test_my_model.py
 1. Add a model page in `docs/models/tts/` (or `stt/`).
 2. Add the page to the `nav` section in `mkdocs.yml`.
 3. Optionally add a `README.md` inside your model directory for model-specific details.
+4. Make sure your PR includes the docs change. The docs workflow will fail if model files change without a matching docs update.
 
 ## Checklist
 
