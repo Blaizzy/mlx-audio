@@ -101,6 +101,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
 | **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
+| **KugelAudio** | SOTA 7B AR+Diffusion TTS for European languages | EN, DE, FR, ES, IT, PT, NL, PL, RU, UK, + 14 more | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
 
 ### Speech-to-Text (STT)
@@ -119,6 +120,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
 | **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+| **Qwen2-Audio** | Alibaba's multimodal audio understanding (ASR, captioning, emotion, translation) | Multiple | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
 
 
 ### Voice Activity Detection / Speaker Diarization (VAD)
@@ -356,6 +358,39 @@ python -m mlx_audio.stt.generate \
     --format json \
     --verbose
 ```
+
+### KugelAudio
+
+SOTA open-source 7B TTS model for 24 European languages, based on Microsoft VibeVoice.
+Uses a hybrid AR + Diffusion architecture (Qwen2.5 LM + SDE-DPM-Solver++ diffusion head + VAE decoder).
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("kugelaudio/kugelaudio-0-open")
+
+for result in model.generate(
+    text="Hello, welcome to MLX-Audio!",
+    cfg_scale=3.0,       # Classifier-free guidance (1.0=fast, 3.0=quality)
+    ddpm_steps=10,       # Diffusion steps (5=fast, 10=balanced, 20=max quality)
+):
+    audio = result.audio  # mx.array, 24kHz
+```
+
+The model loads directly from HuggingFace (weights are remapped automatically via `sanitize()`).
+To quantize or save in a pre-converted format:
+
+```bash
+python -m mlx_audio.convert \
+    --hf-path kugelaudio/kugelaudio-0-open \
+    --mlx-path ./kugelaudio-0-open-bf16 \
+    --dtype bfloat16
+```
+
+**Supported languages (24):** English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Russian, Ukrainian, Czech, Romanian, Hungarian, Swedish, Danish, Finnish, Norwegian, Greek, Bulgarian, Slovak, Croatian, Serbian, Turkish
+
+> **Note:** Requires ~17GB memory (7B params in bfloat16).
+> Pre-encoded voice presets (voice cloning) are not yet available in the upstream model — the model generates speech with a default voice.
 
 ### Voxtral TTS
 
