@@ -519,11 +519,11 @@ class Model(nn.Module):
         gen_time = time.time() - gen_start
         gen_tokens = len(tokens)
 
-
+        segments = [{"start": 0.0, "end": elapsed, "text": text}]
 
         return STTOutput(
             text=text,
-            segments=[],
+            segments=segments,
             prompt_tokens=prompt_tokens,
             generation_tokens=gen_tokens,
             total_tokens=prompt_tokens + gen_tokens,
