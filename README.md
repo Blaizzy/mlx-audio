@@ -103,6 +103,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
 | **KugelAudio** | SOTA 7B AR+Diffusion TTS for European languages | EN, DE, FR, ES, IT, PT, NL, PL, RU, UK, + 14 more | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
+| **LongCat-AudioDiT** | SOTA diffusion TTS in waveform latent space with voice cloning | ZH, EN | [meituan-longcat/LongCat-AudioDiT-1B](https://huggingface.co/meituan-longcat/LongCat-AudioDiT-1B) |
 
 ### Speech-to-Text (STT)
 
@@ -391,6 +392,32 @@ python -m mlx_audio.convert \
 
 > **Note:** Requires ~17GB memory (7B params in bfloat16).
 > Pre-encoded voice presets (voice cloning) are not yet available in the upstream model — the model generates speech with a default voice.
+
+### LongCat-AudioDiT
+
+SOTA diffusion-based TTS operating in the waveform latent space. Uses Conditional Flow Matching with a DiT backbone and WAV-VAE codec at 24kHz. Supports zero-shot voice cloning.
+
+```python
+from mlx_audio.tts.utils import load
+
+model = load("meituan-longcat/LongCat-AudioDiT-1B")
+
+# Zero-shot TTS
+result = next(model.generate("Hello, this is a test of AudioDiT."))
+audio = result.audio  # mx.array, 24kHz
+
+# Voice cloning (use "apg" guidance for best similarity)
+result = next(model.generate(
+    text="Today is warm turning to rain.",
+    ref_audio="reference.wav",
+    ref_text="Transcript of the reference audio.",
+    guidance_method="apg",
+    cfg_strength=4.0,
+    steps=16,
+))
+```
+
+See the [LongCat-AudioDiT README](mlx_audio/tts/models/longcat_audiodit/README.md) for all parameters and CLI usage.
 
 ### Voxtral TTS
 
