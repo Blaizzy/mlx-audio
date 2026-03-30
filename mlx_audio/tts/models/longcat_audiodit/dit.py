@@ -15,7 +15,6 @@ import mlx.nn as nn
 
 from .config import ModelConfig
 
-
 # ---------------------------------------------------------------------------
 # Normalization
 # ---------------------------------------------------------------------------
@@ -29,7 +28,9 @@ class RMSNorm(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x_float = x.astype(mx.float32)
-        normed = x_float * mx.rsqrt(mx.mean(x_float ** 2, axis=-1, keepdims=True) + self.eps)
+        normed = x_float * mx.rsqrt(
+            mx.mean(x_float**2, axis=-1, keepdims=True) + self.eps
+        )
         return normed.astype(x.dtype) * self.weight
 
 
@@ -39,7 +40,9 @@ class RMSNorm(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_position_embeddings: int = 2048, base: float = 100000.0):
+    def __init__(
+        self, dim: int, max_position_embeddings: int = 2048, base: float = 100000.0
+    ):
         super().__init__()
         self.dim = dim
         self.max_position_embeddings = max_position_embeddings
@@ -49,7 +52,9 @@ class RotaryEmbedding(nn.Module):
         self._cached_len = 0
 
     def _build(self, seq_len: int):
-        inv_freq = 1.0 / (self.base ** (mx.arange(0, self.dim, 2).astype(mx.float32) / self.dim))
+        inv_freq = 1.0 / (
+            self.base ** (mx.arange(0, self.dim, 2).astype(mx.float32) / self.dim)
+        )
         t = mx.arange(seq_len).astype(mx.float32)
         freqs = mx.outer(t, inv_freq)
         emb = mx.concatenate([freqs, freqs], axis=-1)
@@ -72,7 +77,9 @@ def apply_rotary_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
     # x: (B, heads, L, dim), cos/sin: (L, dim)
     cos = cos[None, None]  # (1, 1, L, dim)
     sin = sin[None, None]
-    return (x.astype(mx.float32) * cos + _rotate_half(x).astype(mx.float32) * sin).astype(x.dtype)
+    return (
+        x.astype(mx.float32) * cos + _rotate_half(x).astype(mx.float32) * sin
+    ).astype(x.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +100,15 @@ class GRN(nn.Module):
 
 
 class ConvNeXtV2Block(nn.Module):
-    def __init__(self, dim: int, intermediate_dim: int, dilation: int = 1, kernel_size: int = 7, bias: bool = True, eps: float = 1e-6):
+    def __init__(
+        self,
+        dim: int,
+        intermediate_dim: int,
+        dilation: int = 1,
+        kernel_size: int = 7,
+        bias: bool = True,
+        eps: float = 1e-6,
+    ):
         super().__init__()
         padding = (dilation * (kernel_size - 1)) // 2
         self.dw_padding = padding
@@ -110,8 +125,14 @@ class ConvNeXtV2Block(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         residual = x
         # Depthwise conv: (B, L, C) with groups=C
-        x = mx.conv1d(x, self.dwconv_weight, stride=1, padding=self.dw_padding,
-                       dilation=self.dw_dilation, groups=self.channels)
+        x = mx.conv1d(
+            x,
+            self.dwconv_weight,
+            stride=1,
+            padding=self.dw_padding,
+            dilation=self.dw_dilation,
+            groups=self.channels,
+        )
         x = x + self.dwconv_bias
         x = self.norm(x)
         x = nn.silu(self.pwconv1(x))
@@ -207,7 +228,9 @@ def _layer_norm(x: mx.array, eps: float = 1e-6) -> mx.array:
     return normed.astype(x.dtype)
 
 
-def _modulate(x: mx.array, scale: mx.array, shift: mx.array, eps: float = 1e-6) -> mx.array:
+def _modulate(
+    x: mx.array, scale: mx.array, shift: mx.array, eps: float = 1e-6
+) -> mx.array:
     """LayerNorm (no affine) + modulate."""
     x = _layer_norm(x, eps)
     if scale.ndim == 2:
@@ -221,7 +244,15 @@ def _modulate(x: mx.array, scale: mx.array, shift: mx.array, eps: float = 1e-6) 
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim: int, heads: int, dim_head: int, bias: bool = True, qk_norm: bool = False, eps: float = 1e-6):
+    def __init__(
+        self,
+        dim: int,
+        heads: int,
+        dim_head: int,
+        bias: bool = True,
+        qk_norm: bool = False,
+        eps: float = 1e-6,
+    ):
         super().__init__()
         self.heads = heads
         self.inner_dim = dim_head * heads
@@ -268,7 +299,16 @@ class SelfAttention(nn.Module):
 
 
 class CrossAttention(nn.Module):
-    def __init__(self, q_dim: int, kv_dim: int, heads: int, dim_head: int, bias: bool = True, qk_norm: bool = False, eps: float = 1e-6):
+    def __init__(
+        self,
+        q_dim: int,
+        kv_dim: int,
+        heads: int,
+        dim_head: int,
+        bias: bool = True,
+        qk_norm: bool = False,
+        eps: float = 1e-6,
+    ):
         super().__init__()
         self.heads = heads
         self.inner_dim = dim_head * heads
@@ -282,9 +322,13 @@ class CrossAttention(nn.Module):
         self.to_out = nn.Linear(self.inner_dim, q_dim, bias=bias)
 
     def __call__(
-        self, x: mx.array, cond: mx.array,
-        mask: mx.array = None, cond_mask: mx.array = None,
-        rope=None, cond_rope=None,
+        self,
+        x: mx.array,
+        cond: mx.array,
+        mask: mx.array = None,
+        cond_mask: mx.array = None,
+        rope=None,
+        cond_rope=None,
     ) -> mx.array:
         B = x.shape[0]
         head_dim = self.inner_dim // self.heads
@@ -329,7 +373,10 @@ class FeedForward(nn.Module):
     def __init__(self, dim: int, mult: float = 4.0, bias: bool = True):
         super().__init__()
         inner_dim = int(dim * mult)
-        self.ff = [nn.Linear(dim, inner_dim, bias=bias), nn.Linear(inner_dim, dim, bias=bias)]
+        self.ff = [
+            nn.Linear(dim, inner_dim, bias=bias),
+            nn.Linear(inner_dim, dim, bias=bias),
+        ]
 
     def __call__(self, x: mx.array) -> mx.array:
         return self.ff[1](nn.gelu_approx(self.ff[0](x)))
@@ -356,14 +403,24 @@ class DiTBlock(nn.Module):
             self.adaln_scale_shift = mx.zeros((dim * 6,))
 
         self.self_attn = SelfAttention(
-            dim=dim, heads=heads, dim_head=dim_head, bias=bias, qk_norm=config.dit_qk_norm, eps=eps,
+            dim=dim,
+            heads=heads,
+            dim_head=dim_head,
+            bias=bias,
+            qk_norm=config.dit_qk_norm,
+            eps=eps,
         )
 
         self.use_cross_attn = config.dit_cross_attn
         if config.dit_cross_attn:
             self.cross_attn = CrossAttention(
-                q_dim=dim, kv_dim=dim, heads=heads, dim_head=dim_head,
-                bias=bias, qk_norm=config.dit_qk_norm, eps=eps,
+                q_dim=dim,
+                kv_dim=dim,
+                heads=heads,
+                dim_head=dim_head,
+                bias=bias,
+                qk_norm=config.dit_qk_norm,
+                eps=eps,
             )
             if config.dit_cross_attn_norm:
                 self.cross_attn_norm = nn.LayerNorm(dim, eps=eps)
@@ -375,14 +432,21 @@ class DiTBlock(nn.Module):
         self.ffn = FeedForward(dim=dim, mult=config.dit_ff_mult, bias=bias)
 
     def __call__(
-        self, x: mx.array, t: mx.array, cond: mx.array,
-        mask: mx.array = None, cond_mask: mx.array = None,
-        rope=None, cond_rope=None,
+        self,
+        x: mx.array,
+        t: mx.array,
+        cond: mx.array,
+        mask: mx.array = None,
+        cond_mask: mx.array = None,
+        rope=None,
+        cond_rope=None,
         adaln_global_out: mx.array = None,
     ) -> mx.array:
         if self.adaln_type == "local" and adaln_global_out is None:
-            if hasattr(self, '_adaln_use_text_cond') and self._adaln_use_text_cond:
-                cond_mean = mx.sum(cond, axis=1) / mx.sum(cond_mask.astype(mx.float32), axis=1, keepdims=True)
+            if hasattr(self, "_adaln_use_text_cond") and self._adaln_use_text_cond:
+                cond_mean = mx.sum(cond, axis=1) / mx.sum(
+                    cond_mask.astype(mx.float32), axis=1, keepdims=True
+                )
                 norm_cond = t + cond_mean
             else:
                 norm_cond = t
@@ -390,7 +454,9 @@ class DiTBlock(nn.Module):
         else:
             adaln_out = adaln_global_out + self.adaln_scale_shift[None, :]
 
-        gate_sa, scale_sa, shift_sa, gate_ffn, scale_ffn, shift_ffn = mx.split(adaln_out, 6, axis=-1)
+        gate_sa, scale_sa, shift_sa, gate_ffn, scale_ffn, shift_ffn = mx.split(
+            adaln_out, 6, axis=-1
+        )
 
         # Self-attention
         norm = _modulate(x, scale_sa, shift_sa)
@@ -402,8 +468,19 @@ class DiTBlock(nn.Module):
         # Cross-attention
         if self.use_cross_attn:
             x_norm = self.cross_attn_norm(x) if self.cross_attn_norm is not None else x
-            c_norm = self.cross_attn_norm_c(cond) if self.cross_attn_norm_c is not None else cond
-            cross_out = self.cross_attn(x=x_norm, cond=c_norm, mask=mask, cond_mask=cond_mask, rope=rope, cond_rope=cond_rope)
+            c_norm = (
+                self.cross_attn_norm_c(cond)
+                if self.cross_attn_norm_c is not None
+                else cond
+            )
+            cross_out = self.cross_attn(
+                x=x_norm,
+                cond=c_norm,
+                mask=mask,
+                cond_mask=cond_mask,
+                rope=rope,
+                cond_rope=cond_rope,
+            )
             x = x + cross_out
 
         # FFN
@@ -510,8 +587,14 @@ class AudioDiTTransformer(nn.Module):
         hidden_state = None
         for i, block in enumerate(self.blocks):
             x = block(
-                x=x, t=t, cond=text, mask=mask, cond_mask=cond_mask,
-                rope=rope, cond_rope=cond_rope, adaln_global_out=adaln_mlp_out,
+                x=x,
+                t=t,
+                cond=text,
+                mask=mask,
+                cond_mask=cond_mask,
+                rope=rope,
+                cond_rope=cond_rope,
+                adaln_global_out=adaln_mlp_out,
             )
             if return_ith_layer == i + 1:
                 hidden_state = mx.array(x)

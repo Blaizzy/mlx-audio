@@ -4158,10 +4158,13 @@ class TestAudioDiTModel(unittest.TestCase):
             sample_rate=24000,
             scale=0.71,
         )
-       
+
     def setUp(self):
+        from mlx_audio.tts.models.longcat_audiodit.config import (
+            ModelConfig,
+            TextEncoderConfig,
+        )
         from mlx_audio.tts.models.longcat_audiodit.longcat_audiodit import Model
-        from mlx_audio.tts.models.longcat_audiodit.config import ModelConfig, TextEncoderConfig
 
         self.cfg = ModelConfig(
             dit_dim=16,
@@ -4262,7 +4265,9 @@ class TestAudioDiTModel(unittest.TestCase):
             latent_cond=mx.zeros((B, S, self.cfg.latent_dim)),
         )
         mx.eval(out["last_hidden_state"])
-        self.assertEqual(tuple(out["last_hidden_state"].shape), (B, S, self.cfg.latent_dim))
+        self.assertEqual(
+            tuple(out["last_hidden_state"].shape), (B, S, self.cfg.latent_dim)
+        )
         self.assertIsNotNone(out["hidden_state"])
 
     def test_encode_prompt_audio(self):
@@ -4283,7 +4288,9 @@ class TestAudioDiTModel(unittest.TestCase):
         sanitized = self.model.sanitize(weights)
         self.assertIn("vae.encoder.layers.0.weight", sanitized)
         self.assertNotIn("vae.encoder.layers.0.weight_v", sanitized)
-        self.assertEqual(tuple(sanitized["vae.encoder.layers.0.weight"].shape), (4, 3, 1))
+        self.assertEqual(
+            tuple(sanitized["vae.encoder.layers.0.weight"].shape), (4, 3, 1)
+        )
 
     def test_sanitize_conv_transpose_weight_norm(self):
         weights = {
@@ -4298,8 +4305,12 @@ class TestAudioDiTModel(unittest.TestCase):
     def test_sanitize_text_encoder_remapping(self):
         weights = {
             "text_encoder.encoder.embed_tokens.weight": mx.zeros((32, 8)),
-            "text_encoder.encoder.block.0.layer.0.SelfAttention.q.weight": mx.zeros((4, 8)),
-            "text_encoder.encoder.block.0.layer.1.DenseReluDense.wi_0.weight": mx.zeros((16, 8)),
+            "text_encoder.encoder.block.0.layer.0.SelfAttention.q.weight": mx.zeros(
+                (4, 8)
+            ),
+            "text_encoder.encoder.block.0.layer.1.DenseReluDense.wi_0.weight": mx.zeros(
+                (16, 8)
+            ),
         }
         sanitized = self.model.sanitize(weights)
         self.assertIn("text_encoder.shared.weight", sanitized)

@@ -13,7 +13,6 @@ import numpy as np
 
 from .config import VaeConfig
 
-
 # ---------------------------------------------------------------------------
 # Activations
 # ---------------------------------------------------------------------------
@@ -72,7 +71,13 @@ class Conv1d(nn.Module):
             self.bias = mx.zeros((out_channels,))
 
     def __call__(self, x: mx.array) -> mx.array:
-        y = mx.conv1d(x, self.weight, stride=self.stride, padding=self.padding, dilation=self.dilation)
+        y = mx.conv1d(
+            x,
+            self.weight,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+        )
         if "bias" in self:
             y = y + self.bias
         return y
@@ -98,7 +103,9 @@ class ConvTranspose1d(nn.Module):
             self.bias = mx.zeros((out_channels,))
 
     def __call__(self, x: mx.array) -> mx.array:
-        y = mx.conv_transpose1d(x, self.weight, stride=self.stride, padding=self.padding)
+        y = mx.conv_transpose1d(
+            x, self.weight, stride=self.stride, padding=self.padding
+        )
         if "bias" in self:
             y = y + self.bias
         return y
@@ -161,12 +168,25 @@ class UpsampleShortcut(nn.Module):
 
 
 class VaeResidualUnit(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, dilation: int, kernel_size: int = 7, use_snake: bool = True):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dilation: int,
+        kernel_size: int = 7,
+        use_snake: bool = True,
+    ):
         super().__init__()
         padding = (dilation * (kernel_size - 1)) // 2
         self.layers = [
             _get_activation(use_snake, out_channels),
-            Conv1d(in_channels, out_channels, kernel_size, dilation=dilation, padding=padding),
+            Conv1d(
+                in_channels,
+                out_channels,
+                kernel_size,
+                dilation=dilation,
+                padding=padding,
+            ),
             _get_activation(use_snake, out_channels),
             Conv1d(out_channels, out_channels, kernel_size=1),
         ]
@@ -184,16 +204,33 @@ class VaeResidualUnit(nn.Module):
 
 
 class VaeEncoderBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, stride: int, use_snake: bool = True, downsample_shortcut: str = "none"):
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        stride: int,
+        use_snake: bool = True,
+        downsample_shortcut: str = "none",
+    ):
         super().__init__()
         self.layers = [
             VaeResidualUnit(in_ch, in_ch, dilation=1, use_snake=use_snake),
             VaeResidualUnit(in_ch, in_ch, dilation=3, use_snake=use_snake),
             VaeResidualUnit(in_ch, in_ch, dilation=9, use_snake=use_snake),
             _get_activation(use_snake, in_ch),
-            Conv1d(in_ch, out_ch, kernel_size=2 * stride, stride=stride, padding=math.ceil(stride / 2)),
+            Conv1d(
+                in_ch,
+                out_ch,
+                kernel_size=2 * stride,
+                stride=stride,
+                padding=math.ceil(stride / 2),
+            ),
         ]
-        self.res = DownsampleShortcut(in_ch, out_ch, stride) if downsample_shortcut == "averaging" else None
+        self.res = (
+            DownsampleShortcut(in_ch, out_ch, stride)
+            if downsample_shortcut == "averaging"
+            else None
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
         h = x
@@ -205,16 +242,33 @@ class VaeEncoderBlock(nn.Module):
 
 
 class VaeDecoderBlock(nn.Module):
-    def __init__(self, in_ch: int, out_ch: int, stride: int, use_snake: bool = True, upsample_shortcut: str = "none"):
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        stride: int,
+        use_snake: bool = True,
+        upsample_shortcut: str = "none",
+    ):
         super().__init__()
         self.layers = [
             _get_activation(use_snake, in_ch),
-            ConvTranspose1d(in_ch, out_ch, kernel_size=2 * stride, stride=stride, padding=math.ceil(stride / 2)),
+            ConvTranspose1d(
+                in_ch,
+                out_ch,
+                kernel_size=2 * stride,
+                stride=stride,
+                padding=math.ceil(stride / 2),
+            ),
             VaeResidualUnit(out_ch, out_ch, dilation=1, use_snake=use_snake),
             VaeResidualUnit(out_ch, out_ch, dilation=3, use_snake=use_snake),
             VaeResidualUnit(out_ch, out_ch, dilation=9, use_snake=use_snake),
         ]
-        self.res = UpsampleShortcut(in_ch, out_ch, stride) if upsample_shortcut == "duplicating" else None
+        self.res = (
+            UpsampleShortcut(in_ch, out_ch, stride)
+            if upsample_shortcut == "duplicating"
+            else None
+        )
 
     def __call__(self, x: mx.array) -> mx.array:
         h = x
@@ -235,18 +289,29 @@ class VaeEncoder(nn.Module):
         super().__init__()
         c_mults = [1] + config.c_mults
         ch = config.channels
-        self.layers = [Conv1d(config.in_channels, c_mults[0] * ch, kernel_size=7, padding=3)]
+        self.layers = [
+            Conv1d(config.in_channels, c_mults[0] * ch, kernel_size=7, padding=3)
+        ]
         for i in range(len(c_mults) - 1):
             self.layers.append(
                 VaeEncoderBlock(
-                    c_mults[i] * ch, c_mults[i + 1] * ch, config.strides[i],
-                    use_snake=config.use_snake, downsample_shortcut=config.downsample_shortcut,
+                    c_mults[i] * ch,
+                    c_mults[i + 1] * ch,
+                    config.strides[i],
+                    use_snake=config.use_snake,
+                    downsample_shortcut=config.downsample_shortcut,
                 )
             )
-        self.layers.append(Conv1d(c_mults[-1] * ch, config.encoder_latent_dim, kernel_size=3, padding=1))
+        self.layers.append(
+            Conv1d(
+                c_mults[-1] * ch, config.encoder_latent_dim, kernel_size=3, padding=1
+            )
+        )
 
         if config.out_shortcut == "averaging":
-            self.shortcut = DownsampleShortcut(c_mults[-1] * ch, config.encoder_latent_dim, 1)
+            self.shortcut = DownsampleShortcut(
+                c_mults[-1] * ch, config.encoder_latent_dim, 1
+            )
         else:
             self.shortcut = None
 
@@ -271,16 +336,29 @@ class VaeDecoder(nn.Module):
         else:
             self.shortcut = None
 
-        self.layers = [Conv1d(config.latent_dim, c_mults[-1] * ch, kernel_size=7, padding=3)]
+        self.layers = [
+            Conv1d(config.latent_dim, c_mults[-1] * ch, kernel_size=7, padding=3)
+        ]
         for i in range(len(c_mults) - 1, 0, -1):
             self.layers.append(
                 VaeDecoderBlock(
-                    c_mults[i] * ch, c_mults[i - 1] * ch, config.strides[i - 1],
-                    use_snake=config.use_snake, upsample_shortcut=config.upsample_shortcut,
+                    c_mults[i] * ch,
+                    c_mults[i - 1] * ch,
+                    config.strides[i - 1],
+                    use_snake=config.use_snake,
+                    upsample_shortcut=config.upsample_shortcut,
                 )
             )
         self.layers.append(_get_activation(config.use_snake, c_mults[0] * ch))
-        self.layers.append(Conv1d(c_mults[0] * ch, config.in_channels, kernel_size=7, padding=3, bias=False))
+        self.layers.append(
+            Conv1d(
+                c_mults[0] * ch,
+                config.in_channels,
+                kernel_size=7,
+                padding=3,
+                bias=False,
+            )
+        )
         self.layers.append(Identity())  # placeholder for final_tanh=False
 
     def __call__(self, x: mx.array) -> mx.array:

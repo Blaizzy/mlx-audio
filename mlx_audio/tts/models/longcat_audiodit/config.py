@@ -73,16 +73,22 @@ class ModelConfig(BaseModelArgs):
 
     def __post_init__(self):
         if isinstance(self.vae_config, dict):
-            self.vae_config = VaeConfig(**{
-                k: v for k, v in self.vae_config.items()
-                if k in VaeConfig.__dataclass_fields__
-            })
+            self.vae_config = VaeConfig(
+                **{
+                    k: v
+                    for k, v in self.vae_config.items()
+                    if k in VaeConfig.__dataclass_fields__
+                }
+            )
         if self.vae_config is None:
             self.vae_config = VaeConfig()
         if isinstance(self.text_encoder_config, dict):
-            self.text_encoder_config = TextEncoderConfig(**{
-                k: v for k, v in self.text_encoder_config.items()
-                if k in TextEncoderConfig.__dataclass_fields__
-            })
+            self.text_encoder_config = TextEncoderConfig(
+                **{
+                    k: v
+                    for k, v in self.text_encoder_config.items()
+                    if k in TextEncoderConfig.__dataclass_fields__
+                }
+            )
         if self.text_encoder_config is None:
             self.text_encoder_config = TextEncoderConfig()

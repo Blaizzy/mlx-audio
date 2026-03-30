@@ -22,7 +22,6 @@ from .dit import AudioDiTTransformer
 from .text_encoder import UMT5Encoder
 from .vae import AudioDiTVae
 
-
 # ---------------------------------------------------------------------------
 # Duration estimation heuristic
 # ---------------------------------------------------------------------------
@@ -33,8 +32,8 @@ ZH_DUR_PER_CHAR = 0.21
 
 def _normalize_text(text: str) -> str:
     text = text.lower()
-    text = re.sub(r'["""\u2018\u2019]', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'["""\u2018\u2019]', " ", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
@@ -79,7 +78,14 @@ def _project(v0: mx.array, v1: mx.array):
     return v0_parallel, v0_orthogonal
 
 
-def _apg_forward(pred_cond, pred_uncond, guidance_scale, momentum_buffer=None, eta=0.0, norm_threshold=2.5):
+def _apg_forward(
+    pred_cond,
+    pred_uncond,
+    guidance_scale,
+    momentum_buffer=None,
+    eta=0.0,
+    norm_threshold=2.5,
+):
     diff = pred_cond - pred_uncond
     if momentum_buffer is not None:
         momentum_buffer.update(diff)
@@ -204,7 +210,9 @@ class Model(nn.Module):
         repa_layer = self.config.repa_dit_layer
 
         # Tokenize
-        tokenizer = transformers.AutoTokenizer.from_pretrained(self.config.text_encoder_model)
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            self.config.text_encoder_model
+        )
 
         text = _normalize_text(text)
         no_prompt = ref_audio is None
@@ -227,8 +235,14 @@ class Model(nn.Module):
 
         # Prompt audio encoding
         if not no_prompt:
-            prompt_audio_mx = mx.array(np.array(ref_audio)) if not isinstance(ref_audio, mx.array) else ref_audio
-            prompt_latent, prompt_dur = self.encode_prompt_audio(prompt_audio_mx[None] if prompt_audio_mx.ndim < 3 else prompt_audio_mx)
+            prompt_audio_mx = (
+                mx.array(np.array(ref_audio))
+                if not isinstance(ref_audio, mx.array)
+                else ref_audio
+            )
+            prompt_latent, prompt_dur = self.encode_prompt_audio(
+                prompt_audio_mx[None] if prompt_audio_mx.ndim < 3 else prompt_audio_mx
+            )
         else:
             prompt_latent = mx.zeros((batch, 0, self.config.latent_dim))
             prompt_dur = 0
@@ -246,7 +260,9 @@ class Model(nn.Module):
 
         # Masks
         mask = mx.arange(total_duration)[None, :] < mx.array([total_duration])
-        text_mask = mx.arange(text_condition.shape[1])[None, :] < text_condition_len[:, None]
+        text_mask = (
+            mx.arange(text_condition.shape[1])[None, :] < text_condition_len[:, None]
+        )
 
         # Conditioning
         neg_text = mx.zeros_like(text_condition)
@@ -260,7 +276,9 @@ class Model(nn.Module):
             empty_latent_cond = latent_cond
 
         # APG buffer
-        apg_buffer = _MomentumBuffer(momentum=-0.3) if guidance_method == "apg" else None
+        apg_buffer = (
+            _MomentumBuffer(momentum=-0.3) if guidance_method == "apg" else None
+        )
 
         # Initial noise
         y = mx.random.normal((batch, total_duration, self.config.latent_dim))
@@ -277,13 +295,20 @@ class Model(nn.Module):
 
             # Set prompt region
             if prompt_dur > 0:
-                y_prompt = prompt_noise * (1 - t_val) + latent_cond[:, :prompt_dur] * t_val
+                y_prompt = (
+                    prompt_noise * (1 - t_val) + latent_cond[:, :prompt_dur] * t_val
+                )
                 y = mx.concatenate([y_prompt, y[:, prompt_dur:]], axis=1)
 
             output = self.transformer(
-                x=y, text=text_condition, text_len=text_condition_len, time=t,
-                mask=mask, cond_mask=text_mask,
-                return_ith_layer=repa_layer, latent_cond=latent_cond,
+                x=y,
+                text=text_condition,
+                text_len=text_condition_len,
+                time=t,
+                mask=mask,
+                cond_mask=text_mask,
+                return_ith_layer=repa_layer,
+                latent_cond=latent_cond,
             )
             pred = output["last_hidden_state"]
 
@@ -291,12 +316,20 @@ class Model(nn.Module):
                 # Null forward for guidance
                 y_null = mx.array(y)
                 if prompt_dur > 0:
-                    y_null = mx.concatenate([mx.zeros_like(y_null[:, :prompt_dur]), y_null[:, prompt_dur:]], axis=1)
+                    y_null = mx.concatenate(
+                        [mx.zeros_like(y_null[:, :prompt_dur]), y_null[:, prompt_dur:]],
+                        axis=1,
+                    )
 
                 null_output = self.transformer(
-                    x=y_null, text=neg_text, text_len=text_condition_len, time=t,
-                    mask=mask, cond_mask=text_mask,
-                    return_ith_layer=repa_layer, latent_cond=empty_latent_cond,
+                    x=y_null,
+                    text=neg_text,
+                    text_len=text_condition_len,
+                    time=t,
+                    mask=mask,
+                    cond_mask=text_mask,
+                    return_ith_layer=repa_layer,
+                    latent_cond=empty_latent_cond,
                 )
                 null_pred = null_output["last_hidden_state"]
 
@@ -309,7 +342,14 @@ class Model(nn.Module):
                     null_s = null_pred[:, prompt_dur:]
                     pred_sample = x_s + (1 - t_val) * pred_s
                     null_sample = x_s + (1 - t_val) * null_s
-                    out = _apg_forward(pred_sample, null_sample, cfg_strength, apg_buffer, eta=0.5, norm_threshold=0.0)
+                    out = _apg_forward(
+                        pred_sample,
+                        null_sample,
+                        cfg_strength,
+                        apg_buffer,
+                        eta=0.5,
+                        norm_threshold=0.0,
+                    )
                     out = (out - x_s) / (1 - t_val)
                     pred = mx.pad(out, [(0, 0), (prompt_dur, 0), (0, 0)])
 
@@ -337,7 +377,10 @@ class Model(nn.Module):
             audio_duration=f"{int(audio_duration // 3600):02d}:{int((audio_duration % 3600) // 60):02d}:{audio_duration % 60:06.3f}",
             real_time_factor=processing_time / max(audio_duration, 1e-6),
             prompt={"tokens": 0, "tokens-per-sec": 0},
-            audio_samples={"samples": num_samples, "samples-per-sec": num_samples / max(processing_time, 1e-6)},
+            audio_samples={
+                "samples": num_samples,
+                "samples-per-sec": num_samples / max(processing_time, 1e-6),
+            },
             processing_time_seconds=processing_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
         )
@@ -347,12 +390,12 @@ class Model(nn.Module):
         sanitized = {}
 
         # Collect weight_v/weight_g pairs for reconstruction
-        weight_v_keys = [k for k in weights if k.endswith('.weight_v')]
+        weight_v_keys = [k for k in weights if k.endswith(".weight_v")]
         processed = set()
 
         for wv_key in weight_v_keys:
-            base = wv_key[:-len('.weight_v')]
-            wg_key = base + '.weight_g'
+            base = wv_key[: -len(".weight_v")]
+            wg_key = base + ".weight_g"
             if wg_key not in weights:
                 continue
 
@@ -361,7 +404,9 @@ class Model(nn.Module):
 
             # Determine if this is ConvTranspose1d
             # ConvTranspose1d is at decoder.layers.{block}.layers.1
-            is_conv_transpose = bool(re.search(r'vae\.decoder\.layers\.\d+\.layers\.1\.weight', wv_key))
+            is_conv_transpose = bool(
+                re.search(r"vae\.decoder\.layers\.\d+\.layers\.1\.weight", wv_key)
+            )
 
             if weight_v.ndim == 3:
                 # Reconstruct weight from weight_norm: w = g * v / ||v||
@@ -369,7 +414,10 @@ class Model(nn.Module):
                     # PyTorch ConvTranspose1d: (in_ch, out_ch, ksize)
                     # norm over dims 1,2 (out_ch and ksize)
                     norm_axes = (1, 2)
-                    norm = mx.sqrt(mx.sum(weight_v * weight_v, axis=norm_axes, keepdims=True) + 1e-12)
+                    norm = mx.sqrt(
+                        mx.sum(weight_v * weight_v, axis=norm_axes, keepdims=True)
+                        + 1e-12
+                    )
                     weight = weight_g * weight_v / norm
                     # Transpose: (in_ch, out_ch, ksize) -> (out_ch, ksize, in_ch)
                     weight = weight.transpose(1, 2, 0)
@@ -377,14 +425,17 @@ class Model(nn.Module):
                     # PyTorch Conv1d: (out_ch, in_ch, ksize)
                     # norm over dims 1,2 (in_ch and ksize)
                     norm_axes = (1, 2)
-                    norm = mx.sqrt(mx.sum(weight_v * weight_v, axis=norm_axes, keepdims=True) + 1e-12)
+                    norm = mx.sqrt(
+                        mx.sum(weight_v * weight_v, axis=norm_axes, keepdims=True)
+                        + 1e-12
+                    )
                     weight = weight_g * weight_v / norm
                     # Transpose: (out_ch, in_ch, ksize) -> (out_ch, ksize, in_ch)
                     weight = weight.transpose(0, 2, 1)
 
-                sanitized[base + '.weight'] = weight
+                sanitized[base + ".weight"] = weight
             else:
-                sanitized[base + '.weight'] = weight_v
+                sanitized[base + ".weight"] = weight_v
 
             processed.add(wv_key)
             processed.add(wg_key)
@@ -397,8 +448,10 @@ class Model(nn.Module):
             new_key = key
 
             # --- Text encoder remapping ---
-            if new_key.startswith('text_encoder.encoder.embed_tokens.'):
-                new_key = new_key.replace('text_encoder.encoder.embed_tokens.', 'text_encoder.shared.')
+            if new_key.startswith("text_encoder.encoder.embed_tokens."):
+                new_key = new_key.replace(
+                    "text_encoder.encoder.embed_tokens.", "text_encoder.shared."
+                )
 
             # T5 block layer remapping:
             # HF: block.{i}.layer.0.SelfAttention -> block.{i}.SelfAttention
@@ -406,46 +459,49 @@ class Model(nn.Module):
             # HF: block.{i}.layer.1.DenseReluDense -> block.{i}.DenseReluDense
             # HF: block.{i}.layer.1.layer_norm -> block.{i}.layer_norm_ff
             new_key = re.sub(
-                r'text_encoder\.encoder\.block\.(\d+)\.layer\.0\.SelfAttention\.',
-                r'text_encoder.block.\1.SelfAttention.',
+                r"text_encoder\.encoder\.block\.(\d+)\.layer\.0\.SelfAttention\.",
+                r"text_encoder.block.\1.SelfAttention.",
                 new_key,
             )
             new_key = re.sub(
-                r'text_encoder\.encoder\.block\.(\d+)\.layer\.0\.layer_norm\.',
-                r'text_encoder.block.\1.layer_norm_sa.',
+                r"text_encoder\.encoder\.block\.(\d+)\.layer\.0\.layer_norm\.",
+                r"text_encoder.block.\1.layer_norm_sa.",
                 new_key,
             )
             new_key = re.sub(
-                r'text_encoder\.encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.',
-                r'text_encoder.block.\1.DenseReluDense.',
+                r"text_encoder\.encoder\.block\.(\d+)\.layer\.1\.DenseReluDense\.",
+                r"text_encoder.block.\1.DenseReluDense.",
                 new_key,
             )
             new_key = re.sub(
-                r'text_encoder\.encoder\.block\.(\d+)\.layer\.1\.layer_norm\.',
-                r'text_encoder.block.\1.layer_norm_ff.',
+                r"text_encoder\.encoder\.block\.(\d+)\.layer\.1\.layer_norm\.",
+                r"text_encoder.block.\1.layer_norm_ff.",
                 new_key,
             )
-            new_key = new_key.replace('text_encoder.encoder.final_layer_norm.', 'text_encoder.final_layer_norm.')
+            new_key = new_key.replace(
+                "text_encoder.encoder.final_layer_norm.",
+                "text_encoder.final_layer_norm.",
+            )
 
             # --- Transformer Sequential index remapping ---
             # Embedder: proj.0 -> proj.0, proj.2 -> proj.1
-            new_key = re.sub(r'\.proj\.2\.', '.proj.1.', new_key)
+            new_key = re.sub(r"\.proj\.2\.", ".proj.1.", new_key)
             # TimestepEmbedding: time_mlp.0 -> time_mlp.0, time_mlp.2 -> time_mlp.1
-            new_key = re.sub(r'\.time_mlp\.2\.', '.time_mlp.1.', new_key)
+            new_key = re.sub(r"\.time_mlp\.2\.", ".time_mlp.1.", new_key)
             # AdaLNMLP: mlp.1 -> mlp.0
-            new_key = re.sub(r'\.mlp\.1\.', '.mlp.0.', new_key)
+            new_key = re.sub(r"\.mlp\.1\.", ".mlp.0.", new_key)
             # Attention to_out: to_out.0 -> to_out
-            new_key = re.sub(r'\.to_out\.0\.', '.to_out.', new_key)
+            new_key = re.sub(r"\.to_out\.0\.", ".to_out.", new_key)
             # FeedForward: ff.3 -> ff.1
-            new_key = re.sub(r'\.ff\.3\.', '.ff.1.', new_key)
+            new_key = re.sub(r"\.ff\.3\.", ".ff.1.", new_key)
 
             # --- ConvNeXtV2 depthwise conv weight ---
             # dwconv.weight: (dim, 1, ksize) -> (dim, ksize, 1) for channels-last
-            if 'dwconv.weight' in new_key and value.ndim == 3:
+            if "dwconv.weight" in new_key and value.ndim == 3:
                 value = value.transpose(0, 2, 1)
-                new_key = new_key.replace('.dwconv.weight', '.dwconv_weight')
-            elif 'dwconv.bias' in new_key:
-                new_key = new_key.replace('.dwconv.bias', '.dwconv_bias')
+                new_key = new_key.replace(".dwconv.weight", ".dwconv_weight")
+            elif "dwconv.bias" in new_key:
+                new_key = new_key.replace(".dwconv.bias", ".dwconv_bias")
 
             # --- Handle standalone Conv1d weights (non weight-normed) ---
             # These might be in the ConvNeXtV2 dwconv or other places

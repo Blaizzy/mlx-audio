@@ -49,7 +49,9 @@ class T5DenseActDense(nn.Module):
 
 
 class T5Attention(nn.Module):
-    def __init__(self, config: TextEncoderConfig, has_relative_attention_bias: bool = False):
+    def __init__(
+        self, config: TextEncoderConfig, has_relative_attention_bias: bool = False
+    ):
         super().__init__()
         self.has_relative_attention_bias = has_relative_attention_bias
         self.relative_attention_num_buckets = config.relative_attention_num_buckets
@@ -78,10 +80,15 @@ class T5Attention(nn.Module):
         relative_buckets = mx.zeros(relative_position.shape, dtype=mx.int32)
         if bidirectional:
             num_buckets //= 2
-            relative_buckets = relative_buckets + (relative_position > 0).astype(mx.int32) * num_buckets
+            relative_buckets = (
+                relative_buckets
+                + (relative_position > 0).astype(mx.int32) * num_buckets
+            )
             relative_position = mx.abs(relative_position)
         else:
-            relative_position = -mx.minimum(relative_position, mx.zeros_like(relative_position))
+            relative_position = -mx.minimum(
+                relative_position, mx.zeros_like(relative_position)
+            )
 
         max_exact = num_buckets // 2
         is_small = relative_position < max_exact
@@ -121,9 +128,21 @@ class T5Attention(nn.Module):
     ) -> Tuple[mx.array, Optional[mx.array]]:
         B, L, _ = hidden_states.shape
 
-        q = self.q(hidden_states).reshape(B, L, self.n_heads, self.d_kv).transpose(0, 2, 1, 3)
-        k = self.k(hidden_states).reshape(B, L, self.n_heads, self.d_kv).transpose(0, 2, 1, 3)
-        v = self.v(hidden_states).reshape(B, L, self.n_heads, self.d_kv).transpose(0, 2, 1, 3)
+        q = (
+            self.q(hidden_states)
+            .reshape(B, L, self.n_heads, self.d_kv)
+            .transpose(0, 2, 1, 3)
+        )
+        k = (
+            self.k(hidden_states)
+            .reshape(B, L, self.n_heads, self.d_kv)
+            .transpose(0, 2, 1, 3)
+        )
+        v = (
+            self.v(hidden_states)
+            .reshape(B, L, self.n_heads, self.d_kv)
+            .transpose(0, 2, 1, 3)
+        )
 
         scores = q @ k.transpose(0, 1, 3, 2)
 
@@ -137,15 +156,23 @@ class T5Attention(nn.Module):
         if mask is not None:
             scores = scores + mask
 
-        attn_weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(scores.dtype)
-        attn_output = (attn_weights @ v).transpose(0, 2, 1, 3).reshape(B, L, self.inner_dim)
+        attn_weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(
+            scores.dtype
+        )
+        attn_output = (
+            (attn_weights @ v).transpose(0, 2, 1, 3).reshape(B, L, self.inner_dim)
+        )
         return self.o(attn_output), position_bias
 
 
 class T5Block(nn.Module):
-    def __init__(self, config: TextEncoderConfig, has_relative_attention_bias: bool = False):
+    def __init__(
+        self, config: TextEncoderConfig, has_relative_attention_bias: bool = False
+    ):
         super().__init__()
-        self.SelfAttention = T5Attention(config, has_relative_attention_bias=has_relative_attention_bias)
+        self.SelfAttention = T5Attention(
+            config, has_relative_attention_bias=has_relative_attention_bias
+        )
         self.layer_norm_sa = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         if config.is_gated_act:
             self.DenseReluDense = T5DenseGatedActDense(config)
@@ -154,10 +181,15 @@ class T5Block(nn.Module):
         self.layer_norm_ff = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
 
     def __call__(
-        self, hidden_states: mx.array, mask: Optional[mx.array] = None, position_bias: Optional[mx.array] = None
+        self,
+        hidden_states: mx.array,
+        mask: Optional[mx.array] = None,
+        position_bias: Optional[mx.array] = None,
     ) -> Tuple[mx.array, Optional[mx.array]]:
         normed = self.layer_norm_sa(hidden_states)
-        attn_output, position_bias = self.SelfAttention(normed, mask=mask, position_bias=position_bias)
+        attn_output, position_bias = self.SelfAttention(
+            normed, mask=mask, position_bias=position_bias
+        )
         hidden_states = hidden_states + attn_output
         normed = self.layer_norm_ff(hidden_states)
         ff_output = self.DenseReluDense(normed)
@@ -177,7 +209,9 @@ class UMT5Encoder(nn.Module):
             T5Block(config, has_relative_attention_bias=True)
             for i in range(config.num_layers)
         ]
-        self.final_layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.final_layer_norm = T5LayerNorm(
+            config.d_model, eps=config.layer_norm_epsilon
+        )
 
     def __call__(
         self, input_ids: mx.array, attention_mask: Optional[mx.array] = None
