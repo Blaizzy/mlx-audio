@@ -81,6 +81,12 @@ def parse_args():
         help="Prefill step size (default: 2048)",
     )
     parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="Custom prompt for the model (e.g. 'Describe the audio content.')",
+    )
+    parser.add_argument(
         "--gen-kwargs",
         type=json.loads,
         default=None,

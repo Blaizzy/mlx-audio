@@ -52,21 +52,18 @@ class CohereAudioFrontend:
         if not safetensor_path.exists():
             return
 
-        try:
-            from safetensors import safe_open
-        except ImportError:
-            return
+        weights = mx.load(str(safetensor_path))
 
-        with safe_open(str(safetensor_path), framework="pt", device="cpu") as f:
-            keys = set(f.keys())
-            if "preprocessor.featurizer.fb" in keys:
-                fb = f.get_tensor("preprocessor.featurizer.fb").float().cpu().numpy()
-                self.fb = mx.array(fb.squeeze(0)).astype(mx.float32)
-            if "preprocessor.featurizer.window" in keys:
-                window = (
-                    f.get_tensor("preprocessor.featurizer.window").float().cpu().numpy()
-                )
-                self.window = mx.array(window).astype(mx.float32)
+        fb_key = "preprocessor.featurizer.fb"
+        if fb_key in weights:
+            fb = weights[fb_key]
+            if fb.ndim == 3:
+                fb = fb.squeeze(0)
+            self.fb = fb.astype(mx.float32)
+
+        win_key = "preprocessor.featurizer.window"
+        if win_key in weights:
+            self.window = weights[win_key].astype(mx.float32)
 
     def _normalize_waveform(self, waveform) -> np.ndarray:
         if isinstance(waveform, mx.array):
