@@ -425,8 +425,8 @@ class Model(nn.Module):
         diff = is_audio_int[1:] - is_audio_int[:-1]  # +1: text→audio, -1: audio→text
         mx.eval(is_audio_int, diff)
 
-        is_audio_flags = is_audio_int.tolist()   # list[int], length seq_len
-        diff_list = diff.tolist()                # list[int], length seq_len-1
+        is_audio_flags = is_audio_int.tolist()  # list[int], length seq_len
+        diff_list = diff.tolist()  # list[int], length seq_len-1
         seq_len = len(is_audio_flags)
 
         changes = [i + 1 for i, d in enumerate(diff_list) if d != 0]
