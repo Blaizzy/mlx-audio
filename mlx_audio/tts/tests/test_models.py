@@ -3964,7 +3964,6 @@ class TestKugelAudioModel(unittest.TestCase):
         self.assertEqual(cfg.decoder_config.hidden_size, 3584)
         self.assertEqual(cfg.decoder_config.num_hidden_layers, 28)
 
-
     def test_sanitize(self):
         """Test full sanitize: prefix stripping, skip rules, re-indexing,
         quantization metadata, and linear weight transposition."""
@@ -3992,12 +3991,8 @@ class TestKugelAudioModel(unittest.TestCase):
             fake_weights[pytorch_mlp] = params[mlp_key]
 
         # 4) Quantization metadata
-        fake_weights["language_model.layers.0.self_attn.q_proj.scales"] = mx.zeros(
-            (4,)
-        )
-        fake_weights["language_model.layers.0.self_attn.q_proj.biases"] = mx.zeros(
-            (4,)
-        )
+        fake_weights["language_model.layers.0.self_attn.q_proj.scales"] = mx.zeros((4,))
+        fake_weights["language_model.layers.0.self_attn.q_proj.biases"] = mx.zeros((4,))
 
         # 5) Linear weight transposition (reversed shape)
         lm_key = "lm_head.weight"
@@ -4022,12 +4017,8 @@ class TestKugelAudioModel(unittest.TestCase):
             self.assertIn(mlp_key, result)
 
         # Verify quantization metadata preserved
-        self.assertIn(
-            "language_model.layers.0.self_attn.q_proj.scales", result
-        )
-        self.assertIn(
-            "language_model.layers.0.self_attn.q_proj.biases", result
-        )
+        self.assertIn("language_model.layers.0.self_attn.q_proj.scales", result)
+        self.assertIn("language_model.layers.0.self_attn.q_proj.biases", result)
 
         # Verify linear weight transposed to correct shape
         if lm_key in params:
