@@ -122,16 +122,16 @@ class Qwen2AudioEncoder(nn.Module):
         ]
         self.layer_norm = nn.LayerNorm(config.d_model)
 
-        # Fixed sinusoidal positional embeddings (generous buffer for off-by-one)
+        # Stored as float32; post_load_hook casts once to the model weight dtype.
         self._embed_positions = sinusoids(
             config.max_source_positions + 1, config.d_model
         )
 
     @property
     def embed_positions(self) -> mx.array:
-        # Cast stored float32 sinusoids to the loaded weight dtype at use-time
-        # so positional embeddings never upcast the encoder activations.
-        return self._embed_positions.astype(self.conv1.weight.dtype)
+        # post_load_hook casts _embed_positions to weight dtype once at load time,
+        # so this property is now a free attribute access on every forward pass.
+        return self._embed_positions
 
     def __call__(self, input_features: mx.array) -> mx.array:
         # input_features: (B, n_mels, T) -> transpose to (B, T, n_mels) for Conv1d
@@ -195,6 +195,51 @@ class Model(nn.Module):
 
         self.audio_token_id = config.audio_token_id
         self._processor = None
+
+        # Precompute mel-spectrogram constants (filterbank, window, token count).
+        self._init_mel_constants()
+
+    def _init_mel_constants(self) -> None:
+        """Compute mel-spectrogram constants once; reused by every _extract_features call."""
+        n_mels = self.config.audio_config.num_mel_bins  # 128
+        n_fft = 400
+        hop_length = 160
+        sample_rate = 16000
+        max_source_positions = self.config.audio_config.max_source_positions  # 1500
+        n_freqs = n_fft // 2 + 1  # 201
+
+        self._mel_n_fft = n_fft
+        self._mel_hop_length = hop_length
+        self._mel_max_samples = max_source_positions * 2 * hop_length  # 480000
+
+        # Hanning window (400,) float32
+        self._mel_window = np.hanning(n_fft + 1)[:-1].astype(np.float32)
+
+        # Mel filterbank (n_mels, n_freqs) — vectorized, no inner Python loops
+        fmax = sample_rate / 2.0
+        mel_max = 2595.0 * np.log10(1.0 + fmax / 700.0)
+        mel_points = np.linspace(0.0, mel_max, n_mels + 2)
+        hz_points = 700.0 * (10.0 ** (mel_points / 2595.0) - 1.0)
+        bin_points = np.floor((n_fft + 1) * hz_points / sample_rate).astype(int)
+
+        f = np.arange(n_freqs, dtype=np.float32)
+        filterbank = np.zeros((n_mels, n_freqs), dtype=np.float32)
+        for m in range(1, n_mels + 1):
+            lower, center, upper = bin_points[m - 1], bin_points[m], bin_points[m + 1]
+            if center > lower:
+                mask = (f >= lower) & (f < center)
+                filterbank[m - 1, mask] = (f[mask] - lower) / (center - lower)
+            if upper > center:
+                mask = (f >= center) & (f < upper)
+                filterbank[m - 1, mask] = (upper - f[mask]) / (upper - center)
+        self._mel_filterbank = filterbank
+
+        # num_audio_tokens is a constant: audio is always padded to max_samples so
+        # n_frames, conv2 output length, and avgpool output are all fixed.
+        pad = n_fft // 2
+        n_frames = (self._mel_max_samples + 2 * pad - n_fft) // hop_length + 1
+        after_conv = (n_frames - 1) // 2 + 1
+        self._mel_num_audio_tokens: int = after_conv // 2  # 750
 
     @property
     def layers(self):
@@ -279,42 +324,31 @@ class Model(nn.Module):
         finally:
             transformers.logging.set_verbosity(prev)
 
-        return model
+        # Cast sinusoidal embeddings to the loaded weight dtype once here so that
+        # the embed_positions property is a free attribute access on every forward pass.
+        enc = model.audio_tower
+        enc._embed_positions = enc._embed_positions.astype(enc.conv1.weight.dtype)
 
-    def _get_feat_extract_output_lengths(self, input_length: int) -> int:
-        # After conv2 (stride=2): (L - 1) // 2 + 1
-        after_conv = (input_length - 1) // 2 + 1
-        # After AvgPool1d (kernel=2, stride=2): floor(after_conv / 2)
-        after_pool = after_conv // 2
-        return after_pool
+        return model
 
     def _extract_features(
         self, audio: Union[mx.array, np.ndarray]
     ) -> Tuple[mx.array, int]:
-        n_mels = self.config.audio_config.num_mel_bins  # 128
-        sample_rate = 16000
-        n_fft = 400
-        hop_length = 160
-        max_source_positions = self.config.audio_config.max_source_positions  # 1500
-
-        # Max audio length: max_source_positions * 2 * hop_length = 480000 samples
-        max_samples = max_source_positions * 2 * hop_length
-
         if isinstance(audio, mx.array):
             audio_np = np.array(audio.reshape(-1), dtype=np.float32)
         else:
             audio_np = audio.flatten().astype(np.float32)
 
         # Pad or truncate to max_samples
+        max_samples = self._mel_max_samples
         if len(audio_np) < max_samples:
             audio_np = np.pad(audio_np, (0, max_samples - len(audio_np)))
         else:
             audio_np = audio_np[:max_samples]
 
-        # Hanning window
-        window = np.hanning(n_fft + 1)[:-1].astype(np.float32)
-
         # STFT with center padding (pad by n_fft // 2 on each side)
+        n_fft = self._mel_n_fft
+        hop_length = self._mel_hop_length
         pad = n_fft // 2
         audio_padded = np.pad(audio_np, (pad, pad), mode="reflect")
 
@@ -325,60 +359,24 @@ class Model(nn.Module):
             strides=(audio_padded.strides[0] * hop_length, audio_padded.strides[0]),
         ).copy()
 
-        windowed = frames * window[np.newaxis, :]
+        windowed = frames * self._mel_window[np.newaxis, :]
         spec = np.fft.rfft(windowed, n=n_fft)
-        power = np.abs(spec) ** 2
+        # Avoid sqrt: |z|² = real² + imag² is cheaper than (np.abs(z))²
+        power = spec.real**2 + spec.imag**2
 
-        # Mel filterbank
-        fmin = 0.0
-        fmax = float(sample_rate) / 2.0
-        n_freqs = n_fft // 2 + 1
-
-        def hz_to_mel(f):
-            return 2595.0 * np.log10(1.0 + f / 700.0)
-
-        def mel_to_hz(m):
-            return 700.0 * (10.0 ** (m / 2595.0) - 1.0)
-
-        mel_min = hz_to_mel(fmin)
-        mel_max = hz_to_mel(fmax)
-        mel_points = np.linspace(mel_min, mel_max, n_mels + 2)
-        hz_points = mel_to_hz(mel_points)
-        bin_points = np.floor((n_fft + 1) * hz_points / sample_rate).astype(int)
-
-        filterbank = np.zeros((n_mels, n_freqs), dtype=np.float32)
-        for m in range(1, n_mels + 1):
-            f_m_minus = bin_points[m - 1]
-            f_m = bin_points[m]
-            f_m_plus = bin_points[m + 1]
-            for k in range(f_m_minus, f_m):
-                if f_m > f_m_minus:
-                    filterbank[m - 1, k] = (k - f_m_minus) / (f_m - f_m_minus)
-            for k in range(f_m, f_m_plus):
-                if f_m_plus > f_m:
-                    filterbank[m - 1, k] = (f_m_plus - k) / (f_m_plus - f_m)
-
-        mel_spec = power @ filterbank.T  # (n_frames, n_mels)
+        mel_spec = power @ self._mel_filterbank.T  # (n_frames, n_mels)
 
         log_mel = np.log10(np.clip(mel_spec, 1e-10, None))
         log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
         log_mel = (log_mel + 4.0) / 4.0
 
-        # Shape: (1, n_mels, T) for encoder.
         # Use the encoder's weight dtype so the forward pass stays in one dtype.
         # Numpy doesn't have bfloat16, so we always compute the mel in float32
         # and convert when crossing into MLX.
         model_dtype = self.audio_tower.conv1.weight.dtype
         mel_tensor = mx.array(log_mel.T[np.newaxis], dtype=model_dtype)
 
-        # Compute number of audio tokens after encoder processing
-        mel_len = mel_tensor.shape[2]  # T dimension
-        # After conv2 (stride=2): (mel_len - 1) // 2 + 1
-        after_conv = (mel_len - 1) // 2 + 1
-        # After avgpool (kernel=2, stride=2): floor(after_conv / 2)
-        num_audio_tokens = after_conv // 2
-
-        return mel_tensor, num_audio_tokens
+        return mel_tensor, self._mel_num_audio_tokens
 
     def _build_prompt(
         self,
@@ -422,34 +420,53 @@ class Model(nn.Module):
         text_ids = mx.where(is_audio, 0, input_ids)
         text_embeds = self.language_model.model.embed_tokens(text_ids[None])  # (1, seq, D)
 
-        # Cast audio features to embedding dtype — zero-cost if they already match
-        # (with fix 3+4 they will be bfloat16; this is a safety net for other configs)
+        # Cast audio features to embedding dtype — zero-cost if they already match.
         audio_features = audio_features.astype(text_embeds.dtype)
 
-        # Use numpy only for index arithmetic — no tensor data crosses into numpy.
-        # Walk the sequence finding contiguous text/audio runs; splice in MLX slices.
+        # Find contiguous run boundaries in O(seq_len) numpy; no tensor data crosses.
         is_audio_np = np.array(is_audio)
-        seq_len = len(is_audio_np)
+        changes = np.where(np.diff(is_audio_np.astype(np.int8)))[0] + 1
+        run_boundaries = np.concatenate([[0], changes, [len(is_audio_np)]])
+
         segments: List[mx.array] = []
         audio_offset = 0
-        i = 0
-        while i < seq_len:
-            if not is_audio_np[i]:
-                j = i + 1
-                while j < seq_len and not is_audio_np[j]:
-                    j += 1
-                segments.append(text_embeds[:, i:j, :])
-                i = j
-            else:
-                j = i + 1
-                while j < seq_len and is_audio_np[j]:
-                    j += 1
-                n = j - i
+        for start, end in zip(run_boundaries[:-1], run_boundaries[1:]):
+            start, end = int(start), int(end)
+            if is_audio_np[start]:
+                n = end - start
                 segments.append(audio_features[:, audio_offset : audio_offset + n, :])
                 audio_offset += n
-                i = j
+            else:
+                segments.append(text_embeds[:, start:end, :])
 
         return mx.concatenate(segments, axis=1)
+
+    def _prepare_inputs(
+        self,
+        audio: Union[str, mx.array, np.ndarray, List],
+        prompt: str,
+        verbose: bool = False,
+    ) -> Tuple[mx.array, mx.array, int]:
+        """Load audio, encode features, build prompt and input embeddings.
+
+        Returns (prompt_ids, inputs_embeds, n_prompt_tokens).
+        """
+        audio_list = self._load_audio(audio)
+
+        if verbose:
+            print(f"Encoding {len(audio_list)} audio file(s)...")
+
+        features_list: List[mx.array] = []
+        tokens_list: List[int] = []
+        for audio_data in audio_list:
+            input_features, num_audio_tokens = self._extract_features(audio_data)
+            features_list.append(self.get_audio_features(input_features))
+            tokens_list.append(num_audio_tokens)
+
+        prompt_ids = self._build_prompt(tokens_list, prompt)
+        inputs_embeds = self.get_input_embeddings(prompt_ids, features_list)
+        mx.eval(inputs_embeds)
+        return prompt_ids, inputs_embeds, len(prompt_ids)
 
     def _load_single_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
         if isinstance(audio, str):
@@ -482,7 +499,6 @@ class Model(nn.Module):
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
         prompt: str = None,
-        language: str = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         stream: bool = False,
@@ -503,30 +519,13 @@ class Model(nn.Module):
                 verbose=verbose,
             )
 
-        start_time = time.time()
-
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        audio_list = self._load_audio(audio)
-
-        if verbose:
-            print(f"Encoding {len(audio_list)} audio file(s)...")
-
-        features_list: List[mx.array] = []
-        tokens_list: List[int] = []
-        for audio_data in audio_list:
-            input_features, num_audio_tokens = self._extract_features(audio_data)
-            audio_features = self.get_audio_features(input_features)
-            mx.eval(audio_features)
-            features_list.append(audio_features)
-            tokens_list.append(num_audio_tokens)
-
-        prompt_ids = self._build_prompt(tokens_list, prompt)
-        inputs_embeds = self.get_input_embeddings(prompt_ids, features_list)
-        mx.eval(inputs_embeds)
-
-        prompt_tokens = len(prompt_ids)
+        start_time = time.time()
+        prompt_ids, inputs_embeds, prompt_tokens = self._prepare_inputs(
+            audio, prompt, verbose
+        )
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
@@ -590,22 +589,9 @@ class Model(nn.Module):
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        audio_list = self._load_audio(audio)
-
-        features_list: List[mx.array] = []
-        tokens_list: List[int] = []
-        for audio_data in audio_list:
-            input_features, num_audio_tokens = self._extract_features(audio_data)
-            audio_features = self.get_audio_features(input_features)
-            mx.eval(audio_features)
-            features_list.append(audio_features)
-            tokens_list.append(num_audio_tokens)
-
-        prompt_ids = self._build_prompt(tokens_list, prompt)
-        inputs_embeds = self.get_input_embeddings(prompt_ids, features_list)
-        mx.eval(inputs_embeds)
-
-        prompt_token_count = len(prompt_ids)
+        prompt_ids, inputs_embeds, prompt_token_count = self._prepare_inputs(
+            audio, prompt, verbose
+        )
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
