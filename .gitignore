@@ -46,3 +46,4 @@ output/
 .build
 claude.md
 .claude/site/
+.generated/legacy-docs-generated/
