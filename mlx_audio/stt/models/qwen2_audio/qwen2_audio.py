@@ -28,10 +28,6 @@ class StreamingResult:
     generation_tokens: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def sinusoids(length: int, channels: int, dtype: mx.Dtype = mx.float32) -> mx.array:
     max_timescale = 10000
@@ -42,10 +38,6 @@ def sinusoids(length: int, channels: int, dtype: mx.Dtype = mx.float32) -> mx.ar
         dtype
     )
 
-
-# ---------------------------------------------------------------------------
-# Encoder
-# ---------------------------------------------------------------------------
 
 
 class Qwen2AudioEncoderAttention(nn.Module):
@@ -127,8 +119,7 @@ class Qwen2AudioEncoder(nn.Module):
 
     @property
     def embed_positions(self) -> mx.array:
-        # post_load_hook casts _embed_positions to weight dtype once at load time,
-        # so this property is now a free attribute access on every forward pass.
+
         return self._embed_positions
 
     def __call__(self, input_features: mx.array) -> mx.array:
@@ -153,10 +144,6 @@ class Qwen2AudioEncoder(nn.Module):
         return x
 
 
-# ---------------------------------------------------------------------------
-# Projector
-# ---------------------------------------------------------------------------
-
 
 class Qwen2AudioMultiModalProjector(nn.Module):
     def __init__(self, config: ModelConfig):
@@ -170,10 +157,6 @@ class Qwen2AudioMultiModalProjector(nn.Module):
     def __call__(self, x: mx.array) -> mx.array:
         return self.linear(x)
 
-
-# ---------------------------------------------------------------------------
-# Model
-# ---------------------------------------------------------------------------
 
 
 class Model(nn.Module):
@@ -322,8 +305,6 @@ class Model(nn.Module):
         finally:
             transformers.logging.set_verbosity(prev)
 
-        # Cast sinusoidal embeddings to the loaded weight dtype once here so that
-        # the embed_positions property is a free attribute access on every forward pass.
         enc = model.audio_tower
         enc._embed_positions = enc._embed_positions.astype(enc.conv1.weight.dtype)
 
@@ -359,7 +340,7 @@ class Model(nn.Module):
 
         windowed = frames * self._mel_window[np.newaxis, :]
         spec = np.fft.rfft(windowed, n=n_fft)
-        # Avoid sqrt: |z|² = real² + imag² is cheaper than (np.abs(z))²
+    
         power = spec.real**2 + spec.imag**2
 
         mel_spec = power @ self._mel_filterbank.T  # (n_frames, n_mels)
@@ -368,9 +349,7 @@ class Model(nn.Module):
         log_mel = np.maximum(log_mel, log_mel.max() - 8.0)
         log_mel = (log_mel + 4.0) / 4.0
 
-        # Use the encoder's weight dtype so the forward pass stays in one dtype.
-        # Numpy doesn't have bfloat16, so we always compute the mel in float32
-        # and convert when crossing into MLX.
+ 
         model_dtype = self.audio_tower.conv1.weight.dtype
         mel_tensor = mx.array(log_mel.T[np.newaxis], dtype=model_dtype)
 
@@ -462,9 +441,9 @@ class Model(nn.Module):
             from mlx_audio.stt.utils import load_audio
 
             return load_audio(audio)
-        elif isinstance(audio, np.ndarray):
+        if isinstance(audio, np.ndarray):
             return mx.array(audio, dtype=mx.float32)
-        elif isinstance(audio, mx.array):
+        if isinstance(audio, mx.array):
             return audio
         raise TypeError(f"Unsupported audio type: {type(audio)}")
 
@@ -545,16 +524,7 @@ class Model(nn.Module):
         gen_time = time.time() - gen_start
         gen_tokens = len(tokens)
 
-        if verbose:
-            print(f"Prompt tokens: {prompt_tokens}")
-            print(f"Generation tokens: {gen_tokens}")
-            print(f"Prefill time: {prefill_time:.2f}s")
-            print(f"Generation time: {gen_time:.2f}s")
-            print(f"Total time: {elapsed:.2f}s")
-            if prefill_time > 0:
-                print(f"Prefill TPS: {prompt_tokens / prefill_time:.1f}")
-            if gen_time > 0:
-                print(f"Generation TPS: {gen_tokens / gen_time:.1f}")
+
 
         return STTOutput(
             text=text,
