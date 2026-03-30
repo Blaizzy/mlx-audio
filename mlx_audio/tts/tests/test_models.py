@@ -4136,5 +4136,199 @@ class TestKugelAudioModel(unittest.TestCase):
         self.assertEqual(sched.lower_order_nums, 0)
 
 
+class TestAudioDiTModel(unittest.TestCase):
+    @staticmethod
+    def _small_vae_config():
+        from mlx_audio.tts.models.longcat_audiodit.config import VaeConfig
+
+        return VaeConfig(
+            in_channels=1,
+            channels=4,
+            c_mults=[1, 2],
+            strides=[2, 4],
+            latent_dim=4,
+            encoder_latent_dim=8,
+            use_snake=True,
+            downsample_shortcut="averaging",
+            upsample_shortcut="duplicating",
+            out_shortcut="averaging",
+            in_shortcut="duplicating",
+            final_tanh=False,
+            downsampling_ratio=8,
+            sample_rate=24000,
+            scale=0.71,
+        )
+       
+    def setUp(self):
+        from mlx_audio.tts.models.longcat_audiodit.longcat_audiodit import Model
+        from mlx_audio.tts.models.longcat_audiodit.config import ModelConfig, TextEncoderConfig
+
+        self.cfg = ModelConfig(
+            dit_dim=16,
+            dit_depth=2,
+            dit_heads=2,
+            dit_ff_mult=2.0,
+            dit_text_dim=8,
+            dit_dropout=0.0,
+            dit_bias=True,
+            dit_cross_attn=True,
+            dit_adaln_type="global",
+            dit_adaln_use_text_cond=True,
+            dit_long_skip=True,
+            dit_text_conv=True,
+            dit_qk_norm=True,
+            dit_cross_attn_norm=False,
+            dit_eps=1e-6,
+            dit_use_latent_condition=True,
+            repa_dit_layer=1,
+            latent_dim=4,
+            sigma=0.0,
+            sampling_rate=24000,
+            latent_hop=8,
+            max_wav_duration=2.0,
+            text_encoder_model="google/umt5-base",
+            text_add_embed=True,
+            text_norm_feat=True,
+            vae_config=TestAudioDiTModel._small_vae_config(),
+            text_encoder_config=TextEncoderConfig(
+                vocab_size=32,
+                d_model=8,
+                d_kv=4,
+                d_ff=16,
+                num_layers=1,
+                num_heads=2,
+                relative_attention_num_buckets=8,
+                relative_attention_max_distance=16,
+            ),
+        )
+
+        self.model = Model(self.cfg)
+
+    # -- config --
+
+    def test_config_from_dict(self):
+        from mlx_audio.tts.models.longcat_audiodit.config import ModelConfig
+
+        cfg = ModelConfig(
+            vae_config={"channels": 64, "latent_dim": 32},
+            text_encoder_config={"d_model": 256},
+        )
+        self.assertEqual(cfg.vae_config.channels, 64)
+        self.assertEqual(cfg.text_encoder_config.d_model, 256)
+
+    def test_config_defaults(self):
+        from mlx_audio.tts.models.longcat_audiodit.config import ModelConfig
+
+        cfg = ModelConfig()
+        self.assertEqual(cfg.model_type, "audiodit")
+        self.assertEqual(cfg.dit_dim, 1536)
+        self.assertIsNotNone(cfg.vae_config)
+        self.assertEqual(cfg.vae_config.scale, 0.71)
+        total = 1
+        for s in cfg.vae_config.strides:
+            total *= s
+        self.assertEqual(total, cfg.vae_config.downsampling_ratio)
+
+    # -- forward --
+
+    def test_vae_encode_decode_shapes(self):
+        mx.random.seed(0)
+        x = mx.random.normal((1, 64, 1))
+        latent = self.model.vae.encode(x)
+        mx.eval(latent)
+        self.assertEqual(tuple(latent.shape), (1, 8, 4))
+
+        recon = self.model.vae.decode(latent)
+        mx.eval(recon)
+        self.assertEqual(tuple(recon.shape), (1, 64, 1))
+
+    def test_text_encoder_forward(self):
+        ids = mx.zeros((1, 5), dtype=mx.int32)
+        mask = mx.ones((1, 5), dtype=mx.float32)
+        out = self.model.encode_text(ids, mask)
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (1, 5, self.cfg.text_encoder_config.d_model))
+
+    def test_dit_forward(self):
+        B, S, T = 1, 4, 3
+        out = self.model.transformer(
+            x=mx.random.normal((B, S, self.cfg.latent_dim)),
+            text=mx.random.normal((B, T, self.cfg.dit_text_dim)),
+            text_len=mx.array([T], dtype=mx.float32),
+            time=mx.array([0.5]),
+            mask=mx.ones((B, S), dtype=mx.bool_),
+            cond_mask=mx.ones((B, T), dtype=mx.bool_),
+            return_ith_layer=self.cfg.repa_dit_layer,
+            latent_cond=mx.zeros((B, S, self.cfg.latent_dim)),
+        )
+        mx.eval(out["last_hidden_state"])
+        self.assertEqual(tuple(out["last_hidden_state"].shape), (B, S, self.cfg.latent_dim))
+        self.assertIsNotNone(out["hidden_state"])
+
+    def test_encode_prompt_audio(self):
+        audio = mx.random.normal((1, 64, 1))
+        latent, prompt_dur = self.model.encode_prompt_audio(audio)
+        mx.eval(latent)
+        self.assertEqual(latent.shape[2], self.cfg.latent_dim)
+        self.assertEqual(latent.shape[1], prompt_dur)
+        self.assertGreater(prompt_dur, 0)
+
+    # -- sanitize --
+
+    def test_sanitize_weight_norm(self):
+        weights = {
+            "vae.encoder.layers.0.weight_v": mx.ones((4, 1, 3)),
+            "vae.encoder.layers.0.weight_g": mx.ones((4, 1, 1)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("vae.encoder.layers.0.weight", sanitized)
+        self.assertNotIn("vae.encoder.layers.0.weight_v", sanitized)
+        self.assertEqual(tuple(sanitized["vae.encoder.layers.0.weight"].shape), (4, 3, 1))
+
+    def test_sanitize_conv_transpose_weight_norm(self):
+        weights = {
+            "vae.decoder.layers.1.layers.1.weight_v": mx.ones((8, 4, 4)),
+            "vae.decoder.layers.1.layers.1.weight_g": mx.ones((8, 1, 1)),
+        }
+        sanitized = self.model.sanitize(weights)
+        key = "vae.decoder.layers.1.layers.1.weight"
+        self.assertIn(key, sanitized)
+        self.assertEqual(tuple(sanitized[key].shape), (4, 4, 8))
+
+    def test_sanitize_text_encoder_remapping(self):
+        weights = {
+            "text_encoder.encoder.embed_tokens.weight": mx.zeros((32, 8)),
+            "text_encoder.encoder.block.0.layer.0.SelfAttention.q.weight": mx.zeros((4, 8)),
+            "text_encoder.encoder.block.0.layer.1.DenseReluDense.wi_0.weight": mx.zeros((16, 8)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("text_encoder.shared.weight", sanitized)
+        self.assertIn("text_encoder.block.0.SelfAttention.q.weight", sanitized)
+        self.assertIn("text_encoder.block.0.DenseReluDense.wi_0.weight", sanitized)
+
+    def test_sanitize_transformer_remapping(self):
+        weights = {
+            "transformer.proj.2.weight": mx.zeros((4, 4)),
+            "transformer.blocks.0.attn.to_out.0.weight": mx.zeros((4, 4)),
+            "transformer.blocks.0.ff.3.weight": mx.zeros((4, 4)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("transformer.proj.1.weight", sanitized)
+        self.assertIn("transformer.blocks.0.attn.to_out.weight", sanitized)
+        self.assertIn("transformer.blocks.0.ff.1.weight", sanitized)
+
+    def test_sanitize_dwconv_transpose(self):
+        weights = {
+            "transformer.text_conv_layer.0.dwconv.weight": mx.ones((8, 1, 7)),
+            "transformer.text_conv_layer.0.dwconv.bias": mx.zeros((8,)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("transformer.text_conv_layer.0.dwconv_weight", sanitized)
+        self.assertEqual(
+            tuple(sanitized["transformer.text_conv_layer.0.dwconv_weight"].shape),
+            (8, 7, 1),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
