@@ -71,10 +71,10 @@ class Qwen2AudioEncoderAttention(nn.Module):
         k = k.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(B, T, self.num_heads, self.head_dim).transpose(0, 2, 1, 3)
 
-        attn = (q * self.scale) @ k.transpose(0, 1, 3, 2)
-        attn_dtype = attn.dtype
-        attn = mx.softmax(attn.astype(mx.float32), axis=-1).astype(attn_dtype)
-        out = (attn @ v).transpose(0, 2, 1, 3).reshape(B, T, self.embed_dim)
+        out = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=self.scale
+        )
+        out = out.transpose(0, 2, 1, 3).reshape(B, T, self.embed_dim)
         return self.out_proj(out)
 
 
@@ -411,7 +411,7 @@ class Model(nn.Module):
         # Concatenate all per-audio features: (1, total_audio_tokens, D)
         audio_features = mx.concatenate(audio_features_list, axis=1)
 
-        # Embed text tokens (audio positions get a dummy embedding — replaced below)
+        # Embed all tokens (audio positions get a dummy embedding — replaced below)
         is_audio = input_ids == self.audio_token_id
         text_ids = mx.where(is_audio, 0, input_ids)
         text_embeds = self.language_model.model.embed_tokens(
@@ -421,28 +421,17 @@ class Model(nn.Module):
         # Cast audio features to embedding dtype — zero-cost if they already match.
         audio_features = audio_features.astype(text_embeds.dtype)
 
-        is_audio_int = is_audio.astype(mx.int32)
-        diff = is_audio_int[1:] - is_audio_int[:-1]  # +1: text→audio, -1: audio→text
-        mx.eval(is_audio_int, diff)
+        # Build a full-size audio embedding tensor aligned to the text positions.
+        # audio_indices maps each audio token position to its index in audio_features.
+        audio_mask = is_audio.astype(mx.int32)
+        audio_indices = mx.cumsum(audio_mask) - 1  # 0-based index per audio token
+        # Clamp to valid range for non-audio positions (value doesn't matter, will be masked)
+        audio_indices = mx.clip(audio_indices, 0, audio_features.shape[1] - 1)
+        audio_embeds = audio_features[:, audio_indices, :]  # (1, seq, D)
 
-        is_audio_flags = is_audio_int.tolist()  # list[int], length seq_len
-        diff_list = diff.tolist()  # list[int], length seq_len-1
-        seq_len = len(is_audio_flags)
-
-        changes = [i + 1 for i, d in enumerate(diff_list) if d != 0]
-        run_boundaries = [0] + changes + [seq_len]
-
-        segments: List[mx.array] = []
-        audio_offset = 0
-        for start, end in zip(run_boundaries[:-1], run_boundaries[1:]):
-            if is_audio_flags[start]:
-                n = end - start
-                segments.append(audio_features[:, audio_offset : audio_offset + n, :])
-                audio_offset += n
-            else:
-                segments.append(text_embeds[:, start:end, :])
-
-        return mx.concatenate(segments, axis=1)
+        # Select: audio embeddings where is_audio, text embeddings elsewhere
+        mask_3d = is_audio[None, :, None]  # (1, seq, 1)
+        return mx.where(mask_3d, audio_embeds, text_embeds)
 
     def _prepare_inputs(
         self,
@@ -529,6 +518,7 @@ class Model(nn.Module):
         prompt_ids, inputs_embeds, prompt_tokens = self._prepare_inputs(
             audio, prompt, verbose
         )
+        prefill_time = time.time() - start_time
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
@@ -539,6 +529,7 @@ class Model(nn.Module):
         eos_token_id = self._processor.tokenizer.eos_token_id
         tokens = []
 
+        gen_start = time.time()
         for token, _logprobs in generate_step(
             prompt=prompt_ids,
             input_embeddings=inputs_embeds.squeeze(0),
@@ -554,14 +545,19 @@ class Model(nn.Module):
 
         text = self._processor.tokenizer.decode(tokens, skip_special_tokens=True)
         elapsed = time.time() - start_time
+        gen_time = time.time() - gen_start
         gen_tokens = len(tokens)
 
         if verbose:
             print(f"Prompt tokens: {prompt_tokens}")
             print(f"Generation tokens: {gen_tokens}")
+            print(f"Prefill time: {prefill_time:.2f}s")
+            print(f"Generation time: {gen_time:.2f}s")
             print(f"Total time: {elapsed:.2f}s")
-            if gen_tokens > 0:
-                print(f"Generation TPS: {gen_tokens / elapsed:.1f}")
+            if prefill_time > 0:
+                print(f"Prefill TPS: {prompt_tokens / prefill_time:.1f}")
+            if gen_time > 0:
+                print(f"Generation TPS: {gen_tokens / gen_time:.1f}")
 
         return STTOutput(
             text=text,
@@ -570,8 +566,8 @@ class Model(nn.Module):
             generation_tokens=gen_tokens,
             total_tokens=prompt_tokens + gen_tokens,
             total_time=elapsed,
-            prompt_tps=prompt_tokens / elapsed if elapsed > 0 else 0,
-            generation_tps=gen_tokens / elapsed if elapsed > 0 else 0,
+            prompt_tps=prompt_tokens / prefill_time if prefill_time > 0 else 0,
+            generation_tps=gen_tokens / gen_time if gen_time > 0 else 0,
         )
 
     def _stream_generate(
