@@ -385,37 +385,12 @@ class Model(nn.Module):
         return mx.array(prompt_ids)
 
     def get_input_embeddings(
-        self, input_ids: mx.array, audio_features_list: List[mx.array]
-    ) -> mx.array:
-
-        audio_features = mx.concatenate(audio_features_list, axis=1)
-
-
-        is_audio = input_ids == self.audio_token_id
-        text_ids = mx.where(is_audio, 0, input_ids)
-        text_embeds = self.language_model.model.embed_tokens(
-            text_ids[None]
-        )  # (1, seq, D)
-
-        audio_features = audio_features.astype(text_embeds.dtype)
-
-
-        audio_mask = is_audio.astype(mx.int32)
-        audio_indices = mx.cumsum(audio_mask) - 1  # 0-based index per audio token
-    
-        audio_indices = mx.clip(audio_indices, 0, audio_features.shape[1] - 1)
-        audio_embeds = audio_features[:, audio_indices, :]  # (1, seq, D)
-
-        mask_3d = is_audio[None, :, None]  # (1, seq, 1)
-        return mx.where(mask_3d, audio_embeds, text_embeds)
-
-    def _prepare_inputs(
         self,
         audio: Union[str, mx.array, np.ndarray, List],
-        prompt: str,
+        prompt: str = None,
         verbose: bool = False,
     ) -> Tuple[mx.array, mx.array, int]:
-        """Load audio, encode features, build prompt and input embeddings.
+        """Load audio, encode features, build prompt and splice embeddings.
 
         Returns (prompt_ids, inputs_embeds, n_prompt_tokens).
         """
@@ -432,8 +407,28 @@ class Model(nn.Module):
             tokens_list.append(num_audio_tokens)
 
         prompt_ids = self._build_prompt(tokens_list, prompt)
-        inputs_embeds = self.get_input_embeddings(prompt_ids, features_list)
+        audio_features = mx.concatenate(features_list, axis=1)
+
+        # Embed all tokens (audio positions get a dummy embedding — replaced below)
+        is_audio = prompt_ids == self.audio_token_id
+        text_ids = mx.where(is_audio, 0, prompt_ids)
+        text_embeds = self.language_model.model.embed_tokens(
+            text_ids[None]
+        )  # (1, seq, D)
+
+        audio_features = audio_features.astype(text_embeds.dtype)
+
+        # Map each audio token position to its index in audio_features
+        audio_mask = is_audio.astype(mx.int32)
+        audio_indices = mx.cumsum(audio_mask) - 1
+        audio_indices = mx.clip(audio_indices, 0, audio_features.shape[1] - 1)
+        audio_embeds = audio_features[:, audio_indices, :]  # (1, seq, D)
+
+        # Select: audio embeddings where is_audio, text embeddings elsewhere
+        mask_3d = is_audio[None, :, None]  # (1, seq, 1)
+        inputs_embeds = mx.where(mask_3d, audio_embeds, text_embeds)
         mx.eval(inputs_embeds)
+
         return prompt_ids, inputs_embeds, len(prompt_ids)
 
     def _load_single_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:
@@ -491,7 +486,7 @@ class Model(nn.Module):
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         start_time = time.time()
-        prompt_ids, inputs_embeds, prompt_tokens = self._prepare_inputs(
+        prompt_ids, inputs_embeds, prompt_tokens = self.get_input_embeddings(
             audio, prompt, verbose
         )
         prefill_time = time.time() - start_time
@@ -555,7 +550,7 @@ class Model(nn.Module):
         from mlx_lm.generate import generate_step
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
-        prompt_ids, inputs_embeds, prompt_token_count = self._prepare_inputs(
+        prompt_ids, inputs_embeds, prompt_token_count = self.get_input_embeddings(
             audio, prompt, verbose
         )
 
