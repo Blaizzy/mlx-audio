@@ -176,6 +176,110 @@ class Model(nn.Module):
         prompt_dur = latent.shape[1]
         return latent, prompt_dur
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        return f"{int(seconds // 3600):02d}:{int((seconds % 3600) // 60):02d}:{seconds % 60:06.3f}"
+
+    def _stream_decode(
+        self,
+        pred_latent: mx.array,
+        sr: int,
+        start_time: float,
+        chunk_seconds: float = 2.0,
+        overlap_seconds: float = 0.5,
+    ) -> Generator[GenerationResult, None, None]:
+        """Decode latents in overlapping chunks with cosine crossfade.
+
+        Runs the VAE decoder on small overlapping windows of the latent
+        sequence and yields audio as soon as each chunk is ready, giving
+        much lower time-to-first-audio than full-sequence decoding.
+        """
+        ratio = self.config.vae_config.downsampling_ratio
+        chunk_frames = max(1, int(chunk_seconds * sr / ratio))
+        overlap_frames = max(0, int(overlap_seconds * sr / ratio))
+        hop_frames = max(1, chunk_frames - overlap_frames)
+        overlap_samples = overlap_frames * ratio
+        # Context frames fed to the VAE decoder on each side so its
+        # convolutions have proper context, then trimmed from the output.
+        context_frames = overlap_frames
+
+        total_frames = pred_latent.shape[1]
+        prev_tail = None
+        chunk_idx = 0
+        cumulative_samples = 0
+
+        start = 0
+        while start < total_frames:
+            end = min(start + chunk_frames, total_frames)
+            is_last = end >= total_frames
+
+            # Extend chunk with context on both sides for decoder conv context
+            left_ctx = min(context_frames, start)
+            right_ctx = min(context_frames, total_frames - end)
+            ctx_start = start - left_ctx
+            ctx_end = end + right_ctx
+
+            # Decode extended chunk, then trim context audio
+            audio_full = self.vae.decode(pred_latent[:, ctx_start:ctx_end, :])
+            audio_full = audio_full.squeeze(-1).squeeze(0)  # (L,)
+            mx.eval(audio_full)
+            left_trim = left_ctx * ratio
+            right_trim = right_ctx * ratio
+            if right_trim > 0:
+                audio_chunk = audio_full[left_trim:-right_trim]
+            else:
+                audio_chunk = audio_full[left_trim:]
+
+            if prev_tail is not None and overlap_samples > 0:
+                # Cosine crossfade with previous chunk's tail
+                ol = min(overlap_samples, prev_tail.shape[0], audio_chunk.shape[0])
+                t = mx.linspace(0, 1, ol)
+                fade_in = 0.5 * (1 - mx.cos(mx.array(math.pi) * t))
+                fade_out = 1.0 - fade_in
+                blended = prev_tail[:ol] * fade_out + audio_chunk[:ol] * fade_in
+
+                if is_last:
+                    output = mx.concatenate([blended, audio_chunk[ol:]])
+                else:
+                    output = mx.concatenate([blended, audio_chunk[ol:-overlap_samples]])
+                    prev_tail = audio_chunk[-overlap_samples:]
+                    mx.eval(prev_tail)
+            else:
+                if is_last or overlap_frames == 0:
+                    output = audio_chunk
+                else:
+                    output = audio_chunk[:-overlap_samples]
+                    prev_tail = audio_chunk[-overlap_samples:]
+                    mx.eval(prev_tail)
+
+            mx.eval(output)
+            num_samples = output.shape[0]
+            cumulative_samples += num_samples
+            processing_time = time_module.time() - start_time
+            audio_dur = cumulative_samples / sr
+
+            yield GenerationResult(
+                audio=output,
+                samples=num_samples,
+                sample_rate=sr,
+                segment_idx=chunk_idx,
+                token_count=0,
+                audio_duration=self._format_duration(audio_dur),
+                real_time_factor=processing_time / max(audio_dur, 1e-6),
+                prompt={"tokens": 0, "tokens-per-sec": 0},
+                audio_samples={
+                    "samples": num_samples,
+                    "samples-per-sec": num_samples / max(processing_time, 1e-6),
+                },
+                processing_time_seconds=processing_time,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+                is_streaming_chunk=True,
+                is_final_chunk=is_last,
+            )
+
+            chunk_idx += 1
+            start += hop_frames
+
     def generate(
         self,
         text: str,
@@ -188,6 +292,10 @@ class Model(nn.Module):
         cfg_strength: float = 4.0,
         guidance_method: str = "cfg",
         seed: int = 1024,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
+        chunk_seconds: float = 2.0,
+        overlap_seconds: float = 0.5,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate audio from text.
@@ -202,6 +310,10 @@ class Model(nn.Module):
             cfg_strength: Classifier-free guidance strength.
             guidance_method: "cfg" or "apg".
             seed: Random seed.
+            stream: Stream audio chunks during VAE decoding.
+            streaming_interval: Alias for chunk_seconds (CLI compat).
+            chunk_seconds: Chunk length in seconds for streaming decode.
+            overlap_seconds: Overlap between chunks for cosine crossfade.
         """
         import transformers
 
@@ -362,32 +474,40 @@ class Model(nn.Module):
 
         # Decode
         pred_latent = y[:, prompt_dur:] if not no_prompt else y
-        waveform = self.vae.decode(pred_latent)  # (B, L, 1)
-        waveform = waveform.squeeze(-1)  # (B, L)
 
-        mx.eval(waveform)
-        processing_time = time_module.time() - start_time
+        if stream:
+            # streaming_interval from CLI takes priority over chunk_seconds
+            cs = streaming_interval if streaming_interval != 2.0 else chunk_seconds
+            yield from self._stream_decode(
+                pred_latent, sr, start_time, cs, overlap_seconds
+            )
+        else:
+            waveform = self.vae.decode(pred_latent)  # (B, L, 1)
+            waveform = waveform.squeeze(-1)  # (B, L)
 
-        audio = waveform[0]
-        num_samples = audio.shape[0]
-        audio_duration = num_samples / sr
+            mx.eval(waveform)
+            processing_time = time_module.time() - start_time
 
-        yield GenerationResult(
-            audio=audio,
-            samples=num_samples,
-            sample_rate=sr,
-            segment_idx=0,
-            token_count=0,
-            audio_duration=f"{int(audio_duration // 3600):02d}:{int((audio_duration % 3600) // 60):02d}:{audio_duration % 60:06.3f}",
-            real_time_factor=processing_time / max(audio_duration, 1e-6),
-            prompt={"tokens": 0, "tokens-per-sec": 0},
-            audio_samples={
-                "samples": num_samples,
-                "samples-per-sec": num_samples / max(processing_time, 1e-6),
-            },
-            processing_time_seconds=processing_time,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
-        )
+            audio = waveform[0]
+            num_samples = audio.shape[0]
+            audio_duration = num_samples / sr
+
+            yield GenerationResult(
+                audio=audio,
+                samples=num_samples,
+                sample_rate=sr,
+                segment_idx=0,
+                token_count=0,
+                audio_duration=self._format_duration(audio_duration),
+                real_time_factor=processing_time / max(audio_duration, 1e-6),
+                prompt={"tokens": 0, "tokens-per-sec": 0},
+                audio_samples={
+                    "samples": num_samples,
+                    "samples-per-sec": num_samples / max(processing_time, 1e-6),
+                },
+                processing_time_seconds=processing_time,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+            )
 
     def sanitize(self, weights: dict) -> dict:
         """Convert PyTorch AudioDiT weights to MLX format."""
