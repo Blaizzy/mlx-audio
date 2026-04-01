@@ -196,6 +196,14 @@ class SeparationResponse(BaseModel):
 # Initialize the ModelProvider
 model_provider = ModelProvider()
 
+# MLX's Metal backend is not thread-safe. Concurrent inference calls from
+# multiple coroutines share the same Metal command buffer, triggering:
+#   "A command encoder is already encoding to this command buffer"
+# This is a known upstream issue: https://github.com/ml-explore/mlx/issues/2133
+# Serialise all inference through this lock so only one request uses the GPU
+# at a time.
+_inference_lock = asyncio.Lock()
+
 
 @app.get("/")
 async def root():
@@ -261,6 +269,12 @@ async def remove_model(model_name: str):
 
 
 async def generate_audio(model, payload: SpeechRequest):
+    async with _inference_lock:
+        async for chunk in _generate_audio_inner(model, payload):
+            yield chunk
+
+
+async def _generate_audio_inner(model, payload: SpeechRequest):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
     audio_chunks = []
@@ -414,8 +428,13 @@ async def stt_transcriptions(
     signature = inspect.signature(stt_model.generate)
     gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
 
+    async def locked_transcription_stream():
+        async with _inference_lock:
+            for chunk in generate_transcription_stream(stt_model, tmp_path, gen_kwargs):
+                yield chunk
+
     return StreamingResponse(
-        generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
+        locked_transcription_stream(),
         media_type="application/x-ndjson",
     )
 
