@@ -5,7 +5,6 @@ Pipeline: text -> normalize -> G2P (phones, tones, word2ph) -> symbol IDs + BERT
 """
 
 import re
-from pathlib import Path
 from typing import List, Tuple
 
 import mlx.core as mx
@@ -255,14 +254,13 @@ def g2p(text: str, pad_start_end: bool = True) -> Tuple[List[str], List[int], Li
         if upper in eng_dict:
             pron = eng_dict[upper]
             if isinstance(pron, list):
-                pron = pron[0]  # take first pronunciation
+                pron = pron[0]
             for ph in pron:
                 p, t = _refine_ph(ph)
                 phones.append(p)
                 tones.append(t)
                 phone_len += 1
         else:
-            # Fallback to g2p_en
             phone_list = [p for p in g2p_fn(word) if p != " "]
             for ph in phone_list:
                 if ph in arpa:
@@ -286,10 +284,6 @@ def g2p(text: str, pad_start_end: bool = True) -> Tuple[List[str], List[int], Li
     return phones, tones, word2ph
 
 
-# ---------------------------------------------------------------------------
-# Symbol-to-ID conversion
-# ---------------------------------------------------------------------------
-
 def cleaned_text_to_sequence(
     phones: List[str],
     tones: List[int],
@@ -304,28 +298,13 @@ def cleaned_text_to_sequence(
     return phone_ids, tone_ids, lang_ids
 
 
-# ---------------------------------------------------------------------------
-# BERT feature extraction (MLX)
-# ---------------------------------------------------------------------------
-
 def get_bert_features(
     text: str,
     word2ph: List[int],
     bert_model,
     add_blank: bool = True,
 ) -> mx.array:
-    """
-    Extract phone-level BERT features using MLX BertModel.
-
-    Args:
-        text: normalized English text
-        word2ph: phones-per-wordpiece-token alignment
-        bert_model: our MLX BertModel instance
-        add_blank: if True, double word2ph and add 1 for [CLS] (MeloTTS convention)
-
-    Returns:
-        (768, num_phones) BERT features at phone level
-    """
+    """Extract phone-level BERT features. Returns (768, num_phones)."""
     tokenizer = _get_tokenizer()
 
     inputs = tokenizer(text, return_tensors="np")
@@ -333,13 +312,11 @@ def get_bert_features(
     token_type_ids = mx.array(inputs.get("token_type_ids", [[0] * input_ids.shape[1]]))
     attention_mask = mx.array(inputs["attention_mask"])
 
-    # Extract 3rd-to-last hidden state
     features = bert_model.extract_features(
         input_ids, token_type_ids=token_type_ids, attention_mask=attention_mask
-    )  # (1, seq_len, hidden_size)
-    features = features[0]  # (seq_len, hidden_size)
+    )
+    features = features[0]
 
-    # Adjust word2ph for blank insertion (MeloTTS convention)
     w2ph = list(word2ph)
     if add_blank:
         w2ph = [p * 2 for p in w2ph]
@@ -350,20 +327,15 @@ def get_bert_features(
         f"Text: {text!r}"
     )
 
-    # Repeat each token's features by its word2ph count
     phone_features = []
     for i, count in enumerate(w2ph):
         if count > 0:
             repeated = mx.repeat(features[i : i + 1], count, axis=0)
             phone_features.append(repeated)
 
-    phone_features = mx.concatenate(phone_features, axis=0)  # (num_phones, 768)
-    return phone_features.T  # (768, num_phones)
+    phone_features = mx.concatenate(phone_features, axis=0)
+    return phone_features.T
 
-
-# ---------------------------------------------------------------------------
-# Full pipeline
-# ---------------------------------------------------------------------------
 
 def process_text(
     text: str,
@@ -371,22 +343,10 @@ def process_text(
     language: str = "EN",
     add_blank: bool = True,
 ) -> dict:
-    """
-    Full text processing pipeline for MeloTTS.
-
-    Args:
-        text: raw input text
-        bert_model: MLX BertModel instance (optional, returns zeros if None)
-        language: language code
-        add_blank: insert blank tokens between phones
-
-    Returns:
-        dict with keys: phone_ids, tone_ids, lang_ids, bert_features, phones
-    """
+    """Full text processing pipeline: text -> phone IDs + BERT features."""
     norm_text = text_normalize(text)
     phones, tones, word2ph = g2p(norm_text)
 
-    # Insert blanks between phones if requested (VITS convention)
     if add_blank:
         phones_with_blank = [pad]
         tones_with_blank = [0]
@@ -398,12 +358,10 @@ def process_text(
 
     phone_ids, tone_ids, lang_ids = cleaned_text_to_sequence(phones, tones, language)
 
-    # BERT features
     if bert_model is not None:
         bert_features = get_bert_features(
             norm_text, word2ph, bert_model, add_blank=add_blank
         )
-        # Pad or trim to match phone count
         n_phones = len(phone_ids)
         if bert_features.shape[1] < n_phones:
             pad_size = n_phones - bert_features.shape[1]
