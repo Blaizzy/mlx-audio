@@ -214,21 +214,9 @@ class Model(nn.Module):
         path = path[:, None, :, :]
         return path * mask
 
-    def generate(
-        self,
-        text: str,
-        voice: Optional[str] = None,
-        speed: float = 1.0,
-        lang_code: str = "EN-US",
-        noise_scale: float = 0.667,
-        noise_scale_w: float = 0.8,
-        sdp_ratio: float = 0.0,
-        **kwargs,
-    ):
-        """Generate audio from text."""
+    def _prepare_inputs(self, text, voice, lang_code, speed, noise_scale, noise_scale_w, sdp_ratio):
+        """Text processing and latent z computation (everything before decoding)."""
         from .text import process_text
-
-        start_time = time.time()
 
         spk2id = self.config.spk2id
         if voice and voice in spk2id:
@@ -254,39 +242,124 @@ class Model(nn.Module):
         x_lengths = mx.array([n_phones])
         sid_tensor = mx.array([sid])
 
-        audio = self.infer(
-            phone_ids,
-            x_lengths,
-            sid_tensor,
-            tone_ids,
-            lang_ids,
-            bert_zeros,
-            ja_bert=ja_bert_features,
-            noise_scale=noise_scale,
-            length_scale=1.0 / speed,
-            noise_scale_w=noise_scale_w,
-            sdp_ratio=sdp_ratio,
+        # Run encoder + duration + flow (everything except decoder)
+        g = mx.expand_dims(self.emb_g(sid_tensor), -1)
+        x, m_p, logs_p, x_mask = self.enc_p(
+            phone_ids, x_lengths, tone_ids, lang_ids, bert_zeros,
+            ja_bert=ja_bert_features, g=g,
         )
 
-        audio = audio.squeeze(0).squeeze(0)
-        mx.async_eval(audio)
+        logw_dp = self.dp(x, x_mask, g=g)
+        if sdp_ratio > 0:
+            logw_sdp = self.sdp(x, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
+            logw = sdp_ratio * logw_sdp + (1 - sdp_ratio) * logw_dp
+        else:
+            logw = logw_dp
+        w = mx.exp(logw) * x_mask * (1.0 / speed)
 
-        elapsed = time.time() - start_time
-        samples = audio.shape[0]
+        w_ceil = mx.ceil(w)
+        y_lengths = mx.clip(mx.sum(w_ceil, axis=(1, 2)), a_min=1, a_max=None).astype(mx.int32)
+        y_mask = self._sequence_mask(y_lengths, int(y_lengths.max()))[:, None, :]
+
+        attn_mask = x_mask[:, :, :, None] * y_mask[:, :, None, :]
+        attn = self._generate_path(w_ceil, attn_mask)
+
+        m_p = mx.matmul(m_p, attn.squeeze(1))
+        logs_p = mx.matmul(logs_p, attn.squeeze(1))
+
+        z_p = m_p + mx.random.normal(m_p.shape) * mx.exp(logs_p) * noise_scale
+
+        z = z_p
+        for layer in reversed(self.flow_layers):
+            z = layer(z, y_mask, g=g, reverse=True)
+
+        return z * y_mask, g, result
+
+    def generate(
+        self,
+        text: str,
+        voice: Optional[str] = None,
+        speed: float = 1.0,
+        lang_code: str = "EN-US",
+        noise_scale: float = 0.667,
+        noise_scale_w: float = 0.8,
+        sdp_ratio: float = 0.0,
+        stream: bool = False,
+        streaming_interval: float = 1.0,
+        **kwargs,
+    ):
+        """Generate audio from text. Set stream=True for chunked output."""
+        start_time = time.time()
+
+        z, g, result = self._prepare_inputs(
+            text, voice, lang_code, speed, noise_scale, noise_scale_w, sdp_ratio,
+        )
+
+        if not stream:
+            audio = self.dec(z, g=g).squeeze(0).squeeze(0)
+            mx.eval(audio)
+            elapsed = time.time() - start_time
+            samples = audio.shape[0]
+            audio_duration = samples / self.sample_rate
+            yield self._make_result(audio, samples, result, elapsed, segment_idx=0)
+        else:
+            # Streaming: chunk z along time dim, decode with overlap, yield
+            # HiFi-GAN upsample factor
+            hop = 1
+            for r in self.config.upsample_rates:
+                hop *= r
+            # Context frames for overlap (avoid boundary artifacts)
+            context_frames = 16
+            # Chunk size in latent frames from streaming_interval
+            chunk_frames = max(1, int(self.sample_rate * streaming_interval / hop))
+            t_total = z.shape[2]
+
+            segment_idx = 0
+            pos = 0
+            while pos < t_total:
+                chunk_end = min(pos + chunk_frames, t_total)
+                # Add context from previous chunk
+                ctx_start = max(0, pos - context_frames)
+                z_chunk = z[:, :, ctx_start:chunk_end]
+
+                audio_chunk = self.dec(z_chunk, g=g).squeeze(0).squeeze(0)
+                mx.eval(audio_chunk)
+
+                # Trim context samples from the front
+                trim_samples = (pos - ctx_start) * hop
+                audio_chunk = audio_chunk[trim_samples:]
+
+                elapsed = time.time() - start_time
+                samples = audio_chunk.shape[0]
+                is_final = chunk_end >= t_total
+
+                yield self._make_result(
+                    audio_chunk, samples, result, elapsed,
+                    segment_idx=segment_idx,
+                    is_streaming_chunk=True,
+                    is_final_chunk=is_final,
+                )
+
+                segment_idx += 1
+                pos = chunk_end
+
+    def _make_result(self, audio, samples, text_result, elapsed, segment_idx=0,
+                     is_streaming_chunk=False, is_final_chunk=False):
         audio_duration = samples / self.sample_rate
-
-        yield GenerationResult(
+        return GenerationResult(
             audio=audio,
             samples=samples,
             sample_rate=self.sample_rate,
-            segment_idx=0,
-            token_count=len(result["phone_ids"]),
+            segment_idx=segment_idx,
+            token_count=len(text_result["phone_ids"]),
             audio_duration=f"{int(audio_duration // 60):02d}:{int(audio_duration % 60):02d}.{int((audio_duration % 1) * 1000):03d}",
             real_time_factor=round(elapsed / audio_duration, 2) if audio_duration > 0 else 0,
-            prompt={"tokens": len(result["phone_ids"]), "tokens-per-sec": round(len(result["phone_ids"]) / elapsed, 2) if elapsed > 0 else 0},
+            prompt={"tokens": len(text_result["phone_ids"]), "tokens-per-sec": round(len(text_result["phone_ids"]) / elapsed, 2) if elapsed > 0 else 0},
             audio_samples={"samples": samples, "samples-per-sec": round(samples / elapsed, 2) if elapsed > 0 else 0},
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
         )
 
     def sanitize(self, weights):
