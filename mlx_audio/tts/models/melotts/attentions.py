@@ -57,12 +57,18 @@ class MultiHeadAttention(nn.Module):
         if window_size is not None:
             n_heads_rel = 1 if heads_share else n_heads
             rel_stddev = self.k_channels**-0.5
-            self.emb_rel_k = mx.random.normal(
-                shape=(n_heads_rel, window_size * 2 + 1, self.k_channels)
-            ) * rel_stddev
-            self.emb_rel_v = mx.random.normal(
-                shape=(n_heads_rel, window_size * 2 + 1, self.k_channels)
-            ) * rel_stddev
+            self.emb_rel_k = (
+                mx.random.normal(
+                    shape=(n_heads_rel, window_size * 2 + 1, self.k_channels)
+                )
+                * rel_stddev
+            )
+            self.emb_rel_v = (
+                mx.random.normal(
+                    shape=(n_heads_rel, window_size * 2 + 1, self.k_channels)
+                )
+                * rel_stddev
+            )
 
     def __call__(self, x, c, attn_mask=None):
         q = self.conv_q(x)
@@ -89,10 +95,10 @@ class MultiHeadAttention(nn.Module):
         scores = mx.matmul(query_scaled, key.transpose(0, 1, 3, 2))
 
         if self.window_size is not None:
-            key_relative_embeddings = self._get_relative_embeddings(
-                self.emb_rel_k, t_s
+            key_relative_embeddings = self._get_relative_embeddings(self.emb_rel_k, t_s)
+            rel_logits = self._matmul_with_relative_keys(
+                query_scaled, key_relative_embeddings
             )
-            rel_logits = self._matmul_with_relative_keys(query_scaled, key_relative_embeddings)
             scores_local = self._relative_position_to_absolute_position(rel_logits)
             scores = scores + scores_local
 
@@ -184,8 +190,12 @@ class FFN(nn.Module):
         self.causal = causal
         padding = self._causal_padding() if causal else (kernel_size - 1) // 2
 
-        self.conv_1 = Conv1dPT(in_channels, filter_channels, kernel_size, padding=padding)
-        self.conv_2 = Conv1dPT(filter_channels, out_channels, kernel_size, padding=padding)
+        self.conv_1 = Conv1dPT(
+            in_channels, filter_channels, kernel_size, padding=padding
+        )
+        self.conv_2 = Conv1dPT(
+            filter_channels, out_channels, kernel_size, padding=padding
+        )
         self.drop = nn.Dropout(p_dropout)
         self.activation = activation
 
@@ -222,7 +232,9 @@ class Encoder(nn.Module):
         self.hidden_channels = hidden_channels
         self.n_layers = n_layers
         self.gin_channels = gin_channels
-        self.cond_layer_idx = min(cond_layer_idx, n_layers) if gin_channels > 0 else n_layers
+        self.cond_layer_idx = (
+            min(cond_layer_idx, n_layers) if gin_channels > 0 else n_layers
+        )
         self.drop = nn.Dropout(p_dropout)
 
         self.attn_layers = []

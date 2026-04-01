@@ -5,7 +5,6 @@ from typing import List
 import mlx.core as mx
 import mlx.nn as nn
 
-
 LRELU_SLOPE = 0.1
 
 
@@ -17,12 +16,26 @@ class Conv1dPT(nn.Module):
     """Conv1d accepting PyTorch-style (B, C, T) input."""
 
     def __init__(
-        self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, bias=True, groups=1
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        dilation=1,
+        bias=True,
+        groups=1,
     ):
         super().__init__()
         self.conv = nn.Conv1d(
-            in_channels, out_channels, kernel_size, stride=stride, padding=padding,
-            dilation=dilation, bias=bias, groups=groups,
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            bias=bias,
+            groups=groups,
         )
 
     def __call__(self, x):

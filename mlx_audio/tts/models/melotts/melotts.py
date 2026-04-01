@@ -79,9 +79,9 @@ class Model(nn.Module):
             n_layers=config.n_layers,
             kernel_size=config.kernel_size,
             p_dropout=config.p_dropout,
-            gin_channels=config.gin_channels
-            if config.use_spk_conditioned_encoder
-            else 0,
+            gin_channels=(
+                config.gin_channels if config.use_spk_conditioned_encoder else 0
+            ),
         )
 
         self.dec = Generator(
@@ -174,7 +174,9 @@ class Model(nn.Module):
         w = mx.exp(logw) * x_mask * length_scale
 
         w_ceil = mx.ceil(w)
-        y_lengths = mx.clip(mx.sum(w_ceil, axis=(1, 2)), a_min=1, a_max=None).astype(mx.int32)
+        y_lengths = mx.clip(mx.sum(w_ceil, axis=(1, 2)), a_min=1, a_max=None).astype(
+            mx.int32
+        )
         y_mask = self._sequence_mask(y_lengths, int(y_lengths.max()))[:, None, :]
 
         attn_mask = x_mask[:, :, :, None] * y_mask[:, :, None, :]
@@ -210,11 +212,15 @@ class Model(nn.Module):
         start = cum_dur_shifted[:, :, None]
         end = cum_dur[:, :, None]
 
-        path = ((y_pos[None, :, :] >= start) & (y_pos[None, :, :] < end)).astype(mx.float32)
+        path = ((y_pos[None, :, :] >= start) & (y_pos[None, :, :] < end)).astype(
+            mx.float32
+        )
         path = path[:, None, :, :]
         return path * mask
 
-    def _prepare_inputs(self, text, voice, lang_code, speed, noise_scale, noise_scale_w, sdp_ratio):
+    def _prepare_inputs(
+        self, text, voice, lang_code, speed, noise_scale, noise_scale_w, sdp_ratio
+    ):
         """Text processing and latent z computation (everything before decoding)."""
         from .text import process_text
 
@@ -245,8 +251,13 @@ class Model(nn.Module):
         # Run encoder + duration + flow (everything except decoder)
         g = mx.expand_dims(self.emb_g(sid_tensor), -1)
         x, m_p, logs_p, x_mask = self.enc_p(
-            phone_ids, x_lengths, tone_ids, lang_ids, bert_zeros,
-            ja_bert=ja_bert_features, g=g,
+            phone_ids,
+            x_lengths,
+            tone_ids,
+            lang_ids,
+            bert_zeros,
+            ja_bert=ja_bert_features,
+            g=g,
         )
 
         logw_dp = self.dp(x, x_mask, g=g)
@@ -258,7 +269,9 @@ class Model(nn.Module):
         w = mx.exp(logw) * x_mask * (1.0 / speed)
 
         w_ceil = mx.ceil(w)
-        y_lengths = mx.clip(mx.sum(w_ceil, axis=(1, 2)), a_min=1, a_max=None).astype(mx.int32)
+        y_lengths = mx.clip(mx.sum(w_ceil, axis=(1, 2)), a_min=1, a_max=None).astype(
+            mx.int32
+        )
         y_mask = self._sequence_mask(y_lengths, int(y_lengths.max()))[:, None, :]
 
         attn_mask = x_mask[:, :, :, None] * y_mask[:, :, None, :]
@@ -292,7 +305,13 @@ class Model(nn.Module):
         start_time = time.time()
 
         z, g, result = self._prepare_inputs(
-            text, voice, lang_code, speed, noise_scale, noise_scale_w, sdp_ratio,
+            text,
+            voice,
+            lang_code,
+            speed,
+            noise_scale,
+            noise_scale_w,
+            sdp_ratio,
         )
 
         if not stream:
@@ -334,7 +353,10 @@ class Model(nn.Module):
                 is_final = chunk_end >= t_total
 
                 yield self._make_result(
-                    audio_chunk, samples, result, elapsed,
+                    audio_chunk,
+                    samples,
+                    result,
+                    elapsed,
                     segment_idx=segment_idx,
                     is_streaming_chunk=True,
                     is_final_chunk=is_final,
@@ -343,8 +365,16 @@ class Model(nn.Module):
                 segment_idx += 1
                 pos = chunk_end
 
-    def _make_result(self, audio, samples, text_result, elapsed, segment_idx=0,
-                     is_streaming_chunk=False, is_final_chunk=False):
+    def _make_result(
+        self,
+        audio,
+        samples,
+        text_result,
+        elapsed,
+        segment_idx=0,
+        is_streaming_chunk=False,
+        is_final_chunk=False,
+    ):
         audio_duration = samples / self.sample_rate
         return GenerationResult(
             audio=audio,
@@ -353,9 +383,21 @@ class Model(nn.Module):
             segment_idx=segment_idx,
             token_count=len(text_result["phone_ids"]),
             audio_duration=f"{int(audio_duration // 60):02d}:{int(audio_duration % 60):02d}.{int((audio_duration % 1) * 1000):03d}",
-            real_time_factor=round(elapsed / audio_duration, 2) if audio_duration > 0 else 0,
-            prompt={"tokens": len(text_result["phone_ids"]), "tokens-per-sec": round(len(text_result["phone_ids"]) / elapsed, 2) if elapsed > 0 else 0},
-            audio_samples={"samples": samples, "samples-per-sec": round(samples / elapsed, 2) if elapsed > 0 else 0},
+            real_time_factor=(
+                round(elapsed / audio_duration, 2) if audio_duration > 0 else 0
+            ),
+            prompt={
+                "tokens": len(text_result["phone_ids"]),
+                "tokens-per-sec": (
+                    round(len(text_result["phone_ids"]) / elapsed, 2)
+                    if elapsed > 0
+                    else 0
+                ),
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": round(samples / elapsed, 2) if elapsed > 0 else 0,
+            },
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
             is_streaming_chunk=is_streaming_chunk,
@@ -408,6 +450,7 @@ class Model(nn.Module):
                 config_data = json.load(f)
             if "symbols" in config_data:
                 from .text import load_symbols_from_config
+
                 load_symbols_from_config(config_data["symbols"])
 
         bert_weights_path = model_path / "bert_weights.npz"

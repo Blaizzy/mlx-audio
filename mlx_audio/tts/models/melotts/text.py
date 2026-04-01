@@ -19,18 +19,45 @@ pu_symbols = punctuation + ["SP", "UNK"]
 pad = "_"
 
 en_symbols = [
-    "aa", "ae", "ah", "ao", "aw", "ay",
-    "b", "ch", "d", "dh",
-    "eh", "er", "ey",
-    "f", "g", "hh",
-    "ih", "iy",
-    "jh", "k", "l", "m", "n", "ng",
-    "ow", "oy",
-    "p", "r", "s", "sh",
-    "t", "th",
-    "uh", "uw",
+    "aa",
+    "ae",
+    "ah",
+    "ao",
+    "aw",
+    "ay",
+    "b",
+    "ch",
+    "d",
+    "dh",
+    "eh",
+    "er",
+    "ey",
+    "f",
+    "g",
+    "hh",
+    "ih",
+    "iy",
+    "jh",
+    "k",
+    "l",
+    "m",
+    "n",
+    "ng",
+    "ow",
+    "oy",
+    "p",
+    "r",
+    "s",
+    "sh",
+    "t",
+    "th",
+    "uh",
+    "uw",
     "V",  # uppercase V is intentional in MeloTTS
-    "w", "y", "z", "zh",
+    "w",
+    "y",
+    "z",
+    "zh",
 ]
 
 # Default symbol table (English-only fallback; overwritten by load_symbols_from_config)
@@ -46,37 +73,138 @@ def load_symbols_from_config(config_symbols):
 
 
 language_id_map = {
-    "ZH": 0, "JP": 1, "EN": 2, "ZH_MIX_EN": 3,
-    "KR": 4, "ES": 5, "SP": 5, "FR": 6,
+    "ZH": 0,
+    "JP": 1,
+    "EN": 2,
+    "ZH_MIX_EN": 3,
+    "KR": 4,
+    "ES": 5,
+    "SP": 5,
+    "FR": 6,
 }
 
 language_tone_start_map = {
-    "ZH": 0, "ZH_MIX_EN": 0,
-    "JP": 6, "EN": 7,
-    "KR": 11, "ES": 12, "SP": 12,
+    "ZH": 0,
+    "ZH_MIX_EN": 0,
+    "JP": 6,
+    "EN": 7,
+    "KR": 11,
+    "ES": 12,
+    "SP": 12,
     "FR": 13,
 }
 
 arpa = {
-    "AH0", "S", "AH1", "EY2", "AE2", "EH0", "OW2", "UH0", "NG",
-    "B", "G", "AY0", "M", "AA0", "F", "AO0", "ER2", "UH1", "IY1",
-    "AH2", "DH", "IY0", "EY1", "IH0", "K", "N", "W", "IY2", "T",
-    "AA1", "ER1", "EH2", "OY0", "UH2", "UW1", "Z", "AW2", "AW1",
-    "V", "UW2", "AA2", "ER", "AW0", "UW0", "R", "OW1", "EH1",
-    "ZH", "AE0", "IH2", "IH1", "OY2", "JH", "EY0", "AE1", "OW0",
-    "AY1", "TH", "HH", "P", "SH", "CH", "AO1", "OY1", "AO2",
-    "IH", "UW", "AY2", "AY", "EH", "L", "ER0", "D", "AE",
+    "AH0",
+    "S",
+    "AH1",
+    "EY2",
+    "AE2",
+    "EH0",
+    "OW2",
+    "UH0",
+    "NG",
+    "B",
+    "G",
+    "AY0",
+    "M",
+    "AA0",
+    "F",
+    "AO0",
+    "ER2",
+    "UH1",
+    "IY1",
+    "AH2",
+    "DH",
+    "IY0",
+    "EY1",
+    "IH0",
+    "K",
+    "N",
+    "W",
+    "IY2",
+    "T",
+    "AA1",
+    "ER1",
+    "EH2",
+    "OY0",
+    "UH2",
+    "UW1",
+    "Z",
+    "AW2",
+    "AW1",
+    "V",
+    "UW2",
+    "AA2",
+    "ER",
+    "AW0",
+    "UW0",
+    "R",
+    "OW1",
+    "EH1",
+    "ZH",
+    "AE0",
+    "IH2",
+    "IH1",
+    "OY2",
+    "JH",
+    "EY0",
+    "AE1",
+    "OW0",
+    "AY1",
+    "TH",
+    "HH",
+    "P",
+    "SH",
+    "CH",
+    "AO1",
+    "OY1",
+    "AO2",
+    "IH",
+    "UW",
+    "AY2",
+    "AY",
+    "EH",
+    "L",
+    "ER0",
+    "D",
+    "AE",
 }
 
 
 _ones = [
-    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
-    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
-    "seventeen", "eighteen", "nineteen",
+    "",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
 ]
 _tens = [
-    "", "", "twenty", "thirty", "forty", "fifty",
-    "sixty", "seventy", "eighty", "ninety",
+    "",
+    "",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
 ]
 
 
@@ -169,6 +297,7 @@ def _get_tokenizer():
     global _tokenizer
     if _tokenizer is None:
         from transformers import AutoTokenizer
+
         _tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
     return _tokenizer
 
@@ -177,6 +306,7 @@ def _get_g2p():
     global _g2p_instance
     if _g2p_instance is None:
         from g2p_en import G2p
+
         _g2p_instance = G2p()
     return _g2p_instance
 
@@ -189,6 +319,7 @@ def _get_eng_dict():
 
     try:
         import cmudict
+
         _eng_dict = cmudict.dict()
     except ImportError:
         # Fallback: use g2p_en's built-in CMU dict
@@ -226,7 +357,9 @@ def _distribute_phone(n_phone: int, n_word: int) -> List[int]:
     return phones_per_word
 
 
-def g2p(text: str, pad_start_end: bool = True) -> Tuple[List[str], List[int], List[int]]:
+def g2p(
+    text: str, pad_start_end: bool = True
+) -> Tuple[List[str], List[int], List[int]]:
     """Convert normalized English text to phones, tones, and word2ph alignment."""
     tokenizer = _get_tokenizer()
     g2p_fn = _get_g2p()

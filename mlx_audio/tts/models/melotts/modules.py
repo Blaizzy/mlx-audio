@@ -60,9 +60,7 @@ class WN(nn.Module):
             else:
                 res_skip_channels = hidden_channels
 
-            self.res_skip_layers.append(
-                Conv1dPT(hidden_channels, res_skip_channels, 1)
-            )
+            self.res_skip_layers.append(Conv1dPT(hidden_channels, res_skip_channels, 1))
 
     def __call__(self, x, x_mask, g=None):
         output = mx.zeros_like(x)
@@ -444,16 +442,12 @@ class StochasticDurationPredictor(nn.Module):
 
         self.flows = [ElementwiseAffine(2)]
         for _ in range(n_flows):
-            self.flows.append(
-                ConvFlow(2, filter_channels, kernel_size, n_layers=3)
-            )
+            self.flows.append(ConvFlow(2, filter_channels, kernel_size, n_layers=3))
             self.flows.append(Flip())
 
         self.post_pre = Conv1dPT(1, filter_channels, 1)
         self.post_proj = Conv1dPT(filter_channels, filter_channels, 1)
-        self.post_convs = DDSConv(
-            filter_channels, kernel_size, 3, p_dropout=p_dropout
-        )
+        self.post_convs = DDSConv(filter_channels, kernel_size, 3, p_dropout=p_dropout)
 
         self.post_flows = [ElementwiseAffine(2)]
         for _ in range(n_flows):
@@ -502,7 +496,9 @@ class StochasticDurationPredictor(nn.Module):
             )
 
             logq = (
-                mx.sum(-0.5 * (mx.log(mx.array(2 * 3.141592653589793)) + e_q**2) * x_mask)
+                mx.sum(
+                    -0.5 * (mx.log(mx.array(2 * 3.141592653589793)) + e_q**2) * x_mask
+                )
                 - logdet_tot_q
             )
 
@@ -553,7 +549,9 @@ class DurationPredictor(nn.Module):
 
         padding = (kernel_size - 1) // 2
 
-        self.conv_1 = Conv1dPT(in_channels, filter_channels, kernel_size, padding=padding)
+        self.conv_1 = Conv1dPT(
+            in_channels, filter_channels, kernel_size, padding=padding
+        )
         self.norm_1 = nn.LayerNorm(filter_channels)
         self.conv_2 = Conv1dPT(
             filter_channels, filter_channels, kernel_size, padding=padding
@@ -615,7 +613,12 @@ class TextEncoder(nn.Module):
         self.ja_bert_proj = Conv1dPT(768, hidden_channels, 1)
 
         self.encoder = Encoder(
-            hidden_channels, filter_channels, n_heads, n_layers, kernel_size, p_dropout,
+            hidden_channels,
+            filter_channels,
+            n_heads,
+            n_layers,
+            kernel_size,
+            p_dropout,
             gin_channels=gin_channels,
         )
         self.proj = Conv1dPT(hidden_channels, out_channels * 2, 1)

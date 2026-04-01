@@ -3,7 +3,6 @@
 import mlx.core as mx
 import mlx.nn as nn
 
-
 DEFAULT_MIN_BIN_WIDTH = 1e-3
 DEFAULT_MIN_BIN_HEIGHT = 1e-3
 DEFAULT_MIN_DERIVATIVE = 1e-3
@@ -152,7 +151,9 @@ def rational_quadratic_spline(
     input_derivatives_plus_one = _gather(derivatives[..., 1:], bin_idx)
 
     if inverse:
-        a = (input_heights) * (input_derivatives + input_derivatives_plus_one - 2 * input_delta)
+        a = (input_heights) * (
+            input_derivatives + input_derivatives_plus_one - 2 * input_delta
+        )
         b = (input_heights) * (input_delta - input_derivatives)
         c = -input_delta * (inputs - input_cumheights)
         a = a + 1e-8
@@ -168,10 +169,14 @@ def rational_quadratic_spline(
             (input_derivatives + input_derivatives_plus_one - 2 * input_delta)
             * theta_one_minus_theta
         )
-        derivative_numerator = input_delta * input_delta * (
-            input_derivatives_plus_one * root * root
-            + 2 * input_delta * theta_one_minus_theta
-            + input_derivatives * (1 - root) * (1 - root)
+        derivative_numerator = (
+            input_delta
+            * input_delta
+            * (
+                input_derivatives_plus_one * root * root
+                + 2 * input_delta * theta_one_minus_theta
+                + input_derivatives * (1 - root) * (1 - root)
+            )
         )
         logabsdet = mx.log(derivative_numerator + 1e-8) - 2 * mx.log(
             mx.abs(denominator) + 1e-8
@@ -190,10 +195,14 @@ def rational_quadratic_spline(
         )
         outputs = input_cumheights + numerator / denominator
 
-        derivative_numerator = input_delta * input_delta * (
-            input_derivatives_plus_one * theta * theta
-            + 2 * input_delta * theta_one_minus_theta
-            + input_derivatives * (1 - theta) * (1 - theta)
+        derivative_numerator = (
+            input_delta
+            * input_delta
+            * (
+                input_derivatives_plus_one * theta * theta
+                + 2 * input_delta * theta_one_minus_theta
+                + input_derivatives * (1 - theta) * (1 - theta)
+            )
         )
         logabsdet = mx.log(derivative_numerator + 1e-8) - 2 * mx.log(
             mx.abs(denominator) + 1e-8
