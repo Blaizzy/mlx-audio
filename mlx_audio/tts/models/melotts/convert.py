@@ -21,16 +21,16 @@ def is_conv_transpose_key(key):
     return bool(re.search(r"dec\.ups\.\d+\.weight", key))
 
 
-def convert_melotts(output_dir: str):
+def convert_melotts(output_dir: str, model_repo: str = "myshell-ai/MeloTTS-English"):
     import torch
     from huggingface_hub import hf_hub_download
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    print("Downloading MeloTTS-English checkpoint...")
-    ckpt_path = hf_hub_download("myshell-ai/MeloTTS-English", "checkpoint.pth")
-    config_path = hf_hub_download("myshell-ai/MeloTTS-English", "config.json")
+    print(f"Downloading {model_repo} checkpoint...")
+    ckpt_path = hf_hub_download(model_repo, "checkpoint.pth")
+    config_path = hf_hub_download(model_repo, "config.json")
 
     with open(config_path) as f:
         config = json.load(f)
@@ -159,7 +159,13 @@ def convert_bert(output_path: Path):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Convert MeloTTS-English to MLX")
+    parser = argparse.ArgumentParser(description="Convert MeloTTS to MLX")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="myshell-ai/MeloTTS-English",
+        help="HuggingFace repo ID (e.g. myshell-ai/MeloTTS-English-v3)",
+    )
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -167,4 +173,4 @@ if __name__ == "__main__":
         help="Output directory for MLX weights",
     )
     args = parser.parse_args()
-    convert_melotts(args.output_dir)
+    convert_melotts(args.output_dir, model_repo=args.model)

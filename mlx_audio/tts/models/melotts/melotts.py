@@ -82,6 +82,8 @@ class Model(nn.Module):
             gin_channels=(
                 config.gin_channels if config.use_spk_conditioned_encoder else 0
             ),
+            num_tones=config.num_tones,
+            num_languages=config.num_languages,
         )
 
         self.dec = Generator(

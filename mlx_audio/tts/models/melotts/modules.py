@@ -600,6 +600,8 @@ class TextEncoder(nn.Module):
         kernel_size,
         p_dropout,
         gin_channels=0,
+        num_tones=16,
+        num_languages=10,
     ):
         super().__init__()
         self.n_vocab = n_vocab
@@ -607,8 +609,8 @@ class TextEncoder(nn.Module):
         self.hidden_channels = hidden_channels
 
         self.emb = nn.Embedding(n_vocab, hidden_channels)
-        self.tone_emb = nn.Embedding(16, hidden_channels)  # num_tones
-        self.language_emb = nn.Embedding(10, hidden_channels)  # num_languages
+        self.tone_emb = nn.Embedding(num_tones, hidden_channels)
+        self.language_emb = nn.Embedding(num_languages, hidden_channels)
         self.bert_proj = Conv1dPT(1024, hidden_channels, 1)
         self.ja_bert_proj = Conv1dPT(768, hidden_channels, 1)
 
