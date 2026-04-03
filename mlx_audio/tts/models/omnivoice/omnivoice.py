@@ -134,8 +134,9 @@ class Model(nn.Module):
         text: Optional[str] = None,
         duration_s: float = 5.0,
         language: str = "None",
+        lang_code: str = "None",  # alias used by generate_audio()
         instruct: str = "None",
-        ref_audio: Optional[Union[str, Path]] = None,
+        ref_audio=None,  # str | Path | mx.array (pre-loaded at sample_rate)
         ref_audio_max_duration_s: float = 10.0,
         num_steps: int = 32,
         guidance_scale: float = 2.0,
@@ -149,6 +150,7 @@ class Model(nn.Module):
         ref_tokens: Optional[mx.array] = None,
         # low-level override: pre-encoded text ids
         input_ids: Optional[mx.array] = None,
+        **kwargs,  # absorb: voice, speed, cfg_scale, temperature, max_tokens, etc.
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech from text.
 
@@ -181,6 +183,16 @@ class Model(nn.Module):
         from .generation import iterative_unmask
         from .utils import create_voice_clone_prompt
 
+        # lang_code is the name used by generate_audio(); language takes precedence
+        if language == "None" and lang_code != "None":
+            language = lang_code
+
+        # Fall back to tokenizers set by post_load_hook
+        if text_tokenizer is None:
+            text_tokenizer = getattr(self, "text_tokenizer", None)
+        if tokenizer is None:
+            tokenizer = getattr(self, "audio_tokenizer", None)
+
         # --- text encoding ---
         if input_ids is None:
             if text_tokenizer is None:
@@ -196,11 +208,20 @@ class Model(nn.Module):
                 raise ValueError(
                     "tokenizer (HiggsAudioTokenizer) is required for voice cloning via ref_audio."
                 )
-            ref_tokens = create_voice_clone_prompt(
-                str(ref_audio),
-                tokenizer=tokenizer,
-                max_duration_s=ref_audio_max_duration_s,
-            )
+            if isinstance(ref_audio, (str, Path)):
+                ref_tokens = create_voice_clone_prompt(
+                    str(ref_audio),
+                    tokenizer=tokenizer,
+                    max_duration_s=ref_audio_max_duration_s,
+                )
+            else:
+                # Already loaded as 1D mx.array at self.config.sample_rate by generate_audio()
+                wav = ref_audio
+                if not isinstance(wav, mx.array):
+                    wav = mx.array(wav)
+                if wav.ndim == 1:
+                    wav = wav[None, :, None]  # [1, T, 1]
+                ref_tokens = tokenizer.encode(wav)[0]  # [T_ref, 8]
 
         # HiggsAudio hop = 8*5*4*2*3 = 960 samples/token at 24kHz → 25 tokens/sec
         T = math.ceil(duration_s * self.config.sample_rate / 960)
@@ -264,3 +285,28 @@ class Model(nn.Module):
     @property
     def sample_rate(self) -> int:
         return self.config.sample_rate
+
+    @staticmethod
+    def post_load_hook(model: "Model", model_path: Path) -> "Model":
+        """Load text tokenizer and HiggsAudio tokenizer after weight loading."""
+        import warnings
+
+        try:
+            from transformers import AutoTokenizer
+
+            model.text_tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        except Exception as e:
+            warnings.warn(f"Could not load text tokenizer: {e}")
+            model.text_tokenizer = None
+
+        try:
+            from mlx_audio.codec.models.higgs_audio.higgs_audio import (
+                HiggsAudioTokenizer,
+            )
+
+            model.audio_tokenizer = HiggsAudioTokenizer.from_pretrained(str(model_path))
+        except Exception as e:
+            warnings.warn(f"Could not load audio tokenizer: {e}")
+            model.audio_tokenizer = None
+
+        return model

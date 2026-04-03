@@ -94,15 +94,16 @@ def iterative_unmask(
             )  # [1, S_cond+T, D]
             logits_cond = model(inputs_cond, prefix_len=cond_prefix_len)  # [1, T, C, V]
 
-            if uncond_prefix_len == 0:
-                logits_uncond = model(audio_embeds, prefix_len=0)  # [1, T, C, V]
-            else:
-                inputs_uncond = mx.concatenate(
-                    [uncond_embeds, audio_embeds], axis=1
-                )  # [1, S_uncond+T, D]
-                logits_uncond = model(
-                    inputs_uncond, prefix_len=uncond_prefix_len
-                )  # [1, T, C, V]
+            if guidance_scale != 0:
+                if uncond_prefix_len == 0:
+                    logits_uncond = model(audio_embeds, prefix_len=0)  # [1, T, C, V]
+                else:
+                    inputs_uncond = mx.concatenate(
+                        [uncond_embeds, audio_embeds], axis=1
+                    )  # [1, S_uncond+T, D]
+                    logits_uncond = model(
+                        inputs_uncond, prefix_len=uncond_prefix_len
+                    )  # [1, T, C, V]
 
         # CFG in log-prob space (matches original)
         if guidance_scale != 0:

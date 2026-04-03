@@ -29,10 +29,6 @@ import mlx.core as mx
 NUM_CODEBOOKS = 8
 AUDIO_VOCAB_SIZE = 1025  # 1024 real + 1 mask
 
-# Audio tokenizer: keep only these prefixes, drop semantic model
-_TOKENIZER_KEEP = {"acoustic_encoder.", "acoustic_decoder.", "quantizer.", "fc2."}
-_TOKENIZER_DROP = {"embed_avg", "cluster_size", "inited"}
-
 
 def remap_backbone(weights: dict, dtype: mx.Dtype) -> dict:
     """Remap k2-fsa backbone keys → mlx-audio convention and cast dtype."""
@@ -56,16 +52,15 @@ def remap_backbone(weights: dict, dtype: mx.Dtype) -> dict:
     return result
 
 
-def filter_tokenizer(weights: dict, dtype: mx.Dtype) -> dict:
-    """Keep only acoustic path weights, drop semantic model."""
-    result = {}
-    for k, v in weights.items():
-        if not any(k.startswith(p) for p in _TOKENIZER_KEEP):
-            continue
-        if any(s in k for s in _TOKENIZER_DROP):
-            continue
-        result[k] = v.astype(dtype)
-    return result
+def cast_tokenizer(weights: dict, dtype: mx.Dtype) -> dict:
+    """Cast all tokenizer weights to target dtype.
+
+    Deliberately keeps HuBERT / semantic model weights so that the
+    PyTorch HiggsAudioV2TokenizerModel can load from this directory
+    for voice-cloning encode().  MLX-side filtering happens in
+    HiggsAudioTokenizer.sanitize() at load time.
+    """
+    return {k: v.astype(dtype) for k, v in weights.items()}
 
 
 # ── IO helpers ────────────────────────────────────────────────────────────────
@@ -102,7 +97,7 @@ def convert(src: Path, out: Path, dtype: mx.Dtype):
     print("Loading audio tokenizer weights…")
     tok_weights = dict(mx.load(str(src / "audio_tokenizer" / "model.safetensors")))
     print(f"  {len(tok_weights)} keys")
-    tok_weights = filter_tokenizer(tok_weights, dtype)
+    tok_weights = cast_tokenizer(tok_weights, dtype)
     _save_weights(tok_weights, tok_out / "model.safetensors")
 
     # 3. Config files
