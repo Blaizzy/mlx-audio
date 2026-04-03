@@ -132,7 +132,7 @@ class Model(nn.Module):
     def generate(
         self,
         text: Optional[str] = None,
-        duration_s: float = 5.0,
+        duration_s: Optional[float] = None,
         language: str = "None",
         lang_code: str = "None",  # alias used by generate_audio()
         instruct: str = "None",
@@ -156,7 +156,8 @@ class Model(nn.Module):
 
         Args:
             text: Input text to synthesize.
-            duration_s: Maximum output duration in seconds (default 5.0).
+            duration_s: Output duration in seconds. None (default) = auto-estimate
+                       from text using RuleDurationEstimator (+15% margin).
             language: BCP-47 language tag e.g. "en", "ru", "zh" (default "None" = auto).
             instruct: Style instruction tag (default "None").
             ref_audio: Path to reference audio file for voice cloning (WAV, any SR).
@@ -224,7 +225,18 @@ class Model(nn.Module):
                 ref_tokens = tokenizer.encode(wav)[0]  # [T_ref, 8]
 
         # HiggsAudio hop = 8*5*4*2*3 = 960 samples/token at 24kHz → 25 tokens/sec
-        T = math.ceil(duration_s * self.config.sample_rate / 960)
+        TOKENS_PER_SEC = self.config.sample_rate / 960  # 25.0
+        if duration_s is None:
+            from .duration import RuleDurationEstimator
+
+            _estimator = RuleDurationEstimator()
+            # Calibration: "Nice to meet you." @ 25 tokens ≈ 1s (matches original)
+            raw_tokens = _estimator.estimate_duration(
+                text or "", "Nice to meet you.", 25
+            )
+            T = max(10, int(raw_tokens * 1.15))  # +15% margin, min 10 tokens
+        else:
+            T = math.ceil(duration_s * TOKENS_PER_SEC)
         input_ids_b = input_ids[None]  # [1, S]
         ref_b = ref_tokens[None] if ref_tokens is not None else None
 
