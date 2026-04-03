@@ -472,30 +472,39 @@ class Model(nn.Module):
         top_p: float,
         top_k: int,
         temperature: float,
-    ) -> mx.array:
+    ) -> tuple[mx.array, int]:
+        """Sample a semantic token with Repetition Aware Sampling (RAS).
+
+        Returns the sampled token and its integer value. Only computes
+        the high-temperature resample when a repetition is actually
+        detected, avoiding a redundant second sample on every step.
+        """
         if self.semantic_logit_bias is None:
             raise ValueError("Semantic logits bias is not initialized.")
 
         biased_logits = logits + self.semantic_logit_bias.astype(logits.dtype)
-        normal = _sample_logits(
+        semantic_token = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        high_temp = _sample_logits(
-            biased_logits,
-            temperature=RAS_HIGH_TEMP,
-            top_p=RAS_HIGH_TOP_P,
-            top_k=top_k,
-        )
-        mx.eval(normal, high_temp)
+        mx.eval(semantic_token)
+        token_value = int(semantic_token[0].item())
 
-        token_value = int(normal[0].item())
-        should_use_high = (
+        if (
             token_value in previous_semantic_tokens
             and self.config.semantic_start_token_id
             <= token_value
             <= self.config.semantic_end_token_id
-        )
-        return high_temp if should_use_high else normal
+        ):
+            semantic_token = _sample_logits(
+                biased_logits,
+                temperature=RAS_HIGH_TEMP,
+                top_p=RAS_HIGH_TOP_P,
+                top_k=top_k,
+            )
+            mx.eval(semantic_token)
+            token_value = int(semantic_token[0].item())
+
+        return semantic_token, token_value
 
     def _generate_codes_for_batch(
         self,
@@ -505,7 +514,19 @@ class Model(nn.Module):
         top_p: float,
         top_k: int,
         temperature: float,
-    ) -> mx.array:
+        streaming_interval: int = 0,
+    ):
+        """Generate audio codes for a batch of text.
+
+        Args:
+            streaming_interval: If > 0, yield partial code chunks every N
+                semantic tokens for streaming decode. If 0, return all codes
+                at once.
+
+        Yields/Returns:
+            When streaming_interval > 0: yields mx.array code chunks.
+            When streaming_interval == 0: returns a single mx.array of all codes.
+        """
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
 
@@ -538,16 +559,15 @@ class Model(nn.Module):
             max(32, text_token_count * 12),
         )
 
+        step_count = 0
         for _ in range(semantic_token_budget):
-            semantic_token = self._sample_semantic(
+            semantic_token, semantic_token_id = self._sample_semantic(
                 logits=logits,
                 previous_semantic_tokens=previous_semantic_tokens,
                 top_p=top_p,
                 top_k=top_k,
                 temperature=temperature,
             )
-            mx.eval(semantic_token)
-            semantic_token_id = int(semantic_token[0].item())
             if semantic_token_id == im_end_id:
                 break
 
@@ -583,20 +603,41 @@ class Model(nn.Module):
                 fast_hidden = self.model.fast_embeddings(residual_token)
 
             generated_steps.append(previous_codebooks[0])
+            step_count += 1
 
+            # Yield streaming chunks
+            if (
+                streaming_interval > 0
+                and step_count % streaming_interval == 0
+            ):
+                chunk = mx.stack(generated_steps, axis=1).astype(mx.int32)
+                yield chunk
+                generated_steps = []
+
+            # Prepare next slow transformer step, use async_eval to
+            # overlap the GPU compute with Python loop overhead
             next_input = mx.concatenate(
                 [semantic_token[:, None].astype(mx.int32), previous_codebooks], axis=1
             )
             next_result = self.model(next_input[:, :, None], cache=cache)
             logits = next_result.logits[:, -1]
             hidden_state = next_result.hidden_states[:, -1]
+            mx.async_eval(logits, hidden_state)
 
-        if not generated_steps:
+            if step_count % 256 == 0:
+                mx.clear_cache()
+
+        # Yield or return remaining codes
+        if generated_steps:
+            codes = mx.stack(generated_steps, axis=1).astype(mx.int32)
+            if streaming_interval > 0:
+                yield codes
+            else:
+                yield codes
+        elif streaming_interval == 0:
             raise RuntimeError(
                 f"No audio tokens were generated for batch text: {batch_text!r}"
             )
-
-        return mx.stack(generated_steps, axis=1).astype(mx.int32)
 
     def _decode_codes(self, codes: mx.array) -> mx.array:
         if self.codec is None:
@@ -621,12 +662,11 @@ class Model(nn.Module):
         speed: float = 1.0,
         chunk_length: int = 300,
         verbose: bool = True,
+        streaming_interval: float = 1.0,
         **kwargs,
     ):
         del voice, repetition_penalty, verbose, kwargs
 
-        if stream:
-            raise NotImplementedError("Fish Speech streaming is not implemented yet.")
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
         if self.codec is None:
@@ -655,6 +695,11 @@ class Model(nn.Module):
             else [text]
         )
 
+        # Streaming: decode and yield audio every N semantic tokens.
+        # Each semantic token ~= 1/21 sec audio, so streaming_interval
+        # seconds maps to roughly streaming_interval * 21 tokens.
+        stream_tokens = int(streaming_interval * 21) if stream else 0
+
         conversation = Conversation(list(base_conversation.messages))
         segment_idx = 0
         for batch_text in batches:
@@ -667,18 +712,64 @@ class Model(nn.Module):
                 )
             )
             start_time = time.perf_counter()
-            codes = self._generate_codes_for_batch(
+            all_codes_list = []
+            all_audio_list = []
+
+            for codes_chunk in self._generate_codes_for_batch(
                 conversation=conversation,
                 batch_text=batch_text,
                 max_new_tokens=max_tokens,
                 top_p=top_p,
                 top_k=top_k,
                 temperature=temperature,
-            )
-            audio = self._decode_codes(codes)
-            if abs(speed - 1.0) > 1e-6:
-                audio = _adjust_speed(audio, speed)
-            mx.eval(audio, codes)
+                streaming_interval=stream_tokens,
+            ):
+                audio_chunk = self._decode_codes(codes_chunk)
+                if abs(speed - 1.0) > 1e-6:
+                    audio_chunk = _adjust_speed(audio_chunk, speed)
+                mx.eval(audio_chunk)
+                all_codes_list.append(codes_chunk)
+                all_audio_list.append(audio_chunk)
+
+                if stream:
+                    elapsed = max(time.perf_counter() - start_time, 1e-6)
+                    audio_duration = float(audio_chunk.shape[0]) / float(
+                        self.sample_rate
+                    )
+                    yield GenerationResult(
+                        audio=audio_chunk,
+                        samples=int(audio_chunk.shape[0]),
+                        sample_rate=self.sample_rate,
+                        segment_idx=segment_idx,
+                        token_count=int(codes_chunk.shape[1]),
+                        audio_duration=_format_duration(audio_duration),
+                        real_time_factor=(
+                            audio_duration / elapsed if elapsed > 0 else 0.0
+                        ),
+                        prompt={
+                            "tokens": 0,
+                            "tokens-per-sec": 0.0,
+                        },
+                        audio_samples={
+                            "samples": int(audio_chunk.shape[0]),
+                            "samples-per-sec": (
+                                float(audio_chunk.shape[0]) / elapsed
+                                if elapsed > 0
+                                else 0.0
+                            ),
+                        },
+                        processing_time_seconds=elapsed,
+                        peak_memory_usage=float(mx.get_peak_memory() / 1e9),
+                    )
+                    segment_idx += 1
+
+            # Reassemble full codes for conversation history
+            if all_codes_list:
+                codes = mx.concatenate(all_codes_list, axis=1)
+            else:
+                raise RuntimeError(
+                    f"No audio tokens were generated for batch text: {batch_text!r}"
+                )
 
             conversation.append(
                 Message(
@@ -690,33 +781,37 @@ class Model(nn.Module):
                 )
             )
 
-            elapsed = max(time.perf_counter() - start_time, 1e-6)
-            audio_duration = float(audio.shape[0]) / float(self.sample_rate)
-            prompt_tokens_count = len(self.tokenizer.encode(batch_text))
-            yield GenerationResult(
-                audio=audio,
-                samples=int(audio.shape[0]),
-                sample_rate=self.sample_rate,
-                segment_idx=segment_idx,
-                token_count=int(codes.shape[1]),
-                audio_duration=_format_duration(audio_duration),
-                real_time_factor=audio_duration / elapsed if elapsed > 0 else 0.0,
-                prompt={
-                    "tokens": prompt_tokens_count,
-                    "tokens-per-sec": (
-                        prompt_tokens_count / elapsed if elapsed > 0 else 0.0
+            if not stream:
+                audio = mx.concatenate(all_audio_list) if all_audio_list else codes
+                elapsed = max(time.perf_counter() - start_time, 1e-6)
+                audio_duration = float(audio.shape[0]) / float(self.sample_rate)
+                prompt_tokens_count = len(self.tokenizer.encode(batch_text))
+                yield GenerationResult(
+                    audio=audio,
+                    samples=int(audio.shape[0]),
+                    sample_rate=self.sample_rate,
+                    segment_idx=segment_idx,
+                    token_count=int(codes.shape[1]),
+                    audio_duration=_format_duration(audio_duration),
+                    real_time_factor=(
+                        audio_duration / elapsed if elapsed > 0 else 0.0
                     ),
-                },
-                audio_samples={
-                    "samples": int(audio.shape[0]),
-                    "samples-per-sec": (
-                        float(audio.shape[0]) / elapsed if elapsed > 0 else 0.0
-                    ),
-                },
-                processing_time_seconds=elapsed,
-                peak_memory_usage=float(mx.get_peak_memory() / 1e9),
-            )
-            segment_idx += 1
+                    prompt={
+                        "tokens": prompt_tokens_count,
+                        "tokens-per-sec": (
+                            prompt_tokens_count / elapsed if elapsed > 0 else 0.0
+                        ),
+                    },
+                    audio_samples={
+                        "samples": int(audio.shape[0]),
+                        "samples-per-sec": (
+                            float(audio.shape[0]) / elapsed if elapsed > 0 else 0.0
+                        ),
+                    },
+                    processing_time_seconds=elapsed,
+                    peak_memory_usage=float(mx.get_peak_memory() / 1e9),
+                )
+                segment_idx += 1
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
