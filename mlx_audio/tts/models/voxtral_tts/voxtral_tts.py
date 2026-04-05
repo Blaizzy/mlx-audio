@@ -802,29 +802,18 @@ class Model(nn.Module):
                 "Expected [NEXT_AUDIO_TEXT] and [REPEAT_AUDIO_TEXT] from tekken.json."
             )
 
-        try:
-            from mistral_common.protocol.speech.request import SpeechRequest
+        if not hasattr(self.tokenizer, "encode_speech_request"):
+            raise RuntimeError(
+                "Voxtral TTS requires mistral-common[audio] so the Mistral "
+                "speech tokenizer can build the prompt correctly. Install the "
+                "`tts` extra or add `mistral-common[audio]` to your environment."
+            )
 
-            req = SpeechRequest(input=text, voice=voice)
-            result = self.tokenizer.encode_speech_request(req)
-            return result.tokens
-        except (ImportError, AttributeError):
-            pass
+        from mistral_common.protocol.speech.request import SpeechRequest
 
-        text_tokens = self._encode_text_tokens(text)
-        n_voice_frames = self._voice_num_audio_tokens.get(voice)
-        if n_voice_frames is None:
-            voice_emb = self._get_voice_embedding(voice)
-            n_voice_frames = voice_emb.shape[0] if voice_emb is not None else 0
-
-        return (
-            [self.config.bos_token_id, self.config.begin_audio_token_id]
-            + [self.config.audio_token_id] * n_voice_frames
-            + [self._text_to_audio_token_id]
-            + text_tokens
-            + [self._audio_to_text_token_id]
-            + [self.config.begin_audio_token_id]
-        )
+        req = SpeechRequest(input=text, voice=voice)
+        result = self.tokenizer.encode_speech_request(req)
+        return result.tokens
 
     def _codes_to_global_indices(self, codes: mx.array) -> mx.array:
         """Convert per-codebook codes to global embedding table indices.

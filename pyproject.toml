@@ -43,6 +43,7 @@ stt = [
 
 # TTS dependencies
 tts = [
+    "mistral-common[audio]",
     "tiktoken>=0.9.0",
     "misaki>=0.9.4",
     "num2words>=0.5.14",
