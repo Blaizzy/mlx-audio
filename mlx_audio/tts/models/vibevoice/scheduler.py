@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
-import numpy as np
 
 
 def betas_for_alpha_bar(
@@ -129,14 +128,15 @@ class DPMSolverMultistepScheduler:
         self._cached_sigma_t = []
         self._cached_lambda = []
 
-        alpha_t_np = np.array(self.alpha_t.tolist())
-        sigma_t_np = np.array(self.sigma_t.tolist())
+        alpha_t_vals = [float(v) for v in self.alpha_t.tolist()]
+        sigma_t_vals = [float(v) for v in self.sigma_t.tolist()]
 
         for t in timestep_values:
-            sigma = np.sqrt((1 - alpha_t_np[t] ** 2) / (alpha_t_np[t] ** 2))
-            alpha_t_val = 1.0 / np.sqrt(sigma**2 + 1.0)
+            alpha_t_cur = alpha_t_vals[t]
+            sigma = math.sqrt((1.0 - alpha_t_cur**2) / (alpha_t_cur**2))
+            alpha_t_val = 1.0 / math.sqrt(sigma**2 + 1.0)
             sigma_t_val = sigma * alpha_t_val
-            lambda_val = np.log(alpha_t_val) - np.log(sigma_t_val)
+            lambda_val = math.log(alpha_t_val) - math.log(sigma_t_val)
 
             self._cached_alpha_t.append(float(alpha_t_val))
             self._cached_sigma_t.append(float(sigma_t_val))
@@ -161,15 +161,17 @@ class DPMSolverMultistepScheduler:
         """Convert model output to x0 prediction based on prediction type."""
         alpha_t = self._cached_alpha_t[step_idx]
         sigma_t = self._cached_sigma_t[step_idx]
+        sample_fp32 = sample.astype(mx.float32)
+        model_output_fp32 = model_output.astype(mx.float32)
 
         if self.prediction_type == "epsilon":
             # model predicts noise
-            x0_pred = (sample - sigma_t * model_output) / alpha_t
+            x0_pred = (sample_fp32 - sigma_t * model_output_fp32) / alpha_t
         elif self.prediction_type == "v_prediction":
             # model predicts v = alpha_t * noise - sigma_t * x0
-            x0_pred = alpha_t * sample - sigma_t * model_output
+            x0_pred = alpha_t * sample_fp32 - sigma_t * model_output_fp32
         elif self.prediction_type == "sample":
-            x0_pred = model_output
+            x0_pred = model_output_fp32
         else:
             raise ValueError(f"Unknown prediction_type: {self.prediction_type}")
 
@@ -253,6 +255,7 @@ class DPMSolverMultistepScheduler:
             self._step_index = 0
 
         step_idx = self._step_index
+        original_dtype = model_output.dtype
 
         # Convert model output to x0 prediction
         x0_pred = self._convert_model_output(model_output, sample, step_idx)
@@ -261,6 +264,10 @@ class DPMSolverMultistepScheduler:
         for i in range(self.solver_order - 1, 0, -1):
             self.model_outputs[i] = self.model_outputs[i - 1]
         self.model_outputs[0] = x0_pred
+
+        sample = sample.astype(mx.float32)
+        if prev_x0 is not None:
+            prev_x0 = prev_x0.astype(mx.float32)
 
         # Determine order for this step
         lower_order_final_flag = (step_idx == self.num_inference_steps - 1) and (
@@ -310,7 +317,10 @@ class DPMSolverMultistepScheduler:
         # Update step index
         self._step_index += 1
 
-        return SchedulerOutput(prev_sample=prev_sample, x0_pred=x0_pred)
+        return SchedulerOutput(
+            prev_sample=prev_sample.astype(original_dtype),
+            x0_pred=x0_pred,
+        )
 
     def reset(self):
         """Reset scheduler state for new generation."""

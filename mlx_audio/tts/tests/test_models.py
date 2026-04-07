@@ -1,5 +1,7 @@
 import importlib.resources
 import importlib.util
+import json
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +11,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from misaki import en
+
+from mlx_audio.utils import apply_quantization
 
 
 # Create a patch for the deprecated open_text function
@@ -1246,7 +1250,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         )
 
     def test_init(self):
-        """Test VibeVoiceModel initialization."""
+        """Model initializes the expected VibeVoice components."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         # Initialize model
@@ -1264,7 +1268,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertIsNotNone(model.tts_eos_classifier)
 
     def test_sample_rate(self):
-        """Test VibeVoiceModel sample_rate property."""
+        """Model exposes the configured sample rate."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         config = self._default_config
@@ -1273,7 +1277,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(model.sample_rate, 24000)
 
     def test_get_input_embeddings(self):
-        """Test VibeVoiceModel get_input_embeddings method."""
+        """Model returns the decoder token embedding table."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         config = self._default_config
@@ -1284,7 +1288,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(embeddings.weight.shape[0], config.decoder_config.vocab_size)
 
     def test_sanitize(self):
-        """Test VibeVoiceModel sanitize method."""
+        """Sanitize accepts native parameter dictionaries."""
         from mlx.utils import tree_flatten
 
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
@@ -1300,7 +1304,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertIsInstance(sanitized, dict)
 
     def test_sanitize_huggingface_keys(self):
-        """Test VibeVoiceModel sanitize transforms HuggingFace keys."""
+        """Sanitize rewrites upstream HuggingFace-style parameter names."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         config = self._default_config
@@ -1344,7 +1348,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertIn(f"{quant_key}.biases", sanitized)
 
     def test_config_defaults(self):
-        """Test VibeVoiceModel uses correct config defaults."""
+        """Default config values match the expected VibeVoice architecture."""
         from mlx_audio.tts.models.vibevoice.config import ModelConfig
 
         config = ModelConfig()
@@ -1355,6 +1359,847 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(config.tts_backbone_num_hidden_layers, 20)
         self.assertEqual(config.decoder_config.hidden_size, 896)
         self.assertEqual(config.decoder_config.num_hidden_layers, 24)
+
+    def test_model_quant_predicate_non_streaming_defaults_to_lm_only(self):
+        """Non-streaming VibeVoice should quantize only the LM backbone by default."""
+        from mlx_audio.tts.models.vibevoice.config import ModelConfig
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = ModelConfig(model_type="vibevoice")
+        model = Model(config)
+
+        self.assertTrue(model.model_quant_predicate("language_model.layers.0.mlp", None))
+        self.assertFalse(model.model_quant_predicate("prediction_head.layers.0", None))
+        self.assertFalse(model.model_quant_predicate("lm_head", None))
+        self.assertFalse(
+            model.model_quant_predicate("acoustic_tokenizer.encoder.0.conv", None)
+        )
+        self.assertFalse(
+            model.model_quant_predicate("semantic_connector.fc1", None)
+        )
+
+    def test_model_quant_predicate_streaming_quantizes_split_lm_only(self):
+        """Streaming VibeVoice should quantize only the split LM backbones."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        self.assertTrue(model.model_quant_predicate("language_model.layers.0.mlp", None))
+        self.assertTrue(
+            model.model_quant_predicate("tts_language_model.layers.0.mlp", None)
+        )
+        self.assertFalse(model.model_quant_predicate("prediction_head.layers.0", None))
+        self.assertFalse(
+            model.model_quant_predicate("acoustic_connector.fc1", None)
+        )
+
+    def test_quantized_component_prefixes_uses_config_metadata(self):
+        """Selective-quantized checkpoints should reload from config without env flags."""
+        from mlx_audio.tts.models.vibevoice.config import ModelConfig
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = ModelConfig(
+            model_type="vibevoice",
+            quantization={
+                "bits": 8,
+                "group_size": 64,
+                "mode": "affine",
+                "quantized_components": ["language_model.", "prediction_head."],
+            },
+        )
+        model = Model(config)
+
+        self.assertEqual(
+            model.quantized_component_prefixes(),
+            ["language_model.", "prediction_head."],
+        )
+        self.assertTrue(model.model_quant_predicate("prediction_head.layers.0", None))
+        self.assertFalse(model.model_quant_predicate("lm_head", None))
+
+    def test_apply_quantization_uses_saved_scales_even_if_predicate_is_false(self):
+        """Packed quantized checkpoints must reload even with a narrower predicate."""
+
+        class _FakeQuantModule(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = mx.zeros((8, 64), dtype=mx.float32)
+
+            def to_quantized(self, *args, **kwargs):
+                return self
+
+        class _FakeModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.prediction_head = nn.Module()
+                self.prediction_head.noisy_images_proj = _FakeQuantModule()
+
+        captured = {}
+
+        def _fake_quantize(model, *, class_predicate, **kwargs):
+            captured["decision"] = class_predicate(
+                "prediction_head.noisy_images_proj",
+                model.prediction_head.noisy_images_proj,
+            )
+
+        model = _FakeModel()
+        config = {"quantization": {"bits": 8, "group_size": 64, "mode": "affine"}}
+        weights = {
+            "prediction_head.noisy_images_proj.scales": mx.zeros(
+                (8, 1), dtype=mx.float32
+            )
+        }
+
+        with patch("mlx_audio.utils.nn.quantize", new=_fake_quantize):
+            apply_quantization(
+                model,
+                config,
+                weights,
+                model_quant_predicate=lambda p, m: False,
+            )
+
+        self.assertTrue(captured["decision"])
+
+
+class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
+    class _FakeEncoderOutput:
+        def __init__(self, mean):
+            self.mean = mean
+
+    class _FakeNonStreamingTokenizer:
+        def __init__(self):
+            self.bos_token_id = 1
+            self.eos_token_id = 2
+            self.pad_token_id = 0
+            self._next = 10
+            self._tokens = {
+                "<|vision_start|>": 1001,
+                "<|vision_end|>": 1002,
+                "<|vision_pad|>": 1003,
+                "<|endoftext|>": 2,
+            }
+
+        def encode(self, text, add_special_tokens=True):
+            if text not in self._tokens:
+                self._tokens[text] = self._next
+                self._next += 1
+            return [self._tokens[text]]
+
+        def convert_tokens_to_ids(self, token):
+            return self._tokens[token]
+
+    class _FakeNonStreamingLanguageModel:
+        def __init__(self, hidden_size=4):
+            self.hidden_size = hidden_size
+            self.config = type(
+                "Config", (), {"max_position_embeddings": 128}
+            )()
+
+        def embed_tokens(self, input_ids):
+            batch, seq = int(input_ids.shape[0]), int(input_ids.shape[1])
+            return mx.zeros((batch, seq, self.hidden_size), dtype=mx.float32)
+
+        def make_cache(self):
+            return []
+
+        def __call__(
+            self,
+            inputs_embeds=None,
+            cache=None,
+            return_layer_last_hidden=False,
+            timing_info=None,
+        ):
+            hidden = mx.zeros_like(inputs_embeds)
+            if return_layer_last_hidden:
+                return hidden, cache, [hidden[:, -1, :]]
+            return hidden, cache
+
+    def _make_helper_model(self):
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        model = Model.__new__(Model)
+        model.tokenizer = self._FakeNonStreamingTokenizer()
+        model.speech_start_id = 1001
+        model.speech_end_id = 1002
+        model.speech_diffusion_id = 1003
+        model.eos_id = 2
+        return model
+
+    def _make_loop_model(self):
+        model = self._make_helper_model()
+        model.config = type("Config", (), {"sample_rate": 24000})()
+        model.language_model = self._FakeNonStreamingLanguageModel(hidden_size=4)
+        model.lm_head = MagicMock(return_value=mx.zeros((1, 8), dtype=mx.float32))
+        model.semantic_tokenizer = MagicMock()
+        model.acoustic_tokenizer = MagicMock()
+        model.acoustic_connector = MagicMock(side_effect=lambda x: x)
+        model.semantic_connector = MagicMock(side_effect=lambda x: x)
+        model.sample_speech_tokens = MagicMock(
+            return_value=mx.array([[0.1, 0.2, 0.3, 0.4]], dtype=mx.float32)
+        )
+        model.speech_scaling_factor = mx.array(1.0, dtype=mx.float32)
+        model.speech_bias_factor = mx.array(0.0, dtype=mx.float32)
+        return model
+
+    def test_parse_non_streaming_script_plain_text_defaults_to_speaker_zero(self):
+        """Plain text is normalized into a single-speaker script."""
+        model = self._make_helper_model()
+
+        parsed = model._parse_non_streaming_script("Hello there.\nGeneral Kenobi.")
+
+        self.assertEqual(parsed, [(0, " Hello there. General Kenobi.")])
+
+    def test_parse_non_streaming_script_normalizes_multi_speaker_labels(self):
+        """Speaker labels are compacted into stable zero-based ids."""
+        model = self._make_helper_model()
+
+        parsed = model._parse_non_streaming_script(
+            "Speaker 1: First line.\n"
+            "Continuation.\n"
+            "Speaker 2: Reply.\n"
+            "Speaker 1: Closing."
+        )
+
+        self.assertEqual(
+            parsed,
+            [
+                (0, " First line. Continuation."),
+                (1, " Reply."),
+                (0, " Closing."),
+            ],
+        )
+
+    def test_build_non_streaming_prompt_tokens_supports_multiple_speakers(self):
+        """Prompt building inserts separate reference spans per speaker."""
+        model = self._make_helper_model()
+        parsed = [
+            (0, " First."),
+            (1, " Second."),
+            (0, " Third."),
+        ]
+
+        prompt_tokens, speech_input_mask = model._build_non_streaming_prompt_tokens(
+            parsed_script=parsed,
+            ref_prompt_steps=[2, 3],
+        )
+
+        self.assertEqual(len(prompt_tokens), len(speech_input_mask))
+        self.assertEqual(prompt_tokens.count(model.speech_start_id), 3)
+        self.assertEqual(prompt_tokens.count(model.speech_end_id), 2)
+        self.assertEqual(prompt_tokens.count(model.speech_diffusion_id), 5)
+        self.assertEqual(sum(speech_input_mask), 5)
+
+    def test_normalize_non_streaming_ref_audios_validates_length(self):
+        """Reference audio count must match the parsed speaker count."""
+        model = self._make_helper_model()
+
+        with self.assertRaisesRegex(ValueError, "must match the number of speakers"):
+            model._normalize_non_streaming_ref_audios(
+                ref_audio=["speaker0.wav"],
+                expected_speakers=2,
+            )
+
+    def test_inject_prefill_speech_embeddings_accepts_per_speaker_lists(self):
+        """Per-speaker prefill embeddings are injected in prompt order."""
+        model = self._make_helper_model()
+        input_embeds = mx.zeros((1, 5, 2), dtype=mx.float32)
+        speech_input_mask = [False, True, True, False, True]
+        speech_embeds = [
+            mx.array([[1.0, 1.0], [2.0, 2.0]], dtype=mx.float32),
+            mx.array([[3.0, 3.0]], dtype=mx.float32),
+        ]
+
+        updated = model._inject_prefill_speech_embeddings(
+            input_embeds=input_embeds,
+            speech_input_mask=speech_input_mask,
+            speech_embeds=speech_embeds,
+        )
+
+        np.testing.assert_allclose(
+            np.array(updated[0, [1, 2, 4], :]),
+            np.array([[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]], dtype=np.float32),
+        )
+
+    def test_prepare_single_non_streaming_ref_embedding_uses_acoustic_only(self):
+        """Reference prefill uses acoustic embeddings without semantic mixing."""
+        model = self._make_helper_model()
+        model.config = type("Config", (), {"sample_rate": 24000})()
+        model.speech_bias_factor = mx.array(0.0, dtype=mx.float32)
+        model.speech_scaling_factor = mx.array(1.0, dtype=mx.float32)
+
+        acoustic_latents = mx.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=mx.float32)
+
+        class _AcousticEncodeOut:
+            def sample(self, dist_type=None):
+                return acoustic_latents, None
+
+        model.acoustic_tokenizer = MagicMock()
+        model.acoustic_tokenizer.encode.return_value = _AcousticEncodeOut()
+        model.acoustic_tokenizer.std_dist_type = "gaussian"
+        model.acoustic_connector = MagicMock(
+            side_effect=lambda x: x + mx.array(10.0, dtype=mx.float32)
+        )
+        model.semantic_tokenizer = MagicMock()
+        model.semantic_connector = MagicMock()
+
+        ref_embed = model._prepare_single_non_streaming_ref_embedding(
+            mx.array([0.1, -0.1, 0.2], dtype=mx.float32)
+        )
+
+        np.testing.assert_allclose(
+            np.array(ref_embed),
+            np.array([[11.0, 12.0], [13.0, 14.0]], dtype=np.float32),
+        )
+        model.semantic_tokenizer.encode.assert_not_called()
+        model.semantic_connector.assert_not_called()
+
+    def test_causal_conv1d_non_streaming_matches_upstream_stride_padding(self):
+        """Causal strided padding matches the upstream encoder behavior."""
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import CausalConv1d
+
+        conv = CausalConv1d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=4,
+            stride=2,
+            bias=False,
+        )
+        conv.conv.weight = mx.ones_like(conv.conv.weight)
+
+        x = mx.array([[[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]]], dtype=mx.float32)
+        y = conv(x)
+
+        expected = np.array([[[3.0, 10.0, 18.0, 26.0]]], dtype=np.float32)
+        np.testing.assert_allclose(np.array(y), expected, atol=1e-6)
+
+    def test_shift_negative_ids_matches_upstream_style_compaction(self):
+        """Negative token history compaction follows upstream semantics."""
+        model = self._make_helper_model()
+
+        shifted = model._shift_negative_ids([1001, 1003, 1002, 2], start_idx=1)
+
+        self.assertEqual(shifted, [1001, 1003, 1003, 1002])
+
+    def test_shift_negative_cache_compacts_sequence_dimension(self):
+        """Negative KV cache shifting mirrors the token compaction step."""
+        model = self._make_helper_model()
+        k_cache = mx.array([[[[0.0]], [[1.0]], [[2.0]], [[3.0]]]], dtype=mx.float32)
+        v_cache = mx.array([[[[10.0]], [[11.0]], [[12.0]], [[13.0]]]], dtype=mx.float32)
+
+        shifted = model._shift_negative_cache([(k_cache, v_cache)], start_idx=1)
+
+        shifted_k, shifted_v = shifted[0]
+        np.testing.assert_allclose(
+            np.array(shifted_k[:, :, 0, 0]),
+            np.array([[0.0, 1.0, 1.0, 2.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            np.array(shifted_v[:, :, 0, 0]),
+            np.array([[10.0, 11.0, 11.0, 12.0]], dtype=np.float32),
+        )
+
+    def test_reset_negative_cache_on_speech_start_reuses_first_state(self):
+        """Speech-start reset reuses the first cached negative state."""
+        model = self._make_helper_model()
+        k_cache = mx.array([[[[0.0]], [[1.0]], [[2.0]]]], dtype=mx.float32)
+        v_cache = mx.array([[[[5.0]], [[6.0]], [[7.0]]]], dtype=mx.float32)
+
+        reset = model._reset_negative_cache_on_speech_start([(k_cache, v_cache)])
+
+        reset_k, reset_v = reset[0]
+        np.testing.assert_allclose(
+            np.array(reset_k[:, :, 0, 0]),
+            np.array([[0.0, 1.0, 0.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            np.array(reset_v[:, :, 0, 0]),
+            np.array([[5.0, 6.0, 5.0]], dtype=np.float32),
+        )
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_skips_auto_chunking_for_multi_speaker_script(
+        self, _mock_peak_memory
+    ):
+        """Auto-chunking is disabled for multi-speaker scripts."""
+        model = self._make_loop_model()
+        ref_audio = [
+            mx.zeros((16,), dtype=mx.float32),
+            mx.ones((16,), dtype=mx.float32),
+        ]
+        ref_embeds = [
+            mx.zeros((2, 4), dtype=mx.float32),
+            mx.ones((3, 4), dtype=mx.float32),
+        ]
+
+        with patch.object(
+            model,
+            "_prepare_non_streaming_ref_embeddings",
+            return_value=ref_embeds,
+        ) as mock_prepare, patch.object(
+            model,
+            "_build_non_streaming_prompt_tokens",
+            wraps=model._build_non_streaming_prompt_tokens,
+        ) as mock_build, patch.object(
+            model,
+            "_split_non_streaming_text",
+            side_effect=AssertionError("chunking should be skipped for multi-speaker"),
+        ) as mock_split, patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            return_value=model.eos_id,
+        ):
+            result = next(
+                model._generate_non_streaming(
+                    text="Speaker 1: Hello.\nSpeaker 2: Hi there.",
+                    max_tokens=1,
+                    cfg_scale=1.0,
+                    verbose=False,
+                    allow_chunking=True,
+                    ref_audio=ref_audio,
+                )
+            )
+
+        mock_split.assert_not_called()
+        mock_prepare.assert_called_once()
+        build_kwargs = mock_build.call_args.kwargs
+        self.assertEqual(build_kwargs["ref_prompt_steps"], [2, 3])
+        self.assertEqual(
+            build_kwargs["parsed_script"],
+            [(0, " Hello."), (1, " Hi there.")],
+        )
+        self.assertEqual(result.sample_rate, 24000)
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_uses_last_semantic_frame_for_feedback(
+        self, _mock_peak_memory
+    ):
+        """Semantic feedback currently collapses to the last semantic frame."""
+        model = self._make_loop_model()
+        model.acoustic_tokenizer.decode.return_value = mx.array(
+            [[[0.0, 0.0, 0.0, 0.0]]], dtype=mx.float32
+        )
+        semantic_frames = mx.array(
+            [[[1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]]],
+            dtype=mx.float32,
+        )
+        model.semantic_tokenizer.encode.return_value = self._FakeEncoderOutput(
+            semantic_frames
+        )
+
+        with patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=[model.speech_diffusion_id, model.eos_id],
+        ):
+            result = next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=2,
+                    cfg_scale=1.5,
+                    verbose=False,
+                )
+            )
+
+        semantic_input = model.semantic_connector.call_args.args[0]
+        np.testing.assert_allclose(
+            np.array(semantic_input),
+            np.array([[[3.0, 3.0, 3.0, 3.0]]], dtype=np.float32),
+        )
+        self.assertEqual(tuple(semantic_input.shape), (1, 1, 4))
+        self.assertEqual(result.samples, 4)
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_refresh_negative_uses_previous_feedback_embed(
+        self, _mock_peak_memory
+    ):
+        """Negative refresh reuses the previous feedback embedding."""
+        class RecordingLanguageModel:
+            def __init__(self):
+                self.hidden_size = 4
+                self.config = type("Config", (), {"max_position_embeddings": 128})()
+                self.calls = []
+
+            def embed_tokens(self, input_ids):
+                token_id = int(np.array(input_ids)[0, 0])
+                if token_id == 1001:
+                    value = 7.0
+                elif token_id == 1003:
+                    value = 9.0
+                else:
+                    value = float(token_id)
+                return mx.full((1, 1, self.hidden_size), value, dtype=mx.float32)
+
+            def make_cache(self):
+                return []
+
+            def __call__(
+                self,
+                inputs_embeds=None,
+                cache=None,
+                return_layer_last_hidden=False,
+                timing_info=None,
+            ):
+                self.calls.append(np.array(inputs_embeds))
+                if return_layer_last_hidden:
+                    return inputs_embeds, cache, [inputs_embeds[:, -1, :]]
+                return inputs_embeds, cache
+
+        model = self._make_loop_model()
+        model.language_model = RecordingLanguageModel()
+        model.acoustic_tokenizer.decode.return_value = mx.array(
+            [[[0.0, 0.0, 0.0, 0.0]]], dtype=mx.float32
+        )
+        model.semantic_tokenizer.encode.return_value = self._FakeEncoderOutput(
+            mx.zeros((1, 1, 4), dtype=mx.float32)
+        )
+        model.acoustic_connector = MagicMock(
+            side_effect=lambda x: mx.full((1, 1, 4), 3.0, dtype=mx.float32)
+        )
+        model.semantic_connector = MagicMock(
+            side_effect=lambda x: mx.zeros((1, 1, 4), dtype=mx.float32)
+        )
+
+        captured_negative_conditions = []
+
+        def _sample(positive_condition, negative_condition, **kwargs):
+            captured_negative_conditions.append(np.array(negative_condition))
+            return mx.full((1, 4), 0.5, dtype=mx.float32)
+
+        model.sample_speech_tokens = MagicMock(side_effect=_sample)
+
+        with patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=[model.speech_diffusion_id, model.speech_diffusion_id, model.eos_id],
+        ):
+            next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=3,
+                    cfg_scale=1.5,
+                    verbose=False,
+                )
+            )
+
+        self.assertEqual(len(captured_negative_conditions), 2)
+        np.testing.assert_allclose(
+            captured_negative_conditions[0],
+            np.full((1, 4), 7.0, dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            captured_negative_conditions[1],
+            np.full((1, 4), 3.0, dtype=np.float32),
+        )
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_ignores_generic_cli_repetition_penalty_default(
+        self, _mock_peak_memory
+    ):
+        """Generic CLI default repetition_penalty=1.1 is treated as unset."""
+        model = self._make_loop_model()
+        captured = []
+
+        def _select(*args, **kwargs):
+            captured.append(kwargs.get("repetition_penalty"))
+            return model.eos_id
+
+        with patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=_select,
+        ):
+            next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=1,
+                    cfg_scale=1.0,
+                    verbose=False,
+                    repetition_penalty=1.1,
+                    _repetition_penalty_explicit=False,
+                )
+            )
+
+        self.assertEqual(captured, [None])
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_keeps_explicit_repetition_penalty(
+        self, _mock_peak_memory
+    ):
+        """Explicit repetition_penalty values are preserved for VibeVoice."""
+        model = self._make_loop_model()
+        captured = []
+
+        def _select(*args, **kwargs):
+            captured.append(kwargs.get("repetition_penalty"))
+            return model.eos_id
+
+        with patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=_select,
+        ):
+            next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=1,
+                    cfg_scale=1.0,
+                    verbose=False,
+                    repetition_penalty=1.1,
+                    _repetition_penalty_explicit=True,
+                )
+            )
+
+        self.assertEqual(captured, [1.1])
+
+    def test_attention_repeats_kv_heads_before_fast_attention(self):
+        """Attention repeats KV heads before MLX fast attention."""
+        from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig
+        from mlx_audio.tts.models.vibevoice.language_model import (
+            Attention,
+            apply_rotary_pos_emb,
+        )
+
+        config = Qwen2DecoderConfig(
+            model_type="qwen2",
+            hidden_size=8,
+            intermediate_size=16,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            num_hidden_layers=1,
+            rms_norm_eps=1e-6,
+            vocab_size=32,
+            max_position_embeddings=64,
+            rope_theta=1000000.0,
+            head_dim=2,
+        )
+        attn = Attention(config)
+
+        x = mx.arange(0, 32, dtype=mx.float32).reshape(1, 4, 8) / 10.0
+        cos = mx.ones((1, 4, 2), dtype=mx.float32)
+        sin = mx.zeros((1, 4, 2), dtype=mx.float32)
+
+        actual, _ = attn(x, cos, sin, mask=None, cache=None)
+
+        batch_size, seq_len, _ = x.shape
+        q = attn.q_proj(x).reshape(batch_size, seq_len, attn.num_heads, attn.head_dim)
+        k = attn.k_proj(x).reshape(
+            batch_size, seq_len, attn.num_kv_heads, attn.head_dim
+        )
+        v = attn.v_proj(x).reshape(
+            batch_size, seq_len, attn.num_kv_heads, attn.head_dim
+        )
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        q = q.transpose(0, 2, 1, 3).astype(mx.float32)
+        k = mx.repeat(k.transpose(0, 2, 1, 3).astype(mx.float32), 2, axis=1)
+        v = mx.repeat(v.transpose(0, 2, 1, 3).astype(mx.float32), 2, axis=1)
+
+        scores = mx.matmul(q, k.transpose(0, 1, 3, 2)) * attn.scale
+        weights = mx.softmax(scores.astype(mx.float32), axis=-1)
+        expected = mx.matmul(weights, v)
+        expected = attn.o_proj(
+            expected.transpose(0, 2, 1, 3).reshape(batch_size, seq_len, -1)
+        ).astype(mx.float32)
+
+        np.testing.assert_allclose(
+            np.array(actual.astype(mx.float32)),
+            np.array(expected),
+            rtol=1e-4,
+            atol=3e-3,
+        )
+
+    def test_post_load_hook_can_promote_non_streaming_lm_to_fp32(self):
+        """Diagnostic LM fp32 mode promotes LM and lm_head together."""
+        from mlx.utils import tree_map
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        model = Model.__new__(Model)
+        model.is_non_streaming = True
+        model.tokenizer = object()
+        model.language_model = nn.Linear(4, 4)
+        model.lm_head = nn.Linear(4, 4)
+        model.prediction_head = object()
+        model._resolve_non_streaming_token_ids = MagicMock()
+
+        model.language_model.update(
+            tree_map(lambda p: p.astype(mx.bfloat16), model.language_model.parameters())
+        )
+        model.lm_head.update(
+            tree_map(lambda p: p.astype(mx.bfloat16), model.lm_head.parameters())
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "MLX_AUDIO_VIBEVOICE_LM_FP32": "1",
+                "MLX_AUDIO_VIBEVOICE_COMPILE": "0",
+            },
+        ):
+            Model.post_load_hook(model, Path("/tmp"))
+
+        self.assertEqual(model.language_model.weight.dtype, mx.float32)
+        self.assertEqual(model.lm_head.weight.dtype, mx.float32)
+        self.assertIs(model._prediction_head_eager, model.prediction_head)
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_trace_records_raw_and_used_semantic_shapes(
+        self, _mock_peak_memory
+    ):
+        """Trace logging records both raw and collapsed semantic shapes."""
+        model = self._make_loop_model()
+        model.acoustic_tokenizer.decode.return_value = mx.array(
+            [[[0.0, 0.0, 0.0, 0.0]]], dtype=mx.float32
+        )
+        semantic_frames = mx.array(
+            [[[1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]]],
+            dtype=mx.float32,
+        )
+        model.semantic_tokenizer.encode.return_value = self._FakeEncoderOutput(
+            semantic_frames
+        )
+
+        with TemporaryDirectory() as tmpdir, patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=[model.speech_diffusion_id, model.eos_id],
+        ):
+            trace_path = Path(tmpdir) / "feedback_trace.jsonl"
+            next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=2,
+                    cfg_scale=1.5,
+                    verbose=False,
+                    trace_jsonl_path=str(trace_path),
+                    trace_limit=4,
+                )
+            )
+
+            rows = [
+                json.loads(line)
+                for line in trace_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+
+        feedback_rows = [row for row in rows if row.get("event") == "feedback_step"]
+        self.assertEqual(len(feedback_rows), 1)
+        row = feedback_rows[0]
+        self.assertEqual(row["event"], "feedback_step")
+        self.assertEqual(row["control_step"], 1)
+        self.assertEqual(row["diffusion_step"], 1)
+        self.assertEqual(row["semantic_features_raw"]["shape"], [1, 3, 4])
+        self.assertEqual(row["semantic_features_used"]["shape"], [1, 1, 4])
+        self.assertEqual(row["next_embed"]["shape"], [1, 1, 4])
+
+    def test_qwen2model_can_return_per_layer_last_hidden_states(self):
+        """Qwen2Model can expose last hidden states per decoder layer."""
+        from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig
+        from mlx_audio.tts.models.vibevoice.language_model import Qwen2Model
+
+        config = Qwen2DecoderConfig(
+            model_type="qwen2",
+            hidden_size=8,
+            intermediate_size=16,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            num_hidden_layers=3,
+            rms_norm_eps=1e-6,
+            vocab_size=32,
+            max_position_embeddings=64,
+            rope_theta=1000000.0,
+            head_dim=4,
+        )
+        model = Qwen2Model(config)
+        inputs_embeds = mx.zeros((1, 4, 8), dtype=mx.float32)
+
+        hidden, caches, layer_last_hidden = model(
+            inputs_embeds=inputs_embeds,
+            cache=None,
+            return_layer_last_hidden=True,
+        )
+
+        self.assertEqual(tuple(hidden.shape), (1, 4, 8))
+        self.assertEqual(len(caches), 3)
+        self.assertEqual(len(layer_last_hidden), 3)
+        for layer_hidden in layer_last_hidden:
+            self.assertEqual(tuple(layer_hidden.shape), (1, 8))
+
+    def test_diffusion_head_precomputed_condition_matches_regular_forward(self):
+        """Precomputed timestep-conditioned inputs match regular diffusion forward."""
+        from mlx_audio.tts.models.vibevoice.config import DiffusionHeadConfig
+        from mlx_audio.tts.models.vibevoice.diffusion_head import DiffusionHead
+
+        config = DiffusionHeadConfig(
+            model_type="vibevoice_diffusion_head",
+            hidden_size=8,
+            latent_size=4,
+            head_layers=2,
+            head_ffn_ratio=2.0,
+            rms_norm_eps=1e-5,
+        )
+        head = DiffusionHead(config)
+        noisy = mx.arange(8, dtype=mx.float32).reshape(2, 4) / 10.0
+        timesteps = mx.array([10.0, 10.0], dtype=mx.float32)
+        condition = mx.arange(16, dtype=mx.float32).reshape(2, 8) / 100.0
+
+        regular = head(noisy, timesteps, condition)
+        combined = head.condition_with_timestep(condition, timesteps)
+        precomputed = head.forward_with_condition(noisy, combined)
+
+        np.testing.assert_allclose(
+            np.array(regular), np.array(precomputed), atol=1e-6
+        )
+
+    def test_mlx_lm_qwen2_wrapper_preserves_parameter_keys_and_cache_interface(self):
+        """The optional mlx_lm wrapper preserves parameter names and cache shape."""
+        from mlx.utils import tree_flatten
+
+        from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig
+        from mlx_audio.tts.models.vibevoice.language_model import (
+            MlxLmQwen2Model,
+            Qwen2Model,
+        )
+
+        config = Qwen2DecoderConfig(
+            model_type="qwen2",
+            hidden_size=32,
+            intermediate_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            num_hidden_layers=2,
+            rms_norm_eps=1e-6,
+            vocab_size=64,
+            max_position_embeddings=128,
+            rope_theta=1000000.0,
+            head_dim=8,
+        )
+        baseline = Qwen2Model(config, use_norm=True)
+        wrapper = MlxLmQwen2Model(config, use_norm=True)
+
+        baseline_keys = {k for k, _ in tree_flatten(baseline.parameters())}
+        wrapper_keys = {k for k, _ in tree_flatten(wrapper.parameters())}
+        self.assertEqual(baseline_keys, wrapper_keys)
+
+        cache = wrapper.make_cache()
+        self.assertEqual(len(cache), config.num_hidden_layers)
+
+        inputs = mx.zeros((1, 3, config.hidden_size), dtype=mx.float32)
+        hidden, new_cache = wrapper(inputs_embeds=inputs, cache=cache)
+        self.assertEqual(tuple(hidden.shape), (1, 3, config.hidden_size))
+        self.assertEqual(len(new_cache), config.num_hidden_layers)
+
+    def test_diffusion_feedforward_fused_gate_up_matches_regular_path(self):
+        """The fused diffusion FFN path remains numerically equivalent."""
+        from mlx_audio.tts.models.vibevoice.diffusion_head import FeedForwardNetwork
+
+        ffn = FeedForwardNetwork(embed_dim=8, ffn_dim=16)
+        x = mx.arange(24, dtype=mx.float32).reshape(1, 3, 8) / 10.0
+
+        expected = ffn.down_proj(nn.silu(ffn.gate_proj(x)) * ffn.up_proj(x))
+        actual = ffn(x)
+
+        np.testing.assert_allclose(
+            np.array(expected), np.array(actual), atol=1e-6
+        )
 
 
 class TestChatterboxConfig(unittest.TestCase):
