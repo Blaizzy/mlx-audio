@@ -3,7 +3,7 @@ name: Docs Pages
 on:
   push:
     branches:
-      - add-mkdocs-site
+      - main
   workflow_dispatch:
 
 permissions:
