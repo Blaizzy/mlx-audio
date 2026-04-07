@@ -222,6 +222,17 @@ def apply_quantization(
     if quantization is None:
         return
     group_size = quantization.get("group_size", 64)
+    quant_cfg = config.get("quantization", {})
+
+    def candidate_paths(path: str):
+        """Generate normalized path variants used by different save/load stacks."""
+        paths = [path]
+        for prefix in ("model.", "module."):
+            if path.startswith(prefix):
+                paths.append(path[len(prefix) :])
+            else:
+                paths.append(prefix + path)
+        return paths
 
     def get_class_predicate(p, m):
         # Skip layers without quantization capability
@@ -230,18 +241,26 @@ def apply_quantization(
         # Skip layers not divisible by configured group size
         if hasattr(m, "weight") and m.weight.shape[-1] % group_size != 0:
             return False
-        # Use model-specific predicate if available
+        pred_result = None
+        # Use model-specific predicate if available, but do not let it block
+        # already-saved quantized layers. Packed checkpoints with `*.scales`
+        # must still be able to reconstruct the right QuantizedLinear modules
+        # even if the current model predicate is narrower than the checkpoint.
         if model_quant_predicate is not None:
             pred_result = model_quant_predicate(p, m)
             if isinstance(pred_result, dict):
                 return pred_result
-            if not pred_result:
-                return False
         # Handle custom per layer quantizations
-        if p in config["quantization"]:
-            return config["quantization"][p]
+        for cp in candidate_paths(p):
+            if cp in quant_cfg and isinstance(quant_cfg[cp], dict):
+                return quant_cfg[cp]
         # Handle legacy models which may not have everything quantized
-        return f"{p}.scales" in weights
+        for cp in candidate_paths(p):
+            if f"{cp}.scales" in weights:
+                return True
+        if pred_result is not None and not pred_result:
+            return False
+        return False
 
     nn.quantize(
         model,
@@ -374,7 +393,7 @@ def base_load_model(
 
     # Get model config from model class if it exists, otherwise use the config
     model_config = (
-        model_class.ModelConfig.from_dict(config)
+        model_class.ModelConfig.from_dict(dict(config))
         if hasattr(model_class, "ModelConfig")
         else config
     )
@@ -383,13 +402,22 @@ def base_load_model(
     # Load weights
     weights = load_weights(model_path)
 
+    # Apply quantization if specified.
+    # Important: do this *before* sanitize for quantized checkpoints so that
+    # sanitize sees quantized parameter shapes (weight/scales/biases) and does
+    # not drop quantization tensors.
+    model_quant_predicate = getattr(model, "model_quant_predicate", None)
+    has_quantization = config.get("quantization", None) is not None
+    if has_quantization:
+        apply_quantization(model, config, weights, model_quant_predicate)
+
     # Sanitize weights if the model has a sanitize method
     if hasattr(model, "sanitize"):
         weights = model.sanitize(weights)
 
-    # Apply quantization if specified
-    model_quant_predicate = getattr(model, "model_quant_predicate", None)
-    apply_quantization(model, config, weights, model_quant_predicate)
+    # Non-quantized path keeps the previous order.
+    if not has_quantization:
+        apply_quantization(model, config, weights, model_quant_predicate)
 
     model.load_weights(list(weights.items()), strict=strict)
 

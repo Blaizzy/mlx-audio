@@ -266,6 +266,12 @@ def convert(
             mode=q_mode,
             quant_predicate=quant_predicate,
         )
+        if hasattr(model, "quantized_component_prefixes"):
+            quantization_cfg = dict(config.get("quantization", {}))
+            quantization_cfg["quantized_components"] = list(
+                model.quantized_component_prefixes()
+            )
+            config["quantization"] = quantization_cfg
 
     if dequantize:
         print("[INFO] Dequantizing")

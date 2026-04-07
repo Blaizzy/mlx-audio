@@ -105,7 +105,7 @@ def hertz_to_mel(pitch: float) -> float:
 def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
-    max_tokens: int = 1200,
+    max_tokens: Optional[int] = None,
     voice: str = "af_heart",
     prompt: Optional[str] = None,
     instruct: Optional[str] = None,
@@ -226,7 +226,6 @@ def generate_audio(
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             temperature=temperature,
-            max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
@@ -234,6 +233,8 @@ def generate_audio(
             use_zero_spk_emb=use_zero_spk_emb,
             **kwargs,
         )
+        if max_tokens is not None:
+            gen_kwargs["max_tokens"] = int(max_tokens)
         if prompt is not None:
             gen_kwargs["prompt"] = prompt
         if sigma is not None:
@@ -315,8 +316,8 @@ def parse_args():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=1200,
-        help="Maximum number of tokens to generate",
+        default=None,
+        help="Maximum control tokens to generate (default: model-specific auto budget)",
     )
     parser.add_argument(
         "--text",
@@ -359,6 +360,61 @@ def parse_args():
         type=int,
         default=None,
         help="Override diffusion steps. Higher = better quality, slower (try 30-50).",
+    )
+    parser.add_argument(
+        "--cfg_active_ratio",
+        type=float,
+        default=1.0,
+        help=(
+            "DEPRECATED: kept for compatibility, ignored by VibeVoice runtime. "
+            "Full CFG is always used for quality/stability."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default=None,
+        choices=[
+            "robust_fast",
+            "fast",
+            "robust_dual",
+            "dual",
+            "robust",
+            "normal",
+            "natural",
+            "creative",
+        ],
+        help="VibeVoice non-streaming stability mode preset.",
+    )
+    parser.add_argument(
+        "--max_length_times",
+        type=float,
+        default=2.0,
+        help="VibeVoice generation length multiplier relative to prompt length.",
+    )
+    parser.add_argument(
+        "--refresh_negative",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="VibeVoice CFG negative-branch refresh behavior.",
+    )
+    parser.add_argument(
+        "--use_semantic_feedback",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="VibeVoice semantic feedback loop toggle (default depends on mode).",
+    )
+    parser.add_argument(
+        "--diffusion_fp32",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Run VibeVoice diffusion in float32 (higher quality, slower).",
+    )
+    parser.add_argument(
+        "--allow_chunking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable text chunking for VibeVoice non-streaming generation (disabled by default).",
     )
 
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
@@ -413,8 +469,8 @@ def parse_args():
     parser.add_argument(
         "--repetition_penalty",
         type=float,
-        default=1.1,
-        help="Repetition penalty for the model",
+        default=None,
+        help="Optional repetition penalty for the model",
     )
     parser.add_argument(
         "--stream",
