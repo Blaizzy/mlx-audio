@@ -19,7 +19,7 @@ jobs:
   build:
     runs-on: macos-14
     env:
-      SITE_URL: https://shreyaskarnik.github.io/mlx-audio/
+      SITE_URL: https://blaizzy.github.io/mlx-audio/
     steps:
       - uses: actions/checkout@v6
 
