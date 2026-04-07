@@ -413,8 +413,8 @@ def parse_args():
     parser.add_argument(
         "--repetition_penalty",
         type=float,
-        default=None,
-        help="Optional repetition penalty for the model",
+        default=1.1,
+        help="Repetition penalty for the model",
     )
     parser.add_argument(
         "--stream",
