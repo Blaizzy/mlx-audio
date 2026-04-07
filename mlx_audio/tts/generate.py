@@ -361,15 +361,6 @@ def parse_args():
         help="Override diffusion steps. Higher = better quality, slower (try 30-50).",
     )
     parser.add_argument(
-        "--cfg_active_ratio",
-        type=float,
-        default=1.0,
-        help=(
-            "DEPRECATED: kept for compatibility, ignored by VibeVoice runtime. "
-            "Full CFG is always used for quality/stability."
-        ),
-    )
-    parser.add_argument(
         "--mode",
         type=str,
         default=None,
