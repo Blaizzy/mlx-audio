@@ -4341,5 +4341,394 @@ class TestAudioDiTModel(unittest.TestCase):
         )
 
 
+class TestMeloTTSConfig(unittest.TestCase):
+    """Tests for MeloTTS model config."""
+
+    def test_config_defaults(self):
+        from mlx_audio.tts.models.melotts import ModelConfig
+
+        config = ModelConfig()
+        self.assertEqual(config.sample_rate, 44100)
+        self.assertEqual(config.inter_channels, 192)
+        self.assertEqual(config.hidden_channels, 192)
+        self.assertEqual(config.n_heads, 2)
+        self.assertEqual(config.n_layers, 6)
+        self.assertEqual(config.n_vocab, 219)
+        self.assertEqual(config.num_tones, 16)
+        self.assertEqual(config.num_languages, 10)
+        self.assertEqual(config.gin_channels, 256)
+
+    def test_config_from_dict(self):
+        from mlx_audio.tts.models.melotts import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "sampling_rate": 22050,
+                "n_vocab": 100,
+                "num_languages": 8,
+                "spk2id": {"EN-US": 0},
+            }
+        )
+        self.assertEqual(config.sample_rate, 22050)
+        self.assertEqual(config.n_vocab, 100)
+        self.assertEqual(config.num_languages, 8)
+        self.assertEqual(config.spk2id, {"EN-US": 0})
+
+
+class TestMeloTTSModel(unittest.TestCase):
+    """Tests for MeloTTS model instantiation and components."""
+
+    @property
+    def _default_config(self):
+        from mlx_audio.tts.models.melotts import ModelConfig
+
+        return ModelConfig(
+            n_vocab=50,
+            n_speakers=4,
+            spk2id={"EN-Default": 0},
+            inter_channels=32,
+            hidden_channels=32,
+            filter_channels=64,
+            n_heads=2,
+            n_layers=2,
+            n_layers_trans_flow=2,
+            gin_channels=32,
+            upsample_initial_channel=64,
+            upsample_rates=[4, 4],
+            upsample_kernel_sizes=[8, 8],
+            resblock_kernel_sizes=[3],
+            resblock_dilation_sizes=[[1, 3]],
+            num_tones=16,
+            num_languages=10,
+        )
+
+    def test_model_init(self):
+        from mlx_audio.tts.models.melotts import Model
+
+        config = self._default_config
+        model = Model(config)
+        self.assertIsInstance(model, nn.Module)
+        self.assertEqual(model.sample_rate, 44100)
+
+    def test_model_components_exist(self):
+        from mlx_audio.tts.models.melotts import Model
+
+        model = Model(self._default_config)
+        self.assertIsNotNone(model.enc_p)
+        self.assertIsNotNone(model.dec)
+        self.assertIsNotNone(model.enc_q)
+        self.assertIsNotNone(model.dp)
+        self.assertIsNotNone(model.sdp)
+        self.assertIsNotNone(model.emb_g)
+        self.assertEqual(len(model.flow_layers), 8)  # 4 coupling + 4 flip
+
+    def test_sanitize_skips_discriminator(self):
+        from mlx_audio.tts.models.melotts import Model
+
+        model = Model(self._default_config)
+        weights = {
+            "enc_p.emb.weight": mx.zeros((50, 32)),
+            "net_dur_disc.something": mx.zeros(10),
+            "net_d.layer": mx.zeros(10),
+        }
+        sanitized = model.sanitize(weights)
+        self.assertIn("enc_p.emb.weight", sanitized)
+        self.assertNotIn("net_dur_disc.something", sanitized)
+        self.assertNotIn("net_d.layer", sanitized)
+
+    def test_sanitize_weight_norm_merge(self):
+        from mlx_audio.tts.models.melotts import Model
+
+        model = Model(self._default_config)
+        weights = {
+            "dec.ups.0.weight_g": mx.ones((4, 1, 1)),
+            "dec.ups.0.weight_v": mx.ones((4, 2, 8)) * 2.0,
+        }
+        sanitized = model.sanitize(weights)
+        self.assertNotIn("dec.ups.0.weight_g", sanitized)
+        self.assertNotIn("dec.ups.0.weight_v", sanitized)
+        self.assertIn("dec.ups.0.weight", sanitized)
+
+    def test_sanitize_flow_remapping(self):
+        from mlx_audio.tts.models.melotts import Model
+
+        model = Model(self._default_config)
+        weights = {
+            "flow.flows.0.pre.weight": mx.zeros((32, 16, 1)),
+        }
+        sanitized = model.sanitize(weights)
+        self.assertIn("flow_layers.0.pre.weight", sanitized)
+        self.assertNotIn("flow.flows.0.pre.weight", sanitized)
+
+    def test_sanitize_layernorm_rename(self):
+        from mlx_audio.tts.models.melotts import Model
+
+        model = Model(self._default_config)
+        weights = {
+            "dp.norm_1.gamma": mx.ones(32),
+            "dp.norm_1.beta": mx.zeros(32),
+        }
+        sanitized = model.sanitize(weights)
+        self.assertIn("dp.norm_1.weight", sanitized)
+        self.assertIn("dp.norm_1.bias", sanitized)
+        self.assertNotIn("dp.norm_1.gamma", sanitized)
+
+    def test_infer_shapes(self):
+        """Test that infer produces audio with correct shape."""
+        from mlx_audio.tts.models.melotts import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        B, T = 1, 10
+        audio = model.infer(
+            x=mx.zeros((B, T), dtype=mx.int32),
+            x_lengths=mx.array([T]),
+            sid=mx.array([0]),
+            tone=mx.zeros((B, T), dtype=mx.int32),
+            language=mx.zeros((B, T), dtype=mx.int32),
+            bert=mx.zeros((B, 1024, T)),
+            ja_bert=mx.zeros((B, 768, T)),
+        )
+        # Force computation
+        audio_np = np.array(audio)
+        self.assertEqual(audio.ndim, 3)
+        self.assertEqual(audio.shape[0], 1)  # batch
+        self.assertEqual(audio.shape[1], 1)  # mono channel
+
+
+class TestMeloTTSText(unittest.TestCase):
+    """Tests for MeloTTS text processing pipeline."""
+
+    def test_text_normalize(self):
+        from mlx_audio.tts.models.melotts.text import text_normalize
+
+        self.assertEqual(text_normalize("Dr. Smith"), "doctor smith")
+        self.assertIn("forty two", text_normalize("42"))
+        self.assertIn("three point one four", text_normalize("3.14"))
+
+    def test_g2p_basic(self):
+        from mlx_audio.tts.models.melotts.text import g2p, text_normalize
+
+        phones, tones, word2ph = g2p(text_normalize("hello"))
+        self.assertEqual(phones[0], "_")  # pad start
+        self.assertEqual(phones[-1], "_")  # pad end
+        self.assertIn("hh", phones)
+        self.assertEqual(len(phones), sum(word2ph))
+
+    def test_g2p_punctuation(self):
+        from mlx_audio.tts.models.melotts.text import g2p, text_normalize
+
+        phones, tones, word2ph = g2p(text_normalize("hello, world."))
+        self.assertIn(",", phones)
+        self.assertIn(".", phones)
+
+    def test_cleaned_text_to_sequence(self):
+        from mlx_audio.tts.models.melotts.text import cleaned_text_to_sequence
+
+        phones = ["_", "hh", "ah", "_"]
+        tones = [0, 0, 1, 0]
+        phone_ids, tone_ids, lang_ids = cleaned_text_to_sequence(phones, tones, "EN")
+        self.assertEqual(len(phone_ids), 4)
+        self.assertEqual(len(tone_ids), 4)
+        # EN tone offset is 7
+        self.assertEqual(tone_ids[0], 7)  # 0 + 7
+        self.assertEqual(tone_ids[2], 8)  # 1 + 7
+        # EN lang id is 2
+        self.assertTrue(all(lid == 2 for lid in lang_ids))
+
+    def test_load_symbols_from_config(self):
+        import mlx_audio.tts.models.melotts.text as text_mod
+
+        original_symbols = list(text_mod.symbols)
+        try:
+            test_symbols = ["_", "a", "b", "c"]
+            text_mod.load_symbols_from_config(test_symbols)
+            # Access via module to see updated globals
+            self.assertEqual(len(text_mod.symbols), 4)
+            self.assertEqual(text_mod._symbol_to_id["a"], 1)
+            self.assertEqual(text_mod._symbol_to_id["c"], 3)
+        finally:
+            text_mod.load_symbols_from_config(original_symbols)
+
+    def test_process_text_returns_correct_keys(self):
+        from mlx_audio.tts.models.melotts.text import process_text
+
+        result = process_text("hello", bert_model=None, language="EN", add_blank=True)
+        self.assertIn("phone_ids", result)
+        self.assertIn("tone_ids", result)
+        self.assertIn("lang_ids", result)
+        self.assertIn("bert_features", result)
+        self.assertIn("phones", result)
+        self.assertIn("norm_text", result)
+
+    def test_process_text_blank_insertion(self):
+        from mlx_audio.tts.models.melotts.text import process_text
+
+        result_blank = process_text(
+            "hi", bert_model=None, language="EN", add_blank=True
+        )
+        result_no_blank = process_text(
+            "hi", bert_model=None, language="EN", add_blank=False
+        )
+        # With blanks, every phone is surrounded by pad symbols
+        self.assertGreater(
+            len(result_blank["phone_ids"]), len(result_no_blank["phone_ids"])
+        )
+
+    def test_bert_features_shape(self):
+        from mlx_audio.tts.models.melotts.text import process_text
+
+        result = process_text("hello", bert_model=None, language="EN", add_blank=True)
+        # Without BERT model, features are zeros
+        self.assertEqual(result["bert_features"].shape[0], 768)
+        self.assertEqual(result["bert_features"].shape[1], len(result["phone_ids"]))
+
+
+class TestMeloTTSBert(unittest.TestCase):
+    """Tests for MeloTTS BERT model."""
+
+    def test_bert_config_defaults(self):
+        from mlx_audio.tts.models.melotts.bert import BertConfig
+
+        config = BertConfig()
+        self.assertEqual(config.vocab_size, 30522)
+        self.assertEqual(config.hidden_size, 768)
+        self.assertEqual(config.num_hidden_layers, 12)
+        self.assertEqual(config.num_attention_heads, 12)
+
+    def test_bert_model_init(self):
+        from mlx_audio.tts.models.melotts.bert import BertConfig, BertModel
+
+        config = BertConfig(
+            num_hidden_layers=2,
+            hidden_size=64,
+            num_attention_heads=2,
+            intermediate_size=128,
+        )
+        model = BertModel(config)
+        self.assertIsNotNone(model.embeddings)
+        self.assertIsNotNone(model.encoder)
+        self.assertIsNotNone(model.pooler)
+
+    def test_bert_forward(self):
+        from mlx_audio.tts.models.melotts.bert import BertConfig, BertModel
+
+        config = BertConfig(
+            num_hidden_layers=2,
+            hidden_size=64,
+            num_attention_heads=2,
+            intermediate_size=128,
+        )
+        model = BertModel(config)
+        input_ids = mx.array([[1, 2, 3, 4]])
+        seq_out, pooled, hidden_states = model(input_ids)
+        seq_out_np = np.array(seq_out)
+        pooled_np = np.array(pooled)
+        self.assertEqual(seq_out.shape, (1, 4, 64))
+        self.assertEqual(pooled.shape, (1, 64))
+        self.assertIsNone(hidden_states)
+
+    def test_bert_extract_features(self):
+        from mlx_audio.tts.models.melotts.bert import BertConfig, BertModel
+
+        config = BertConfig(
+            num_hidden_layers=4,
+            hidden_size=64,
+            num_attention_heads=2,
+            intermediate_size=128,
+        )
+        model = BertModel(config)
+        input_ids = mx.array([[1, 2, 3]])
+        features = model.extract_features(input_ids)
+        features_np = np.array(features)
+        # extract_features returns hidden_states[-3] (3rd from last)
+        self.assertEqual(features.shape, (1, 3, 64))
+
+
+class TestMeloTTSHiFiGAN(unittest.TestCase):
+    """Tests for MeloTTS HiFi-GAN decoder."""
+
+    def test_generator_init(self):
+        from mlx_audio.tts.models.melotts.hifigan import Generator
+
+        gen = Generator(
+            initial_channel=32,
+            resblock="1",
+            resblock_kernel_sizes=[3],
+            resblock_dilation_sizes=[[1, 3]],
+            upsample_rates=[4, 4],
+            upsample_initial_channel=64,
+            upsample_kernel_sizes=[8, 8],
+            gin_channels=32,
+        )
+        self.assertEqual(gen.num_upsamples, 2)
+        self.assertEqual(gen.num_kernels, 1)
+
+    def test_generator_forward(self):
+        from mlx_audio.tts.models.melotts.hifigan import Generator
+
+        gen = Generator(
+            initial_channel=32,
+            resblock="1",
+            resblock_kernel_sizes=[3],
+            resblock_dilation_sizes=[[1, 3]],
+            upsample_rates=[4, 4],
+            upsample_initial_channel=64,
+            upsample_kernel_sizes=[8, 8],
+            gin_channels=32,
+        )
+        z = mx.zeros((1, 32, 10))
+        g = mx.zeros((1, 32, 1))
+        audio = gen(z, g=g)
+        audio_np = np.array(audio)
+        self.assertEqual(audio.shape[0], 1)
+        self.assertEqual(audio.shape[1], 1)
+        # 10 frames * 4 * 4 = 160 samples
+        self.assertEqual(audio.shape[2], 160)
+
+
+class TestMeloTTSAttentions(unittest.TestCase):
+    """Tests for MeloTTS attention modules."""
+
+    def test_layernorm_channel_first(self):
+        from mlx_audio.tts.models.melotts.attentions import LayerNorm
+
+        ln = LayerNorm(32)
+        x = mx.random.normal((1, 32, 10))
+        out = ln(x)
+        out_np = np.array(out)
+        self.assertEqual(out.shape, (1, 32, 10))
+
+    def test_encoder_init(self):
+        from mlx_audio.tts.models.melotts.attentions import Encoder
+
+        enc = Encoder(
+            hidden_channels=32,
+            filter_channels=64,
+            n_heads=2,
+            n_layers=2,
+            kernel_size=3,
+            gin_channels=32,
+        )
+        self.assertEqual(len(enc.attn_layers), 2)
+        self.assertEqual(len(enc.ffn_layers), 2)
+        self.assertTrue(hasattr(enc, "spk_emb_linear"))
+
+    def test_encoder_cond_layer_idx(self):
+        from mlx_audio.tts.models.melotts.attentions import Encoder
+
+        enc = Encoder(
+            hidden_channels=32,
+            filter_channels=64,
+            n_heads=2,
+            n_layers=4,
+            kernel_size=3,
+            gin_channels=32,
+            cond_layer_idx=2,
+        )
+        self.assertEqual(enc.cond_layer_idx, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
