@@ -1,9 +1,7 @@
 "use client"
 
-import type React from "react"
-
-import { useState, useEffect } from "react"
-import { Bookmark, ChevronDown, Play } from "lucide-react"
+import { useState, useEffect, type MouseEvent } from "react"
+import { Play } from "lucide-react"
 
 type Voice = {
   id: string
@@ -13,112 +11,119 @@ type Voice = {
   age: string
   accent: string
   region: string
-  isSelected?: boolean
   tags?: string[]
 }
 
 const voices: Voice[] = [
   {
-    id: "trustworthy-man",
-    name: "Trustworthy Man",
+    id: "af_heart",
+    name: "Heart",
     language: "English",
-    gender: "Male",
+    gender: "Female",
     age: "Adult",
-    accent: "Resonate",
-    region: "EN-US (General)",
-    isSelected: true,
+    accent: "Warm",
+    region: "EN-US (American)",
   },
   {
-    id: "expressive-narrator",
-    name: "Expressive Narrator",
+    id: "af_bella",
+    name: "Bella",
     language: "English",
-    gender: "Male",
+    gender: "Female",
     age: "Adult",
-    accent: "Audiobook",
-    region: "EN-British",
+    accent: "Bright",
+    region: "EN-US (American)",
   },
   {
-    id: "radiant-girl",
-    name: "Radiant Girl",
+    id: "af_nova",
+    name: "Nova",
+    language: "English",
+    gender: "Female",
+    age: "Adult",
+    accent: "Clear",
+    region: "EN-US (American)",
+  },
+  {
+    id: "af_sky",
+    name: "Sky",
     language: "English",
     gender: "Female",
     age: "Young Adult",
     accent: "Lively",
-    region: "EN-US (General)",
+    region: "EN-US (American)",
   },
   {
-    id: "magnetic-voiced-male",
-    name: "Magnetic-voiced Male",
+    id: "am_adam",
+    name: "Adam",
     language: "English",
     gender: "Male",
     age: "Adult",
-    accent: "Ad",
-    region: "EN-US (General)",
+    accent: "Deep",
+    region: "EN-US (American)",
   },
   {
-    id: "compelling-lady",
-    name: "Compelling Lady",
+    id: "am_echo",
+    name: "Echo",
+    language: "English",
+    gender: "Male",
+    age: "Adult",
+    accent: "Resonant",
+    region: "EN-US (American)",
+  },
+  {
+    id: "bf_alice",
+    name: "Alice",
     language: "English",
     gender: "Female",
     age: "Adult",
-    accent: "Broadcast",
+    accent: "Refined",
     region: "EN-British",
   },
   {
-    id: "aussie-bloke",
-    name: "Aussie Bloke",
-    language: "English",
-    gender: "Male",
-    age: "Adult",
-    accent: "Bright",
-    region: "EN-Australian",
-  },
-  {
-    id: "captivating-female",
-    name: "Captivating Female",
+    id: "bf_emma",
+    name: "Emma",
     language: "English",
     gender: "Female",
     age: "Adult",
-    accent: "News Report",
-    region: "EN-US (General)",
-  },
-  {
-    id: "upbeat-woman",
-    name: "Upbeat Woman",
-    language: "English",
-    gender: "Female",
-    age: "Adult",
-    accent: "Bright",
-    region: "EN-US (General)",
-  },
-  {
-    id: "calm-woman",
-    name: "Calm Woman",
-    language: "English",
-    gender: "Female",
-    age: "Adult",
-    accent: "Audiobook",
-    region: "EN-US (General)",
-  },
-  {
-    id: "upset-girl",
-    name: "Upset Girl",
-    language: "English",
-    gender: "Female",
-    age: "Young Adult",
-    accent: "Sad",
+    accent: "Clear",
     region: "EN-British",
   },
   {
-    id: "gentle-voiced-man",
-    name: "Gentle-voiced Man",
+    id: "bm_daniel",
+    name: "Daniel",
     language: "English",
     gender: "Male",
     age: "Adult",
-    accent: "Resonate",
-    region: "EN-US (General)",
+    accent: "Deep",
+    region: "EN-British",
+  },
+  {
+    id: "bm_george",
+    name: "George",
+    language: "English",
+    gender: "Male",
+    age: "Adult",
+    accent: "Warm",
+    region: "EN-British",
   },
 ]
+
+export function getVoiceDisplayName(voiceId: string): string {
+  const voice = voices.find(v => v.id === voiceId)
+  return voice?.name || voiceId
+}
+
+export const VOICE_GRADIENT_COLORS: Record<string, string> = {
+  af_heart: "from-pink-400 to-rose-500",
+  af_bella: "from-purple-400 to-pink-500",
+  af_nova: "from-sky-400 to-blue-500",
+  af_sky: "from-cyan-400 to-sky-500",
+  am_adam: "from-blue-400 to-indigo-600",
+  am_echo: "from-indigo-400 to-purple-500",
+  bf_alice: "from-rose-400 to-pink-500",
+  bf_emma: "from-amber-400 to-orange-500",
+  bm_daniel: "from-slate-400 to-gray-600",
+  bm_george: "from-teal-400 to-emerald-500",
+}
 
 interface VoiceLibraryProps {
   onClose?: () => void
@@ -135,57 +140,28 @@ export function VoiceLibrary({
 }: VoiceLibraryProps) {
   const [activeTab, setActiveTab] = useState<"library" | "my-voices">("library")
   const [selectedVoice, setSelectedVoice] = useState(
-    initialSelectedVoice
-      ? voices.find((v) => v.name === initialSelectedVoice)?.id || "trustworthy-man"
-      : "trustworthy-man",
+    initialSelectedVoice || "af_heart",
   )
   const [language, setLanguage] = useState("")
   const [accent, setAccent] = useState("")
   const [gender, setGender] = useState("")
   const [age, setAge] = useState("")
-  const [bookmarkedVoices, setBookmarkedVoices] = useState<string[]>([])
   const [isCloneModalOpen, setIsCloneModalOpen] = useState(false)
 
   useEffect(() => {
     if (initialSelectedVoice) {
-      const voiceId = voices.find((v) => v.name === initialSelectedVoice)?.id
-      if (voiceId) {
-        setSelectedVoice(voiceId)
-      }
+      setSelectedVoice(initialSelectedVoice)
     }
   }, [initialSelectedVoice])
 
-  const getGradientForVoice = (voiceId: string) => {
-    // Map of voice IDs to gradient classes
-    const gradientMap: Record<string, string> = {
-      "trustworthy-man": "bg-gradient-to-br from-blue-400 to-indigo-600",
-      "expressive-narrator": "bg-gradient-to-br from-purple-400 to-indigo-500",
-      "radiant-girl": "bg-gradient-to-br from-pink-400 to-orange-300",
-      "magnetic-voiced-male": "bg-gradient-to-br from-sky-400 to-blue-600",
-      "compelling-lady": "bg-gradient-to-br from-rose-400 to-red-500",
-      "aussie-bloke": "bg-gradient-to-br from-amber-400 to-orange-500",
-      "captivating-female": "bg-gradient-to-br from-teal-400 to-emerald-500",
-      "upbeat-woman": "bg-gradient-to-br from-green-400 to-emerald-500",
-      "calm-woman": "bg-gradient-to-br from-indigo-400 to-purple-500",
-      "upset-girl": "bg-gradient-to-br from-rose-300 to-pink-500",
-      "gentle-voiced-man": "bg-gradient-to-br from-cyan-400 to-blue-500",
-    }
-
-    // Return the gradient class or a default gradient if not found
-    return gradientMap[voiceId] || "bg-gradient-to-br from-gray-400 to-gray-600"
-  }
+  const getGradientForVoice = (voiceId: string) =>
+    `bg-gradient-to-br ${VOICE_GRADIENT_COLORS[voiceId] || "from-gray-400 to-gray-600"}`
 
   const handleSelectVoice = (voiceId: string) => {
     setSelectedVoice(voiceId)
-    // Get the voice name from the voices array
-    const selectedVoiceName = voices.find((v) => v.id === voiceId)?.name || "Trustworthy Man"
-
-    // Call the onSelectVoice callback if provided
     if (onSelectVoice) {
-      onSelectVoice(selectedVoiceName)
+      onSelectVoice(voiceId)
     }
-
-    // In a real app, this would update the selected voice in the parent component
     if (onClose) {
       setTimeout(() => {
         onClose()
@@ -193,27 +169,12 @@ export function VoiceLibrary({
     }
   }
 
-  const handleBookmark = (e: React.MouseEvent, voiceId: string) => {
+  const handleUseVoice = (e: MouseEvent, voiceId: string) => {
     e.stopPropagation()
-    setBookmarkedVoices((prev) => (prev.includes(voiceId) ? prev.filter((id) => id !== voiceId) : [...prev, voiceId]))
-  }
-
-  const handleUseVoice = (e: React.MouseEvent, voiceId: string) => {
-    e.stopPropagation()
-    // Set the selected voice
     setSelectedVoice(voiceId)
-
-    // Get the voice name from the voices array
-    const selectedVoiceName = voices.find((v) => v.id === voiceId)?.name || "Trustworthy Man"
-
-    // Call the onSelectVoice callback if provided
     if (onSelectVoice) {
-      onSelectVoice(selectedVoiceName)
+      onSelectVoice(voiceId)
     }
-
-    // Provide visual feedback
-    const voiceName = voices.find((v) => v.id === voiceId)?.name
-    console.log(`Voice selected: ${voiceName}`)
   }
 
   const handleCreateVoice = () => {
@@ -223,11 +184,8 @@ export function VoiceLibrary({
   return (
     <div
       className="flex flex-col h-full"
-      onClick={() => console.log("Current selected voice:", selectedVoice)}
       style={{ display: "grid", gridTemplateRows: "auto 1fr", height: "100%" }}
     >
-
-
       <div className="overflow-y-auto">
         <div className="space-y-2">
           {activeTab === "library" ? (
@@ -275,12 +233,6 @@ export function VoiceLibrary({
                       Use
                     </button>
                   )}
-                  <button
-                    className={`${bookmarkedVoices.includes(voice.id) ? "text-yellow-500" : "text-gray-400"} hover:text-yellow-500`}
-                    onClick={(e) => handleBookmark(e, voice.id)}
-                  >
-                    <Bookmark className="h-4 w-4" />
-                  </button>
                 </div>
               </div>
             ))
