@@ -1250,7 +1250,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         )
 
     def test_init(self):
-        """Test VibeVoiceModel initialization."""
+        """Model initializes the expected VibeVoice components."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         # Initialize model
@@ -1268,7 +1268,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertIsNotNone(model.tts_eos_classifier)
 
     def test_sample_rate(self):
-        """Test VibeVoiceModel sample_rate property."""
+        """Model exposes the configured sample rate."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         config = self._default_config
@@ -1277,7 +1277,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(model.sample_rate, 24000)
 
     def test_get_input_embeddings(self):
-        """Test VibeVoiceModel get_input_embeddings method."""
+        """Model returns the decoder token embedding table."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         config = self._default_config
@@ -1288,7 +1288,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(embeddings.weight.shape[0], config.decoder_config.vocab_size)
 
     def test_sanitize(self):
-        """Test VibeVoiceModel sanitize method."""
+        """Sanitize accepts native parameter dictionaries."""
         from mlx.utils import tree_flatten
 
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
@@ -1304,7 +1304,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertIsInstance(sanitized, dict)
 
     def test_sanitize_huggingface_keys(self):
-        """Test VibeVoiceModel sanitize transforms HuggingFace keys."""
+        """Sanitize rewrites upstream HuggingFace-style parameter names."""
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
         config = self._default_config
@@ -1348,7 +1348,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertIn(f"{quant_key}.biases", sanitized)
 
     def test_config_defaults(self):
-        """Test VibeVoiceModel uses correct config defaults."""
+        """Default config values match the expected VibeVoice architecture."""
         from mlx_audio.tts.models.vibevoice.config import ModelConfig
 
         config = ModelConfig()
@@ -1542,6 +1542,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         return model
 
     def test_parse_non_streaming_script_plain_text_defaults_to_speaker_zero(self):
+        """Plain text is normalized into a single-speaker script."""
         model = self._make_helper_model()
 
         parsed = model._parse_non_streaming_script("Hello there.\nGeneral Kenobi.")
@@ -1549,6 +1550,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         self.assertEqual(parsed, [(0, " Hello there. General Kenobi.")])
 
     def test_parse_non_streaming_script_normalizes_multi_speaker_labels(self):
+        """Speaker labels are compacted into stable zero-based ids."""
         model = self._make_helper_model()
 
         parsed = model._parse_non_streaming_script(
@@ -1568,6 +1570,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         )
 
     def test_build_non_streaming_prompt_tokens_supports_multiple_speakers(self):
+        """Prompt building inserts separate reference spans per speaker."""
         model = self._make_helper_model()
         parsed = [
             (0, " First."),
@@ -1587,6 +1590,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         self.assertEqual(sum(speech_input_mask), 5)
 
     def test_normalize_non_streaming_ref_audios_validates_length(self):
+        """Reference audio count must match the parsed speaker count."""
         model = self._make_helper_model()
 
         with self.assertRaisesRegex(ValueError, "must match the number of speakers"):
@@ -1596,6 +1600,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
             )
 
     def test_inject_prefill_speech_embeddings_accepts_per_speaker_lists(self):
+        """Per-speaker prefill embeddings are injected in prompt order."""
         model = self._make_helper_model()
         input_embeds = mx.zeros((1, 5, 2), dtype=mx.float32)
         speech_input_mask = [False, True, True, False, True]
@@ -1616,6 +1621,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         )
 
     def test_prepare_single_non_streaming_ref_embedding_uses_acoustic_only(self):
+        """Reference prefill uses acoustic embeddings without semantic mixing."""
         model = self._make_helper_model()
         model.config = type("Config", (), {"sample_rate": 24000})()
         model.speech_bias_factor = mx.array(0.0, dtype=mx.float32)
@@ -1648,6 +1654,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         model.semantic_connector.assert_not_called()
 
     def test_causal_conv1d_non_streaming_matches_upstream_stride_padding(self):
+        """Causal strided padding matches the upstream encoder behavior."""
         from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import CausalConv1d
 
         conv = CausalConv1d(
@@ -1666,6 +1673,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         np.testing.assert_allclose(np.array(y), expected, atol=1e-6)
 
     def test_shift_negative_ids_matches_upstream_style_compaction(self):
+        """Negative token history compaction follows upstream semantics."""
         model = self._make_helper_model()
 
         shifted = model._shift_negative_ids([1001, 1003, 1002, 2], start_idx=1)
@@ -1673,6 +1681,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         self.assertEqual(shifted, [1001, 1003, 1003, 1002])
 
     def test_shift_negative_cache_compacts_sequence_dimension(self):
+        """Negative KV cache shifting mirrors the token compaction step."""
         model = self._make_helper_model()
         k_cache = mx.array([[[[0.0]], [[1.0]], [[2.0]], [[3.0]]]], dtype=mx.float32)
         v_cache = mx.array([[[[10.0]], [[11.0]], [[12.0]], [[13.0]]]], dtype=mx.float32)
@@ -1690,6 +1699,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         )
 
     def test_reset_negative_cache_on_speech_start_reuses_first_state(self):
+        """Speech-start reset reuses the first cached negative state."""
         model = self._make_helper_model()
         k_cache = mx.array([[[[0.0]], [[1.0]], [[2.0]]]], dtype=mx.float32)
         v_cache = mx.array([[[[5.0]], [[6.0]], [[7.0]]]], dtype=mx.float32)
@@ -1710,6 +1720,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
     def test_generate_non_streaming_skips_auto_chunking_for_multi_speaker_script(
         self, _mock_peak_memory
     ):
+        """Auto-chunking is disabled for multi-speaker scripts."""
         model = self._make_loop_model()
         ref_audio = [
             mx.zeros((16,), dtype=mx.float32),
@@ -1762,6 +1773,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
     def test_generate_non_streaming_uses_last_semantic_frame_for_feedback(
         self, _mock_peak_memory
     ):
+        """Semantic feedback currently collapses to the last semantic frame."""
         model = self._make_loop_model()
         model.acoustic_tokenizer.decode.return_value = mx.array(
             [[[0.0, 0.0, 0.0, 0.0]]], dtype=mx.float32
@@ -1800,6 +1812,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
     def test_generate_non_streaming_refresh_negative_uses_previous_feedback_embed(
         self, _mock_peak_memory
     ):
+        """Negative refresh reuses the previous feedback embedding."""
         class RecordingLanguageModel:
             def __init__(self):
                 self.hidden_size = 4
@@ -1879,6 +1892,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         )
 
     def test_attention_repeats_kv_heads_before_fast_attention(self):
+        """Attention repeats KV heads before MLX fast attention."""
         from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig
         from mlx_audio.tts.models.vibevoice.language_model import (
             Attention,
@@ -1934,6 +1948,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         )
 
     def test_post_load_hook_can_promote_non_streaming_lm_to_fp32(self):
+        """Diagnostic LM fp32 mode promotes LM and lm_head together."""
         from mlx.utils import tree_map
         from mlx_audio.tts.models.vibevoice.vibevoice import Model
 
@@ -1969,6 +1984,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
     def test_generate_non_streaming_trace_records_raw_and_used_semantic_shapes(
         self, _mock_peak_memory
     ):
+        """Trace logging records both raw and collapsed semantic shapes."""
         model = self._make_loop_model()
         model.acoustic_tokenizer.decode.return_value = mx.array(
             [[[0.0, 0.0, 0.0, 0.0]]], dtype=mx.float32
@@ -2015,6 +2031,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         self.assertEqual(row["next_embed"]["shape"], [1, 1, 4])
 
     def test_qwen2model_can_return_per_layer_last_hidden_states(self):
+        """Qwen2Model can expose last hidden states per decoder layer."""
         from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig
         from mlx_audio.tts.models.vibevoice.language_model import Qwen2Model
 
@@ -2047,6 +2064,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
             self.assertEqual(tuple(layer_hidden.shape), (1, 8))
 
     def test_diffusion_head_precomputed_condition_matches_regular_forward(self):
+        """Precomputed timestep-conditioned inputs match regular diffusion forward."""
         from mlx_audio.tts.models.vibevoice.config import DiffusionHeadConfig
         from mlx_audio.tts.models.vibevoice.diffusion_head import DiffusionHead
 
@@ -2072,6 +2090,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         )
 
     def test_mlx_lm_qwen2_wrapper_preserves_parameter_keys_and_cache_interface(self):
+        """The optional mlx_lm wrapper preserves parameter names and cache shape."""
         from mlx.utils import tree_flatten
 
         from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig
@@ -2109,6 +2128,7 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
         self.assertEqual(len(new_cache), config.num_hidden_layers)
 
     def test_diffusion_feedforward_fused_gate_up_matches_regular_path(self):
+        """The fused diffusion FFN path remains numerically equivalent."""
         from mlx_audio.tts.models.vibevoice.diffusion_head import FeedForwardNetwork
 
         ffn = FeedForwardNetwork(embed_dim=8, ffn_dim=16)
