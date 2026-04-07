@@ -4507,7 +4507,14 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertIn("forty two", text_normalize("42"))
         self.assertIn("three point one four", text_normalize("3.14"))
 
+    def _require_g2p(self):
+        try:
+            import g2p_en  # noqa: F401
+        except ImportError:
+            self.skipTest("g2p_en is required for this test")
+
     def test_g2p_basic(self):
+        self._require_g2p()
         from mlx_audio.tts.models.melotts.text import g2p, text_normalize
 
         phones, tones, word2ph = g2p(text_normalize("hello"))
@@ -4517,6 +4524,7 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertEqual(len(phones), sum(word2ph))
 
     def test_g2p_punctuation(self):
+        self._require_g2p()
         from mlx_audio.tts.models.melotts.text import g2p, text_normalize
 
         phones, tones, word2ph = g2p(text_normalize("hello, world."))
@@ -4552,6 +4560,7 @@ class TestMeloTTSText(unittest.TestCase):
             text_mod.load_symbols_from_config(original_symbols)
 
     def test_process_text_returns_correct_keys(self):
+        self._require_g2p()
         from mlx_audio.tts.models.melotts.text import process_text
 
         result = process_text("hello", bert_model=None, language="EN", add_blank=True)
@@ -4563,6 +4572,7 @@ class TestMeloTTSText(unittest.TestCase):
         self.assertIn("norm_text", result)
 
     def test_process_text_blank_insertion(self):
+        self._require_g2p()
         from mlx_audio.tts.models.melotts.text import process_text
 
         result_blank = process_text(
@@ -4577,6 +4587,7 @@ class TestMeloTTSText(unittest.TestCase):
         )
 
     def test_bert_features_shape(self):
+        self._require_g2p()
         from mlx_audio.tts.models.melotts.text import process_text
 
         result = process_text("hello", bert_model=None, language="EN", add_blank=True)
