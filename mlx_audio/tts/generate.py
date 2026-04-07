@@ -360,52 +360,6 @@ def parse_args():
         default=None,
         help="Override diffusion steps. Higher = better quality, slower (try 30-50).",
     )
-    parser.add_argument(
-        "--mode",
-        type=str,
-        default=None,
-        choices=[
-            "robust_fast",
-            "fast",
-            "robust_dual",
-            "dual",
-            "robust",
-            "normal",
-            "natural",
-            "creative",
-        ],
-        help="VibeVoice non-streaming stability mode preset.",
-    )
-    parser.add_argument(
-        "--max_length_times",
-        type=float,
-        default=2.0,
-        help="VibeVoice generation length multiplier relative to prompt length.",
-    )
-    parser.add_argument(
-        "--refresh_negative",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="VibeVoice CFG negative-branch refresh behavior.",
-    )
-    parser.add_argument(
-        "--use_semantic_feedback",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="VibeVoice semantic feedback loop toggle (default depends on mode).",
-    )
-    parser.add_argument(
-        "--diffusion_fp32",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Run VibeVoice diffusion in float32 (higher quality, slower).",
-    )
-    parser.add_argument(
-        "--allow_chunking",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Enable text chunking for VibeVoice non-streaming generation (disabled by default).",
-    )
 
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
     parser.add_argument(
