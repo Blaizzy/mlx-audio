@@ -418,17 +418,19 @@ class Model(nn.Module):
     def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         remapped = {}
         for key, value in weights.items():
-            if key.startswith("text_model.model."):
+            if key.startswith("model."):
+                # Already in MLX format (e.g., previously converted/quantized model)
+                remapped[key] = value
+            elif key.startswith("text_model.model."):
                 new_key = key[len("text_model.model.") :]
+                remapped[f"model.{new_key}"] = value
             elif key.startswith("audio_decoder."):
                 suffix = key[len("audio_decoder.") :]
                 if suffix.startswith("codebook_embeddings."):
                     new_key = suffix
                 else:
                     new_key = f"fast_{suffix}"
-            else:
-                continue
-            remapped[f"model.{new_key}"] = value
+                remapped[f"model.{new_key}"] = value
         return remapped
 
     def _build_conversation(

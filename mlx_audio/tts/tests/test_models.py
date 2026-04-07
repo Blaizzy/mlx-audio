@@ -1322,6 +1322,31 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertNotIn("model.prediction_head.t_embedder.mlp.0.weight", sanitized)
         self.assertNotIn("model.prediction_head.adaLN_modulation.1.weight", sanitized)
 
+    def test_sanitize_preserves_quantization_metadata(self):
+        """Test that sanitize preserves .scales and .biases for quantized models."""
+        from mlx.utils import tree_flatten
+
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        config = self._default_config
+        model = Model(config)
+
+        # Start with the model's own weights
+        weights = dict(tree_flatten(model.parameters()))
+
+        # Add mock quantization metadata for the key from the bug report:
+        # "Expected shape (151936, 896) but received shape (151936, 224)
+        #  for parameter language_model.embed_tokens.weight"
+        quant_key = "language_model.embed_tokens.weight"
+        weights[f"{quant_key}.scales"] = mx.ones((1,))
+        weights[f"{quant_key}.biases"] = mx.ones((1,))
+
+        sanitized = model.sanitize(weights)
+
+        # Quantization metadata must survive sanitization
+        self.assertIn(f"{quant_key}.scales", sanitized)
+        self.assertIn(f"{quant_key}.biases", sanitized)
+
     def test_config_defaults(self):
         """Test VibeVoiceModel uses correct config defaults."""
         from mlx_audio.tts.models.vibevoice.config import ModelConfig
@@ -4325,6 +4350,760 @@ class TestFishSpeechModel(unittest.TestCase):
         self.assertEqual(config.text_config.n_layer, 1)
         self.assertEqual(config.audio_decoder_config.num_codebooks, 2)
         self.assertEqual(config.semantic_start_token_id, 1000)
+
+
+# ---------------------------------------------------------------------------
+# Irodori-TTS helpers
+# ---------------------------------------------------------------------------
+
+
+class _MockTokenizer:
+    """Minimal HuggingFace-style tokenizer stub for Irodori-TTS tests."""
+
+    bos_token_id = 1
+    eos_token_id = 2
+    pad_token_id = 0
+    padding_side = "right"
+
+    def encode(self, text, add_special_tokens=False):
+        return [3, 4, 5]
+
+
+class _FakeDACVAE:
+    """DACVAE stub that matches the real API shapes."""
+
+    def __init__(self, latent_dim: int = 8, downsample_factor: int = 1920):
+        self.latent_dim = latent_dim
+        self.downsample_factor = downsample_factor
+
+    def encode(self, audio_in: mx.array) -> mx.array:
+        B = audio_in.shape[0]
+        T = max(1, int(audio_in.shape[1]) // self.downsample_factor)
+        return mx.zeros((B, self.latent_dim, T), dtype=mx.float32)
+
+    def decode(self, latent: mx.array) -> mx.array:
+        B, _D, T = latent.shape
+        return mx.zeros((B, T * self.downsample_factor, 1), dtype=mx.float32)
+
+
+def _small_irodori_dit_config(**overrides):
+    from mlx_audio.tts.models.irodori_tts.config import IrodoriDiTConfig
+
+    defaults = dict(
+        latent_dim=8,
+        latent_patch_size=1,
+        model_dim=32,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=2.0,
+        text_mlp_ratio=2.0,
+        speaker_mlp_ratio=2.0,
+        text_vocab_size=64,
+        text_dim=32,
+        text_layers=1,
+        text_heads=4,
+        speaker_dim=32,
+        speaker_layers=1,
+        speaker_heads=4,
+        speaker_patch_size=1,
+        timestep_embed_dim=16,
+        adaln_rank=8,
+        norm_eps=1e-5,
+    )
+    defaults.update(overrides)
+    return IrodoriDiTConfig(**defaults)
+
+
+def _small_irodori_model_config(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_speaker=1.0,
+        sequence_length=4,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Irodori-TTS test classes
+# ---------------------------------------------------------------------------
+
+
+class TestIrodoriNormalizeText(unittest.TestCase):
+    def test_fullwidth_alpha_to_halfwidth(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("Ａｂ"), "Ab")
+
+    def test_fullwidth_digits_to_halfwidth(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("１２３"), "123")
+
+    def test_halfwidth_kana_to_fullwidth(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("ｱｲ"), "アイ")
+
+    def test_wave_dash_to_katakana_dash(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("ー〜ー"), "ーーー")
+
+    def test_trailing_kuten_stripped(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        result = normalize_text("こんにちは。")
+        self.assertFalse(result.endswith("。"))
+        self.assertEqual(result, "こんにちは")
+
+    def test_surrounding_brackets_stripped(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("「こんにちは」"), "こんにちは")
+
+    def test_no_change_for_plain_text(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        text = "こんにちは"
+        self.assertEqual(normalize_text(text), text)
+
+
+class TestIrodoriEncodeText(unittest.TestCase):
+    def setUp(self):
+        self.tok = _MockTokenizer()
+
+    def test_output_shapes(self):
+        from mlx_audio.tts.models.irodori_tts.text import encode_text
+
+        ids, mask = encode_text("hello", self.tok, max_length=10, add_bos=True)
+        self.assertEqual(tuple(ids.shape), (1, 10))
+        self.assertEqual(tuple(mask.shape), (1, 10))
+
+    def test_bos_prepended(self):
+        from mlx_audio.tts.models.irodori_tts.text import encode_text
+
+        ids, mask = encode_text("hello", self.tok, max_length=10, add_bos=True)
+        self.assertEqual(int(ids[0, 0]), self.tok.bos_token_id)
+
+    def test_no_bos(self):
+        from mlx_audio.tts.models.irodori_tts.text import encode_text
+
+        ids, _ = encode_text("hello", self.tok, max_length=10, add_bos=False)
+        self.assertEqual(int(ids[0, 0]), 3)
+
+    def test_padding(self):
+        from mlx_audio.tts.models.irodori_tts.text import encode_text
+
+        ids, mask = encode_text("hello", self.tok, max_length=10, add_bos=True)
+        for i in range(4, 10):
+            self.assertEqual(int(ids[0, i]), self.tok.pad_token_id)
+            self.assertFalse(bool(mask[0, i]))
+
+    def test_mask_true_for_real_tokens(self):
+        from mlx_audio.tts.models.irodori_tts.text import encode_text
+
+        ids, mask = encode_text("hello", self.tok, max_length=10, add_bos=True)
+        for i in range(4):
+            self.assertTrue(bool(mask[0, i]))
+
+    def test_truncation(self):
+        from mlx_audio.tts.models.irodori_tts.text import encode_text
+
+        ids, mask = encode_text("hello", self.tok, max_length=2, add_bos=True)
+        self.assertEqual(tuple(ids.shape), (1, 2))
+
+
+class TestIrodoriDiTShapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_full_forward_shape(self):
+        B, S = 1, 6
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([0.5], dtype=mx.float32)
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+
+        out = self.model(x_t, t, text_ids, text_mask, ref_latent, ref_mask)
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+    def test_encode_conditions_shapes(self):
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+
+        t_state, t_mask, s_state, s_mask = self.model.encode_conditions(
+            text_ids, text_mask, ref_latent, ref_mask
+        )
+        mx.eval(t_state, s_state)
+        self.assertEqual(tuple(t_state.shape), (B, 5, self.cfg.text_dim))
+        self.assertEqual(int(s_state.shape[0]), B)
+        self.assertEqual(int(s_state.shape[-1]), self.cfg.speaker_dim)
+
+    def test_kv_cache_and_forward_with_conditions(self):
+        B, S = 1, 4
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+
+        t_state, t_mask, s_state, s_mask = self.model.encode_conditions(
+            text_ids, text_mask, ref_latent, ref_mask
+        )
+        kv_text, kv_speaker = self.model.build_kv_cache(t_state, s_state)
+        self.assertEqual(len(kv_text), self.cfg.num_layers)
+        self.assertEqual(len(kv_speaker), self.cfg.num_layers)
+
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([0.3], dtype=mx.float32)
+        out = self.model.forward_with_conditions(
+            x_t, t, t_state, t_mask, s_state, s_mask, kv_text, kv_speaker
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+    def test_zero_speaker_latent(self):
+        B, S = 1, 4
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([1.0], dtype=mx.float32)
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 1, self.cfg.latent_dim))
+        ref_mask = mx.zeros((B, 1), dtype=mx.bool_)
+
+        out = self.model(x_t, t, text_ids, text_mask, ref_latent, ref_mask)
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+
+class TestIrodoriModelSanitize(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        self.model = Model(_small_irodori_model_config())
+
+    def test_cond_module_key_remapped(self):
+        weights = {"cond_module.0.weight": mx.zeros((1, 1), dtype=mx.float32)}
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("model.cond_module.layers.0.weight", sanitized)
+        self.assertNotIn("cond_module.0.weight", sanitized)
+
+    def test_model_prefix_added(self):
+        weights = {"blocks.0.mlp.w1.weight": mx.zeros((1, 1), dtype=mx.float32)}
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("model.blocks.0.mlp.w1.weight", sanitized)
+
+    def test_model_prefix_not_doubled(self):
+        weights = {"model.out_proj.weight": mx.zeros((1, 1), dtype=mx.float32)}
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("model.out_proj.weight", sanitized)
+        self.assertNotIn("model.model.out_proj.weight", sanitized)
+
+    def test_deep_cond_module_key(self):
+        weights = {"cond_module.2.bias": mx.zeros((1,), dtype=mx.float32)}
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("model.cond_module.layers.2.bias", sanitized)
+
+
+class TestIrodoriGenerateSmoke(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_returns_result(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].sample_rate, 48000)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_with_ref_audio(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        ref = mx.zeros((1, cfg.audio_downsample_factor * 4), dtype=mx.float32)
+        results = list(model.generate("テスト", ref_audio=ref, rng_seed=1))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_stream_raises(self):
+        model = self._make_model()
+        with self.assertRaises(NotImplementedError):
+            next(model.generate("hi", stream=True))
+
+    def test_generate_without_dacvae_raises(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config()
+        model = Model(cfg)
+        model._tokenizer = _MockTokenizer()
+        with self.assertRaises(ValueError):
+            next(model.generate("hi"))
+
+    def test_result_fields(self):
+        model = self._make_model()
+        result = next(model.generate("テスト", rng_seed=0))
+        self.assertIsNotNone(result.audio)
+        self.assertIsInstance(result.token_count, int)
+        self.assertGreater(result.token_count, 0)
+        self.assertIsNotNone(result.audio_duration)
+        self.assertGreater(result.real_time_factor, 0.0)
+
+
+class TestKugelAudioModel(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.kugelaudio.config import ModelConfig
+        from mlx_audio.tts.models.kugelaudio.kugelaudio import Model
+
+        cfg = ModelConfig.from_dict(
+            {
+                "acoustic_vae_dim": 4,
+                "decoder_config": {
+                    "hidden_size": 8,
+                    "intermediate_size": 16,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 32,
+                    "max_position_embeddings": 64,
+                },
+                "diffusion_head_config": {
+                    "hidden_size": 8,
+                    "latent_size": 4,
+                    "head_layers": 1,
+                },
+                "acoustic_tokenizer_config": {
+                    "vae_dim": 4,
+                    "encoder_n_filters": 4,
+                    "decoder_n_filters": 4,
+                    "encoder_ratios": [2],
+                    "encoder_depths": "1",
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_from_dict_basic(self):
+        """Basic config creation with nested sub-configs."""
+        from mlx_audio.tts.models.kugelaudio.config import ModelConfig
+
+        cfg = ModelConfig.from_dict(
+            {
+                "acoustic_vae_dim": 64,
+                "decoder_config": {"hidden_size": 3584, "num_hidden_layers": 28},
+                "diffusion_head_config": {},
+                "acoustic_tokenizer_config": {},
+            }
+        )
+        self.assertEqual(cfg.model_type, "kugelaudio")
+        self.assertEqual(cfg.acoustic_vae_dim, 64)
+        self.assertEqual(cfg.decoder_config.hidden_size, 3584)
+        self.assertEqual(cfg.decoder_config.num_hidden_layers, 28)
+
+    def test_sanitize(self):
+        """Test full sanitize: prefix stripping, skip rules, re-indexing,
+        quantization metadata, and linear weight transposition."""
+        from mlx.utils import tree_flatten
+
+        model = self._make_model()
+        params = dict(tree_flatten(model.parameters()))
+
+        # Build fake HF-style weight dict exercising every sanitize path
+        fake_weights = {}
+
+        # 1) "model." prefix → should be stripped
+        lang_key = next(k for k in params if k.startswith("language_model."))
+        fake_weights[f"model.{lang_key}"] = params[lang_key]
+
+        # 2) Keys that should be dropped
+        fake_weights["model.semantic_tokenizer.foo"] = mx.zeros((2,))
+        fake_weights["model.semantic_connector.bar"] = mx.zeros((2,))
+        fake_weights["model.acoustic_tokenizer.encoder.baz"] = mx.zeros((2,))
+
+        # 3) Sequential re-indexing (.mlp.0. → .mlp.layers.0.)
+        mlp_key = next((k for k in params if "t_embedder.mlp.layers." in k), None)
+        if mlp_key:
+            pytorch_mlp = "model." + mlp_key.replace(".mlp.layers.", ".mlp.")
+            fake_weights[pytorch_mlp] = params[mlp_key]
+
+        # 4) Quantization metadata
+        fake_weights["language_model.layers.0.self_attn.q_proj.scales"] = mx.zeros((4,))
+        fake_weights["language_model.layers.0.self_attn.q_proj.biases"] = mx.zeros((4,))
+
+        # 5) Linear weight transposition (reversed shape)
+        lm_key = "lm_head.weight"
+        if lm_key in params:
+            fake_weights[lm_key] = mx.zeros(tuple(reversed(params[lm_key].shape)))
+
+        result = model.sanitize(fake_weights)
+
+        # Verify prefix stripping
+        self.assertIn(lang_key, result)
+
+        # Verify dropped keys
+        for dropped in [
+            "semantic_tokenizer.foo",
+            "semantic_connector.bar",
+            "acoustic_tokenizer.encoder.baz",
+        ]:
+            self.assertNotIn(dropped, result)
+
+        # Verify sequential re-indexing
+        if mlp_key:
+            self.assertIn(mlp_key, result)
+
+        # Verify quantization metadata preserved
+        self.assertIn("language_model.layers.0.self_attn.q_proj.scales", result)
+        self.assertIn("language_model.layers.0.self_attn.q_proj.biases", result)
+
+        # Verify linear weight transposed to correct shape
+        if lm_key in params:
+            self.assertEqual(result[lm_key].shape, params[lm_key].shape)
+
+    def test_token_constraint_mask_allows_valid_tokens(self):
+        """Only VALID_SPEECH_TOKENS should survive the mask."""
+        from mlx_audio.tts.models.kugelaudio.kugelaudio import VALID_SPEECH_TOKENS
+
+        vocab_size = 152064
+        logits = mx.zeros((1, vocab_size))
+
+        constraint_mask = mx.full(logits.shape, float("-inf"))
+        valid_indices = mx.array(VALID_SPEECH_TOKENS)
+        constraint_mask[:, valid_indices] = 0.0
+        masked = logits + constraint_mask
+        mx.eval(masked)
+
+        for tid in VALID_SPEECH_TOKENS:
+            self.assertEqual(masked[0, tid].item(), 0.0)
+
+        self.assertEqual(masked[0, 0].item(), float("-inf"))
+        self.assertEqual(masked[0, 1000].item(), float("-inf"))
+
+    def test_token_argmax_selects_highest_valid_token(self):
+        """argmax on masked logits should pick the boosted valid token."""
+        from mlx_audio.tts.models.kugelaudio.kugelaudio import (
+            SPEECH_DIFFUSION_ID,
+            VALID_SPEECH_TOKENS,
+        )
+
+        vocab_size = 152064
+        logits = mx.zeros((1, vocab_size))
+
+        logits = logits.at[0, SPEECH_DIFFUSION_ID].add(mx.array(10.0))
+
+        constraint_mask = mx.full(logits.shape, float("-inf"))
+        valid_indices = mx.array(VALID_SPEECH_TOKENS)
+        constraint_mask[:, valid_indices] = 0.0
+        masked = logits + constraint_mask
+
+        selected = mx.argmax(masked, axis=-1).item()
+        self.assertEqual(selected, SPEECH_DIFFUSION_ID)
+
+    def test_sde_scheduler_inherits_from_base(self):
+        """SDEDPMSolverMultistepScheduler should subclass the base."""
+        from mlx_audio.tts.models.kugelaudio.scheduler import (
+            SDEDPMSolverMultistepScheduler,
+        )
+        from mlx_audio.tts.models.vibevoice.scheduler import (
+            DPMSolverMultistepScheduler as BaseDPMSolver,
+        )
+
+        self.assertTrue(issubclass(SDEDPMSolverMultistepScheduler, BaseDPMSolver))
+
+    def test_sde_scheduler_adds_noise(self):
+        """SDE variant should produce different results from deterministic."""
+        from mlx_audio.tts.models.kugelaudio.scheduler import (
+            SDEDPMSolverMultistepScheduler,
+        )
+        from mlx_audio.tts.models.vibevoice.scheduler import (
+            DPMSolverMultistepScheduler as BaseDPMSolver,
+        )
+
+        mx.random.seed(42)
+        sde = SDEDPMSolverMultistepScheduler(
+            num_train_timesteps=100, prediction_type="v_prediction"
+        )
+        det = BaseDPMSolver(num_train_timesteps=100, prediction_type="v_prediction")
+
+        sde.set_timesteps(5)
+        det.set_timesteps(5)
+
+        sample = mx.ones((1, 4)) * 0.5
+        model_output = mx.ones((1, 4)) * 0.1
+
+        sde_result = sde.step(model_output, sde.timesteps[0], sample)
+        det_result = det.step(model_output, det.timesteps[0], sample)
+
+        mx.eval(sde_result.prev_sample, det_result.prev_sample)
+
+        diff = mx.abs(sde_result.prev_sample - det_result.prev_sample).sum().item()
+        self.assertGreater(diff, 0.0)
+
+    def test_sde_scheduler_step_output_shape(self):
+        """Output shape should match input shape."""
+        from mlx_audio.tts.models.kugelaudio.scheduler import (
+            SDEDPMSolverMultistepScheduler,
+        )
+
+        sched = SDEDPMSolverMultistepScheduler(num_train_timesteps=100)
+        sched.set_timesteps(5)
+
+        sample = mx.zeros((2, 8))
+        output = mx.zeros((2, 8))
+
+        result = sched.step(output, sched.timesteps[0], sample)
+        mx.eval(result.prev_sample)
+
+        self.assertEqual(result.prev_sample.shape, (2, 8))
+        self.assertIsNotNone(result.x0_pred)
+
+    def test_sde_scheduler_reset_clears_state(self):
+        """reset() should zero out step index and lower order count."""
+        from mlx_audio.tts.models.kugelaudio.scheduler import (
+            SDEDPMSolverMultistepScheduler,
+        )
+
+        sched = SDEDPMSolverMultistepScheduler(num_train_timesteps=100)
+        sched.set_timesteps(5)
+        sched._step_index = 3  # pylint: disable=protected-access
+        sched.lower_order_nums = 2
+        sched.reset()
+        self.assertIsNone(sched._step_index)  # pylint: disable=protected-access
+        self.assertEqual(sched.lower_order_nums, 0)
+
+
+class TestAudioDiTModel(unittest.TestCase):
+    @staticmethod
+    def _small_vae_config():
+        from mlx_audio.tts.models.longcat_audiodit.config import VaeConfig
+
+        return VaeConfig(
+            in_channels=1,
+            channels=4,
+            c_mults=[1, 2],
+            strides=[2, 4],
+            latent_dim=4,
+            encoder_latent_dim=8,
+            use_snake=True,
+            downsample_shortcut="averaging",
+            upsample_shortcut="duplicating",
+            out_shortcut="averaging",
+            in_shortcut="duplicating",
+            final_tanh=False,
+            downsampling_ratio=8,
+            sample_rate=24000,
+            scale=0.71,
+        )
+
+    def setUp(self):
+        from mlx_audio.tts.models.longcat_audiodit.config import (
+            ModelConfig,
+            TextEncoderConfig,
+        )
+        from mlx_audio.tts.models.longcat_audiodit.longcat_audiodit import Model
+
+        self.cfg = ModelConfig(
+            dit_dim=16,
+            dit_depth=2,
+            dit_heads=2,
+            dit_ff_mult=2.0,
+            dit_text_dim=8,
+            dit_dropout=0.0,
+            dit_bias=True,
+            dit_cross_attn=True,
+            dit_adaln_type="global",
+            dit_adaln_use_text_cond=True,
+            dit_long_skip=True,
+            dit_text_conv=True,
+            dit_qk_norm=True,
+            dit_cross_attn_norm=False,
+            dit_eps=1e-6,
+            dit_use_latent_condition=True,
+            repa_dit_layer=1,
+            latent_dim=4,
+            sigma=0.0,
+            sampling_rate=24000,
+            latent_hop=8,
+            max_wav_duration=2.0,
+            text_encoder_model="google/umt5-base",
+            text_add_embed=True,
+            text_norm_feat=True,
+            vae_config=TestAudioDiTModel._small_vae_config(),
+            text_encoder_config=TextEncoderConfig(
+                vocab_size=32,
+                d_model=8,
+                d_kv=4,
+                d_ff=16,
+                num_layers=1,
+                num_heads=2,
+                relative_attention_num_buckets=8,
+                relative_attention_max_distance=16,
+            ),
+        )
+
+        self.model = Model(self.cfg)
+
+    # -- config --
+
+    def test_config_from_dict(self):
+        from mlx_audio.tts.models.longcat_audiodit.config import ModelConfig
+
+        cfg = ModelConfig(
+            vae_config={"channels": 64, "latent_dim": 32},
+            text_encoder_config={"d_model": 256},
+        )
+        self.assertEqual(cfg.vae_config.channels, 64)
+        self.assertEqual(cfg.text_encoder_config.d_model, 256)
+
+    def test_config_defaults(self):
+        from mlx_audio.tts.models.longcat_audiodit.config import ModelConfig
+
+        cfg = ModelConfig()
+        self.assertEqual(cfg.model_type, "audiodit")
+        self.assertEqual(cfg.dit_dim, 1536)
+        self.assertIsNotNone(cfg.vae_config)
+        self.assertEqual(cfg.vae_config.scale, 0.71)
+        total = 1
+        for s in cfg.vae_config.strides:
+            total *= s
+        self.assertEqual(total, cfg.vae_config.downsampling_ratio)
+
+    # -- forward --
+
+    def test_vae_encode_decode_shapes(self):
+        mx.random.seed(0)
+        x = mx.random.normal((1, 64, 1))
+        latent = self.model.vae.encode(x)
+        mx.eval(latent)
+        self.assertEqual(tuple(latent.shape), (1, 8, 4))
+
+        recon = self.model.vae.decode(latent)
+        mx.eval(recon)
+        self.assertEqual(tuple(recon.shape), (1, 64, 1))
+
+    def test_text_encoder_forward(self):
+        ids = mx.zeros((1, 5), dtype=mx.int32)
+        mask = mx.ones((1, 5), dtype=mx.float32)
+        out = self.model.encode_text(ids, mask)
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (1, 5, self.cfg.text_encoder_config.d_model))
+
+    def test_dit_forward(self):
+        B, S, T = 1, 4, 3
+        out = self.model.transformer(
+            x=mx.random.normal((B, S, self.cfg.latent_dim)),
+            text=mx.random.normal((B, T, self.cfg.dit_text_dim)),
+            text_len=mx.array([T], dtype=mx.float32),
+            time=mx.array([0.5]),
+            mask=mx.ones((B, S), dtype=mx.bool_),
+            cond_mask=mx.ones((B, T), dtype=mx.bool_),
+            return_ith_layer=self.cfg.repa_dit_layer,
+            latent_cond=mx.zeros((B, S, self.cfg.latent_dim)),
+        )
+        mx.eval(out["last_hidden_state"])
+        self.assertEqual(
+            tuple(out["last_hidden_state"].shape), (B, S, self.cfg.latent_dim)
+        )
+        self.assertIsNotNone(out["hidden_state"])
+
+    def test_encode_prompt_audio(self):
+        audio = mx.random.normal((1, 64, 1))
+        latent, prompt_dur = self.model.encode_prompt_audio(audio)
+        mx.eval(latent)
+        self.assertEqual(latent.shape[2], self.cfg.latent_dim)
+        self.assertEqual(latent.shape[1], prompt_dur)
+        self.assertGreater(prompt_dur, 0)
+
+    # -- sanitize --
+
+    def test_sanitize_weight_norm(self):
+        weights = {
+            "vae.encoder.layers.0.weight_v": mx.ones((4, 1, 3)),
+            "vae.encoder.layers.0.weight_g": mx.ones((4, 1, 1)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("vae.encoder.layers.0.weight", sanitized)
+        self.assertNotIn("vae.encoder.layers.0.weight_v", sanitized)
+        self.assertEqual(
+            tuple(sanitized["vae.encoder.layers.0.weight"].shape), (4, 3, 1)
+        )
+
+    def test_sanitize_conv_transpose_weight_norm(self):
+        weights = {
+            "vae.decoder.layers.1.layers.1.weight_v": mx.ones((8, 4, 4)),
+            "vae.decoder.layers.1.layers.1.weight_g": mx.ones((8, 1, 1)),
+        }
+        sanitized = self.model.sanitize(weights)
+        key = "vae.decoder.layers.1.layers.1.weight"
+        self.assertIn(key, sanitized)
+        self.assertEqual(tuple(sanitized[key].shape), (4, 4, 8))
+
+    def test_sanitize_text_encoder_remapping(self):
+        weights = {
+            "text_encoder.encoder.embed_tokens.weight": mx.zeros((32, 8)),
+            "text_encoder.encoder.block.0.layer.0.SelfAttention.q.weight": mx.zeros(
+                (4, 8)
+            ),
+            "text_encoder.encoder.block.0.layer.1.DenseReluDense.wi_0.weight": mx.zeros(
+                (16, 8)
+            ),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("text_encoder.shared.weight", sanitized)
+        self.assertIn("text_encoder.block.0.SelfAttention.q.weight", sanitized)
+        self.assertIn("text_encoder.block.0.DenseReluDense.wi_0.weight", sanitized)
+
+    def test_sanitize_transformer_remapping(self):
+        weights = {
+            "transformer.proj.2.weight": mx.zeros((4, 4)),
+            "transformer.blocks.0.attn.to_out.0.weight": mx.zeros((4, 4)),
+            "transformer.blocks.0.ff.3.weight": mx.zeros((4, 4)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("transformer.proj.1.weight", sanitized)
+        self.assertIn("transformer.blocks.0.attn.to_out.weight", sanitized)
+        self.assertIn("transformer.blocks.0.ff.1.weight", sanitized)
+
+    def test_sanitize_dwconv_transpose(self):
+        weights = {
+            "transformer.text_conv_layer.0.dwconv.weight": mx.ones((8, 1, 7)),
+            "transformer.text_conv_layer.0.dwconv.bias": mx.zeros((8,)),
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("transformer.text_conv_layer.0.dwconv_weight", sanitized)
+        self.assertEqual(
+            tuple(sanitized["transformer.text_conv_layer.0.dwconv_weight"].shape),
+            (8, 7, 1),
+        )
 
 
 if __name__ == "__main__":

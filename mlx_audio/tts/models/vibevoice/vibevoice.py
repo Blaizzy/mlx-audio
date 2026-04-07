@@ -1289,8 +1289,9 @@ class Model(nn.Module):
 
             # Check if key exists in model
             if new_key not in curr_shapes:
-                # Debug: uncomment to see missing keys
-                # print(f"Warning: Key {new_key} (from {k}) not found in model")
+                # Preserve quantization metadata -- model isn't quantized yet at sanitize time
+                if new_key.endswith((".scales", ".biases")):
+                    new_weights[new_key] = v
                 continue
 
             target_shape = curr_shapes[new_key]
