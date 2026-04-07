@@ -1891,6 +1891,66 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
             np.full((1, 4), 3.0, dtype=np.float32),
         )
 
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_ignores_generic_cli_repetition_penalty_default(
+        self, _mock_peak_memory
+    ):
+        """Generic CLI default repetition_penalty=1.1 is treated as unset."""
+        model = self._make_loop_model()
+        captured = []
+
+        def _select(*args, **kwargs):
+            captured.append(kwargs.get("repetition_penalty"))
+            return model.eos_id
+
+        with patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=_select,
+        ):
+            next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=1,
+                    cfg_scale=1.0,
+                    verbose=False,
+                    repetition_penalty=1.1,
+                    _repetition_penalty_explicit=False,
+                )
+            )
+
+        self.assertEqual(captured, [None])
+
+    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
+    def test_generate_non_streaming_keeps_explicit_repetition_penalty(
+        self, _mock_peak_memory
+    ):
+        """Explicit repetition_penalty values are preserved for VibeVoice."""
+        model = self._make_loop_model()
+        captured = []
+
+        def _select(*args, **kwargs):
+            captured.append(kwargs.get("repetition_penalty"))
+            return model.eos_id
+
+        with patch.object(
+            model,
+            "_select_non_streaming_next_token",
+            side_effect=_select,
+        ):
+            next(
+                model._generate_non_streaming(
+                    text="Hello.",
+                    max_tokens=1,
+                    cfg_scale=1.0,
+                    verbose=False,
+                    repetition_penalty=1.1,
+                    _repetition_penalty_explicit=True,
+                )
+            )
+
+        self.assertEqual(captured, [1.1])
+
     def test_attention_repeats_kv_heads_before_fast_attention(self):
         """Attention repeats KV heads before MLX fast attention."""
         from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig

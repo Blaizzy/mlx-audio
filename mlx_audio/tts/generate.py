@@ -494,6 +494,10 @@ def parse_args():
     )
 
     args = parser.parse_args()
+    args._repetition_penalty_explicit = any(
+        arg == "--repetition_penalty" or arg.startswith("--repetition_penalty=")
+        for arg in sys.argv[1:]
+    )
 
     if args.save and not args.stream:
         parser.error("--save requires --stream")

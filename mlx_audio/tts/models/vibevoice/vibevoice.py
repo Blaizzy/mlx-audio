@@ -1694,10 +1694,20 @@ class Model(nn.Module):
         temperature = kwargs.pop("temperature", None)
         top_p = kwargs.pop("top_p", None)
         top_k = kwargs.pop("top_k", None)
+        repetition_penalty_explicit = bool(
+            kwargs.pop(
+                "_repetition_penalty_explicit",
+                kwargs.pop("repetition_penalty_explicit", False),
+            )
+        )
         # The shared `mlx_audio.tts.generate` CLI keeps its generic default
         # repetition_penalty=1.1 for contract stability. Most VibeVoice parity
-        # and quality tuning here was exercised with `None` / model-level defaults.
+        # and quality tuning here was exercised with `None` / model-level defaults,
+        # so treat the generic CLI default as "unset" unless the user passed it
+        # explicitly.
         repetition_penalty = kwargs.pop("repetition_penalty", None)
+        if repetition_penalty == 1.1 and not repetition_penalty_explicit:
+            repetition_penalty = None
         use_semantic_feedback = kwargs.pop("use_semantic_feedback", None)
         diffusion_fp32 = bool(kwargs.pop("diffusion_fp32", False))
         requested_cfg_active_ratio = float(kwargs.pop("cfg_active_ratio", 1.0))
