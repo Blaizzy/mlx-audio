@@ -105,7 +105,7 @@ def hertz_to_mel(pitch: float) -> float:
 def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
-    max_tokens: Optional[int] = None,
+    max_tokens: int = 1200,
     voice: str = "af_heart",
     prompt: Optional[str] = None,
     instruct: Optional[str] = None,
@@ -231,10 +231,9 @@ def generate_audio(
             streaming_interval=streaming_interval,
             instruct=instruct,
             use_zero_spk_emb=use_zero_spk_emb,
+            max_tokens=max_tokens,
             **kwargs,
         )
-        if max_tokens is not None:
-            gen_kwargs["max_tokens"] = int(max_tokens)
         if prompt is not None:
             gen_kwargs["prompt"] = prompt
         if sigma is not None:
@@ -316,8 +315,8 @@ def parse_args():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=None,
-        help="Maximum control tokens to generate (default: model-specific auto budget)",
+        default=1200,
+        help="Maximum number of tokens to generate",
     )
     parser.add_argument(
         "--text",
