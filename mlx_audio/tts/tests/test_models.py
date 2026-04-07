@@ -1891,32 +1891,6 @@ class TestVibeVoiceNonStreamingHelpers(unittest.TestCase):
             np.full((1, 4), 3.0, dtype=np.float32),
         )
 
-    @patch("mlx_audio.tts.models.vibevoice.vibevoice.mx.get_peak_memory", return_value=0.0)
-    def test_generate_non_streaming_applies_explicit_rng_seed_once(
-        self, _mock_peak_memory
-    ):
-        """Explicit seed is applied once at generation start."""
-        model = self._make_loop_model()
-
-        with patch(
-            "mlx_audio.tts.models.vibevoice.vibevoice.mx.random.seed"
-        ) as mock_seed, patch.object(
-            model,
-            "_select_non_streaming_next_token",
-            return_value=model.eos_id,
-        ):
-            next(
-                model._generate_non_streaming(
-                    text="Hello.",
-                    max_tokens=1,
-                    cfg_scale=1.0,
-                    verbose=False,
-                    seed=42,
-                )
-            )
-
-        mock_seed.assert_called_once_with(42)
-
     def test_attention_repeats_kv_heads_before_fast_attention(self):
         """Attention repeats KV heads before MLX fast attention."""
         from mlx_audio.tts.models.vibevoice.config import Qwen2DecoderConfig

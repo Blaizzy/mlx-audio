@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import secrets
 import time
 from pathlib import Path
 from typing import Generator, List, Optional, Tuple, Union
@@ -1688,8 +1687,6 @@ class Model(nn.Module):
         """Non-streaming generation loop for `vibevoice` checkpoints."""
         allow_chunking_opt = kwargs.pop("_allow_chunking", kwargs.pop("allow_chunking", None))
         chunked_mode = bool(kwargs.pop("_chunked_mode", False))
-        rng_seed = kwargs.pop("_rng_seed", kwargs.pop("rng_seed", kwargs.pop("seed", None)))
-        rng_seed_applied = bool(kwargs.pop("_rng_seed_applied", False))
         prefill_ref_embeds = kwargs.pop("_prefill_ref_embeds", None)
         prefill_ref_prompt_steps = kwargs.pop("_ref_prompt_steps", None)
         ref_audio = kwargs.pop("ref_audio", None)
@@ -1739,15 +1736,6 @@ class Model(nn.Module):
             raise ValueError("semantic_tokenizer is required for non-streaming vibevoice.")
         if not hasattr(self, "acoustic_tokenizer") or self.acoustic_tokenizer is None:
             raise ValueError("acoustic_tokenizer is required for non-streaming vibevoice.")
-
-        if not rng_seed_applied:
-            if rng_seed is None:
-                rng_seed = secrets.randbits(32)
-            rng_seed = int(rng_seed)
-            mx.random.seed(rng_seed)
-            rng_seed_applied = True
-            if verbose:
-                print(f"Using VibeVoice RNG seed: {rng_seed}")
 
         diffusion_noise_sequence = None
         if diffusion_noise_path:
@@ -1841,8 +1829,6 @@ class Model(nn.Module):
                         cfg_scale=cfg_scale,
                         ddpm_steps=ddpm_steps,
                         verbose=verbose,
-                        _rng_seed=rng_seed,
-                        _rng_seed_applied=True,
                         _allow_chunking=False,
                         _chunked_mode=True,
                         ref_audio=None if shared_ref_embeds is not None else ref_audio_inputs,
