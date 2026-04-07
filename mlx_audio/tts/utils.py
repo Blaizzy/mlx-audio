@@ -267,6 +267,8 @@ def convert(
             quant_predicate=quant_predicate,
         )
         if hasattr(model, "quantized_component_prefixes"):
+            # Persist the model-selected prefixes so selective quantized
+            # checkpoints can be reloaded without external runtime flags.
             quantization_cfg = dict(config.get("quantization", {}))
             quantization_cfg["quantized_components"] = list(
                 model.quantized_component_prefixes()

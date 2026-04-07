@@ -391,7 +391,9 @@ def base_load_model(
         model_remapping=model_remapping,
     )
 
-    # Get model config from model class if it exists, otherwise use the config
+    # Build model config from a shallow copy because some `from_dict()` paths
+    # normalize nested fields destructively, while the original config is still
+    # needed later in the load path (for example quantization metadata).
     model_config = (
         model_class.ModelConfig.from_dict(dict(config))
         if hasattr(model_class, "ModelConfig")
