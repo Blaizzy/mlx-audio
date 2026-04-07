@@ -1754,19 +1754,6 @@ class Model(nn.Module):
             and not refresh_negative
             and not recompute_positive_without_cache
         )
-        use_speculative_neg_dual = (
-            use_negative_cfg
-            and refresh_negative
-            and not recompute_positive_without_cache
-            and dual_batch_allowed
-            and os.getenv("MLX_AUDIO_VIBEVOICE_SPECULATIVE_NEG_DUAL", "0") == "1"
-        )
-        speculative_neg_exact_every = 0
-        if use_speculative_neg_dual:
-            speculative_neg_exact_every = max(
-                0,
-                int(os.getenv("MLX_AUDIO_VIBEVOICE_SPECULATIVE_NEG_EXACT_EVERY", "0")),
-            )
         if not use_negative_cfg:
             # Fast path: negative branch is unnecessary when CFG guidance is disabled.
             refresh_negative = False
@@ -1777,8 +1764,6 @@ class Model(nn.Module):
                 print("Using dual LM batch path for negative branch updates.")
             else:
                 print("Dual LM batching disabled by env; using two-pass fallback.")
-        elif use_speculative_neg_dual and verbose:
-            print("Using speculative dual LM path for refresh_negative branch.")
         if verbose and abs(requested_cfg_active_ratio - 1.0) > 1e-8:
             print("Note: cfg_active_ratio is disabled; using full CFG for all diffusion steps.")
         if recompute_positive_without_cache and verbose:
@@ -1997,9 +1982,6 @@ class Model(nn.Module):
         token_counts = {}
         neg_cache = None
         neg_hidden = None
-        neg_pending_cache = None
-        neg_pending_hidden = None
-        neg_has_pending = False
         neg_initialized = False
         negative_input_ids = [int(self.speech_start_id)]
         prev_step_embed = None
@@ -2102,29 +2084,7 @@ class Model(nn.Module):
 
             if next_token_id == self.speech_diffusion_id:
                 positive_condition = hidden[:, -1, :]
-                must_force_exact_neg_refresh = (
-                    use_speculative_neg_dual
-                    and speculative_neg_exact_every > 0
-                    and ((diffusion_steps + 1) % speculative_neg_exact_every == 0)
-                )
-                if (
-                    use_negative_cfg
-                    and refresh_negative
-                    and use_speculative_neg_dual
-                    and not must_force_exact_neg_refresh
-                    and neg_has_pending
-                    and neg_pending_hidden is not None
-                    and neg_pending_cache is not None
-                ):
-                    neg_hidden = neg_pending_hidden
-                    neg_cache = neg_pending_cache
-                    neg_pending_hidden = None
-                    neg_pending_cache = None
-                    neg_has_pending = False
-                    neg_initialized = True
-                    negative_condition = neg_hidden[:, -1, :]
-                    negative_input_ids.append(int(self.speech_diffusion_id))
-                elif use_negative_cfg and refresh_negative:
+                if use_negative_cfg and refresh_negative:
                     # Upstream-like negative branch for batch=1:
                     # advance one step only when current token is diffusion.
                     #
@@ -2156,9 +2116,6 @@ class Model(nn.Module):
                     neg_initialized = True
                     negative_condition = neg_hidden[:, -1, :]
                     negative_input_ids.append(int(self.speech_diffusion_id))
-                    neg_pending_hidden = None
-                    neg_pending_cache = None
-                    neg_has_pending = False
                 elif use_negative_cfg:
                     negative_condition = (
                         neg_hidden[:, -1, :]
@@ -2300,10 +2257,6 @@ class Model(nn.Module):
                     latent_chunks.append(speech_latent)
                     next_embed = acoustic_embed
             else:
-                if use_speculative_neg_dual and neg_has_pending:
-                    neg_pending_hidden = None
-                    neg_pending_cache = None
-                    neg_has_pending = False
                 next_ids = mx.array([[next_token_id]], dtype=mx.int32)
                 next_embed = self.language_model.embed_tokens(next_ids)
                 if (
@@ -2318,9 +2271,6 @@ class Model(nn.Module):
                         negative_input_ids[-1] = int(self.speech_start_id)
                     else:
                         negative_input_ids = [int(self.speech_start_id)]
-                    neg_pending_hidden = None
-                    neg_pending_cache = None
-                    neg_has_pending = False
                 if next_token_id == self.speech_end_id:
                     # Match upstream non-streaming inference:
                     # speech_end resets tokenizer streaming caches but does not
@@ -2355,44 +2305,6 @@ class Model(nn.Module):
                     dual_batch_reported = True
                 if verbose and (not used_dual) and not dual_batch_fallback_reported:
                     print("Dual LM batching unavailable for current step, using fallback.")
-                    dual_batch_fallback_reported = True
-            elif use_speculative_neg_dual:
-                probe_step_active = (
-                    lm_layer_probe_records is not None
-                    and layer_probe_steps is not None
-                    and int(generated_steps) in layer_probe_steps
-                )
-                neg_source_cache = neg_cache
-                lm_t0 = time.perf_counter()
-                (
-                    hidden,
-                    cache,
-                    pending_neg_hidden,
-                    pending_neg_cache,
-                    used_dual,
-                ) = self._dual_language_step(
-                    pos_embed=next_embed,
-                    pos_cache=cache,
-                    neg_embed=next_embed,
-                    neg_cache=neg_source_cache,
-                )
-                prev_step_embed = next_embed
-                if timing_sync:
-                    mx.eval(hidden)
-                    mx.eval(pending_neg_hidden)
-                dual_elapsed = time.perf_counter() - lm_t0
-                lm_step_time += dual_elapsed
-                lm_dual_time += dual_elapsed
-                neg_pending_hidden = pending_neg_hidden
-                neg_pending_cache = pending_neg_cache
-                neg_has_pending = True
-                if verbose and used_dual and not dual_batch_reported:
-                    print("Speculative dual LM batching active.")
-                    dual_batch_reported = True
-                if verbose and (not used_dual) and not dual_batch_fallback_reported:
-                    print(
-                        "Speculative dual LM batching unavailable for current step, using fallback."
-                    )
                     dual_batch_fallback_reported = True
             else:
                 lm_t0 = time.perf_counter()
