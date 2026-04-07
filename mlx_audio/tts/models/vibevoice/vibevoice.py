@@ -40,49 +40,6 @@ NON_STREAMING_SYSTEM_PROMPT = (
     " Transform the text provided by various speakers into speech output, "
     "utilizing the distinct voice of each respective speaker.\n"
 )
-NON_STREAMING_STABILITY_PRESETS = {
-    "robust_fast": {
-        "do_sample": False,
-        # cfg=1.0 disables CFG negative branch for faster inference.
-        "cfg_scale": 1.0,
-        "inference_steps": 12,
-        "semantic_feedback": False,
-    },
-    "robust_dual": {
-        "do_sample": False,
-        # Keep robust quality defaults but enable dual-LM update path.
-        "cfg_scale": 1.5,
-        "inference_steps": 15,
-        "semantic_feedback": False,
-        "refresh_negative": False,
-    },
-    "robust": {
-        "do_sample": False,
-        "cfg_scale": 1.5,
-        "inference_steps": 15,
-        # Prioritize stability/speed for long-form generation.
-        "semantic_feedback": False,
-    },
-    "normal": {
-        "do_sample": True,
-        "cfg_scale": 2.5,
-        "temperature": 0.7,
-        "top_p": 0.9,
-        "repetition_penalty": 1.05,
-        "inference_steps": 25,
-    },
-    "creative": {
-        "do_sample": True,
-        "cfg_scale": 3.0,
-        "temperature": 0.7,
-        "top_p": 0.7,
-        "top_k": 15,
-        "repetition_penalty": 1.15,
-        "inference_steps": 35,
-    },
-}
-
-
 def _tensor_stats_mlx(tensor: Optional[mx.array]):
     if tensor is None:
         return None
@@ -559,23 +516,6 @@ class Model(nn.Module):
         if eos_id is None or eos_id < 0:
             raise ValueError("Tokenizer has no valid EOS token id for VibeVoice.")
         self.eos_id = int(eos_id)
-
-    def _resolve_non_streaming_preset(self, mode: Optional[str]) -> Optional[dict]:
-        if mode is None:
-            return None
-        mode_key = str(mode).strip().lower()
-        if mode_key == "natural":
-            mode_key = "normal"
-        if mode_key in {"fast", "robust-fast"}:
-            mode_key = "robust_fast"
-        if mode_key in {"dual", "robust-dual"}:
-            mode_key = "robust_dual"
-        if mode_key not in NON_STREAMING_STABILITY_PRESETS:
-            valid = ", ".join(sorted(NON_STREAMING_STABILITY_PRESETS.keys()))
-            raise ValueError(
-                f"Unsupported VibeVoice mode `{mode}`. Expected one of: {valid}."
-            )
-        return dict(NON_STREAMING_STABILITY_PRESETS[mode_key])
 
     def _speech_tok_compress_ratio(self) -> int:
         ratio = 1
@@ -1748,7 +1688,6 @@ class Model(nn.Module):
         chunked_mode = bool(kwargs.pop("_chunked_mode", False))
         prefill_ref_embeds = kwargs.pop("_prefill_ref_embeds", None)
         prefill_ref_prompt_steps = kwargs.pop("_ref_prompt_steps", None)
-        mode = kwargs.pop("mode", None)
         ref_audio = kwargs.pop("ref_audio", None)
         do_sample = kwargs.pop("do_sample", None)
         temperature = kwargs.pop("temperature", None)
@@ -1801,32 +1740,7 @@ class Model(nn.Module):
                 latent_dim=self.config.acoustic_vae_dim,
             )
 
-        preset = self._resolve_non_streaming_preset(mode)
-        if preset is not None:
-            cfg_scale = float(preset["cfg_scale"])
-            if ddpm_steps is None:
-                ddpm_steps = int(preset["inference_steps"])
-            do_sample = bool(preset.get("do_sample", False))
-            temperature = preset.get("temperature", 0.7)
-            top_p = preset.get("top_p")
-            top_k = preset.get("top_k")
-            repetition_penalty = preset.get("repetition_penalty")
-            if not do_sample:
-                # Keep deterministic presets aligned with upstream behavior.
-                temperature = 1.0
-                top_p = None
-                top_k = None
-            if "refresh_negative" in preset:
-                refresh_negative = bool(preset["refresh_negative"])
-            if use_semantic_feedback is None:
-                use_semantic_feedback = bool(preset.get("semantic_feedback", True))
-            if verbose:
-                print(
-                    f"Using VibeVoice mode: {mode} "
-                    f"(cfg_scale={cfg_scale}, ddpm_steps={ddpm_steps}, do_sample={do_sample})"
-                )
-        else:
-            do_sample = bool(do_sample) if do_sample is not None else False
+        do_sample = bool(do_sample) if do_sample is not None else False
         if use_semantic_feedback is None:
             use_semantic_feedback = True
         use_negative_cfg = float(cfg_scale) > 1.0 + 1e-6
@@ -1928,7 +1842,6 @@ class Model(nn.Module):
                         verbose=verbose,
                         _allow_chunking=False,
                         _chunked_mode=True,
-                        mode=mode,
                         ref_audio=None if shared_ref_embeds is not None else ref_audio_inputs,
                         _prefill_ref_embeds=shared_ref_embeds,
                         _ref_prompt_steps=shared_ref_steps,
