@@ -4341,5 +4341,420 @@ class TestAudioDiTModel(unittest.TestCase):
         )
 
 
+# ── VoxCPM2 ──────────────────────────────────────────────────────
+
+
+def _tiny_voxcpm2_args():
+    """Create a minimal VoxCPM2 config for fast tests."""
+    from mlx_audio.tts.models.voxcpm2.config import (
+        AudioVAEConfig,
+        CFMConfig,
+        DiTConfig,
+        EncoderConfig,
+        LMConfig,
+        ModelArgs,
+    )
+
+    lm = LMConfig(
+        hidden_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        intermediate_size=128,
+        vocab_size=100,
+        use_mup=False,
+        scale_emb=12,
+        scale_depth=1.4,
+        dim_model_base=256,
+        rope_long_factor=[1.0] * 8,
+        rope_short_factor=[1.0] * 8,
+    )
+    return ModelArgs(
+        lm_config=lm,
+        encoder_config=EncoderConfig(
+            hidden_dim=64, ffn_dim=128, num_heads=4, num_layers=1
+        ),
+        dit_config=DiTConfig(
+            hidden_dim=64,
+            ffn_dim=128,
+            num_heads=4,
+            num_layers=1,
+            cfm_config=CFMConfig(),
+        ),
+        audio_vae_config=AudioVAEConfig(
+            encoder_dim=8,
+            encoder_rates=[2, 2],
+            latent_dim=16,
+            decoder_dim=64,
+            decoder_rates=[2, 2],
+            depthwise=False,
+            sample_rate=16000,
+            out_sample_rate=48000,
+            sr_bin_boundaries=[20000, 30000, 40000],
+        ),
+        patch_size=2,
+        feat_dim=16,
+        scalar_quantization_latent_dim=32,
+        residual_lm_num_layers=1,
+        residual_lm_no_rope=True,
+    )
+
+
+class TestVoxCPM2Config(unittest.TestCase):
+    def test_from_dict_parses_real_config(self):
+        from mlx_audio.tts.models.voxcpm2.config import ModelArgs
+
+        config = ModelArgs.from_dict(
+            {
+                "lm_config": {
+                    "hidden_size": 2048,
+                    "num_hidden_layers": 28,
+                    "num_attention_heads": 16,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 6144,
+                    "vocab_size": 73448,
+                    "rms_norm_eps": 1e-5,
+                    "rope_theta": 10000,
+                    "kv_channels": 128,
+                    "rope_scaling": {
+                        "type": "longrope",
+                        "long_factor": [1.0] * 64,
+                        "short_factor": [1.0] * 64,
+                        "original_max_position_embeddings": 32768,
+                    },
+                    "use_mup": False,
+                    "scale_emb": 12,
+                    "dim_model_base": 256,
+                    "scale_depth": 1.4,
+                },
+                "encoder_config": {
+                    "hidden_dim": 1024,
+                    "kv_channels": 128,
+                    "num_layers": 12,
+                },
+                "dit_config": {
+                    "hidden_dim": 1024,
+                    "num_layers": 12,
+                    "kv_channels": 128,
+                    "mean_mode": False,
+                    "cfm_config": {"solver": "euler"},
+                },
+                "audio_vae_config": {
+                    "encoder_rates": [2, 5, 8, 8],
+                    "decoder_rates": [8, 6, 5, 2, 2, 2],
+                    "sample_rate": 16000,
+                    "out_sample_rate": 48000,
+                    "sr_bin_boundaries": [20000, 30000, 40000],
+                },
+                "patch_size": 4,
+                "scalar_quantization_latent_dim": 512,
+                "residual_lm_no_rope": True,
+            }
+        )
+        self.assertEqual(config.lm_config.hidden_size, 2048)
+        self.assertEqual(config.lm_config.kv_channels, 128)
+        self.assertFalse(config.lm_config.use_mup)
+        self.assertTrue(config.residual_lm_no_rope)
+        self.assertEqual(config.audio_vae_config.out_sample_rate, 48000)
+        self.assertFalse(config.dit_config.dit_mean_mode)
+        self.assertEqual(config.scalar_quantization_latent_dim, 512)
+
+    def test_mean_mode_alias(self):
+        """dit_config.mean_mode maps to dit_mean_mode."""
+        from mlx_audio.tts.models.voxcpm2.config import ModelArgs
+
+        config = ModelArgs.from_dict(
+            {"dit_config": {"mean_mode": True, "cfm_config": {}}}
+        )
+        self.assertTrue(config.dit_config.dit_mean_mode)
+
+
+class TestVoxCPM2Registration(unittest.TestCase):
+    def test_model_type_in_remapping(self):
+        from mlx_audio.tts.utils import MODEL_REMAPPING
+
+        self.assertIn("voxcpm2", MODEL_REMAPPING)
+        self.assertEqual(MODEL_REMAPPING["voxcpm2"], "voxcpm2")
+
+
+class TestVoxCPM2AudioVAE(unittest.TestCase):
+    def test_encode_decode_shape(self):
+        from mlx_audio.tts.models.voxcpm2.audio_vae import AudioVAE
+        from mlx_audio.tts.models.voxcpm2.config import AudioVAEConfig
+
+        config = AudioVAEConfig(
+            encoder_dim=8,
+            encoder_rates=[2, 2],
+            latent_dim=16,
+            decoder_dim=64,
+            decoder_rates=[2, 2],
+            depthwise=False,
+            sample_rate=16000,
+            out_sample_rate=48000,
+            sr_bin_boundaries=[20000, 30000, 40000],
+        )
+        vae = AudioVAE(config)
+        mx.eval(vae.parameters())
+
+        x = mx.zeros((1, 16, 1))  # (B, T, C=1)
+        encoded = vae.encode(x)
+        self.assertEqual(encoded.ndim, 3)
+        self.assertEqual(encoded.shape[-1], 16)  # latent_dim
+
+        decoded = vae.decode(encoded)
+        self.assertIsNotNone(decoded)
+
+    def test_sr_conditioning(self):
+        from mlx_audio.tts.models.voxcpm2.audio_vae import AudioVAE
+        from mlx_audio.tts.models.voxcpm2.config import AudioVAEConfig
+
+        config = AudioVAEConfig(
+            encoder_dim=8,
+            encoder_rates=[2, 2],
+            latent_dim=16,
+            decoder_dim=64,
+            decoder_rates=[2, 2],
+            depthwise=False,
+            sr_bin_boundaries=[20000, 30000, 40000],
+        )
+        vae = AudioVAE(config)
+        mx.eval(vae.parameters())
+
+        self.assertEqual(len(vae.decoder.sr_cond_layers), 2)
+        # Test bucket index
+        idx = vae.decoder.get_sr_idx(mx.array([48000], dtype=mx.int32))
+        self.assertEqual(idx.item(), 3)  # > all boundaries
+        idx = vae.decoder.get_sr_idx(mx.array([10000], dtype=mx.int32))
+        self.assertEqual(idx.item(), 0)  # < all boundaries
+
+    def test_sanitize_weight_norm_fusion(self):
+        from mlx_audio.tts.models.voxcpm2.audio_vae import AudioVAE
+        from mlx_audio.tts.models.voxcpm2.config import AudioVAEConfig
+
+        config = AudioVAEConfig(
+            encoder_dim=8,
+            encoder_rates=[2],
+            decoder_rates=[2],
+            latent_dim=16,
+            decoder_dim=32,
+            depthwise=False,
+            sr_bin_boundaries=None,
+        )
+        vae = AudioVAE(config)
+
+        g = mx.ones((8, 1, 1)) * 2.0
+        v = mx.ones((8, 1, 7))
+        weights = {"encoder.conv_in.weight_g": g, "encoder.conv_in.weight_v": v}
+        sanitized = vae.sanitize(weights)
+
+        self.assertIn("encoder.conv_in.weight", sanitized)
+        self.assertNotIn("encoder.conv_in.weight_g", sanitized)
+        self.assertNotIn("encoder.conv_in.weight_v", sanitized)
+
+
+class TestVoxCPM2MiniCPM(unittest.TestCase):
+    def test_no_rope(self):
+        from mlx_audio.tts.models.voxcpm2.config import LMConfig
+        from mlx_audio.tts.models.voxcpm2.minicpm import MiniCPMModel
+
+        config = LMConfig(
+            hidden_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            vocab_size=0,
+            no_rope=True,
+            use_mup=False,
+            rope_long_factor=[1.0] * 8,
+            rope_short_factor=[1.0] * 8,
+        )
+        model = MiniCPMModel(config)
+        mx.eval(model.parameters())
+        self.assertIsNone(model.rope)
+
+        x = mx.random.normal((1, 4, 64))
+        out, cache = model(inputs_embeds=x)
+        self.assertEqual(out.shape, (1, 4, 64))
+
+    def test_kv_channels(self):
+        from mlx_audio.tts.models.voxcpm2.config import LMConfig
+        from mlx_audio.tts.models.voxcpm2.minicpm import Attention
+
+        config = LMConfig(
+            hidden_size=64,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            kv_channels=32,
+            rope_long_factor=[1.0] * 16,
+            rope_short_factor=[1.0] * 16,
+        )
+        attn = Attention(config)
+        self.assertEqual(attn.head_dim, 32)
+
+
+class TestVoxCPM2DiT(unittest.TestCase):
+    def test_multi_token_mu(self):
+        from mlx_audio.tts.models.voxcpm2.config import LMConfig
+        from mlx_audio.tts.models.voxcpm2.dit import VoxCPMLocDiTV2
+
+        config = LMConfig(
+            hidden_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            vocab_size=0,
+            use_mup=False,
+            rope_long_factor=[1.0] * 8,
+            rope_short_factor=[1.0] * 8,
+        )
+        dit = VoxCPMLocDiTV2(config, in_channels=16)
+        mx.eval(dit.parameters())
+
+        x = mx.random.normal((1, 16, 4))
+        mu = mx.random.normal((1, 128))  # 2 * hidden_size
+        t = mx.array([0.5])
+        cond = mx.random.normal((1, 16, 4))
+        dt = mx.array([0.0])
+
+        out = dit(x, mu, t, cond, dt)
+        self.assertEqual(out.shape, x.shape)
+
+    def test_single_token_mu(self):
+        from mlx_audio.tts.models.voxcpm2.config import LMConfig
+        from mlx_audio.tts.models.voxcpm2.dit import VoxCPMLocDiTV2
+
+        config = LMConfig(
+            hidden_size=64,
+            num_hidden_layers=1,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            vocab_size=0,
+            use_mup=False,
+            rope_long_factor=[1.0] * 8,
+            rope_short_factor=[1.0] * 8,
+        )
+        dit = VoxCPMLocDiTV2(config, in_channels=16)
+        mx.eval(dit.parameters())
+
+        x = mx.random.normal((1, 16, 4))
+        mu = mx.random.normal((1, 64))  # 1 * hidden_size
+        out = dit(x, mu, mx.array([0.5]), mx.random.normal((1, 16, 4)), mx.array([0.0]))
+        self.assertEqual(out.shape, x.shape)
+
+
+class TestVoxCPM2Model(unittest.TestCase):
+    def test_init(self):
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+        mx.eval(model.parameters())
+
+        self.assertIsNotNone(model.base_lm)
+        self.assertIsNotNone(model.residual_lm)
+        self.assertIsNotNone(model.fusion_concat_proj)
+        self.assertIsNone(model.residual_lm.rope)  # no_rope=True
+        self.assertIsNotNone(model.base_lm.rope)
+        self.assertEqual(model.sample_rate, 48000)
+        self.assertEqual(model.fusion_concat_proj.weight.shape, (64, 128))
+
+    def test_embed_tokens(self):
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+        mx.eval(model.parameters())
+
+        x = mx.array([[1, 2, 3]])
+        emb = model.base_lm.embed_tokens(x)
+        self.assertEqual(emb.shape, (1, 3, 64))
+
+    def test_inference_pipeline(self):
+        """Test forward pass through the full inference pipeline (no tokenizer)."""
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+        mx.eval(model.parameters())
+
+        # Simulate zero-shot input
+        text_token = mx.array([[1, 2, 3, 101]])
+        text_length = 4
+        audio_feat = mx.zeros((1, text_length, 2, 16))
+        text_mask = mx.ones((1, text_length))
+        audio_mask = mx.zeros((1, text_length))
+
+        feat_embed = model.feat_encoder(audio_feat)
+        feat_embed = model.enc_to_lm_proj(feat_embed)
+        text_embed = model.base_lm.embed_tokens(text_token)
+        combined = text_mask[:, :, None] * text_embed + audio_mask[:, :, None] * feat_embed
+
+        enc_out, lm_cache = model.base_lm(combined)
+        self.assertEqual(enc_out.shape, (1, text_length, 64))
+
+        # Fusion concat proj
+        residual_in = model.fusion_concat_proj(
+            mx.concatenate([enc_out, audio_mask[:, :, None] * feat_embed], axis=-1)
+        )
+        self.assertEqual(residual_in.shape, (1, text_length, 64))
+
+        res_out, res_cache = model.residual_lm(residual_in)
+
+        # DiT hidden (concat, not sum)
+        lm_h = model.lm_to_dit_proj(enc_out[:, -1, :])
+        res_h = model.res_to_dit_proj(res_out[:, -1, :])
+        dit_h = mx.concatenate([lm_h, res_h], axis=-1)
+        self.assertEqual(dit_h.shape, (1, 128))  # 2 * dit_hidden_dim
+
+    def test_sanitize_populates_rope(self):
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+
+        weights = model.sanitize({})
+        rope_keys = [k for k in weights if "rope" in k]
+        self.assertGreater(len(rope_keys), 0)
+
+    def test_sanitize_sr_boundaries(self):
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+
+        weights = {"audio_vae.decoder._sr_boundaries": mx.array([20000, 30000, 40000])}
+        sanitized = model.sanitize(weights)
+        # Buffer should be extracted, not in returned weights
+        self.assertNotIn("audio_vae.decoder._sr_boundaries", sanitized)
+
+    def test_voice_design_prefix(self):
+        """Instruct param prepends voice description to text."""
+        from unittest.mock import MagicMock
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        args = _tiny_voxcpm2_args()
+        model = Model(args)
+        model.tokenizer = MagicMock()
+        model.tokenizer.encode = MagicMock(return_value=[1, 2, 3])
+
+        # Call generate with instruct — it should prepend (instruct)text
+        gen = model.generate(
+            text="Hello",
+            instruct="A warm voice",
+            max_tokens=1,
+            warmup_patches=0,
+        )
+        try:
+            next(gen)
+        except Exception:
+            pass
+        # Check tokenizer was called with prefixed text
+        call_args = model.tokenizer.encode.call_args[0][0]
+        self.assertTrue(call_args.startswith("(A warm voice)"))
+
+
 if __name__ == "__main__":
     unittest.main()
