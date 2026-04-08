@@ -6,7 +6,7 @@ from .config import (
     Qwen2Config,
     SemanticTokenizerConfig,
 )
-from .vibevoice_asr import Model
+from .vibevoice_asr import Model, StreamingResult
 
 __all__ = [
     "Model",
@@ -14,4 +14,5 @@ __all__ = [
     "AcousticTokenizerConfig",
     "SemanticTokenizerConfig",
     "Qwen2Config",
+    "StreamingResult",
 ]
