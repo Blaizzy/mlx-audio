@@ -40,7 +40,22 @@ from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
-from mlx_audio.utils import load_model
+from mlx_audio.utils import (
+    get_model_category,
+    get_model_name_parts,
+    load_config,
+    load_model,
+)
+
+# Voice descriptions for STS models (OpenAI voice names → natural language)
+STS_VOICE_MAP = {
+    "alloy": "US female",
+    "echo": "US male",
+    "fable": "UK female",
+    "onyx": "UK male",
+    "nova": "US female",
+    "shimmer": "UK female",
+}
 
 
 def sanitize_for_json(obj: Any) -> Any:
@@ -74,19 +89,51 @@ MLX_AUDIO_NUM_WORKERS = os.getenv("MLX_AUDIO_NUM_WORKERS", "2")
 
 class ModelProvider:
     def __init__(self):
-        self.models: Dict[str, Dict[str, Any]] = {}
+        self.models: Dict[str, Any] = {}
+        self.processors: Dict[str, Any] = {}
+        self.categories: Dict[str, str] = {}
         self.lock = asyncio.Lock()
 
     def load_model(self, model_name: str):
         if model_name not in self.models:
-            self.models[model_name] = load_model(model_name)
+            # Determine category before loading
+            config = load_config(model_name)
+            name_parts = get_model_name_parts(model_name)
+            model_type = config.get("model_type", None)
+            category = get_model_category(model_type, name_parts)
+            self.categories[model_name] = category
+
+            # STS models with their own from_pretrained (e.g. LFM2.5-Audio)
+            if category == "sts" and model_type == "lfm_audio":
+                from mlx_audio.sts.models.lfm_audio import (
+                    LFM2AudioModel,
+                    LFM2AudioProcessor,
+                )
+
+                self.models[model_name] = LFM2AudioModel.from_pretrained(
+                    model_name
+                )
+                mx.eval(self.models[model_name].parameters())
+                self.processors[model_name] = (
+                    LFM2AudioProcessor.from_pretrained(model_name)
+                )
+            else:
+                self.models[model_name] = load_model(model_name)
 
         return self.models[model_name]
+
+    def get_category(self, model_name: str) -> Optional[str]:
+        return self.categories.get(model_name)
+
+    def get_processor(self, model_name: str):
+        return self.processors.get(model_name)
 
     async def remove_model(self, model_name: str) -> bool:
         async with self.lock:
             if model_name in self.models:
                 del self.models[model_name]
+                self.processors.pop(model_name, None)
+                self.categories.pop(model_name, None)
                 return True
             return False
 
@@ -323,12 +370,64 @@ async def generate_audio(model, payload: SpeechRequest):
     yield buffer.getvalue()
 
 
+async def generate_sts_audio(model, processor, payload: SpeechRequest):
+    """Generate audio from an STS model (e.g. LFM2.5-Audio) using ChatState."""
+    from mlx_audio.sts.models.lfm_audio import ChatState, LFMModality
+    from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
+
+    voice = payload.voice or "echo"
+    voice_desc = STS_VOICE_MAP.get(voice, voice)
+
+    chat = ChatState(processor)
+    chat.new_turn("system")
+    chat.add_text(f"Perform TTS. Use the {voice_desc} voice.")
+    chat.end_turn()
+    chat.new_turn("user")
+    chat.add_text(payload.input)
+    chat.end_turn()
+    chat.new_turn("assistant")
+
+    audio_codes = []
+    for token, modality in model.generate_sequential(
+        **dict(chat.items()),
+        max_new_tokens=payload.max_tokens,
+        temperature=payload.temperature or 1.0,
+        top_k=payload.top_k or 50,
+        audio_temperature=0.8,
+        audio_top_k=64,
+    ):
+        mx.eval(token)
+        if modality == LFMModality.AUDIO_OUT:
+            if token[0].item() == AUDIO_EOS_TOKEN:
+                break
+            audio_codes.append(token)
+
+    if not audio_codes:
+        raise HTTPException(status_code=400, detail="No audio generated")
+
+    codes = mx.stack(audio_codes, axis=0)[None, :].transpose(0, 2, 1)
+    waveform = processor.decode_audio(codes)
+    audio_np = np.array(waveform[0], dtype=np.float32)
+
+    buffer = io.BytesIO()
+    audio_write(buffer, audio_np, model.sample_rate, format=payload.response_format)
+    yield buffer.getvalue()
+
+
 @app.post("/v1/audio/speech")
 async def tts_speech(payload: SpeechRequest):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
+    processor = model_provider.get_processor(payload.model)
+
+    generator = (
+        generate_sts_audio(model, processor, payload)
+        if processor is not None
+        else generate_audio(model, payload)
+    )
+
     return StreamingResponse(
-        generate_audio(model, payload),
+        generator,
         media_type=f"audio/{payload.response_format}",
         headers={
             "Content-Disposition": f"attachment; filename=speech.{payload.response_format}"
@@ -368,6 +467,34 @@ def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
             os.remove(tmp_path)
 
 
+def generate_sts_transcription(model, processor, audio_data, sample_rate):
+    """Generate transcription from an STS model (e.g. LFM2.5-Audio) using ChatState."""
+    from mlx_audio.sts.models.lfm_audio import ChatState, LFMModality
+
+    audio = mx.array(audio_data)
+
+    chat = ChatState(processor)
+    chat.new_turn("system")
+    chat.add_text("Perform ASR.")
+    chat.end_turn()
+    chat.new_turn("user")
+    chat.add_audio(audio, sample_rate=sample_rate)
+    chat.end_turn()
+    chat.new_turn("assistant")
+
+    text_parts = []
+    for token, modality in model.generate_sequential(
+        **dict(chat.items()),
+        max_new_tokens=512,
+    ):
+        mx.eval(token)
+        if modality == LFMModality.TEXT:
+            text_parts.append(processor.decode_text(token[None]))
+
+    text = "".join(text_parts).replace("<|im_end|>", "").strip()
+    yield json.dumps({"text": text}) + "\n"
+
+
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
     file: UploadFile = File(...),
@@ -382,7 +509,7 @@ async def stt_transcriptions(
     prefill_step_size: int = Form(2048),
     text: Optional[str] = Form(None),
 ):
-    """Transcribe audio using an STT model in OpenAI format."""
+    """Transcribe audio using an STT or STS model in OpenAI format."""
     # Create TranscriptionRequest from form fields
     payload = TranscriptionRequest(
         model=model,
@@ -401,6 +528,16 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
+
+    # Use STS transcription path if model has a processor
+    processor = model_provider.get_processor(payload.model)
+    if processor is not None:
+        stt_model = model_provider.load_model(payload.model)
+        return StreamingResponse(
+            generate_sts_transcription(stt_model, processor, audio, sr),
+            media_type="application/x-ndjson",
+        )
+
     _, ext = os.path.splitext(file.filename)
     tmp_path = f"/tmp/{time.time()}.{ext if ext else 'mp3'}"
     audio_write(tmp_path, audio, sr)
