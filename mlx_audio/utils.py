@@ -413,6 +413,7 @@ _stt_utils = None
 _tts_utils = None
 _vad_utils = None
 _lid_utils = None
+_sts_utils = None
 
 
 def _get_stt_utils():
@@ -453,6 +454,16 @@ def _get_lid_utils():
 
         _lid_utils = lid_utils
     return _lid_utils
+
+
+def _get_sts_utils():
+    """Lazy load STS utils."""
+    global _sts_utils
+    if _sts_utils is None:
+        from mlx_audio.sts import utils as sts_utils
+
+        _sts_utils = sts_utils
+    return _sts_utils
 
 
 def audio_volume_normalize(audio, coeff: float = 0.2):
@@ -632,17 +643,19 @@ def is_valid_module_name(name: str) -> bool:
 
 
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
-    """Determine whether a model belongs to the TTS, STT, LID, or VAD category."""
+    """Determine whether a model belongs to the TTS, STT, STS, LID, or VAD category."""
     stt_utils = _get_stt_utils()
     tts_utils = _get_tts_utils()
     vad_utils = _get_vad_utils()
     lid_utils = _get_lid_utils()
+    sts_utils = _get_sts_utils()
 
     candidates = [model_type] + (model_name or [])
 
     categories = [
         ("tts", tts_utils.MODEL_REMAPPING),
         ("stt", stt_utils.MODEL_REMAPPING),
+        ("sts", sts_utils.MODEL_REMAPPING),
         ("lid", lid_utils.MODEL_REMAPPING),
         ("vad", vad_utils.MODEL_REMAPPING),
     ]
@@ -682,7 +695,7 @@ def get_model_name_parts(model_path: Union[str, Path]) -> str:
 
 
 def load_model(model_name: str):
-    """Load a TTS, STT, LID, or VAD model based on its configuration and name.
+    """Load a TTS, STT, STS, LID, or VAD model based on its configuration and name.
 
     Args:
         model_name (str): Name or path of the model to load
@@ -695,6 +708,7 @@ def load_model(model_name: str):
     """
     tts_utils = _get_tts_utils()
     stt_utils = _get_stt_utils()
+    sts_utils = _get_sts_utils()
     vad_utils = _get_vad_utils()
     lid_utils = _get_lid_utils()
 
@@ -711,6 +725,7 @@ def load_model(model_name: str):
     model_loaders = {
         "tts": tts_utils.load_model,
         "stt": stt_utils.load_model,
+        "sts": sts_utils.load_model,
         "lid": lid_utils.load_model,
         "vad": vad_utils.load_model,
     }
