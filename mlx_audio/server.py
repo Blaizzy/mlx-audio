@@ -96,22 +96,29 @@ class ModelProvider:
 
     def load_model(self, model_name: str):
         if model_name not in self.models:
-            self.models[model_name] = load_model(model_name)
-
-            # Determine and store category
+            # Determine category before loading
             config = load_config(model_name)
             name_parts = get_model_name_parts(model_name)
             model_type = config.get("model_type", None)
             category = get_model_category(model_type, name_parts)
             self.categories[model_name] = category
 
-            # Load processor for STS models that need one
+            # STS models with their own from_pretrained (e.g. LFM2.5-Audio)
             if category == "sts" and model_type == "lfm_audio":
-                from mlx_audio.sts.models.lfm_audio import LFM2AudioProcessor
+                from mlx_audio.sts.models.lfm_audio import (
+                    LFM2AudioModel,
+                    LFM2AudioProcessor,
+                )
 
+                self.models[model_name] = LFM2AudioModel.from_pretrained(
+                    model_name
+                )
+                mx.eval(self.models[model_name].parameters())
                 self.processors[model_name] = (
                     LFM2AudioProcessor.from_pretrained(model_name)
                 )
+            else:
+                self.models[model_name] = load_model(model_name)
 
         return self.models[model_name]
 
