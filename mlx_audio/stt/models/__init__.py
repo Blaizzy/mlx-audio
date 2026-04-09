@@ -1,4 +1,5 @@
 from . import (
+    cohere_asr,
     fireredasr2,
     glmasr,
     granite_speech,

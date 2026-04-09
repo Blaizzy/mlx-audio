@@ -104,6 +104,23 @@ def hertz_to_mel(pitch: float) -> float:
     return mel
 
 
+def write_joined_audio(
+    file_name: str,
+    audio_chunks: list,
+    sample_rate: int,
+    audio_format: str,
+) -> None:
+    if not audio_chunks:
+        return
+
+    audio = (
+        mx.concatenate(audio_chunks, axis=0)
+        if len(audio_chunks) > 1
+        else audio_chunks[0]
+    )
+    audio_write(file_name, audio, sample_rate, format=audio_format)
+
+
 def generate_audio(
     text: Optional[str],
     model: Optional[Union[str, nn.Module]] = None,
@@ -138,6 +155,7 @@ def generate_audio(
     streaming_interval: float = 2.0,
     conversation: Optional[list[dict[str, Any]]] = None,
     mode: str = "generation",
+    save: bool = False,
     use_zero_spk_emb: bool = False,
     **kwargs,
 ) -> None:
@@ -161,10 +179,11 @@ def generate_audio(
     - join_audio (bool): Whether to join multiple audio files into one.
     - play (bool): Whether to play the generated audio.
     - verbose (bool): Whether to print status messages.
+    - save (bool): Whether to save streamed audio to a file when using stream mode.
     - model (object): A already loaded model.
     - stt_model (object): A already loaded stt model.
     Returns:
-    - None: The function writes the generated audio to a file.
+    - None: The function writes the generated audio to a file when not streaming, or when streaming with saving enabled.
     """
     try:
         play = play or stream
@@ -274,13 +293,26 @@ def generate_audio(
 
         results = model_generate(**gen_kwargs)
 
+        save_streamed_audio = stream and save
         audio_list = []
+        streamed_audio_chunks = []
+        streamed_segment_audio = {}
+        streamed_segment_sample_rates = {}
         file_name = f"{file_prefix}.{audio_format}"
         for i, result in enumerate(results):
             if play and player is not None:
                 player.queue_audio(result.audio)
 
-            if join_audio:
+            if save_streamed_audio:
+                if join_audio:
+                    streamed_audio_chunks.append(result.audio)
+                else:
+                    segment_idx = result.segment_idx
+                    if segment_idx not in streamed_segment_audio:
+                        streamed_segment_audio[segment_idx] = []
+                        streamed_segment_sample_rates[segment_idx] = result.sample_rate
+                    streamed_segment_audio[segment_idx].append(result.audio)
+            elif join_audio and not stream:
                 audio_list.append(result.audio)
             elif not stream:
                 file_name = f"{file_prefix}_{i:03d}.{audio_format}"
@@ -311,14 +343,42 @@ def generate_audio(
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
                 print(f"Peak memory usage:     {result.peak_memory_usage:.2f}GB")
 
-        if join_audio and not stream:
+        if save_streamed_audio and join_audio and streamed_audio_chunks:
+            if verbose:
+                print(f"Joining {len(streamed_audio_chunks)} streamed audio chunks")
+            write_joined_audio(
+                file_name,
+                streamed_audio_chunks,
+                model.sample_rate,
+                audio_format,
+            )
+            print(f"✅ Audio successfully generated and saving as: {file_name}")
+        elif save_streamed_audio and streamed_segment_audio:
+            for segment_idx in sorted(streamed_segment_audio):
+                file_name = f"{file_prefix}_{segment_idx:03d}.{audio_format}"
+                audio_chunks = streamed_segment_audio[segment_idx]
+                sample_rate = streamed_segment_sample_rates[segment_idx]
+                if verbose:
+                    print(
+                        "Joining "
+                        f"{len(audio_chunks)} streamed audio chunks for segment "
+                        f"{segment_idx}"
+                    )
+                write_joined_audio(
+                    file_name,
+                    audio_chunks,
+                    sample_rate,
+                    audio_format,
+                )
+                print(f"✅ Audio successfully generated and saving as: {file_name}")
+        elif join_audio and not stream and audio_list:
             if verbose:
                 print(f"Joining {len(audio_list)} audio files")
-            audio = mx.concatenate(audio_list, axis=0)
-            audio_write(
-                f"{file_prefix}.{audio_format}",
-                np.array(audio),
-                int(getattr(loaded_model, "sample_rate", 24000)),
+            write_joined_audio(
+                file_name,
+                audio_list,
+                model.sample_rate,
+                audio_format,
             )
             if verbose:
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
@@ -487,7 +547,7 @@ def parse_args():
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="Stream the audio as segments instead of saving to a file",
+        help="Stream the audio as segments during generation",
     )
     parser.add_argument(
         "--streaming_interval",
@@ -495,34 +555,23 @@ def parse_args():
         default=2.0,
         help="The time interval in seconds for streaming segments",
     )
+    parser.add_argument(
+        "--save",
+        action="store_true",
+        help="Save streamed audio to a file. Requires --stream.",
+    )
 
     args = parser.parse_args()
 
-    if args.conversation_json is not None:
-        with open(args.conversation_json, "r", encoding="utf-8") as f:
-            args.conversation = json.load(f)
-        if not isinstance(args.conversation, list):
-            raise ValueError(
-                "--conversation_json must point to a JSON array of messages"
-            )
-        if args.text is not None:
-            raise ValueError("Use either --text or --conversation_json, not both")
-        if args.ref_audio is not None:
-            raise ValueError(
-                "--ref_audio is not supported with --conversation_json; attach audio context inside the conversation payload"
-            )
-        if args.ref_text is not None:
-            raise ValueError(
-                "--ref_text is not supported with --conversation_json; include the prefix transcript in the user message text"
-            )
-    else:
-        args.conversation = None
-        if args.text is None:
-            if not sys.stdin.isatty():
-                args.text = sys.stdin.read().strip()
-            else:
-                print("Please enter the text to generate:")
-                args.text = input("> ").strip()
+    if args.save and not args.stream:
+        parser.error("--save requires --stream")
+
+    if args.text is None:
+        if not sys.stdin.isatty():
+            args.text = sys.stdin.read().strip()
+        else:
+            print("Please enter the text to generate:")
+            args.text = input("> ").strip()
 
     return args
 

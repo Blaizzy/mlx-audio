@@ -5,6 +5,7 @@ __pycache__/
 *.so
 .Python
 build/
+site/
 develop-eggs/
 dist/
 downloads/
@@ -58,7 +59,6 @@ Thumbs.db
 
 # uv
 .build
-
-# misc
-output/
-*.safetensors
+claude.md
+.claude/site/
+.generated/legacy-docs-generated/
