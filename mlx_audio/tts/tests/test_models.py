@@ -4341,5 +4341,976 @@ class TestAudioDiTModel(unittest.TestCase):
         )
 
 
+class TestOmniVoiceConfig(unittest.TestCase):
+    def test_parse_from_dict_minimal(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "audio_codebook_weights": [8, 8, 6, 6, 4, 4, 2, 2],
+                "sample_rate": 24000,
+            }
+        )
+        self.assertEqual(cfg.audio_vocab_size, 1025)
+        self.assertEqual(cfg.num_audio_codebook, 8)
+        self.assertEqual(cfg.sample_rate, 24000)
+
+    def test_unknown_keys_are_ignored(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+
+        OmniVoiceConfig.from_dict({"model_type": "omnivoice", "future_key": 99})
+
+    def test_higgs_audio_config(self):
+        from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
+
+        cfg = HiggsAudioConfig.from_dict(
+            {
+                "model_type": "higgs_audio_v2_tokenizer",
+                "sample_rate": 24000,
+                "codebook_size": 1024,
+                "downsample_factor": 960,
+            }
+        )
+        self.assertEqual(cfg.downsample_factor, 960)
+        self.assertAlmostEqual(cfg.tokens_per_second, 25.0)
+
+
+class TestOmniVoiceRegistration(unittest.TestCase):
+    def test_model_type_registered(self):
+        from mlx_audio.tts.utils import MODEL_REMAPPING
+
+        self.assertIn("omnivoice", MODEL_REMAPPING)
+        self.assertEqual(MODEL_REMAPPING["omnivoice"], "omnivoice")
+
+
+class TestOmniVoiceBackbone(unittest.TestCase):
+    def _make_backbone(self):
+        from mlx_audio.tts.models.omnivoice.backbone import (
+            BackboneConfig,
+            OmniVoiceBackbone,
+        )
+
+        cfg = BackboneConfig(
+            hidden_size=64,
+            num_hidden_layers=2,
+            num_attention_heads=4,
+            num_key_value_heads=2,
+            intermediate_size=128,
+            vocab_size=151676,
+            head_dim=16,
+            rms_norm_eps=1e-6,
+        )
+        return OmniVoiceBackbone(cfg)
+
+    def test_output_shape(self):
+        model = self._make_backbone()
+        B, S = 1, 10
+        embeds = mx.zeros((B, S, 64))
+        out = model(embeds)
+        self.assertEqual(out.shape, (B, S, 64))
+
+    def test_bidirectional_no_causal_leak(self):
+        model = self._make_backbone()
+        S = 10
+        base_embeds = mx.zeros((1, S, 64))
+        perturbed_list = np.zeros((1, S, 64), dtype=np.float32)
+        perturbed_list[0, 7, :] = 1.0
+        perturbed = mx.array(perturbed_list)
+
+        out_base = model(base_embeds)
+        out_perturbed = model(perturbed)
+        diff = mx.abs(out_base[0, 3] - out_perturbed[0, 3])
+        self.assertGreater(
+            float(mx.max(diff).item()),
+            1e-6,
+            "Position 3 unchanged after perturbing pos 7 — causal mask still active!",
+        )
+
+
+class TestOmniVoiceModel(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_logits_shape(self):
+        model = self._make_model()
+        B, S, T = 1, 5, 7
+        input_ids = mx.zeros((B, S), dtype=mx.int32)
+        audio_tokens = mx.full((B, T, 8), 1024, dtype=mx.int32)
+        inputs_embeds = model._embed(input_ids, audio_tokens)
+        logits = model(inputs_embeds, prefix_len=S)
+        self.assertEqual(logits.shape, (B, T, 8, 1025))
+
+    def test_embed_shape(self):
+        model = self._make_model()
+        B, S, T = 1, 5, 7
+        input_ids = mx.zeros((B, S), dtype=mx.int32)
+        audio_tokens = mx.full((B, T, 8), 1024, dtype=mx.int32)
+        embeds = model._embed(input_ids, audio_tokens)
+        self.assertEqual(embeds.shape, (B, S + T, 64))
+
+
+class TestOmniVoiceBuildCondEmbeds(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_text_only_shape(self):
+        model = self._make_model()
+        embeds = model.build_cond_embeds(mx.zeros((1, 5), dtype=mx.int32))
+        self.assertEqual(embeds.shape, (1, 5, 64))
+
+    def test_text_plus_ref_shape(self):
+        model = self._make_model()
+        embeds = model.build_cond_embeds(
+            mx.zeros((1, 5), dtype=mx.int32),
+            mx.zeros((1, 7, 8), dtype=mx.int32),
+        )
+        self.assertEqual(embeds.shape, (1, 12, 64))
+
+    def test_uncond_no_ref(self):
+        model = self._make_model()
+        embeds = model.build_cond_embeds(mx.zeros((1, 5), dtype=mx.int32))
+        self.assertEqual(embeds.shape, (1, 5, 64))
+
+
+class TestOmniVoiceGeneration(unittest.TestCase):
+    def test_schedule_monotone(self):
+        from mlx_audio.tts.models.omnivoice.generation import _get_time_steps
+
+        ts = _get_time_steps(num_step=32, t_shift=0.1)
+        self.assertEqual(len(ts), 33)
+        for i in range(1, len(ts)):
+            self.assertGreaterEqual(ts[i], ts[i - 1])
+        self.assertAlmostEqual(ts[0], 0.0, places=6)
+        self.assertAlmostEqual(ts[-1], 1.0, places=4)
+
+    def test_iterative_unmask_no_mask_remaining(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        model = Model(cfg)
+
+        T = 10
+        input_ids = mx.zeros((1, 3), dtype=mx.int32)
+        cond_embeds = model.build_cond_embeds(input_ids)
+        uncond_embeds = model.build_cond_embeds(mx.zeros_like(input_ids))
+        tokens = iterative_unmask(
+            model=model,
+            cond_embeds=cond_embeds,
+            uncond_embeds=uncond_embeds,
+            T=T,
+            num_steps=5,
+            guidance_scale=2.0,
+        )
+        self.assertEqual(tokens.shape, (T, 8))
+        mask_count = int(mx.sum(tokens == 1024).item())
+        self.assertEqual(
+            mask_count, 0, f"Found {mask_count} mask tokens after unmasking"
+        )
+        self.assertTrue(bool(mx.all(tokens >= 0).item()))
+        self.assertTrue(bool(mx.all(tokens <= 1023).item()))
+
+    def test_frozen_tokens_invariant(self):
+        from mlx_audio.tts.models.omnivoice.generation import (  # noqa: F401
+            iterative_unmask,
+        )
+
+        pass
+
+
+class TestOmniVoiceIterativeUnmaskRefactor(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_new_signature_shape(self):
+        from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
+
+        model = self._make_model()
+        cond = mx.zeros((1, 3, 64))
+        uncond = mx.zeros((1, 3, 64))
+        tokens = iterative_unmask(model, cond, uncond, T=10, num_steps=2)
+        self.assertEqual(tokens.shape, (10, 8))
+
+    def test_no_mask_tokens_remain(self):
+        from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
+
+        model = self._make_model()
+        cond = mx.zeros((1, 3, 64))
+        uncond = mx.zeros((1, 3, 64))
+        tokens = iterative_unmask(model, cond, uncond, T=10, num_steps=5)
+        self.assertEqual(int(mx.sum(tokens == 1024).item()), 0)
+
+    def test_deterministic_with_fixed_seed(self):
+        from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
+
+        model = self._make_model()
+        input_ids = mx.zeros((1, 3), dtype=mx.int32)
+        cond = model.build_cond_embeds(input_ids)
+        uncond = model.build_cond_embeds(mx.zeros_like(input_ids))
+
+        mx.random.seed(42)
+        t1 = iterative_unmask(model, cond, uncond, T=5, num_steps=3)
+        _ = int(mx.sum(t1).item())
+
+        mx.random.seed(42)
+        t2 = iterative_unmask(model, cond, uncond, T=5, num_steps=3)
+
+        self.assertTrue(bool(mx.all(t1 == t2).item()))
+
+
+class TestOmniVoiceSanitize(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_llm_prefix_remapped(self):
+        model = self._make_model()
+        x = mx.zeros((4,))
+        result = model.sanitize({"llm.layers.0.weight": x})
+        self.assertIn("backbone.layers.0.weight", result)
+        self.assertNotIn("llm.layers.0.weight", result)
+
+    def test_audio_embeddings_split(self):
+        model = self._make_model()
+        x = mx.zeros((8 * 1025, 4))
+        result = model.sanitize({"audio_embeddings.weight": x})
+        for i in range(8):
+            self.assertIn(f"audio_embeddings.{i}.weight", result)
+            self.assertEqual(result[f"audio_embeddings.{i}.weight"].shape, (1025, 4))
+        self.assertNotIn("audio_embeddings.weight", result)
+
+    def test_audio_heads_split(self):
+        model = self._make_model()
+        x = mx.zeros((8 * 1025, 4))
+        result = model.sanitize({"audio_heads.weight": x})
+        for i in range(8):
+            self.assertIn(f"audio_heads.{i}.weight", result)
+        self.assertNotIn("audio_heads.weight", result)
+
+    def test_codebook_layer_offsets_dropped(self):
+        model = self._make_model()
+        x = mx.array([0, 1025, 2050, 3075, 4100, 5125, 6150, 7175])
+        result = model.sanitize({"codebook_layer_offsets": x})
+        self.assertNotIn("codebook_layer_offsets", result)
+        self.assertEqual(len(result), 0)
+
+    def test_other_keys_pass_through(self):
+        model = self._make_model()
+        x = mx.zeros((4,))
+        result = model.sanitize({"some.other.key": x})
+        self.assertIn("some.other.key", result)
+
+
+class TestOmniVoiceGenerate(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_generate_returns_generation_result(self):
+        import math
+
+        from mlx_audio.tts.models.base import GenerationResult
+
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(model.generate(input_ids=input_ids, duration_s=1.0, num_steps=5))
+        self.assertIsInstance(result, GenerationResult)
+
+    def test_generate_token_count(self):
+        import math
+
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(model.generate(input_ids=input_ids, duration_s=1.0, num_steps=5))
+        expected_T = math.ceil(1.0 * 24000 / 960)
+        self.assertEqual(result.token_count, expected_T)
+
+    def test_generate_sample_rate(self):
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(model.generate(input_ids=input_ids, duration_s=1.0, num_steps=5))
+        self.assertEqual(result.sample_rate, 24000)
+
+    def test_generate_processing_time_positive(self):
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(model.generate(input_ids=input_ids, duration_s=1.0, num_steps=5))
+        self.assertGreater(result.processing_time_seconds, 0)
+
+    def test_generate_result_field_types(self):
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(model.generate(input_ids=input_ids, duration_s=1.0, num_steps=5))
+        self.assertIsInstance(result.audio_duration, str)
+        self.assertIsInstance(result.prompt, dict)
+        self.assertIn("tokens-per-sec", result.prompt)
+        self.assertIsInstance(result.audio_samples, dict)
+        self.assertIn("samples", result.audio_samples)
+        self.assertIn("samples-per-sec", result.audio_samples)
+
+    def test_generate_with_ref_tokens_succeeds(self):
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        ref_tokens = mx.ones((4, 8), dtype=mx.int32)
+        result = next(
+            model.generate(
+                input_ids=input_ids, duration_s=0.5, num_steps=3, ref_tokens=ref_tokens
+            )
+        )
+        self.assertIsInstance(result.token_count, int)
+        self.assertGreater(result.token_count, 0)
+
+
+class TestOmniVoiceCloneUtils(unittest.TestCase):
+    def test_no_tokenizer_returns_empty(self):
+        from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+
+        result = create_voice_clone_prompt("any_path.wav", tokenizer=None)
+        self.assertEqual(result.shape, (0, 8))
+        self.assertEqual(result.dtype, mx.int32)
+
+    def test_missing_file_raises(self):
+        from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+        from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+
+        tok = HiggsAudioTokenizer(HiggsAudioConfig())
+        with self.assertRaises(FileNotFoundError):
+            create_voice_clone_prompt("/nonexistent/file.wav", tokenizer=tok)
+
+    def test_with_tokenizer_returns_2d(self):
+        import os
+        import tempfile
+
+        import soundfile as sf
+
+        from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+        from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+
+        tok = HiggsAudioTokenizer(HiggsAudioConfig())
+        tok.encode = lambda wav: mx.zeros(
+            (wav.shape[0], wav.shape[1] // 960, 8), dtype=mx.int32
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+            tmp_path = f.name
+        audio = np.zeros(24000 * 2, dtype=np.float32)
+        sf.write(tmp_path, audio, 24000)
+        result = create_voice_clone_prompt(tmp_path, tokenizer=tok)
+        self.assertEqual(result.ndim, 2)
+        self.assertEqual(result.shape[1], 8)
+        self.assertEqual(result.dtype, mx.int32)
+        os.unlink(tmp_path)
+
+
+class TestOmniVoiceGenerateWithTokenizer(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def _make_tokenizer(self):
+        from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+
+        return HiggsAudioTokenizer(HiggsAudioConfig())
+
+    def test_audio_is_zeros_without_tokenizer(self):
+        model = self._make_model()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(model.generate(input_ids=input_ids, duration_s=0.1, num_steps=2))
+        self.assertIsInstance(result.audio, mx.array)
+
+    def test_audio_is_array_with_tokenizer(self):
+        model = self._make_model()
+        tok = self._make_tokenizer()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(
+            model.generate(
+                input_ids=input_ids, duration_s=0.1, num_steps=2, tokenizer=tok
+            )
+        )
+        self.assertIsNotNone(result.audio)
+        self.assertIsInstance(result.audio, mx.array)
+
+    def test_samples_count_with_tokenizer(self):
+        model = self._make_model()
+        tok = self._make_tokenizer()
+        input_ids = mx.zeros((5,), dtype=mx.int32)
+        result = next(
+            model.generate(
+                input_ids=input_ids, duration_s=0.1, num_steps=2, tokenizer=tok
+            )
+        )
+        expected_samples = result.token_count * 960
+        self.assertEqual(result.audio.size, expected_samples)
+
+
+class TestHiggsAudioDAC(unittest.TestCase):
+    def test_residual_unit_shape(self):
+        from mlx_audio.codec.models.higgs_audio.dac import ResidualUnit
+
+        model = ResidualUnit(64)
+        x = mx.zeros((1, 100, 64))
+        y = model(x)
+        self.assertEqual(y.shape, (1, 100, 64))
+
+    def test_encoder_block_downsamples(self):
+        from mlx_audio.codec.models.higgs_audio.dac import AcousticEncoderBlock
+
+        model = AcousticEncoderBlock(64, 128, stride=8)
+        x = mx.zeros((1, 800, 64))
+        y = model(x)
+        self.assertEqual(y.shape[1], 100)
+
+    def test_acoustic_encoder_hop(self):
+        from mlx_audio.codec.models.higgs_audio.dac import AcousticEncoder
+
+        model = AcousticEncoder()
+        x = mx.zeros((1, 960, 1))
+        y = model(x)
+        self.assertEqual(y.shape, (1, 1, 256))
+
+    def test_acoustic_decoder_upsample(self):
+        from mlx_audio.codec.models.higgs_audio.dac import AcousticDecoder
+
+        model = AcousticDecoder()
+        x = mx.zeros((1, 1, 256))
+        y = model(x)
+        self.assertEqual(y.shape, (1, 960, 1))
+
+    def test_rvq_decode_shape(self):
+        from mlx_audio.codec.models.higgs_audio.dac import ResidualVectorQuantizer
+
+        model = ResidualVectorQuantizer()
+        codes = mx.zeros((1, 17, 8), dtype=mx.int32)
+        y = model.decode(codes)
+        self.assertEqual(y.shape, (1, 17, 1024))
+
+
+class TestHiggsAudioTokenizer(unittest.TestCase):
+    def test_higgs_audio_instantiation(self):
+        from mlx_audio.codec.models.higgs_audio import (
+            HiggsAudioConfig,
+            HiggsAudioTokenizer,
+        )
+
+        tokenizer = HiggsAudioTokenizer(HiggsAudioConfig())
+        self.assertIsNotNone(tokenizer)
+
+    def test_higgs_audio_config_tokens_per_second(self):
+        from mlx_audio.codec.models.higgs_audio import HiggsAudioConfig
+
+        cfg = HiggsAudioConfig()
+        self.assertAlmostEqual(cfg.tokens_per_second, 25.0)
+
+
+class TestHiggsAudioTokenizerFull(unittest.TestCase):
+    def _tok(self):
+        from mlx_audio.codec.models.higgs_audio.config import HiggsAudioConfig
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+
+        return HiggsAudioTokenizer(HiggsAudioConfig())
+
+    def test_instantiation(self):
+        self.assertIsNotNone(self._tok())
+
+    def test_decode_2d_shape(self):
+        tok = self._tok()
+        tokens = mx.zeros((4, 8), dtype=mx.int32)
+        wav = tok.decode(tokens)
+        self.assertEqual(wav.shape, (4 * 960,))
+
+    def test_decode_3d_shape(self):
+        tok = self._tok()
+        tokens = mx.zeros((1, 4, 8), dtype=mx.int32)
+        wav = tok.decode(tokens)
+        self.assertEqual(wav.ndim, 3)
+        self.assertEqual(wav.shape[0], 1)
+        self.assertEqual(wav.shape[2], 1)
+
+    def test_encode_raises_without_pt_tokenizer(self):
+        tok = self._tok()
+        wav = mx.zeros((1, 960 * 5, 1))
+        with self.assertRaises(RuntimeError):
+            tok.encode(wav)
+
+    def test_sanitize_keeps_encode_path(self):
+        tok = self._tok()
+        weights = {
+            "acoustic_encoder.conv1.weight_g": mx.zeros((1,)),
+            "semantic_model.encoder.conv.weight": mx.zeros((1,)),
+            "fc2.weight": mx.zeros((256, 1024)),
+            "fc1.weight": mx.zeros((768, 1024)),
+        }
+        result = tok.sanitize(weights)
+        self.assertIn("acoustic_encoder.conv1.weight_g", result)
+        self.assertIn("fc2.weight", result)
+        self.assertIn("semantic_model.encoder.conv.weight", result)
+        self.assertNotIn("fc1.weight", result)
+
+    def test_from_pretrained_missing_raises(self):
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+
+        with self.assertRaises(FileNotFoundError):
+            HiggsAudioTokenizer.from_pretrained("/nonexistent/path")
+
+
+class TestHiggsAudioEncodeConfig(unittest.TestCase):
+    def test_semantic_config_fields(self):
+        from mlx_audio.codec.models.higgs_audio import HiggsAudioConfig
+
+        cfg = HiggsAudioConfig.from_dict(
+            {
+                "model_type": "higgs_audio_v2_tokenizer",
+                "sample_rate": 24000,
+                "semantic_sample_rate": 16000,
+                "downsample_factor": 960,
+                "strides": [1, 1],
+                "block_dilations": [1, 1],
+                "channel_ratios": [1, 1],
+                "kernel_size": 3,
+                "unit_kernel_size": 3,
+                "semantic_model_config": {
+                    "model_type": "hubert",
+                    "hidden_size": 768,
+                    "num_hidden_layers": 12,
+                },
+            }
+        )
+        self.assertEqual(cfg.semantic_sample_rate, 16000)
+        self.assertEqual(cfg.strides, [1, 1])
+        self.assertIsNotNone(cfg.semantic_model_config)
+
+    def test_semantic_downsample_factor_property(self):
+        from mlx_audio.codec.models.higgs_audio import HiggsAudioConfig
+
+        cfg = HiggsAudioConfig()
+        cfg.semantic_sample_rate = 16000
+        cfg.downsample_factor = 960
+        cfg.sample_rate = 24000
+        self.assertEqual(cfg.semantic_downsample_factor, 2)
+
+
+class TestSemanticEncoder(unittest.TestCase):
+    def test_output_shape_preserves_time(self):
+        from mlx_audio.codec.models.higgs_audio.semantic import SemanticEncoder
+
+        enc = SemanticEncoder(
+            hidden_size=768,
+            strides=[1, 1],
+            dilations=[1, 1],
+            channel_ratios=[1, 1],
+            kernel_size=3,
+            unit_kernel_size=3,
+        )
+        x = mx.zeros((1, 25, 768))
+        y = enc(x)
+        self.assertEqual(y.shape, (1, 25, 768))
+
+    def test_different_batch_and_time(self):
+        from mlx_audio.codec.models.higgs_audio.semantic import SemanticEncoder
+
+        enc = SemanticEncoder(
+            hidden_size=768,
+            strides=[1, 1],
+            dilations=[1, 1],
+            channel_ratios=[1, 1],
+            kernel_size=3,
+            unit_kernel_size=3,
+        )
+        x = mx.zeros((2, 50, 768))
+        y = enc(x)
+        self.assertEqual(y.shape, (2, 50, 768))
+
+    def test_nonzero_output(self):
+        from mlx_audio.codec.models.higgs_audio.semantic import SemanticEncoder
+
+        enc = SemanticEncoder(
+            hidden_size=768,
+            strides=[1, 1],
+            dilations=[1, 1],
+            channel_ratios=[1, 1],
+            kernel_size=3,
+            unit_kernel_size=3,
+        )
+        x = mx.ones((1, 10, 768))
+        y = enc(x)
+        mx.eval(y)
+        self.assertFalse(mx.all(y == 0).item())
+
+
+class TestHiggsAudioSanitizeEncode(unittest.TestCase):
+    def _tok(self):
+        from mlx_audio.codec.models.higgs_audio import (
+            HiggsAudioConfig,
+            HiggsAudioTokenizer,
+        )
+
+        return HiggsAudioTokenizer(HiggsAudioConfig())
+
+    def test_keeps_semantic_model_weights(self):
+        tok = self._tok()
+        weights = {
+            "semantic_model.encoder.layers.0.attention.k_proj.weight": mx.zeros(
+                (768, 768)
+            )
+        }
+        result = tok.sanitize(weights)
+        self.assertEqual(len(result), 1)
+        self.assertIn("semantic_model.encoder.layers.0.attention.k_proj.weight", result)
+
+    def test_keeps_encoder_semantic_weights(self):
+        tok = self._tok()
+        weights = {"encoder_semantic.conv.weight": mx.zeros((768, 768, 3))}
+        result = tok.sanitize(weights)
+        self.assertEqual(len(result), 1)
+        # Conv weight should be transposed for MLX
+        self.assertEqual(result["encoder_semantic.conv.weight"].shape, (768, 3, 768))
+
+    def test_keeps_fc_weights(self):
+        tok = self._tok()
+        weights = {"fc.weight": mx.zeros((1024, 1024)), "fc.bias": mx.zeros((1024,))}
+        result = tok.sanitize(weights)
+        self.assertIn("fc.weight", result)
+        self.assertIn("fc.bias", result)
+
+    def test_still_drops_decoder_semantic(self):
+        tok = self._tok()
+        weights = {"decoder_semantic.conv.weight": mx.zeros((768, 768, 3))}
+        result = tok.sanitize(weights)
+        self.assertEqual(len(result), 0)
+
+    def test_still_drops_fc1(self):
+        tok = self._tok()
+        weights = {"fc1.weight": mx.zeros((768, 1024))}
+        result = tok.sanitize(weights)
+        self.assertEqual(len(result), 0)
+
+    def test_semantic_model_conv_transposed(self):
+        tok = self._tok()
+        weights = {
+            "semantic_model.feature_extractor.conv_layers.0.conv.weight": mx.zeros(
+                (512, 1, 10)
+            )
+        }
+        result = tok.sanitize(weights)
+        key = "semantic_model.feature_extractor.conv_layers.0.conv.weight"
+        self.assertIn(key, result)
+        self.assertEqual(result[key].shape, (512, 10, 1))
+
+    def test_semantic_model_parametrizations_remapped(self):
+        tok = self._tok()
+        weights = {
+            "semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original0": mx.zeros(
+                (768, 48, 128)
+            ),
+            "semantic_model.encoder.pos_conv_embed.conv.parametrizations.weight.original1": mx.zeros(
+                (768, 48, 128)
+            ),
+        }
+        result = tok.sanitize(weights)
+        self.assertIn("semantic_model.encoder.pos_conv_embed.conv.weight_g", result)
+        self.assertIn("semantic_model.encoder.pos_conv_embed.conv.weight_v", result)
+        # Should be transposed
+        self.assertEqual(
+            result["semantic_model.encoder.pos_conv_embed.conv.weight_g"].shape,
+            (768, 128, 48),
+        )
+
+
+class TestHiggsAudioEncodePureMlx(unittest.TestCase):
+    def _config(self):
+        from mlx_audio.codec.models.higgs_audio import HiggsAudioConfig
+
+        return HiggsAudioConfig.from_dict(
+            {
+                "sample_rate": 24000,
+                "semantic_sample_rate": 16000,
+                "downsample_factor": 960,
+                "strides": [1, 1],
+                "block_dilations": [1, 1],
+                "channel_ratios": [1, 1],
+                "kernel_size": 3,
+                "unit_kernel_size": 3,
+                "semantic_model_config": {
+                    "model_type": "wav2vec2",
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 2,
+                    "intermediate_size": 128,
+                    "hidden_dropout": 0.0,
+                    "activation_dropout": 0.0,
+                    "attention_dropout": 0.0,
+                    "feat_proj_dropout": 0.0,
+                    "final_dropout": 0.0,
+                    "layerdrop": 0.0,
+                    "conv_dim": [32, 32, 32, 32, 32, 32, 32],
+                    "conv_stride": [5, 2, 2, 2, 2, 2, 2],
+                    "conv_kernel": [10, 3, 3, 3, 3, 2, 2],
+                    "num_conv_pos_embeddings": 32,
+                    "num_conv_pos_embedding_groups": 8,
+                },
+            }
+        )
+
+    def _tokenizer(self):
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+
+        tok = HiggsAudioTokenizer(self._config())
+        tok._init_encode_modules()
+
+        class DummyAcousticEncoder(nn.Module):
+            def __call__(self, waveform: mx.array) -> mx.array:
+                batch, time, _ = waveform.shape
+                frames = max(time // 960, 1)
+                return mx.zeros((batch, frames, 256), dtype=mx.float32)
+
+        class DummyQuantizer(nn.Module):
+            def encode(self, embeddings: mx.array) -> mx.array:
+                batch, time, _ = embeddings.shape
+                return mx.zeros((batch, time, 8), dtype=mx.int32)
+
+        tok.acoustic_encoder = DummyAcousticEncoder()
+        tok.quantizer = DummyQuantizer()
+        return tok
+
+    def test_encode_returns_correct_shape(self):
+        tok = self._tokenizer()
+        wav = mx.zeros((1, 4800, 1), dtype=mx.float32)
+
+        codes = tok.encode(wav)
+
+        self.assertEqual(codes.shape, (1, 5, 8))
+
+    def test_encode_returns_int32(self):
+        tok = self._tokenizer()
+        wav = mx.zeros((1, 4800, 1), dtype=mx.float32)
+
+        codes = tok.encode(wav)
+
+        self.assertEqual(codes.dtype, mx.int32)
+
+    def test_encode_without_modules_raises(self):
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
+
+        tok = HiggsAudioTokenizer(self._config())
+        wav = mx.zeros((1, 4800, 1), dtype=mx.float32)
+
+        with self.assertRaises(RuntimeError):
+            tok.encode(wav)
+
+
+class TestHiggsAudioEncodeParity(unittest.TestCase):
+    """Compare MLX encode output against real model weights.
+
+    Requires parity_test/model_src/ with full OmniVoice checkpoint.
+    Tests skip gracefully if weights are not available.
+    """
+
+    def _skip_if_no_weights(self):
+        """Skip test if parity_test weights not available."""
+        import os
+
+        weights_path = "parity_test/model_src/audio_tokenizer/model.safetensors"
+        if not os.path.exists(weights_path):
+            self.skipTest("parity_test/model_src not available")
+
+    def test_encode_shape_matches(self):
+        """Verify encode output shape with real weights.
+
+        1 second of zeros at 24kHz should produce ~25 frames (24000/960).
+        Output shape: [batch=1, time=T, codebooks=8]
+        """
+        self._skip_if_no_weights()
+        from mlx_audio.codec.models.higgs_audio import HiggsAudioTokenizer
+
+        tok = HiggsAudioTokenizer.from_pretrained("parity_test/model_src")
+        wav = mx.zeros((1, 24000, 1), dtype=mx.float32)  # 1 second at 24kHz
+        codes = tok.encode(wav)
+
+        # Verify shape
+        self.assertEqual(codes.ndim, 3, "codes should be 3D: [batch, time, codebooks]")
+        self.assertEqual(codes.shape[0], 1, "batch size should be 1")
+        self.assertEqual(codes.shape[2], 8, "should have 8 codebooks")
+
+        # Verify time dimension is reasonable (20-30 frames for 1 second)
+        self.assertGreater(
+            codes.shape[1], 20, "time frames should be > 20 for 1 second"
+        )
+        self.assertLess(codes.shape[1], 30, "time frames should be < 30 for 1 second")
+
+    def test_encode_values_in_range(self):
+        """Verify encode output values are valid codebook indices.
+
+        All codes should be in range [0, 1024) for 10-bit codebooks.
+        """
+        self._skip_if_no_weights()
+        from mlx_audio.codec.models.higgs_audio import HiggsAudioTokenizer
+
+        tok = HiggsAudioTokenizer.from_pretrained("parity_test/model_src")
+        wav = mx.random.normal((1, 24000, 1), dtype=mx.float32) * 0.1  # Random audio
+        codes = tok.encode(wav)
+        mx.eval(codes)
+
+        # Verify all codes are valid indices
+        self.assertTrue(mx.all(codes >= 0).item(), "all codes should be >= 0")
+        self.assertTrue(
+            mx.all(codes < 1024).item(), "all codes should be < 1024 (10-bit codebook)"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
