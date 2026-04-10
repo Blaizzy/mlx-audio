@@ -6,6 +6,7 @@ from .dac import (
     VectorQuantizer,
 )
 from .higgs_audio import HiggsAudioTokenizer
+from .semantic import SemanticEncoder
 
 __all__ = [
     "HiggsAudioConfig",
@@ -14,4 +15,5 @@ __all__ = [
     "ResidualVectorQuantizer",
     "VectorQuantizer",
     "HiggsAudioTokenizer",
+    "SemanticEncoder",
 ]

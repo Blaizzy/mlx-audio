@@ -1,8 +1,12 @@
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
+
+from mlx_audio.stt.utils import resample_audio
 
 from .config import HiggsAudioConfig
 from .dac import AcousticDecoder, AcousticEncoder, ResidualVectorQuantizer
@@ -13,22 +17,47 @@ class HiggsAudioTokenizer(nn.Module):
     HiggsAudioV2 acoustic tokenizer.
 
     Decode path (tokens → waveform): quantizer → fc2 → acoustic_decoder  [MLX]
-    Encode path (waveform → tokens): HiggsAudioV2TokenizerModel  [PyTorch CPU]
-
-    The encode path requires the HuBERT semantic model which is only available
-    via the transformers PyTorch implementation. We bridge via numpy.
+    Encode path (waveform → tokens): pure MLX semantic + acoustic fusion
     """
 
     def __init__(self, config: HiggsAudioConfig):
         super().__init__()
-        self.config = config
-        self.acoustic_encoder = AcousticEncoder()
-        self.quantizer = ResidualVectorQuantizer()
-        self.acoustic_decoder = AcousticDecoder()
+        self.config: HiggsAudioConfig = config
+        self.acoustic_encoder: nn.Module = AcousticEncoder()
+        self.quantizer: nn.Module = ResidualVectorQuantizer()
+        self.acoustic_decoder: nn.Module = AcousticDecoder()
         # Decode path: quantizer (1024-dim) → fc2 → decoder (256-dim)
-        self.fc2 = nn.Linear(1024, 256, bias=True)
-        # PyTorch tokenizer for encoding (set by from_pretrained if available)
-        self._pt_tokenizer = None
+        self.fc2: nn.Linear = nn.Linear(1024, 256, bias=True)
+        self.semantic_model: nn.Module | None = None
+        self.encoder_semantic: nn.Module | None = None
+        self.fc: nn.Linear | None = None
+        # Backward-compat attribute retained, but no longer used for encode().
+        self._pt_tokenizer: Any | None = None
+
+    def _init_encode_modules(self):
+        from mlx_audio.stt.models.wav2vec.wav2vec import ModelConfig, Wav2Vec2Model
+
+        if self.config.semantic_model_config is None:
+            raise RuntimeError(
+                "semantic_model_config is required to initialize encode modules"
+            )
+
+        from .semantic import SemanticEncoder
+
+        semantic_config = ModelConfig.from_dict(self.config.semantic_model_config)
+        hidden_size = semantic_config.hidden_size
+
+        self.semantic_model = Wav2Vec2Model(semantic_config)
+        self.encoder_semantic = SemanticEncoder(
+            hidden_size=hidden_size,
+            strides=self.config.strides,
+            dilations=self.config.block_dilations,
+            channel_ratios=self.config.channel_ratios,
+            kernel_size=self.config.kernel_size,
+            unit_kernel_size=self.config.unit_kernel_size,
+        )
+        fusion_dim = hidden_size + 256
+        self.fc = nn.Linear(fusion_dim, fusion_dim, bias=True)
 
     def decode(self, tokens: mx.array) -> mx.array:
         """
@@ -38,9 +67,12 @@ class HiggsAudioTokenizer(nn.Module):
         squeeze = tokens.ndim == 2
         if squeeze:
             tokens = tokens[None]  # [1, T, 8]
-        z = self.quantizer.decode(tokens)  # [B, T, 1024]
+        quantizer = cast(Any, self.quantizer)
+        acoustic_decoder = cast(nn.Module, self.acoustic_decoder)
+
+        z = quantizer.decode(tokens)  # [B, T, 1024]
         z = self.fc2(z)  # [B, T, 256]
-        wav = self.acoustic_decoder(z)  # [B, T*960, 1]
+        wav = acoustic_decoder(z)  # [B, T*960, 1]
         if squeeze:
             return wav[0, :, 0]  # [T*960]
         return wav  # [B, T*960, 1]
@@ -48,63 +80,123 @@ class HiggsAudioTokenizer(nn.Module):
     def encode(self, waveform: mx.array) -> mx.array:
         """
         waveform: [B, T, 1] float32 at 24kHz
-        Returns: [B, T//960, 8] int32 codebook tokens
-
-        Uses PyTorch HiggsAudioV2TokenizerModel (CPU) when loaded via from_pretrained().
-        The full encode path requires HuBERT semantic features; it cannot be replicated
-        with acoustic encoder alone.
+        Returns: [B, T', 8] int32 codebook tokens
         """
-        if self._pt_tokenizer is None:
+        if self.semantic_model is None:
             raise RuntimeError(
-                "Encode requires the PyTorch HiggsAudioV2TokenizerModel. "
-                "Load via HiggsAudioTokenizer.from_pretrained() with a valid model_path."
+                "Encode modules are not initialized. Call _init_encode_modules() or "
+                "load via HiggsAudioTokenizer.from_pretrained()."
             )
-        import numpy as np
-        import torch
 
-        # MLX [B, T, 1] → numpy → PyTorch [B, 1, T]
-        wav_np = np.array(waveform.astype(mx.float32))  # [B, T, 1]
-        wav_pt = torch.from_numpy(wav_np).permute(0, 2, 1)  # [B, 1, T]
+        waveform_np = np.asarray(waveform.astype(mx.float32))
+        if waveform_np.ndim != 3 or waveform_np.shape[-1] != 1:
+            raise ValueError("waveform must have shape [B, T, 1]")
 
-        with torch.no_grad():
-            codes = self._pt_tokenizer.encode(
-                wav_pt, return_dict=False
-            )  # [B, 8, T//960]
+        audio_24k = waveform_np[..., 0]
+        resampled = [
+            resample_audio(
+                sample, self.config.sample_rate, self.config.semantic_sample_rate
+            )
+            for sample in audio_24k
+        ]
+        target_len = min(len(r) for r in resampled)
+        audio_16k = np.stack([r[:target_len] for r in resampled], axis=0).astype(
+            np.float32
+        )
+        hubert_pad = self.config.hubert_downsample_factor // 2
+        audio_16k = np.pad(
+            audio_16k, ((0, 0), (hubert_pad, hubert_pad)), mode="constant"
+        )
+        audio_16k = mx.array(audio_16k)
 
-        # PyTorch [B, 8, T//960] → MLX [B, T//960, 8]
-        codes_np = codes.numpy().astype("int32")  # [B, 8, T//960]
-        codes_mx = mx.array(codes_np).transpose(0, 2, 1)  # [B, T//960, 8]
-        return codes_mx
+        semantic_model = cast(nn.Module, self.semantic_model)
+        encoder_semantic = cast(nn.Module, self.encoder_semantic)
+        fc = cast(nn.Linear, self.fc)
 
-    def sanitize(self, weights: dict) -> dict:
-        """Filter checkpoint keys to acoustic path only and fix weight layouts.
+        semantic_outputs = cast(
+            Any, semantic_model(audio_16k, output_hidden_states=True, return_dict=True)
+        )
+        hidden_states = mx.stack(list(semantic_outputs.hidden_states), axis=0)
+        semantic_features = mx.mean(hidden_states, axis=0)
+        dsf = self.config.semantic_downsample_factor
+        if dsf > 1:
+            semantic_features = semantic_features[:, ::dsf, :]
+        semantic_features = encoder_semantic(semantic_features)
 
-        PyTorch conv weights are [C_out, C_in, K]; MLX expects [C_out, K, C_in].
-        PyTorch ConvTranspose1d weights are [C_in, C_out, K]; MLX expects [C_in, K, C_out].
-        Both require the same (0, 2, 1) transpose.
+        acoustic_features = self.acoustic_encoder(waveform.astype(mx.float32))
+        time_steps = min(semantic_features.shape[1], acoustic_features.shape[1])
+        semantic_features = semantic_features[:, :time_steps, :]
+        acoustic_features = acoustic_features[:, :time_steps, :]
+
+        embeddings = mx.concatenate([acoustic_features, semantic_features], axis=-1)
+        embeddings = fc(embeddings)
+        quantizer = cast(Any, self.quantizer)
+        return quantizer.encode(embeddings).astype(mx.int32)
+
+    def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
+        """Filter and transform checkpoint weights for MLX.
+
+        Keeps: acoustic_encoder, acoustic_decoder, quantizer, fc2 (decode path)
+               semantic_model, encoder_semantic, fc (encode path)
+        Drops: decoder_semantic, fc1 (unused decode-semantic path)
+               .embed_avg, .cluster_size, .inited (VQ bookkeeping)
         """
-        keep_prefixes = ("acoustic_encoder.", "acoustic_decoder.", "quantizer.", "fc2.")
+        keep_prefixes = (
+            "acoustic_encoder.",
+            "acoustic_decoder.",
+            "quantizer.",
+            "fc2.",
+            "semantic_model.",
+            "encoder_semantic.",
+        )
+        keep_exact = ("fc.weight", "fc.bias")
+        drop_prefixes = ("decoder_semantic.", "fc1.")
         drop_suffixes = (".embed_avg", ".cluster_size", ".inited")
+
         result = {}
         for k, v in weights.items():
-            if not any(k.startswith(p) for p in keep_prefixes):
+            # Explicit drops first
+            if any(k.startswith(p) for p in drop_prefixes):
+                continue
+            if not (any(k.startswith(p) for p in keep_prefixes) or k in keep_exact):
                 continue
             if any(k.endswith(s) for s in drop_suffixes):
                 continue
-            # Remap embedding key: checkpoint uses .embed, MLX nn.Embedding uses .weight
-            if k.endswith(".codebook.embed"):
-                k = k[: -len("embed")] + "weight"
-            # Transpose snake activation alpha: PyTorch [1, C, 1] → MLX [1, 1, C]
-            if k.endswith(".alpha") and v.ndim == 3:
-                v = v.transpose(0, 2, 1)
-            # Transpose 3-D weights from PyTorch layout → MLX layout
-            elif v.ndim == 3 and k.endswith(".weight"):
-                # ConvTranspose1d: PyTorch [C_in, C_out, K] → MLX [C_out, K, C_in]
-                # Conv1d:          PyTorch [C_out, C_in, K] → MLX [C_out, K, C_in]
-                if "conv_t" in k:
-                    v = v.transpose(1, 2, 0)
-                else:
+
+            # === Semantic model (HuBERT/Wav2Vec2) weight transforms ===
+            if k.startswith("semantic_model."):
+                # Remap parametrized weight norm keys
+                if ".parametrizations.weight.original0" in k:
+                    k = k.replace(".parametrizations.weight.original0", ".weight_g")
+                elif ".parametrizations.weight.original1" in k:
+                    k = k.replace(".parametrizations.weight.original1", ".weight_v")
+                # Transpose 3D conv weights: PyTorch [C_out, C_in, K] -> MLX [C_out, K, C_in]
+                if v.ndim == 3 and (
+                    k.endswith(".weight")
+                    or k.endswith(".weight_g")
+                    or k.endswith(".weight_v")
+                ):
                     v = v.transpose(0, 2, 1)
+
+            # === Encoder semantic (SemanticEncoder CNN) weight transforms ===
+            elif k.startswith("encoder_semantic."):
+                if v.ndim == 3 and k.endswith(".weight"):
+                    v = v.transpose(0, 2, 1)
+
+            # === Acoustic path weight transforms (existing logic) ===
+            elif k.startswith(
+                ("acoustic_encoder.", "acoustic_decoder.", "quantizer.", "fc2.")
+            ):
+                if k.endswith(".codebook.embed"):
+                    k = k[: -len("embed")] + "weight"
+                if k.endswith(".alpha") and v.ndim == 3:
+                    v = v.transpose(0, 2, 1)
+                elif v.ndim == 3 and k.endswith(".weight"):
+                    if "conv_t" in k:
+                        v = v.transpose(1, 2, 0)
+                    else:
+                        v = v.transpose(0, 2, 1)
+
             result[k] = v
         return result
 
@@ -115,7 +207,8 @@ class HiggsAudioTokenizer(nn.Module):
         Expects: <model_path>/audio_tokenizer/config.json
                  <model_path>/audio_tokenizer/model.safetensors
 
-        Also loads PyTorch HiggsAudioV2TokenizerModel (CPU) for voice-clone encoding.
+        Initializes encode-path modules (HuBERT, SemanticEncoder, fc) when
+        semantic_model_config is present in the checkpoint config.
         """
         config_path = Path(model_path) / "audio_tokenizer" / "config.json"
         weights_path = Path(model_path) / "audio_tokenizer" / "model.safetensors"
@@ -125,27 +218,11 @@ class HiggsAudioTokenizer(nn.Module):
             raise FileNotFoundError(f"Weights not found: {weights_path}")
         config = HiggsAudioConfig.from_dict(json.loads(config_path.read_text()))
         inst = cls(config)
-        raw = mx.load(str(weights_path))
+        if config.semantic_model_config is not None:
+            inst._init_encode_modules()
+        raw = cast(dict[str, mx.array], mx.load(str(weights_path)))
         sanitized = inst.sanitize(raw)
         inst.load_weights(list(sanitized.items()))
         mx.eval(inst.parameters())
-
-        # Load PyTorch tokenizer for encoding (requires torchaudio)
-        try:
-            from transformers import HiggsAudioV2TokenizerModel
-
-            pt_tok = HiggsAudioV2TokenizerModel.from_pretrained(
-                str(Path(model_path) / "audio_tokenizer")
-            )
-            pt_tok.train(False)  # set to eval mode without using eval()
-            inst._pt_tokenizer = pt_tok
-        except Exception as e:
-            import warnings
-
-            warnings.warn(
-                f"Could not load PyTorch tokenizer for encoding: {e}. "
-                "Voice cloning (encode) will not work.",
-                stacklevel=2,
-            )
 
         return inst
