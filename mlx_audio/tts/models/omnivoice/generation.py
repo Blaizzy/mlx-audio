@@ -7,8 +7,6 @@ import mlx.nn as nn
 if TYPE_CHECKING:
     from .omnivoice import Model
 
-AUDIO_MASK_ID = 1024
-
 
 def _get_time_steps(num_step: int, t_shift: float = 0.1) -> list:
     """Cosine-shifted timestep schedule matching original OmniVoice."""
@@ -54,7 +52,8 @@ def iterative_unmask(
     Class prediction is greedy (class_temperature=0) by default.
     """
     C = model.config.num_audio_codebook
-    tokens = mx.full((T, C), AUDIO_MASK_ID, dtype=mx.int32)
+    mask_id = model.config.audio_mask_id
+    tokens = mx.full((T, C), mask_id, dtype=mx.int32)
 
     cond_prefix_len = cond_embeds.shape[1]
     uncond_prefix_len = uncond_embeds.shape[1]
@@ -118,7 +117,7 @@ def iterative_unmask(
         # Mask out AUDIO_MASK_ID from predictions
         # Build a mask: True at index AUDIO_MASK_ID along the last axis
         V = log_probs.shape[-1]
-        mask_token_mask = mx.arange(V) == AUDIO_MASK_ID  # [V]
+        mask_token_mask = mx.arange(V) == mask_id  # [V]
         log_probs = mx.where(mask_token_mask, -float("inf"), log_probs)
         log_probs = log_probs[0]  # [T, C, V]
 
@@ -150,7 +149,7 @@ def iterative_unmask(
             k = total_mask
 
         # Only reveal still-masked positions
-        still_masked = tokens == AUDIO_MASK_ID  # [T, C]
+        still_masked = tokens == mask_id  # [T, C]
         # Set confidence to -inf for already-unmasked positions
         score = mx.where(still_masked, confidence, mx.array(-float("inf")))
 
@@ -165,5 +164,5 @@ def iterative_unmask(
         mx.eval(tokens)
 
     # Safety: replace any remaining mask tokens with token 0
-    tokens = mx.where(tokens == AUDIO_MASK_ID, mx.zeros_like(tokens), tokens)
+    tokens = mx.where(tokens == mask_id, mx.zeros_like(tokens), tokens)
     return tokens

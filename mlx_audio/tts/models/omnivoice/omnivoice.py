@@ -137,6 +137,7 @@ class Model(nn.Module):
         lang_code: str = "None",  # alias used by generate_audio()
         instruct: str = "None",
         ref_audio=None,  # str | Path | mx.array (pre-loaded at sample_rate)
+        ref_text: Optional[str] = None,
         ref_audio_max_duration_s: float = 10.0,
         num_steps: int = 32,
         guidance_scale: float = 2.0,
@@ -201,7 +202,18 @@ class Model(nn.Module):
                     "text_tokenizer is required when input_ids is not provided. "
                     "Pass an AutoTokenizer or use input_ids directly."
                 )
-            input_ids = self._encode_text(text, language, instruct, text_tokenizer)
+            import re
+
+            encode_text = text or ""
+            if ref_text:
+                encode_text = ref_text.strip() + " " + encode_text.strip()
+                encode_text = re.sub(r"[\r\n]+", "", encode_text)
+                encode_text = re.sub(r"[ \t]+", " ", encode_text)
+                cjk = r"[\u4e00-\u9fff]"
+                encode_text = re.sub(rf"(?<={cjk})\s+|\s+(?={cjk})", "", encode_text)
+            input_ids = self._encode_text(
+                encode_text, language, instruct, text_tokenizer
+            )
 
         # --- voice cloning ---
         if ref_tokens is None and ref_audio is not None:
@@ -260,7 +272,9 @@ class Model(nn.Module):
         elapsed = time.time() - start_time
 
         if tokenizer is not None:
-            audio = tokenizer.decode(tokens)  # [T*960] 1D for 2D tokens input
+            audio = tokenizer.decode(tokens).astype(
+                mx.float32
+            )  # [T*960] 1D; f32 for numpy compat
         else:
             audio = mx.zeros((T * 960,), dtype=mx.float32)
 
