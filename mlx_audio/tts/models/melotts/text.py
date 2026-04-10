@@ -305,8 +305,13 @@ def _get_tokenizer():
 def _get_g2p():
     global _g2p_instance
     if _g2p_instance is None:
-        from g2p_en import G2p
-
+        try:
+            from g2p_en import G2p
+        except ImportError:
+            raise ImportError(
+                "MeloTTS English requires the 'g2p_en' package. "
+                "Install it with: pip install g2p_en"
+            )
         _g2p_instance = G2p()
     return _g2p_instance
 
