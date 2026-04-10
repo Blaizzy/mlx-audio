@@ -103,7 +103,7 @@ class HiggsAudioTokenizer(nn.Module):
         audio_16k = np.stack([r[:target_len] for r in resampled], axis=0).astype(
             np.float32
         )
-        hubert_pad = self.config.hubert_downsample_factor // 2
+        hubert_pad = self.config.downsample_factor // 2
         audio_16k = np.pad(
             audio_16k, ((0, 0), (hubert_pad, hubert_pad)), mode="constant"
         )

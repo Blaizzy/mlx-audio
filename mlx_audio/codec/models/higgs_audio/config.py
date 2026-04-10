@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +11,9 @@ class HiggsAudioConfig(BaseModelArgs):
     sample_rate: int = 24000
     codebook_size: int = 1024
     codebook_dim: int = 64
-    downsample_factor: int = 960  # audio frames per token at sample_rate (8*5*4*2*3)
+    # config.json stores HuBERT conv downsample factor here (320).
+    # Acoustic hop is computed from dac_encoder_ratios instead.
+    downsample_factor: int = 320
     # DAC acoustic sub-model
     dac_sample_rate: int = 24000
     dac_num_codebooks: int = 8
@@ -25,19 +28,23 @@ class HiggsAudioConfig(BaseModelArgs):
     channel_ratios: List[int] = field(default_factory=lambda: [1, 1])
     kernel_size: int = 3
     unit_kernel_size: int = 3
-    # HuBERT conv downsample factor (product of HuBERT conv strides)
-    hubert_downsample_factor: int = 320
+
+    @property
+    def acoustic_hop(self) -> int:
+        """Product of DAC encoder strides: 8*5*4*2*3 = 960."""
+        return math.prod(self.dac_encoder_ratios)
 
     @property
     def tokens_per_second(self) -> float:
-        return self.sample_rate / self.downsample_factor
+        return self.sample_rate / self.acoustic_hop
 
     @property
     def semantic_downsample_factor(self) -> int:
         """Factor to stride-slice HuBERT output to match acoustic frame rate.
 
-        HuBERT produces ~50fps at 16kHz/320. Acoustic produces ~25fps at 24kHz/960.
-        This factor = 2 downsamples semantic from 50fps to 25fps.
+        HuBERT at 16kHz/320 = 50fps. Acoustic at 24kHz/960 = 25fps.
+        Factor = 50/25 = 2.
         """
-        sr_ratio = self.sample_rate / self.semantic_sample_rate
-        return int(self.downsample_factor / sr_ratio / self.hubert_downsample_factor)
+        hubert_fps = self.semantic_sample_rate / self.downsample_factor
+        acoustic_fps = self.sample_rate / self.acoustic_hop
+        return max(1, round(hubert_fps / acoustic_fps))

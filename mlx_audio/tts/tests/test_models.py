@@ -4372,10 +4372,10 @@ class TestOmniVoiceConfig(unittest.TestCase):
                 "model_type": "higgs_audio_v2_tokenizer",
                 "sample_rate": 24000,
                 "codebook_size": 1024,
-                "downsample_factor": 960,
+                "downsample_factor": 320,
             }
         )
-        self.assertEqual(cfg.downsample_factor, 960)
+        self.assertEqual(cfg.downsample_factor, 320)
         self.assertAlmostEqual(cfg.tokens_per_second, 25.0)
 
 
@@ -5017,7 +5017,7 @@ class TestHiggsAudioEncodeConfig(unittest.TestCase):
                 "model_type": "higgs_audio_v2_tokenizer",
                 "sample_rate": 24000,
                 "semantic_sample_rate": 16000,
-                "downsample_factor": 960,
+                "downsample_factor": 320,
                 "strides": [1, 1],
                 "block_dilations": [1, 1],
                 "channel_ratios": [1, 1],
@@ -5038,9 +5038,6 @@ class TestHiggsAudioEncodeConfig(unittest.TestCase):
         from mlx_audio.codec.models.higgs_audio import HiggsAudioConfig
 
         cfg = HiggsAudioConfig()
-        cfg.semantic_sample_rate = 16000
-        cfg.downsample_factor = 960
-        cfg.sample_rate = 24000
         self.assertEqual(cfg.semantic_downsample_factor, 2)
 
 
@@ -5179,7 +5176,7 @@ class TestHiggsAudioEncodePureMlx(unittest.TestCase):
             {
                 "sample_rate": 24000,
                 "semantic_sample_rate": 16000,
-                "downsample_factor": 960,
+                "downsample_factor": 320,
                 "strides": [1, 1],
                 "block_dilations": [1, 1],
                 "channel_ratios": [1, 1],
