@@ -2,8 +2,9 @@
 
 import json
 import time
+import warnings
 from pathlib import Path
-from typing import Dict, Generator, List, Optional, Tuple, Union
+from typing import Dict, Generator, List, NamedTuple, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -496,63 +497,68 @@ class Model(nn.Module):
 
         return input_embeds, trailing_text_hidden, shared_pad_embed, attention_mask
 
-    def _prepare_icl_generation_inputs(
+    # ── ICL Helpers (used by _prepare_icl_generation_inputs and batch ICL) ──
+
+    class ICLSharedEmbeddings(NamedTuple):
+        """Pre-computed ICL context shared across all target text segments.
+
+        Contains encoded reference audio, tokenized reference transcript,
+        and all embeddings that are independent of the target text.
+        """
+
+        ref_codes: mx.array  # [1, num_quantizers, ref_time]
+        ref_text_ids: mx.array  # [1, ref_tokens]
+        tts_bos_embed: mx.array  # [1, 1, hidden]
+        tts_eos_embed: mx.array  # [1, 1, hidden]
+        tts_pad_embed: mx.array  # [1, 1, hidden]
+        codec_embed_icl: mx.array  # [1, ref_time+1, hidden]
+        codec_pad_embed: mx.array  # [1, 1, hidden]
+        codec_prefix_embed: mx.array  # [1, prefix_len, hidden]
+
+    def _prepare_icl_shared_context(
         self,
-        text: str,
         ref_audio: mx.array,
         ref_text: str,
         language: str = "auto",
-    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
-        """Prepare inputs for ICL (In-Context Learning) voice cloning.
+    ) -> "Model.ICLSharedEmbeddings":
+        """Encode reference audio and compute all text-independent ICL embeddings.
 
-        Matches the official Qwen3-TTS generate_icl_prompt structure:
-        1. text_embed = text_projection(text_embeddings(ref_text_tokens + target_text_tokens)) + eos
-        2. codec_embed = codec_bos + sum_of_all_codebook_embeddings(ref_codes)
-        3. Streaming overlay: text[:codec_len] + codec if text longer, else padded text + codec
+        This is the single entry point for building shared ICL context.
+        Call once, then pass the result to ``_build_single_icl_embed`` for
+        each target text segment.
 
         Args:
-            text: Target text to synthesize
-            ref_audio: Reference audio waveform [samples]
+            ref_audio: Raw audio waveform [samples] or [1, samples]
             ref_text: Transcript of the reference audio
             language: Language code
-
-        Returns:
-            input_embeds: Input embeddings for prefill
-            trailing_text_hidden: Remaining text embeddings for generation
-            tts_pad_embed: Padding embedding
-            ref_codes: Reference codes [1, num_quantizers, ref_time]
         """
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
 
-        config = self.config.talker_config
-
-        # 1. Encode reference audio -> ref_codes [1, 16, ref_time]
-        audio_for_spk = ref_audio  # Save original shape for speaker embedding
+        # ── Encode reference audio ──
+        audio_for_spk = ref_audio
         if ref_audio.ndim == 1:
-            ref_audio = ref_audio[None, None, :]  # [1, 1, samples]
+            ref_audio_3d = ref_audio[None, None, :]
         elif ref_audio.ndim == 2:
-            ref_audio = ref_audio[None, :]  # [1, 1, samples]
-        ref_codes = self.speech_tokenizer.encode(ref_audio)  # [1, 16, ref_time]
-        mx.eval(ref_codes)
-        ref_time = ref_codes.shape[2]
+            ref_audio_3d = ref_audio[None, :]
+        else:
+            ref_audio_3d = ref_audio
 
-        # 2. Tokenize ref_text and target_text separately
-        # ref_text format: <|im_start|>assistant\n{ref_text}<|im_end|>\n
+        ref_codes = self.speech_tokenizer.encode(ref_audio_3d)
+        mx.eval(ref_codes)
+
+        speaker_embed = None
+        if self.speaker_encoder is not None:
+            speaker_embed = self.extract_speaker_embedding(audio_for_spk)
+            mx.eval(speaker_embed)
+
+        # ── Tokenize reference transcript ──
+        config = self.config.talker_config
         ref_chat = f"<|im_start|>assistant\n{ref_text}<|im_end|>\n"
         ref_ids = mx.array(self.tokenizer.encode(ref_chat))[None, :]
-        # Pure ref text tokens: skip first 3 (role) and last 2 (<|im_end|>\n)
         ref_text_ids = ref_ids[:, 3:-2]
 
-        # target_text format: <|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n
-        target_chat = (
-            f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
-        )
-        target_ids = mx.array(self.tokenizer.encode(target_chat))[None, :]
-        # Pure target text tokens: skip first 3 (role) and last 5 (trailing template)
-        text_ids = target_ids[:, 3:-5]
-
-        # 3. TTS special tokens
+        # ── TTS special tokens ──
         tts_tokens = mx.array(
             [
                 [
@@ -565,21 +571,9 @@ class Model(nn.Module):
         tts_embeds = self.talker.text_projection(
             self.talker.get_text_embeddings()(tts_tokens)
         )
-        tts_bos_embed = tts_embeds[:, 0:1, :]
-        tts_eos_embed = tts_embeds[:, 1:2, :]
-        tts_pad_embed = tts_embeds[:, 2:3, :]
 
-        # 4. Build text_embed: text_projection(text_embeddings(ref_tokens + target_tokens)) + eos
-        combined_text_ids = mx.concatenate([ref_text_ids, text_ids], axis=1)
-        text_embed = self.talker.text_projection(
-            self.talker.get_text_embeddings()(combined_text_ids)
-        )
-        text_embed = mx.concatenate([text_embed, tts_eos_embed], axis=1)
-        text_lens = text_embed.shape[1]
-
-        # 5. Build codec_embed: codec_bos + sum_of_all_codebook_embeddings(ref_codes)
-        # ref_codes shape: [1, 16, ref_time]
-        first_cb_codes = ref_codes[:, 0, :]  # [1, ref_time]
+        # ── Codec embed from ref_codes ──
+        first_cb_codes = ref_codes[:, 0, :]
         ref_codec_embed = self.talker.get_input_embeddings()(first_cb_codes)
         for i in range(config.num_code_groups - 1):
             cb_codes = ref_codes[:, i + 1, :]
@@ -588,45 +582,22 @@ class Model(nn.Module):
                 + self.talker.code_predictor.codec_embedding[i](cb_codes)
             )
 
-        # Prepend codec_bos
         codec_bos_embed = self.talker.get_input_embeddings()(
             mx.array([[config.codec_bos_id]])
         )
-        codec_embed_icl = mx.concatenate(
-            [codec_bos_embed, ref_codec_embed], axis=1
-        )  # [1, ref_time+1, hidden]
-        codec_lens = codec_embed_icl.shape[1]
+        codec_embed_icl = mx.concatenate([codec_bos_embed, ref_codec_embed], axis=1)
 
-        # 6. Non-streaming mode overlay (matching official Qwen3-TTS non_streaming_mode=True)
-        # All text first (overlaid with codec_pad), then all codec (overlaid with tts_pad).
-        # This preserves full text context in the prefill, which is critical when
-        # codec_lens > text_lens (long references).
+        # ── Codec pad ──
         codec_pad_embed = self.talker.get_input_embeddings()(
             mx.array([[config.codec_pad_id]])
         )
-        text_with_codec_pad = text_embed + mx.broadcast_to(
-            codec_pad_embed, (1, text_lens, codec_pad_embed.shape[-1])
-        )
-        codec_with_text_pad = codec_embed_icl + mx.broadcast_to(
-            tts_pad_embed, (1, codec_lens, tts_pad_embed.shape[-1])
-        )
-        icl_input_embed = mx.concatenate(
-            [text_with_codec_pad, codec_with_text_pad], axis=1
-        )
-        trailing_text_hidden = tts_pad_embed
 
-        # 7. Language ID
+        # ── Language ID + codec prefix ──
         language_id = None
         if language.lower() != "auto" and config.codec_language_id:
             if language.lower() in config.codec_language_id:
                 language_id = config.codec_language_id[language.lower()]
 
-        # 8. Speaker embedding (ICL still uses x-vector)
-        speaker_embed = None
-        if self.speaker_encoder is not None:
-            speaker_embed = self.extract_speaker_embedding(audio_for_spk)
-
-        # 9. Build codec prefix (think/nothink + speaker + pad + bos)
         if language_id is None:
             codec_prefill = [
                 config.codec_nothink_id,
@@ -662,25 +633,129 @@ class Model(nn.Module):
                 [codec_prefix_embed, codec_prefix_suffix], axis=1
             )
 
-        # 10. Role embedding (first 3 tokens: <|im_start|>assistant\n)
+        return self.ICLSharedEmbeddings(
+            ref_codes=ref_codes,
+            ref_text_ids=ref_text_ids,
+            tts_bos_embed=tts_embeds[:, 0:1, :],
+            tts_eos_embed=tts_embeds[:, 1:2, :],
+            tts_pad_embed=tts_embeds[:, 2:3, :],
+            codec_embed_icl=codec_embed_icl,
+            codec_pad_embed=codec_pad_embed,
+            codec_prefix_embed=codec_prefix_embed,
+        )
+
+    def _build_single_icl_embed(
+        self,
+        text: str,
+        shared: "Model.ICLSharedEmbeddings",
+    ) -> mx.array:
+        """Build ICL input embeddings for a single text segment.
+
+        Combines text-specific tokenization with the pre-computed shared
+        embeddings (reference audio codes, speaker prefix, etc.).
+
+        Args:
+            text: Target text to synthesize
+            shared: Pre-computed text-independent embeddings from
+                ``_prepare_icl_shared_context``.
+
+        Returns:
+            input_embeds: [1, prefill_len, hidden_size]
+        """
+        # 1. Tokenize target text
+        target_chat = (
+            f"<|im_start|>assistant\n{text}<|im_end|>\n<|im_start|>assistant\n"
+        )
+        target_ids = mx.array(self.tokenizer.encode(target_chat))[None, :]
+        text_ids = target_ids[:, 3:-5]
+
+        # 2. Build text_embed: ref_tokens + target_tokens + eos
+        combined_text_ids = mx.concatenate([shared.ref_text_ids, text_ids], axis=1)
+        text_embed = self.talker.text_projection(
+            self.talker.get_text_embeddings()(combined_text_ids)
+        )
+        text_embed = mx.concatenate([text_embed, shared.tts_eos_embed], axis=1)
+        text_lens = text_embed.shape[1]
+        codec_lens = shared.codec_embed_icl.shape[1]
+
+        # 3. Non-streaming overlay
+        text_with_codec_pad = text_embed + mx.broadcast_to(
+            shared.codec_pad_embed,
+            (1, text_lens, shared.codec_pad_embed.shape[-1]),
+        )
+        codec_with_text_pad = shared.codec_embed_icl + mx.broadcast_to(
+            shared.tts_pad_embed,
+            (1, codec_lens, shared.tts_pad_embed.shape[-1]),
+        )
+        icl_input_embed = mx.concatenate(
+            [text_with_codec_pad, codec_with_text_pad], axis=1
+        )
+
+        # 4. Role embedding
         role_embed = self.talker.text_projection(
             self.talker.get_text_embeddings()(target_ids[:, :3])
         )
 
-        # 11. Build pad/bos prefix (text side overlaid with codec prefix[:-1])
-        pad_count = codec_prefix_embed.shape[1] - 2
+        # 5. Build pad/bos prefix
+        pad_count = shared.codec_prefix_embed.shape[1] - 2
         pad_embeds = mx.broadcast_to(
-            tts_pad_embed, (1, pad_count, tts_pad_embed.shape[-1])
+            shared.tts_pad_embed,
+            (1, pad_count, shared.tts_pad_embed.shape[-1]),
         )
-        combined_prefix = mx.concatenate([pad_embeds, tts_bos_embed], axis=1)
-        combined_prefix = combined_prefix + codec_prefix_embed[:, :-1, :]
+        combined_prefix = mx.concatenate([pad_embeds, shared.tts_bos_embed], axis=1)
+        combined_prefix = combined_prefix + shared.codec_prefix_embed[:, :-1, :]
 
-        # 12. Full input_embeds: role + codec_prefix + icl_embed
+        # 6. Full input_embeds
         input_embeds = mx.concatenate(
             [role_embed, combined_prefix, icl_input_embed], axis=1
         )
 
-        return input_embeds, trailing_text_hidden, tts_pad_embed, ref_codes
+        return input_embeds
+
+    def _prepare_icl_generation_inputs(
+        self,
+        text: str,
+        ref_audio: mx.array,
+        ref_text: str,
+        language: str = "auto",
+    ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
+        """Prepare inputs for ICL (In-Context Learning) voice cloning.
+
+        Matches the official Qwen3-TTS generate_icl_prompt structure:
+        1. text_embed = text_projection(text_embeddings(ref_text_tokens + target_text_tokens)) + eos
+        2. codec_embed = codec_bos + sum_of_all_codebook_embeddings(ref_codes)
+        3. Streaming overlay: text[:codec_len] + codec if text longer, else padded text + codec
+
+        Args:
+            text: Target text to synthesize
+            ref_audio: Reference audio waveform [samples]
+            ref_text: Transcript of the reference audio
+            language: Language code
+
+        Returns:
+            input_embeds: Input embeddings for prefill
+            trailing_text_hidden: Remaining text embeddings for generation
+            tts_pad_embed: Padding embedding
+            ref_codes: Reference codes [1, num_quantizers, ref_time]
+        """
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
+
+        # Prepare shared ICL context (encode ref audio + compute embeddings)
+        shared = self._prepare_icl_shared_context(ref_audio, ref_text, language)
+
+        # Build ICL input embeddings
+        input_embeds = self._build_single_icl_embed(text, shared)
+
+        # In ICL non-streaming mode, trailing text is just the pad embed
+        trailing_text_hidden = shared.tts_pad_embed
+
+        return (
+            input_embeds,
+            trailing_text_hidden,
+            shared.tts_pad_embed,
+            shared.ref_codes,
+        )
 
     def _sample_token(
         self,
@@ -973,20 +1048,84 @@ class Model(nn.Module):
             # ICL mode needs stronger repetition penalty to prevent code
             # degeneration with long reference audio prefills
             icl_rep_penalty = max(repetition_penalty, 1.5)
-            yield from self._generate_icl(
-                text=text,
-                ref_audio=ref_audio,
-                ref_text=ref_text,
-                language=lang_code,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                top_k=top_k,
-                top_p=top_p,
-                repetition_penalty=icl_rep_penalty,
-                verbose=verbose,
-                stream=stream,
-                streaming_interval=streaming_interval,
-            )
+
+            if split_pattern:
+                segments = [s.strip() for s in text.split(split_pattern) if s.strip()]
+            else:
+                segments = [text]
+
+            if len(segments) > 1:
+                # Multi-segment: batch ICL generation (parallel, non-streaming)
+                if stream:
+                    warnings.warn(
+                        "Streaming is not supported for multi-segment batch ICL. "
+                        "Falling back to non-streaming batch generation.",
+                        stacklevel=2,
+                    )
+                audios, token_counts, elapsed = self._batch_generate_icl(
+                    texts=segments,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    language=lang_code,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=icl_rep_penalty,
+                    verbose=verbose,
+                )
+                num_segments = len(audios)
+                elapsed_per_seg = elapsed / num_segments if num_segments > 0 else elapsed
+                for seg_idx, (audio, tok_count) in enumerate(zip(audios, token_counts)):
+                    samples = audio.shape[0]
+                    duration_seconds = samples / self.sample_rate
+                    yield GenerationResult(
+                        audio=audio,
+                        samples=samples,
+                        sample_rate=self.sample_rate,
+                        segment_idx=seg_idx,
+                        token_count=tok_count,
+                        audio_duration=format_duration(duration_seconds),
+                        real_time_factor=(
+                            duration_seconds / elapsed_per_seg
+                            if elapsed_per_seg > 0
+                            else 0
+                        ),
+                        prompt={
+                            "tokens": tok_count,
+                            "tokens-per-sec": (
+                                tok_count / elapsed_per_seg
+                                if elapsed_per_seg > 0
+                                else 0
+                            ),
+                        },
+                        audio_samples={
+                            "samples": samples,
+                            "samples-per-sec": (
+                                samples / elapsed_per_seg
+                                if elapsed_per_seg > 0
+                                else 0
+                            ),
+                        },
+                        processing_time_seconds=elapsed,
+                        peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    )
+            else:
+                # Single segment: use existing _generate_icl (supports streaming)
+                yield from self._generate_icl(
+                    text=segments[0],
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                    language=lang_code,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    top_k=top_k,
+                    top_p=top_p,
+                    repetition_penalty=icl_rep_penalty,
+                    verbose=verbose,
+                    stream=stream,
+                    streaming_interval=streaming_interval,
+                )
             return
 
         # Split text into segments
@@ -1817,6 +1956,307 @@ class Model(nn.Module):
             stream=stream,
             streaming_interval=streaming_interval,
         )
+
+    def _prepare_batch_icl_inputs(
+        self,
+        texts: List[str],
+        shared: "Model.ICLSharedEmbeddings",
+    ) -> Tuple[mx.array, mx.array, Optional[mx.array]]:
+        """Prepare batched ICL inputs from multiple text segments.
+
+        Args:
+            texts: List of text segments to synthesize
+            shared: Pre-computed text-independent embeddings (includes
+                tokenized reference transcript).
+
+        Returns:
+            input_embeds: [batch, max_prefill_len, hidden_size] left-padded
+            tts_pad_embed: [1, 1, hidden_size] shared pad embedding
+            attention_mask: [batch, max_prefill_len] or None for batch=1
+        """
+        batch_size = len(texts)
+        per_seq_embeds = []
+
+        for text in texts:
+            embeds = self._build_single_icl_embed(text, shared)
+            per_seq_embeds.append(embeds)
+
+        hidden_size = per_seq_embeds[0].shape[-1]
+
+        # Left-pad to max prefill length
+        prefill_lens = [e.shape[1] for e in per_seq_embeds]
+        max_prefill = max(prefill_lens)
+
+        padded_embeds = []
+        mask_rows = []
+        for embeds in per_seq_embeds:
+            seq_len = embeds.shape[1]
+            pad_len = max_prefill - seq_len
+            if pad_len > 0:
+                padding = mx.zeros((1, pad_len, hidden_size))
+                padded = mx.concatenate([padding, embeds], axis=1)
+                mask_row = mx.concatenate(
+                    [mx.zeros((1, pad_len)), mx.ones((1, seq_len))], axis=1
+                )
+            else:
+                padded = embeds
+                mask_row = mx.ones((1, seq_len))
+            padded_embeds.append(padded)
+            mask_rows.append(mask_row)
+
+        input_embeds = mx.concatenate(padded_embeds, axis=0)
+        attention_mask = mx.concatenate(mask_rows, axis=0)
+
+        # For batch=1, drop mask to skip O(N^2) mask construction each step
+        if batch_size == 1:
+            attention_mask = None
+
+        return input_embeds, shared.tts_pad_embed, attention_mask
+
+    def _batch_generate_icl(
+        self,
+        texts: List[str],
+        ref_audio: mx.array,
+        ref_text: str,
+        language: str = "auto",
+        temperature: float = 0.9,
+        max_tokens: int = 4096,
+        top_k: int = 50,
+        top_p: float = 1.0,
+        repetition_penalty: float = 1.5,
+        verbose: bool = False,
+    ) -> Tuple[List[mx.array], List[int], float]:
+        """Batch ICL generation: generate audio for multiple text segments in parallel.
+
+        Encodes the reference audio once, builds batched ICL inputs for all segments,
+        runs a single batched autoregressive loop, then decodes each segment's codes.
+
+        Args:
+            texts: List of text segments to synthesize
+            ref_audio: Reference audio waveform (shared for all segments, must be mx.array)
+            ref_text: Reference audio transcript
+            language: Language code
+            temperature: Sampling temperature
+            max_tokens: Base max tokens (will be capped per text)
+            top_k: Top-k sampling
+            top_p: Top-p sampling
+            repetition_penalty: Repetition penalty
+
+        Returns:
+            Tuple of (audios, token_counts, elapsed_seconds):
+                audios: List of audio arrays, each [samples] as mx.array
+                token_counts: List of generated token counts per segment
+                elapsed_seconds: Total wall-clock time for generation + decode
+        """
+        batch_size = len(texts)
+        if batch_size == 0:
+            return [], [], 0.0
+
+        start_time = time.time()
+
+        # ── Step 1: Prepare shared ICL context ──
+        shared = self._prepare_icl_shared_context(ref_audio, ref_text, language)
+        ref_len = shared.ref_codes.shape[2]
+
+        if verbose:
+            print(f"  Batch ICL: {batch_size} segments, ref_time={ref_len}")
+
+        # ── Step 2: Prepare batched ICL inputs ──
+        input_embeds, tts_pad_embed, attention_mask = self._prepare_batch_icl_inputs(
+            texts, shared
+        )
+        mx.eval(input_embeds, tts_pad_embed)
+        if attention_mask is not None:
+            mx.eval(attention_mask)
+
+        # ── Step 3: Compute per-segment max tokens ──
+        per_seg_max = []
+        for text in texts:
+            target_token_count = len(self.tokenizer.encode(text))
+            per_seg_max.append(min(max_tokens, max(75, target_token_count * 6)))
+        effective_max_tokens = max(per_seg_max)
+
+        # ── Step 4: Batched autoregressive generation loop ──
+        config = self.config.talker_config
+        eos_token_id = config.codec_eos_token_id
+
+        cache = self.talker.make_cache()
+        code_cache = self.talker.code_predictor.make_cache()
+
+        generated_codes = [[] for _ in range(batch_size)]
+        generated_token_ids = [[] for _ in range(batch_size)]
+        finished = mx.zeros((batch_size,), dtype=mx.bool_)
+        eos_fill = mx.full((batch_size, 1), eos_token_id, dtype=mx.int32)
+
+        suppress_tokens = [
+            i
+            for i in range(config.vocab_size - 1024, config.vocab_size)
+            if i != eos_token_id
+        ]
+
+        # ICL mode: trailing text is always tts_pad_embed for all segments
+        tts_pad_broadcast = mx.broadcast_to(
+            tts_pad_embed, (batch_size, 1, tts_pad_embed.shape[-1])
+        )
+
+        pbar = tqdm(
+            total=effective_max_tokens,
+            desc=f"Batch ICL({batch_size})",
+            unit="tokens",
+            disable=not verbose,
+            leave=False,
+        )
+
+        for step in range(effective_max_tokens):
+            # Forward pass (batched)
+            logits, hidden = self.talker(
+                input_embeds, cache=cache, attention_mask=attention_mask
+            )
+
+            # Batched sampling
+            sampled_tokens = self._sample_token_batch(
+                logits,
+                temperature=temperature,
+                top_k=top_k,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                generated_tokens_per_seq=generated_token_ids,
+                suppress_tokens=suppress_tokens,
+                eos_token_id=eos_token_id,
+            )
+
+            # Mask finished sequences to EOS
+            next_token_batch = mx.where(finished[:, None], eos_fill, sampled_tokens)
+
+            # EOS detection
+            newly_finished = next_token_batch[:, 0] == eos_token_id
+            finished = finished | newly_finished
+
+            # Generate remaining codebook tokens (batched)
+            code_tokens = [next_token_batch]
+            code_hidden = hidden[:, -1:, :]
+
+            for c in code_cache:
+                c.keys = None
+                c.values = None
+                c.offset = 0
+
+            for code_idx in range(config.num_code_groups - 1):
+                if code_idx == 0:
+                    code_0_embed = self.talker.get_input_embeddings()(next_token_batch)
+                    code_input = mx.concatenate([code_hidden, code_0_embed], axis=1)
+                else:
+                    code_embed = self.talker.code_predictor.codec_embedding[
+                        code_idx - 1
+                    ](code_tokens[-1])
+                    code_input = code_embed
+
+                code_logits, code_cache, _ = self.talker.code_predictor(
+                    code_input,
+                    cache=code_cache,
+                    generation_step=code_idx,
+                )
+                next_code = self._sample_token_batch(
+                    code_logits,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p,
+                )
+                code_tokens.append(next_code)
+
+            all_codes = mx.concatenate(code_tokens, axis=1)
+
+            # Next input: tts_pad_embed + codec_embed (ICL simplification!)
+            codec_embed = self.talker.get_input_embeddings()(next_token_batch)
+            for j, code in enumerate(code_tokens[1:]):
+                codec_embed = codec_embed + self.talker.code_predictor.codec_embedding[
+                    j
+                ](code)
+
+            input_embeds = tts_pad_broadcast + codec_embed
+
+            # Single sync
+            mx.eval(all_codes, input_embeds, finished)
+
+            # CPU-side bookkeeping
+            finished_cpu = finished.tolist()
+            if all(finished_cpu):
+                break
+
+            token_ids_cpu = next_token_batch[:, 0].tolist()
+            for b in range(batch_size):
+                if not finished_cpu[b]:
+                    generated_token_ids[b].append(token_ids_cpu[b])
+                    generated_codes[b].append(all_codes[b : b + 1])
+
+            # Extend attention mask
+            if attention_mask is not None:
+                attention_mask = mx.concatenate(
+                    [attention_mask, mx.ones((batch_size, 1))], axis=1
+                )
+
+            if step > 0 and step % 50 == 0:
+                mx.clear_cache()
+
+            pbar.update(1)
+
+        pbar.close()
+
+        # ── Step 5: Decode each segment ──
+        elapsed_gen = time.time() - start_time
+
+        # Free generation state before decoding
+        del cache, code_cache, input_embeds, finished, eos_fill
+        if attention_mask is not None:
+            del attention_mask
+        mx.clear_cache()
+
+        ref_codes_t = mx.transpose(shared.ref_codes, (0, 2, 1))  # [1, ref_time, 16]
+        audios = []
+        token_counts = [len(g) for g in generated_codes]
+
+        for b in range(batch_size):
+            if not generated_codes[b]:
+                # Empty generation — yield zero-length audio
+                audios.append(mx.zeros((0,)))
+                continue
+
+            gen_codes = mx.stack(generated_codes[b], axis=1)  # [1, gen_len, 16]
+            generated_codes[b] = []  # free memory
+
+            # Prepend ref_codes for decoding
+            full_codes = mx.concatenate([ref_codes_t, gen_codes], axis=1)
+            total_len = full_codes.shape[1]
+
+            # Decode
+            audio, audio_lengths = self.speech_tokenizer.decode(full_codes)
+            audio = audio[0]
+
+            # Trim to valid length
+            valid_len = int(audio_lengths[0])
+            if valid_len > 0 and valid_len < audio.shape[0]:
+                audio = audio[:valid_len]
+
+            # Remove reference audio portion (proportional trim)
+            cut = int(ref_len / max(total_len, 1) * audio.shape[0])
+            if cut > 0 and cut < audio.shape[0]:
+                audio = audio[cut:]
+
+            mx.eval(audio)
+            audios.append(audio)
+
+            del gen_codes, full_codes
+            mx.clear_cache()
+
+        elapsed_total = time.time() - start_time
+        if verbose:
+            print(
+                f"  Batch ICL done: gen={elapsed_gen:.2f}s, "
+                f"decode={elapsed_total - elapsed_gen:.2f}s, "
+                f"total={elapsed_total:.2f}s"
+            )
+
+        return audios, token_counts, elapsed_total
 
     def _generate_icl(
         self,
