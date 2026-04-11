@@ -4,6 +4,9 @@ import type React from "react"
 
 import { useState, useRef, useEffect } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
+import { SearchableLanguageSelect } from "@/components/SearchableLanguageSelect"
+import { SearchableSTTModelSelect } from "@/components/SearchableSTTModelSelect"
+import { getSupportedLanguageNames, getCompatibleModelValues } from "@/components/modelLanguageData"
 import { FileText, Upload, MoreVertical, X, ChevronDown, Mic } from "lucide-react"
 import Link from "next/link"
 
@@ -28,6 +31,21 @@ export default function SpeechToTextPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [maxTokens, setMaxTokens] = useState(1024)
+ 
+  // Compute allowed options reactively
+  const allowedLanguages = getSupportedLanguageNames(selectedModel);
+  const allowedModels    = getCompatibleModelValues(primaryLanguage);
+
+  // Optional: auto-reset language to Detect if current selection becomes incompatible
+  useEffect(() => {
+    if (
+      primaryLanguage !== 'Detect' &&
+      allowedLanguages !== '*' &&
+      !allowedLanguages.includes(primaryLanguage)
+    ) {
+      setPrimaryLanguage('Detect');
+    }
+  }, [selectedModel]);
 
   // New state for stored transcriptions
   const [storedTranscriptions, setStoredTranscriptions] = useState<{ id: string; data: any }[]>([])
@@ -360,37 +378,21 @@ export default function SpeechToTextPage() {
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-medium">Primary language</label>
               </div>
-              <div className="relative">
-                <select
-                  value={primaryLanguage}
-                  onChange={(e) => setPrimaryLanguage(e.target.value)}
-                  className="w-full appearance-none rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 pr-10 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                >
-                  <option value="Detect">Detect</option>
-                  <option value="English">English</option>
-                  <option value="Spanish">Spanish</option>
-                  <option value="French">French</option>
-                  <option value="German">German</option>
-                  <option value="Italian">Italian</option>
-                  <option value="Portuguese">Portuguese</option>
-                  <option value="Chinese">Chinese</option>
-                  <option value="Japanese">Japanese</option>
-                  <option value="Korean">Korean</option>
-                </select>
-                <ChevronDown className="absolute right-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
-              </div>
+              <SearchableLanguageSelect
+                value={primaryLanguage}
+                onChange={setPrimaryLanguage}
+                allowedLanguages={allowedLanguages}
+               />
             </div>
 
             <div className="mb-6">
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-medium">Model</label>
               </div>
-              <input
-                type="text"
+              <SearchableSTTModelSelect
                 value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                placeholder="Enter model name"
-                className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                onChange={setSelectedModel}
+                allowedValues={allowedModels}
               />
             </div>
 
