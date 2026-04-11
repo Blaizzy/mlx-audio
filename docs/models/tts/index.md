@@ -8,6 +8,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 |-------|------|-----------|:---:|:---:|--------------|
 | [**Kokoro**](kokoro.md) | 82M | EN, JA, ZH, FR, ES, IT, PT, HI | -- | -- | Fast, 54 voice presets, speed control |
 | [**Qwen3-TTS**](qwen3-tts.md) | 0.6B / 1.7B | ZH, EN, JA, KO, + more | Yes | Yes | Voice cloning, emotion control, voice design, batch generation |
+| [**OmniVoice**](../../../mlx_audio/tts/models/omnivoice/README.md) | 0.6B backbone + HiggsAudio tokenizer | 646+ languages | Yes | -- | Zero-shot multilingual cloning, nonverbal tags, CMU + pinyin controls |
 | [**Voxtral TTS**](voxtral-tts.md) | 4B | EN, FR, ES, DE, IT, PT, NL, AR, HI | -- | Yes | 20 voice presets, 9 languages, chunked streaming output |
 | [**CSM**](csm.md) | 1B | EN | Yes | Yes | Conversational speech, voice cloning, multi-turn context |
 | [**Dia**](dia.md) | 1.6B | EN | -- | -- | Dialogue with `[S1]`/`[S2]` speaker tags |
@@ -48,7 +49,7 @@ All TTS models share a common interface:
 
 !!! tip "Choosing a model"
     - **Fastest / smallest:** Kokoro (82M) -- great for quick generation with many voice presets.
-    - **Voice cloning:** CSM or Qwen3-TTS -- clone any voice from a short reference clip.
+    - **Voice cloning:** CSM, Qwen3-TTS, or OmniVoice -- clone a voice from reference speech.
     - **Multilingual:** Voxtral TTS (9 languages, 20 voices) or Chatterbox (16 languages).
     - **Dialogue:** Dia -- built-in support for multi-speaker conversations.
     - **Emotion / style control:** Qwen3-TTS CustomVoice or VoiceDesign variants.
