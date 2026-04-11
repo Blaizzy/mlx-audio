@@ -275,24 +275,30 @@ class Model(nn.Module):
         latent_dim = self.audio_vae.latent_dim
         z1 = mx.zeros((1, self.patch_size, latent_dim))
 
-        tokens = mx.concatenate([
-            mx.array([self.ref_audio_start_token], dtype=mx.int32),
-            mx.zeros(ref_len, dtype=mx.int32),
-            mx.array([self.ref_audio_end_token], dtype=mx.int32),
-        ])
+        tokens = mx.concatenate(
+            [
+                mx.array([self.ref_audio_start_token], dtype=mx.int32),
+                mx.zeros(ref_len, dtype=mx.int32),
+                mx.array([self.ref_audio_end_token], dtype=mx.int32),
+            ]
+        )
 
         feats = mx.concatenate([z1, ref_feat, z1], axis=0)
 
-        t_mask = mx.concatenate([
-            mx.array([1], dtype=mx.float32),
-            mx.zeros(ref_len, dtype=mx.float32),
-            mx.array([1], dtype=mx.float32),
-        ])
-        a_mask = mx.concatenate([
-            mx.array([0], dtype=mx.float32),
-            mx.ones(ref_len, dtype=mx.float32),
-            mx.array([0], dtype=mx.float32),
-        ])
+        t_mask = mx.concatenate(
+            [
+                mx.array([1], dtype=mx.float32),
+                mx.zeros(ref_len, dtype=mx.float32),
+                mx.array([1], dtype=mx.float32),
+            ]
+        )
+        a_mask = mx.concatenate(
+            [
+                mx.array([0], dtype=mx.float32),
+                mx.ones(ref_len, dtype=mx.float32),
+                mx.array([0], dtype=mx.float32),
+            ]
+        )
 
         return tokens, feats, t_mask, a_mask
 
@@ -336,7 +342,7 @@ class Model(nn.Module):
         # 1. Sanitize VAE weights if present and not already done
         vae_weights = {k: v for k, v in weights.items() if k.startswith("audio_vae.")}
         vae_weights_stripped = {
-            k[len("audio_vae."):]: v for k, v in vae_weights.items()
+            k[len("audio_vae.") :]: v for k, v in vae_weights.items()
         }
 
         if vae_weights_stripped and not vae_already_sanitized:
@@ -451,23 +457,29 @@ class Model(nn.Module):
             prompt_feat = self._encode_wav(prompt_audio, padding_mode="left")
             prompt_audio_length = prompt_feat.shape[0]
 
-            ref_tokens, ref_feats, ref_t_mask, ref_a_mask = self._make_ref_prefix(ref_feat)
+            ref_tokens, ref_feats, ref_t_mask, ref_a_mask = self._make_ref_prefix(
+                ref_feat
+            )
 
             text_pad_feat = mx.zeros((text_length, self.patch_size, latent_dim))
             prompt_pad_token = mx.zeros(prompt_audio_length, dtype=mx.int32)
 
             text_token = mx.concatenate([ref_tokens, text_token, prompt_pad_token])
             audio_feat = mx.concatenate([ref_feats, text_pad_feat, prompt_feat], axis=0)
-            text_mask = mx.concatenate([
-                ref_t_mask,
-                mx.ones(text_length, dtype=mx.float32),
-                mx.zeros(prompt_audio_length, dtype=mx.float32),
-            ])
-            audio_mask = mx.concatenate([
-                ref_a_mask,
-                mx.zeros(text_length, dtype=mx.float32),
-                mx.ones(prompt_audio_length, dtype=mx.float32),
-            ])
+            text_mask = mx.concatenate(
+                [
+                    ref_t_mask,
+                    mx.ones(text_length, dtype=mx.float32),
+                    mx.zeros(prompt_audio_length, dtype=mx.float32),
+                ]
+            )
+            audio_mask = mx.concatenate(
+                [
+                    ref_a_mask,
+                    mx.zeros(text_length, dtype=mx.float32),
+                    mx.ones(prompt_audio_length, dtype=mx.float32),
+                ]
+            )
 
         elif has_ref:
             # Mode 3: Reference cloning only
@@ -476,20 +488,26 @@ class Model(nn.Module):
             text_length = text_token.shape[0]
 
             ref_feat = self._encode_wav(ref_audio, padding_mode="right")
-            ref_tokens, ref_feats, ref_t_mask, ref_a_mask = self._make_ref_prefix(ref_feat)
+            ref_tokens, ref_feats, ref_t_mask, ref_a_mask = self._make_ref_prefix(
+                ref_feat
+            )
 
             text_pad_feat = mx.zeros((text_length, self.patch_size, latent_dim))
 
             text_token = mx.concatenate([ref_tokens, text_token])
             audio_feat = mx.concatenate([ref_feats, text_pad_feat], axis=0)
-            text_mask = mx.concatenate([
-                ref_t_mask,
-                mx.ones(text_length, dtype=mx.float32),
-            ])
-            audio_mask = mx.concatenate([
-                ref_a_mask,
-                mx.zeros(text_length, dtype=mx.float32),
-            ])
+            text_mask = mx.concatenate(
+                [
+                    ref_t_mask,
+                    mx.ones(text_length, dtype=mx.float32),
+                ]
+            )
+            audio_mask = mx.concatenate(
+                [
+                    ref_a_mask,
+                    mx.zeros(text_length, dtype=mx.float32),
+                ]
+            )
 
         elif has_prompt:
             # Mode 2: Continuation only
@@ -506,14 +524,18 @@ class Model(nn.Module):
 
             text_token = mx.concatenate([text_token, prompt_pad_token])
             audio_feat = mx.concatenate([text_pad_feat, prompt_feat], axis=0)
-            text_mask = mx.concatenate([
-                mx.ones(text_length, dtype=mx.float32),
-                mx.zeros(prompt_audio_length, dtype=mx.float32),
-            ])
-            audio_mask = mx.concatenate([
-                mx.zeros(text_length, dtype=mx.float32),
-                mx.ones(prompt_audio_length, dtype=mx.float32),
-            ])
+            text_mask = mx.concatenate(
+                [
+                    mx.ones(text_length, dtype=mx.float32),
+                    mx.zeros(prompt_audio_length, dtype=mx.float32),
+                ]
+            )
+            audio_mask = mx.concatenate(
+                [
+                    mx.zeros(text_length, dtype=mx.float32),
+                    mx.ones(prompt_audio_length, dtype=mx.float32),
+                ]
+            )
 
         else:
             # Mode 1: Zero-shot
@@ -560,9 +582,7 @@ class Model(nn.Module):
 
         # V2: fusion_concat_proj for residual input
         residual_input = self.fusion_concat_proj(
-            mx.concatenate(
-                [enc_outputs, audio_mask[:, :, None] * feat_embed], axis=-1
-            )
+            mx.concatenate([enc_outputs, audio_mask[:, :, None] * feat_embed], axis=-1)
         )
 
         residual_outputs, res_cache = self.residual_lm(residual_input)
@@ -575,7 +595,9 @@ class Model(nn.Module):
             audio_indices = np.nonzero(mask_np > 0)[0]
             context_len = min(streaming_prefix_len - 1, len(audio_indices))
             last_indices = audio_indices[-context_len:]
-            pred_feat_seq = [audio_feat[:, int(idx), :, :][:, None, :, :] for idx in last_indices]
+            pred_feat_seq = [
+                audio_feat[:, int(idx), :, :][:, None, :, :] for idx in last_indices
+            ]
         else:
             pred_feat_seq = []
 

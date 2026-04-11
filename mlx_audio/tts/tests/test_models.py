@@ -4690,7 +4690,9 @@ class TestVoxCPM2Model(unittest.TestCase):
         feat_embed = model.feat_encoder(audio_feat)
         feat_embed = model.enc_to_lm_proj(feat_embed)
         text_embed = model.base_lm.embed_tokens(text_token)
-        combined = text_mask[:, :, None] * text_embed + audio_mask[:, :, None] * feat_embed
+        combined = (
+            text_mask[:, :, None] * text_embed + audio_mask[:, :, None] * feat_embed
+        )
 
         enc_out, lm_cache = model.base_lm(combined)
         self.assertEqual(enc_out.shape, (1, text_length, 64))
@@ -4733,6 +4735,7 @@ class TestVoxCPM2Model(unittest.TestCase):
     def test_voice_design_prefix(self):
         """Instruct param prepends voice description to text."""
         from unittest.mock import MagicMock
+
         from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
 
         args = _tiny_voxcpm2_args()

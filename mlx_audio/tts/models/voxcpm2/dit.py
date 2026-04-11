@@ -124,9 +124,7 @@ class UnifiedCFM(nn.Module):
                 b = current_x.shape[0]
 
                 x_in = mx.concatenate([current_x, current_x], axis=0)
-                mu_in = mx.concatenate(
-                    [mu, mx.zeros_like(mu)], axis=0
-                )
+                mu_in = mx.concatenate([mu, mx.zeros_like(mu)], axis=0)
 
                 t_val = mx.full((x_in.shape[0],), t)
 
