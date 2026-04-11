@@ -189,6 +189,11 @@ class Model(nn.Module):
     def _encode_sample_rate(self):
         return self.args.audio_vae_config.sample_rate
 
+    def _tokenize(self, text: str):
+        """Tokenize text without BOS token (matching PyTorch behavior)."""
+        tokens = self.tokenizer.tokenize(text)
+        return self.tokenizer.convert_tokens_to_ids(tokens)
+
     def _encode_wav(self, audio_input, padding_mode: str = "right") -> mx.array:
         """Load, VAD-trim, pad and VAE-encode audio.
 
@@ -411,15 +416,18 @@ class Model(nn.Module):
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded")
 
-        # Map CLI aliases
+        # Map CLI aliases — but enforce minimum cfg_value for VoxCPM2
         if cfg_scale is not None:
-            cfg_value = cfg_scale
+            cfg_value = max(cfg_scale, 2.0)
         if ddpm_steps is not None:
             inference_timesteps = ddpm_steps
 
         # Voice design: prepend description as (instruct)text
         if instruct:
             text = f"({instruct}){text}"
+            # Voice design gives good context from the start, less warmup needed
+            if warmup_patches > 1:
+                warmup_patches = 1
 
         start_time = time.perf_counter()
 
@@ -435,7 +443,7 @@ class Model(nn.Module):
         if has_ref and has_prompt:
             # Mode 4: Combined reference + continuation
             combined_text = prompt_text + text
-            text_ids = self.tokenizer.encode(combined_text)
+            text_ids = self._tokenize(combined_text)
             text_token = mx.array(text_ids + [self.audio_start_token], dtype=mx.int32)
             text_length = text_token.shape[0]
 
@@ -463,7 +471,7 @@ class Model(nn.Module):
 
         elif has_ref:
             # Mode 3: Reference cloning only
-            text_ids = self.tokenizer.encode(text)
+            text_ids = self._tokenize(text)
             text_token = mx.array(text_ids + [self.audio_start_token], dtype=mx.int32)
             text_length = text_token.shape[0]
 
@@ -486,7 +494,7 @@ class Model(nn.Module):
         elif has_prompt:
             # Mode 2: Continuation only
             combined_text = prompt_text + text
-            text_ids = self.tokenizer.encode(combined_text)
+            text_ids = self._tokenize(combined_text)
             text_token = mx.array(text_ids + [self.audio_start_token], dtype=mx.int32)
             text_length = text_token.shape[0]
 
@@ -509,7 +517,7 @@ class Model(nn.Module):
 
         else:
             # Mode 1: Zero-shot
-            text_ids = self.tokenizer.encode(text)
+            text_ids = self._tokenize(text)
             text_token = mx.array(text_ids + [self.audio_start_token], dtype=mx.int32)
             text_length = text_token.shape[0]
 
