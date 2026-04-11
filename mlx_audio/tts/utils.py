@@ -24,6 +24,7 @@ MODEL_REMAPPING = {
     "csm": "sesame",
     "voxcpm": "voxcpm",
     "voxcpm1.5": "voxcpm",
+    "voxcpm2": "voxcpm2",
     "vibevoice_streaming": "vibevoice",
     "chatterbox_turbo": "chatterbox_turbo",
     "soprano": "soprano",
