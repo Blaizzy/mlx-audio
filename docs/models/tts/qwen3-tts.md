@@ -112,6 +112,26 @@ for result in model.generate(
     # Play or process each chunk for low-latency output
 ```
 
+### Real-time tuning (Qwen3-TTS 12.5Hz codec)
+
+For live translation and assistants, `streaming_interval` is the main latency knob:
+
+- `streaming_interval = chunk_tokens / 12.5`
+- Smaller chunks reduce first-audio latency
+- Larger chunks improve smoothness and reduce decode overhead
+
+Practical baseline on Apple Silicon + 4-bit CustomVoice:
+
+| chunk tokens | `streaming_interval` | first-chunk feel | recommendation |
+|--------------|----------------------|------------------|----------------|
+| 2 | `0.16` | very fast, choppy | debug only |
+| 4 | `0.32` | fast + stable | default for real-time |
+| 6 | `0.48` | smoother, slower | quality-focused |
+| 8 | `0.64` | stable, higher delay | fallback |
+
+!!! tip "Start point for real-time UX"
+    Use `stream=True, streaming_interval=0.32` first, then tune toward `0.48` if you hear chunk boundaries.
+
 ### Batch Generation
 
 Generate multiple texts with different voices in a single batched forward pass:
