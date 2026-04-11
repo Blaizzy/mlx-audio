@@ -16,8 +16,11 @@ def _remove_silence(
     trail_sil: int = 300,
 ) -> np.ndarray:
     """Remove middle and edge silences using pydub, matching k2-fsa/OmniVoice."""
-    from pydub import AudioSegment
-    from pydub.silence import split_on_silence
+    try:
+        from pydub import AudioSegment
+        from pydub.silence import split_on_silence
+    except ModuleNotFoundError:
+        return audio
 
     pcm = (audio * 32767).clip(-32768, 32767).astype(np.int16)
     seg = AudioSegment(pcm.tobytes(), frame_rate=sr, sample_width=2, channels=1)
@@ -57,8 +60,11 @@ def _trim_long_audio(
     if duration <= trim_threshold:
         return audio
 
-    from pydub import AudioSegment
-    from pydub.silence import detect_nonsilent
+    try:
+        from pydub import AudioSegment
+        from pydub.silence import detect_nonsilent
+    except ModuleNotFoundError:
+        return audio
 
     pcm = (audio * 32767).clip(-32768, 32767).astype(np.int16)
     seg = AudioSegment(pcm.tobytes(), frame_rate=sr, sample_width=2, channels=1)
