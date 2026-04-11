@@ -397,7 +397,7 @@ class Model(nn.Module):
         inference_timesteps: int = 10,
         cfg_value: float = 2.0,
         streaming_prefix_len: int = 4,
-        warmup_patches: int = 2,
+        warmup_patches: int = 0,
         # CLI compatibility aliases
         cfg_scale: Optional[float] = None,
         ddpm_steps: Optional[int] = None,
