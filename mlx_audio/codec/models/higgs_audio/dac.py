@@ -47,14 +47,19 @@ class AcousticEncoderBlock(nn.Module):
         self.res_unit2 = ResidualUnit(in_dim, dilation=3)
         self.res_unit3 = ResidualUnit(in_dim, dilation=9)
         self.snake1 = Snake1d(in_dim)
+        pad = math.ceil(stride / 2)
         self.conv1 = WNConv1d(
             in_dim,
             out_dim,
             kernel_size=2 * stride,
             stride=stride,
-            padding=math.ceil(stride / 2),
+            padding=pad,
             norm="none",
         )
+        # WNConv1d with pad_mode="none" overrides padding via
+        # (kernel-stride)//2 which is wrong for odd strides.
+        # Force the correct value here.
+        self.conv1.padding = pad
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.res_unit1(x)

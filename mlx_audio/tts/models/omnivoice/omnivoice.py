@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from pathlib import Path
 from typing import Generator, List, Optional, Union
@@ -9,6 +10,49 @@ import mlx.nn as nn
 from ..base import GenerationResult
 from .backbone import BackboneConfig, OmniVoiceBackbone
 from .config import OmniVoiceConfig
+
+_NONVERBAL_PATTERN = re.compile(
+    r"\[(laughter|sigh|confirmation-en|question-en|question-ah|question-oh|"
+    r"question-ei|question-yi|surprise-ah|surprise-oh|surprise-wa|"
+    r"surprise-yo|dissatisfaction-hnn)\]"
+)
+
+
+def _combine_text(text: str, ref_text: Optional[str] = None) -> str:
+    """Merge ref_text + text, normalise whitespace and CJK spacing."""
+    if ref_text:
+        full_text = ref_text.strip() + " " + text.strip()
+    else:
+        full_text = text.strip()
+    full_text = re.sub(r"[\r\n]+", "", full_text)
+    full_text = re.sub(r"[ \t]+", " ", full_text)
+    cjk = r"[\u4e00-\u9fff]"
+    full_text = re.sub(rf"(?<={cjk})\s+|\s+(?={cjk})", "", full_text)
+    return full_text
+
+
+def _tokenize_with_nonverbal_tags(text: str, tokenizer) -> mx.array:
+    """Tokenize text, keeping nonverbal tags like [laughter] as atomic tokens."""
+    parts: list[int] = []
+    last_end = 0
+    for m in _NONVERBAL_PATTERN.finditer(text):
+        if m.start() > last_end:
+            segment = text[last_end : m.start()]
+            ids = tokenizer(segment, add_special_tokens=False).input_ids
+            if ids:
+                parts.extend(ids)
+        tag_ids = tokenizer(m.group(), add_special_tokens=False).input_ids
+        if tag_ids:
+            parts.extend(tag_ids)
+        last_end = m.end()
+    if last_end < len(text):
+        segment = text[last_end:]
+        ids = tokenizer(segment, add_special_tokens=False).input_ids
+        if ids:
+            parts.extend(ids)
+    if not parts:
+        parts = tokenizer(text, add_special_tokens=False).input_ids
+    return mx.array(parts, dtype=mx.int32)
 
 
 class Model(nn.Module):
@@ -40,49 +84,91 @@ class Model(nn.Module):
             nn.Linear(hidden, V, bias=False) for _ in range(C)
         ]
 
-    def _embed(
+    def _tokenize_style_and_text(
         self,
-        input_ids: mx.array,  # [B, S] text token ids
-        audio_tokens: mx.array,  # [B, T, 8] audio codebook tokens (may include MASK_ID)
-    ) -> mx.array:  # [B, S+T, hidden]
-        text_embeds = self.backbone.embed_tokens(input_ids)  # [B, S, H]
-        # Sum embeddings across 8 codebooks (not concat)
-        audio_embeds = sum(
-            self.audio_embeddings[i](audio_tokens[:, :, i])
-            for i in range(self.config.num_audio_codebook)
-        )  # [B, T, H]
-        return mx.concatenate([text_embeds, audio_embeds], axis=1)  # [B, S+T, H]
+        text: str,
+        language: str = "None",
+        instruct: str = "None",
+        text_tokenizer=None,
+        denoise: bool = True,
+        ref_text: Optional[str] = None,
+    ) -> tuple:
+        style_text = ""
+        if denoise:
+            style_text += "<|denoise|>"
+        style_text += f"<|lang_start|>{language}<|lang_end|>"
+        style_text += f"<|instruct_start|>{instruct}<|instruct_end|>"
+        style_ids = mx.array(
+            text_tokenizer(style_text, return_tensors="np").input_ids[0],
+            dtype=mx.int32,
+        )
 
-    def build_cond_embeds(
+        full_text = _combine_text(text, ref_text)
+        wrapped_text = f"<|text_start|>{full_text}<|text_end|>"
+        text_ids = _tokenize_with_nonverbal_tags(wrapped_text, text_tokenizer)
+
+        return style_ids, text_ids
+
+    def _prepare_inference_inputs(
         self,
-        input_ids: mx.array,  # [1, S]
-        ref_tokens: Optional[mx.array] = None,  # [1, T_ref, 8]
-    ) -> mx.array:  # [1, S + T_ref, D]
-        """Build conditioning embedding: text + optional reference audio tokens."""
-        text_embeds = self.backbone.embed_tokens(input_ids)  # [1, S, D]
-        if ref_tokens is None:
-            return text_embeds
-        ref_embeds = sum(
-            self.audio_embeddings[i](ref_tokens[:, :, i])
+        style_ids: mx.array,
+        text_ids: mx.array,
+        T: int,
+        ref_tokens: Optional[mx.array] = None,
+    ) -> dict:
+        C = self.config.num_audio_codebook
+        mask_id = self.config.audio_mask_id
+
+        style_block = mx.broadcast_to(style_ids[None, :, None], (1, len(style_ids), C))
+        text_block = mx.broadcast_to(text_ids[None, :, None], (1, len(text_ids), C))
+        target_block = mx.full((1, T, C), mask_id, dtype=mx.int32)
+
+        parts = [style_block, text_block]
+        n_text = len(style_ids) + len(text_ids)
+
+        if ref_tokens is not None:
+            ref_block = ref_tokens[None]  # [1, T_ref, 8]
+            parts.append(ref_block)
+        parts.append(target_block)
+
+        input_ids = mx.concatenate(parts, axis=1)
+        L = input_ids.shape[1]
+
+        audio_mask = mx.concatenate(
+            [
+                mx.zeros((1, n_text), dtype=mx.bool_),
+                mx.ones((1, L - n_text), dtype=mx.bool_),
+            ],
+            axis=1,
+        )
+
+        return {"input_ids": input_ids, "audio_mask": audio_mask}
+
+    def _prepare_embed_inputs(
+        self, input_ids: mx.array, audio_mask: mx.array
+    ) -> mx.array:
+        text_embeds = self.backbone.embed_tokens(input_ids[:, :, 0])
+        audio_embeds = sum(
+            self.audio_embeddings[i](input_ids[:, :, i])
             for i in range(self.config.num_audio_codebook)
-        )  # [1, T_ref, D]
-        return mx.concatenate([text_embeds, ref_embeds], axis=1)
+        )
+        return mx.where(audio_mask[:, :, None], audio_embeds, text_embeds)
 
     def __call__(
         self,
-        inputs_embeds: mx.array,  # [B, prefix_len+T, D]
-        prefix_len: int,
+        input_ids: mx.array,
+        audio_mask: mx.array,
         attention_mask: Optional[mx.array] = None,
-    ) -> mx.array:  # [B, T, 8, V]
-        hidden = self.backbone(inputs_embeds, attention_mask)  # [B, prefix_len+T, H]
-        audio_hidden = hidden[:, prefix_len:, :]  # [B, T, H]
+    ) -> mx.array:
+        inputs_embeds = self._prepare_embed_inputs(input_ids, audio_mask)
+        hidden = self.backbone(inputs_embeds, attention_mask)
         logits = mx.stack(
             [
-                self.audio_heads[i](audio_hidden)
+                self.audio_heads[i](hidden)
                 for i in range(self.config.num_audio_codebook)
             ],
             axis=2,
-        )  # [B, T, 8, V]
+        )
         return logits
 
     def sanitize(self, weights: dict) -> dict:
@@ -112,31 +198,14 @@ class Model(nn.Module):
                 result[k] = v
         return result
 
-    def _encode_text(
-        self,
-        text: str,
-        language: str = "None",
-        instruct: str = "None",
-        text_tokenizer=None,
-    ) -> mx.array:
-        """Wrap text with OmniVoice special tokens and encode to ids."""
-        wrapped = (
-            f"<|denoise|>"
-            f"<|lang_start|>{language}<|lang_end|>"
-            f"<|instruct_start|>{instruct}<|instruct_end|>"
-            f"<|text_start|>{text}<|text_end|>"
-        )
-        ids = text_tokenizer.encode(wrapped, add_special_tokens=True)
-        return mx.array(ids, dtype=mx.int32)
-
     def generate(
         self,
         text: Optional[str] = None,
         duration_s: Optional[float] = None,
         language: str = "None",
-        lang_code: str = "None",  # alias used by generate_audio()
+        lang_code: str = "None",
         instruct: str = "None",
-        ref_audio=None,  # str | Path | mx.array (pre-loaded at sample_rate)
+        ref_audio=None,
         ref_text: Optional[str] = None,
         ref_audio_max_duration_s: float = 10.0,
         num_steps: int = 32,
@@ -147,73 +216,20 @@ class Model(nn.Module):
         t_shift: float = 0.1,
         tokenizer=None,
         text_tokenizer=None,
-        # low-level override: pre-encoded ref tokens
         ref_tokens: Optional[mx.array] = None,
-        # low-level override: pre-encoded text ids
         input_ids: Optional[mx.array] = None,
-        **kwargs,  # absorb: voice, speed, cfg_scale, temperature, max_tokens, etc.
+        **kwargs,
     ) -> Generator[GenerationResult, None, None]:
-        """Generate speech from text.
-
-        Args:
-            text: Input text to synthesize.
-            duration_s: Output duration in seconds. None (default) = auto-estimate
-                       from text using RuleDurationEstimator (+15% margin).
-            language: BCP-47 language tag e.g. "en", "ru", "zh" (default "None" = auto).
-            instruct: Style instruction tag (default "None").
-            ref_audio: Path to reference audio file for voice cloning (WAV, any SR).
-                       Requires ``tokenizer`` to be set.
-            ref_audio_max_duration_s: Clip reference audio to this many seconds (default 10).
-            num_steps: Iterative unmasking steps (default 32).
-            guidance_scale: CFG strength (default 2.0; 0 = no CFG).
-            class_temperature: Token sampling temperature (0 = greedy, default 0.0).
-            position_temperature: Gumbel noise on confidence scores (default 5.0).
-            layer_penalty_factor: Layer-ordering penalty (default 5.0).
-            t_shift: Time-step warp factor (default 0.1).
-            tokenizer: HiggsAudioTokenizer instance. Required to decode audio or
-                       encode ref_audio for voice cloning.
-            text_tokenizer: Hugging Face tokenizer for text encoding (AutoTokenizer).
-                            Required unless ``input_ids`` is provided directly.
-            ref_tokens: Pre-encoded reference tokens [T_ref, 8]. When set, ``ref_audio``
-                        is ignored.
-            input_ids: Pre-encoded text token ids [S]. When set, ``text`` and
-                       ``text_tokenizer`` are ignored.
-
-        Yields:
-            GenerationResult with audio, metrics, and token count.
-        """
         from .generation import iterative_unmask
         from .utils import create_voice_clone_prompt
 
-        # lang_code is the name used by generate_audio(); language takes precedence
         if language == "None" and lang_code != "None":
             language = lang_code
 
-        # Fall back to tokenizers set by post_load_hook
         if text_tokenizer is None:
             text_tokenizer = getattr(self, "text_tokenizer", None)
         if tokenizer is None:
             tokenizer = getattr(self, "audio_tokenizer", None)
-
-        # --- text encoding ---
-        if input_ids is None:
-            if text_tokenizer is None:
-                raise ValueError(
-                    "text_tokenizer is required when input_ids is not provided. "
-                    "Pass an AutoTokenizer or use input_ids directly."
-                )
-            import re
-
-            encode_text = text or ""
-            if ref_text:
-                encode_text = ref_text.strip() + " " + encode_text.strip()
-                encode_text = re.sub(r"[\r\n]+", "", encode_text)
-                encode_text = re.sub(r"[ \t]+", " ", encode_text)
-                cjk = r"[\u4e00-\u9fff]"
-                encode_text = re.sub(rf"(?<={cjk})\s+|\s+(?={cjk})", "", encode_text)
-            input_ids = self._encode_text(
-                encode_text, language, instruct, text_tokenizer
-            )
 
         # --- voice cloning ---
         if ref_tokens is None and ref_audio is not None:
@@ -228,39 +244,87 @@ class Model(nn.Module):
                     max_duration_s=ref_audio_max_duration_s,
                 )
             else:
-                # Already loaded as 1D mx.array at self.config.sample_rate by generate_audio()
                 wav = ref_audio
                 if not isinstance(wav, mx.array):
                     wav = mx.array(wav)
                 if wav.ndim == 1:
-                    wav = wav[None, :, None]  # [1, T, 1]
-                ref_tokens = tokenizer.encode(wav)[0]  # [T_ref, 8]
+                    wav = wav[None, :, None]
+                ref_tokens = tokenizer.encode(wav)[0]
 
-        # HiggsAudio hop = 8*5*4*2*3 = 960 samples/token at 24kHz → 25 tokens/sec
-        TOKENS_PER_SEC = self.config.sample_rate / 960  # 25.0
-        if duration_s is None:
-            from .duration import RuleDurationEstimator
+        has_ref = ref_tokens is not None
 
-            _estimator = RuleDurationEstimator()
-            # Calibration: "Nice to meet you." @ 25 tokens ≈ 1s (matches original)
-            raw_tokens = _estimator.estimate_duration(
-                text or "", "Nice to meet you.", 25
+        # --- text encoding ---
+        if input_ids is not None:
+            # Legacy path: caller provided pre-encoded flat input_ids [S]
+            # Build a minimal unified input_ids from them
+            C = self.config.num_audio_codebook
+            mask_id = self.config.audio_mask_id
+            TOKENS_PER_SEC = self.config.sample_rate / 960
+            if duration_s is None:
+                from .duration import RuleDurationEstimator
+
+                _estimator = RuleDurationEstimator()
+                raw_tokens = _estimator.estimate_duration(
+                    text or "", "Nice to meet you.", 25
+                )
+                T = max(10, int(raw_tokens * 1.15))
+            else:
+                T = math.ceil(duration_s * TOKENS_PER_SEC)
+
+            S = input_ids.shape[0]
+            text_block = mx.broadcast_to(input_ids[None, :, None], (1, S, C))
+            target_block = mx.full((1, T, C), mask_id, dtype=mx.int32)
+            parts = [text_block]
+            if ref_tokens is not None:
+                parts.append(ref_tokens[None])
+            parts.append(target_block)
+            cond_input_ids = mx.concatenate(parts, axis=1)
+            n_text = S
+            L = cond_input_ids.shape[1]
+            cond_audio_mask = mx.concatenate(
+                [
+                    mx.zeros((1, n_text), dtype=mx.bool_),
+                    mx.ones((1, L - n_text), dtype=mx.bool_),
+                ],
+                axis=1,
             )
-            T = max(10, int(raw_tokens * 1.15))  # +15% margin, min 10 tokens
         else:
-            T = math.ceil(duration_s * TOKENS_PER_SEC)
-        input_ids_b = input_ids[None]  # [1, S]
-        ref_b = ref_tokens[None] if ref_tokens is not None else None
+            if text_tokenizer is None:
+                raise ValueError(
+                    "text_tokenizer is required when input_ids is not provided. "
+                    "Pass an AutoTokenizer or use input_ids directly."
+                )
 
-        cond_embeds = self.build_cond_embeds(input_ids_b, ref_b)
-        # Unconditional: empty prefix — backbone sees only audio mask tokens
-        uncond_embeds = mx.zeros((1, 0, cond_embeds.shape[-1]), dtype=cond_embeds.dtype)
+            style_ids, text_ids = self._tokenize_style_and_text(
+                text=text or "",
+                language=language,
+                instruct=instruct,
+                text_tokenizer=text_tokenizer,
+                denoise=has_ref,
+                ref_text=ref_text,
+            )
+
+            TOKENS_PER_SEC = self.config.sample_rate / 960
+            if duration_s is None:
+                from .duration import RuleDurationEstimator
+
+                _estimator = RuleDurationEstimator()
+                raw_tokens = _estimator.estimate_duration(
+                    text or "", "Nice to meet you.", 25
+                )
+                T = max(10, int(raw_tokens * 1.15))
+            else:
+                T = math.ceil(duration_s * TOKENS_PER_SEC)
+
+            inputs = self._prepare_inference_inputs(style_ids, text_ids, T, ref_tokens)
+            cond_input_ids = inputs["input_ids"]
+            cond_audio_mask = inputs["audio_mask"]
 
         start_time = time.time()
         tokens = iterative_unmask(
             self,
-            cond_embeds=cond_embeds,
-            uncond_embeds=uncond_embeds,
+            cond_input_ids=cond_input_ids,
+            cond_audio_mask=cond_audio_mask,
             T=T,
             num_steps=num_steps,
             guidance_scale=guidance_scale,
@@ -272,9 +336,7 @@ class Model(nn.Module):
         elapsed = time.time() - start_time
 
         if tokenizer is not None:
-            audio = tokenizer.decode(tokens).astype(
-                mx.float32
-            )  # [T*960] 1D; f32 for numpy compat
+            audio = tokenizer.decode(tokens).astype(mx.float32)
         else:
             audio = mx.zeros((T * 960,), dtype=mx.float32)
 

@@ -4460,22 +4460,33 @@ class TestOmniVoiceModel(unittest.TestCase):
     def test_logits_shape(self):
         model = self._make_model()
         B, S, T = 1, 5, 7
-        input_ids = mx.zeros((B, S), dtype=mx.int32)
-        audio_tokens = mx.full((B, T, 8), 1024, dtype=mx.int32)
-        inputs_embeds = model._embed(input_ids, audio_tokens)
-        logits = model(inputs_embeds, prefix_len=S)
-        self.assertEqual(logits.shape, (B, T, 8, 1025))
+        C = 8
+        input_ids_unified = mx.full((B, S + T, C), 0, dtype=mx.int32)
+        target = mx.full((B, T, C), 1024, dtype=mx.int32)
+        input_ids_unified = mx.concatenate(
+            [input_ids_unified[:, :S, :], target], axis=1
+        )
+        audio_mask = mx.concatenate(
+            [mx.zeros((B, S), dtype=mx.bool_), mx.ones((B, T), dtype=mx.bool_)],
+            axis=1,
+        )
+        logits = model(input_ids_unified, audio_mask)
+        self.assertEqual(logits.shape, (B, S + T, 8, 1025))
 
-    def test_embed_shape(self):
+    def test_embed_inputs_shape(self):
         model = self._make_model()
         B, S, T = 1, 5, 7
-        input_ids = mx.zeros((B, S), dtype=mx.int32)
-        audio_tokens = mx.full((B, T, 8), 1024, dtype=mx.int32)
-        embeds = model._embed(input_ids, audio_tokens)
+        C = 8
+        input_ids_unified = mx.zeros((B, S + T, C), dtype=mx.int32)
+        audio_mask = mx.concatenate(
+            [mx.zeros((B, S), dtype=mx.bool_), mx.ones((B, T), dtype=mx.bool_)],
+            axis=1,
+        )
+        embeds = model._prepare_embed_inputs(input_ids_unified, audio_mask)
         self.assertEqual(embeds.shape, (B, S + T, 64))
 
 
-class TestOmniVoiceBuildCondEmbeds(unittest.TestCase):
+class TestOmniVoicePrepareInputs(unittest.TestCase):
     def _make_model(self):
         from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
         from mlx_audio.tts.models.omnivoice.omnivoice import Model
@@ -4501,23 +4512,43 @@ class TestOmniVoiceBuildCondEmbeds(unittest.TestCase):
         )
         return Model(cfg)
 
-    def test_text_only_shape(self):
+    def test_no_ref_structure(self):
         model = self._make_model()
-        embeds = model.build_cond_embeds(mx.zeros((1, 5), dtype=mx.int32))
-        self.assertEqual(embeds.shape, (1, 5, 64))
+        style_ids = mx.array([1, 2, 3], dtype=mx.int32)
+        text_ids = mx.array([10, 11, 12, 13], dtype=mx.int32)
+        T = 5
+        result = model._prepare_inference_inputs(style_ids, text_ids, T)
+        input_ids = result["input_ids"]
+        audio_mask = result["audio_mask"]
+        self.assertEqual(input_ids.shape, (1, 12, 8))
+        self.assertEqual(audio_mask.shape, (1, 12))
+        self.assertTrue(mx.all(audio_mask[0, :7] == False).item())
+        self.assertTrue(mx.all(audio_mask[0, 7:] == True).item())
+        self.assertTrue(mx.all(input_ids[0, 7:, :] == 1024).item())
 
-    def test_text_plus_ref_shape(self):
+    def test_with_ref_structure(self):
         model = self._make_model()
-        embeds = model.build_cond_embeds(
-            mx.zeros((1, 5), dtype=mx.int32),
-            mx.zeros((1, 7, 8), dtype=mx.int32),
-        )
-        self.assertEqual(embeds.shape, (1, 12, 64))
+        style_ids = mx.array([1, 2, 3], dtype=mx.int32)
+        text_ids = mx.array([10, 11], dtype=mx.int32)
+        ref_tokens = mx.ones((4, 8), dtype=mx.int32) * 500
+        T = 3
+        result = model._prepare_inference_inputs(style_ids, text_ids, T, ref_tokens)
+        input_ids = result["input_ids"]
+        audio_mask = result["audio_mask"]
+        self.assertEqual(input_ids.shape, (1, 12, 8))
+        self.assertTrue(mx.all(audio_mask[0, :5] == False).item())
+        self.assertTrue(mx.all(audio_mask[0, 5:] == True).item())
+        self.assertTrue(mx.all(input_ids[0, 5:9, :] == 500).item())
+        self.assertTrue(mx.all(input_ids[0, 9:, :] == 1024).item())
 
-    def test_uncond_no_ref(self):
+    def test_text_ids_repeated_across_codebooks(self):
         model = self._make_model()
-        embeds = model.build_cond_embeds(mx.zeros((1, 5), dtype=mx.int32))
-        self.assertEqual(embeds.shape, (1, 5, 64))
+        style_ids = mx.array([1, 2], dtype=mx.int32)
+        text_ids = mx.array([10, 11], dtype=mx.int32)
+        result = model._prepare_inference_inputs(style_ids, text_ids, T=2)
+        input_ids = result["input_ids"]
+        for c in range(8):
+            self.assertTrue(mx.all(input_ids[0, :4, c] == input_ids[0, :4, 0]).item())
 
 
 class TestOmniVoiceGeneration(unittest.TestCase):
@@ -4558,13 +4589,19 @@ class TestOmniVoiceGeneration(unittest.TestCase):
         model = Model(cfg)
 
         T = 10
-        input_ids = mx.zeros((1, 3), dtype=mx.int32)
-        cond_embeds = model.build_cond_embeds(input_ids)
-        uncond_embeds = model.build_cond_embeds(mx.zeros_like(input_ids))
+        C = 8
+        S = 3
+        text_block = mx.zeros((1, S, C), dtype=mx.int32)
+        target_block = mx.full((1, T, C), 1024, dtype=mx.int32)
+        cond_input_ids = mx.concatenate([text_block, target_block], axis=1)
+        cond_audio_mask = mx.concatenate(
+            [mx.zeros((1, S), dtype=mx.bool_), mx.ones((1, T), dtype=mx.bool_)],
+            axis=1,
+        )
         tokens = iterative_unmask(
             model=model,
-            cond_embeds=cond_embeds,
-            uncond_embeds=uncond_embeds,
+            cond_input_ids=cond_input_ids,
+            cond_audio_mask=cond_audio_mask,
             T=T,
             num_steps=5,
             guidance_scale=2.0,
@@ -4611,38 +4648,52 @@ class TestOmniVoiceIterativeUnmaskRefactor(unittest.TestCase):
         )
         return Model(cfg)
 
+    def _build_cond(self, model, S, T):
+        C = 8
+        text_block = mx.zeros((1, S, C), dtype=mx.int32)
+        target_block = mx.full((1, T, C), 1024, dtype=mx.int32)
+        cond_input_ids = mx.concatenate([text_block, target_block], axis=1)
+        cond_audio_mask = mx.concatenate(
+            [mx.zeros((1, S), dtype=mx.bool_), mx.ones((1, T), dtype=mx.bool_)],
+            axis=1,
+        )
+        return cond_input_ids, cond_audio_mask
+
     def test_new_signature_shape(self):
         from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
 
         model = self._make_model()
-        cond = mx.zeros((1, 3, 64))
-        uncond = mx.zeros((1, 3, 64))
-        tokens = iterative_unmask(model, cond, uncond, T=10, num_steps=2)
+        cond_input_ids, cond_audio_mask = self._build_cond(model, S=3, T=10)
+        tokens = iterative_unmask(
+            model, cond_input_ids, cond_audio_mask, T=10, num_steps=2
+        )
         self.assertEqual(tokens.shape, (10, 8))
 
     def test_no_mask_tokens_remain(self):
         from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
 
         model = self._make_model()
-        cond = mx.zeros((1, 3, 64))
-        uncond = mx.zeros((1, 3, 64))
-        tokens = iterative_unmask(model, cond, uncond, T=10, num_steps=5)
+        cond_input_ids, cond_audio_mask = self._build_cond(model, S=3, T=10)
+        tokens = iterative_unmask(
+            model, cond_input_ids, cond_audio_mask, T=10, num_steps=5
+        )
         self.assertEqual(int(mx.sum(tokens == 1024).item()), 0)
 
     def test_deterministic_with_fixed_seed(self):
         from mlx_audio.tts.models.omnivoice.generation import iterative_unmask
 
         model = self._make_model()
-        input_ids = mx.zeros((1, 3), dtype=mx.int32)
-        cond = model.build_cond_embeds(input_ids)
-        uncond = model.build_cond_embeds(mx.zeros_like(input_ids))
+        cond_input_ids, cond_audio_mask = self._build_cond(model, S=3, T=5)
 
         mx.random.seed(42)
-        t1 = iterative_unmask(model, cond, uncond, T=5, num_steps=3)
+        t1 = iterative_unmask(model, cond_input_ids, cond_audio_mask, T=5, num_steps=3)
         _ = int(mx.sum(t1).item())
 
+        cond_input_ids2, cond_audio_mask2 = self._build_cond(model, S=3, T=5)
         mx.random.seed(42)
-        t2 = iterative_unmask(model, cond, uncond, T=5, num_steps=3)
+        t2 = iterative_unmask(
+            model, cond_input_ids2, cond_audio_mask2, T=5, num_steps=3
+        )
 
         self.assertTrue(bool(mx.all(t1 == t2).item()))
 

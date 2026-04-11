@@ -35,8 +35,8 @@ def _filter_top_k(log_probs: mx.array, ratio: float = 0.1) -> mx.array:
 
 def iterative_unmask(
     model: "Model",
-    cond_embeds: mx.array,  # [1, S_cond, D]
-    uncond_embeds: mx.array,  # [1, S_uncond, D]  — empty for pure uncond
+    cond_input_ids: mx.array,
+    cond_audio_mask: mx.array,
     T: int,
     num_steps: int = 32,
     guidance_scale: float = 2.0,
@@ -44,125 +44,68 @@ def iterative_unmask(
     position_temperature: float = 5.0,
     layer_penalty_factor: float = 5.0,
     t_shift: float = 0.1,
-) -> mx.array:  # [T, 8] in [0, 1023]
-    """Iterative unmasking decode — matches original OmniVoice inference exactly.
-
-    CFG is applied in log-prob space (not logit space).
-    Position selection uses Gumbel noise + layer penalty.
-    Class prediction is greedy (class_temperature=0) by default.
-    """
+) -> mx.array:
     C = model.config.num_audio_codebook
     mask_id = model.config.audio_mask_id
-    tokens = mx.full((T, C), mask_id, dtype=mx.int32)
+    V = model.config.audio_vocab_size
 
-    cond_prefix_len = cond_embeds.shape[1]
-    uncond_prefix_len = uncond_embeds.shape[1]
-    same_prefix = cond_prefix_len == uncond_prefix_len
+    c_len = cond_input_ids.shape[1]
 
-    if same_prefix:
-        prefix_batch = mx.concatenate([cond_embeds, uncond_embeds], axis=0)  # [2, S, D]
+    uncond_input_ids = cond_input_ids[:, -T:, :]
+    uncond_audio_mask = cond_audio_mask[:, -T:]
 
-    # Layer IDs for penalty: shape [C] → broadcast over [T, C]
-    layer_ids = mx.arange(C, dtype=mx.float32)  # [C]
-
+    layer_ids = mx.arange(C, dtype=mx.float32)
     timesteps = _get_time_steps(num_steps, t_shift)
     total_mask = T * C
 
+    mask_token_mask = mx.arange(V) == mask_id
+
     for step in range(num_steps):
-        # Build full inputs_embeds including current (partially-unmasked) tokens
-        audio_embeds = sum(
-            model.audio_embeddings[i](tokens[None, :, i]) for i in range(C)
-        )  # [1, T, D]
+        logits_all = model(cond_input_ids, cond_audio_mask)
+        logits_cond = logits_all[:, c_len - T :, :, :]
 
-        if same_prefix:
-            audio_batch = mx.concatenate(
-                [audio_embeds, audio_embeds], axis=0
-            )  # [2, T, D]
-            inputs_embeds = mx.concatenate(
-                [prefix_batch, audio_batch], axis=1
-            )  # [2, S+T, D]
-            logits_batch = model(
-                inputs_embeds, prefix_len=cond_prefix_len
-            )  # [2, T, C, V]
-            logits_cond = logits_batch[0:1]  # [1, T, C, V]
-            logits_uncond = logits_batch[1:2]  # [1, T, C, V]
-        else:
-            # Different prefix lengths (voice cloning vs no-prefix uncond)
-            inputs_cond = mx.concatenate(
-                [cond_embeds, audio_embeds], axis=1
-            )  # [1, S_cond+T, D]
-            logits_cond = model(inputs_cond, prefix_len=cond_prefix_len)  # [1, T, C, V]
-
-            if guidance_scale != 0:
-                if uncond_prefix_len == 0:
-                    logits_uncond = model(audio_embeds, prefix_len=0)  # [1, T, C, V]
-                else:
-                    inputs_uncond = mx.concatenate(
-                        [uncond_embeds, audio_embeds], axis=1
-                    )  # [1, S_uncond+T, D]
-                    logits_uncond = model(
-                        inputs_uncond, prefix_len=uncond_prefix_len
-                    )  # [1, T, C, V]
-
-        # CFG in log-prob space (matches original)
         if guidance_scale != 0:
-            c_lp = nn.log_softmax(logits_cond, axis=-1)  # [1, T, C, V]
-            u_lp = nn.log_softmax(logits_uncond, axis=-1)  # [1, T, C, V]
-            log_probs = nn.log_softmax(
-                c_lp + guidance_scale * (c_lp - u_lp), axis=-1
-            )  # [1, T, C, V]
+            logits_uncond_all = model(uncond_input_ids, uncond_audio_mask)
+            logits_uncond = logits_uncond_all[:, :T, :, :]
+            c_lp = nn.log_softmax(logits_cond, axis=-1)
+            u_lp = nn.log_softmax(logits_uncond, axis=-1)
+            log_probs = nn.log_softmax(c_lp + guidance_scale * (c_lp - u_lp), axis=-1)
         else:
             log_probs = nn.log_softmax(logits_cond, axis=-1)
 
-        # Mask out AUDIO_MASK_ID from predictions
-        # Build a mask: True at index AUDIO_MASK_ID along the last axis
-        V = log_probs.shape[-1]
-        mask_token_mask = mx.arange(V) == mask_id  # [V]
         log_probs = mx.where(mask_token_mask, -float("inf"), log_probs)
-        log_probs = log_probs[0]  # [T, C, V]
+        log_probs = log_probs[0]
 
-        # Predict tokens
         if class_temperature > 0.0:
             filtered = _filter_top_k(log_probs, ratio=0.1)
-            new_tokens = mx.argmax(
-                _gumbel_noise(filtered, class_temperature), axis=-1
-            )  # [T, C]
+            new_tokens = mx.argmax(_gumbel_noise(filtered, class_temperature), axis=-1)
         else:
-            new_tokens = mx.argmax(log_probs, axis=-1)  # [T, C]
+            new_tokens = mx.argmax(log_probs, axis=-1)
 
-        # Confidence = max log-prob per position
-        confidence = mx.max(log_probs, axis=-1)  # [T, C]
-
-        # Layer penalty: encourage lower-index codebooks to unmask first
-        # layer_ids [C] broadcast to [T, C]
+        confidence = mx.max(log_probs, axis=-1)
         confidence = confidence - layer_ids * layer_penalty_factor
-
-        # Position temperature: Gumbel noise on confidence scores
         if position_temperature > 0.0:
             confidence = _gumbel_noise(confidence, position_temperature)
 
-        # How many positions to unmask this step
         dt = timesteps[step + 1] - timesteps[step]
         k = max(1, math.ceil(total_mask * dt))
-        # On the last step, unmask everything still masked
         if step == num_steps - 1:
             k = total_mask
 
-        # Only reveal still-masked positions
-        still_masked = tokens == mask_id  # [T, C]
-        # Set confidence to -inf for already-unmasked positions
+        current_tokens = cond_input_ids[0, c_len - T :, :]
+        still_masked = current_tokens == mask_id
         score = mx.where(still_masked, confidence, mx.array(-float("inf")))
-
         flat_score = score.reshape(-1)
-        # Top-k positions to reveal
         rank = mx.argsort(mx.argsort(-flat_score))
-        reveal_flat = rank < k
-        reveal = reveal_flat.reshape(T, C)
-        update = reveal & still_masked
+        reveal = (rank < k).reshape(T, C) & still_masked
 
-        tokens = mx.where(update, new_tokens, tokens)
-        mx.eval(tokens)
+        updated = mx.where(reveal, new_tokens, current_tokens)
+        mx.eval(updated)
 
-    # Safety: replace any remaining mask tokens with token 0
+        prefix = cond_input_ids[:, : c_len - T, :]
+        cond_input_ids = mx.concatenate([prefix, updated[None]], axis=1)
+        uncond_input_ids = updated[None]
+
+    tokens = cond_input_ids[0, c_len - T :, :]
     tokens = mx.where(tokens == mask_id, mx.zeros_like(tokens), tokens)
     return tokens
