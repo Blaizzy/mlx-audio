@@ -29,7 +29,7 @@ export const MODEL_SUPPORTED_LANGS: Record<string, string[] | '*'> = {
   'facebook/mms-1b-fl102':                            '*',
   'facebook/mms-1b-all':                              '*',
   'fibm-granite/granite-4.0-1b-speech':               ['EN', 'DE', 'ES', 'JA', 'PT'],
-  'mlx-community/Voxtral-Mini-3B-2507-bf16':          ['EN', 'DE', 'ES', 'HI', 'JA', 'PT'],
+  'mlx-community/Voxtral-Mini-3B-2507-bf16':          ['EN', 'DE', 'ES', 'FR', 'HI', 'JA', 'NL', 'PT'],
   'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit': ['EN', 'AR', 'DE', 'ES', 'FR', 'HI', 'IT', 'JA', 'KO', 'NL', 'PT', 'RU', 'ZH'],
   'mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16': ['EN', 'AR', 'DE', 'ES', 'FR', 'HI', 'IT', 'JA', 'KO', 'NL', 'PT', 'RU', 'ZH'],
   'mlx-community/Qwen2-Audio-7B-Instruct-4bit':       '*',
