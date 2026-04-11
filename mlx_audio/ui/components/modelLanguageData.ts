@@ -1,45 +1,42 @@
-// Language full name → ISO code
 export const LANGUAGE_CODE: Record<string, string> = {
-  Afrikaans: 'AF', Albanian: 'SQ', Amharic: 'AM', Arabic: 'AR',
-  Armenian: 'HY', Azerbaijani: 'AZ', Basque: 'EU', Belarusian: 'BE',
-  Bengali: 'BN', Bosnian: 'BS', Bulgarian: 'BG', Catalan: 'CA',
-  Chinese: 'ZH', Croatian: 'HR', Czech: 'CS', Danish: 'DA',
-  Dutch: 'NL', English: 'EN', Estonian: 'ET', Finnish: 'FI',
-  French: 'FR', Galician: 'GL', Georgian: 'KA', German: 'DE',
-  Greek: 'EL', Gujarati: 'GU', Hebrew: 'HE', Hindi: 'HI',
-  Hungarian: 'HU', Icelandic: 'IS', Indonesian: 'ID', Irish: 'GA',
-  Italian: 'IT', Japanese: 'JA', Javanese: 'JV', Kannada: 'KN',
-  Kazakh: 'KK', Korean: 'KO', Latvian: 'LV', Lithuanian: 'LT',
-  Macedonian: 'MK', Malay: 'MS', Malayalam: 'ML', Maltese: 'MT',
-  Marathi: 'MR', Mongolian: 'MN', Nepali: 'NE', Norwegian: 'NO',
-  Persian: 'FA', Polish: 'PL', Portuguese: 'PT', Punjabi: 'PA',
-  Romanian: 'RO', Russian: 'RU', Serbian: 'SR', Slovak: 'SK',
-  Slovenian: 'SL', Somali: 'SO', Spanish: 'ES', Swahili: 'SW',
-  Swedish: 'SV', Tamil: 'TA', Telugu: 'TE', Thai: 'TH',
-  Turkish: 'TR', Ukrainian: 'UK', Urdu: 'UR', Uzbek: 'UZ',
-  Vietnamese: 'VI', Welsh: 'CY', Yoruba: 'YO', Zulu: 'ZU',
+  Afrikaans: 'af', Albanian: 'sq', Amharic: 'am', Arabic: 'ar',
+  Armenian: 'hy', Azerbaijani: 'az', Basque: 'eu', Belarusian: 'be',
+  Bengali: 'bn', Bosnian: 'bs', Bulgarian: 'bg', Catalan: 'ca',
+  Chinese: 'zh', Croatian: 'hr', Czech: 'cs', Danish: 'da',
+  Dutch: 'nl', English: 'en', Estonian: 'et', Finnish: 'fi',
+  French: 'fr', Galician: 'gl', Georgian: 'ka', German: 'de',
+  Greek: 'el', Gujarati: 'gu', Hebrew: 'he', Hindi: 'hi',
+  Hungarian: 'hu', Icelandic: 'is', Indonesian: 'id', Irish: 'ga',
+  Italian: 'it', Japanese: 'ja', Javanese: 'jv', Kannada: 'kn',
+  Kazakh: 'kk', Korean: 'ko', Latvian: 'lv', Lithuanian: 'lt',
+  Macedonian: 'mk', Malay: 'ms', Malayalam: 'ml', Maltese: 'mt',
+  Marathi: 'mr', Mongolian: 'mn', Nepali: 'ne', Norwegian: 'no',
+  Persian: 'fa', Polish: 'pl', Portuguese: 'pt', Punjabi: 'pa',
+  Romanian: 'ro', Russian: 'ru', Serbian: 'sr', Slovak: 'sk',
+  Slovenian: 'sl', Somali: 'so', Spanish: 'es', Swahili: 'sw',
+  Swedish: 'sv', Tamil: 'ta', Telugu: 'te', Thai: 'th',
+  Turkish: 'tr', Ukrainian: 'uk', Urdu: 'ur', Uzbek: 'uz',
+  Vietnamese: 'vi', Welsh: 'cy', Yoruba: 'yo', Zulu: 'zu',
 };
 
-// '*' = supports all languages in the selector
 export const MODEL_SUPPORTED_LANGS: Record<string, string[] | '*'> = {
   'mlx-community/whisper-large-v3-turbo-asr-fp16':    '*',
-  'distil-whisper/distil-large-v3':                   ['EN'],
-  'UsefulSensors/moonshine-tiny':                     ['EN'],
-  'UsefulSensors/moonshine-base':                     ['EN'],
+  'distil-whisper/distil-large-v3':                   ['en'],
+  'UsefulSensors/moonshine-tiny':                     ['en'],
+  'UsefulSensors/moonshine-base':                     ['en'],
   'facebook/mms-1b-fl102':                            '*',
   'facebook/mms-1b-all':                              '*',
-  'fibm-granite/granite-4.0-1b-speech':               ['EN', 'DE', 'ES', 'JA', 'PT'],
-  'mlx-community/Voxtral-Mini-3B-2507-bf16':          ['EN', 'DE', 'ES', 'FR', 'HI', 'JA', 'NL', 'PT'],
-  'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit': ['EN', 'AR', 'DE', 'ES', 'FR', 'HI', 'IT', 'JA', 'KO', 'NL', 'PT', 'RU', 'ZH'],
-  'mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16': ['EN', 'AR', 'DE', 'ES', 'FR', 'HI', 'IT', 'JA', 'KO', 'NL', 'PT', 'RU', 'ZH'],
+  'fibm-granite/granite-4.0-1b-speech':               ['en', 'de', 'es', 'ja', 'pt'],
+  'mlx-community/Voxtral-Mini-3B-2507-bf16':          ['en', 'de', 'es', 'fr', 'hi', 'ja', 'nl', 'pt'],
+  'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit': ['en', 'ar', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'ko', 'nl', 'pt', 'ru', 'zh'],
+  'mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16': ['en', 'ar', 'de', 'es', 'fr', 'hi', 'it', 'ja', 'ko', 'nl', 'pt', 'ru', 'zh'],
   'mlx-community/Qwen2-Audio-7B-Instruct-4bit':       '*',
-  'mlx-community/Qwen3-ASR-1.7B-8bit':               ['EN', 'AR', 'CS', 'DA', 'DE', 'EL', 'ES', 'FA', 'FI', 'FR', 'HI', 'HU', 'ID', 'IT', 'JA', 'KO', 'MK', 'MS', 'NL', 'PT', 'RO', 'RU', 'SV', 'TH', 'VI', 'ZH'],
-  'mlx-community/Qwen3-ForcedAligner-0.6B-8bit':     ['EN', 'DE', 'ES', 'FR', 'IT', 'JA', 'KO', 'PT', 'RU', 'ZH'],
-  'mlx-community/parakeet-tdt-0.6b-v3':              ['EN', 'BG', 'CS', 'DA', 'DE', 'EL', 'ES', 'ET', 'FI', 'HR', 'HU', 'IT', 'LT', 'LV', 'MT', 'NL', 'PL', 'PT', 'RO', 'RU', 'SK', 'SL', 'SV', 'UK'],
+  'mlx-community/Qwen3-ASR-1.7B-8bit':               ['en', 'ar', 'cs', 'da', 'de', 'el', 'es', 'fa', 'fi', 'fr', 'hi', 'hu', 'id', 'it', 'ja', 'ko', 'mk', 'ms', 'nl', 'pt', 'ro', 'ru', 'sv', 'th', 'vi', 'zh'],
+  'mlx-community/Qwen3-ForcedAligner-0.6B-8bit':     ['en', 'de', 'es', 'fr', 'it', 'ja', 'ko', 'pt', 'ru', 'zh'],
+  'mlx-community/parakeet-tdt-0.6b-v3':              ['en', 'bg', 'cs', 'da', 'de', 'el', 'es', 'et', 'fi', 'hr', 'hu', 'it', 'lt', 'lv', 'mt', 'nl', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sv', 'uk'],
   'mlx-community/VibeVoice-ASR-bf16':                '*',
 };
 
-/** Language names valid for a given model. Always includes 'Detect'. */
 export function getSupportedLanguageNames(modelValue: string): string[] | '*' {
   const codes = MODEL_SUPPORTED_LANGS[modelValue];
   if (!codes || codes === '*') return '*';
@@ -51,7 +48,6 @@ export function getSupportedLanguageNames(modelValue: string): string[] | '*' {
   ];
 }
 
-/** Model values compatible with a given language name. 'Detect' returns '*'. */
 export function getCompatibleModelValues(languageName: string): string[] | '*' {
   if (!languageName || languageName === 'Detect') return '*';
   const code = LANGUAGE_CODE[languageName];

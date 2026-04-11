@@ -6,7 +6,7 @@ import { useState, useRef, useEffect } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
 import { SearchableLanguageSelect } from "@/components/SearchableLanguageSelect"
 import { SearchableSTTModelSelect } from "@/components/SearchableSTTModelSelect"
-import { getSupportedLanguageNames, getCompatibleModelValues } from "@/components/modelLanguageData"
+import { getSupportedLanguageNames, getCompatibleModelValues, LANGUAGE_CODE } from "@/components/modelLanguageData"
 import { FileText, Upload, MoreVertical, X, ChevronDown, Mic } from "lucide-react"
 import Link from "next/link"
 
@@ -93,7 +93,12 @@ export default function SpeechToTextPage() {
     const formData = new FormData()
     formData.append("file", file)
     formData.append("model", selectedModel)
-    formData.append("language", primaryLanguage === "Detect" ? "en" : primaryLanguage.toLowerCase())
+    const languageCode = primaryLanguage === "Detect"
+      ? null
+      : LANGUAGE_CODE[primaryLanguage] ?? primaryLanguage.toLowerCase();
+    if (languageCode) {
+      formData.append("language", languageCode);
+    }
     formData.append("response_format", "verbose_json")
     formData.append("temperature", "0")
     formData.append("max_tokens", maxTokens.toString())
@@ -151,6 +156,8 @@ export default function SpeechToTextPage() {
         fileName,
         text: accumulatedText,
         audioDataUrl,
+        language: languageCode ?? "Detect",  
+        date: new Date().toISOString(), 
         ...(segments.length > 0 ? { segments } : {}),
       }
       localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))

@@ -153,9 +153,18 @@ export default function TranscriptViewerPage() {
         }
 
         setFileName(data.fileName ?? "unknown file")
-        setLanguage(data.language ?? "English")
-        setDate(data.date ?? "yesterday")
-
+        setLanguage(data.language && data.language !== "Detect"
+          ? data.language
+          : "Auto-detect"
+        )
+        setDate(data.date
+          ? new Date(data.date).toLocaleDateString(undefined, {
+              day: "numeric",
+              month: "long",
+              year: "numeric",
+            })
+          : "Unknown date"
+        )
         if (data.audioDataUrl && audioRef.current) {
           audioRef.current.src = data.audioDataUrl
           audioRef.current.onloadedmetadata = () => {
