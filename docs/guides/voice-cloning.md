@@ -8,6 +8,7 @@ Several MLX Audio models can clone a speaker's voice from a short reference audi
 |-------|--------|--------------------------|-------|
 | **CSM** | `--ref_audio` CLI / `ref_audio` kwarg | Yes (WAV) | Conversational Speech Model from Sesame |
 | **Qwen3-TTS Base** | `ref_audio` + `ref_text` kwargs | Yes (WAV) + transcript | Alibaba multilingual TTS |
+| **OmniVoice** | `ref_audio` + `ref_text` kwargs | Yes (WAV) + transcript recommended | 646+ language zero-shot cloning, best with prompt preprocessing |
 | **Spark** | `ref_audio` kwarg | Yes | SparkTTS voice cloning |
 | **Chatterbox** | `ref_audio` kwarg | Yes | Expressive multilingual TTS |
 | **OuteTTS** | `ref_audio` kwarg | Yes | Efficient TTS with cloning |
@@ -147,6 +148,50 @@ mlx_audio.tts.generate \
 ```
 
 Providing the transcript yourself avoids loading the STT model and speeds up generation.
+
+## OmniVoice
+
+OmniVoice supports multilingual zero-shot voice cloning with a HiggsAudioV2 acoustic tokenizer and iterative masked generation.
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/OmniVoice-bf16")
+
+results = list(model.generate(
+    text="Hello from OmniVoice.",
+    language="english",
+    ref_audio="reference.wav",
+    ref_text="This is what my voice sounds like.",
+))
+
+audio = results[0].audio
+```
+
+### OmniVoice-specific notes
+
+- **Reference text is strongly recommended.** OmniVoice performs best when the transcript matches the spoken content of the reference clip.
+- **Prompt preprocessing matters.** MLX Audio now mirrors the original Python pipeline with RMS normalization, silence removal, trimming at silence gaps, and torchaudio-compatible resampling before reference encoding.
+- **Best reference length:** roughly 5-15 seconds of actual speech after silence trimming.
+- **Supported inline controls:** nonverbal tags such as `[laughter]`, `[sigh]`, and pronunciation overrides for English CMU dictionary forms and Chinese pinyin forms.
+
+### Example: English CMU pronunciation control
+
+```python
+results = list(model.generate(
+    text="He plays the [B EY1 S] guitar while catching a [B AE1 S] fish.",
+    language="english",
+))
+```
+
+### Example: Nonverbal tags
+
+```python
+results = list(model.generate(
+    text="I just heard the funniest joke [laughter] that was incredible.",
+    language="english",
+))
+```
 
 ### Combining Cloning with Streaming
 
