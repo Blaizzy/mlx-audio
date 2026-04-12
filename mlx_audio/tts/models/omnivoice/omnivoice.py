@@ -337,9 +337,11 @@ class Model(nn.Module):
         duration_list = cast(list[float | None], _ensure_list(duration_s, batch_size))
         instruct_list = cast(list[str], _ensure_list(instruct, batch_size))
         language_list = [
-            lang_code_list[i]
-            if language_list[i] == "None" and lang_code_list[i] != "None"
-            else language_list[i]
+            (
+                lang_code_list[i]
+                if language_list[i] == "None" and lang_code_list[i] != "None"
+                else language_list[i]
+            )
             for i in range(batch_size)
         ]
 
@@ -461,15 +463,15 @@ class Model(nn.Module):
                         real_time_factor=rtf,
                         prompt={
                             "tokens": token_count,
-                            "tokens-per-sec": round(token_count / elapsed, 2)
-                            if elapsed > 0
-                            else 0,
+                            "tokens-per-sec": (
+                                round(token_count / elapsed, 2) if elapsed > 0 else 0
+                            ),
                         },
                         audio_samples={
                             "samples": n_samples,
-                            "samples-per-sec": round(n_samples / elapsed, 2)
-                            if elapsed > 0
-                            else 0,
+                            "samples-per-sec": (
+                                round(n_samples / elapsed, 2) if elapsed > 0 else 0
+                            ),
                         },
                         processing_time_seconds=elapsed,
                         peak_memory_usage=mx.get_peak_memory() / 1e9,
