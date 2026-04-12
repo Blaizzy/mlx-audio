@@ -5551,5 +5551,46 @@ class TestOmniVoiceGenerateBatch(unittest.TestCase):
         self.assertEqual(len(results), 1)
 
 
+class TestOmniVoiceBatchEdgeCases(TestOmniVoiceGenerateBatch):
+    def test_mismatched_list_lengths_raises(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _ensure_list
+
+        with self.assertRaises(ValueError):
+            _ensure_list(["a", "b"], 3)
+
+    def test_batch_different_durations(self):
+        model = self._make_model()
+        results = model.generate_batch(
+            text=["Hello", "Goodbye"],
+            duration_s=[1.0, 2.0],
+            num_steps=3,
+        )
+        self.assertEqual(len(results), 2)
+        self.assertNotEqual(results[0].token_count, results[1].token_count)
+
+    def test_batch_of_one_equals_single(self):
+        from mlx_audio.tts.models.base import GenerationResult
+
+        model = self._make_model()
+
+        mx.random.seed(42)
+        batch_results = model.generate_batch(
+            text=["Hello world"],
+            duration_s=1.0,
+            num_steps=3,
+        )
+        self.assertEqual(len(batch_results), 1)
+        batch_result = batch_results[0]
+
+        mx.random.seed(42)
+        single_result = next(
+            model.generate(text="Hello world", duration_s=1.0, num_steps=3)
+        )
+
+        self.assertIsInstance(batch_result, GenerationResult)
+        self.assertIsInstance(single_result, GenerationResult)
+        self.assertEqual(batch_result.token_count, single_result.token_count)
+
+
 if __name__ == "__main__":
     unittest.main()
