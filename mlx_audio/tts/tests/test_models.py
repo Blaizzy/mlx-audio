@@ -5360,5 +5360,77 @@ class TestHiggsAudioEncodeParity(unittest.TestCase):
         )
 
 
+class TestOmniVoiceEnsureList(unittest.TestCase):
+    def test_scalar_auto_repeat(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _ensure_list
+
+        self.assertEqual(_ensure_list("en", 3, auto_repeat=True), ["en", "en", "en"])
+
+    def test_scalar_no_repeat_raises(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _ensure_list
+
+        with self.assertRaises(ValueError):
+            _ensure_list("en", 3, auto_repeat=False)
+
+    def test_list_passthrough(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _ensure_list
+
+        self.assertEqual(_ensure_list(["a", "b"], 2), ["a", "b"])
+
+    def test_list_length_mismatch_raises(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _ensure_list
+
+        with self.assertRaises(ValueError):
+            _ensure_list(["a"], 2)
+
+    def test_none_fills(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _ensure_list
+
+        self.assertEqual(_ensure_list(None, 3), [None, None, None])
+
+
+class TestOmniVoicePackBatch(unittest.TestCase):
+    def test_two_items_shapes(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _pack_batch
+
+        inputs_list = [
+            {
+                "input_ids": mx.zeros((1, 10, 8), dtype=mx.int32),
+                "audio_mask": mx.concatenate(
+                    [mx.zeros((1, 5), dtype=mx.bool_), mx.ones((1, 5), dtype=mx.bool_)],
+                    axis=1,
+                ),
+            },
+            {
+                "input_ids": mx.zeros((1, 12, 8), dtype=mx.int32),
+                "audio_mask": mx.concatenate(
+                    [mx.zeros((1, 6), dtype=mx.bool_), mx.ones((1, 6), dtype=mx.bool_)],
+                    axis=1,
+                ),
+            },
+        ]
+        result = _pack_batch(inputs_list, target_lens=[5, 6], mask_id=1024)
+        self.assertEqual(result["cond_input_ids"].shape, (2, 12, 8))
+        self.assertEqual(result["cond_audio_mask"].shape, (2, 12))
+        self.assertEqual(result["uncond_input_ids"].shape, (2, 6, 8))
+        self.assertEqual(result["uncond_audio_mask"].shape, (2, 6))
+
+    def test_cond_padding_is_mask_id(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import _pack_batch
+
+        inputs_list = [
+            {
+                "input_ids": mx.full((1, 5, 8), 42, dtype=mx.int32),
+                "audio_mask": mx.ones((1, 5), dtype=mx.bool_),
+            },
+            {
+                "input_ids": mx.full((1, 8, 8), 42, dtype=mx.int32),
+                "audio_mask": mx.ones((1, 8), dtype=mx.bool_),
+            },
+        ]
+        result = _pack_batch(inputs_list, target_lens=[3, 4], mask_id=1024)
+        self.assertTrue(mx.all(result["cond_input_ids"][0, 5:, :] == 1024).item())
+
+
 if __name__ == "__main__":
     unittest.main()

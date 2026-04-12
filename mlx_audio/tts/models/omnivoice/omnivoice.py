@@ -31,6 +31,91 @@ def _combine_text(text: str, ref_text: Optional[str] = None) -> str:
     return full_text
 
 
+def _ensure_list(x, batch_size: int, auto_repeat: bool = True):
+    if x is None:
+        return [None] * batch_size
+    if not isinstance(x, list):
+        if auto_repeat:
+            return [x] * batch_size
+        raise ValueError(
+            f"Expected list of length {batch_size}, got scalar. Pass a list or set auto_repeat=True."
+        )
+    if len(x) != batch_size:
+        raise ValueError(f"Expected list of length {batch_size}, got {len(x)}")
+    return x
+
+
+def _pack_batch(inputs_list: list, target_lens: list, mask_id: int) -> dict:
+    B = len(inputs_list)
+    c_lens = [inp["input_ids"].shape[1] for inp in inputs_list]
+    max_c_len = max(c_lens)
+    max_u_len = max(target_lens)
+    C = inputs_list[0]["input_ids"].shape[2]
+
+    cond_rows = []
+    cond_mask_rows = []
+    uncond_rows = []
+    uncond_mask_rows = []
+
+    for i, inp in enumerate(inputs_list):
+        cl = c_lens[i]
+        tl = target_lens[i]
+
+        cond_row = inp["input_ids"]
+        pad_len = max_c_len - cl
+        if pad_len > 0:
+            cond_row = mx.concatenate(
+                [cond_row, mx.full((1, pad_len, C), mask_id, dtype=mx.int32)], axis=1
+            )
+        cond_rows.append(cond_row)
+
+        cond_mask_row = inp["audio_mask"]
+        if pad_len > 0:
+            cond_mask_row = mx.concatenate(
+                [cond_mask_row, mx.zeros((1, pad_len), dtype=mx.bool_)], axis=1
+            )
+        cond_mask_rows.append(cond_mask_row)
+
+        uncond_row = inp["input_ids"][0, -tl:, :]
+        uncond_mask_row = inp["audio_mask"][0, -tl:]
+
+        # If target length exceeds conditioned length, extend with full mask tokens.
+        pad_u_len = max_u_len - tl
+        if pad_u_len > 0:
+            uncond_row = mx.concatenate(
+                [
+                    uncond_row,
+                    mx.full((pad_u_len, C), mask_id, dtype=mx.int32),
+                ],
+                axis=0,
+            )
+            # Padded positions are still masked and participate in iterative decoding.
+            uncond_mask_row = mx.concatenate(
+                [
+                    uncond_mask_row,
+                    mx.ones((pad_u_len,), dtype=mx.bool_),
+                ],
+                axis=0,
+            )
+
+        uncond_rows.append(uncond_row[None, :, :])
+        uncond_mask_rows.append(uncond_mask_row[None, :])
+
+    cond_input_ids = mx.concatenate(cond_rows, axis=0)
+    cond_audio_mask = mx.concatenate(cond_mask_rows, axis=0)
+    uncond_input_ids = mx.concatenate(uncond_rows, axis=0)
+    uncond_audio_mask = mx.concatenate(uncond_mask_rows, axis=0)
+
+    return {
+        "cond_input_ids": cond_input_ids,
+        "cond_audio_mask": cond_audio_mask,
+        "uncond_input_ids": uncond_input_ids,
+        "uncond_audio_mask": uncond_audio_mask,
+        "c_lens": c_lens,
+        "target_lens": target_lens,
+    }
+
+
 def _tokenize_with_nonverbal_tags(text: str, tokenizer) -> mx.array:
     """Tokenize text, keeping nonverbal tags like [laughter] as atomic tokens."""
     parts: list[int] = []
