@@ -2,7 +2,7 @@ import math
 import re
 import time
 from pathlib import Path
-from typing import Generator, List, Optional, Union
+from typing import Any, Generator, List, Optional, Union, cast
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -16,6 +16,9 @@ _NONVERBAL_PATTERN = re.compile(
     r"question-ei|question-yi|surprise-ah|surprise-oh|surprise-wa|"
     r"surprise-yo|dissatisfaction-hnn)\]"
 )
+
+BatchInput = dict[str, mx.array]
+PackedBatchData = dict[str, mx.array | list[int]]
 
 
 def _combine_text(text: str, ref_text: Optional[str] = None) -> str:
@@ -45,7 +48,9 @@ def _ensure_list(x, batch_size: int, auto_repeat: bool = True):
     return x
 
 
-def _pack_batch(inputs_list: list, target_lens: list, mask_id: int) -> dict:
+def _pack_batch(
+    inputs_list: list[BatchInput], target_lens: list[int], mask_id: int
+) -> PackedBatchData:
     B = len(inputs_list)
     c_lens = [inp["input_ids"].shape[1] for inp in inputs_list]
     max_c_len = max(c_lens)
@@ -177,7 +182,9 @@ class Model(nn.Module):
         text_tokenizer=None,
         denoise: bool = True,
         ref_text: Optional[str] = None,
-    ) -> tuple:
+    ) -> tuple[mx.array, mx.array]:
+        if text_tokenizer is None:
+            raise ValueError("text_tokenizer is required for text tokenization.")
         style_text = ""
         if denoise:
             style_text += "<|denoise|>"
@@ -200,7 +207,7 @@ class Model(nn.Module):
         text_ids: mx.array,
         T: int,
         ref_tokens: Optional[mx.array] = None,
-    ) -> dict:
+    ) -> dict[str, mx.array]:
         C = self.config.num_audio_codebook
         mask_id = self.config.audio_mask_id
 
@@ -256,7 +263,7 @@ class Model(nn.Module):
         )
         return logits
 
-    def sanitize(self, weights: dict) -> dict:
+    def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         """Remap k2-fsa/OmniVoice PyTorch keys to mlx-audio naming convention.
 
         Key transforms:
@@ -282,6 +289,194 @@ class Model(nn.Module):
             else:
                 result[k] = v
         return result
+
+    def generate_batch(
+        self,
+        text: List[str],
+        language: Union[str, List[str]] = "None",
+        lang_code: Union[str, List[str]] = "None",
+        ref_text: Optional[Union[str, List[str]]] = None,
+        ref_audio=None,
+        ref_tokens: Optional[Union[mx.array, List[mx.array]]] = None,
+        duration_s: Optional[Union[float, List[float]]] = None,
+        instruct: Union[str, List[str]] = "None",
+        ref_audio_max_duration_s: float = 10.0,
+        num_steps: int = 32,
+        guidance_scale: float = 2.0,
+        class_temperature: float = 0.0,
+        position_temperature: float = 5.0,
+        layer_penalty_factor: float = 5.0,
+        t_shift: float = 0.1,
+        tokenizer=None,
+        text_tokenizer=None,
+        max_batch_size: int = 8,
+        **kwargs,
+    ) -> List[GenerationResult]:
+        from .generation import PackedBatch, iterative_unmask_batch
+        from .utils import create_voice_clone_prompt
+
+        if not isinstance(text, list):
+            text = [text]
+        if not text:
+            return []
+        if max_batch_size < 1:
+            raise ValueError("max_batch_size must be at least 1")
+
+        if text_tokenizer is None:
+            text_tokenizer = getattr(self, "text_tokenizer", None)
+        if tokenizer is None:
+            tokenizer = getattr(self, "audio_tokenizer", None)
+
+        batch_size = len(text)
+        language_list = cast(list[str], _ensure_list(language, batch_size))
+        lang_code_list = cast(list[str], _ensure_list(lang_code, batch_size))
+        ref_text_list = cast(list[str | None], _ensure_list(ref_text, batch_size))
+        ref_tokens_list = cast(
+            list[mx.array | None], _ensure_list(ref_tokens, batch_size)
+        )
+        duration_list = cast(list[float | None], _ensure_list(duration_s, batch_size))
+        instruct_list = cast(list[str], _ensure_list(instruct, batch_size))
+        language_list = [
+            lang_code_list[i]
+            if language_list[i] == "None" and lang_code_list[i] != "None"
+            else language_list[i]
+            for i in range(batch_size)
+        ]
+
+        if ref_audio is not None:
+            ref_audio_list = cast(list[Any], _ensure_list(ref_audio, batch_size))
+            for i in range(batch_size):
+                if ref_tokens_list[i] is not None or ref_audio_list[i] is None:
+                    continue
+                if tokenizer is None:
+                    raise ValueError(
+                        "tokenizer (HiggsAudioTokenizer) is required for voice cloning via ref_audio."
+                    )
+                if isinstance(ref_audio_list[i], (str, Path)):
+                    ref_tokens_list[i] = create_voice_clone_prompt(
+                        str(ref_audio_list[i]),
+                        tokenizer=tokenizer,
+                        max_duration_s=ref_audio_max_duration_s,
+                    )
+                else:
+                    wav = ref_audio_list[i]
+                    if not isinstance(wav, mx.array):
+                        wav = mx.array(wav)
+                    if wav.ndim == 1:
+                        wav = wav[None, :, None]
+                    ref_tokens_list[i] = tokenizer.encode(wav)[0]
+
+        if text_tokenizer is None:
+            raise ValueError(
+                "text_tokenizer is required for generate_batch(). Pass an AutoTokenizer or load the model via post_load_hook."
+            )
+
+        tokens_per_sec = self.config.sample_rate / 960
+        inputs_list = []
+        target_lens = []
+
+        for i in range(batch_size):
+            has_ref = ref_tokens_list[i] is not None
+            style_ids, text_ids = self._tokenize_style_and_text(
+                text=text[i],
+                language=language_list[i],
+                instruct=instruct_list[i],
+                text_tokenizer=text_tokenizer,
+                denoise=has_ref,
+                ref_text=ref_text_list[i],
+            )
+
+            duration_value = duration_list[i]
+            if duration_value is None:
+                from .duration import RuleDurationEstimator
+
+                estimator = RuleDurationEstimator()
+                raw_tokens = estimator.estimate_duration(
+                    text[i] or "", "Nice to meet you.", 25
+                )
+                target_len = max(10, int(raw_tokens * 1.15))
+            else:
+                target_len = math.ceil(duration_value * tokens_per_sec)
+
+            target_lens.append(target_len)
+            inputs_list.append(
+                self._prepare_inference_inputs(
+                    style_ids, text_ids, target_len, ref_tokens_list[i]
+                )
+            )
+
+        all_results = []
+        for chunk_start in range(0, batch_size, max_batch_size):
+            chunk_end = min(chunk_start + max_batch_size, batch_size)
+            packed = cast(
+                PackedBatch,
+                cast(
+                    object,
+                    _pack_batch(
+                        inputs_list[chunk_start:chunk_end],
+                        target_lens[chunk_start:chunk_end],
+                        self.config.audio_mask_id,
+                    ),
+                ),
+            )
+
+            start_time = time.time()
+            token_list = iterative_unmask_batch(
+                self,
+                packed,
+                num_steps=num_steps,
+                guidance_scale=guidance_scale,
+                class_temperature=class_temperature,
+                position_temperature=position_temperature,
+                layer_penalty_factor=layer_penalty_factor,
+                t_shift=t_shift,
+            )
+            elapsed = time.time() - start_time
+
+            for j, tokens in enumerate(token_list):
+                idx = chunk_start + j
+                token_count = target_lens[idx]
+                if tokenizer is not None:
+                    audio = tokenizer.decode(tokens).astype(mx.float32)
+                else:
+                    audio = mx.zeros((token_count * 960,), dtype=mx.float32)
+
+                n_samples = token_count * 960
+                audio_duration_s = n_samples / self.config.sample_rate
+                rtf = audio_duration_s / elapsed if elapsed > 0 else 0.0
+                d = int(audio_duration_s)
+                duration_str = (
+                    f"{d // 3600:02d}:{(d % 3600) // 60:02d}:{d % 60:02d}."
+                    f"{int((audio_duration_s % 1) * 1000):03d}"
+                )
+
+                all_results.append(
+                    GenerationResult(
+                        audio=audio,
+                        samples=n_samples,
+                        sample_rate=self.config.sample_rate,
+                        segment_idx=idx,
+                        token_count=token_count,
+                        audio_duration=duration_str,
+                        real_time_factor=rtf,
+                        prompt={
+                            "tokens": token_count,
+                            "tokens-per-sec": round(token_count / elapsed, 2)
+                            if elapsed > 0
+                            else 0,
+                        },
+                        audio_samples={
+                            "samples": n_samples,
+                            "samples-per-sec": round(n_samples / elapsed, 2)
+                            if elapsed > 0
+                            else 0,
+                        },
+                        processing_time_seconds=elapsed,
+                        peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    )
+                )
+
+        return all_results
 
     def generate(
         self,
@@ -344,7 +539,7 @@ class Model(nn.Module):
             # Build a minimal unified input_ids from them
             C = self.config.num_audio_codebook
             mask_id = self.config.audio_mask_id
-            TOKENS_PER_SEC = self.config.sample_rate / 960
+            tokens_per_sec = self.config.sample_rate / 960
             if duration_s is None:
                 from .duration import RuleDurationEstimator
 
@@ -352,13 +547,13 @@ class Model(nn.Module):
                 raw_tokens = _estimator.estimate_duration(
                     text or "", "Nice to meet you.", 25
                 )
-                T = max(10, int(raw_tokens * 1.15))
+                target_len = max(10, int(raw_tokens * 1.15))
             else:
-                T = math.ceil(duration_s * TOKENS_PER_SEC)
+                target_len = math.ceil(duration_s * tokens_per_sec)
 
             S = input_ids.shape[0]
             text_block = mx.broadcast_to(input_ids[None, :, None], (1, S, C))
-            target_block = mx.full((1, T, C), mask_id, dtype=mx.int32)
+            target_block = mx.full((1, target_len, C), mask_id, dtype=mx.int32)
             parts = [text_block]
             if ref_tokens is not None:
                 parts.append(ref_tokens[None])
@@ -389,7 +584,7 @@ class Model(nn.Module):
                 ref_text=ref_text,
             )
 
-            TOKENS_PER_SEC = self.config.sample_rate / 960
+            tokens_per_sec = self.config.sample_rate / 960
             if duration_s is None:
                 from .duration import RuleDurationEstimator
 
@@ -397,11 +592,13 @@ class Model(nn.Module):
                 raw_tokens = _estimator.estimate_duration(
                     text or "", "Nice to meet you.", 25
                 )
-                T = max(10, int(raw_tokens * 1.15))
+                target_len = max(10, int(raw_tokens * 1.15))
             else:
-                T = math.ceil(duration_s * TOKENS_PER_SEC)
+                target_len = math.ceil(duration_s * tokens_per_sec)
 
-            inputs = self._prepare_inference_inputs(style_ids, text_ids, T, ref_tokens)
+            inputs = self._prepare_inference_inputs(
+                style_ids, text_ids, target_len, ref_tokens
+            )
             cond_input_ids = inputs["input_ids"]
             cond_audio_mask = inputs["audio_mask"]
 
@@ -410,7 +607,7 @@ class Model(nn.Module):
             self,
             cond_input_ids=cond_input_ids,
             cond_audio_mask=cond_audio_mask,
-            T=T,
+            T=target_len,
             num_steps=num_steps,
             guidance_scale=guidance_scale,
             class_temperature=class_temperature,
@@ -423,9 +620,9 @@ class Model(nn.Module):
         if tokenizer is not None:
             audio = tokenizer.decode(tokens).astype(mx.float32)
         else:
-            audio = mx.zeros((T * 960,), dtype=mx.float32)
+            audio = mx.zeros((target_len * 960,), dtype=mx.float32)
 
-        n_samples = T * 960
+        n_samples = target_len * 960
         audio_duration_s = n_samples / self.config.sample_rate
         rtf = audio_duration_s / elapsed if elapsed > 0 else 0.0
         d = int(audio_duration_s)
@@ -436,12 +633,12 @@ class Model(nn.Module):
             samples=n_samples,
             sample_rate=self.config.sample_rate,
             segment_idx=0,
-            token_count=T,
+            token_count=target_len,
             audio_duration=duration_str,
             real_time_factor=rtf,
             prompt={
-                "tokens": T,
-                "tokens-per-sec": round(T / elapsed, 2) if elapsed > 0 else 0,
+                "tokens": target_len,
+                "tokens-per-sec": round(target_len / elapsed, 2) if elapsed > 0 else 0,
             },
             audio_samples={
                 "samples": n_samples,

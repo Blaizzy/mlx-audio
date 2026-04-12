@@ -3,6 +3,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
@@ -5430,6 +5431,124 @@ class TestOmniVoicePackBatch(unittest.TestCase):
         ]
         result = _pack_batch(inputs_list, target_lens=[3, 4], mask_id=1024)
         self.assertTrue(mx.all(result["cond_input_ids"][0, 5:, :] == 1024).item())
+
+
+class TestOmniVoiceIterativeUnmaskBatch(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_returns_list_of_correct_shapes(self):
+        from mlx_audio.tts.models.omnivoice.generation import iterative_unmask_batch
+        from mlx_audio.tts.models.omnivoice.omnivoice import _pack_batch
+
+        model = self._make_model()
+        mask_id = 1024
+        T0, T1 = 5, 7
+        inputs_list = [
+            {
+                "input_ids": mx.full((1, 8 + T0, 8), mask_id, dtype=mx.int32),
+                "audio_mask": mx.concatenate(
+                    [
+                        mx.zeros((1, 8), dtype=mx.bool_),
+                        mx.ones((1, T0), dtype=mx.bool_),
+                    ],
+                    axis=1,
+                ),
+            },
+            {
+                "input_ids": mx.full((1, 10 + T1, 8), mask_id, dtype=mx.int32),
+                "audio_mask": mx.concatenate(
+                    [
+                        mx.zeros((1, 10), dtype=mx.bool_),
+                        mx.ones((1, T1), dtype=mx.bool_),
+                    ],
+                    axis=1,
+                ),
+            },
+        ]
+        packed = _pack_batch(inputs_list, [T0, T1], mask_id)
+        results = iterative_unmask_batch(model, packed, num_steps=3, guidance_scale=2.0)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[0].shape, (T0, 8))
+        self.assertEqual(results[1].shape, (T1, 8))
+        self.assertTrue(mx.all(results[0] >= 0).item())
+        self.assertTrue(mx.all(results[0] < 1024).item())
+
+
+class TestOmniVoiceGenerateBatch(unittest.TestCase):
+    class _TinyTextTokenizer:
+        def __call__(self, text, add_special_tokens=False, return_tensors=None):
+            ids = [((ord(ch) % 31) + 1) for ch in text] or [1]
+            if return_tensors == "np":
+                return SimpleNamespace(input_ids=[ids])
+            return SimpleNamespace(input_ids=ids)
+
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        model = Model(cfg)
+        model.text_tokenizer = self._TinyTextTokenizer()
+        return model
+
+    def test_batch_returns_list(self):
+        from mlx_audio.tts.models.base import GenerationResult
+
+        model = self._make_model()
+        results = model.generate_batch(
+            text=["Hello world", "Goodbye world"],
+            duration_s=1.0,
+            num_steps=3,
+        )
+        self.assertIsInstance(results, list)
+        self.assertEqual(len(results), 2)
+        self.assertIsInstance(results[0], GenerationResult)
+
+    def test_batch_backward_compat_single(self):
+        model = self._make_model()
+        results = model.generate_batch(text=["Hello"], duration_s=1.0, num_steps=3)
+        self.assertEqual(len(results), 1)
 
 
 if __name__ == "__main__":

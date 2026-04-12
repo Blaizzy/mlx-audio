@@ -1,14 +1,20 @@
 import math
-from typing import TYPE_CHECKING
+from typing import Any, TypedDict
 
 import mlx.core as mx
 import mlx.nn as nn
 
-if TYPE_CHECKING:
-    from .omnivoice import Model
+
+class PackedBatch(TypedDict):
+    cond_input_ids: mx.array
+    cond_audio_mask: mx.array
+    uncond_input_ids: mx.array
+    uncond_audio_mask: mx.array
+    c_lens: list[int]
+    target_lens: list[int]
 
 
-def _get_time_steps(num_step: int, t_shift: float = 0.1) -> list:
+def _get_time_steps(num_step: int, t_shift: float = 0.1) -> list[float]:
     """Cosine-shifted timestep schedule matching original OmniVoice."""
     n = num_step + 1
     ts = [i / num_step for i in range(n)]  # linspace 0..1
@@ -34,7 +40,7 @@ def _filter_top_k(log_probs: mx.array, ratio: float = 0.1) -> mx.array:
 
 
 def iterative_unmask(
-    model: "Model",
+    model: Any,
     cond_input_ids: mx.array,
     cond_audio_mask: mx.array,
     T: int,
@@ -109,3 +115,121 @@ def iterative_unmask(
     tokens = cond_input_ids[0, c_len - T :, :]
     tokens = mx.where(tokens == mask_id, mx.zeros_like(tokens), tokens)
     return tokens
+
+
+def iterative_unmask_batch(
+    model: Any,
+    packed: PackedBatch,
+    num_steps: int = 32,
+    guidance_scale: float = 2.0,
+    class_temperature: float = 0.0,
+    position_temperature: float = 5.0,
+    layer_penalty_factor: float = 5.0,
+    t_shift: float = 0.1,
+) -> list[mx.array]:
+    C = model.config.num_audio_codebook
+    mask_id = model.config.audio_mask_id
+    V = model.config.audio_vocab_size
+    B = len(packed["target_lens"])
+
+    cond_input_ids = packed["cond_input_ids"]
+    cond_audio_mask = packed["cond_audio_mask"]
+    uncond_input_ids = packed["uncond_input_ids"]
+    uncond_audio_mask = packed["uncond_audio_mask"]
+    c_lens = packed["c_lens"]
+    target_lens = packed["target_lens"]
+
+    layer_ids = mx.arange(C, dtype=mx.float32)
+    mask_token_mask = mx.arange(V) == mask_id
+    timesteps = _get_time_steps(num_steps, t_shift)
+
+    per_item_schedules = []
+    for target_len in target_lens:
+        total_mask = target_len * C
+        schedule = []
+        for step in range(num_steps):
+            dt = timesteps[step + 1] - timesteps[step]
+            k = max(1, math.ceil(total_mask * dt))
+            if step == num_steps - 1:
+                k = total_mask
+            schedule.append(k)
+        per_item_schedules.append(schedule)
+
+    for step in range(num_steps):
+        logits_cond_all = model(cond_input_ids, cond_audio_mask)
+        logits_uncond_all: mx.array | None = None
+        if guidance_scale != 0:
+            logits_uncond_all = model(uncond_input_ids, uncond_audio_mask)
+
+        next_cond_rows = []
+        next_uncond_rows = []
+
+        for i in range(B):
+            cl = c_lens[i]
+            tl = target_lens[i]
+            k = per_item_schedules[i][step]
+
+            c_logits = logits_cond_all[i : i + 1, cl - tl : cl, :, :]
+            if guidance_scale != 0:
+                assert logits_uncond_all is not None
+                u_logits = logits_uncond_all[i : i + 1, :tl, :, :]
+                c_lp = nn.log_softmax(c_logits, axis=-1)
+                u_lp = nn.log_softmax(u_logits, axis=-1)
+                log_probs = nn.log_softmax(
+                    c_lp + guidance_scale * (c_lp - u_lp), axis=-1
+                )
+            else:
+                log_probs = nn.log_softmax(c_logits, axis=-1)
+
+            log_probs = mx.where(mask_token_mask, -float("inf"), log_probs)[0]
+
+            if class_temperature > 0.0:
+                filtered = _filter_top_k(log_probs, ratio=0.1)
+                new_tokens = mx.argmax(
+                    _gumbel_noise(filtered, class_temperature), axis=-1
+                )
+            else:
+                new_tokens = mx.argmax(log_probs, axis=-1)
+
+            confidence = mx.max(log_probs, axis=-1)
+            confidence = confidence - layer_ids * layer_penalty_factor
+            if position_temperature > 0.0:
+                confidence = _gumbel_noise(confidence, position_temperature)
+
+            current_tokens = cond_input_ids[i, cl - tl : cl, :]
+            still_masked = current_tokens == mask_id
+            score = mx.where(still_masked, confidence, mx.array(-float("inf")))
+            flat_score = score.reshape(-1)
+            rank = mx.argsort(mx.argsort(-flat_score))
+            reveal = (rank < k).reshape(tl, C) & still_masked
+            updated = mx.where(reveal, new_tokens, current_tokens)
+            mx.eval(updated)
+
+            cond_prefix = cond_input_ids[i, : cl - tl, :]
+            cond_pad_len = cond_input_ids.shape[1] - cl
+            if cond_pad_len > 0:
+                cond_pad = mx.full((cond_pad_len, C), mask_id, dtype=mx.int32)
+                cond_row = mx.concatenate([cond_prefix, updated, cond_pad], axis=0)
+            else:
+                cond_row = mx.concatenate([cond_prefix, updated], axis=0)
+            next_cond_rows.append(cond_row[None, :, :])
+
+            uncond_pad_len = uncond_input_ids.shape[1] - tl
+            if uncond_pad_len > 0:
+                uncond_pad = mx.full((uncond_pad_len, C), mask_id, dtype=mx.int32)
+                uncond_row = mx.concatenate([updated, uncond_pad], axis=0)
+            else:
+                uncond_row = updated
+            next_uncond_rows.append(uncond_row[None, :, :])
+
+        cond_input_ids = mx.concatenate(next_cond_rows, axis=0)
+        uncond_input_ids = mx.concatenate(next_uncond_rows, axis=0)
+
+    results = []
+    for i in range(B):
+        cl = c_lens[i]
+        tl = target_lens[i]
+        tokens = cond_input_ids[i, cl - tl : cl, :]
+        tokens = mx.where(tokens == mask_id, mx.zeros_like(tokens), tokens)
+        results.append(tokens)
+    return results
