@@ -26,32 +26,50 @@ The original Python OmniVoice solves this by auto-transcribing the reference aud
 
 ### Obtaining ref_text with Qwen3 ASR
 
+The transcript must match the **preprocessed** reference audio (after silence removal), not the original recording. If you transcribe the raw file, the ASR may return more text than the preprocessed clip contains, and the excess will leak into the generated speech.
+
+The correct workflow mirrors the original k2-fsa/OmniVoice: preprocess first, then transcribe.
+
 ```python
 from mlx_audio.stt.utils import load_model as load_stt
 from mlx_audio.tts.utils import load_model as load_tts
-import soundfile as sf
+from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+import mlx.core as mx
 import numpy as np
+import soundfile as sf
+import tempfile, os
 
-# Step 1: Transcribe reference audio
-stt = load_stt("mlx-community/Qwen3-ASR-small")
-ref_text = stt.generate("reference.wav")
-print(f"Transcript: {ref_text}")
-
-# Step 2: Generate with voice clone
 tts = load_tts("mlx-community/OmniVoice-bf16")
+tokenizer = tts.audio_tokenizer
 
+# Step 1: Preprocess reference audio (silence removal, RMS norm)
+ref_tokens = create_voice_clone_prompt("reference.wav", tokenizer=tokenizer)
+mx.eval(ref_tokens)
+
+# Step 2: Decode preprocessed tokens back to audio, then transcribe
+preprocessed = np.array(tokenizer.decode(ref_tokens).astype(mx.float32))
+tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+sf.write(tmp.name, preprocessed, 24000)
+tmp.close()
+
+stt = load_stt("mlx-community/Qwen3-ASR-0.6B-8bit")
+ref_text = stt.generate(tmp.name).text
+os.unlink(tmp.name)
+
+# Step 3: Generate with ref_tokens + ref_text from the same source
 results = list(tts.generate(
     text="Hello from OmniVoice.",
     language="english",
-    ref_audio="reference.wav",
+    ref_tokens=ref_tokens,
     ref_text=ref_text,
 ))
 
-audio = results[0].audio
-sf.write("output.wav", np.array(audio), results[0].sample_rate)
+sf.write("output.wav", np.array(results[0].audio), results[0].sample_rate)
 ```
 
-Any STT model works — Whisper, Qwen3-ASR, SenseVoice, etc. The only requirement is that the transcript reasonably matches the spoken content of the reference clip.
+Any STT model works — Whisper, Qwen3-ASR, SenseVoice, etc. The key is to transcribe the **preprocessed** audio, not the original file.
+
+See `examples/omnivoice_clone_demo.py` for a complete CLI script with this workflow.
 
 ### Reference preprocessing
 
