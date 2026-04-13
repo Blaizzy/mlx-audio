@@ -37,6 +37,7 @@ MODEL_REMAPPING = {
     "audiodit": "longcat_audiodit",
     "longcat": "longcat_audiodit",
     "acestep": "ace_step",
+    "ace": "ace_step",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]

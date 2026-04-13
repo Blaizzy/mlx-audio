@@ -30,28 +30,27 @@ def convert_ace_step(model_repo: str, output_dir: str, local_files_only: bool = 
 
     weights = {}
     for key, value in state_dict.items():
-        if not key.startswith("decoder.") and not key.startswith("encoder."):
+        np_val = value.cpu().float().numpy()
+        new_key = key
+
+        # Skip rotary embedding caches (recomputed at runtime)
+        if "rotary_emb" in key:
             continue
 
-        np_val = value.cpu().float().numpy()
+        # Handle decoder Conv1d proj_in: PyTorch [out, in, K] -> MLX [out, K, in]
+        # Use underscore naming (proj_in_weight) to match bare params in DiTModel
+        if "decoder.proj_in.1." in new_key:
+            new_key = new_key.replace("proj_in.1.", "proj_in_")
+            if new_key.endswith("_weight"):
+                np_val = np_val.swapaxes(1, 2)
 
-        if key.startswith("decoder."):
-            new_key = key.replace("decoder.", "dit.")
-            if "proj_in.1." in new_key:
-                new_key = new_key.replace("proj_in.1.", "proj_in.")
-                if new_key.endswith(".weight"):
-                    np_val = np_val.swapaxes(1, 2)
-            elif "proj_out.1." in new_key:
-                new_key = new_key.replace("proj_out.1.", "proj_out.")
-                if new_key.endswith(".weight"):
-                    np_val = np_val.transpose(1, 2, 0)
-            elif "rotary_emb" in new_key:
-                continue
-            weights[new_key] = mx.array(np_val)
-        else:
-            if "rotary_emb" in key:
-                continue
-            weights[key] = mx.array(np_val)
+        # Handle decoder ConvTranspose1d proj_out: PyTorch [in, out, K] -> MLX [out, K, in]
+        elif "decoder.proj_out.1." in new_key:
+            new_key = new_key.replace("proj_out.1.", "proj_out_")
+            if new_key.endswith("_weight"):
+                np_val = np_val.transpose(1, 2, 0)
+
+        weights[new_key] = mx.array(np_val)
 
     mx.save_safetensors(str(out_dir / "model.safetensors"), weights)
 

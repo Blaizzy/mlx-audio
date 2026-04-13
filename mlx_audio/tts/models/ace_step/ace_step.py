@@ -523,23 +523,43 @@ class Model(nn.Module):
         for key, value in weights.items():
             new_key = key
 
-            # Handle Conv1d weights: PyTorch [out, in, K] -> MLX [out, K, in]
-            if "proj_in.1.weight" in key:
-                # Conv1d: PyTorch [out_ch, in_ch, K] -> MLX [out_ch, K, in_ch]
+            # Handle dit.* -> decoder.* remapping (legacy converted weights)
+            if new_key.startswith("dit."):
+                new_key = "decoder." + new_key[4:]
+
+            # Handle decoder Conv1d proj_in weights: PyTorch [out, in, K] -> MLX [out, K, in]
+            # Only for decoder.proj_in/proj_out (bare params), not detokenizer/encoder proj_out (nn.Linear)
+            if "decoder.proj_in.1." in new_key or (
+                new_key == "decoder.proj_in.weight" and len(value.shape) == 3
+            ):
                 if len(value.shape) == 3:
                     value = value.transpose(0, 2, 1)
-                new_key = key.replace(".1.", "_")
+                new_key = new_key.replace("proj_in.1.", "proj_in_").replace(
+                    "decoder.proj_in.weight", "decoder.proj_in_weight"
+                )
 
-            # Handle ConvTranspose1d weights: PyTorch [in, out, K] -> MLX [out, K, in]
-            elif "proj_out.1.weight" in key:
-                # ConvTranspose1d: PyTorch [in_ch, out_ch, K] -> MLX [out_ch, K, in_ch]
+            # Handle decoder ConvTranspose1d proj_out weights: PyTorch [in, out, K] -> MLX [out, K, in]
+            elif "decoder.proj_out.1." in new_key or (
+                new_key == "decoder.proj_out.weight" and len(value.shape) == 3
+            ):
                 if len(value.shape) == 3:
                     value = value.transpose(1, 2, 0)
-                new_key = key.replace(".1.", "_")
+                new_key = new_key.replace("proj_out.1.", "proj_out_").replace(
+                    "decoder.proj_out.weight", "decoder.proj_out_weight"
+                )
 
-            # Handle Conv1d/ConvTranspose1d bias
-            elif "proj_in.1.bias" in key or "proj_out.1.bias" in key:
-                new_key = key.replace(".1.", "_")
+            # Handle decoder Conv1d/ConvTranspose1d bias
+            elif new_key == "decoder.proj_in.bias" or "decoder.proj_in.1.bias" in new_key:
+                new_key = new_key.replace("proj_in.1.", "proj_in_").replace(
+                    "decoder.proj_in.bias", "decoder.proj_in_bias"
+                )
+            elif (
+                new_key == "decoder.proj_out.bias"
+                or "decoder.proj_out.1.bias" in new_key
+            ):
+                new_key = new_key.replace("proj_out.1.", "proj_out_").replace(
+                    "decoder.proj_out.bias", "decoder.proj_out_bias"
+                )
 
             # Handle scale_shift_table - ensure correct shape
             if "scale_shift_table" in key:
