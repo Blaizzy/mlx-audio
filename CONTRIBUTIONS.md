@@ -8,3 +8,10 @@ This file acknowledges the original authors and contributors of models ported to
 - **Copyright**: Speech Lab, Alibaba Group
 - **License**: Apache License 2.0
 - **MLX Port**: Dmitry Starkov ([@starkdmi](https://github.com/starkdmi))
+
+## DeepFilterNet (Speech Enhancement)
+
+- **Original**: [Rikorose/DeepFilterNet](https://github.com/Rikorose/DeepFilterNet)
+- **Copyright**: Hendrik Schröter and contributors
+- **License**: MIT / Apache-2.0
+- **MLX Port**: Kyle Howells ([@kylehowells](https://github.com/kylehowells))

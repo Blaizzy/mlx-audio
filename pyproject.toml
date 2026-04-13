@@ -21,9 +21,9 @@ requires-python = ">=3.10"
 dependencies = [
     "mlx>=0.25.2",
     "numpy>=1.26.4",
-    "huggingface_hub>=0.27.0",
-    "transformers==5.0.0rc3",
-    "mlx-lm==0.30.5",
+    "huggingface_hub>=1.0",
+    "transformers>=5.0.0",
+    "mlx-lm==0.31.1",
     "tqdm>=4.67.1",
     "sounddevice==0.5.3",
     "miniaudio>=1.61",
@@ -38,10 +38,12 @@ dependencies = [
 stt = [
     "tiktoken>=0.9.0",
     "mistral-common[audio]",
+    "sentencepiece>=0.2.0",
 ]
 
 # TTS dependencies
 tts = [
+    "tiktoken>=0.9.0",
     "misaki>=0.9.4",
     "num2words>=0.5.14",
     "spacy>=3.8.4",
@@ -70,6 +72,7 @@ sts = [
     "sentencepiece>=0.2.0",
     
     "webrtcvad>=2.0.10",
+    "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
 
 # Full installation (all features)
@@ -88,6 +91,7 @@ all = [
     "uvicorn>=0.22.0",
 
     "webrtcvad>=2.0.10",
+    "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
 
 # Development dependencies
@@ -99,11 +103,18 @@ dev = [
     "pre-commit>=3.7.0",
 ]
 
+# Documentation dependencies
+docs = [
+    "mkdocs-material>=9.6",
+    "mkdocstrings[python]>=0.29",
+]
+
 [project.scripts]
 "mlx_audio.convert" = "mlx_audio.convert:main"
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
+"mlx_audio.sts.generate" = "mlx_audio.sts.generate:main"
 
 [project.urls]
 Homepage = "https://github.com/Blaizzy/mlx-audio"

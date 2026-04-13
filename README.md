@@ -1,3 +1,5 @@
+<a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy%2Fmlx-audio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
 # MLX-Audio
 
 The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
@@ -56,7 +58,18 @@ mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --p
 
 # Save to a specific directory
 mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --output_path ./my_audio  --lang_code a
+
+# Stream audio during generation
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --lang_code a
+
+# Stream audio during generation and save it to disk
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --save --lang_code a
+
+# Join multiple generated segments into one file
+mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text $'Hello!\nHow are you?' --join_audio --lang_code a
 ```
+
+By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
 ### Python API
 
@@ -86,18 +99,29 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
 | **Chatterbox** | Expressive multilingual TTS | EN, ES, FR, DE, IT, PT, PL, TR, RU, NL, CS, AR, ZH, JA, HU, KO | [mlx-community/chatterbox-fp16](https://huggingface.co/mlx-community/chatterbox-fp16) |
 | **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
+| **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
+| **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
+| **KugelAudio** | SOTA 7B AR+Diffusion TTS for European languages | EN, DE, FR, ES, IT, PT, NL, PL, RU, UK, + 14 more | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
+| **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
+| **LongCat-AudioDiT** | SOTA diffusion TTS in waveform latent space with voice cloning | ZH, EN | [mlx-community/LongCat-AudioDiT-1B-bf16](https://huggingface.co/mlx-community/LongCat-AudioDiT-1B-bf16) |
 
 ### Speech-to-Text (STT)
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
+| **Distil-Whisper** | Distilled fast Whisper variants | EN | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
+| **Canary** | NVIDIA's multilingual ASR with translation | 25 EU + RU, UK | [README](mlx_audio/stt/models/canary/README.md) |
+| **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
+| **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
+| **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+| **Qwen2-Audio** | Alibaba's multimodal audio understanding (ASR, captioning, emotion, translation) | Multiple | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
 
 
 ### Voice Activity Detection / Speaker Diarization (VAD)
@@ -114,8 +138,9 @@ See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API d
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
-| **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit)
+| **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
+| **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
 
 ### Music Generation
 
@@ -178,6 +203,21 @@ audio = results[0].audio  # mx.array
 ```
 
 See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
+
+### Ming Omni TTS (BailingMM)
+
+```bash
+mlx_audio.tts.generate \
+    --model mlx-community/Ming-omni-tts-16.8B-A3B-bf16 \
+    --prompt "Please generate speech based on the following description.\n" \
+    --text "This is a quick Ming Omni test." \
+    --lang_code en \
+    --output_path audio_io \
+    --file_prefix ming_basic \
+    --verbose
+```
+
+See the [Ming Omni TTS README](mlx_audio/tts/models/bailingmm/README.md) for CLI and Python cookbook examples, and the [Ming Omni Dense README](mlx_audio/tts/models/dense/README.md) for the `mlx-community/Ming-omni-tts-0.5B-bf16` workflow.
 
 ### CSM (Voice Cloning)
 
@@ -325,6 +365,80 @@ python -m mlx_audio.stt.generate \
     --format json \
     --verbose
 ```
+
+### KugelAudio
+
+SOTA open-source 7B TTS model for 24 European languages, based on Microsoft VibeVoice.
+Uses a hybrid AR + Diffusion architecture (Qwen2.5 LM + SDE-DPM-Solver++ diffusion head + VAE decoder).
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("kugelaudio/kugelaudio-0-open")
+
+for result in model.generate(
+    text="Hello, welcome to MLX-Audio!",
+    cfg_scale=3.0,       # Classifier-free guidance (1.0=fast, 3.0=quality)
+    ddpm_steps=10,       # Diffusion steps (5=fast, 10=balanced, 20=max quality)
+):
+    audio = result.audio  # mx.array, 24kHz
+```
+
+The model loads directly from HuggingFace (weights are remapped automatically via `sanitize()`).
+To quantize or save in a pre-converted format:
+
+```bash
+python -m mlx_audio.convert \
+    --hf-path kugelaudio/kugelaudio-0-open \
+    --mlx-path ./kugelaudio-0-open-bf16 \
+    --dtype bfloat16
+```
+
+**Supported languages (24):** English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Russian, Ukrainian, Czech, Romanian, Hungarian, Swedish, Danish, Finnish, Norwegian, Greek, Bulgarian, Slovak, Croatian, Serbian, Turkish
+
+> **Note:** Requires ~17GB memory (7B params in bfloat16).
+> Pre-encoded voice presets (voice cloning) are not yet available in the upstream model — the model generates speech with a default voice.
+
+### LongCat-AudioDiT
+
+SOTA diffusion-based TTS operating in the waveform latent space. Uses Conditional Flow Matching with a DiT backbone and WAV-VAE codec at 24kHz. Supports zero-shot voice cloning.
+
+```python
+from mlx_audio.tts.utils import load
+
+model = load("mlx-community/LongCat-AudioDiT-1B-bf16")
+
+# Zero-shot TTS
+result = next(model.generate("Hello, this is a test of AudioDiT."))
+audio = result.audio  # mx.array, 24kHz
+
+# Voice cloning (use "apg" guidance for best similarity)
+result = next(model.generate(
+    text="Today is warm turning to rain.",
+    ref_audio="reference.wav",
+    ref_text="Transcript of the reference audio.",
+    guidance_method="apg",
+    cfg_strength=4.0,
+    steps=16,
+))
+```
+
+See the [LongCat-AudioDiT README](mlx_audio/tts/models/longcat_audiodit/README.md) for all parameters and CLI usage.
+
+### Voxtral TTS
+
+Mistral's 4B multilingual text-to-speech with 20 voice presets across 9 languages.
+
+```python
+from mlx_audio.tts.utils import load
+
+model = load("mlx-community/Voxtral-4B-TTS-2603-mlx-bf16")
+
+for result in model.generate(text="Hello, how are you today?", voice="casual_male"):
+    print(result.audio_duration)
+```
+
+Voices: `casual_male`, `casual_female`, `cheerful_female`, `neutral_male`, `neutral_female`, `fr_male`, `fr_female`, `es_male`, `es_female`, `de_male`, `de_female`, `it_male`, `it_female`, `pt_male`, `pt_female`, `nl_male`, `nl_female`, `ar_male`, `hi_male`, `hi_female`
 
 ### Voxtral Realtime
 
@@ -536,6 +650,13 @@ python -m mlx_audio.convert \
     --q-bits 4 \
     --upload-repo username/Kokoro-82M-4bit (optional: if you want to upload the model to Hugging Face)
 
+# Convert with MXFP4 quantization
+python -m mlx_audio.convert \
+    --hf-path prince-canuma/Kokoro-82M \
+    --mlx-path ./Kokoro-82M-mxfp4 \
+    --quantize \
+    --q-mode mxfp4
+
 # Convert with specific dtype (bfloat16)
 python -m mlx_audio.convert \
     --hf-path prince-canuma/Kokoro-82M \
@@ -550,8 +671,9 @@ python -m mlx_audio.convert \
 | `--hf-path` | Source Hugging Face model or local path |
 | `--mlx-path` | Output directory for converted model |
 | `-q, --quantize` | Enable quantization |
-| `--q-bits` | Bits per weight (4, 6, or 8) |
-| `--q-group-size` | Group size for quantization (default: 64) |
+| `--q-bits` | Bits per weight (optional, defaults depend on `--q-mode`) |
+| `--q-group-size` | Group size for quantization (optional, defaults depend on `--q-mode`) |
+| `--q-mode` | Quantization mode: `affine`, `mxfp4`, `mxfp8`, `nvfp4` |
 | `--dtype` | Weight dtype: `float16`, `bfloat16`, `float32` |
 | `--upload-repo` | Upload converted model to HF Hub |
 
@@ -564,11 +686,11 @@ Looking for Swift/iOS support? Check out [mlx-audio-swift](https://github.com/Bl
 - Python 3.10+
 - Apple Silicon Mac (M1/M2/M3/M4)
 - MLX framework
-- **ffmpeg** (required for MP3/FLAC audio encoding)
+- **ffmpeg** (required for MP3/FLAC/OGG/Opus/Vorbis audio encoding)
 
 ### Installing ffmpeg
 
-ffmpeg is required for saving audio in MP3 or FLAC format. Install it using:
+ffmpeg is required for saving audio in MP3, FLAC, OGG, Opus, or Vorbis format. Install it using:
 
 ```bash
 # macOS (using Homebrew)
