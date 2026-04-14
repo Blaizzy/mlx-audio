@@ -401,7 +401,8 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
-    tmp_path = f"/tmp/{time.time()}.mp3"
+    _, ext = os.path.splitext(file.filename)
+    tmp_path = f"/tmp/{time.time()}.{ext if ext else 'mp3'}"
     audio_write(tmp_path, audio, sr)
 
     stt_model = model_provider.load_model(payload.model)
@@ -521,7 +522,7 @@ async def _stream_transcription(
     """Handle both streaming and non-streaming model inference over WebSocket.
 
     Streaming models (whose generate() accepts a ``stream`` parameter) receive
-    the numpy array directly and yield token deltas sent as
+    the audio as an ``mx.array`` and yield token deltas sent as
     ``{"type": "delta", "delta": "..."}`` messages, followed by a
     ``{"type": "complete", ...}`` message.
 
@@ -529,18 +530,22 @@ async def _stream_transcription(
     legacy ``{"text": ..., "is_partial": ...}`` format.
     """
     supports_stream = "stream" in inspect.signature(stt_model.generate).parameters
-    lang_arg = language if language and language != "Detect" else None
 
     if supports_stream and streaming:
         result_iter = stt_model.generate(
-            audio_array, stream=True, language=lang_arg, verbose=False
+            mx.array(audio_array), stream=True, language=language, verbose=False
         )
         accumulated = ""
+        detected_language = language
         for chunk in result_iter:
             delta = (
                 chunk if isinstance(chunk, str) else getattr(chunk, "text", str(chunk))
             )
             accumulated += delta
+            # Pick up detected language from streaming results
+            chunk_lang = getattr(chunk, "language", None)
+            if chunk_lang and detected_language is None:
+                detected_language = chunk_lang
             await websocket.send_json({"type": "delta", "delta": delta})
 
         await websocket.send_json(
@@ -548,7 +553,7 @@ async def _stream_transcription(
                 "type": "complete",
                 "text": accumulated,
                 "segments": None,
-                "language": lang_arg,
+                "language": detected_language,
                 "is_partial": is_partial,
             }
         )
@@ -556,7 +561,7 @@ async def _stream_transcription(
         tmp_path = f"/tmp/realtime_{time.time()}.mp3"
         audio_write(tmp_path, audio_array, sample_rate)
         try:
-            result = stt_model.generate(tmp_path, language=lang_arg, verbose=False)
+            result = stt_model.generate(tmp_path, language=language, verbose=False)
             segments = (
                 sanitize_for_json(result.segments)
                 if hasattr(result, "segments") and result.segments
@@ -634,7 +639,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
             # Receive message
             try:
                 message = await websocket.receive()
-            except:
+            except Exception:
                 break
 
             if "bytes" in message:
@@ -795,7 +800,7 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
                     data = json.loads(message["text"])
                     if data.get("action") == "stop":
                         break
-                except:
+                except Exception:
                     pass
 
     except WebSocketDisconnect:
@@ -803,12 +808,12 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
     except Exception as e:
         try:
             await websocket.send_json({"error": str(e), "status": "error"})
-        except:
+        except Exception:
             pass
     finally:
         try:
             await websocket.close()
-        except:
+        except Exception:
             pass
 
 

@@ -25,7 +25,8 @@ class PreprocessArgs:
     dither: float
     pad_to: int = 0
     pad_value: float = 0
-    preemph: float = 0.97  # Preemphasis coefficient (set to 0.0 to disable)
+    preemph: float = 0.97
+    log_zero_guard_value: float = 2**-24
 
     @property
     def win_length(self) -> int:
@@ -54,18 +55,33 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     if preemph > 0:
         x = mx.concat([x[:1], x[1:] - preemph * x[:-1]], axis=0)
 
-    x = stft(x, args.n_fft, args.hop_length, args.win_length, window)
+    # Center-pad window to n_fft (matches torch.stft / NeMo)
+    if window.shape[0] < args.n_fft:
+        left = (args.n_fft - window.shape[0]) // 2
+        right = args.n_fft - window.shape[0] - left
+        window = mx.concatenate(
+            [
+                mx.zeros((left,), dtype=window.dtype),
+                window,
+                mx.zeros((right,), dtype=window.dtype),
+            ]
+        )
+
+    x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="constant")
     x = mx.square(mx.abs(x)).astype(original_dtype)
     filters = mel_filters(
-        args.sample_rate, args.n_fft, args.features, norm=args.normalize, mel_scale=None
+        args.sample_rate, args.n_fft, args.features, norm="slaney", mel_scale="slaney"
     )
     x = filters.astype(x.dtype) @ x.T
 
-    x = mx.log(x + 1e-5)
+    log_guard = mx.array(args.log_zero_guard_value, dtype=x.dtype)
+    x = mx.log(x + log_guard)
 
     if args.normalize == "per_feature":
         mean = mx.mean(x, axis=1, keepdims=True)
-        std = mx.std(x, axis=1, keepdims=True)
+        n = max(x.shape[1] - 1, 1)
+        variance = mx.sum((x - mean) ** 2, axis=1, keepdims=True) / n
+        std = mx.sqrt(variance)
         normalized_mel = (x - mean) / (std + 1e-5)
     else:
         mean = mx.mean(x)

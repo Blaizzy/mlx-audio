@@ -2,6 +2,7 @@ import functools
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import mlx.core as mx
 import numpy as np
 import pytest
 
@@ -319,20 +320,34 @@ def test_realtime_ws_streaming_structured_chunks(client, mock_model_provider):
     assert "Hello" in combined
 
 
-def test_realtime_ws_numpy_direct_pass(client, mock_model_provider):
-    """Streaming models receive numpy arrays directly, not file paths."""
+def test_realtime_ws_mx_array_pass(client, mock_model_provider):
+    """Streaming models receive mx.array, not file paths."""
     gen_fn = _make_streaming_generate(["test"])
     _, mock_stt_model = _ws_send_audio_and_collect(client, mock_model_provider, gen_fn)
 
-    # Check that generate was called with a numpy array (not a string path)
+    # Check that generate was called with an mx.array (not a string path)
     tracked = mock_stt_model.generate
     assert len(tracked.call_args_list) > 0, "generate was never called"
     first_arg = tracked.call_args_list[0][0][
         0
     ]  # first call, positional args, first arg
-    assert isinstance(
-        first_arg, np.ndarray
-    ), f"Expected numpy array, got {type(first_arg)}"
+    assert isinstance(first_arg, mx.array), f"Expected mx.array, got {type(first_arg)}"
+
+
+def test_realtime_ws_mx_array_supports_bfloat16_cast(client, mock_model_provider):
+    """Regression: models like Parakeet that cast to bfloat16 must receive mx.array."""
+
+    def gen_fn(audio, *, stream=False, language=None, verbose=False, **kwargs):
+        if stream:
+            # Parakeet's stream_generate does this internally
+            _ = audio.astype(mx.bfloat16)
+            return iter(["ok"])
+        return MagicMock(text="ok", segments=None, language=None)
+
+    messages, _ = _ws_send_audio_and_collect(client, mock_model_provider, gen_fn)
+    completes = [m for m in messages if m.get("type") == "complete"]
+    assert len(completes) >= 1
+    assert completes[0]["text"] == "ok"
 
 
 def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):

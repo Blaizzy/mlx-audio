@@ -14,8 +14,11 @@ export function Footer() {
           <Link href="#" className="hover:underline">
             Privacy Policy
           </Link>
-          <Link href="#" className="hover:underline">
-            @MLX-Audio 2025
+          <Link
+            href="https://github.com/Blaizzy/mlx-audio"
+            className="hover:underline"
+          >
+            @MLX-Audio {new Date().getFullYear()}
           </Link>
         </div>
         <button className="flex items-center space-x-1 rounded-md border border-gray-200 dark:border-gray-700 px-2 py-1 text-xs hover:bg-gray-50 dark:hover:bg-gray-800">
