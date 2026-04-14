@@ -1074,7 +1074,7 @@ class Model(nn.Module):
         voice: Optional[str] = None,
         duration: float = 30.0,
         seed: Optional[int] = None,
-        num_steps: int = 8,
+        num_steps: int = 20,
         shift: float = 3.0,
         guidance_scale: float = 1.0,
         guidance_interval: float = 0.5,
