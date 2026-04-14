@@ -232,7 +232,7 @@ class DiTModel(nn.Module):
                 timestep_proj,
                 attention_mask=layer_mask,
                 encoder_hidden_states=encoder_hidden_states,
-                encoder_attention_mask=cross_attn_mask,
+                encoder_attention_mask=None,
                 cache=layer_cache,
             )
 
