@@ -5,7 +5,7 @@ Thanks for contributing to mlx-audio.
 ## Scope
 
 We welcome:
-- New model ports (TTS, STT, STS)
+- New model ports (TTS, STT, STS, SFX, VAD)
 - Bug fixes and performance improvements
 - Documentation and example improvements
 
