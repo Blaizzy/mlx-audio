@@ -36,6 +36,7 @@ MODEL_REMAPPING = {
     "kugelaudio": "kugelaudio",
     "audiodit": "longcat_audiodit",
     "longcat": "longcat_audiodit",
+    "omnivoice": "omnivoice",
     "melotts": "melotts",
 }
 MAX_FILE_SIZE_GB = 5
