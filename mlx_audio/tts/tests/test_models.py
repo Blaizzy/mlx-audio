@@ -5590,6 +5590,8 @@ class TestOmniVoiceBatchEdgeCases(TestOmniVoiceGenerateBatch):
         self.assertIsInstance(batch_result, GenerationResult)
         self.assertIsInstance(single_result, GenerationResult)
         self.assertEqual(batch_result.token_count, single_result.token_count)
+
+
 class TestMeloTTSConfig(unittest.TestCase):
     """Tests for MeloTTS model config."""
 
