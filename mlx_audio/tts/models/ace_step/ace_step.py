@@ -259,7 +259,7 @@ class Model(nn.Module):
         max_length: int = 2048,
         language: str = "unknown",
     ) -> Tuple[mx.array, mx.array]:
-        """Prepare lyric embeddings using embed_tokens only."""
+        """Prepare lyric embeddings using Qwen3 word embeddings."""
         if not lyrics:
             lyrics = "[instrumental]"
 
@@ -273,7 +273,9 @@ class Model(nn.Module):
         else:
             lyric_len = min(len(formatted_lyrics.split()) * 3, max_length)
             lyric_len = max(lyric_len, 10)
-            lyric_hidden = mx.random.normal((1, lyric_len, self.config.text_hidden_dim))
+            lyric_hidden = mx.random.normal(
+                (1, lyric_len, self.config.text_hidden_dim)
+            )
             lyric_mask = mx.ones((1, lyric_len))
             return lyric_hidden.astype(self.dtype), lyric_mask.astype(self.dtype)
 
