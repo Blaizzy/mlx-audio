@@ -20,26 +20,25 @@ class LMConfig:
     """Configuration for the 5Hz Language Model.
 
     Available models:
-        - "0.6B": Smallest, fastest (default, recommended for most use cases)
+        - "0.6B": Full precision (default)
+        - "0.6B-8bit": 8-bit quantized, ~704 MB
+        - "0.6B-4bit": 4-bit quantized, ~373 MB
         - "4B": Largest, highest quality but slower
-
-    Note: The 1.7B bundled model requires manual weight conversion and is not
-    currently supported. Use 0.6B or 4B instead.
     """
 
-    model_size: str = "0.6B"  # "0.6B" or "4B"
+    model_size: str = "0.6B"
     max_new_tokens: int = 3000
     temperature: float = 0.8
     top_k: int = 200
     top_p: float = 0.95
     repetition_penalty: float = 1.05
 
-    # Base model path (set when loading from ACE-Step1.5)
     base_model_path: Optional[str] = None
 
-    # Model ID mapping for standalone models (HuggingFace repos)
     _STANDALONE_MODEL_IDS = {
         "0.6B": "ACE-Step/acestep-5Hz-lm-0.6B",
+        "0.6B-8bit": "WaveCut/acestep-5Hz-lm-0.6B-mlx_8bit",
+        "0.6B-4bit": "WaveCut/acestep-5Hz-lm-0.6B-mlx_4bit",
         "4B": "ACE-Step/acestep-5Hz-lm-4B",
     }
 
