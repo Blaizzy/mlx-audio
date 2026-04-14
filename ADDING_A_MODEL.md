@@ -17,9 +17,12 @@ Minimum required files:
 ```
 mlx_audio/tts/models/my_model/
 ├── __init__.py      # must export Model and ModelConfig
-├── my_model.py      # Model class + ModelConfig dataclass
-└── convert.py       # weight conversion script (PyTorch → safetensors)
+└── my_model.py      # Model class + ModelConfig dataclass
 ```
+
+Add `convert.py` only when the conversion needs model-specific logic that is
+worth keeping reproducible in-tree, for example starting from `.pt` or ONNX
+checkpoints, remapping unusual keys, or exporting auxiliary files.
 
 ## Auto-discovery
 
@@ -32,6 +35,10 @@ mlx_audio/tts/models/my_model/
 So `model_type` in `config.json` **must match the directory name exactly**.
 
 ## ModelConfig
+
+The exact fields depend on the category. TTS models usually include
+`sample_rate`; STT models are more likely to focus on tokenizer, frontend, or
+decoder settings.
 
 ```python
 from dataclasses import dataclass
@@ -54,6 +61,11 @@ class ModelConfig(BaseModelArgs):
 ```
 
 ## Model class
+
+The example below is TTS-oriented because it shows the full
+`GenerationResult` shape. For STT models, the same package/export pattern
+applies, but inference is usually audio-in / text-out with structured results
+such as `.text`, `.segments`, or timestamps.
 
 ```python
 import mlx.nn as nn
@@ -135,6 +147,9 @@ class Model(nn.Module):
 
 ## `generate()` — kwargs passed by the CLI
 
+This section is TTS-specific. STT models typically accept audio input and may
+return structured transcription metadata instead of waveform chunks.
+
 `generate_audio()` always passes these kwargs; use `**kwargs` to absorb any
 you don't need:
 
@@ -152,28 +167,21 @@ you don't need:
 | `instruct` | `str \| None` | style / emotion instruction |
 | `stream` | `bool` | streaming mode |
 
-## Weight conversion (`convert.py`)
+## Weight conversion (`convert.py`, optional)
 
-```python
-# convert.py — minimal pattern
-from pathlib import Path
-import numpy as np
-from safetensors.numpy import save_file
-import torch
+Add `convert.py` when the conversion path needs model-specific logic or a
+reproducible custom pipeline. Even upstream `safetensors` may still need
+remapping or auxiliary exports before the model is ready to load.
 
-def convert(pt_path: str, output_dir: str, dtype: str = "bfloat16"):
-    mlx_dtype = {"float16": np.float16, "bfloat16": np.float32}[dtype]
-    weights = torch.load(pt_path, map_location="cpu")
-    out = {}
-    for k, v in weights.items():
-        arr = v.detach().cpu().numpy().astype(mlx_dtype)
-        out[k] = arr
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    save_file(out, f"{output_dir}/model.safetensors")
-```
-
-For key renaming and shape fixes, implement `Model.sanitize()` — the loader
-calls it automatically after reading the safetensors file.
+- If the upstream release already provides `safetensors`, load those directly
+  and skip `torch`.
+- Prefer the repository-wide converter when it is enough.
+- Add a model-specific `convert.py` when the conversion has custom steps that
+  are worth preserving for future contributors.
+- If conversion is required, document the exact input files and command so
+  another contributor can reproduce the same `model.safetensors` output.
+- Keep key renaming and shape fixes in `Model.sanitize()` — the loader calls it
+  automatically after reading the safetensors file.
 
 ## Acoustic codecs / tokenizers
 
@@ -184,8 +192,11 @@ import — do not bundle codec weights inside the TTS model directory.
 
 ## Tests
 
-Add tests under `mlx_audio/tts/tests/test_<model_name>.py` (or the equivalent
-category). Tests should use random MLX weights — no real checkpoint required:
+Add tests under the matching category directory, for example
+`mlx_audio/tts/tests/test_<model_name>.py` or `mlx_audio/stt/tests/test_<model_name>.py`.
+Tests should match the model output type — waveform assertions for TTS,
+transcription/text/segment assertions for STT — and should avoid requiring a
+real checkpoint when random MLX weights are enough.
 
 ```python
 import unittest
