@@ -1256,16 +1256,30 @@ class Model(nn.Module):
         )
         is_covers = mx.array([1.0 if is_cover else 0.0], dtype=self.dtype)
 
-        # LM hints support - LM hints override is_covers to True
+        # LM hints support - LM hints replace src_latents via is_covers mechanism
         lm_hints = None
         if lm_precomputed_hints is not None:
             lm_hints = lm_precomputed_hints.astype(self.dtype)
             is_covers = mx.ones((1,), dtype=self.dtype)
             if verbose:
                 print("Using pre-computed LM hints")
-        elif use_lm and task_type == "cover":
-            if verbose:
-                print("5Hz LM enabled for cover task")
+        elif use_lm:
+            # Generate LM hints for any task type
+            lm_hints = self._generate_lm_hints(
+                caption=text,
+                lyrics=lyrics,
+                duration=int(duration),
+                language=vocal_language,
+                target_len=latent_len,
+                seed=seed,
+                model_size=lm_model_size,
+                verbose=verbose,
+            )
+            if lm_hints is not None:
+                lm_hints = lm_hints.astype(self.dtype)
+                is_covers = mx.ones((1,), dtype=self.dtype)
+                if verbose:
+                    print(f"LM hints generated: {lm_hints.shape}")
 
         if verbose:
             print("Running diffusion...")
