@@ -611,8 +611,9 @@ class Model(nn.Module):
         matched_weights = {k: v for k, v in weights.items() if k in param_keys}
 
         if matched_weights:
-            nested_matched = tree_unflatten(list(matched_weights.items()))
-            self.update(nested_matched)
+            from mlx.utils import tree_unflatten
+
+            self.update(tree_unflatten(list(matched_weights.items())))
 
         if strict and (missing_keys or unexpected_keys):
             msg = []
