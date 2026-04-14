@@ -50,6 +50,7 @@ tts = [
     "spacy>=3.8.4",
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
+    "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 ]
 
@@ -86,6 +87,7 @@ all = [
     "spacy>=3.8.4",
     "phonemizer-fork>=3.3.2",
     "espeakng-loader>=0.2.4",
+    "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 
     "fastapi>=0.95.0",
