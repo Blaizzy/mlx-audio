@@ -1087,7 +1087,7 @@ class Model(nn.Module):
         track_name: Optional[str] = None,
         complete_track_classes: Optional[List[str]] = None,
         # LM parameters
-        use_lm: bool = False,
+        use_lm: bool = True,
         lm_model_size: str = "0.6B",
         lm_temperature: float = 0.8,
         lm_top_p: float = 0.95,
