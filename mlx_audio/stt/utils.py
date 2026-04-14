@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -66,7 +66,10 @@ def load_audio(
 
 
 def load_model(
-    model_path: Union[str, Path], lazy: bool = False, strict: bool = False, **kwargs
+    model_path: Union[str, Path],
+    lazy: bool = False,
+    strict: bool = False,
+    **kwargs: Any,
 ) -> nn.Module:
     """
     Load and initialize an STT model from a given path.
@@ -91,7 +94,10 @@ def load_model(
 
 
 def load(
-    model_path: Union[str, Path], lazy: bool = False, strict: bool = False, **kwargs
+    model_path: Union[str, Path],
+    lazy: bool = False,
+    strict: bool = False,
+    **kwargs: Any,
 ) -> nn.Module:
     """
     Load a speech-to-text model from a local path or HuggingFace repository.
@@ -103,16 +109,11 @@ def load(
         model_path: The local path or HuggingFace repo ID to load from.
         lazy: If False, evaluate model parameters immediately.
         strict: If True, raise an error if any weights are missing.
-        **kwargs: Additional keyword arguments:
-            - revision (str): HuggingFace revision/branch to use
-            - force_download (bool): Force re-download of model files
+        **kwargs: Additional keyword arguments such as `revision` and
+            `force_download`.
 
     Returns:
         nn.Module: The loaded and initialized model.
 
-    Example:
-        >>> from mlx_audio.stt import load
-        >>> model = load("mlx-community/whisper-tiny-asr-fp16")
-        >>> result = model.generate(audio)
     """
     return load_model(model_path, lazy=lazy, strict=strict, **kwargs)

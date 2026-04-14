@@ -3,7 +3,7 @@ import logging
 import shutil
 from pathlib import Path
 from textwrap import dedent
-from typing import List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -36,13 +36,14 @@ MODEL_REMAPPING = {
     "kugelaudio": "kugelaudio",
     "audiodit": "longcat_audiodit",
     "longcat": "longcat_audiodit",
+    "melotts": "melotts",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 
 
 # Get a list of all available model types from the models directory
-def get_available_models():
+def get_available_models() -> List[str]:
     """
     Get a list of all available TTS model types by scanning the models directory.
 
@@ -60,7 +61,7 @@ def get_available_models():
     return available_models
 
 
-def get_model_and_args(model_type: str, model_name: List[str]):
+def get_model_and_args(model_type: str, model_name: List[str]) -> Tuple[Any, str]:
     """
     Retrieve the model architecture module based on the model type and name.
 
@@ -90,7 +91,10 @@ def get_model_and_args(model_type: str, model_name: List[str]):
 
 
 def load_model(
-    model_path: Path, lazy: bool = False, strict: bool = True, **kwargs
+    model_path: Path,
+    lazy: bool = False,
+    strict: bool = True,
+    **kwargs: Any,
 ) -> nn.Module:
     """
     Load and initialize the model from a given path.
@@ -119,7 +123,10 @@ def load_model(
 
 
 def load(
-    model_path: Union[str, Path], lazy: bool = False, strict: bool = True, **kwargs
+    model_path: Union[str, Path],
+    lazy: bool = False,
+    strict: bool = True,
+    **kwargs: Any,
 ) -> nn.Module:
     """
     Load a text-to-speech model from a local path or HuggingFace repository.
@@ -131,23 +138,18 @@ def load(
         model_path: The local path or HuggingFace repo ID to load from.
         lazy: If False, evaluate model parameters immediately.
         strict: If True, raise an error if any weights are missing.
-        **kwargs: Additional keyword arguments:
-            - revision (str): HuggingFace revision/branch to use
-            - force_download (bool): Force re-download of model files
+        **kwargs: Additional keyword arguments such as `revision` and
+            `force_download`.
 
     Returns:
         nn.Module: The loaded and initialized model.
 
-    Example:
-        >>> from mlx_audio.tts import load
-        >>> model = load("mlx-community/outetts-0.3-500M-bf16")
-        >>> audio = model.generate("Hello world!")
     """
     return load_model(model_path, lazy=lazy, strict=strict, **kwargs)
 
 
 def fetch_from_hub(
-    model_path: Path, lazy: bool = False, **kwargs
+    model_path: Path, lazy: bool = False, **kwargs: Any
 ) -> Tuple[nn.Module, dict]:
     model = load_model(model_path, lazy, **kwargs)
     config = load_config(model_path, **kwargs)

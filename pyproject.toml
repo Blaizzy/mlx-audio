@@ -103,6 +103,12 @@ dev = [
     "pre-commit>=3.7.0",
 ]
 
+# Documentation dependencies
+docs = [
+    "mkdocs-material>=9.6",
+    "mkdocstrings[python]>=0.29",
+]
+
 [project.scripts]
 "mlx_audio.convert" = "mlx_audio.convert:main"
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
