@@ -146,7 +146,6 @@ Apple Silicon M4 Max, 4-bit quantized model, 20 diffusion steps:
 
 - The 0.6B LM occasionally ignores the `vocal_language` parameter and picks its own
 - Vocal clarity varies by seed — use cherry-picking for final output
-- Non-Western genres (e.g., Bollywood) are less represented in training data
 
 ## Citation
 
