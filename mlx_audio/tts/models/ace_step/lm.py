@@ -144,6 +144,7 @@ class ACEStepLM:
 {lyrics_section}
 
 # Metas
+- language: {language}
 - duration: {duration} seconds
 <|endoftext|>
 """
