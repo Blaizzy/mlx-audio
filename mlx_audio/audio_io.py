@@ -2,8 +2,8 @@
 
 This module provides functions for reading and writing audio files.
 - Reading: Uses miniaudio to support WAV, MP3, FLAC, and Vorbis formats.
-           Uses ffmpeg for M4A/AAC format support.
-- Writing: Uses miniaudio for WAV and ffmpeg for MP3, FLAC, OGG, Opus, and Vorbis encoding.
+           Uses ffmpeg for M4A/AAC, OGG, Opus, and WebM format support.
+- Writing: Uses miniaudio for WAV and ffmpeg for MP3, FLAC, OGG, Opus, Vorbis, and WebM encoding.
 """
 
 import io
@@ -23,6 +23,7 @@ _FORMAT_MAP = {
     "vorbis": "vorbis",
     "m4a": "m4a",
     "aac": "m4a",
+    "webm": "webm",
 }
 
 # Sample format mapping
@@ -46,6 +47,9 @@ def _detect_format_from_bytes(data: bytes) -> str:
     elif data[4:8] == b"ftyp":
         # M4A/MP4/AAC container format
         return "m4a"
+    elif data[:4] == b"\x1a\x45\xdf\xa3":
+        # WebM/Matroska container (EBML header)
+        return "webm"
     else:
         raise ValueError("Unable to detect audio format from bytes")
 
@@ -72,7 +76,7 @@ def _decode_ffmpeg(
             "  ffmpeg not found!\n"
             "========================================\n"
             "\n"
-            "ffmpeg is required for M4A/AAC audio decoding.\n"
+            "ffmpeg is required for M4A/AAC/WebM audio decoding.\n"
             "\n"
             "Install ffmpeg:\n"
             "  macOS:  brew install ffmpeg\n"
@@ -182,7 +186,7 @@ def read(
     always_2d: bool = False,
     dtype: str = "float64",
 ) -> Tuple[np.ndarray, int]:
-    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC).
+    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM).
 
     Args:
         file: Path to the audio file or a BytesIO object.
@@ -197,13 +201,17 @@ def read(
     use_ffmpeg = False
     if isinstance(file, (str, Path)):
         ext = Path(file).suffix.lstrip(".").lower()
-        if ext in ("m4a", "aac", "ogg", "opus"):
+        if ext in ("m4a", "aac", "ogg", "opus", "webm"):
             use_ffmpeg = True
     elif isinstance(file, io.BytesIO):
         file.seek(0)
         header = file.read(12)
         file.seek(0)
-        if header[4:8] == b"ftyp" or header[:4] == b"OggS":
+        if (
+            header[4:8] == b"ftyp"
+            or header[:4] == b"OggS"
+            or header[:4] == b"\x1a\x45\xdf\xa3"
+        ):
             use_ffmpeg = True
 
     if use_ffmpeg:
@@ -297,7 +305,7 @@ def _get_ffmpeg_path() -> str:
             "  ffmpeg not found!\n"
             "========================================\n"
             "\n"
-            "ffmpeg is required for MP3/FLAC encoding and M4A/AAC decoding.\n"
+            "ffmpeg is required for MP3/FLAC/WebM encoding and M4A/AAC/WebM decoding.\n"
             "\n"
             "Install ffmpeg:\n"
             "  macOS:  brew install ffmpeg\n"
@@ -353,6 +361,8 @@ def _encode_ffmpeg(
         cmd.extend(["-b:a", bitrate])
     elif format == "opus":
         cmd.extend(["-c:a", "libopus", "-b:a", bitrate])
+    elif format == "webm":
+        cmd.extend(["-c:a", "libopus", "-b:a", bitrate])
     elif format in ("ogg", "vorbis"):
         # Use FLAC codec in OGG container for maximum compatibility
         # Native vorbis encoder has limitations (experimental, stereo-only)
@@ -400,12 +410,12 @@ def write(
         data: Audio data as numpy array. Shape can be (samples,) for mono
               or (samples, channels) for multi-channel.
         samplerate: Sample rate in Hz.
-        format: Output format. Supports 'wav', 'flac', 'mp3', 'ogg', 'opus', 'vorbis'.
+        format: Output format. Supports 'wav', 'flac', 'mp3', 'ogg', 'opus', 'vorbis', 'webm'.
                 If None, inferred from file extension.
 
     Note:
         WAV uses miniaudio for encoding.
-        MP3, FLAC, OGG, Opus, and Vorbis use ffmpeg (must be installed: brew install ffmpeg).
+        MP3, FLAC, OGG, Opus, Vorbis, and WebM use ffmpeg (must be installed: brew install ffmpeg).
     """
     import miniaudio
 
@@ -488,7 +498,7 @@ def write(
         else:
             miniaudio.wav_write_file(str(file), sound)
 
-    elif format in ("flac", "mp3", "ogg", "opus", "vorbis"):
+    elif format in ("flac", "mp3", "ogg", "opus", "vorbis", "webm"):
         # Check for ffmpeg early to provide a clear error message
         if not _check_ffmpeg_available():
             import warnings

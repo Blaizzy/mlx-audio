@@ -142,6 +142,36 @@ class TestAudioIOFormats:
         assert abs(read_data.shape[0] - data.shape[0]) < tolerance
 
     @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_write_read_webm(self, sample_audio_mono, tmp_path):
+        """Test writing and reading WebM file."""
+        data, samplerate = sample_audio_mono
+        output_file = tmp_path / "test.webm"
+
+        write(output_file, data, samplerate, format="webm")
+        assert output_file.exists()
+        assert output_file.stat().st_size > 0
+
+        # Verify we can read it back via ffmpeg
+        # Note: WebM with Opus internally uses 48kHz, so reading may return different sample rate
+        read_data, read_samplerate = read(output_file)
+        assert read_data.shape[0] > 0  # Just verify we got data
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_write_read_webm_stereo(self, sample_audio_stereo, tmp_path):
+        """Test writing and reading stereo WebM file."""
+        data, samplerate = sample_audio_stereo
+        output_file = tmp_path / "test_stereo.webm"
+
+        write(output_file, data, samplerate, format="webm")
+        assert output_file.exists()
+        assert output_file.stat().st_size > 0
+
+        read_data, read_samplerate = read(output_file)
+        assert read_data.shape[0] > 0
+        # WebM/Opus may change channel count, just verify data is returned
+        assert read_data.ndim >= 1
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_bytesio_ogg(self, sample_audio_mono):
         """Test writing OGG to BytesIO."""
         data, samplerate = sample_audio_mono
@@ -165,6 +195,20 @@ class TestAudioIOFormats:
         assert buffer.getvalue()  # Should have content
 
         # Verify we can read it back
+        buffer.seek(0)
+        read_data, read_samplerate = read(buffer)
+        assert read_data.shape[0] > 0  # Just verify we got data
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_write_bytesio_webm(self, sample_audio_mono):
+        """Test writing WebM to BytesIO and reading it back (simulates browser blob)."""
+        data, samplerate = sample_audio_mono
+        buffer = io.BytesIO()
+
+        write(buffer, data, samplerate, format="webm")
+        assert buffer.getvalue()  # Should have content
+
+        # Verify we can read it back (this is the browser blob path)
         buffer.seek(0)
         read_data, read_samplerate = read(buffer)
         assert read_data.shape[0] > 0  # Just verify we got data
