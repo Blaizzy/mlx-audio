@@ -29,6 +29,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Request,
     Response,
     UploadFile,
     WebSocket,
@@ -260,7 +261,7 @@ async def remove_model(model_name: str):
         raise HTTPException(status_code=404, detail=f"Model '{model_name}' not found")
 
 
-async def generate_audio(model, payload: SpeechRequest):
+async def generate_audio(model, payload: SpeechRequest, request: Request):
     # Load reference audio if provided
     ref_audio = payload.ref_audio
     audio_chunks = []
@@ -300,6 +301,10 @@ async def generate_audio(model, payload: SpeechRequest):
         verbose=payload.verbose,
     ):
 
+        if await request.is_disconnected():
+            mx.clear_cache()
+            return
+
         if payload.stream:
             buffer = io.BytesIO()
             audio_write(
@@ -310,6 +315,8 @@ async def generate_audio(model, payload: SpeechRequest):
             audio_chunks.append(result.audio)
             if sample_rate is None:
                 sample_rate = result.sample_rate
+
+        await asyncio.sleep(0)  # register any disconnects
 
     if payload.stream:
         return
@@ -324,11 +331,11 @@ async def generate_audio(model, payload: SpeechRequest):
 
 
 @app.post("/v1/audio/speech")
-async def tts_speech(payload: SpeechRequest):
+async def tts_speech(payload: SpeechRequest, request: Request):
     """Generate speech audio following the OpenAI text-to-speech API."""
     model = model_provider.load_model(payload.model)
     return StreamingResponse(
-        generate_audio(model, payload),
+        generate_audio(model, payload, request),
         media_type=f"audio/{payload.response_format}",
         headers={
             "Content-Disposition": f"attachment; filename=speech.{payload.response_format}"
@@ -522,7 +529,7 @@ async def _stream_transcription(
     """Handle both streaming and non-streaming model inference over WebSocket.
 
     Streaming models (whose generate() accepts a ``stream`` parameter) receive
-    the numpy array directly and yield token deltas sent as
+    the audio as an ``mx.array`` and yield token deltas sent as
     ``{"type": "delta", "delta": "..."}`` messages, followed by a
     ``{"type": "complete", ...}`` message.
 
@@ -533,7 +540,7 @@ async def _stream_transcription(
 
     if supports_stream and streaming:
         result_iter = stt_model.generate(
-            audio_array, stream=True, language=language, verbose=False
+            mx.array(audio_array), stream=True, language=language, verbose=False
         )
         accumulated = ""
         detected_language = language

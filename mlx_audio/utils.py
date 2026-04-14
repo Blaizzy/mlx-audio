@@ -87,9 +87,8 @@ DEFAULT_ALLOW_PATTERNS = [
     "*.txt",
     "*.jsonl",
     "*.yaml",
-    "*.wav",
-    "*.pth",
     "*.npz",
+    "*.pth",
 ]
 
 
@@ -170,8 +169,8 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     if config_file.exists():
         with open(config_file, encoding="utf-8") as f:
             return json.load(f)
-    else:
-        raise FileNotFoundError(f"Config not found at {model_path}")
+
+    raise FileNotFoundError(f"Config not found at {model_path}")
 
 
 def load_weights(model_path: Path) -> dict:
@@ -364,6 +363,10 @@ def base_load_model(
         model_type = config.get("architecture", None)
     if model_type is None:
         model_type = model_name[0].lower() if model_name is not None else None
+
+    # Override model_type for TADA models (config says "llama" but it's TADA)
+    if model_type == "llama" and "acoustic_dim" in config:
+        model_type = "tada"
 
     model_class, model_type = get_model_class(
         model_type=model_type,
