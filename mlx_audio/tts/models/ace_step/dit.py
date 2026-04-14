@@ -23,8 +23,6 @@ class DiTModel(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-
-        self.hidden_size = config.hidden_size
         self.patch_size = config.patch_size
         in_channels = config.in_channels
 
@@ -108,9 +106,6 @@ class DiTModel(nn.Module):
         Returns:
             Output [batch, seq_len // stride, out_channels]
         """
-        # MLX conv1d expects: input [N, L, C_in], weight [C_out, K, C_in]
-        # x is already [batch, seq_len, in_channels]
-        # weight is [out_channels, kernel_size, in_channels]
         output = mx.conv1d(x, weight, stride=stride)
         output = output + bias
         return output
@@ -132,30 +127,13 @@ class DiTModel(nn.Module):
         batch_size, seq_len, in_channels = x.shape
         out_channels, kernel_size, _ = weight.shape
 
-        # For transposed conv with stride=kernel_size (non-overlapping)
-        # Each input position produces kernel_size outputs
-
-        # x: [batch, seq_len, in_channels]
-        # weight: [out_channels, kernel_size, in_channels]
-
-        # Compute all outputs at once
-        # [batch, seq_len, in_channels] @ [in_channels, kernel_size * out_channels]
-        # weight is [out_channels, kernel_size, in_channels]
-        # transpose(2, 1, 0) -> [in_channels, kernel_size, out_channels]
-        # reshape -> [in_channels, kernel_size * out_channels]
-        # This ordering ensures output channels are grouped by kernel position
+        # Non-overlapping transposed conv via matmul: each input produces kernel_size outputs
         weight_reshaped = weight.transpose(2, 1, 0).reshape(
             in_channels, kernel_size * out_channels
         )
-        output = x @ weight_reshaped  # [batch, seq_len, out_channels * kernel_size]
-
-        # Reshape to [batch, seq_len, kernel_size, out_channels]
+        output = x @ weight_reshaped
         output = output.reshape(batch_size, seq_len, kernel_size, out_channels)
-
-        # Reshape to [batch, seq_len * kernel_size, out_channels]
         output = output.reshape(batch_size, seq_len * kernel_size, out_channels)
-
-        # Add bias
         output = output + bias
 
         return output
@@ -228,38 +206,22 @@ class DiTModel(nn.Module):
         position_ids = mx.arange(seq_len)[None, :]
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # Create attention masks (bidirectional for DiT)
-        # Note: Don't use the original attention_mask here since it has the pre-patched length
-        # After patching, all positions are valid
-        self_attn_mask = create_4d_mask(
-            seq_len=seq_len,
-            dtype=hidden_states.dtype,
-            attention_mask=None,  # All positions valid after patching
-            is_causal=False,
-        )
+        # Bidirectional attention: all positions attend to all others.
+        # Non-sliding layers use None (no mask needed).
+        # Sliding window mask is computed once and reused across all layers.
+        sliding_mask = None
+        if self.config.use_sliding_window:
+            sliding_mask = create_4d_mask(
+                seq_len=seq_len,
+                dtype=hidden_states.dtype,
+                sliding_window=self.config.sliding_window,
+                is_sliding_window=True,
+                is_causal=False,
+            )
 
-        # Cross-attention mask
-        # Note: The PyTorch implementation ignores the encoder_attention_mask input
-        # and creates a bidirectional mask allowing all positions to attend.
-        # We match this behavior by setting cross_attn_mask to None (no masking).
-        cross_attn_mask = None
-
-        # Pass through DiT layers
         for layer_idx, layer in enumerate(self.layers):
             layer_type = self.config.layer_types[layer_idx]
-
-            # Use sliding window mask for sliding attention layers
-            if layer_type == "sliding_attention" and self.config.use_sliding_window:
-                layer_mask = create_4d_mask(
-                    seq_len=seq_len,
-                    dtype=hidden_states.dtype,
-                    attention_mask=None,  # All positions valid after patching
-                    sliding_window=self.config.sliding_window,
-                    is_sliding_window=True,
-                    is_causal=False,
-                )
-            else:
-                layer_mask = self_attn_mask
+            layer_mask = sliding_mask if layer_type == "sliding_attention" else None
 
             # Get cache for this layer (KVCache auto-populates on first use)
             layer_cache = cache[layer_idx] if cache is not None else None

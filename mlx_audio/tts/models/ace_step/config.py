@@ -12,12 +12,6 @@ from mlx_audio.tts.models.base import BaseModelArgs
 
 TASK_TYPES = ["text2music", "repaint", "cover", "extract", "lego", "complete"]
 
-# Task types available for turbo models (subset)
-TASK_TYPES_TURBO = ["text2music", "repaint", "cover"]
-
-# Task types available for base models (full set)
-TASK_TYPES_BASE = ["text2music", "repaint", "cover", "extract", "lego", "complete"]
-
 
 # ==============================================================================
 # Instruction Constants
@@ -148,30 +142,3 @@ class ModelConfig(BaseModelArgs):
             ]
 
 
-@dataclass
-class VAEConfig(BaseModelArgs):
-
-    audio_channels: int = 2
-    channel_multiples: List[int] = field(default_factory=lambda: [1, 2, 4, 8, 16])
-    decoder_channels: int = 128
-    decoder_input_channels: int = 64
-    downsampling_ratios: List[int] = field(default_factory=lambda: [2, 4, 4, 6, 10])
-    encoder_hidden_size: int = 128
-    sampling_rate: int = 48000
-
-
-@dataclass
-class TextEncoderConfig(BaseModelArgs):
-
-    hidden_size: int = 1024
-    intermediate_size: int = 3072
-    num_hidden_layers: int = 28
-    num_attention_heads: int = 16
-    num_key_value_heads: int = 8
-    head_dim: int = 128
-    hidden_act: str = "silu"
-    max_position_embeddings: int = 32768
-    rms_norm_eps: float = 1e-6
-    rope_theta: float = 1000000.0
-    vocab_size: int = 151669
-    tie_word_embeddings: bool = True

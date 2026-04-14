@@ -162,16 +162,16 @@ class Model(nn.Module):
             model._sample_rate = vae_config.get("sampling_rate", 48000)
 
         # Load silence latent - try turbo subdirectory first, then root
-        silence_path = model_path / "acestep-v15-turbo" / "silence_latent.pt"
-        if not Path(str(silence_path).replace(".pt", ".npy")).exists():
-            silence_path = model_path / "silence_latent.pt"
+        silence_npy = model_path / "acestep-v15-turbo" / "silence_latent.npy"
+        if not silence_npy.exists():
+            silence_npy = model_path / "silence_latent.npy"
 
-        if Path(str(silence_path).replace(".pt", ".npy")).exists():
+        if silence_npy.exists():
             import numpy as np
 
-            silence_pt = np.load(str(silence_path).replace(".pt", ".npy"))
-            silence_pt = silence_pt.transpose(0, 2, 1)  # [1, 64, T] -> [1, T, 64]
-            model.silence_latent = mx.array(silence_pt)
+            silence_np = np.load(str(silence_npy))
+            silence_np = silence_np.transpose(0, 2, 1)  # [1, 64, T] -> [1, T, 64]
+            model.silence_latent = mx.array(silence_np)
         else:
             model.silence_latent = mx.zeros((1, 3000, 64))
 
@@ -592,13 +592,6 @@ class Model(nn.Module):
         # Sanitize weights
         weights = self.sanitize(weights)
 
-        # Use mlx's update function for loading
-        from mlx.utils import tree_unflatten
-
-        # Convert flat dict to nested structure
-        nested_weights = tree_unflatten(list(weights.items()))
-
-        # Get current parameters for comparison
         current_params = dict(nn.utils.tree_flatten(self.parameters()))
 
         missing_keys = []
@@ -727,36 +720,14 @@ class Model(nn.Module):
         refer_audio_acoustic_hidden_states_packed: mx.array,
         refer_audio_order_mask: mx.array,
         hidden_states: mx.array,
-        attention_mask: mx.array,
-        silence_latent: mx.array,
         src_latents: mx.array,
         chunk_masks: mx.array,
         is_covers: mx.array,
         lm_hints_25hz: Optional[mx.array] = None,
     ) -> Tuple[mx.array, mx.array, mx.array]:
-        """Prepare conditioning inputs.
-
-        Args:
-            text_hidden_states: Text embeddings
-            text_attention_mask: Text attention mask
-            lyric_hidden_states: Lyric embeddings
-            lyric_attention_mask: Lyric attention mask
-            refer_audio_acoustic_hidden_states_packed: Reference audio features
-            refer_audio_order_mask: Reference audio order mask
-            hidden_states: Input hidden states
-            attention_mask: Attention mask
-            silence_latent: Silence latent for padding
-            src_latents: Source latents
-            chunk_masks: Chunk masks
-            is_covers: Cover song flags
-            lm_hints_25hz: Optional pre-computed LM hints at 25Hz rate
-
-        Returns:
-            Tuple of (encoder_hidden_states, encoder_attention_mask, context_latents)
-        """
+        """Prepare conditioning inputs."""
         dtype = hidden_states.dtype
 
-        # Encode conditions
         encoder_hidden_states, encoder_attention_mask = self.encoder(
             text_hidden_states=text_hidden_states,
             text_attention_mask=text_attention_mask,
@@ -798,7 +769,6 @@ class Model(nn.Module):
         src_latents: mx.array,
         chunk_masks: mx.array,
         is_covers: mx.array,
-        silence_latent: Optional[mx.array] = None,
         attention_mask: Optional[mx.array] = None,
         seed: Optional[int] = None,
         fix_nfe: int = 8,
@@ -806,37 +776,10 @@ class Model(nn.Module):
         shift: float = 3.0,
         guidance_scale: float = 15.0,
         guidance_interval: float = 0.5,
-        omega_scale: float = 10.0,
         cfg_type: str = "apg",
         lm_hints_25hz: Optional[mx.array] = None,
     ) -> Dict:
-        """Generate audio latents.
-
-        Args:
-            text_hidden_states: Text embeddings
-            text_attention_mask: Text attention mask
-            lyric_hidden_states: Lyric embeddings
-            lyric_attention_mask: Lyric attention mask
-            refer_audio_acoustic_hidden_states_packed: Reference audio features
-            refer_audio_order_mask: Reference audio order mask
-            src_latents: Source latents
-            chunk_masks: Chunk masks
-            is_covers: Cover song flags
-            silence_latent: Silence latent for padding
-            attention_mask: Attention mask
-            seed: Random seed
-            fix_nfe: Number of function evaluations (steps)
-            infer_method: Inference method ('ode' or 'sde')
-            shift: Timestep schedule shift
-            guidance_scale: Classifier-free guidance scale (default 15.0)
-            guidance_interval: Fraction of steps where guidance is applied (0.5 = middle 50%)
-            omega_scale: Granularity scale for variance control (default 10.0)
-            cfg_type: CFG type ('cfg' for standard, 'apg' for Adaptive Projected Gradient)
-            lm_hints_25hz: Optional pre-computed LM hints at 25Hz rate
-
-        Returns:
-            Dictionary with 'target_latents' and 'time_costs'
-        """
+        """Generate audio latents."""
         # Pre-defined timestep schedules for turbo model (fix_nfe=8)
         # These are the valid timesteps from the PyTorch turbo implementation
         SHIFT_TIMESTEPS = {
@@ -899,8 +842,6 @@ class Model(nn.Module):
                 refer_audio_acoustic_hidden_states_packed=refer_audio_acoustic_hidden_states_packed,
                 refer_audio_order_mask=refer_audio_order_mask,
                 hidden_states=src_latents,
-                attention_mask=attention_mask,
-                silence_latent=silence_latent,
                 src_latents=src_latents,
                 chunk_masks=chunk_masks,
                 is_covers=is_covers,
@@ -1078,7 +1019,6 @@ class Model(nn.Module):
         shift: float = 3.0,
         guidance_scale: float = 1.0,
         guidance_interval: float = 0.5,
-        omega_scale: float = 10.0,
         cfg_type: str = "apg",
         vocal_language: str = "unknown",
         verbose: bool = True,
@@ -1108,7 +1048,6 @@ class Model(nn.Module):
             shift: Timestep schedule shift (1, 2, or 3)
             guidance_scale: CFG scale (1.0 = no guidance, turbo model default; >1 for non-turbo models)
             guidance_interval: Fraction of steps where guidance is applied (0.5 recommended)
-            omega_scale: Granularity scale for variance control
             cfg_type: CFG type ('cfg' for standard, 'apg' for Adaptive Projected Gradient)
             vocal_language: Language code for vocals (e.g., "en", "zh")
             verbose: Whether to print progress
@@ -1299,13 +1238,11 @@ class Model(nn.Module):
             src_latents=src_latents,
             chunk_masks=chunk_masks,
             is_covers=is_covers,
-            silence_latent=self.silence_latent.astype(self.dtype),
             seed=seed,
             fix_nfe=num_steps,
             shift=shift,
             guidance_scale=guidance_scale,
             guidance_interval=guidance_interval,
-            omega_scale=omega_scale,
             cfg_type=cfg_type,
             lm_hints_25hz=lm_hints,
         )
@@ -1379,15 +1316,3 @@ class Model(nn.Module):
             is_final_chunk=True,
         )
 
-
-def test_model():
-    """Test model instantiation."""
-    config = ModelConfig()
-    model = Model(config)
-    print(f"Model created with config: {config.model_type}")
-    print(f"Sample rate: {model.sample_rate}")
-    return model
-
-
-if __name__ == "__main__":
-    test_model()
