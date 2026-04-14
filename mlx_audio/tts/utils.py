@@ -44,6 +44,7 @@ MODEL_REMAPPING = {
     "moss_tts_local": "moss_tts",
     "acestep": "ace_step",
     "ace_step": "ace_step",
+    "ace": "ace_step",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
