@@ -545,6 +545,14 @@ class Model(nn.Module):
         else:
             return f"{prefix}.{suffix}"
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Format a duration in seconds as 00:MM:SS.mmm."""
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        ms = int((seconds % 1) * 1000)
+        return f"00:{mins:02d}:{secs:02d}.{ms:03d}"
+
     def generate(
         self,
         text: str,
@@ -554,6 +562,8 @@ class Model(nn.Module):
         top_p: float = 0.95,
         max_tokens: int = 4096,
         verbose: bool = False,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         **kwargs,
     ) -> GenerationResult:
         """Generate speech from text.
@@ -566,9 +576,16 @@ class Model(nn.Module):
             top_p: Nucleus sampling threshold.
             max_tokens: Maximum number of audio tokens to generate.
             verbose: Show progress bar.
+            stream: Enable streaming output. When True, intermediate audio
+                chunks are yielded during generation for lower latency.
+            streaming_interval: Approximate seconds of audio per streaming
+                chunk. Each frame is 80 ms, so the interval is converted to
+                a frame count (``max(1, int(streaming_interval / 0.08))``).
 
         Yields:
-            GenerationResult with audio waveform.
+            GenerationResult with audio waveform. When *stream* is True,
+            intermediate results have ``is_streaming_chunk=True`` and the
+            last result additionally has ``is_final_chunk=True``.
         """
         from mlx_lm.models.cache import make_prompt_cache
 
@@ -605,6 +622,17 @@ class Model(nn.Module):
         )
 
         all_codes = []
+        yielded_frames = 0
+        chunk_idx = 0
+        # Convert streaming_interval (seconds) to frames (1 frame = 80 ms)
+        frames_per_chunk = max(1, int(streaming_interval / 0.08))
+        # Context frames for overlap-add decoding.  The codec decoder uses
+        # sliding-window attention with windows up to 16 (at the final stage).
+        # Including context frames from the previous chunk ensures smooth
+        # transitions without boundary artifacts.
+        context_frames = 16
+        # Each codec frame produces 1920 samples (8x upsample × 240 patch)
+        samples_per_frame = 1920
 
         for i in tqdm(range(max_tokens), disable=not verbose):
             h = hidden[:, -1, :]  # (1, dim)
@@ -635,26 +663,83 @@ class Model(nn.Module):
             if i % 50 == 0:
                 mx.clear_cache()
 
+            # Streaming: yield chunk when buffer is full
+            if stream and len(all_codes) - yielded_frames >= frames_per_chunk:
+                # Include context frames from earlier in the sequence so the
+                # codec decoder's sliding-window attention has proper context,
+                # avoiding boundary artifacts between chunks.
+                ctx_start = max(0, yielded_frames - context_frames)
+                chunk_codes = mx.concatenate(all_codes[ctx_start:], axis=1)
+                full_waveform = self.audio_tokenizer.decode(chunk_codes)
+                full_waveform = full_waveform.squeeze(0)
+
+                # Trim the context portion — keep only new audio
+                ctx_used = yielded_frames - ctx_start
+                trim_samples = ctx_used * samples_per_frame
+                chunk_waveform = full_waveform[trim_samples:]
+
+                chunk_samples = chunk_waveform.shape[0]
+                chunk_duration = chunk_samples / self.config.sample_rate
+                chunk_time = time.time() - time_start
+                chunk_token_count = len(all_codes) - yielded_frames
+
+                yield GenerationResult(
+                    audio=chunk_waveform,
+                    sample_rate=self.config.sample_rate,
+                    samples=chunk_samples,
+                    segment_idx=chunk_idx,
+                    token_count=chunk_token_count,
+                    audio_samples={
+                        "samples": chunk_samples,
+                        "samples-per-sec": self.config.sample_rate,
+                    },
+                    audio_duration=self._format_duration(chunk_duration),
+                    real_time_factor=(
+                        chunk_duration / chunk_time if chunk_time > 0 else 0
+                    ),
+                    prompt={
+                        "tokens": chunk_token_count,
+                        "tokens-per-sec": (
+                            round(chunk_token_count / chunk_time, 2)
+                            if chunk_time > 0
+                            else 0
+                        ),
+                    },
+                    processing_time_seconds=chunk_time,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    is_streaming_chunk=True,
+                    is_final_chunk=False,
+                )
+                yielded_frames = len(all_codes)
+                chunk_idx += 1
+                time_start = time.time()
+
         if not all_codes:
             raise RuntimeError("No audio frames generated")
 
-        audio_codes = mx.concatenate(all_codes, axis=1)  # (1, N_frames, 37)
-
-        time_acoustic = time.time()
-
-        # Decode to waveform
-        waveform = self.audio_tokenizer.decode(audio_codes)  # (1, samples)
-        waveform = waveform.squeeze(0)  # (samples,)
+        # Final chunk: decode remaining frames (or all frames if not streaming)
+        remaining = len(all_codes) - yielded_frames
+        if stream and yielded_frames > 0 and remaining > 0:
+            # Decode remainder with context for smooth transition
+            ctx_start = max(0, yielded_frames - context_frames)
+            final_codes = mx.concatenate(all_codes[ctx_start:], axis=1)
+            full_waveform = self.audio_tokenizer.decode(final_codes).squeeze(0)
+            ctx_used = yielded_frames - ctx_start
+            trim_samples = ctx_used * samples_per_frame
+            waveform = full_waveform[trim_samples:]
+        elif stream and yielded_frames > 0 and remaining == 0:
+            # Everything already yielded — emit a zero-length final marker
+            waveform = mx.zeros((0,))
+        else:
+            # Non-streaming (or no intermediate chunks were yielded):
+            # decode everything at once — identical to the original path
+            audio_codes = mx.concatenate(all_codes, axis=1)
+            waveform = self.audio_tokenizer.decode(audio_codes).squeeze(0)
 
         time_end = time.time()
 
         audio_samples = waveform.shape[0]
         audio_duration = audio_samples / self.config.sample_rate
-
-        duration_mins = int(audio_duration // 60)
-        duration_secs = int(audio_duration % 60)
-        duration_ms = int((audio_duration % 1) * 1000)
-        duration_str = f"00:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
         processing_time = time_end - time_start
 
@@ -662,26 +747,34 @@ class Model(nn.Module):
             audio=waveform,
             sample_rate=self.config.sample_rate,
             samples=audio_samples,
-            segment_idx=0,
-            token_count=audio_codes.shape[1],
+            segment_idx=chunk_idx if stream else 0,
+            token_count=remaining if stream and yielded_frames > 0 else len(all_codes),
             audio_samples={
                 "samples": audio_samples,
                 "samples-per-sec": self.config.sample_rate,
             },
-            audio_duration=duration_str,
+            audio_duration=self._format_duration(audio_duration),
             real_time_factor=(
                 audio_duration / processing_time if processing_time > 0 else 0
             ),
             prompt={
-                "tokens": audio_codes.shape[1],
+                "tokens": (
+                    remaining if stream and yielded_frames > 0 else len(all_codes)
+                ),
                 "tokens-per-sec": (
-                    round(audio_codes.shape[1] / processing_time, 2)
+                    round(
+                        (remaining if stream and yielded_frames > 0 else len(all_codes))
+                        / processing_time,
+                        2,
+                    )
                     if processing_time > 0
                     else 0
                 ),
             },
             processing_time_seconds=processing_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=stream,
+            is_final_chunk=stream,
         )
         mx.clear_cache()
 
