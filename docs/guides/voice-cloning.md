@@ -8,6 +8,7 @@ Several MLX Audio models can clone a speaker's voice from a short reference audi
 |-------|--------|--------------------------|-------|
 | **CSM** | `--ref_audio` CLI / `ref_audio` kwarg | Yes (WAV) | Conversational Speech Model from Sesame |
 | **Qwen3-TTS Base** | `ref_audio` + `ref_text` kwargs | Yes (WAV) + transcript | Alibaba multilingual TTS |
+| **OmniVoice** | `ref_audio` + `ref_text` kwargs | Yes (WAV) + transcript recommended | 646+ language zero-shot cloning, best with prompt preprocessing |
 | **Spark** | `ref_audio` kwarg | Yes | SparkTTS voice cloning |
 | **Chatterbox** | `ref_audio` kwarg | Yes | Expressive multilingual TTS |
 | **OuteTTS** | `ref_audio` kwarg | Yes | Efficient TTS with cloning |
@@ -147,6 +148,68 @@ mlx_audio.tts.generate \
 ```
 
 Providing the transcript yourself avoids loading the STT model and speeds up generation.
+
+## OmniVoice
+
+OmniVoice supports multilingual zero-shot voice cloning with a HiggsAudioV2 acoustic tokenizer and iterative masked generation.
+
+!!! warning "ref_text must match preprocessed audio"
+    OmniVoice preprocessing removes silence and trims the reference clip. If you transcribe the **original** file, the ASR transcript may be longer than the preprocessed audio, causing the extra text to leak into generation. Always transcribe the **preprocessed** audio, not the raw recording. See `examples/omnivoice_clone_demo.py` for the correct workflow.
+
+```python
+from mlx_audio.tts.utils import load_model as load_tts
+from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+from mlx_audio.stt.utils import load_model as load_stt
+import mlx.core as mx, numpy as np, soundfile as sf, tempfile, os
+
+tts = load_tts("mlx-community/OmniVoice-bf16")
+
+# Preprocess → encode → decode → transcribe (matches original pipeline)
+ref_tokens = create_voice_clone_prompt("reference.wav", tokenizer=tts.audio_tokenizer)
+mx.eval(ref_tokens)
+
+preprocessed = np.array(tts.audio_tokenizer.decode(ref_tokens).astype(mx.float32))
+tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+sf.write(tmp.name, preprocessed, 24000); tmp.close()
+
+ref_text = load_stt("mlx-community/Qwen3-ASR-0.6B-8bit").generate(tmp.name).text
+os.unlink(tmp.name)
+
+results = list(tts.generate(
+    text="Hello from OmniVoice.",
+    language="english",
+    ref_tokens=ref_tokens,
+    ref_text=ref_text,
+))
+
+sf.write("output.wav", np.array(results[0].audio), results[0].sample_rate)
+```
+
+### OmniVoice-specific notes
+
+- **Reference text is required for stable cloning.** Without it, output quality degrades significantly — garbled speech, wrong language, or missing words.
+- **Transcribe after preprocessing, not before.** The original k2-fsa/OmniVoice runs Whisper on audio after silence removal. This demo replicates that approach.
+- **Prompt preprocessing matters.** MLX Audio mirrors the original Python pipeline with RMS normalization, silence removal, trimming at silence gaps, and torchaudio-compatible resampling before reference encoding.
+- **Best reference length:** roughly 5–15 seconds of actual speech after silence trimming.
+- **Supported inline controls:** nonverbal tags such as `[laughter]`, `[sigh]`, and pronunciation overrides for English CMU dictionary forms and Chinese pinyin forms.
+
+### Example: English CMU pronunciation control
+
+```python
+results = list(model.generate(
+    text="He plays the [B EY1 S] guitar while catching a [B AE1 S] fish.",
+    language="english",
+))
+```
+
+### Example: Nonverbal tags
+
+```python
+results = list(model.generate(
+    text="I just heard the funniest joke [laughter] that was incredible.",
+    language="english",
+))
+```
 
 ### Combining Cloning with Streaming
 
