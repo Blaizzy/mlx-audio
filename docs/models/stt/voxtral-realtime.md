@@ -35,6 +35,49 @@ for chunk in model.generate("audio.wav", stream=True):
     print(chunk, end="", flush=True)
 ```
 
+### Live Input Streaming
+
+When the audio is arriving in real time (mic, WebSocket, network), feed
+samples as they become available instead of passing a completed array:
+
+```python
+import threading
+import numpy as np
+from mlx_audio.stt.models.voxtral_realtime.streaming import StreamingAudioSource
+
+source = StreamingAudioSource()
+
+def producer():
+    for chunk in capture_microphone_chunks():  # 16 kHz float32 np.ndarray
+        source.append(chunk)
+    source.close()
+
+threading.Thread(target=producer, daemon=True).start()
+
+for delta in model.generate_streaming(source):
+    print(delta, end="", flush=True)
+```
+
+For cooperative integrations (async servers, multiple concurrent
+streams) use the lower-level session API. `feed()` is a cheap
+thread-safe queue push; `step(max_decode_tokens=N)` runs a bounded
+unit of MLX work and returns the deltas emitted during that call.
+Releasing the MLX executor between `step()` calls lets another
+stream — or an LLM request — interleave on the same executor:
+
+```python
+session = model.create_streaming_session()
+
+# Producer side (any thread or asyncio task):
+session.feed(samples)           # cheap, non-blocking
+session.close()                 # end-of-stream signal
+
+# Consumer side (MLX executor thread):
+while not session.done:
+    for delta in session.step(max_decode_tokens=4):
+        emit(delta)
+```
+
 ### Adjusting Transcription Delay
 
 Lower delay values produce faster output but may reduce accuracy:
