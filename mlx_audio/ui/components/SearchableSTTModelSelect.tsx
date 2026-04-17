@@ -42,7 +42,7 @@ const MODEL_GROUPS: ModelGroup[] = [
   {
     group: 'Voxtral',
     models: [
-      { value: 'mlx-community/Voxtral-Mini-3B-2507-bf16',          label: 'Voxtral Mini 3B bf16',            description: 'Full precision (EN, DE, ES, HI, JA, PT' },
+      { value: 'mlx-community/Voxtral-Mini-3B-2507-bf16',          label: 'Voxtral Mini 3B bf16',            description: 'Full precision (EN, DE, ES, HI, JA, PT), Autodetect of language less reliable'},
       { value: 'mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit', label: 'Voxtral Mini 4B Realtime 4bit',   description: 'Streaming, Quantized, faster (EN, AR, DE, ES, FR, HI, IT, JA, KO, NL, PT, RU, ZH)' },
       { value: 'mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16', label: 'Voxtral Mini 4B Realtime fp16',   description: 'Streaming, Full precision (EN, AR, DE, ES, FR, HI, IT, JA, KO, NL, PT, RU, ZH)' },
     ],
