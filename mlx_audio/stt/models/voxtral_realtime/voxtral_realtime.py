@@ -341,6 +341,73 @@ class Model(nn.Module):
             generation_tps=len(generated) / decode_time if decode_time > 0 else 0,
         )
 
+    def create_streaming_session(
+        self,
+        *,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        transcription_delay_ms: Optional[int] = None,
+    ):
+        """Create a stateful streaming session for this model.
+
+        Returns a ``VoxtralStreamingSession`` whose ``feed()`` is a cheap
+        thread-safe queue push (safe to call from an asyncio loop), and
+        whose ``step()`` / ``finalize_step()`` run one short unit of MLX
+        work. Call ``step()`` repeatedly from an executor thread between
+        audio feeds; between calls the executor is free for other work.
+        """
+        from .streaming import VoxtralStreamingSession
+
+        return VoxtralStreamingSession(
+            self,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            transcription_delay_ms=transcription_delay_ms,
+        )
+
+    def generate_streaming(
+        self,
+        source,
+        *,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        verbose: bool = False,
+        transcription_delay_ms: Optional[int] = None,
+    ):
+        """Yield text deltas while audio is streamed in from ``source``.
+
+        Thin wrapper around ``create_streaming_session`` that consumes the
+        ``StreamingAudioSource`` in the calling thread (held for the life
+        of the generation). For cooperative integrations that need to
+        interleave MLX work with other tasks, prefer building your own
+        loop on top of ``create_streaming_session`` instead.
+        """
+        sess = self.create_streaming_session(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            transcription_delay_ms=transcription_delay_ms,
+        )
+
+        start_time = time.time()
+        while True:
+            samples, closed = source.read()
+            if samples.size > 0:
+                sess.feed(samples)
+            if closed:
+                sess.close()
+            for delta in sess.step(max_decode_tokens=16):
+                yield delta
+            if sess.done:
+                break
+
+        if verbose:
+            total = time.time() - start_time
+            print(
+                f"Streaming generate: {len(sess.generated)} tokens in {total:.3f}s "
+                f"({len(sess.generated) / total:.0f} tok/s)"
+            )
+        mx.clear_cache()
+
     def _generate_stream(
         self, audio_np, max_tokens, temperature, verbose, transcription_delay_ms=None
     ):
