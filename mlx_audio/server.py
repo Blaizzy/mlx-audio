@@ -489,7 +489,7 @@ async def stt_transcriptions(
     stream: bool = Form(False),
     context: Optional[str] = Form(None),
     prefill_step_size: int = Form(2048),
-    text: Optional[str] = Form(None),prin
+    text: Optional[str] = Form(None),
     diarize: bool = Form(False),
     diarization_model: Optional[str] = Form(None), 
 ):
