@@ -5,9 +5,6 @@ Mirrors the batch mel/conv_stem path but accepts audio incrementally via
 raw audio has arrived. At close() the residual tail is flushed using
 right-reflect padding so the stream output matches the batch output
 sample-for-sample for any audio that is fully fed then closed.
-
-This module is additive. The existing batch path in audio.py/encoder.py
-is unchanged and still used by Model.generate().
 """
 
 from __future__ import annotations
@@ -21,6 +18,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from .config import RAW_AUDIO_LENGTH_PER_TOK, _num_delay_tokens
 from .encoder import _compute_rope_freqs
 
 
@@ -207,15 +205,8 @@ class StreamingMel:
         frames_mx = mx.array(frames_np, dtype=mx.float32) * self._window[None, :]
         spectrum = mx.fft.rfft(frames_mx, n=self.window_size, axis=-1)
         magnitudes = mx.abs(spectrum) ** 2  # [n_new, freq_bins]
-        # Batch drops the NYQUIST bin via magnitudes[:-1, :].T where the first
-        # axis is TIME. In our shape [n_new, freq_bins], the time axis is 0,
-        # so parity with batch requires us NOT to slice frames here (that
-        # happens via drop-last across the whole stream). But batch also
-        # slices axis 0 of [n_frames, n_freq] which is TIME. Recheck:
-        #   batch magnitudes = [n_frames, n_freq].
-        #   magnitudes[:-1, :] drops the LAST TIME frame. (drop-last rule)
-        # Our shape matches. We don't slice here; drop-last was applied
-        # already by max_k_inclusive when final=True.
+        # Drop-last (the batch path's magnitudes[:-1, :] over the TIME axis)
+        # is applied globally via max_k_inclusive when final=True, not here.
         mel_spec = magnitudes @ self.mel_filters  # [n_new, mel_bins]
         log_spec = mx.log10(mx.maximum(mel_spec, 1e-10))
         min_val = self.global_log_mel_max - 8.0
@@ -420,6 +411,32 @@ class VoxtralStreamingSession:
     (does MLX work and returns a bounded number of deltas) lets the
     caller release the MLX executor between ``step`` calls, so other
     MLX-bound work can be interleaved.
+
+    Parameters:
+        max_tokens: decode stop cap (total tokens per utterance).
+        temperature: sampling temperature (0 = greedy).
+        transcription_delay_ms: target decoder lag behind audio, i.e.
+            how much audio the encoder accumulates BEFORE the decoder
+            emits its first token. This is the core latency/quality
+            knob:
+              - Smaller (e.g. 160, 320 ms): deltas appear sooner but
+                the decoder has less acoustic context, so WER rises
+                and partial hypotheses flip more often.
+              - Larger (e.g. 640, 960 ms): more stable transcripts,
+                but each delta arrives that many ms after the word
+                was spoken.
+              - 2400 ms: per Mistral's recommended-settings table
+                (see ``config.py`` link), this is the high-latency
+                preset whose WER is within a fraction of a point of
+                the offline (non-streaming) mode — use it when you
+                need offline-grade quality but still want the
+                incremental-delta API (e.g. live captioning of
+                pre-recorded audio, or tolerant real-time flows).
+            Defaults to ``config.transcription_delay_ms`` (480 ms,
+            Mistral's sweet spot between latency and quality). This
+            also shifts the prompt length
+            (``1 + n_left + n_delay``) and the right pad injected at
+            ``close()``.
     """
 
     def __init__(
@@ -430,8 +447,6 @@ class VoxtralStreamingSession:
         temperature: float = 0.0,
         transcription_delay_ms: Optional[int] = None,
     ) -> None:
-        from .voxtral_realtime import RAW_AUDIO_LENGTH_PER_TOK, _num_delay_tokens
-
         self.model = model
         self.max_tokens = max_tokens
         self.temperature = temperature
@@ -508,6 +523,16 @@ class VoxtralStreamingSession:
         ready, then decodes up to ``max_decode_tokens`` tokens (stopping
         early if we catch up to the available audio). Returns a list of
         text deltas emitted during this call.
+
+        ``max_decode_tokens`` is the yield granularity, not a free
+        speedup: each call decodes at most that many tokens and then
+        returns so the caller can release the MLX executor for other
+        work. Smaller values (4-8) interleave more finely but pay
+        per-call overhead; larger values (32-64) amortize overhead but
+        hold the executor longer. Pick based on how often other MLX
+        tasks need to run; if decoding is the bottleneck, a higher
+        value is usually fine because interleaving can't create
+        compute that isn't there.
         """
         if self._done:
             return []

@@ -25,30 +25,19 @@ import numpy as np
 
 from ..base import STTOutput
 from .audio import compute_mel_filters, compute_mel_spectrogram
-from .config import ModelConfig
+from .config import (
+    AUDIO_LENGTH_PER_TOK,
+    FRAME_RATE,
+    HOP_LENGTH,
+    RAW_AUDIO_LENGTH_PER_TOK,
+    SAMPLE_RATE,
+    ModelConfig,
+    _num_audio_tokens,
+    _num_delay_tokens,
+)
 from .decoder import Decoder, compute_time_embedding
 from .encoder import AudioEncoder
 from .tokenizer import TekkenTokenizer
-
-# Derived streaming constants
-SAMPLE_RATE = 16000
-FRAME_RATE = 12.5
-RAW_AUDIO_LENGTH_PER_TOK = int(SAMPLE_RATE // FRAME_RATE)  # 1280
-HOP_LENGTH = 160
-AUDIO_LENGTH_PER_TOK = RAW_AUDIO_LENGTH_PER_TOK // HOP_LENGTH  # 8
-
-
-def _num_audio_tokens(audio_len):
-    if audio_len % HOP_LENGTH != 0:
-        audio_len = math.ceil(audio_len / HOP_LENGTH - 1)
-    else:
-        audio_len = audio_len // HOP_LENGTH
-    return math.ceil(audio_len / AUDIO_LENGTH_PER_TOK)
-
-
-def _num_delay_tokens(delay_ms):
-    delay_len = int(delay_ms / 1000.0 * SAMPLE_RATE)
-    return _num_audio_tokens(delay_len)
 
 
 def _pad_audio_streaming(audio_array, n_left_pad_tokens, n_right_pad_tokens):
