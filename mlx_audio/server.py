@@ -824,6 +824,123 @@ async def stt_realtime_transcriptions(websocket: WebSocket):
             pass
 
 
+DEFAULT_REALTIME_MODEL = os.getenv(
+    "MLX_AUDIO_REALTIME_MODEL",
+    "mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit",
+)
+
+
+@app.websocket("/v1/realtime")
+async def voxtral_realtime_ws(websocket: WebSocket):
+    """OpenAI Realtime API-compatible WebSocket endpoint for voxtral_realtime.
+
+    Protocol (subset):
+      client → server
+        { "type": "session.update", "session": {...} }           # optional
+        { "type": "input_audio_buffer.append", "audio": "<b64 PCM16>" }
+        { "type": "input_audio_buffer.commit", "final": true }   # flush+finish
+      server → client
+        { "type": "session.created", "session": {...} }
+        { "type": "response.audio_transcript.delta", "delta": "..." }
+        { "type": "response.audio_transcript.done", "text": "..." }
+        { "type": "error", "error": {"message": "..."} }
+
+    Model is selected via the ``?model=<repo>`` query string; defaults to
+    ``$MLX_AUDIO_REALTIME_MODEL`` or mlx-community's 4-bit checkpoint.
+    """
+    await websocket.accept()
+
+    model_name = websocket.query_params.get("model", DEFAULT_REALTIME_MODEL)
+    try:
+        model = model_provider.load_model(model_name)
+    except Exception as e:
+        await websocket.send_json({"type": "error", "error": {"message": f"load failed: {e}"}})
+        await websocket.close()
+        return
+
+    if not hasattr(model, "create_streaming_session"):
+        await websocket.send_json({
+            "type": "error",
+            "error": {"message": f"model {model_name!r} does not support streaming"},
+        })
+        await websocket.close()
+        return
+
+    temperature = 0.0
+    session = model.create_streaming_session(temperature=temperature)
+    full_text_parts: list[str] = []
+
+    async def drain_deltas(max_decode_tokens: int = 8) -> bool:
+        """Run one session.step off-loop, ship deltas. Returns session.done."""
+        deltas = await asyncio.to_thread(session.step, max_decode_tokens=max_decode_tokens)
+        for delta in deltas:
+            full_text_parts.append(delta)
+            await websocket.send_json({
+                "type": "response.audio_transcript.delta",
+                "delta": delta,
+            })
+        return session.done
+
+    async def send_done():
+        await websocket.send_json({
+            "type": "response.audio_transcript.done",
+            "text": "".join(full_text_parts),
+        })
+
+    await websocket.send_json({
+        "type": "session.created",
+        "session": {"model": model_name, "input_audio_format": "pcm16"},
+    })
+
+    try:
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "error": {"message": "invalid JSON"}})
+                continue
+
+            msg_type = msg.get("type", "")
+
+            if msg_type == "session.update":
+                await websocket.send_json({"type": "session.updated"})
+
+            elif msg_type == "input_audio_buffer.append":
+                audio_b64 = msg.get("audio", "")
+                if not audio_b64:
+                    continue
+                pcm16 = np.frombuffer(base64.b64decode(audio_b64), dtype=np.int16)
+                samples = pcm16.astype(np.float32) / 32768.0
+                session.feed(samples)
+                # Opportunistic draining between chunks so deltas flow early.
+                await drain_deltas(max_decode_tokens=8)
+
+            elif msg_type == "input_audio_buffer.commit":
+                if msg.get("final"):
+                    session.close()
+                    while not await drain_deltas(max_decode_tokens=16):
+                        pass
+                    await send_done()
+                    # Start a fresh session for any subsequent utterance.
+                    session = model.create_streaming_session(temperature=temperature)
+                    full_text_parts = []
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "error": {"message": str(e)}})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        mx.clear_cache()
+
+
 class MLXAudioStudioServer:
     def __init__(self, start_ui=False, log_dir="logs"):
         self.start_ui = start_ui
