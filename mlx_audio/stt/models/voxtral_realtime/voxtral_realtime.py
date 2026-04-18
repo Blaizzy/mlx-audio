@@ -65,6 +65,9 @@ class Model(nn.Module):
         # Will be set in post_load_hook
         self._tokenizer = None
         self._mel_filters = None
+        # Sentinel so _ensure_ada_scales is callable even if post_load_hook
+        # has not run yet (e.g. unit tests that build Model directly).
+        self._ada_scale_delay = -1
 
     def _ensure_mel_filters(self):
         if self._mel_filters is None:
@@ -130,6 +133,10 @@ class Model(nn.Module):
             from .decoder import compute_time_embedding
 
             t_cond = compute_time_embedding(float(n_delay), self.config.decoder.dim)
+            # Match the dtype the AdaRMSNorm weights were demoted to so the
+            # matmul doesn't silently upcast (see post_load_hook).
+            ada_weight = self.decoder.layers[0].ada_rms_norm_t_cond.ada_down.weight
+            t_cond = t_cond.astype(ada_weight.dtype)
             self.decoder.precompute_ada_scales(t_cond)
             for scale in self.decoder._ada_scales:
                 if scale is not None:
@@ -208,7 +215,7 @@ class Model(nn.Module):
         prefill_start = time.time()
         h, cache = self.decoder.forward(prefix_embeds, start_pos=0)
         logits = self.decoder.logits(h[-1])
-        cache_arrays = [t for lc in cache for t in lc[:2]]
+        cache_arrays = [a for c in cache for a in (c.keys, c.values) if a is not None]
         mx.eval(logits, *cache_arrays)
 
         if verbose:
@@ -559,14 +566,16 @@ class Model(nn.Module):
         return new_weights
 
     def model_quant_predicate(self, p, m):
-        """Skip quantization on encoder norms, ada norms, embeddings."""
-        skip_patterns = [
-            "norm",
-            "ada_rms_norm",
-            "tok_embeddings",
-            "conv_layers",
-            "audio_language_projection",
-        ]
+        """Quantize all big linears; only skip the small ones that hurt quality.
+
+        Per-step memory bandwidth dominates decode time, so the tied
+        ``tok_embeddings`` matmul in ``decoder.logits`` and the audio adapter
+        projections MUST be quantized to match voxmlx's throughput. Only the
+        norms, the tiny AdaRMSNorm MLPs, and the conv stem (3×128 kernels) are
+        skipped — matmul kernels on those are negligible and quantizing them
+        would cost more in quality than it saves in bandwidth.
+        """
+        skip_patterns = ["norm", "ada_rms_norm", "conv_layers"]
         return not any(pat in p for pat in skip_patterns)
 
     @classmethod
@@ -580,9 +589,44 @@ class Model(nn.Module):
         # Precompute mel filters
         model._ensure_mel_filters()
 
-        # Precompute ada scales from time conditioning (tracked for runtime override)
+        # Late-quantize the tied ``tok_embeddings`` if it was shipped in fp16
+        # (older converted checkpoints did this because the predicate used to
+        # skip embeddings). Per-step logits go through ~768 MB of weight
+        # otherwise — ~6 ms of memory-bandwidth tax on every decode step on an
+        # M-series GPU. Quantizing in place matches voxmlx's footprint.
+        tok = model.decoder.tok_embeddings
+        if not isinstance(tok, nn.QuantizedEmbedding):
+            quant = getattr(model.config, "quantization", None)
+            bits = 4
+            group_size = 64
+            if isinstance(quant, dict):
+                bits = int(quant.get("bits", bits))
+                group_size = int(quant.get("group_size", group_size))
+            model.decoder.tok_embeddings = nn.QuantizedEmbedding.from_embedding(
+                tok, group_size=group_size, bits=bits
+            )
+
+        # The mlx-audio converter shipped (a) fp32 norm / ada-norm weights and
+        # (b) fp16 quantization scales/biases, where voxmlx's canonical
+        # T0mSIlver checkpoint uses bf16 everywhere. MLX's quantized_matmul
+        # kernel has fast paths that only kick in when activations and
+        # scales share a dtype — running fp16 scales against bf16 activations
+        # forces silent casts inside the kernel and costs ~30 % of per-step
+        # latency on the 4B decoder. Normalize everything non-4-bit to bf16.
+        def _normalize_to_bf16(module):
+            for _, child in module.named_modules():
+                for attr in ("weight", "bias", "scales", "biases"):
+                    x = getattr(child, attr, None)
+                    if isinstance(x, mx.array) and x.dtype in (mx.float32, mx.float16):
+                        setattr(child, attr, x.astype(mx.bfloat16))
+
+        _normalize_to_bf16(model)
+
+        # Precompute ada scales from time conditioning (tracked for runtime
+        # override). t_cond must match the (now bf16) AdaRMSNorm weight dtype.
         n_delay = _num_delay_tokens(model.config.transcription_delay_ms)
         t_cond = compute_time_embedding(float(n_delay), model.config.decoder.dim)
+        t_cond = t_cond.astype(mx.bfloat16)
         model.decoder.precompute_ada_scales(t_cond)
         model._ada_scale_delay = n_delay
         # Evaluate ada scales eagerly

@@ -19,7 +19,6 @@ import mlx.nn as nn
 import numpy as np
 
 from .config import RAW_AUDIO_LENGTH_PER_TOK, _num_delay_tokens
-from .encoder import _compute_rope_freqs
 
 
 class StreamingAudioSource:
@@ -133,47 +132,47 @@ class StreamingMel:
         self._closed = True
         return self._drain(final=True)
 
-    def _get_sample(self, raw_idx: int) -> Optional[float]:
-        """Return raw audio value at global index, applying reflect padding.
+    def _extract_windows(self, k_start: int, k_end: int) -> Optional[np.ndarray]:
+        """Vectorized window extraction for a contiguous range of frames.
 
-        Returns None if the index cannot be resolved from available data.
+        Builds ``[n_frames, window_size]`` directly with numpy advanced indexing
+        — the previous per-frame Python loop over window_size (400) was 400
+        iterations per mel frame, costing single-digit milliseconds per 80 ms
+        realtime chunk and dominating the CPU side of the streaming pipeline.
+
+        Returns None if any frame in the range can't be resolved yet (e.g. the
+        right-reflect region isn't legal because we haven't closed).
         """
         N = self._n_received
-        if raw_idx < 0:
-            src = -raw_idx
-        elif raw_idx >= N:
-            src = 2 * N - 2 - raw_idx
-        else:
-            src = raw_idx
-        if src < 0 or src >= N:
+        n_frames = k_end - k_start
+        if n_frames <= 0:
             return None
-        buf_idx = src - self._buf_start
-        if buf_idx < 0 or buf_idx >= len(self._buf):
-            return None
-        return float(self._buf[buf_idx])
 
-    def _extract_window(self, k: int) -> Optional[np.ndarray]:
-        """Build the raw window for frame k using reflect padding where needed."""
-        start = k * self.hop_length - self.pad_size
-        out = np.empty(self.window_size, dtype=np.float32)
-        N = self._n_received
-        for i in range(self.window_size):
-            r = start + i
-            if r < 0:
-                src = -r
-            elif r >= N:
-                if not self._closed:
-                    return None  # right-reflect only allowed after close
-                src = 2 * N - 2 - r
-            else:
-                src = r
-            if src < 0 or src >= N:
-                return None
-            buf_idx = src - self._buf_start
-            if buf_idx < 0 or buf_idx >= len(self._buf):
-                return None
-            out[i] = self._buf[buf_idx]
-        return out
+        # Global raw indices for every (frame, sample) pair
+        frame_starts = np.arange(k_start, k_end) * self.hop_length - self.pad_size
+        offsets = np.arange(self.window_size)
+        r = frame_starts[:, None] + offsets[None, :]  # [n_frames, window_size]
+
+        # Reflect padding: left uses src = -r, right uses src = 2N-2-r
+        left_mask = r < 0
+        right_mask = r >= N
+
+        if right_mask.any() and not self._closed:
+            return None  # caller should wait for more audio / close()
+
+        src = np.where(left_mask, -r, np.where(right_mask, 2 * N - 2 - r, r))
+
+        # Any index still out of [0, N) signals a buffer gap (should not happen
+        # in normal use, but matches the conservative behavior of the previous
+        # scalar loop).
+        if ((src < 0) | (src >= N)).any():
+            return None
+
+        buf_idx = src - self._buf_start
+        if (buf_idx < 0).any() or (buf_idx >= len(self._buf)).any():
+            return None
+
+        return self._buf[buf_idx]  # [n_frames, window_size], float32 view/copy
 
     def _drain(self, *, final: bool) -> Optional[mx.array]:
         N = self._n_received
@@ -183,25 +182,15 @@ class StreamingMel:
         else:
             # No right-reflect allowed yet. Right-boundary rule:
             #   frame k needs raw[k*hop + pad - 1] in-range -> k*hop + pad <= N.
-            # _extract_window also guards the left-reflect requirement (raw[pad]
-            # at k=0 demands N > pad), which is tighter only for N in [pad, pad].
             max_k_inclusive = (N - self.pad_size) // self.hop_length
 
         if self._next_k > max_k_inclusive:
             return None
 
-        windows: list[np.ndarray] = []
-        while self._next_k <= max_k_inclusive:
-            w = self._extract_window(self._next_k)
-            if w is None:
-                break
-            windows.append(w)
-            self._next_k += 1
-
-        if not windows:
+        frames_np = self._extract_windows(self._next_k, max_k_inclusive + 1)
+        if frames_np is None:
             return None
-
-        frames_np = np.stack(windows, axis=0)  # [n_new, window_size]
+        self._next_k = max_k_inclusive + 1
         frames_mx = mx.array(frames_np, dtype=mx.float32) * self._window[None, :]
         spectrum = mx.fft.rfft(frames_mx, n=self.window_size, axis=-1)
         magnitudes = mx.abs(spectrum) ** 2  # [n_new, freq_bins]
@@ -326,13 +315,17 @@ class StreamingConvStem:
 
     def step(self, mel_chunk: mx.array) -> mx.array:
         """Process a mel chunk. mel_chunk: [mel_bins, n_frames]. Returns [n_out, dim]."""
+        # Cast mel to conv weight dtype (bf16) so the entire encoder/projection
+        # pipeline runs in bf16 instead of fp32. Keeping fp32 propagates all
+        # the way to the decoder input and forces the decoder forward to run
+        # in fp32 (~2x slower than bf16 on Apple Silicon).
+        target_dtype = self._c0.conv.conv.weight.dtype
         if mel_chunk.shape[1] == 0:
-            # Empty -> empty output at the right type
             return mx.zeros(
-                (0, self._c0.conv.conv.weight.shape[0]), dtype=mel_chunk.dtype
+                (0, self._c0.conv.conv.weight.shape[0]), dtype=target_dtype
             )
         # Match batch: conv_stem takes mel.T[None, :, :] ([1, frames, 128])
-        x = mel_chunk.T  # [frames, 128]
+        x = mel_chunk.T.astype(target_dtype)  # [frames, 128]
         x = self._c0.step(x)
         x = nn.gelu(x)
         x = self._c1.step(x)
@@ -371,22 +364,16 @@ class StreamingEncoder:
         if chunk_len == 0:
             return conv_chunk
 
-        positions = mx.arange(self._pos, self._pos + chunk_len)
-        rope_cos, rope_sin = _compute_rope_freqs(
-            positions, self.encoder.config.head_dim, self.encoder.config.rope_theta
+        # The mask only depends on chunk_len + the current KV offset, so build
+        # it once from cache[0] and share it across all 32 layers. Must be a
+        # materialized array: under streaming, K_len = Q_len + cache_size and
+        # SDPA's "causal" string shortcut is only valid when Q_len == K_len.
+        mask = self._caches[0].make_mask(
+            chunk_len, window_size=self._sw, return_array=True
         )
-
         x = conv_chunk
         for i, layer in enumerate(self.encoder.transformer_layers):
-            # Always materialize the mask as an array. SDPA's "causal" string
-            # shortcut is safe only when Q_len == K_len (full-chunk path);
-            # under streaming, K_len = Q_len + cache_size and we must provide
-            # an explicit mask aligned with the actual key count.
-            mask = self._caches[i].make_mask(
-                chunk_len, window_size=self._sw, return_array=True
-            )
-            x = layer(x, rope_cos, rope_sin, mask, cache=self._caches[i])
-
+            x = layer(x, self._pos, mask, cache=self._caches[i])
         out = self.encoder.transformer_norm(x)
         self._pos += chunk_len
         return out
@@ -615,7 +602,9 @@ class VoxtralStreamingSession:
 
         h, self._cache = self.model.decoder.forward(prefix_embeds, start_pos=0)
         logits = self.model.decoder.logits(h[-1])
-        cache_arrays = [t for lc in self._cache for t in lc[:2]]
+        cache_arrays = [
+            a for c in self._cache for a in (c.keys, c.values) if a is not None
+        ]
         mx.eval(logits, *cache_arrays)
         self._next_tok = self.model._next_token_mx(logits, self.temperature)
         mx.async_eval(self._next_tok)
@@ -623,6 +612,7 @@ class VoxtralStreamingSession:
     def _decode_some(self, max_decode_tokens: int) -> list[str]:
         deltas: list[str] = []
         eos = self.model.config.eos_token_id
+        tok_emb = self.model.decoder.tok_embeddings
 
         for _ in range(max_decode_tokens):
             # Before consuming the pending token, make sure we'll be able
@@ -632,39 +622,58 @@ class VoxtralStreamingSession:
             if self._n_adapter() <= self._pos and not self._flushed_close:
                 return deltas
 
-            token = int(self._next_tok.item())
+            if self._n_adapter() <= self._pos:
+                # Closed and out of audio: the right-pad (silence) tokens we
+                # appended at close() should already have let the model emit
+                # EOS. Flush the last pending token without further padding —
+                # matches voxmlx's finalize() behavior.
+                token = int(self._next_tok.item())
+                self.generated.append(token)
+                text_so_far = self.model._tokenizer.decode(
+                    [t for t in self.generated if t != eos]
+                )
+                if text_so_far != self._prev_text:
+                    deltas.append(text_so_far[len(self._prev_text):])
+                    self._prev_text = text_so_far
+                self._done = True
+                return deltas
+
+            # Dispatch the current forward BEFORE the .item() sync so the
+            # previous step's eval overlaps with the current step's compute
+            # queueing — this is the pipelining pattern voxmlx uses. We pass
+            # ``self._next_tok`` (an mx.array living on the GPU) directly to
+            # the embedding lookup instead of round-tripping via
+            # ``mx.array([int(token)])``, which would force a CPU→GPU sync
+            # on every step.
+            prev_tok_mx = self._next_tok  # shape [], argmax result
+            token_embed = tok_emb(prev_tok_mx.reshape(1))[0]
+            embed = self._adapter_at(self._pos) + token_embed
+
+            h, self._cache = self.model.decoder.forward(
+                embed[None, :], start_pos=self._pos, cache=self._cache
+            )
+            logits = self.model.decoder.logits(h.squeeze(0))
+            new_next_tok = self.model._next_token_mx(logits, self.temperature)
+            mx.async_eval(new_next_tok)
+
+            # Now read the PREVIOUS step's token from the GPU. This .item()
+            # only waits for the argmax from the prior iteration — the
+            # current iteration's forward is already queued.
+            token = int(prev_tok_mx.item())
             self.generated.append(token)
 
             text_so_far = self.model._tokenizer.decode(
                 [t for t in self.generated if t != eos]
             )
             if text_so_far != self._prev_text:
-                deltas.append(text_so_far[len(self._prev_text) :])
+                deltas.append(text_so_far[len(self._prev_text):])
                 self._prev_text = text_so_far
 
             if token == eos or len(self.generated) > self.max_tokens:
                 self._done = True
                 return deltas
 
-            if self._n_adapter() > self._pos:
-                embed = self._adapter_at(self._pos) + self.model.decoder.embed_token(
-                    token
-                )
-            else:
-                # Closed and out of audio: run a few trailing steps to
-                # let the decoder emit whatever is pending, then stop.
-                embed = self.model.decoder.embed_token(token)
-                self._trailing_after_close += 1
-                if self._trailing_after_close > 32:
-                    self._done = True
-                    return deltas
-
-            h, self._cache = self.model.decoder.forward(
-                embed[None, :], start_pos=self._pos, cache=self._cache
-            )
-            logits = self.model.decoder.logits(h.squeeze(0))
-            self._next_tok = self.model._next_token_mx(logits, self.temperature)
-            mx.async_eval(self._next_tok)
+            self._next_tok = new_next_tok
             self._pos += 1
             if len(self.generated) % 256 == 0:
                 mx.clear_cache()
@@ -688,9 +697,7 @@ class StreamingDownsampler:
     def step(self, encoded_chunk: mx.array) -> mx.array:
         """encoded_chunk: [n_frames, dim]. Returns adapter frames [n_out, decoder_dim]."""
         if encoded_chunk.shape[0] == 0:
-            return mx.zeros(
-                (0, self._dim), dtype=encoded_chunk.dtype
-            )  # dummy; caller ignores
+            return self._empty_adapter(encoded_chunk.dtype)
 
         if self._buf is not None and self._buf.shape[0] > 0:
             x = mx.concatenate([self._buf, encoded_chunk], axis=0)
@@ -709,5 +716,11 @@ class StreamingDownsampler:
         return projected
 
     def _empty_adapter(self, dtype) -> mx.array:
+        """Empty return that matches the adapter output dim (decoder dim, 3072).
+
+        Callers check ``shape[0] > 0`` so the second dim is never read today,
+        but keeping both zero-return paths consistent avoids a latent bug if
+        anything ever reshapes or concatenates these empties.
+        """
         proj_out_dim = self.encoder.audio_language_projection_2.weight.shape[0]
         return mx.zeros((0, proj_out_dim), dtype=dtype)
