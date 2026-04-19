@@ -129,9 +129,9 @@ class ACEStepLM:
         """
         instruction = "Generate audio semantic tokens based on the given conditions"
 
-        # Format lyrics section
+        # Format lyrics section with language header
         if lyrics and lyrics.strip():
-            lyrics_section = f"# Lyrics\n{lyrics}"
+            lyrics_section = f"# Languages\n{language}\n\n# Lyrics\n{lyrics}"
         else:
             lyrics_section = "# Lyrics\n[instrumental]"
 
@@ -144,6 +144,7 @@ class ACEStepLM:
 {lyrics_section}
 
 # Metas
+- language: {language}
 - duration: {duration} seconds
 <|endoftext|>
 """

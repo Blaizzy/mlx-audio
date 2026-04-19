@@ -204,7 +204,6 @@ class Attention(nn.Module):
         sliding_window: Optional[int] = None,
     ):
         super().__init__()
-        self.hidden_size = hidden_size
         self.num_heads = num_attention_heads
         self.num_kv_heads = num_key_value_heads
         self.head_dim = head_dim
@@ -251,18 +250,14 @@ class Attention(nn.Module):
         """
         batch_size, seq_len, _ = hidden_states.shape
 
-        # Project queries
         queries = self.q_proj(hidden_states)
         queries = queries.reshape(batch_size, seq_len, self.num_heads, self.head_dim)
         queries = self.q_norm(queries)
-        queries = queries.transpose(0, 2, 1, 3)  # [B, H, S, D]
+        queries = queries.transpose(0, 2, 1, 3)
 
-        # For cross-attention with cache: skip K,V projection if already cached
         if self.is_cross_attention and cache is not None and cache.is_set:
-            # Reuse cached K,V (already projected and normalized)
             keys, values = cache.fetch()
         else:
-            # Determine key/value source
             if self.is_cross_attention and encoder_hidden_states is not None:
                 kv_input = encoder_hidden_states
                 kv_len = encoder_hidden_states.shape[1]
@@ -270,7 +265,6 @@ class Attention(nn.Module):
                 kv_input = hidden_states
                 kv_len = seq_len
 
-            # Project keys and values
             keys = self.k_proj(kv_input)
             values = self.v_proj(kv_input)
 
@@ -278,52 +272,36 @@ class Attention(nn.Module):
             values = values.reshape(
                 batch_size, kv_len, self.num_kv_heads, self.head_dim
             )
-
             keys = self.k_norm(keys)
-
-            keys = keys.transpose(0, 2, 1, 3)  # [B, H, S, D]
+            keys = keys.transpose(0, 2, 1, 3)
             values = values.transpose(0, 2, 1, 3)
 
-            # Apply RoPE for self-attention (not cross-attention)
+            # RoPE only for self-attention
             if position_embeddings is not None and not self.is_cross_attention:
                 cos, sin = position_embeddings
                 queries, keys = apply_rotary_pos_emb(queries, keys, cos, sin)
 
-            # Store in cache for cross-attention
             if self.is_cross_attention and cache is not None:
                 cache.update_and_fetch(keys, values)
 
         kv_len = keys.shape[2]
 
-        # Repeat KV heads for grouped query attention
         if self.num_kv_heads < self.num_heads:
             n_rep = self.num_heads // self.num_kv_heads
             keys = mx.repeat(keys, n_rep, axis=1)
             values = mx.repeat(values, n_rep, axis=1)
 
-        # ACE-Step turbo uses standard scaled dot-product attention (softmax)
-        # for both self-attention and cross-attention
-        # queries, keys, values: [B, H, S, D]
         scale = 1.0 / math.sqrt(self.head_dim)
-
-        # Compute attention scores
-        # scores: [B, H, seq_len, kv_len]
         scores = (queries @ keys.transpose(0, 1, 3, 2)) * scale
 
-        # Apply attention mask if provided
         if attention_mask is not None:
             scores = scores + attention_mask
 
-        # Softmax
         weights = mx.softmax(scores.astype(mx.float32), axis=-1).astype(queries.dtype)
+        output = weights @ values
 
-        # Apply to values
-        output = weights @ values  # [B, H, S, D]
-
-        # Reshape output
-        output = output.transpose(0, 2, 1, 3)  # [B, S, H, D]
+        output = output.transpose(0, 2, 1, 3)
         output = output.reshape(batch_size, seq_len, -1)
-
         output = self.o_proj(output)
 
         return output
@@ -407,7 +385,6 @@ class EncoderLayer(nn.Module):
         sliding_window: Optional[int] = None,
     ):
         super().__init__()
-        self.hidden_size = hidden_size
 
         self.self_attn = Attention(
             hidden_size=hidden_size,
@@ -475,7 +452,6 @@ class DiTLayer(nn.Module):
         sliding_window: Optional[int] = None,
     ):
         super().__init__()
-        self.hidden_size = hidden_size
         self.use_cross_attention = use_cross_attention
 
         # Self-attention

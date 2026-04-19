@@ -162,16 +162,16 @@ class Model(nn.Module):
             model._sample_rate = vae_config.get("sampling_rate", 48000)
 
         # Load silence latent - try turbo subdirectory first, then root
-        silence_path = model_path / "acestep-v15-turbo" / "silence_latent.pt"
-        if not Path(str(silence_path).replace(".pt", ".npy")).exists():
-            silence_path = model_path / "silence_latent.pt"
+        silence_npy = model_path / "acestep-v15-turbo" / "silence_latent.npy"
+        if not silence_npy.exists():
+            silence_npy = model_path / "silence_latent.npy"
 
-        if Path(str(silence_path).replace(".pt", ".npy")).exists():
+        if silence_npy.exists():
             import numpy as np
 
-            silence_pt = np.load(str(silence_path).replace(".pt", ".npy"))
-            silence_pt = silence_pt.transpose(0, 2, 1)  # [1, 64, T] -> [1, T, 64]
-            model.silence_latent = mx.array(silence_pt)
+            silence_np = np.load(str(silence_npy))
+            silence_np = silence_np.transpose(0, 2, 1)  # [1, 64, T] -> [1, T, 64]
+            model.silence_latent = mx.array(silence_np)
         else:
             model.silence_latent = mx.zeros((1, 3000, 64))
 
@@ -259,7 +259,7 @@ class Model(nn.Module):
         max_length: int = 2048,
         language: str = "unknown",
     ) -> Tuple[mx.array, mx.array]:
-        """Prepare lyric embeddings using embed_tokens only."""
+        """Prepare lyric embeddings using Qwen3 word embeddings."""
         if not lyrics:
             lyrics = "[instrumental]"
 
@@ -273,7 +273,9 @@ class Model(nn.Module):
         else:
             lyric_len = min(len(formatted_lyrics.split()) * 3, max_length)
             lyric_len = max(lyric_len, 10)
-            lyric_hidden = mx.random.normal((1, lyric_len, self.config.text_hidden_dim))
+            lyric_hidden = mx.random.normal(
+                (1, lyric_len, self.config.text_hidden_dim)
+            )
             lyric_mask = mx.ones((1, lyric_len))
             return lyric_hidden.astype(self.dtype), lyric_mask.astype(self.dtype)
 
@@ -523,23 +525,43 @@ class Model(nn.Module):
         for key, value in weights.items():
             new_key = key
 
-            # Handle Conv1d weights: PyTorch [out, in, K] -> MLX [out, K, in]
-            if "proj_in.1.weight" in key:
-                # Conv1d: PyTorch [out_ch, in_ch, K] -> MLX [out_ch, K, in_ch]
+            # Handle dit.* -> decoder.* remapping (legacy converted weights)
+            if new_key.startswith("dit."):
+                new_key = "decoder." + new_key[4:]
+
+            # Handle decoder Conv1d proj_in weights: PyTorch [out, in, K] -> MLX [out, K, in]
+            # Only for decoder.proj_in/proj_out (bare params), not detokenizer/encoder proj_out (nn.Linear)
+            if "decoder.proj_in.1." in new_key or (
+                new_key == "decoder.proj_in.weight" and len(value.shape) == 3
+            ):
                 if len(value.shape) == 3:
                     value = value.transpose(0, 2, 1)
-                new_key = key.replace(".1.", "_")
+                new_key = new_key.replace("proj_in.1.", "proj_in_").replace(
+                    "decoder.proj_in.weight", "decoder.proj_in_weight"
+                )
 
-            # Handle ConvTranspose1d weights: PyTorch [in, out, K] -> MLX [out, K, in]
-            elif "proj_out.1.weight" in key:
-                # ConvTranspose1d: PyTorch [in_ch, out_ch, K] -> MLX [out_ch, K, in_ch]
+            # Handle decoder ConvTranspose1d proj_out weights: PyTorch [in, out, K] -> MLX [out, K, in]
+            elif "decoder.proj_out.1." in new_key or (
+                new_key == "decoder.proj_out.weight" and len(value.shape) == 3
+            ):
                 if len(value.shape) == 3:
                     value = value.transpose(1, 2, 0)
-                new_key = key.replace(".1.", "_")
+                new_key = new_key.replace("proj_out.1.", "proj_out_").replace(
+                    "decoder.proj_out.weight", "decoder.proj_out_weight"
+                )
 
-            # Handle Conv1d/ConvTranspose1d bias
-            elif "proj_in.1.bias" in key or "proj_out.1.bias" in key:
-                new_key = key.replace(".1.", "_")
+            # Handle decoder Conv1d/ConvTranspose1d bias
+            elif new_key == "decoder.proj_in.bias" or "decoder.proj_in.1.bias" in new_key:
+                new_key = new_key.replace("proj_in.1.", "proj_in_").replace(
+                    "decoder.proj_in.bias", "decoder.proj_in_bias"
+                )
+            elif (
+                new_key == "decoder.proj_out.bias"
+                or "decoder.proj_out.1.bias" in new_key
+            ):
+                new_key = new_key.replace("proj_out.1.", "proj_out_").replace(
+                    "decoder.proj_out.bias", "decoder.proj_out_bias"
+                )
 
             # Handle scale_shift_table - ensure correct shape
             if "scale_shift_table" in key:
@@ -570,13 +592,6 @@ class Model(nn.Module):
         # Sanitize weights
         weights = self.sanitize(weights)
 
-        # Use mlx's update function for loading
-        from mlx.utils import tree_unflatten
-
-        # Convert flat dict to nested structure
-        nested_weights = tree_unflatten(list(weights.items()))
-
-        # Get current parameters for comparison
         current_params = dict(nn.utils.tree_flatten(self.parameters()))
 
         missing_keys = []
@@ -596,8 +611,9 @@ class Model(nn.Module):
         matched_weights = {k: v for k, v in weights.items() if k in param_keys}
 
         if matched_weights:
-            nested_matched = tree_unflatten(list(matched_weights.items()))
-            self.update(nested_matched)
+            from mlx.utils import tree_unflatten
+
+            self.update(tree_unflatten(list(matched_weights.items())))
 
         if strict and (missing_keys or unexpected_keys):
             msg = []
@@ -705,36 +721,14 @@ class Model(nn.Module):
         refer_audio_acoustic_hidden_states_packed: mx.array,
         refer_audio_order_mask: mx.array,
         hidden_states: mx.array,
-        attention_mask: mx.array,
-        silence_latent: mx.array,
         src_latents: mx.array,
         chunk_masks: mx.array,
         is_covers: mx.array,
         lm_hints_25hz: Optional[mx.array] = None,
     ) -> Tuple[mx.array, mx.array, mx.array]:
-        """Prepare conditioning inputs.
-
-        Args:
-            text_hidden_states: Text embeddings
-            text_attention_mask: Text attention mask
-            lyric_hidden_states: Lyric embeddings
-            lyric_attention_mask: Lyric attention mask
-            refer_audio_acoustic_hidden_states_packed: Reference audio features
-            refer_audio_order_mask: Reference audio order mask
-            hidden_states: Input hidden states
-            attention_mask: Attention mask
-            silence_latent: Silence latent for padding
-            src_latents: Source latents
-            chunk_masks: Chunk masks
-            is_covers: Cover song flags
-            lm_hints_25hz: Optional pre-computed LM hints at 25Hz rate
-
-        Returns:
-            Tuple of (encoder_hidden_states, encoder_attention_mask, context_latents)
-        """
+        """Prepare conditioning inputs."""
         dtype = hidden_states.dtype
 
-        # Encode conditions
         encoder_hidden_states, encoder_attention_mask = self.encoder(
             text_hidden_states=text_hidden_states,
             text_attention_mask=text_attention_mask,
@@ -776,7 +770,6 @@ class Model(nn.Module):
         src_latents: mx.array,
         chunk_masks: mx.array,
         is_covers: mx.array,
-        silence_latent: Optional[mx.array] = None,
         attention_mask: Optional[mx.array] = None,
         seed: Optional[int] = None,
         fix_nfe: int = 8,
@@ -784,37 +777,10 @@ class Model(nn.Module):
         shift: float = 3.0,
         guidance_scale: float = 15.0,
         guidance_interval: float = 0.5,
-        omega_scale: float = 10.0,
         cfg_type: str = "apg",
         lm_hints_25hz: Optional[mx.array] = None,
     ) -> Dict:
-        """Generate audio latents.
-
-        Args:
-            text_hidden_states: Text embeddings
-            text_attention_mask: Text attention mask
-            lyric_hidden_states: Lyric embeddings
-            lyric_attention_mask: Lyric attention mask
-            refer_audio_acoustic_hidden_states_packed: Reference audio features
-            refer_audio_order_mask: Reference audio order mask
-            src_latents: Source latents
-            chunk_masks: Chunk masks
-            is_covers: Cover song flags
-            silence_latent: Silence latent for padding
-            attention_mask: Attention mask
-            seed: Random seed
-            fix_nfe: Number of function evaluations (steps)
-            infer_method: Inference method ('ode' or 'sde')
-            shift: Timestep schedule shift
-            guidance_scale: Classifier-free guidance scale (default 15.0)
-            guidance_interval: Fraction of steps where guidance is applied (0.5 = middle 50%)
-            omega_scale: Granularity scale for variance control (default 10.0)
-            cfg_type: CFG type ('cfg' for standard, 'apg' for Adaptive Projected Gradient)
-            lm_hints_25hz: Optional pre-computed LM hints at 25Hz rate
-
-        Returns:
-            Dictionary with 'target_latents' and 'time_costs'
-        """
+        """Generate audio latents."""
         # Pre-defined timestep schedules for turbo model (fix_nfe=8)
         # These are the valid timesteps from the PyTorch turbo implementation
         SHIFT_TIMESTEPS = {
@@ -877,8 +843,6 @@ class Model(nn.Module):
                 refer_audio_acoustic_hidden_states_packed=refer_audio_acoustic_hidden_states_packed,
                 refer_audio_order_mask=refer_audio_order_mask,
                 hidden_states=src_latents,
-                attention_mask=attention_mask,
-                silence_latent=silence_latent,
                 src_latents=src_latents,
                 chunk_masks=chunk_masks,
                 is_covers=is_covers,
@@ -1052,11 +1016,10 @@ class Model(nn.Module):
         voice: Optional[str] = None,
         duration: float = 30.0,
         seed: Optional[int] = None,
-        num_steps: int = 8,
+        num_steps: int = 20,
         shift: float = 3.0,
         guidance_scale: float = 1.0,
         guidance_interval: float = 0.5,
-        omega_scale: float = 10.0,
         cfg_type: str = "apg",
         vocal_language: str = "unknown",
         verbose: bool = True,
@@ -1067,7 +1030,7 @@ class Model(nn.Module):
         track_name: Optional[str] = None,
         complete_track_classes: Optional[List[str]] = None,
         # LM parameters
-        use_lm: bool = False,
+        use_lm: bool = True,
         lm_model_size: str = "0.6B",
         lm_temperature: float = 0.8,
         lm_top_p: float = 0.95,
@@ -1086,7 +1049,6 @@ class Model(nn.Module):
             shift: Timestep schedule shift (1, 2, or 3)
             guidance_scale: CFG scale (1.0 = no guidance, turbo model default; >1 for non-turbo models)
             guidance_interval: Fraction of steps where guidance is applied (0.5 recommended)
-            omega_scale: Granularity scale for variance control
             cfg_type: CFG type ('cfg' for standard, 'apg' for Adaptive Projected Gradient)
             vocal_language: Language code for vocals (e.g., "en", "zh")
             verbose: Whether to print progress
@@ -1236,16 +1198,30 @@ class Model(nn.Module):
         )
         is_covers = mx.array([1.0 if is_cover else 0.0], dtype=self.dtype)
 
-        # LM hints support - LM hints override is_covers to True
+        # LM hints support - LM hints replace src_latents via is_covers mechanism
         lm_hints = None
         if lm_precomputed_hints is not None:
             lm_hints = lm_precomputed_hints.astype(self.dtype)
             is_covers = mx.ones((1,), dtype=self.dtype)
             if verbose:
                 print("Using pre-computed LM hints")
-        elif use_lm and task_type == "cover":
-            if verbose:
-                print("5Hz LM enabled for cover task")
+        elif use_lm:
+            # Generate LM hints for any task type
+            lm_hints = self._generate_lm_hints(
+                caption=text,
+                lyrics=lyrics,
+                duration=int(duration),
+                language=vocal_language,
+                target_len=latent_len,
+                seed=seed,
+                model_size=lm_model_size,
+                verbose=verbose,
+            )
+            if lm_hints is not None:
+                lm_hints = lm_hints.astype(self.dtype)
+                is_covers = mx.ones((1,), dtype=self.dtype)
+                if verbose:
+                    print(f"LM hints generated: {lm_hints.shape}")
 
         if verbose:
             print("Running diffusion...")
@@ -1263,13 +1239,11 @@ class Model(nn.Module):
             src_latents=src_latents,
             chunk_masks=chunk_masks,
             is_covers=is_covers,
-            silence_latent=self.silence_latent.astype(self.dtype),
             seed=seed,
             fix_nfe=num_steps,
             shift=shift,
             guidance_scale=guidance_scale,
             guidance_interval=guidance_interval,
-            omega_scale=omega_scale,
             cfg_type=cfg_type,
             lm_hints_25hz=lm_hints,
         )
@@ -1343,15 +1317,3 @@ class Model(nn.Module):
             is_final_chunk=True,
         )
 
-
-def test_model():
-    """Test model instantiation."""
-    config = ModelConfig()
-    model = Model(config)
-    print(f"Model created with config: {config.model_type}")
-    print(f"Sample rate: {model.sample_rate}")
-    return model
-
-
-if __name__ == "__main__":
-    test_model()

@@ -493,6 +493,8 @@ def parse_args():
         type=str,
         default=None,
         help='Additional generation kwargs as JSON string (e.g., \'{"duration": 60.0, "num_steps": 8}\')',
+    )
+    parser.add_argument(
         "--save",
         action="store_true",
         help="Save streamed audio to a file. Requires --stream.",
