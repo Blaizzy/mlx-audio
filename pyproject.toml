@@ -29,6 +29,7 @@ dependencies = [
     "miniaudio>=1.61",
     "pyloudnorm>=0.2.0",
     "protobuf>=6.33.5",
+    "python-multipart>=0.0.22",
 ]
 
 [project.optional-dependencies]

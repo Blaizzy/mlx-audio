@@ -6,6 +6,7 @@ import { useState, useRef } from "react"
 import { ChevronDown, Download, ThumbsUp, ThumbsDown, Play, Pause, RefreshCw } from "lucide-react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
 import { VoiceSelection } from "@/components/voice-selection"
+import { getVoiceDisplayName } from "@/components/voice-library"
 
 // Custom range input component with colored progress
 function RangeInput({
@@ -62,7 +63,7 @@ export default function SpeechSynthesis() {
   const [quantization, setQuantization] = useState("6bit")
   const [language, setLanguage] = useState("English-detected")
   const [liked, setLiked] = useState<boolean | null>(null)
-  const [selectedVoice, setSelectedVoice] = useState("conversational_a")
+  const [selectedVoice, setSelectedVoice] = useState("af_heart")
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
@@ -131,10 +132,10 @@ export default function SpeechSynthesis() {
     if (!audioRef.current) return
     setIsGenerating(true)
 
-    const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
-    const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost"
+    const API_PORT = process.env.NEXT_PUBLIC_API_PORT || "8000"
 
-    const voice = (model.includes("marvis") ? "conversational_a" : "af_heart");
+    const voice = isMarvisModel(model) ? "conversational_a" : selectedVoice;
 
     try {
       const response = await fetch(`${API_BASE_URL}:${API_PORT}/v1/audio/speech`, {
@@ -333,7 +334,12 @@ export default function SpeechSynthesis() {
                 </div>
               </div>
 
-
+              {!isMarvisModel(baseModel) && !baseModel.includes("Spark") && (
+                <VoiceSelection 
+                  onVoiceChange={handleVoiceChange} 
+                  initialVoice={selectedVoice}
+                />
+              )}
 
               <div className="mb-6">
                 <div className="mb-2 flex items-center justify-between">
@@ -479,7 +485,7 @@ export default function SpeechSynthesis() {
           <div className="flex flex-col justify-between h-full flex-1 px-4 py-2">
             <div className="flex items-center justify-between w-full">
               <div className="text-sm">
-                {selectedVoice}: {text.length > 20 ? text.substring(0, 20) + "..." : text}
+                {getVoiceDisplayName(selectedVoice)}: {text.length > 20 ? text.substring(0, 20) + "..." : text}
               </div>
               <div className="flex items-center space-x-2">
                 <div className="text-xs text-gray-500 dark:text-gray-400 mr-2">How did this sound?</div>

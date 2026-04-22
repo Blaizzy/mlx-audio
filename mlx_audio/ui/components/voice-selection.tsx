@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
-import { VoiceLibrary } from "@/components/voice-library"
+import { VoiceLibrary, getVoiceDisplayName, VOICE_GRADIENT_COLORS } from "@/components/voice-library"
 import { Settings } from "lucide-react"
 
 interface VoiceSelectionProps {
@@ -12,16 +12,11 @@ interface VoiceSelectionProps {
 
 export function VoiceSelection({
   onVoiceChange,
-  initialVoice = "Trustworthy Man",
+  initialVoice = "af_heart",
   className = "mb-6",
 }: VoiceSelectionProps) {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [selectedVoice, setSelectedVoice] = useState(initialVoice)
-
-  useEffect(() => {
-    // This ensures the UI updates when the selected voice changes
-    console.log("Selected voice updated:", selectedVoice)
-  }, [selectedVoice])
 
   useEffect(() => {
     // Update selected voice if initialVoice prop changes
@@ -29,23 +24,6 @@ export function VoiceSelection({
       setSelectedVoice(initialVoice)
     }
   }, [initialVoice])
-
-  // Helper function to determine gradient based on voice name
-  const getGradientForVoice = (name: string) => {
-    if (name.includes("Man") || name.includes("Male")) {
-      return "from-blue-400 to-indigo-600"
-    } else if (name.includes("Girl") || name.includes("Female")) {
-      return "from-pink-400 to-orange-300"
-    } else if (name.includes("Narrator")) {
-      return "from-purple-400 to-indigo-500"
-    } else if (name.includes("Compelling")) {
-      return "from-rose-400 to-red-500"
-    } else if (name.includes("Magnetic")) {
-      return "from-sky-400 to-blue-600"
-    } else {
-      return "from-gray-400 to-gray-600"
-    }
-  }
 
   const handleVoiceChange = (voice: string) => {
     setSelectedVoice(voice)
@@ -56,7 +34,7 @@ export function VoiceSelection({
   }
 
   const handleResetVoice = () => {
-    const defaultVoice = "Trustworthy Man"
+    const defaultVoice = "af_heart"
     setSelectedVoice(defaultVoice)
     if (onVoiceChange) {
       onVoiceChange(defaultVoice)
@@ -70,12 +48,12 @@ export function VoiceSelection({
       <div className="flex items-center justify-between rounded-md border border-gray-200 dark:border-gray-700 p-2 hover:bg-gray-50 dark:hover:bg-gray-800">
         <div className="flex items-center space-x-3">
           <div
-            className={`w-10 h-10 rounded-md flex-shrink-0 bg-gradient-to-br ${getGradientForVoice(selectedVoice)}`}
-            aria-label={`${selectedVoice} avatar`}
+            className={`w-10 h-10 rounded-md flex-shrink-0 bg-gradient-to-br ${VOICE_GRADIENT_COLORS[selectedVoice] || "from-gray-400 to-gray-600"}`}
+            aria-label={`${getVoiceDisplayName(selectedVoice)} avatar`}
           ></div>
           <div>
             <div className="flex items-center space-x-2">
-              <span className="text-sm font-medium">{selectedVoice}</span>
+              <span className="text-sm font-medium">{getVoiceDisplayName(selectedVoice)}</span>
               <div className="h-2 w-2 rounded-full bg-gray-200 dark:bg-gray-600"></div>
             </div>
             <span className="text-xs text-gray-500 dark:text-gray-400">English</span>
