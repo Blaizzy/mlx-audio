@@ -5,7 +5,6 @@ import type React from "react"
 import { useState, useRef, useEffect } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { LayoutWrapper } from "@/components/layout-wrapper"
-import { getAudioFromDB } from "@/components/audio-db"
 import { ArrowLeft, Download, MoreVertical, Play, Pause, SkipBack, SkipForward, ExternalLink } from "lucide-react"
 import Link from "next/link"
 
@@ -166,38 +165,23 @@ export default function TranscriptViewerPage() {
             })
           : "Unknown date"
         )
-        getAudioFromDB(fileId).then((url) => {
-          if (url && audioRef.current) {
-            audioRef.current.src = url
-            audioRef.current.onloadedmetadata = () => {
-              setDuration(audioRef.current?.duration ?? 8)
-            }
+        if (data.audioDataUrl && audioRef.current) {
+          audioRef.current.src = data.audioDataUrl
+          audioRef.current.onloadedmetadata = () => {
+            setDuration(audioRef.current?.duration ?? 8)
           }
-        })
+        } else {
+          setDuration(data.duration ?? 8)
+        }
 
         if (data.segments?.length) {
-          // Build speakers dynamically from segment speaker labels
-          const speakerKeys = [...new Set(
-            data.segments.map((s: any) => s.speaker).filter((s: any) => s != null)
-          )].sort() as string[]
-
-          const colors = ["#F59E0B", "#3B82F6", "#10B981", "#EF4444", "#8B5CF6", "#F97316"]
-          const dynamicSpeakers: Speaker[] = speakerKeys.map((key, i) => ({
-           id: i,
-           name: `Speaker ${i}`, 
-           color: colors[i % colors.length],
+          const segments = data.segments.map(seg => ({
+            speakerId: 0,
+            startTime: seg.start,
+            endTime: seg.end,
+            text: seg.text
           }))
-          if (dynamicSpeakers.length > 0) setSpeakers(dynamicSpeakers)
-
-          const speakerKeyToId = Object.fromEntries(speakerKeys.map((key, i) => [key, i]))
-
-          const mappedSegments = data.segments.map((seg: any) => ({
-            speakerId: seg.speaker != null ? (speakerKeyToId[seg.speaker] ?? 0) : 0,
-            startTime: seg.start ?? 0,
-            endTime: seg.end ?? 0,
-            text: seg.text,
-          }))
-          setTranscript(mappedSegments)
+          setTranscript(segments)
         } else if (data.text) {
           setTranscript([{
             speakerId: 0,
@@ -211,71 +195,7 @@ export default function TranscriptViewerPage() {
       }
     }
   }, [fileId])
-  
-  const downloadFile = (content: string, mimeType: string, extension: string) => {
-  const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement("a")
-  a.href = url
-  a.download = `${fileName.replace(/\.[^/.]+$/, "")}.${extension}`
-  a.click()
-  URL.revokeObjectURL(url)
-}
 
-const exportAsTxt = () => {
-  const content = transcript.map(seg => {
-    const speaker = speakers.find(s => s.id === seg.speakerId)
-    return `${speaker?.name ?? "Unknown Speaker"}\n${seg.text}\n`
-  }).join("\n")
-  downloadFile(content, "text/plain", "txt")
-}
-
-const exportAsSrt = () => {
-  const content = transcript.map((seg, i) => {
-    const speaker = speakers.find(s => s.id === seg.speakerId)
-    const toSrtTime = (s: number) => {
-      const h = Math.floor(s / 3600).toString().padStart(2, "0")
-      const m = Math.floor((s % 3600) / 60).toString().padStart(2, "0")
-      const sec = Math.floor(s % 60).toString().padStart(2, "0")
-      const ms = Math.floor((s % 1) * 1000).toString().padStart(3, "0")
-      return `${h}:${m}:${sec},${ms}`
-    }
-    return `${i + 1}\n${toSrtTime(seg.startTime)} --> ${toSrtTime(seg.endTime)}\n${speaker?.name ?? "Unknown"}: ${seg.text}\n`
-  }).join("\n")
-  downloadFile(content, "text/plain", "srt")
-}
-
-const exportAsVtt = () => {
-  const toVttTime = (s: number) => {
-    const h = Math.floor(s / 3600).toString().padStart(2, "0")
-    const m = Math.floor((s % 3600) / 60).toString().padStart(2, "0")
-    const sec = Math.floor(s % 60).toString().padStart(2, "0")
-    const ms = Math.floor((s % 1) * 1000).toString().padStart(3, "0")
-    return `${h}:${m}:${sec}.${ms}`
-  }
-  const content = "WEBVTT\n\n" + transcript.map((seg, i) => {
-    const speaker = speakers.find(s => s.id === seg.speakerId)
-    return `${i + 1}\n${toVttTime(seg.startTime)} --> ${toVttTime(seg.endTime)}\n<v ${speaker?.name ?? "Unknown"}>${seg.text}\n`
-  }).join("\n")
-  downloadFile(content, "text/vtt", "vtt")
-}
-
-const exportAsJson = () => {
-  const content = JSON.stringify({
-    fileName,
-    language,
-    date,
-    duration,
-    speakers: speakers.map(s => ({ id: s.id, name: s.name, color: s.color })),
-    segments: transcript.map(seg => ({
-      speaker: speakers.find(s => s.id === seg.speakerId)?.name ?? null,
-      start: seg.startTime,
-      end: seg.endTime,
-      text: seg.text,
-    })),
-  }, null, 2)
-  downloadFile(content, "application/json", "json")
-}
 
   return (
     <LayoutWrapper activeTab="audio" activePage="speech-to-text">
@@ -319,26 +239,11 @@ const exportAsJson = () => {
               <button
                 className="flex items-center space-x-2 bg-sky-500 hover:bg-sky-600 text-white px-3 py-1.5 rounded-md mr-2"
                 onClick={() => {
-                  // Build updated segments with current speaker names resolved back
-                  const updatedSegments = transcript.map(seg => ({
-                    text: seg.text,
-                    start: seg.startTime,
-                    end: seg.endTime,
-                    speaker: speakers.find(s => s.id === seg.speakerId)?.name ?? null,
-                  }))
-                  // Read existing stored data and merge updates
-                  const stored = localStorage.getItem(`mlx-audio-transcription-${fileId}`)
-                    if (stored) {
-                    const data = JSON.parse(stored)
-                    localStorage.setItem(`mlx-audio-transcription-${fileId}`, JSON.stringify({
-                      ...data,
-                      segments: updatedSegments,
-                      // Store speaker display names separately so they survive re-mapping
-                      speakerNames: Object.fromEntries(speakers.map(s => [s.name, s.name])),
-                    }))
-                  }
+                  // Save changes and switch back to view mode
                   setActiveTab("view")
-                }}   
+                  // Here you would typically save changes to a backend
+                  console.log("Changes saved:", { transcript, speakers })
+                }}
               >
                 <svg
                   xmlns="http://www.w3.org/2000/svg"
@@ -369,22 +274,38 @@ const exportAsJson = () => {
                   <div className="py-1">
                     <button
                       className="w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 text-left"
-                      onClick={() => { exportAsTxt(); setIsExportDropdownOpen(false) }}>
+                      onClick={() => {
+                        console.log("Exporting as TXT")
+                        setIsExportDropdownOpen(false)
+                      }}
+                    >
                       TXT
                     </button>
                     <button
                       className="w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 text-left"
-                      onClick={() =>  { exportAsSrt(); setIsExportDropdownOpen(false) }}>
+                      onClick={() => {
+                        console.log("Exporting as SRT")
+                        setIsExportDropdownOpen(false)
+                      }}
+                    >
                       SRT
                     </button>
                     <button
                       className="w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 text-left"
-                      onClick={() => { exportAsVtt(); setIsExportDropdownOpen(false) }}>
+                      onClick={() => {
+                        console.log("Exporting as VTT")
+                        setIsExportDropdownOpen(false)
+                      }}
+                    >
                       VTT
                     </button>
                     <button
                       className="w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 text-left"
-                      onClick={() => { exportAsJson(); setIsExportDropdownOpen(false) }}>
+                      onClick={() => {
+                        console.log("Exporting as JSON")
+                        setIsExportDropdownOpen(false)
+                      }}
+                    >
                       JSON
                     </button>
                   </div>

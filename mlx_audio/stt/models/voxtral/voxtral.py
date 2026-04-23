@@ -371,9 +371,14 @@ class Model(nn.Module):
                 disable=not verbose,
                 desc="Streaming",
             ):
-                if token in self._processor.tokenizer.eos_token_ids:
-                    break
-
+                eos_ids = self._processor.tokenizer.eos_token_ids
+                if isinstance(eos_ids, int):
+                    if token == eos_ids:
+                        break
+                else:
+                    if token in eos_ids:
+                        break
+                    
                 yield token, logprobs
 
     def generate(
@@ -424,7 +429,7 @@ class Model(nn.Module):
             min_tokens_to_keep=min_tokens_to_keep,
             top_k=top_k,
             xtc_special_tokens=self._processor.tokenizer.encode("\n")
-            + list(self._processor.tokenizer.eos_token_ids),
+            + ([self._processor.tokenizer.eos_token_ids] if isinstance(self._processor.tokenizer.eos_token_ids, int) else list(self._processor.tokenizer.eos_token_ids)),
         )
 
         for token, _ in self.stream_generate(

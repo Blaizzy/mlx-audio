@@ -44,6 +44,11 @@ from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.utils import load_model
 
+DIARIZE_FIRST_MODELS = ["voxtral", "vibevoice", "moonshine"]
+
+def needs_diarize_first(model_name: str) -> bool:
+    """Returns True for LLM-based STT models that don't produce timestamps."""
+    return any(m in model_name.lower() for m in DIARIZE_FIRST_MODELS)
 
 def sanitize_for_json(obj: Any) -> Any:
     """Recursively sanitize NaN, Infinity, and -Infinity values for JSON serialization."""
@@ -187,6 +192,8 @@ class TranscriptionRequest(BaseModel):
     context: str | None = None
     prefill_step_size: int = 2048
     text: str | None = None
+    diarize: bool = False
+    diarization_model: str | None = None
 
 
 class SeparationResponse(BaseModel):
@@ -344,23 +351,91 @@ async def tts_speech(payload: SpeechRequest, request: Request):
         },
     )
 
+def model_produces_segments(stt_model) -> bool:
+    """Check if model natively returns timestamped segments."""
+    # Check result of a dummy or inspect model type/class name
+    model_class = type(stt_model).__name__.lower()
+    return "whisper" in model_class
 
-def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
-    """Generator that yields transcription chunks and cleans up temp file."""
+
+def generate_diarize_first_stream(
+    stt_model, tmp_path: str, gen_kwargs: dict, diarization_model_name: str
+):
+    #Diarize-first pipeline: segment by speaker, then transcribe each slice.
     try:
-        # Call generate with stream=True (models handle streaming internally)
+        import soundfile as sf
+        import tempfile
+        from mlx_audio.vad import load as load_vad
+
+        audio_data, sample_rate = sf.read(tmp_path)
+        diar_model = load_vad(diarization_model_name)
+
+        all_segments = []
+        for result in diar_model.generate_stream(
+            tmp_path, threshold=0.4, min_duration=0.25,
+            merge_gap=0.5, chunk_duration=5.0, verbose=False,
+        ):
+            for seg in result.segments:
+                all_segments.append(seg)
+
+        collected = []
+        for seg in all_segments:
+            duration = seg.end - seg.start
+            if duration < 0.3:
+                continue
+
+            start_sample = int(seg.start * sample_rate)
+            end_sample = int(seg.end * sample_rate)
+            segment_audio = audio_data[start_sample:end_sample]
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                sf.write(tmp.name, segment_audio, sample_rate)
+                seg_path = tmp.name
+
+            try:
+                result = stt_model.generate(seg_path, **gen_kwargs)
+                text = result.text.strip() if hasattr(result, "text") else str(result).strip()
+            except Exception as e:
+                text = f"[error: {e}]"
+            finally:
+                os.unlink(seg_path)
+
+            chunk = {
+                "text": text,
+                "start": seg.start,
+                "end": seg.end,
+                "speaker": seg.speaker,
+                "accumulated": text,
+            }
+            collected.append(chunk)
+            # Stream each segment as it completes for real-time UI feedback
+            yield json.dumps(sanitize_for_json(chunk)) + "\n"
+
+        yield json.dumps({
+            "type": "diarization_complete",
+            "segments": collected,
+        }) + "\n"
+
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict, diarize: bool = False, diarization_model_name: str | None = None):
+    try:
+        # Force non-streaming when diarizing so we get full segments with timestamps
+        if diarize:
+            gen_kwargs = {**gen_kwargs, "stream": False}
+
         result = stt_model.generate(tmp_path, **gen_kwargs)
 
-        # Check if result is a generator (streaming mode)
-        if hasattr(result, "__iter__") and hasattr(result, "__next__"):
+        if hasattr(result, "__iter__") and hasattr(result, "__next__") and not diarize:
+            # Streaming path — only used when NOT diarizing
             accumulated_text = ""
             for chunk in result:
-                # Handle different chunk types (string tokens vs structured chunks)
                 if isinstance(chunk, str):
                     accumulated_text += chunk
                     chunk_data = {"text": chunk, "accumulated": accumulated_text}
                 else:
-                    # Structured chunk (e.g., Whisper streaming)
                     chunk_data = {
                         "text": chunk.text,
                         "start": getattr(chunk, "start_time", None),
@@ -370,12 +445,39 @@ def generate_transcription_stream(stt_model, tmp_path: str, gen_kwargs: dict):
                     }
                 yield json.dumps(sanitize_for_json(chunk_data)) + "\n"
         else:
-            # Not a generator, yield the full result
-            yield json.dumps(sanitize_for_json(result)) + "\n"
+            # batch result — always used when diarizing
+            result_dict = sanitize_for_json(result)
+
+            if diarize and diarization_model_name and hasattr(result, "segments") and result.segments:
+                try:
+                    from mlx_audio.vad import load as load_vad
+                    diar_model = load_vad(diarization_model_name)
+                    diar_result = diar_model.generate(tmp_path, verbose=False)
+
+                    segments = sanitize_for_json(result.segments)
+                    for seg in segments:
+                        if seg.get("start") is None or seg.get("end") is None:
+                            seg["speaker"] = None
+                            continue
+                        best_speaker = None
+                        best_overlap = 0.0
+                        for d in diar_result.segments:
+                            overlap = max(0, min(seg["end"], d.end) - max(seg["start"], d.start))
+                            if overlap > best_overlap:
+                                best_overlap = overlap
+                                best_speaker = f"SPEAKER_{int(d.speaker):02d}"
+                        seg["speaker"] = best_speaker
+
+                    yield json.dumps(sanitize_for_json(result_dict)) + "\n"
+                    yield json.dumps({"type": "diarization_complete", "segments": segments}) + "\n"
+                except Exception as e:
+                    yield json.dumps(sanitize_for_json(result_dict)) + "\n"
+                    yield json.dumps({"type": "diarization_error", "error": str(e)}) + "\n"
+            else:
+                yield json.dumps(sanitize_for_json(result_dict)) + "\n"
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
-
 
 @app.post("/v1/audio/transcriptions")
 async def stt_transcriptions(
@@ -390,6 +492,8 @@ async def stt_transcriptions(
     context: Optional[str] = Form(None),
     prefill_step_size: int = Form(2048),
     text: Optional[str] = Form(None),
+    diarize: bool = Form(False),
+    diarization_model: Optional[str] = Form(None), 
 ):
     """Transcribe audio using an STT model in OpenAI format."""
     # Create TranscriptionRequest from form fields
@@ -404,6 +508,8 @@ async def stt_transcriptions(
         context=context,
         prefill_step_size=prefill_step_size,
         text=text,
+        diarize=diarize,
+        diarization_model=diarization_model,
     )
 
     data = await file.read()
@@ -417,16 +523,26 @@ async def stt_transcriptions(
     stt_model = model_provider.load_model(payload.model)
 
     # Build kwargs for generate, filtering None values
-    gen_kwargs = payload.model_dump(exclude={"model"}, exclude_none=True)
+    gen_kwargs = payload.model_dump(exclude={"model", "diarize", "diarization_model"}, exclude_none=True)
 
     # Filter kwargs to only include parameters the model's generate method accepts
     signature = inspect.signature(stt_model.generate)
     gen_kwargs = {k: v for k, v in gen_kwargs.items() if k in signature.parameters}
+    if payload.diarize and payload.diarization_model:
+        if needs_diarize_first(payload.model):
+            generator = generate_diarize_first_stream(
+                stt_model, tmp_path, gen_kwargs, payload.diarization_model
+            )
+        else:
+            generator = generate_transcription_stream(
+                stt_model, tmp_path, gen_kwargs,
+                diarize=True,
+                diarization_model_name=payload.diarization_model
+            )
+    else:
+        generator = generate_transcription_stream(stt_model, tmp_path, gen_kwargs)
 
-    return StreamingResponse(
-        generate_transcription_stream(stt_model, tmp_path, gen_kwargs),
-        media_type="application/x-ndjson",
-    )
+    return StreamingResponse(generator, media_type="application/x-ndjson")
 
 
 SAM_MODEL = None

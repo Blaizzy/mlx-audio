@@ -4,8 +4,63 @@ import type React from "react"
 
 import { useState, useRef, useEffect } from "react"
 import { LayoutWrapper } from "@/components/layout-wrapper"
+import { SearchableLanguageSelect } from "@/components/SearchableLanguageSelect"
+import { SearchableSTTModelSelect } from "@/components/SearchableSTTModelSelect"
+import { getAudioFromDB, saveAudioToDB, deleteAudioFromDB } from "@/components/audio-db"
+import { getSupportedLanguageNames, getCompatibleModelValues, LANGUAGE_CODE } from "@/components/modelLanguageData"
 import { FileText, Upload, MoreVertical, X, ChevronDown, Mic } from "lucide-react"
 import Link from "next/link"
+
+const DB_NAME = "mlx-audio-db"
+const DB_STORE = "audio-files"
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1)
+    req.onupgradeneeded = () => req.result.createObjectStore(DB_STORE)
+    req.onsuccess = () => resolve(req.result)
+    req.onerror = () => reject(req.error)
+  })
+}
+
+async function saveAudioToDB(id: string, blob: Blob): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DB_STORE, "readwrite")
+    tx.objectStore(DB_STORE).put(blob, id)
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+  })
+}
+
+export async function getAudioFromDB(id: string): Promise<string | null> {
+  const db = await openDB()
+  return new Promise((resolve) => {
+    const req = db.transaction(DB_STORE).objectStore(DB_STORE).get(id)
+    req.onsuccess = () => {
+      if (!req.result) return resolve(null)
+      resolve(URL.createObjectURL(req.result))
+    }
+    req.onerror = () => resolve(null)
+  })
+}
+
+export async function deleteAudioFromDB(id: string): Promise<void> {
+  const db = await openDB()
+  return new Promise((resolve) => {
+    const tx = db.transaction(DB_STORE, "readwrite")
+    tx.objectStore(DB_STORE).delete(id)
+    tx.oncomplete = () => resolve()
+  })
+}
+
+const DIARIZATION_MODELS = [
+  {
+    value: "mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16",
+    label: "Sortformer 4spk v2.1 fp16",
+    description: "Streaming, up to 4 speakers",
+  },
+]
 
 interface TranscriptionFile {
   id: string
@@ -13,6 +68,20 @@ interface TranscriptionFile {
   status: "uploading" | "processing" | "completed" | "failed"
   result?: string
 }
+
+const Toggle = ({ id, checked, onChange }: { id: string; checked: boolean; onChange: () => void }) => (
+  <div className="relative inline-block w-12 h-6">
+   <input type="checkbox" id={id} className="opacity-0 w-0 h-0" checked={checked} onChange={onChange} />
+   <label htmlFor={id} className={`absolute cursor-pointer inset-0 rounded-full transition-colors duration-200 ${
+     checked ? "bg-black dark:bg-white" : "bg-gray-300 dark:bg-gray-600"
+   }`}>
+     <span className={`absolute left-1 bottom-1 bg-white dark:bg-gray-800 w-4 h-4 rounded-full transition-transform duration-200 ${
+       checked ? "translate-x-6" : ""
+     }`} />
+   </label>
+  </div>
+)
+
 export default function SpeechToTextPage() {
   const [files, setFiles] = useState<TranscriptionFile[]>([
     {
@@ -24,10 +93,29 @@ export default function SpeechToTextPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [primaryLanguage, setPrimaryLanguage] = useState("Detect")
   const [tagAudioEvents, setTagAudioEvents] = useState(false)
+  const [speakerDiarization, setSpeakerDiarization] = useState(false)
+  const [diarizationModel, setDiarizationModel] = useState(DIARIZATION_MODELS[0].value)
   const [selectedModel, setSelectedModel] = useState("mlx-community/whisper-large-v3-turbo-asr-fp16")
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [maxTokens, setMaxTokens] = useState(1024)
+ 
+  // Compute allowed options reactively
+  const allowedLanguages = getSupportedLanguageNames(selectedModel);
+  const allowedModels    = getCompatibleModelValues(primaryLanguage);
+
+  // Optional: auto-reset language to Detect if current selection becomes incompatible
+  useEffect(() => {
+    const supported = getSupportedLanguageNames(selectedModel)
+    if (supported === '*') return
+    if (primaryLanguage === 'Detect' && !supported.includes('Detect')) {
+      setPrimaryLanguage(supported.includes('English') ? 'English' : supported[0])
+      return
+    }
+    if (primaryLanguage !== 'Detect' && !supported.includes(primaryLanguage)) {
+      setPrimaryLanguage(supported.includes('English') ? 'English' : supported[0])
+    }
+  }, [selectedModel])
 
   // New state for stored transcriptions
   const [storedTranscriptions, setStoredTranscriptions] = useState<{ id: string; data: any }[]>([])
@@ -75,19 +163,24 @@ export default function SpeechToTextPage() {
     const formData = new FormData()
     formData.append("file", file)
     formData.append("model", selectedModel)
-    formData.append("language", primaryLanguage === "Detect" ? "en" : primaryLanguage.toLowerCase())
+    const languageCode = primaryLanguage === "Detect"
+      ? null
+      : LANGUAGE_CODE[primaryLanguage] ?? primaryLanguage.toLowerCase();
+    if (languageCode) {
+      formData.append("language", languageCode);
+    }
     formData.append("response_format", "verbose_json")
     formData.append("temperature", "0")
     formData.append("max_tokens", maxTokens.toString())
+    if (speakerDiarization) {
+      formData.append("diarize", "true")
+      formData.append("diarization_model", diarizationModel)
+    }
 
     let fileName = file.name
 
     // Store audio as data URL for playback on the detail page
-    const audioDataUrl = await new Promise<string>((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(reader.result as string)
-      reader.readAsDataURL(file)
-    })
+    await saveAudioToDB(id, file)
 
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost';
     const API_PORT = process.env.NEXT_PUBLIC_API_PORT || '8000';
@@ -97,18 +190,44 @@ export default function SpeechToTextPage() {
         method: "POST",
         body: formData,
       })
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error(`Server error ${res.status}:`, errorText)
+        throw new Error(`Server error ${res.status}: ${errorText}`)
+      }
 
+      // console.log("Response status:", res.status, res.headers.get("content-type"))
       // Server returns NDJSON (newline-delimited JSON) stream
       const reader = res.body?.getReader()
       const decoder = new TextDecoder()
       let accumulatedText = ""
-      const segments: Array<{ text: string; start?: number; end?: number }> = []
+      const segments: Array<{ text: string; start?: number; end?: number; speaker?: string }> = []
 
       if (reader) {
         let buffer = ""
         while (true) {
           const { done, value } = await reader.read()
-          if (done) break
+          if (done) {
+            if (buffer.trim()) {
+              try {
+                const chunk = JSON.parse(buffer)
+                if (chunk.type === "diarization_complete") {
+                  segments.length = 0
+                  segments.push(...chunk.segments)
+                } else {
+                  if (chunk.accumulated) {
+                    accumulatedText = chunk.accumulated
+                  } else if (chunk.text) {
+                    accumulatedText += chunk.text
+                  }
+                  if (chunk.start != null || chunk.end != null) {
+                  segments.push({ text: chunk.text, start: chunk.start, end: chunk.end, speaker: chunk.speaker })
+                  }
+                }
+              } catch { /* skip malformed */ }
+            }
+            break
+          }
           buffer += decoder.decode(value, { stream: true })
           const lines = buffer.split("\n")
           buffer = lines.pop() || ""
@@ -116,13 +235,19 @@ export default function SpeechToTextPage() {
             if (!line.trim()) continue
             try {
               const chunk = JSON.parse(line)
-              if (chunk.accumulated) {
-                accumulatedText = chunk.accumulated
-              } else if (chunk.text) {
-                accumulatedText += chunk.text
-              }
-              if (chunk.start != null || chunk.end != null) {
-                segments.push({ text: chunk.text, start: chunk.start, end: chunk.end })
+              // console.log("chunk:", chunk)
+              if (chunk.type === "diarization_complete") {
+                segments.length = 0
+                segments.push(...chunk.segments)
+              } else {
+                if (chunk.accumulated) {
+                  accumulatedText = chunk.accumulated
+                } else if (chunk.text) {
+                  accumulatedText += chunk.text
+                }
+                if (chunk.start != null || chunk.end != null) {
+                segments.push({ text: chunk.text, start: chunk.start, end: chunk.end, speaker: chunk.speaker })
+                }
               }
             } catch { /* skip malformed lines */ }
           }
@@ -132,7 +257,9 @@ export default function SpeechToTextPage() {
       const data: Record<string, unknown> = {
         fileName,
         text: accumulatedText,
-        audioDataUrl,
+        language: languageCode ?? "Detect",  
+        date: new Date().toISOString(),
+        diarized: speakerDiarization, 
         ...(segments.length > 0 ? { segments } : {}),
       }
       localStorage.setItem(`mlx-audio-transcription-${id}`, JSON.stringify(data))
@@ -142,9 +269,10 @@ export default function SpeechToTextPage() {
         )
       )
     } catch (err) {
+      console.error("Transcribe Failed:", err)
       setFiles((prev) =>
         prev.map((f) => (f.id === id ? { ...f, status: "failed" } : f))
-      )
+      ) 
     }
   }
 
@@ -200,6 +328,7 @@ export default function SpeechToTextPage() {
   const deleteFile = (id: string) => {
     setFiles(files.filter((file) => file.id !== id))
     localStorage.removeItem(`mlx-audio-transcription-${id}`)
+    deleteAudioFromDB(id)
   }
 
   return (
@@ -320,7 +449,7 @@ export default function SpeechToTextPage() {
       {/* Transcribe Files Modal */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="relative w-full max-w-2xl bg-white dark:bg-gray-900 rounded-xl p-6">
+          <div className="relative w-full max-w-2xl bg-white dark:bg-gray-900 rounded-xl p-6 max-h-[90vh] overflow-y-auto">
             <button
               onClick={() => setIsModalOpen(false)}
               className="absolute right-6 top-6 text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300"
@@ -360,37 +489,21 @@ export default function SpeechToTextPage() {
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-medium">Primary language</label>
               </div>
-              <div className="relative">
-                <select
-                  value={primaryLanguage}
-                  onChange={(e) => setPrimaryLanguage(e.target.value)}
-                  className="w-full appearance-none rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 pr-10 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
-                >
-                  <option value="Detect">Detect</option>
-                  <option value="English">English</option>
-                  <option value="Spanish">Spanish</option>
-                  <option value="French">French</option>
-                  <option value="German">German</option>
-                  <option value="Italian">Italian</option>
-                  <option value="Portuguese">Portuguese</option>
-                  <option value="Chinese">Chinese</option>
-                  <option value="Japanese">Japanese</option>
-                  <option value="Korean">Korean</option>
-                </select>
-                <ChevronDown className="absolute right-3 top-3 h-5 w-5 text-gray-400 pointer-events-none" />
-              </div>
+              <SearchableLanguageSelect
+                value={primaryLanguage}
+                onChange={setPrimaryLanguage}
+                allowedLanguages={allowedLanguages}
+               />
             </div>
 
             <div className="mb-6">
               <div className="flex justify-between items-center mb-2">
                 <label className="block text-sm font-medium">Model</label>
               </div>
-              <input
-                type="text"
+              <SearchableSTTModelSelect
                 value={selectedModel}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                placeholder="Enter model name"
-                className="w-full rounded-lg border border-gray-200 dark:border-gray-700 px-4 py-2.5 bg-white dark:bg-gray-800 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                onChange={setSelectedModel}
+                allowedValues={allowedModels}
               />
             </div>
 
@@ -403,7 +516,7 @@ export default function SpeechToTextPage() {
                 <input
                   type="range"
                   min={64}
-                  max={16384}
+                  max={32768}
                   step={64}
                   value={maxTokens}
                   onChange={(e) => setMaxTokens(Number(e.target.value))}
@@ -424,30 +537,49 @@ export default function SpeechToTextPage() {
             <div className="mb-6">
               <div className="flex justify-between items-center">
                 <label className="block text-sm font-medium">Tag audio events</label>
-                <div className="relative inline-block w-12 h-6 transition duration-200 ease-in-out">
-                  <input
-                    type="checkbox"
-                    id="toggle"
-                    className="opacity-0 w-0 h-0"
-                    checked={tagAudioEvents}
-                    onChange={() => setTagAudioEvents(!tagAudioEvents)}
-                  />
-                  <label
-                    htmlFor="toggle"
-                    className={`absolute cursor-pointer top-0 left-0 right-0 bottom-0 rounded-full ${
-                      tagAudioEvents ? "bg-black dark:bg-white" : "bg-gray-300 dark:bg-gray-600"
-                    }`}
-                  >
-                    <span
-                      className={`absolute left-1 bottom-1 bg-white dark:bg-gray-800 w-4 h-4 rounded-full transition-transform duration-200 ease-in-out ${
-                        tagAudioEvents ? "transform translate-x-6" : ""
-                      }`}
-                    ></span>
-                  </label>
-                </div>
+                <Toggle id="toggle-audio-events" checked={tagAudioEvents} onChange={() => setTagAudioEvents(!tagAudioEvents)} />
               </div>
             </div>
-
+            <div className="mb-6">
+              <div className="flex justify-between items-center">
+                <div>
+                <label className="block text-sm font-medium">Speaker diarization</label>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">Identify and label individual speakers</p>
+              </div>
+              <Toggle id="toggle-diarization" checked={speakerDiarization} onChange={() => setSpeakerDiarization(!speakerDiarization)} />
+            </div>
+              {speakerDiarization && (
+                <div className="mt-3 pl-0">
+                  <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1.5">Diarization model</label>
+                  <div className="space-y-2">
+                    {DIARIZATION_MODELS.map((m) => (
+                      <label
+                        key={m.value}
+                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                          diarizationModel === m.value
+                            ? "border-sky-500 bg-sky-50 dark:bg-sky-900/20"
+                            : "border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="diarization-model"
+                          value={m.value}
+                          checked={diarizationModel === m.value}
+                          onChange={() => setDiarizationModel(m.value)}
+                          className="mt-0.5 accent-sky-500"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium">{m.label}</div>
+                          <div className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{m.description}</div>
+                          <div className="text-xs font-mono text-gray-400 dark:text-gray-500 mt-0.5 truncate">{m.value}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             <div className="flex justify-end">
               <button
                 onClick={() => fileInputRef.current?.click()}
