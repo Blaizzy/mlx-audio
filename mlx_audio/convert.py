@@ -595,7 +595,7 @@ def convert(
     model_class = get_model_class(model_type, domain)
 
     model_config = (
-        model_class.ModelConfig.from_dict(config)
+        model_class.ModelConfig.from_dict(dict(config))
         if hasattr(model_class, "ModelConfig")
         else config
     )

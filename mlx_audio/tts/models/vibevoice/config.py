@@ -6,6 +6,14 @@ from typing import Dict, List, Optional, Union
 from mlx_audio.tts.models.base import BaseModelArgs
 
 
+def _coerce_nested_cfg(value):
+    """Convert nested config-like objects to plain dict when possible."""
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    return value
+
+
 @dataclass
 class AcousticTokenizerConfig(BaseModelArgs):
     """Configuration for the acoustic tokenizer (VAE decoder)."""
@@ -87,6 +95,36 @@ class Qwen2DecoderConfig(BaseModelArgs):
 
 
 @dataclass
+class SemanticTokenizerConfig(BaseModelArgs):
+    """Configuration for semantic tokenizer encoder (non-streaming VibeVoice)."""
+
+    model_type: str = "vibevoice_semantic_tokenizer"
+    channels: int = 1
+    corpus_normalize: float = 0.0
+    causal: bool = True
+    vae_dim: int = 128
+    fix_std: float = 0.0
+    std_dist_type: str = "none"
+
+    # Common parameters
+    mixer_layer: str = "depthwise_conv"
+    conv_norm: str = "none"
+    pad_mode: str = "constant"
+    disable_last_norm: bool = True
+    layernorm: str = "RMSNorm"
+    layernorm_eps: float = 1e-5
+    layernorm_elementwise_affine: bool = True
+    conv_bias: bool = True
+    layer_scale_init_value: float = 1e-6
+    weight_init_value: float = 0.01
+
+    # Encoder specific
+    encoder_n_filters: int = 32
+    encoder_ratios: List[int] = field(default_factory=lambda: [8, 5, 5, 4, 2, 2])
+    encoder_depths: str = "3-3-3-3-3-3-8"
+
+
+@dataclass
 class ModelConfig(BaseModelArgs):
     """Main configuration for VibeVoice streaming model."""
 
@@ -102,18 +140,35 @@ class ModelConfig(BaseModelArgs):
     diffusion_head_config: DiffusionHeadConfig = field(
         default_factory=DiffusionHeadConfig
     )
+    semantic_tokenizer_config: SemanticTokenizerConfig = field(
+        default_factory=SemanticTokenizerConfig
+    )
 
     # Model architecture parameters
     acoustic_vae_dim: int = 64
+    semantic_vae_dim: int = 128
     tts_backbone_num_hidden_layers: int = 20
+    quantization: Optional[Dict] = None
 
     @classmethod
     def from_dict(cls, params: dict) -> "ModelConfig":
         """Create config from a dictionary."""
+        # Do not mutate caller-owned config dict (conversion later persists it).
+        params = dict(params)
+
+        # Compatibility with configs that use `sampling_rate`.
+        if "sample_rate" not in params and "sampling_rate" in params:
+            params["sample_rate"] = params["sampling_rate"]
+
         # Handle nested configs
-        acoustic_cfg = params.pop("acoustic_tokenizer_config", {})
-        decoder_cfg = params.pop("decoder_config", {})
-        diffusion_cfg = params.pop("diffusion_head_config", {})
+        acoustic_cfg = _coerce_nested_cfg(params.pop("acoustic_tokenizer_config", {}))
+        decoder_cfg = _coerce_nested_cfg(params.pop("decoder_config", {}))
+        diffusion_cfg = _coerce_nested_cfg(params.pop("diffusion_head_config", {}))
+        semantic_cfg = _coerce_nested_cfg(params.pop("semantic_tokenizer_config", {}))
+
+        # Some upstream checkpoints use this misspelled field.
+        if "acostic_vae_dim" in params and "acoustic_vae_dim" not in params:
+            params["acoustic_vae_dim"] = params.pop("acostic_vae_dim")
 
         # Create sub-configs
         if isinstance(acoustic_cfg, dict):
@@ -130,12 +185,17 @@ class ModelConfig(BaseModelArgs):
             diffusion_config = DiffusionHeadConfig.from_dict(diffusion_cfg)
         else:
             diffusion_config = diffusion_cfg
+        if isinstance(semantic_cfg, dict):
+            semantic_config = SemanticTokenizerConfig.from_dict(semantic_cfg)
+        else:
+            semantic_config = semantic_cfg
 
         # Filter main config params
         config = cls(
             acoustic_tokenizer_config=acoustic_config,
             decoder_config=decoder_config,
             diffusion_head_config=diffusion_config,
+            semantic_tokenizer_config=semantic_config,
             **{
                 k: v
                 for k, v in params.items()

@@ -245,12 +245,12 @@ def generate_audio(
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             temperature=temperature,
-            max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
             instruct=instruct,
             use_zero_spk_emb=use_zero_spk_emb,
+            max_tokens=max_tokens,
             **kwargs,
         )
         if prompt is not None:
@@ -494,6 +494,10 @@ def parse_args():
     )
 
     args = parser.parse_args()
+    args._repetition_penalty_explicit = any(
+        arg == "--repetition_penalty" or arg.startswith("--repetition_penalty=")
+        for arg in sys.argv[1:]
+    )
 
     if args.save and not args.stream:
         parser.error("--save requires --stream")
