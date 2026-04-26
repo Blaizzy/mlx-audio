@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 from typing import Optional, Tuple, Union
@@ -488,6 +489,12 @@ def parse_args():
         help="The time interval in seconds for streaming segments",
     )
     parser.add_argument(
+        "--gen-kwargs",
+        type=str,
+        default=None,
+        help='Additional generation kwargs as JSON string (e.g., \'{"duration": 60.0, "num_steps": 8}\')',
+    )
+    parser.add_argument(
         "--save",
         action="store_true",
         help="Save streamed audio to a file. Requires --stream.",
@@ -504,6 +511,19 @@ def parse_args():
         else:
             print("Please enter the text to generate:")
             args.text = input("> ").strip()
+
+    # Parse and merge gen_kwargs if provided
+    if hasattr(args, "gen_kwargs") and args.gen_kwargs:
+        try:
+            gen_kwargs = json.loads(args.gen_kwargs)
+            # Convert args to dict, merge with gen_kwargs, then back to args
+            args_dict = vars(args)
+            args_dict.update(gen_kwargs)
+            # Remove the gen_kwargs key itself
+            args_dict.pop("gen_kwargs", None)
+        except json.JSONDecodeError as e:
+            print(f"Error parsing --gen-kwargs JSON: {e}")
+            sys.exit(1)
 
     return args
 

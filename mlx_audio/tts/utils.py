@@ -38,6 +38,8 @@ MODEL_REMAPPING = {
     "longcat": "longcat_audiodit",
     "omnivoice": "omnivoice",
     "melotts": "melotts",
+    "acestep": "ace_step",
+    "ace": "ace_step",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
