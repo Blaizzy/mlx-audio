@@ -2,7 +2,27 @@
 
 # MLX-Audio
 
+[![PyPI version](https://img.shields.io/pypi/v/mlx-audio.svg)](https://pypi.org/project/mlx-audio/)
+[![Python](https://img.shields.io/pypi/pyversions/mlx-audio.svg)](https://pypi.org/project/mlx-audio/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/Blaizzy/mlx-audio.svg?style=social)](https://github.com/Blaizzy/mlx-audio)
+
 The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Supported Models](#supported-models)
+- [Model Examples](#model-examples)
+- [Web Interface \& API Server](#web-interface--api-server)
+- [Quantization](#quantization)
+- [Swift](#swift)
+- [Requirements](#requirements)
+- [License](#license)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
 
 ## Features
 
