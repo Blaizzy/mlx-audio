@@ -24,9 +24,9 @@ from urllib.parse import unquote
 
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
 import uvicorn
 import webrtcvad
+from mlx_audio.audio_io import sf_read, sf_write
 from fastapi import (
     FastAPI,
     File,

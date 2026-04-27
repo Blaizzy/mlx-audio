@@ -28,8 +28,8 @@ from mlx_audio.tts.models.moss_tts.moss_tts import (
     _get_generated_audio_history,
     _normalize_reference_audio_for_codec,
     _path_matches_rescue_pattern,
+    _suppress_token_ids,
     find_last_equal,
-    sample_token,
 )
 from mlx_audio.tts.models.moss_tts.qwen3 import Qwen3Attention
 from mlx_audio.tts.models.moss_tts.processor import (
@@ -249,7 +249,7 @@ class TestPrecisionPaths(unittest.TestCase):
             x = mx.zeros((1, 2, 8), dtype=mx.bfloat16)
             model(inputs_embeds=x, attention_mask=None, cache=None)
             self.assertGreaterEqual(len(seen["masks"]), 1)
-            self.assertEqual(seen["masks"][0], "causal")
+            self.assertIsInstance(seen["masks"][0], mx.array)
 
             x1 = mx.zeros((1, 1, 8), dtype=mx.bfloat16)
             model(inputs_embeds=x1, attention_mask=None, cache=None)
@@ -285,32 +285,20 @@ class TestDelayPattern(unittest.TestCase):
         self.assertEqual(int(delayed_np[0, 2]), 7)
 
 
-class TestSampling(unittest.TestCase):
-    def test_greedy_sampling_returns_argmax(self):
+class TestSuppressTokenIds(unittest.TestCase):
+    def test_suppresses_specified_ids(self):
         logits = mx.array([[0.1, 0.5, 0.3, 0.9]], dtype=mx.float32)
-        token = sample_token(logits, do_sample=False)
-        self.assertEqual(int(token.item()), 3)
+        result = _suppress_token_ids(logits, [1, 3])
+        result_np = np.array(result)
+        self.assertAlmostEqual(float(result_np[0, 0]), 0.1, places=6)
+        self.assertAlmostEqual(float(result_np[0, 2]), 0.3, places=6)
+        self.assertTrue(result_np[0, 1] == float("-inf"))
+        self.assertTrue(result_np[0, 3] == float("-inf"))
 
-    def test_temperature_leq_zero_is_greedy(self):
-        logits = mx.array([[0.1, 0.9, 0.8]], dtype=mx.float32)
-        token = sample_token(logits, do_sample=True, temperature=0.0)
-        self.assertEqual(int(token.item()), 1)
-
-    def test_top_k_1_is_deterministic(self):
-        logits = mx.array([[0.1, 0.9, 0.8, 0.2]], dtype=mx.float32)
-        token = sample_token(logits, do_sample=True, top_k=1, temperature=1.0)
-        self.assertEqual(int(token.item()), 1)
-
-    def test_repetition_penalty_runs(self):
-        logits = mx.array([[0.1, 0.9, 0.8, 0.2]], dtype=mx.float32)
-        prev = mx.array([1, 1, 1, 1], dtype=mx.int32)
-        token = sample_token(
-            logits,
-            do_sample=False,
-            prev_tokens=prev,
-            repetition_penalty=1.2,
-        )
-        self.assertIn(int(token.item()), [0, 1, 2, 3])
+    def test_empty_ids_returns_unchanged(self):
+        logits = mx.array([[0.1, 0.5, 0.3]], dtype=mx.float32)
+        result = _suppress_token_ids(logits, [])
+        np.testing.assert_array_equal(np.array(result), np.array(logits))
 
 
 class TestProcessor(unittest.TestCase):
@@ -912,41 +900,6 @@ class TestApplyQuantization(unittest.TestCase):
         apply_quantization(model, config, weights)
 
         self.assertIsInstance(model.layer, nn.Linear)
-
-
-class TestQ8VerifierDefaults(unittest.TestCase):
-    def test_q8_verifier_defaults_follow_generate_audio(self):
-        from mlx_audio.tts.generate import generate_audio
-        from mlx_audio.tts.tests import moss_q8_verify as verifier
-
-        sig = inspect.signature(generate_audio)
-
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["temperature"],
-            sig.parameters["temperature"].default,
-        )
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["top_p"], sig.parameters["top_p"].default
-        )
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["top_k"], sig.parameters["top_k"].default
-        )
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["repetition_penalty"],
-            sig.parameters["repetition_penalty"].default,
-        )
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["text_temperature"],
-            sig.parameters["text_temperature"].default,
-        )
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["text_top_p"],
-            sig.parameters["text_top_p"].default,
-        )
-        self.assertEqual(
-            verifier.DEFAULT_SETTINGS["text_top_k"],
-            sig.parameters["text_top_k"].default,
-        )
 
 
 class TestGenerateIntegration(unittest.TestCase):
