@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false
-
+import re
 from dataclasses import dataclass
 from functools import lru_cache
-import re
 from typing import Any, Iterable, List, Optional, Sequence, Tuple
 
 import mlx.core as mx
 import numpy as np
+
+# pyright: reportMissingImports=false
 
 
 AUDIO_PLACEHOLDER = "<|audio|>"
@@ -462,7 +462,11 @@ def _normalize_message(message: dict) -> dict:
         ref = message.get("reference")
         if isinstance(ref, list):
             audio_codes_list = [r for r in ref if isinstance(r, mx.array)]
-        return {"role": "user", "content": content, "audio_codes_list": audio_codes_list}
+        return {
+            "role": "user",
+            "content": content,
+            "audio_codes_list": audio_codes_list,
+        }
     if role == "assistant":
         return build_assistant_message(
             audio_codes_list=message.get("audio_codes_list", []),
@@ -485,12 +489,16 @@ def prepare_conversation_input(
 
     if mode == "generation":
         if len(conversation) % 2 == 0:
-            raise ValueError("generation mode requires odd number of messages (last must be user)")
+            raise ValueError(
+                "generation mode requires odd number of messages (last must be user)"
+            )
         if conversation[-1]["role"] != "user":
             raise ValueError("generation mode requires last message to be user")
     else:
         if len(conversation) % 2 != 0:
-            raise ValueError("continuation mode requires even number of messages (last must be assistant)")
+            raise ValueError(
+                "continuation mode requires even number of messages (last must be assistant)"
+            )
         if conversation[-1]["role"] != "assistant":
             raise ValueError("continuation mode requires last message to be assistant")
 
@@ -541,7 +549,9 @@ class MossTTSProcessor:
     def build_assistant_message(
         self, audio_codes_list: List[mx.array], content: str = AUDIO_PLACEHOLDER
     ) -> dict:
-        return build_assistant_message(audio_codes_list=audio_codes_list, content=content)
+        return build_assistant_message(
+            audio_codes_list=audio_codes_list, content=content
+        )
 
     def prepare_conversation_input(
         self,

@@ -429,12 +429,12 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have legacy-format messages (no 'type' field), not delta/complete
     deltas = [m for m in messages if m.get("type") == "delta"]
     completes = [m for m in messages if m.get("type") == "complete"]
-    assert len(deltas) == 0, (
-        f"Expected no delta messages when streaming disabled, got: {deltas}"
-    )
-    assert len(completes) == 0, (
-        f"Expected no complete messages when streaming disabled, got: {completes}"
-    )
+    assert (
+        len(deltas) == 0
+    ), f"Expected no delta messages when streaming disabled, got: {deltas}"
+    assert (
+        len(completes) == 0
+    ), f"Expected no complete messages when streaming disabled, got: {completes}"
 
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]

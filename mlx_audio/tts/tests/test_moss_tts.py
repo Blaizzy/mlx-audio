@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-# pyright: reportMissingImports=false
-
-import os
 import inspect
+import os
 import unittest
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, cast
@@ -15,33 +13,41 @@ import numpy as np
 
 from mlx_audio.codec.models.moss_audio_tokenizer import MossAudioTokenizer
 from mlx_audio.tts.models.moss_tts.config import ModelConfig
-from mlx_audio.utils import apply_quantization
 from mlx_audio.tts.models.moss_tts.moss_tts import (
     Model,
     _apply_experimental_quantization,
     _apply_mixed_precision_rescue,
+    _encode_reference_audio_with_codec,
     _get_experimental_quant_mode,
     _get_experimental_quant_patterns,
-    _get_mixed_precision_rescue_patterns,
-    _requantize_module_with_mode,
-    _encode_reference_audio_with_codec,
     _get_generated_audio_history,
+    _get_mixed_precision_rescue_patterns,
     _normalize_reference_audio_for_codec,
     _path_matches_rescue_pattern,
+    _requantize_module_with_mode,
     _suppress_token_ids,
     find_last_equal,
 )
-from mlx_audio.tts.models.moss_tts.qwen3 import Qwen3Attention
 from mlx_audio.tts.models.moss_tts.processor import (
     AUDIO_PLACEHOLDER,
-    MossTTSProcessor,
     AssistantMessage,
+    MossTTSProcessor,
+)
+from mlx_audio.tts.models.moss_tts.processor import (
     apply_de_delay_pattern as processor_apply_de_delay_pattern,
+)
+from mlx_audio.tts.models.moss_tts.processor import (
     apply_delay_pattern as processor_apply_delay_pattern,
+)
+from mlx_audio.tts.models.moss_tts.processor import (
     build_user_message,
     parse_output,
     prepare_generation_input,
 )
+from mlx_audio.tts.models.moss_tts.qwen3 import Qwen3Attention
+from mlx_audio.utils import apply_quantization
+
+# pyright: reportMissingImports=false
 
 
 class TestConfig(unittest.TestCase):
@@ -931,9 +937,9 @@ class TestGenerateIntegration(unittest.TestCase):
         if not os.path.isdir(model_dir):
             self.skipTest(f"model dir not found: {model_dir} (set MOSS_TTS_MODEL_DIR)")
 
-        from mlx_audio.tts.utils import load_model
-
         from pathlib import Path
+
+        from mlx_audio.tts.utils import load_model
 
         model = load_model(Path(model_dir))
         assert model.generate is not None
@@ -941,9 +947,9 @@ class TestGenerateIntegration(unittest.TestCase):
         self.assertGreaterEqual(len(results), 1)
 
     def test_generate_ref_audio_runs_with_fixture_q8(self):
-        from mlx_audio.tts.utils import load_model
-
         from pathlib import Path
+
+        from mlx_audio.tts.utils import load_model
 
         model_dir = os.environ.get("MOSS_TTS_MODEL_DIR", "./moss-tts-8bit")
         if not os.path.isdir(model_dir):
