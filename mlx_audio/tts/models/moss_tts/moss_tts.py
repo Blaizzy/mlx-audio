@@ -473,7 +473,11 @@ class Model(nn.Module):
 
     def model_quant_predicate(self, path: str, module) -> bool:
         skip_patterns = ["codec", "emb_ext", "audio_tokenizer"]
-        return not any(pattern in path for pattern in skip_patterns)
+        if any(pattern in path for pattern in skip_patterns):
+            return False
+        if path == "language_model.embed_tokens" or path.startswith("lm_heads."):
+            return False
+        return True
 
     @property
     def sample_rate(self) -> int:

@@ -675,10 +675,10 @@ class TestQuantPredicate(unittest.TestCase):
         self.assertFalse(model.model_quant_predicate("codec.layers.0.weight", None))
         self.assertFalse(model.model_quant_predicate("emb_ext.0.weight", None))
         self.assertFalse(model.model_quant_predicate("audio_tokenizer.foo", None))
-        self.assertTrue(
+        self.assertFalse(
             model.model_quant_predicate("language_model.embed_tokens", None)
         )
-        self.assertTrue(model.model_quant_predicate("lm_heads.0", None))
+        self.assertFalse(model.model_quant_predicate("lm_heads.0", None))
         self.assertTrue(
             model.model_quant_predicate(
                 "language_model.layers.0.self_attn.q_proj.weight", None
