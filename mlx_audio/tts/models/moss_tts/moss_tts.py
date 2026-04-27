@@ -973,7 +973,9 @@ class Model(nn.Module):
                 # Not in delay phase → sample text freely from the model
                 sampling_text_mask = (~is_stopping) & ~delay_active
                 if bool(sampling_text_mask.item()):
-                    sampled_text = text_sampler(masked_text_logits).astype(mx.int32)
+                    sampled_text = text_sampler(
+                        nn.log_softmax(masked_text_logits, axis=-1)
+                    ).astype(mx.int32)
                     next_text_token = mx.where(
                         sampling_text_mask, sampled_text, next_text_token
                     )
@@ -996,25 +998,17 @@ class Model(nn.Module):
                     audio_lengths[:, None] > mx.arange(n_vq, dtype=mx.int64)[None, :]
                 )
 
-                # ── Delay-step mask: which codebook heads to sample ──
-                # Detect the first delay-slot token (gen → delay transition)
                 entering_delay = (~delay_active) & (
                     next_text_token
                     == int(self.config.audio_assistant_delay_slot_token_id)
                 )
-                # 1-based index of the *current* delay step:
-                #   entering  → delay_count(0) + 1 = 1  (first delay step)
-                #   active    → delay_count(k) + 1       (k-th completed, now on k+1)
-                #   otherwise → 0                         (not in delay; mask = all True)
                 in_delay_now = delay_active | entering_delay
                 delay_step = mx.where(
                     in_delay_now,
-                    delay_count + 1,
+                    delay_count,
                     mx.zeros_like(delay_count),
                 )
 
-                # At delay_step k, codebooks 0..k-1 are already flushed;
-                # only heads with index >= k still need sampling.
                 head_indices = mx.arange(n_vq, dtype=mx.int64)[None, :]
                 post_audio_mask = mx.where(
                     in_delay_now[:, None],
@@ -1044,7 +1038,9 @@ class Model(nn.Module):
                         )
                         for processor in audio_logits_processors:
                             vq0_logits = processor(prev0[0], vq0_logits)
-                        sampled0 = audio_sampler(vq0_logits).astype(mx.int32)
+                        sampled0 = audio_sampler(
+                            nn.log_softmax(vq0_logits, axis=-1)
+                        ).astype(mx.int32)
                         next_audio_tokens[0, 0] = sampled0[0]
 
                     active_tail_heads = [h for h in selected_audio_heads if h > 0]
@@ -1079,7 +1075,9 @@ class Model(nn.Module):
                                 slices.append(h_slice)
                             tail_logits = mx.stack(slices, axis=1)
 
-                        sampled_tail = audio_sampler(tail_logits).astype(mx.int32)
+                        sampled_tail = audio_sampler(
+                            nn.log_softmax(tail_logits, axis=-1)
+                        ).astype(mx.int32)
                         for i, head_idx in enumerate(active_tail_heads):
                             next_audio_tokens[0, int(head_idx)] = sampled_tail[0, i]
 
