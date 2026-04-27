@@ -64,7 +64,7 @@ from mlx_audio.tts.utils import load_model
 model = load_model("./moss-tts-8bit")
 
 for result in model.generate(
-    text="你好，这是 MOSS TTS 的测试。",
+    text="We are buidling the next version of MOSS-TTS.",
     max_tokens=300,
 ):
     audio = result.audio
@@ -184,7 +184,7 @@ CLI example:
 uv run python -m mlx_audio.tts.generate \
   --model ./moss-tts-8bit \
   --text "请用参考音色读这句话。" \
-  --ref_audio <your ref audio>.wav \
+  --ref_audio <path to your ref audio>.wav \
   --output_path ./test_moss_output_voice_clone
 ```
 
@@ -296,46 +296,6 @@ uv run python -m mlx_audio.tts.generate \
   --conversation_json ./conversation.json \
   --mode continuation \
   --output_path ./test_moss_output_continuation
-```
-
-## Serve via OpenAI-compatible API
-
-Start the server:
-
-```bash
-uv run python -m mlx_audio.server --host 127.0.0.1 --port 8321
-```
-
-Request TTS:
-
-```bash
-curl -X POST http://127.0.0.1:8321/v1/audio/speech \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"./moss-tts-8bit","input":"Hello from MOSS"}' \
-  --output moss.wav
-```
-
-Conversation-style payloads are also supported on the same endpoint. This remains stateless: send the full conversation each time, and make sure the final assistant message includes the prefix audio in `audio_codes_list`.
-
-```bash
-curl -X POST http://127.0.0.1:8321/v1/audio/speech \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "./moss-tts-8bit",
-    "mode": "continuation",
-    "conversation": [
-      {
-        "role": "user",
-        "text": "太阳系八大行星之一。请继续介绍地球。",
-        "language": "zh"
-      },
-      {
-        "role": "assistant",
-        "audio_codes_list": ["./fixtures/ref_audio.wav"]
-      }
-    ]
-  }' \
-  --output moss_continuation.wav
 ```
 
 ## Codec reconstruction check (write reconstructed wav)
