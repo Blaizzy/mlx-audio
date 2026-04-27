@@ -42,7 +42,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
-from mlx_audio.audio_io import sf_read, sf_write
 from mlx_audio.audio_io import write as audio_write
 from mlx_audio.server_inference import (
     BaseModelExecutionAdapter,
@@ -160,7 +159,6 @@ app.router.lifespan_context = app_lifespan
 class SpeechRequest(BaseModel):
     model: str
     input: str | SpeechConversation | None = None
-    conversation: SpeechConversation | None = None
     mode: str = "generation"
     instruct: str | None = None
     voice: str | None = None
@@ -179,51 +177,6 @@ class SpeechRequest(BaseModel):
     streaming_interval: float = 2.0
     max_tokens: int = 1200
     verbose: bool = False
-
-
-def _resolve_speech_request_input(
-    payload: SpeechRequest,
-) -> tuple[str | None, SpeechConversation | None]:
-    conversation = payload.conversation
-    input_value = payload.input
-
-    if conversation is None and isinstance(input_value, list):
-        conversation = input_value
-        input_value = None
-
-    if conversation is not None and input_value is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either `input` text or `conversation`, not both.",
-        )
-
-    if conversation is not None:
-        if payload.mode not in {"generation", "continuation"}:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported mode: {payload.mode!r}.",
-            )
-        if not isinstance(conversation, list) or len(conversation) == 0:
-            raise HTTPException(
-                status_code=400,
-                detail="`conversation` must be a non-empty list of messages.",
-            )
-        return None, conversation
-
-    if payload.mode != "generation":
-        raise HTTPException(
-            status_code=400,
-            detail="`mode` is only supported when `conversation` is provided.",
-        )
-
-    if not isinstance(input_value, str) or not input_value.strip():
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either `input` text or `conversation`.",
-        )
-
-    return input_value, None
-
 
 class TranscriptionRequest(BaseModel):
     model: str
