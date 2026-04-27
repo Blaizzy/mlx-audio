@@ -3,7 +3,7 @@ import importlib.util
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
@@ -6151,6 +6151,287 @@ class TestMeloTTSAttentions(unittest.TestCase):
             cond_layer_idx=2,
         )
         self.assertEqual(enc.cond_layer_idx, 2)
+
+
+class MossFakeTokenizer:
+    def encode(self, text, *args, **kwargs):
+        del args, kwargs
+        return [ord(ch) % 97 for ch in text]
+
+    def decode(self, token_ids, *args, **kwargs):
+        del args, kwargs
+        return "".join(chr(int(token_id) + 30) for token_id in token_ids)
+
+
+class MossFakeAudioTokenizer:
+    def __init__(self):
+        self.encoded_audio = None
+        self.decoded_codes = None
+
+    def encode_audio(self, audio, **kwargs):
+        del kwargs
+        self.encoded_audio = audio
+        return mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+
+    def decode_audio_codes(self, audio_codes, **kwargs):
+        del kwargs
+        self.decoded_codes = audio_codes
+        return mx.ones((4, 1), dtype=mx.float32)
+
+
+def moss_tiny_config(**overrides):
+    from mlx_audio.tts.models.moss_tts_nano import ModelConfig
+
+    config = {
+        "model_type": "moss_tts_nano",
+        "n_vq": 2,
+        "audio_vocab_size": 8,
+        "audio_codebook_sizes": [8, 8],
+        "audio_pad_token_id": 8,
+        "pad_token_id": 3,
+        "im_start_token_id": 4,
+        "im_end_token_id": 5,
+        "audio_start_token_id": 6,
+        "audio_end_token_id": 7,
+        "audio_user_slot_token_id": 8,
+        "audio_assistant_slot_token_id": 9,
+        "gpt2_config": {
+            "vocab_size": 32,
+            "n_positions": 64,
+            "n_ctx": 64,
+            "n_embd": 16,
+            "n_layer": 1,
+            "n_head": 4,
+            "n_inner": 32,
+            "position_embedding_type": "rope",
+            "rope_base": 10000.0,
+            "layer_norm_epsilon": 1e-5,
+        },
+        "local_transformer_layers": 1,
+    }
+    config.update(overrides)
+    return ModelConfig.from_dict(config)
+
+
+class TestMossTTSNanoConfig(unittest.TestCase):
+    def test_config_parses_upstream_shape(self):
+        from mlx_audio.tts.models.moss_tts_nano import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "moss_tts_nano",
+                "n_vq": 16,
+                "audio_vocab_size": 1024,
+                "audio_codebook_sizes": [1024] * 16,
+                "gpt2_config": {
+                    "vocab_size": 16384,
+                    "n_embd": 768,
+                    "n_head": 12,
+                    "n_layer": 12,
+                    "n_inner": 3072,
+                    "n_positions": 32768,
+                },
+                "local_transformer_layers": 1,
+            }
+        )
+
+        self.assertEqual(config.model_type, "moss_tts_nano")
+        self.assertEqual(config.n_vq, 16)
+        self.assertEqual(config.gpt2_config.n_embd, 768)
+        self.assertEqual(config.local_gpt2_config().n_positions, 17)
+
+    def test_config_rejects_wrong_codebook_count(self):
+        from mlx_audio.tts.models.moss_tts_nano import ModelConfig
+
+        with self.assertRaises(ValueError):
+            ModelConfig.from_dict(
+                {
+                    "n_vq": 2,
+                    "audio_vocab_size": 8,
+                    "audio_codebook_sizes": [8],
+                    "gpt2_config": {},
+                }
+            )
+
+
+class TestMossTTSNanoText(unittest.TestCase):
+    def test_prompt_prefix_contains_role_and_reference_template(self):
+        from mlx_audio.tts.models.moss_tts_nano.text import (
+            build_assistant_prompt_prefix,
+            build_user_prompt_after_reference,
+            build_user_prompt_prefix,
+        )
+
+        tokenizer = MossFakeTokenizer()
+        config = moss_tiny_config()
+
+        prefix = build_user_prompt_prefix(tokenizer, config)
+        after_reference = build_user_prompt_after_reference(tokenizer)
+        assistant = build_assistant_prompt_prefix(tokenizer, config)
+
+        self.assertEqual(prefix[0], config.im_start_token_id)
+        self.assertGreater(len(after_reference), 0)
+        self.assertIn(config.im_end_token_id, assistant)
+        self.assertIn(config.im_start_token_id, assistant)
+
+    def test_split_text_into_token_budget_chunks(self):
+        from mlx_audio.tts.models.moss_tts_nano.text import (
+            split_text_into_best_sentences,
+        )
+
+        tokenizer = MossFakeTokenizer()
+        chunks = split_text_into_best_sentences(
+            tokenizer,
+            "hello world. this is another sentence.",
+            max_tokens=14,
+        )
+
+        self.assertGreaterEqual(len(chunks), 2)
+        self.assertTrue(all(chunk.strip() for chunk in chunks))
+
+
+class TestMossTTSNanoSampling(unittest.TestCase):
+    def test_top_k_masks_low_scores(self):
+        from mlx_audio.tts.models.moss_tts_nano.sampling import apply_top_k
+
+        logits = mx.array([[1.0, 2.0, 3.0, 4.0]])
+        filtered = np.array(apply_top_k(logits, 2))
+
+        self.assertTrue(np.isneginf(filtered[0, 0]))
+        self.assertTrue(np.isneginf(filtered[0, 1]))
+        self.assertEqual(filtered[0, 2], 3.0)
+        self.assertEqual(filtered[0, 3], 4.0)
+
+    def test_top_p_keeps_at_least_one_score(self):
+        from mlx_audio.tts.models.moss_tts_nano.sampling import apply_top_p
+
+        logits = mx.array([[10.0, 1.0, 0.0]])
+        filtered = np.array(apply_top_p(logits, 0.1))
+
+        self.assertFalse(np.isneginf(filtered[0, 0]))
+        self.assertTrue(np.isneginf(filtered[0, 1]))
+        self.assertTrue(np.isneginf(filtered[0, 2]))
+
+
+class TestMossTTSNanoModel(unittest.TestCase):
+    def test_build_inputs_embeds_shape(self):
+        from mlx_audio.tts.models.moss_tts_nano import Model
+
+        model = Model(moss_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [2, 3, 4]]], dtype=mx.int32)
+
+        embeds = model._build_inputs_embeds(input_ids)
+
+        self.assertEqual(embeds.shape, (1, 2, 16))
+
+    def test_voice_clone_prompt_rows_include_reference_audio_rows(self):
+        from mlx_audio.tts.models.moss_tts_nano import Model
+        from mlx_audio.tts.models.moss_tts_nano.text import build_user_prompt_prefix
+
+        model = Model(moss_tiny_config())
+        tokenizer = MossFakeTokenizer()
+        prompt_audio_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+
+        input_ids, attention_mask = model.build_inference_input_ids(
+            text="hello",
+            tokenizer=tokenizer,
+            mode="voice_clone",
+            prompt_audio_codes=prompt_audio_codes,
+        )
+
+        rows = np.array(input_ids[0])
+        reference_start = len(build_user_prompt_prefix(tokenizer, model.config)) + 1
+        reference_rows = rows[reference_start : reference_start + 2]
+        self.assertEqual(reference_rows.shape[0], 2)
+        self.assertTrue(
+            np.all(reference_rows[:, 0] == model.config.audio_user_slot_token_id)
+        )
+        np.testing.assert_array_equal(reference_rows[:, 1:], np.array([[1, 2], [3, 4]]))
+        self.assertEqual(attention_mask.shape[1], input_ids.shape[1])
+
+    def test_sanitize_drops_tied_and_absent_weights(self):
+        from mlx_audio.tts.models.moss_tts_nano import Model
+
+        model = Model(moss_tiny_config())
+        x = mx.zeros((1,))
+        sanitized = model.sanitize(
+            {
+                "text_lm_head.weight": x,
+                "audio_lm_heads.0.weight": x,
+                "local_transformer.wte.weight": x,
+                "transformer.wpe.weight": x,
+                "transformer.h.0.ln_1.weight": x,
+            }
+        )
+
+        self.assertEqual(set(sanitized), {"transformer.h.0.ln_1.weight"})
+
+    def test_generate_encodes_reference_audio_and_decodes_generated_tokens(self):
+        from mlx_audio.tts.models.moss_tts_nano import Model
+
+        model = Model(moss_tiny_config())
+        model.tokenizer = MossFakeTokenizer()
+        model.audio_tokenizer = MossFakeAudioTokenizer()
+
+        def fake_generate_audio_token_ids(self, **kwargs):
+            self._last_generation_kwargs = kwargs
+            return mx.array([[[5, 6], [7, 1]]], dtype=mx.int32)
+
+        model.generate_audio_token_ids = MethodType(
+            fake_generate_audio_token_ids, model
+        )
+
+        results = list(
+            model.generate(
+                text="hello",
+                ref_audio=np.zeros((16,), dtype=np.float32),
+                max_tokens=2,
+                do_sample=False,
+            )
+        )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].sample_rate, model.sample_rate)
+        self.assertEqual(results[0].samples, 4)
+        self.assertEqual(results[0].token_count, 2)
+        np.testing.assert_array_equal(
+            np.array(model.audio_tokenizer.decoded_codes),
+            np.array([[[5, 6], [7, 1]]]),
+        )
+
+    def test_audio_tokenizer_loader_skips_tts_model_root(self):
+        from mlx_audio.tts.models.moss_tts_nano.audio_tokenizer import (
+            MLXMossAudioTokenizer,
+        )
+
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "config.json").write_text(
+                '{"model_type": "moss_tts_nano", "gpt2_config": {}}'
+            )
+            (root / "model.safetensors").write_bytes(b"")
+
+            calls = []
+            original_from_pretrained = MLXMossAudioTokenizer.from_pretrained
+
+            def fake_from_pretrained(cls, source):
+                del cls
+                calls.append(source)
+                return "audio-tokenizer"
+
+            try:
+                MLXMossAudioTokenizer.from_pretrained = classmethod(
+                    fake_from_pretrained
+                )
+                tokenizer = MLXMossAudioTokenizer.from_model_dir(
+                    root,
+                    fallback_source="codec/repo",
+                )
+            finally:
+                MLXMossAudioTokenizer.from_pretrained = original_from_pretrained
+
+            self.assertEqual(tokenizer, "audio-tokenizer")
+            self.assertEqual(calls, ["codec/repo"])
 
 
 if __name__ == "__main__":
