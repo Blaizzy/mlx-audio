@@ -178,6 +178,7 @@ class SpeechRequest(BaseModel):
     max_tokens: int = 1200
     verbose: bool = False
 
+
 class TranscriptionRequest(BaseModel):
     model: str
     language: str | None = None
