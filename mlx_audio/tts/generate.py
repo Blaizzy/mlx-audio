@@ -1,7 +1,9 @@
 import argparse
+import json
 import os
 import sys
-from typing import Optional, Tuple, Union
+from pathlib import Path
+from typing import Any, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -57,7 +59,7 @@ def detect_speech_boundaries(
         (len(speech_mask) - 1 - np.argmax(speech_mask[::-1])) * step_size + margin,
     )
 
-    return start, end
+    return int(start), int(end)
 
 
 def remove_silence_on_both_ends(
@@ -120,9 +122,9 @@ def write_joined_audio(
 
 
 def generate_audio(
-    text: str,
+    text: Optional[str],
     model: Optional[Union[str, nn.Module]] = None,
-    max_tokens: int = 1200,
+    max_tokens: int = 5000,
     voice: str = "af_heart",
     prompt: Optional[str] = None,
     instruct: Optional[str] = None,
@@ -142,10 +144,18 @@ def generate_audio(
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
-    temperature: float = 0.7,
+    temperature: float = 1.7,
+    top_p: float = 0.8,
+    top_k: int = 25,
+    repetition_penalty: float = 1.0,
+    text_temperature: float = 1.5,
+    text_top_p: float = 1.0,
+    text_top_k: int = 50,
     stream: bool = False,
     streaming_interval: float = 2.0,
     save: bool = False,
+    conversation: Optional[list[dict[str, Any]]] = None,
+    mode: str = "generation",
     use_zero_spk_emb: bool = False,
     **kwargs,
 ) -> None:
@@ -181,44 +191,57 @@ def generate_audio(
         if model is None:
             raise ValueError("Model path or model instance must be provided.")
 
-        if stt_model is None and (ref_audio and ref_text is None):
-            raise ValueError(
-                "STT model path or model instance must be provided when ref_text is missing."
-            )
+        loaded_model = model
 
-        if isinstance(model, str):
+        if isinstance(loaded_model, str):
             # Load model
-            model = load_model(model_path=model)
+            loaded_model = load_model(model_path=Path(loaded_model))
+
+        if loaded_model is None:
+            raise ValueError("Model failed to load")
+        model_generate = getattr(loaded_model, "generate", None)
+        if model_generate is None:
+            raise ValueError("Loaded model does not implement generate(...)")
 
         # Load reference audio for voice matching if specified
+        ref_audio_input: Optional[object] = ref_audio
         if ref_audio:
             if not os.path.exists(ref_audio):
                 raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
 
             normalize = False
-            if hasattr(model, "model_type") and model.model_type == "spark":
+            if (
+                hasattr(loaded_model, "model_type")
+                and loaded_model.model_type == "spark"
+            ):
                 normalize = True
 
-            ref_audio = load_audio(
-                ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
+            ref_audio_input = load_audio(
+                ref_audio,
+                sample_rate=int(getattr(loaded_model, "sample_rate", 24000)),
+                volume_normalize=normalize,
             )
-            if not ref_text:
-                import inspect
+            # if not ref_text:
+            #     import inspect
 
-                if "ref_text" in inspect.signature(model.generate).parameters:
-                    print("Ref_text not found. Transcribing ref_audio...")
-                    from mlx_audio.stt import load as load_stt_model
+            #     if "ref_text" in inspect.signature(model.generate).parameters:
+            #         print("Ref_text not found. Transcribing ref_audio...")
+            #         from mlx_audio.stt import load as load_stt_model
 
-                    if isinstance(stt_model, str):
-                        stt_model = load_stt_model(stt_model)
-                    ref_text = stt_model.generate(ref_audio).text
+            #         if isinstance(stt_model, str):
+            #             stt_model = load_stt_model(stt_model)
+            #         ref_text = stt_model.generate(ref_audio).text
 
-                    del stt_model
-                    mx.clear_cache()
-                    print(f"\033[94mRef_text:\033[0m {ref_text}")
+            #         del stt_model
+            #         mx.clear_cache()
+            #         print(f"\033[94mRef_text:\033[0m {ref_text}")
 
         # Load AudioPlayer
-        player = AudioPlayer(sample_rate=model.sample_rate) if play else None
+        player = (
+            AudioPlayer(sample_rate=int(getattr(loaded_model, "sample_rate", 24000)))
+            if play
+            else None
+        )
 
         # Handle output path
         if output_path:
@@ -228,37 +251,47 @@ def generate_audio(
         if instruct is not None:
             print(f"\033[94mInstruct:\033[0m {instruct}")
 
-        print(
-            f"\033[94mText:\033[0m {text}\n"
-            f"\033[94mVoice:\033[0m {voice}\n"
-            f"\033[94mSpeed:\033[0m {speed}x\n"
-            f"\033[94mLanguage:\033[0m {lang_code}"
-        )
+        if conversation is not None:
+            print(
+                f"\033[94mConversation:\033[0m {len(conversation)} messages\n"
+                f"\033[94mMode:\033[0m {mode}\n"
+            )
+        else:
+            print(f"\033[94mText:\033[0m {text}\n\033[94mVoice:\033[0m {voice}\n")
 
         gen_kwargs = dict(
             text=text,
             voice=voice,
             speed=speed,
             lang_code=lang_code,
-            ref_audio=ref_audio,
+            ref_audio=ref_audio_input,
             ref_text=ref_text,
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            text_temperature=text_temperature,
+            text_top_p=text_top_p,
+            text_top_k=text_top_k,
             max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
             instruct=instruct,
+            conversation=conversation,
+            mode=mode,
             use_zero_spk_emb=use_zero_spk_emb,
             **kwargs,
         )
-        if prompt is not None:
-            gen_kwargs["prompt"] = prompt
-        if sigma is not None:
-            gen_kwargs["sigma"] = sigma
 
-        results = model.generate(**gen_kwargs)
+        if conversation is not None:
+            gen_kwargs.pop("text", None)
+            gen_kwargs["ref_audio"] = None
+            gen_kwargs["ref_text"] = None
+
+        results = model_generate(**gen_kwargs)
 
         save_streamed_audio = stream and save
         audio_list = []
@@ -267,7 +300,7 @@ def generate_audio(
         streamed_segment_sample_rates = {}
         file_name = f"{file_prefix}.{audio_format}"
         for i, result in enumerate(results):
-            if play:
+            if play and player is not None:
                 player.queue_audio(result.audio)
 
             if save_streamed_audio:
@@ -292,17 +325,19 @@ def generate_audio(
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 
             if verbose:
-
                 print("==========")
                 print(f"Duration:              {result.audio_duration}")
+                elapsed = float(getattr(result, "processing_time_seconds", 0.0))
+                samples = int(getattr(result, "audio_samples", 0))
+                token_count = int(getattr(result, "token_count", 0))
+                samples_per_sec = (samples / elapsed) if elapsed > 0 else 0.0
+                tokens_per_sec = (token_count / elapsed) if elapsed > 0 else 0.0
+                print(f"Samples/sec:           {samples_per_sec:.1f}")
                 print(
-                    f"Samples/sec:           {result.audio_samples['samples-per-sec']:.1f}"
+                    f"Prompt:                {token_count} tokens, {tokens_per_sec:.1f} tokens-per-sec"
                 )
                 print(
-                    f"Prompt:                {result.token_count} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
-                )
-                print(
-                    f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"
+                    f"Audio:                 {samples} samples, {samples_per_sec:.1f} samples-per-sec"
                 )
                 print(f"Real-time factor:      {result.real_time_factor:.2f}x")
                 print(f"Processing time:       {result.processing_time_seconds:.2f}s")
@@ -314,7 +349,7 @@ def generate_audio(
             write_joined_audio(
                 file_name,
                 streamed_audio_chunks,
-                model.sample_rate,
+                loaded_model.sample_rate,
                 audio_format,
             )
             print(f"✅ Audio successfully generated and saving as: {file_name}")
@@ -342,13 +377,13 @@ def generate_audio(
             write_joined_audio(
                 file_name,
                 audio_list,
-                model.sample_rate,
+                loaded_model.sample_rate,
                 audio_format,
             )
             if verbose:
                 print(f"✅ Audio successfully generated and saving as: {file_name}")
 
-        if play:
+        if play and player is not None:
             player.wait_for_drain()
             player.stop()
 
@@ -382,7 +417,19 @@ def parse_args():
         "--text",
         type=str,
         default=None,
-        help="Text to generate (leave blank to input via stdin)",
+        help="Text to generate (leave blank to input via stdin unless --conversation_json is used)",
+    )
+    parser.add_argument(
+        "--conversation_json",
+        type=str,
+        default=None,
+        help="Path to a JSON file containing a full MOSS-TTS conversation payload",
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="generation",
+        help="MOSS-TTS input mode: generation or continuation",
     )
     parser.add_argument(
         "--voice",
@@ -455,7 +502,10 @@ def parse_args():
         help="STT model to use to transcribe reference audio",
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.7, help="Temperature for the model"
+        "--temperature",
+        type=float,
+        default=1.7,
+        help="Audio temperature (HF default: 1.7)",
     )
     parser.add_argument(
         "--sigma",
@@ -473,8 +523,26 @@ def parse_args():
     parser.add_argument(
         "--repetition_penalty",
         type=float,
-        default=1.1,
-        help="Repetition penalty for the model",
+        default=1.0,
+        help="Audio repetition penalty (HF default: 1.0)",
+    )
+    parser.add_argument(
+        "--text_temperature",
+        type=float,
+        default=1.5,
+        help="Text temperature (HF default: 1.5)",
+    )
+    parser.add_argument(
+        "--text_top_p",
+        type=float,
+        default=1.0,
+        help="Text top-p (HF default: 1.0)",
+    )
+    parser.add_argument(
+        "--text_top_k",
+        type=int,
+        default=50,
+        help="Text top-k (HF default: 50)",
     )
     parser.add_argument(
         "--stream",
@@ -498,12 +566,31 @@ def parse_args():
     if args.save and not args.stream:
         parser.error("--save requires --stream")
 
-    if args.text is None:
-        if not sys.stdin.isatty():
-            args.text = sys.stdin.read().strip()
-        else:
-            print("Please enter the text to generate:")
-            args.text = input("> ").strip()
+    if args.conversation_json is not None:
+        with open(args.conversation_json, "r", encoding="utf-8") as f:
+            args.conversation = json.load(f)
+        if not isinstance(args.conversation, list):
+            raise ValueError(
+                "--conversation_json must point to a JSON array of messages"
+            )
+        if args.text is not None:
+            raise ValueError("Use either --text or --conversation_json, not both")
+        if args.ref_audio is not None:
+            raise ValueError(
+                "--ref_audio is not supported with --conversation_json; attach audio context inside the conversation payload"
+            )
+        if args.ref_text is not None:
+            raise ValueError(
+                "--ref_text is not supported with --conversation_json; include the prefix transcript in the user message text"
+            )
+    else:
+        args.conversation = None
+        if args.text is None:
+            if not sys.stdin.isatty():
+                args.text = sys.stdin.read().strip()
+            else:
+                print("Please enter the text to generate:")
+                args.text = input("> ").strip()
 
     return args
 

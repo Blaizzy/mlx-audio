@@ -13,6 +13,9 @@ import logging
 import re
 from pathlib import Path
 from typing import (
+    Any,
+    Callable,
+    Dict,
     List,
     Optional,
     Tuple,
@@ -42,7 +45,6 @@ T = TypeVar("T")
 
 
 def from_dict(data_class: Type[T], data: dict) -> T:
-
     if not dataclasses.is_dataclass(data_class):
         raise TypeError(f"{data_class} is not a dataclass")
 
@@ -66,8 +68,10 @@ def from_dict(data_class: Type[T], data: dict) -> T:
                 field_type = args[0]
 
         # Recursively convert nested dataclasses
-        if dataclasses.is_dataclass(field_type) and isinstance(value, dict):
-            value = from_dict(field_type, value)
+        if isinstance(value, dict):
+            nested_type = field_type if isinstance(field_type, type) else None
+            if nested_type is not None and dataclasses.is_dataclass(nested_type):
+                value = from_dict(nested_type, value)
 
         kwargs[field_name] = value
 
@@ -197,9 +201,14 @@ def load_weights(model_path: Path) -> dict:
             f"No weight files (safetensors or npz) found in {model_path}"
         )
 
-    weights = {}
+    weights: Dict[str, mx.array] = {}
     for wf in weight_files:
-        weights.update(mx.load(wf))
+        loaded = mx.load(wf)
+        if isinstance(loaded, tuple):
+            loaded = loaded[0]
+        if not isinstance(loaded, dict):
+            raise TypeError(f"Unexpected weight payload type from {wf}: {type(loaded)}")
+        weights.update(dict(loaded))
 
     return weights
 
@@ -208,7 +217,7 @@ def apply_quantization(
     model: nn.Module,
     config: dict,
     weights: dict,
-    model_quant_predicate: Optional[callable] = None,
+    model_quant_predicate: Optional[Callable[..., object]] = None,
 ) -> None:
     """Apply quantization to a model if specified in config.
 
@@ -223,14 +232,26 @@ def apply_quantization(
         quantization = config.get("quantization_config", None)
     if quantization is None:
         return
-    group_size = quantization.get("group_size", 64)
 
-    def get_class_predicate(p, m):
+    default_group_size = int(quantization["group_size"])
+
+    def required_group_size(path: str) -> int:
+        layer_cfg = quantization.get(path)
+        if isinstance(layer_cfg, dict) and layer_cfg.get("group_size") is not None:
+            return int(layer_cfg["group_size"])
+        return default_group_size
+
+    def get_class_predicate(p: str, m: nn.Module):
         # Skip layers without quantization capability
         if not hasattr(m, "to_quantized"):
             return False
-        # Skip layers not divisible by configured group size
-        if hasattr(m, "weight") and m.weight.shape[-1] % group_size != 0:
+        group_size = required_group_size(p)
+        weight = getattr(m, "weight", None)
+        if (
+            weight is not None
+            and hasattr(weight, "shape")
+            and weight.shape[-1] % group_size != 0
+        ):
             return False
         # Use model-specific predicate if available
         if model_quant_predicate is not None:
@@ -256,7 +277,7 @@ def apply_quantization(
 
 def get_model_class(
     model_type: str,
-    model_name: List[str],
+    model_name: Optional[List[str]],
     category: str,
     model_remapping: dict,
 ) -> Tuple:
@@ -297,8 +318,8 @@ def get_model_class(
     elif model_type_mapped is not None:
         model_type = model_type_mapped
 
+    module_path = f"mlx_audio.{category}.models.{model_type}"
     try:
-        module_path = f"mlx_audio.{category}.models.{model_type}"
         arch = importlib.import_module(module_path)
     except ImportError as e:
         if e.name != module_path:
@@ -367,15 +388,17 @@ def base_load_model(
         model_type = config.get("model_type", None)
     if model_type is None:
         model_type = config.get("architecture", None)
+    if model_type is None and model_name is not None:
+        model_type = model_name[0].lower()
     if model_type is None:
-        model_type = model_name[0].lower() if model_name is not None else None
+        raise ValueError(f"Could not determine model type for {model_path}")
 
     # Override model_type for TADA models (config says "llama" but it's TADA)
     if model_type == "llama" and "acoustic_dim" in config:
         model_type = "tada"
 
     model_class, model_type = get_model_class(
-        model_type=model_type,
+        model_type=str(model_type),
         model_name=model_name,
         category=category,
         model_remapping=model_remapping,
@@ -657,13 +680,17 @@ def load_audio(
     if not os.path.exists(audio):
         raise FileNotFoundError(f"Audio file not found: {audio}")
 
-    samples, orig_sample_rate = audio_read(audio)
-    shape = samples.shape
+    read_result = audio_read(audio)
+    if not isinstance(read_result, tuple) or len(read_result) != 2:
+        raise TypeError(f"Unexpected audio payload from {audio}: {type(read_result)}")
+    samples, orig_sample_rate = read_result
+    samples_np = np.asarray(samples, dtype=np.float32)
+    shape = samples_np.shape
 
     # Collapse multi channel as mono
     if len(shape) > 1:
-        samples = samples.sum(axis=1)
-        samples = samples / shape[1]
+        samples_np = samples_np.sum(axis=1)
+        samples_np = samples_np / shape[1]
 
     # Resample if needed
     if sample_rate != orig_sample_rate:
@@ -672,20 +699,25 @@ def load_audio(
     # Random segment selection
     if segment_duration is not None:
         seg_length = int(sample_rate * segment_duration)
-        samples = random_select_audio_segment(samples, seg_length)
+        samples_np = np.asarray(
+            random_select_audio_segment(samples_np, seg_length), dtype=np.float32
+        )
 
     # Volume normalization
     if volume_normalize:
-        samples = audio_volume_normalize(samples)
+        samples_np = np.asarray(audio_volume_normalize(samples_np), dtype=np.float32)
 
     # Length adjustment
     if length is not None:
-        if samples.shape[0] > length:
-            samples = samples[:length]
+        if samples_np.shape[0] > length:
+            samples_np = samples_np[:length]
         else:
-            samples = np.pad(samples, (0, int(length - samples.shape[0])))
+            samples_np = np.asarray(
+                np.pad(samples_np, (0, int(length - samples_np.shape[0]))),
+                dtype=np.float32,
+            )
 
-    return mx.array(samples, dtype=mx.float32)
+    return mx.array(samples_np, dtype=mx.float32)
 
 
 __all__ = [
