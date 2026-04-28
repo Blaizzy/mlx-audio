@@ -434,8 +434,17 @@ class Model(nn.Module):
         return remapped
 
     def _build_conversation(
-        self, prompt_texts: list[str], prompt_tokens: list[mx.array]
+        self,
+        prompt_texts: list[str],
+        prompt_tokens: list[mx.array],
+        instruct: Optional[str] = None,
     ) -> Conversation:
+        # Append the optional `instruct` style hint (e.g. "low whisper",
+        # "professional broadcast tone") to the system prompt so it actually
+        # influences generation. This is the path the OpenAI-compatible
+        # SpeechRequest.instruct field flows through; previously it was
+        # silently dropped by `del kwargs` in `.generate()`.
+        suffix = f". style: {instruct}" if instruct and instruct.strip() else ""
         conversation = Conversation()
         if prompt_texts and prompt_tokens:
             tagged_prompt_texts = []
@@ -446,14 +455,16 @@ class Model(nn.Module):
                     tagged_prompt_texts.append(f"<|speaker:{idx}|>{text}")
             system_parts = [
                 TextPart(
-                    "convert the provided text to speech reference to the following:\n\nText:\n"
+                    "convert the provided text to speech reference to the following"
+                    + suffix
+                    + ":\n\nText:\n"
                 ),
                 TextPart("\n".join(tagged_prompt_texts)),
                 TextPart("\n\nSpeech:\n"),
                 VQPart(mx.concatenate(prompt_tokens, axis=1)),
             ]
         else:
-            system_parts = [TextPart("convert the provided text to speech")]
+            system_parts = [TextPart("convert the provided text to speech" + suffix)]
 
         conversation.append(
             Message(
@@ -612,6 +623,7 @@ class Model(nn.Module):
         voice: Optional[str] = None,
         ref_audio: Optional[mx.array] = None,
         ref_text: Optional[str] = None,
+        instruct: Optional[str] = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
         top_p: float = 0.7,
@@ -647,7 +659,7 @@ class Model(nn.Module):
             prompt_tokens.append(indices[0, :, :prompt_length])
             prompt_texts.append(ref_text or "")
 
-        base_conversation = self._build_conversation(prompt_texts, prompt_tokens)
+        base_conversation = self._build_conversation(prompt_texts, prompt_tokens, instruct=instruct)
         turns = split_text_by_speaker(text)
         batches = (
             group_turns_into_batches(turns, max_speakers=5, max_bytes=chunk_length)
