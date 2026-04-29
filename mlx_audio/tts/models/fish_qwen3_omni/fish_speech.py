@@ -11,7 +11,7 @@ import mlx.nn as nn
 from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
 
-from mlx_audio.tts.models.base import GenerationResult
+from mlx_audio.tts.models.base import BatchGenerationResult, GenerationResult
 
 from .config import ModelConfig
 from .prompt import (
@@ -287,12 +287,33 @@ class DualARTransformer(nn.Module):
         return mx.where(semantic_mask[:, :, None], x / scale, x)
 
     def __call__(
-        self, inp: mx.array, cache: Optional[list[KVCache]] = None
+        self,
+        inp: mx.array,
+        cache: Optional[list[KVCache]] = None,
+        attention_mask: Optional[mx.array] = None,
     ) -> ForwardResult:
         x = self._embed(inp)
         if cache is None:
             cache = [None] * len(self.layers)
-        mask = create_attention_mask(x, cache[0])
+
+        if attention_mask is not None:
+            seq_len = x.shape[1]
+            total_len = attention_mask.shape[-1]
+            if seq_len > 1:
+                if total_len == seq_len:
+                    causal = nn.MultiHeadAttention.create_additive_causal_mask(seq_len)
+                else:
+                    query_pos = mx.arange(total_len - seq_len, total_len)[:, None]
+                    key_pos = mx.arange(total_len)[None, :]
+                    causal = mx.where(key_pos > query_pos, -1e9, 0.0)
+                causal = causal.astype(x.dtype)[None, None, :, :]
+                pad_mask = (1 - attention_mask[:, None, None, :].astype(x.dtype)) * -1e9
+                mask = causal + pad_mask
+            else:
+                mask = (1 - attention_mask[:, None, None, :].astype(x.dtype)) * -1e9
+        else:
+            mask = create_attention_mask(x, cache[0])
+
         for layer, layer_cache in zip(self.layers, cache):
             x = layer(x, mask=mask, cache=layer_cache)
         slow_out = self.norm(x)
@@ -465,6 +486,37 @@ class Model(nn.Module):
         )
         return conversation
 
+    def _prepare_reference_prompt(
+        self, ref_audio: Optional[mx.array], ref_text: Optional[str]
+    ) -> tuple[list[str], list[mx.array]]:
+        prompt_tokens = []
+        prompt_texts = []
+        if ref_audio is not None:
+            if self.codec is None:
+                raise ValueError("Codec not loaded. Call post_load_hook first.")
+
+            audio = ref_audio
+            if audio.ndim == 1:
+                audio = audio[None, None, :]
+            elif audio.ndim == 2:
+                audio = audio[None, :, :]
+            if audio.shape[1] != 1:
+                audio = mx.mean(audio, axis=1, keepdims=True)
+            indices, feature_lengths = self.codec.encode(audio)
+            prompt_length = int(feature_lengths[0].item())
+            prompt_tokens.append(indices[0, :, :prompt_length])
+            prompt_texts.append(ref_text or "")
+
+        return prompt_texts, prompt_tokens
+
+    def _split_generation_text(self, text: str, chunk_length: int) -> list[str]:
+        turns = split_text_by_speaker(text)
+        return (
+            group_turns_into_batches(turns, max_speakers=5, max_bytes=chunk_length)
+            if turns
+            else [text]
+        )
+
     def _sample_semantic(
         self,
         logits: mx.array,
@@ -480,13 +532,6 @@ class Model(nn.Module):
         normal = _sample_logits(
             biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
         )
-        high_temp = _sample_logits(
-            biased_logits,
-            temperature=RAS_HIGH_TEMP,
-            top_p=RAS_HIGH_TOP_P,
-            top_k=top_k,
-        )
-        mx.eval(normal, high_temp)
 
         token_value = int(normal[0].item())
         should_use_high = (
@@ -495,7 +540,114 @@ class Model(nn.Module):
             <= token_value
             <= self.config.semantic_end_token_id
         )
-        return high_temp if should_use_high else normal
+        if not should_use_high:
+            return normal
+
+        high_temp = _sample_logits(
+            biased_logits,
+            temperature=RAS_HIGH_TEMP,
+            top_p=RAS_HIGH_TOP_P,
+            top_k=top_k,
+        )
+        return high_temp
+
+    def _sample_semantic_batch(
+        self,
+        logits: mx.array,
+        previous_semantic_tokens: list[list[int]],
+        top_p: float,
+        top_k: int,
+        temperature: float,
+    ) -> mx.array:
+        if self.semantic_logit_bias is None:
+            raise ValueError("Semantic logits bias is not initialized.")
+
+        biased_logits = logits + self.semantic_logit_bias.astype(logits.dtype)
+        normal = _sample_logits(
+            biased_logits, temperature=temperature, top_p=top_p, top_k=top_k
+        )
+
+        normal_tokens = normal.tolist()
+        if not isinstance(normal_tokens, list):
+            normal_tokens = [normal_tokens]
+        high_temp_indices = []
+        for idx, token_value in enumerate(normal_tokens):
+            should_use_high = (
+                token_value in previous_semantic_tokens[idx]
+                and self.config.semantic_start_token_id
+                <= token_value
+                <= self.config.semantic_end_token_id
+            )
+            if should_use_high:
+                high_temp_indices.append(idx)
+
+        if not high_temp_indices:
+            return normal
+
+        high_logits = mx.take(
+            biased_logits, mx.array(high_temp_indices, dtype=mx.int32), axis=0
+        )
+        high_temp = _sample_logits(
+            high_logits,
+            temperature=RAS_HIGH_TEMP,
+            top_p=RAS_HIGH_TOP_P,
+            top_k=top_k,
+        )
+
+        high_tokens = high_temp.tolist()
+        if not isinstance(high_tokens, list):
+            high_tokens = [high_tokens]
+        sampled_tokens = list(normal_tokens)
+        for idx, token_value in zip(high_temp_indices, high_tokens):
+            sampled_tokens[idx] = token_value
+        return mx.array(sampled_tokens, dtype=normal.dtype)
+
+    def _prepare_batched_prompt_inputs(
+        self, conversations: list[Conversation]
+    ) -> tuple[mx.array, mx.array]:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
+
+        encoded_prompts = []
+        prompt_lengths = []
+        for conversation in conversations:
+            prompt_conversation = Conversation(list(conversation.messages))
+            prompt_conversation.append(
+                Message(
+                    role="assistant",
+                    parts=[],
+                    modality="voice",
+                    add_im_start=True,
+                    add_im_end=False,
+                )
+            )
+            prompt = prompt_conversation.encode_for_inference(
+                self.tokenizer, num_codebooks=self.model.num_codebooks
+            )
+            encoded_prompts.append(prompt.astype(mx.int32))
+            prompt_lengths.append(prompt.shape[1])
+
+        max_prompt_len = max(prompt_lengths)
+        padded_prompts = []
+        mask_rows = []
+        for prompt, prompt_len in zip(encoded_prompts, prompt_lengths):
+            pad_len = max_prompt_len - prompt_len
+            if pad_len > 0:
+                padding = mx.zeros((prompt.shape[0], pad_len), dtype=mx.int32)
+                prompt = mx.concatenate([padding, prompt], axis=1)
+                mask = mx.concatenate(
+                    [
+                        mx.zeros((1, pad_len), dtype=mx.float32),
+                        mx.ones((1, prompt_len), dtype=mx.float32),
+                    ],
+                    axis=1,
+                )
+            else:
+                mask = mx.ones((1, prompt_len), dtype=mx.float32)
+            padded_prompts.append(prompt[None, :, :])
+            mask_rows.append(mask)
+
+        return mx.concatenate(padded_prompts, axis=0), mx.concatenate(mask_rows, axis=0)
 
     def _generate_codes_for_batch(
         self,
@@ -546,7 +698,6 @@ class Model(nn.Module):
                 top_k=top_k,
                 temperature=temperature,
             )
-            mx.eval(semantic_token)
             semantic_token_id = int(semantic_token[0].item())
             if semantic_token_id == im_end_id:
                 break
@@ -563,7 +714,7 @@ class Model(nn.Module):
             previous_codebooks = semantic_code[:, None]
             fast_cache = self.model.make_fast_cache()
             fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
-            mx.eval(fast_prefill)
+            mx.async_eval(fast_prefill)
             fast_hidden = self.model.fast_embeddings(semantic_code)
 
             for _ in range(self.model.num_codebooks - 1):
@@ -576,7 +727,6 @@ class Model(nn.Module):
                     top_p=top_p,
                     top_k=top_k,
                 )
-                mx.eval(residual_token)
                 previous_codebooks = mx.concatenate(
                     [previous_codebooks, residual_token[:, None]], axis=1
                 )
@@ -589,7 +739,6 @@ class Model(nn.Module):
             )
             next_result = self.model(next_input[:, :, None], cache=cache)
             logits = next_result.logits[:, -1]
-            hidden_state = next_result.hidden_states[:, -1]
 
         if not generated_steps:
             raise RuntimeError(
@@ -598,6 +747,153 @@ class Model(nn.Module):
 
         return mx.stack(generated_steps, axis=1).astype(mx.int32)
 
+    def _generate_codes_for_text_batch(
+        self,
+        conversations: list[Conversation],
+        batch_texts: list[str],
+        max_new_tokens: int,
+        top_p: float,
+        top_k: int,
+        temperature: float,
+    ) -> list[mx.array]:
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
+
+        batch_size = len(conversations)
+        if batch_size == 0:
+            return []
+
+        prompt, attention_mask = self._prepare_batched_prompt_inputs(conversations)
+        cache = self.model.make_cache()
+        result = self.model(prompt, cache=cache, attention_mask=attention_mask)
+        logits = result.logits[:, -1]
+        hidden_state = result.hidden_states[:, -1]
+
+        previous_semantic_tokens: list[list[int]] = [[] for _ in range(batch_size)]
+        generated_steps: list[list[mx.array]] = [[] for _ in range(batch_size)]
+        finished = [False] * batch_size
+        im_end_id = self.tokenizer.get_token_id(IM_END_TOKEN)
+        token_budgets = [
+            min(max_new_tokens, max(32, len(self.tokenizer.encode(text)) * 12))
+            for text in batch_texts
+        ]
+        max_budget = max(token_budgets)
+        im_end_tokens = mx.full((batch_size,), im_end_id, dtype=mx.int32)
+
+        for step in range(max_budget):
+            active = [
+                (not finished[idx]) and step < token_budgets[idx]
+                for idx in range(batch_size)
+            ]
+            if not any(active):
+                break
+
+            sampled_semantic = self._sample_semantic_batch(
+                logits=logits,
+                previous_semantic_tokens=previous_semantic_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature,
+            )
+            active_mask = mx.array(active, dtype=mx.bool_)
+            semantic_token = mx.where(active_mask, sampled_semantic, im_end_tokens)
+
+            semantic_token_ids = semantic_token.tolist()
+            if not isinstance(semantic_token_ids, list):
+                semantic_token_ids = [semantic_token_ids]
+            should_continue = []
+            for idx, token_id in enumerate(semantic_token_ids):
+                keep_generating = active[idx] and token_id != im_end_id
+                should_continue.append(keep_generating)
+                if active[idx] and not keep_generating:
+                    finished[idx] = True
+
+            if not any(should_continue):
+                break
+
+            continue_mask = mx.array(should_continue, dtype=mx.bool_)
+            semantic_code = (
+                semantic_token - self.config.semantic_start_token_id
+            ).astype(mx.int32)
+            semantic_code = mx.clip(
+                semantic_code, 0, self.config.audio_decoder_config.vocab_size - 1
+            )
+            semantic_code = mx.where(
+                continue_mask, semantic_code, mx.zeros_like(semantic_code)
+            )
+            previous_codebooks = semantic_code[:, None]
+
+            fast_cache = self.model.make_fast_cache()
+            fast_prefill = self.model.fast_forward_cached(hidden_state, fast_cache)
+            mx.async_eval(fast_prefill)
+            fast_hidden = self.model.fast_embeddings(semantic_code)
+
+            for _ in range(self.model.num_codebooks - 1):
+                residual_logits = self.model.fast_forward_cached(
+                    fast_hidden, fast_cache
+                )
+                residual_token = _sample_logits(
+                    residual_logits,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                )
+                residual_token = mx.where(
+                    continue_mask, residual_token, mx.zeros_like(residual_token)
+                )
+                previous_codebooks = mx.concatenate(
+                    [previous_codebooks, residual_token[:, None]], axis=1
+                )
+                fast_hidden = self.model.fast_embeddings(residual_token)
+
+            for idx, keep_generating in enumerate(should_continue):
+                if not keep_generating:
+                    continue
+                token_id = semantic_token_ids[idx]
+                previous_semantic_tokens[idx].append(token_id)
+                previous_semantic_tokens[idx] = previous_semantic_tokens[idx][
+                    -RAS_WIN_SIZE:
+                ]
+                generated_steps[idx].append(previous_codebooks[idx])
+                if step + 1 >= token_budgets[idx]:
+                    finished[idx] = True
+
+            next_input = mx.concatenate(
+                [semantic_token[:, None].astype(mx.int32), previous_codebooks], axis=1
+            )
+            attention_mask = mx.concatenate(
+                [attention_mask, mx.ones((batch_size, 1), dtype=attention_mask.dtype)],
+                axis=1,
+            )
+            next_result = self.model(
+                next_input[:, :, None],
+                cache=cache,
+                attention_mask=attention_mask,
+            )
+            logits = next_result.logits[:, -1]
+            hidden_state = next_result.hidden_states[:, -1]
+
+            if all(finished):
+                break
+            if step > 0 and step % 50 == 0:
+                mx.clear_cache()
+
+        empty_indices = [
+            idx
+            for idx, sequence_steps in enumerate(generated_steps)
+            if not sequence_steps
+        ]
+        if empty_indices:
+            raise RuntimeError(
+                "No audio tokens were generated for batch sequence(s): "
+                + ", ".join(str(idx) for idx in empty_indices)
+            )
+
+        return [
+            mx.stack(sequence_steps, axis=1).astype(mx.int32)
+            for sequence_steps in generated_steps
+        ]
+
     def _decode_codes(self, codes: mx.array) -> mx.array:
         if self.codec is None:
             raise ValueError("Codec not loaded. Call post_load_hook first.")
@@ -605,6 +901,34 @@ class Model(nn.Module):
         audio, audio_lengths = self.codec.decode(codes[None, :, :], feature_lengths)
         length = int(audio_lengths[0].item())
         return audio[0, 0, :length]
+
+    def _decode_codes_batch(self, codes_list: list[mx.array]) -> list[mx.array]:
+        if self.codec is None:
+            raise ValueError("Codec not loaded. Call post_load_hook first.")
+        if not codes_list:
+            return []
+
+        max_len = max(codes.shape[1] for codes in codes_list)
+        padded_codes = []
+        feature_lengths = []
+        for codes in codes_list:
+            feature_lengths.append(codes.shape[1])
+            pad_len = max_len - codes.shape[1]
+            if pad_len > 0:
+                padding = mx.zeros((codes.shape[0], pad_len), dtype=codes.dtype)
+                codes = mx.concatenate([codes, padding], axis=1)
+            padded_codes.append(codes[None, :, :])
+
+        batch_codes = mx.concatenate(padded_codes, axis=0)
+        lengths = mx.array(feature_lengths, dtype=mx.int32)
+        audio, audio_lengths = self.codec.decode(batch_codes, lengths)
+        mx.async_eval(audio)
+
+        decoded = []
+        for idx in range(len(codes_list)):
+            length = int(audio_lengths[idx].item())
+            decoded.append(audio[idx, 0, :length])
+        return decoded
 
     def generate(
         self,
@@ -632,28 +956,12 @@ class Model(nn.Module):
         if self.codec is None:
             raise ValueError("Codec not loaded. Call post_load_hook first.")
 
-        prompt_tokens = []
-        prompt_texts = []
-        if ref_audio is not None:
-            audio = ref_audio
-            if audio.ndim == 1:
-                audio = audio[None, None, :]
-            elif audio.ndim == 2:
-                audio = audio[None, :, :]
-            if audio.shape[1] != 1:
-                audio = mx.mean(audio, axis=1, keepdims=True)
-            indices, feature_lengths = self.codec.encode(audio)
-            prompt_length = int(feature_lengths[0].item())
-            prompt_tokens.append(indices[0, :, :prompt_length])
-            prompt_texts.append(ref_text or "")
+        prompt_texts, prompt_tokens = self._prepare_reference_prompt(
+            ref_audio, ref_text
+        )
 
         base_conversation = self._build_conversation(prompt_texts, prompt_tokens)
-        turns = split_text_by_speaker(text)
-        batches = (
-            group_turns_into_batches(turns, max_speakers=5, max_bytes=chunk_length)
-            if turns
-            else [text]
-        )
+        batches = self._split_generation_text(text, chunk_length)
 
         conversation = Conversation(list(base_conversation.messages))
         segment_idx = 0
@@ -678,7 +986,7 @@ class Model(nn.Module):
             audio = self._decode_codes(codes)
             if abs(speed - 1.0) > 1e-6:
                 audio = _adjust_speed(audio, speed)
-            mx.eval(audio, codes)
+            mx.async_eval(audio)
 
             conversation.append(
                 Message(
@@ -717,6 +1025,142 @@ class Model(nn.Module):
                 peak_memory_usage=float(mx.get_peak_memory() / 1e9),
             )
             segment_idx += 1
+
+    @staticmethod
+    def _normalize_batch_arg(name: str, value, batch_size: int) -> list:
+        if value is None:
+            return [None] * batch_size
+        if isinstance(value, (list, tuple)):
+            if len(value) != batch_size:
+                raise ValueError(
+                    f"{name} length ({len(value)}) must match texts length ({batch_size})"
+                )
+            return list(value)
+        return [value] * batch_size
+
+    def batch_generate(
+        self,
+        texts: list[str],
+        voices: Optional[list[Optional[str]]] = None,
+        ref_audios: Optional[list[Optional[mx.array]]] = None,
+        ref_texts: Optional[list[Optional[str]]] = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        top_p: float = 0.7,
+        top_k: int = 30,
+        repetition_penalty: float = 1.2,
+        stream: bool = False,
+        speed: float = 1.0,
+        chunk_length: int = 300,
+        verbose: bool = True,
+        **kwargs,
+    ):
+        del repetition_penalty, verbose
+
+        if stream:
+            raise NotImplementedError("Fish Speech streaming is not implemented yet.")
+        if self.tokenizer is None:
+            raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
+        if self.codec is None:
+            raise ValueError("Codec not loaded. Call post_load_hook first.")
+
+        if ref_audios is None and "ref_audio" in kwargs:
+            ref_audios = kwargs.pop("ref_audio")
+        if ref_texts is None and "ref_text" in kwargs:
+            ref_texts = kwargs.pop("ref_text")
+        kwargs.clear()
+
+        batch_size = len(texts)
+        if batch_size == 0:
+            return
+
+        if voices is not None and len(voices) != batch_size:
+            raise ValueError(
+                f"voices length ({len(voices)}) must match texts length ({batch_size})"
+            )
+
+        ref_audio_list = self._normalize_batch_arg("ref_audios", ref_audios, batch_size)
+        ref_text_list = self._normalize_batch_arg("ref_texts", ref_texts, batch_size)
+
+        states = []
+        for idx, text in enumerate(texts):
+            prompt_texts, prompt_tokens = self._prepare_reference_prompt(
+                ref_audio_list[idx], ref_text_list[idx]
+            )
+            base_conversation = self._build_conversation(prompt_texts, prompt_tokens)
+            states.append(
+                {
+                    "sequence_idx": idx,
+                    "conversation": Conversation(list(base_conversation.messages)),
+                    "batches": self._split_generation_text(text, chunk_length),
+                    "next_batch": 0,
+                }
+            )
+
+        while True:
+            active_states = [
+                state for state in states if state["next_batch"] < len(state["batches"])
+            ]
+            if not active_states:
+                break
+
+            active_conversations = []
+            active_texts = []
+            for state in active_states:
+                batch_text = state["batches"][state["next_batch"]]
+                state["conversation"].append(
+                    Message(
+                        role="user",
+                        parts=[TextPart(batch_text)],
+                        add_im_start=True,
+                        add_im_end=True,
+                    )
+                )
+                active_conversations.append(state["conversation"])
+                active_texts.append(batch_text)
+
+            start_time = time.perf_counter()
+            codes_list = self._generate_codes_for_text_batch(
+                conversations=active_conversations,
+                batch_texts=active_texts,
+                max_new_tokens=max_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature,
+            )
+            audio_list = self._decode_codes_batch(codes_list)
+
+            for state, codes, audio in zip(active_states, codes_list, audio_list):
+                if abs(speed - 1.0) > 1e-6:
+                    audio = _adjust_speed(audio, speed)
+                mx.async_eval(audio)
+
+                state["conversation"].append(
+                    Message(
+                        role="assistant",
+                        parts=[VQPart(codes)],
+                        modality="voice",
+                        add_im_start=True,
+                        add_im_end=True,
+                    )
+                )
+                state["next_batch"] += 1
+
+                elapsed = max(time.perf_counter() - start_time, 1e-6)
+                samples = int(audio.shape[0])
+                duration_seconds = samples / float(self.sample_rate)
+                yield BatchGenerationResult(
+                    audio=audio,
+                    sequence_idx=state["sequence_idx"],
+                    samples=samples,
+                    sample_rate=self.sample_rate,
+                    token_count=int(codes.shape[1]),
+                    audio_duration=_format_duration(duration_seconds),
+                    processing_time_seconds=elapsed,
+                    peak_memory_usage=float(mx.get_peak_memory() / 1e9),
+                )
+
+            mx.clear_cache()
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":

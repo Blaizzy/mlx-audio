@@ -42,6 +42,23 @@ print("OK")
     assert result.returncode == 0, f"TTS lazy import failed: {result.stderr}"
 
 
+def test_sts_utils_no_eager_imports():
+    """Importing sts.utils should not import transformers or mlx_lm."""
+    code = """
+import sys
+import mlx_audio.sts.utils
+assert "transformers" not in sys.modules, f"transformers was eagerly imported"
+assert "mlx_lm" not in sys.modules, f"mlx_lm was eagerly imported"
+print("OK")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"STS lazy import failed: {result.stderr}"
+
+
 def test_codec_no_eager_imports():
     """Importing codec should not import miniaudio."""
     code = """

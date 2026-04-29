@@ -5,7 +5,8 @@ from typing import Dict, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from scipy.signal import get_window
+
+from mlx_audio.dsp import hanning
 
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
@@ -438,8 +439,8 @@ class HiFTGenerator(nn.Module):
         )
 
         # STFT window
-        self.stft_window = mx.array(
-            get_window("hann", istft_params["n_fft"], fftbins=True).astype(np.float32)
+        self.stft_window = hanning(istft_params["n_fft"], periodic=True).astype(
+            mx.float32
         )
 
     def _upsample_f0(self, f0: mx.array) -> mx.array:

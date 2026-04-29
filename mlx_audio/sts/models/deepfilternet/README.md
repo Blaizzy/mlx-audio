@@ -7,6 +7,17 @@ Pretrained weights: [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx
 ## Quick Start
 
 ```python
+from mlx_audio.sts import load
+
+# Load v3 (default) through the standard STS loader
+model = load("mlx-community/DeepFilterNet-mlx")
+model.enhance_file("noisy.wav", "clean.wav")
+```
+
+Or use the model-specific initializer directly when you need explicit version
+selection:
+
+```python
 from mlx_audio.sts.models.deepfilternet import DeepFilterNetModel
 
 # Load v3 (default)

@@ -27,13 +27,9 @@ MODEL_REMAPPING = {
 
 
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    from scipy import signal
+    from mlx_audio.utils import resample_audio as _resample_audio
 
-    gcd = np.gcd(orig_sr, target_sr)
-    up = target_sr // gcd
-    down = orig_sr // gcd
-    resampled = signal.resample_poly(audio, up, down, padtype="edge")
-    return resampled
+    return _resample_audio(audio, orig_sr, target_sr, axis=0)
 
 
 def load_audio(

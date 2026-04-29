@@ -1,6 +1,6 @@
 """Utility functions for mlx_audio.
 
-This module provides a unified interface for loading TTS and STT models,
+This module provides a unified interface for loading TTS, STT, and STS models,
 with lazy imports to avoid loading unnecessary dependencies.
 """
 
@@ -10,6 +10,7 @@ import importlib
 import importlib.util
 import json
 import logging
+import re
 from pathlib import Path
 from typing import (
     List,
@@ -124,7 +125,7 @@ def get_model_path(
     Raises:
         FileNotFoundError: If a local path is provided but doesn't exist.
     """
-    model_path = Path(path_or_hf_repo)
+    model_path = Path(path_or_hf_repo).expanduser()
 
     if model_path.exists():
         return model_path
@@ -219,6 +220,8 @@ def apply_quantization(
     """
     quantization = config.get("quantization", None)
     if quantization is None:
+        quantization = config.get("quantization_config", None)
+    if quantization is None:
         return
     group_size = quantization.get("group_size", 64)
 
@@ -237,8 +240,8 @@ def apply_quantization(
             if not pred_result:
                 return False
         # Handle custom per layer quantizations
-        if p in config["quantization"]:
-            return config["quantization"][p]
+        if p in quantization:
+            return quantization[p]
         # Handle legacy models which may not have everything quantized
         return f"{p}.scales" in weights
 
@@ -322,7 +325,7 @@ def base_load_model(
     **kwargs,
 ) -> nn.Module:
     """
-    Base implementation for loading models (shared between TTS and STT).
+    Base implementation for loading models (shared between TTS, STT, and STS).
 
     Args:
         model_path: The path or HuggingFace repo to load the model from.
@@ -335,22 +338,24 @@ def base_load_model(
     Returns:
         nn.Module: The loaded and initialized model.
     """
-    model_name = None
-    model_type = None
+    model_name = kwargs.pop("model_name_parts", None)
+    model_type = kwargs.pop("model_type", None)
+    allow_patterns = kwargs.pop("allow_patterns", None)
 
     if isinstance(model_path, str):
-        model_name = model_path.lower().split("/")[-1].split("-")
+        if model_name is None:
+            model_name = get_model_name_parts(model_path)
         revision = kwargs.get("revision", None)
         force_download = kwargs.get("force_download", False)
         model_path = get_model_path(
-            model_path, revision=revision, force_download=force_download
+            model_path,
+            revision=revision,
+            force_download=force_download,
+            allow_patterns=allow_patterns,
         )
     elif isinstance(model_path, Path):
-        try:
-            index = model_path.parts.index("hub")
-            model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
-        except ValueError:
-            model_name = model_path.name.lower().split("-")
+        if model_name is None:
+            model_name = get_model_name_parts(model_path)
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
@@ -358,7 +363,8 @@ def base_load_model(
     config["model_path"] = str(model_path)
 
     # Determine model_type from config or model_name
-    model_type = config.get("model_type", None)
+    if model_type is None:
+        model_type = config.get("model_type", None)
     if model_type is None:
         model_type = config.get("architecture", None)
     if model_type is None:
@@ -411,6 +417,7 @@ def base_load_model(
 # Lazy-loaded modules
 _stt_utils = None
 _tts_utils = None
+_sts_utils = None
 _vad_utils = None
 _lid_utils = None
 
@@ -433,6 +440,16 @@ def _get_tts_utils():
 
         _tts_utils = tts_utils
     return _tts_utils
+
+
+def _get_sts_utils():
+    """Lazy load STS utils."""
+    global _sts_utils
+    if _sts_utils is None:
+        from mlx_audio.sts import utils as sts_utils
+
+        _sts_utils = sts_utils
+    return _sts_utils
 
 
 def _get_vad_utils():
@@ -519,6 +536,87 @@ def random_select_audio_segment(audio, length: int):
     return audio[start_index:end_index]
 
 
+def resample_audio(
+    audio: Union[mx.array, "np.ndarray"],
+    orig_sample_rate: int,
+    sample_rate: int,
+    axis: int = -1,
+):
+    """Resample audio with polyphase filtering.
+
+    Args:
+        audio: Audio array as numpy or MLX.
+        orig_sample_rate: Original sample rate.
+        sample_rate: Target sample rate.
+        axis: Axis containing the time dimension.
+
+    Returns:
+        Audio resampled to ``sample_rate``. The return type matches the input type.
+    """
+    import math
+
+    import numpy as np
+    from scipy import signal
+
+    if orig_sample_rate == sample_rate:
+        return audio
+
+    audio_np = np.asarray(audio)
+    gcd = math.gcd(int(orig_sample_rate), int(sample_rate))
+    up = sample_rate // gcd
+    down = orig_sample_rate // gcd
+    resampled = signal.resample_poly(
+        audio_np,
+        up,
+        down,
+        axis=axis,
+        padtype="edge",
+    ).astype(np.float32, copy=False)
+
+    if isinstance(audio, mx.array):
+        return mx.array(resampled)
+    return resampled
+
+
+def trim_silence(
+    audio: Union[mx.array, "np.ndarray"],
+    top_db: float = 20,
+    frame_length: int = 2048,
+    hop_length: int = 512,
+):
+    """Trim leading/trailing low-energy regions using a simple RMS gate."""
+    import numpy as np
+
+    audio_np = np.asarray(audio)
+    n_frames = 1 + (len(audio_np) - frame_length) // hop_length
+    if n_frames <= 0:
+        return audio
+
+    rms = np.array(
+        [
+            np.sqrt(
+                np.mean(audio_np[i * hop_length : i * hop_length + frame_length] ** 2)
+            )
+            for i in range(n_frames)
+        ]
+    )
+    rms_db = 20 * np.log10(np.maximum(rms, 1e-10))
+    threshold = np.max(rms_db) - top_db
+    non_silent = np.where(rms_db >= threshold)[0]
+    if len(non_silent) == 0:
+        return audio
+
+    start_frame = int(non_silent[0])
+    end_frame = int(non_silent[-1]) + 1
+    start_sample = start_frame * hop_length
+    end_sample = min(end_frame * hop_length + frame_length, len(audio_np))
+    trimmed = audio_np[start_sample:end_sample]
+
+    if isinstance(audio, mx.array):
+        return mx.array(trimmed.astype(np.float32, copy=False))
+    return trimmed.astype(np.float32, copy=False)
+
+
 def load_audio(
     audio: Union[str, mx.array],
     sample_rate: int = 24000,
@@ -553,7 +651,6 @@ def load_audio(
     import os
 
     import numpy as np
-    from scipy.signal import resample
 
     from mlx_audio.audio_io import read as audio_read
 
@@ -570,9 +667,7 @@ def load_audio(
 
     # Resample if needed
     if sample_rate != orig_sample_rate:
-        duration = samples.shape[0] / orig_sample_rate
-        num_samples = int(duration * sample_rate)
-        samples = resample(samples, num_samples)
+        samples = resample_audio(samples, orig_sample_rate, sample_rate)
 
     # Random segment selection
     if segment_duration is not None:
@@ -605,6 +700,8 @@ __all__ = [
     "mel_filters",
     # Audio utilities
     "load_audio",
+    "resample_audio",
+    "trim_silence",
     "audio_volume_normalize",
     "random_select_audio_segment",
     # Model utilities
@@ -632,9 +729,10 @@ def is_valid_module_name(name: str) -> bool:
 
 
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
-    """Determine whether a model belongs to the TTS, STT, LID, or VAD category."""
+    """Determine whether a model belongs to the TTS, STT, STS, LID, or VAD category."""
     stt_utils = _get_stt_utils()
     tts_utils = _get_tts_utils()
+    sts_utils = _get_sts_utils()
     vad_utils = _get_vad_utils()
     lid_utils = _get_lid_utils()
 
@@ -643,9 +741,23 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
     categories = [
         ("tts", tts_utils.MODEL_REMAPPING),
         ("stt", stt_utils.MODEL_REMAPPING),
+        ("sts", sts_utils.MODEL_REMAPPING),
         ("lid", lid_utils.MODEL_REMAPPING),
         ("vad", vad_utils.MODEL_REMAPPING),
     ]
+
+    # If the repo name already includes an explicit category token like "lid",
+    # prefer that category as long as we can resolve any candidate hint there.
+    for category, remap in categories:
+        if category not in candidates:
+            continue
+        for hint in candidates:
+            arch = remap.get(hint, hint)
+            if not is_valid_module_name(arch):
+                continue
+            module_path = f"mlx_audio.{category}.models.{arch}"
+            if importlib.util.find_spec(module_path) is not None:
+                return category
 
     # First pass: check for explicit remapping matches (higher priority)
     for category, remap in categories:
@@ -669,20 +781,54 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
     return None
 
 
-def get_model_name_parts(model_path: Union[str, Path]) -> str:
+def get_model_name_parts(model_path: Union[str, Path]) -> List[str]:
     model_name = None
     if isinstance(model_path, str):
-        model_name = model_path.lower().split("/")[-1].split("-")
+        model_name = model_path.lower().split("/")[-1]
     elif isinstance(model_path, Path):
-        index = model_path.parts.index("hub")
-        model_name = model_path.parts[index + 1].lower().split("--")[-1].split("-")
+        try:
+            index = model_path.parts.index("hub")
+            model_name = model_path.parts[index + 1].lower().split("--")[-1]
+        except ValueError:
+            model_name = model_path.name.lower()
     else:
         raise ValueError(f"Invalid model path type: {type(model_path)}")
-    return model_name
+
+    parts = []
+    seen = set()
+
+    dash_parts = [part for part in model_name.split("-") if part]
+
+    for part in dash_parts:
+        if not part or part in seen:
+            continue
+        parts.append(part)
+        seen.add(part)
+
+        if "_" in part:
+            for subpart in part.split("_"):
+                if subpart and subpart not in seen:
+                    parts.append(subpart)
+                    seen.add(subpart)
+
+        normalized = re.sub(r"[^a-z0-9]+", "", part)
+        if normalized and normalized not in seen:
+            parts.append(normalized)
+            seen.add(normalized)
+
+    for start in range(len(dash_parts)):
+        for end in range(start + 2, len(dash_parts) + 1):
+            segment = dash_parts[start:end]
+            for combined in ("_".join(segment), "".join(segment)):
+                if combined and combined not in seen:
+                    parts.append(combined)
+                    seen.add(combined)
+
+    return parts
 
 
 def load_model(model_name: str):
-    """Load a TTS, STT, LID, or VAD model based on its configuration and name.
+    """Load a TTS, STT, STS, LID, or VAD model based on its configuration and name.
 
     Args:
         model_name (str): Name or path of the model to load
@@ -693,26 +839,34 @@ def load_model(model_name: str):
     Raises:
         ValueError: If the model type cannot be determined or is not supported
     """
-    tts_utils = _get_tts_utils()
-    stt_utils = _get_stt_utils()
-    vad_utils = _get_vad_utils()
-    lid_utils = _get_lid_utils()
-
-    config = tts_utils.load_config(model_name)
     model_name_parts = get_model_name_parts(model_name)
+    load_error = None
+
+    try:
+        config = load_config(model_name)
+    except FileNotFoundError as exc:
+        config = {}
+        load_error = exc
 
     # Try to determine model type from config first, then from name
     model_type = config.get("model_type", None)
+    if model_type is None:
+        model_type = config.get("architecture", None)
+    if model_type is None:
+        model_type = _get_sts_utils().infer_model_type_from_config(config)
     model_category = get_model_category(model_type, model_name_parts)
 
     if not model_category:
+        if load_error is not None:
+            raise load_error
         raise ValueError(f"Could not determine model type for {model_name}")
 
     model_loaders = {
-        "tts": tts_utils.load_model,
-        "stt": stt_utils.load_model,
-        "lid": lid_utils.load_model,
-        "vad": vad_utils.load_model,
+        "tts": _get_tts_utils().load_model,
+        "stt": _get_stt_utils().load_model,
+        "sts": _get_sts_utils().load_model,
+        "lid": _get_lid_utils().load_model,
+        "vad": _get_vad_utils().load_model,
     }
 
     if model_category not in model_loaders:

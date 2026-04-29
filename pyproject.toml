@@ -19,57 +19,40 @@ requires-python = ">=3.10"
 
 # Core dependencies
 dependencies = [
-    "mlx>=0.25.2",
-    "numpy>=1.26.4",
     "huggingface_hub>=1.0",
-    "transformers>=5.0.0",
-    "mlx-lm==0.31.1",
-    "tqdm>=4.67.1",
-    "sounddevice==0.5.3",
     "miniaudio>=1.61",
-    "pyloudnorm>=0.2.0",
-    "numba>=0.60.0", # Required by librosa
-    "librosa==0.11.0",
-    "protobuf>=6.33.5",
+    "mlx-lm>=0.31.1",
+    "mlx>=0.31.1",
+    "numpy>=1.26.4",
+    "scipy>=1.10.0",
+    "sounddevice>=0.5.3",
+    "tqdm>=4.67.1",
+    "transformers>=5.5.0",
 ]
 
 [project.optional-dependencies]
 # STT dependencies
 stt = [
-    "tiktoken>=0.9.0",
-    "mistral-common[audio]",
     "sentencepiece>=0.2.0",
 ]
 
 # TTS dependencies
 tts = [
-    "tiktoken>=0.9.0",
-    "misaki>=0.9.4",
-    "num2words>=0.5.14",
-    "spacy>=3.8.4",
-    "phonemizer-fork>=3.3.2",
-    "espeakng-loader>=0.2.4",
-    "pydub>=0.25.1",
+    "mistral-common[audio]",
     "sentencepiece>=0.2.0",
 ]
 
 # Server dependencies
 server = [
     "fastapi>=0.95.0",
-    "uvicorn>=0.22.0",
-    "python-multipart>=0.0.22"
+    "uvicorn[standard]>=0.22.0",
+    "python-multipart>=0.0.22",
+    "webrtcvad>=2.0.10",
+    "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
 
-# STS (Speech-to-Speech) requires both STT and TTS + additional deps
+# STS (Speech-to-Speech) dependencies
 sts = [
-    "tiktoken>=0.9.0",
-    "mistral-common[audio]",
-
-    "misaki>=0.9.4",
-    "num2words>=0.5.14",
-    "spacy>=3.8.4",
-    "phonemizer-fork>=3.3.2",
-    "espeakng-loader>=0.2.4",
     "sentencepiece>=0.2.0",
     
     "webrtcvad>=2.0.10",
@@ -78,19 +61,11 @@ sts = [
 
 # Full installation (all features)
 all = [
-    "tiktoken>=0.9.0",
     "mistral-common[audio]",
-
-    "misaki>=0.9.4",
-    "num2words>=0.5.14",
-    "spacy>=3.8.4",
-    "phonemizer-fork>=3.3.2",
-    "espeakng-loader>=0.2.4",
-    "pydub>=0.25.1",
     "sentencepiece>=0.2.0",
 
     "fastapi>=0.95.0",
-    "uvicorn>=0.22.0",
+    "uvicorn[standard]>=0.22.0",
 
     "webrtcvad>=2.0.10",
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad

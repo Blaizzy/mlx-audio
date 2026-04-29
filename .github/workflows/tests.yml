@@ -91,6 +91,8 @@ jobs:
             path: mlx_audio/stt/tests
           - name: STS
             path: mlx_audio/sts/tests
+          - name: LID
+            path: mlx_audio/lid/tests
           - name: Codec
             path: mlx_audio/codec/tests
           - name: VAD

@@ -160,7 +160,8 @@ OmniVoice supports multilingual zero-shot voice cloning with a HiggsAudioV2 acou
 from mlx_audio.tts.utils import load_model as load_tts
 from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
 from mlx_audio.stt.utils import load_model as load_stt
-import mlx.core as mx, numpy as np, soundfile as sf, tempfile, os
+from mlx_audio.audio_io import write as audio_write
+import mlx.core as mx, numpy as np, tempfile, os
 
 tts = load_tts("mlx-community/OmniVoice-bf16")
 
@@ -170,7 +171,7 @@ mx.eval(ref_tokens)
 
 preprocessed = np.array(tts.audio_tokenizer.decode(ref_tokens).astype(mx.float32))
 tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-sf.write(tmp.name, preprocessed, 24000); tmp.close()
+audio_write(tmp.name, preprocessed, 24000); tmp.close()
 
 ref_text = load_stt("mlx-community/Qwen3-ASR-0.6B-8bit").generate(tmp.name).text
 os.unlink(tmp.name)
@@ -182,7 +183,7 @@ results = list(tts.generate(
     ref_text=ref_text,
 ))
 
-sf.write("output.wav", np.array(results[0].audio), results[0].sample_rate)
+audio_write("output.wav", np.array(results[0].audio), results[0].sample_rate)
 ```
 
 ### OmniVoice-specific notes

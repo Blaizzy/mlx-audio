@@ -6,7 +6,8 @@ from typing import Union
 
 import mlx.core as mx
 import numpy as np
-from librosa.filters import mel as librosa_mel_fn
+
+from mlx_audio.dsp import mel_filters
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +21,16 @@ def get_mel_basis(
     fmax: int,
 ) -> np.ndarray:
     """Get cached mel filter bank."""
-    mel = librosa_mel_fn(
-        sr=sampling_rate,
-        n_fft=n_fft,
-        n_mels=num_mels,
-        fmin=fmin,
-        fmax=fmax,
+    mel = np.array(
+        mel_filters(
+            sample_rate=sampling_rate,
+            n_fft=n_fft,
+            n_mels=num_mels,
+            f_min=fmin,
+            f_max=fmax,
+            norm="slaney",
+            mel_scale="slaney",
+        )
     )
     return mel.astype(np.float32)
 

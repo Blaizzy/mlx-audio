@@ -4,15 +4,19 @@ mlx-audio provides command-line tools for both text-to-speech generation and spe
 
 ## Text-to-Speech
 
+!!! note
+    These TTS quickstart examples use `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
+
 ### Basic Generation
 
 Generate speech from text with a single command:
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Kokoro-82M-bf16 \
+    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
     --text "Hello, world!" \
-    --lang_code a
+    --voice Chelsie \
+    --lang_code English
 ```
 
 ### Play Audio Immediately
@@ -21,33 +25,34 @@ Add `--play` to hear the result without saving:
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Kokoro-82M-bf16 \
+    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
     --text "Hello, world!" \
-    --lang_code a \
+    --voice Chelsie \
+    --lang_code English \
     --play
 ```
 
-### Voice and Speed Control
+### Voice and Language Selection
 
-Choose a voice preset and adjust the speaking speed:
+Choose a voice preset and provide a language hint:
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Kokoro-82M-bf16 \
-    --text "Hello!" \
-    --voice af_heart \
-    --speed 1.2 \
-    --lang_code a
+    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
+    --text "Welcome to MLX-Audio!" \
+    --voice Ethan \
+    --lang_code English
 ```
 
 ### Save to a Directory
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Kokoro-82M-bf16 \
+    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
     --text "Hello!" \
-    --output_path ./my_audio \
-    --lang_code a
+    --voice Chelsie \
+    --lang_code English \
+    --output_path ./my_audio
 ```
 
 ### Voice Cloning (CSM)
@@ -118,9 +123,9 @@ python -m mlx_audio.stt.generate \
 | `--model` | Hugging Face model ID or local path |
 | `--text` | Input text for TTS generation |
 | `--audio` | Input audio file for STT transcription |
-| `--voice` | Voice preset name (e.g., `af_heart`, `casual_male`) |
+| `--voice` | Voice preset name (e.g., `Chelsie`, `Ethan`, `casual_male`) |
 | `--speed` | Speech speed multiplier (default: `1.0`) |
-| `--lang_code` | Language code (e.g., `a` for American English) |
+| `--lang_code` | Language hint (e.g., `English`, `Chinese`, or `auto`) |
 | `--play` | Play audio immediately after generation |
 | `--output_path` | Directory to save output files |
 | `--verbose` | Show detailed generation info |

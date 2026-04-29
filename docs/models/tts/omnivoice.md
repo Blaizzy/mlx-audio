@@ -34,9 +34,9 @@ The correct workflow mirrors the original k2-fsa/OmniVoice: preprocess first, th
 from mlx_audio.stt.utils import load_model as load_stt
 from mlx_audio.tts.utils import load_model as load_tts
 from mlx_audio.tts.models.omnivoice.utils import create_voice_clone_prompt
+from mlx_audio.audio_io import write as audio_write
 import mlx.core as mx
 import numpy as np
-import soundfile as sf
 import tempfile, os
 
 tts = load_tts("mlx-community/OmniVoice-bf16")
@@ -49,7 +49,7 @@ mx.eval(ref_tokens)
 # Step 2: Decode preprocessed tokens back to audio, then transcribe
 preprocessed = np.array(tokenizer.decode(ref_tokens).astype(mx.float32))
 tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-sf.write(tmp.name, preprocessed, 24000)
+audio_write(tmp.name, preprocessed, 24000)
 tmp.close()
 
 stt = load_stt("mlx-community/Qwen3-ASR-0.6B-8bit")
@@ -64,7 +64,7 @@ results = list(tts.generate(
     ref_text=ref_text,
 ))
 
-sf.write("output.wav", np.array(results[0].audio), results[0].sample_rate)
+audio_write("output.wav", np.array(results[0].audio), results[0].sample_rate)
 ```
 
 Any STT model works — Whisper, Qwen3-ASR, SenseVoice, etc. The key is to transcribe the **preprocessed** audio, not the original file.
@@ -77,7 +77,7 @@ The MLX port matches the original Python pipeline for reference audio preprocess
 
 - torchaudio-compatible Hann-windowed sinc resampling
 - RMS normalization for quiet references
-- silence removal via pydub
+- fixed-threshold silence removal with built-in preprocessing
 - long-audio trimming at silence gaps
 
 Best results come from 5–15 seconds of clean speech after silence trimming.
@@ -87,6 +87,9 @@ Best results come from 5–15 seconds of clean speech after silence trimming.
 Generate multiple utterances in one call:
 
 ```python
+from mlx_audio.audio_io import write as audio_write
+import numpy as np
+
 model = load_tts("mlx-community/OmniVoice-bf16")
 
 results = model.generate_batch(
@@ -96,7 +99,7 @@ results = model.generate_batch(
 )
 
 for i, r in enumerate(results):
-    sf.write(f"output_{i}.wav", np.array(r.audio), r.sample_rate)
+    audio_write(f"output_{i}.wav", np.array(r.audio), r.sample_rate)
 ```
 
 Batch generation supports per-item language, ref_audio, ref_text, and duration. Default `max_batch_size=8` with automatic chunking for larger inputs.

@@ -1,7 +1,7 @@
+import asyncio
 from unittest import mock
 
 import numpy as np
-import pytest
 
 from mlx_audio.sts.voice_pipeline import VoicePipeline
 
@@ -48,11 +48,10 @@ class TestVoicePipeline:
         assert pipeline.llm_model == "custom/llm"
         assert pipeline.tts_model == "custom/tts"
 
-    @pytest.mark.asyncio
     @mock.patch("mlx_audio.sts.voice_pipeline.load_llm")
     @mock.patch("mlx_audio.sts.voice_pipeline.load_tts")
     @mock.patch("mlx_audio.sts.voice_pipeline.Whisper.from_pretrained")
-    async def test_init_models(self, mock_whisper_load, mock_tts_load, mock_llm_load):
+    def test_init_models(self, mock_whisper_load, mock_tts_load, mock_llm_load):
         """
         Test that the init_models method initializes the models correctly.
         """
@@ -69,7 +68,7 @@ class TestVoicePipeline:
         mock_stt = mock.AsyncMock()
         mock_whisper_load.return_value = mock_stt
 
-        await pipeline.init_models()
+        asyncio.run(pipeline.init_models())
 
         mock_llm_load.assert_called_once_with(pipeline.llm_model)
         mock_tts_load.assert_called_once_with(pipeline.tts_model)

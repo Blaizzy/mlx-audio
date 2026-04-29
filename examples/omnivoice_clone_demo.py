@@ -21,7 +21,8 @@ import tempfile
 import time
 
 import numpy as np
-import soundfile as sf
+
+from mlx_audio.audio_io import write as audio_write
 
 
 def main():
@@ -74,7 +75,7 @@ def main():
         preprocessed_audio = np.array(tokenizer.decode(ref_tokens).astype(mx.float32))
 
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-        sf.write(tmp.name, preprocessed_audio, 24000)
+        audio_write(tmp.name, preprocessed_audio, 24000)
         tmp.close()
 
         from mlx_audio.stt.utils import load_model as load_stt
@@ -103,7 +104,7 @@ def main():
     elapsed = time.time() - t0
 
     audio = np.array(results[0].audio)
-    sf.write(args.output, audio, results[0].sample_rate)
+    audio_write(args.output, audio, results[0].sample_rate)
     print(
         f"Saved {args.output} ({results[0].audio_duration}, generated in {elapsed:.1f}s)"
     )

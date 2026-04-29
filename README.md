@@ -1,8 +1,29 @@
-<a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy%2Fmlx-audio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 
 # MLX-Audio
 
+<a href="https://trendshift.io/repositories/13625" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13625" alt="Blaizzy%2Fmlx-audio | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+
+[![PyPI version](https://img.shields.io/pypi/v/mlx-audio.svg)](https://pypi.org/project/mlx-audio/)
+[![Python](https://img.shields.io/pypi/pyversions/mlx-audio.svg)](https://pypi.org/project/mlx-audio/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![GitHub stars](https://img.shields.io/github/stars/Blaizzy/mlx-audio.svg?style=social)](https://github.com/Blaizzy/mlx-audio)
+
 The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
+
+## Table of Contents
+
+- [Features](#features)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Supported Models](#supported-models)
+- [Model Examples](#model-examples)
+- [Web Interface \& API Server](#web-interface--api-server)
+- [Quantization](#quantization)
+- [Swift](#swift)
+- [Requirements](#requirements)
+- [License](#license)
+- [Citation](#citation)
+- [Acknowledgements](#acknowledgements)
 
 ## Features
 
@@ -48,25 +69,25 @@ pip install -e ".[dev]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello, world!' --lang_code a
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello, world!' --voice Chelsie
 
-# With voice selection and speed adjustment
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --voice af_heart --speed 1.2 --lang_code a
+# With a different voice and language hint
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Welcome to MLX-Audio!' --voice Ethan --lang_code English
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --play  --lang_code a
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --play
 
 # Save to a specific directory
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --output_path ./my_audio  --lang_code a
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --output_path ./my_audio
 
 # Stream audio during generation
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --lang_code a
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream
 
 # Stream audio during generation and save it to disk
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text 'Hello!' --stream --save --lang_code a
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream --save
 
 # Join multiple generated segments into one file
-mlx_audio.tts.generate --model mlx-community/Kokoro-82M-bf16 --text $'Hello!\nHow are you?' --join_audio --lang_code a
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text $'Hello!\nHow are you?' --voice Chelsie --join_audio
 ```
 
 By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
@@ -77,10 +98,14 @@ By default, when generation yields multiple segments, mlx-audio saves numbered f
 from mlx_audio.tts.utils import load_model
 
 # Load model
-model = load_model("mlx-community/Kokoro-82M-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
 
 # Generate speech
-for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
+for result in model.generate(
+    "Hello from MLX-Audio!",
+    voice="Chelsie",
+    lang_code="English",
+):
     print(f"Generated {result.audio.shape[0]} samples")
     # result.audio contains the waveform as mx.array
 ```
@@ -105,6 +130,8 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
 | **LongCat-AudioDiT** | SOTA diffusion TTS in waveform latent space with voice cloning | ZH, EN | [mlx-community/LongCat-AudioDiT-1B-bf16](https://huggingface.co/mlx-community/LongCat-AudioDiT-1B-bf16) |
 | **MeloTTS** | Lightweight VITS2-based TTS with streaming | EN (more coming) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
+| **MOSS-TTS-Nano** | Tiny multilingual voice-cloning TTS | 20 languages | [mlx-community/MOSS-TTS-Nano-100M](https://huggingface.co/mlx-community/MOSS-TTS-Nano-100M) |
+| **Higgs Audio v2** | 3B Llama-backed TTS with real-time voice cloning | EN, ZH, KO, DE, ES | [bf16 (upstream)](https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base), [q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
 
 ### Speech-to-Text (STT)
 
@@ -145,44 +172,6 @@ See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API d
 
 ## Model Examples
 
-### Kokoro TTS
-
-Kokoro is a fast, multilingual TTS model with 54 voice presets.
-
-```python
-from mlx_audio.tts.utils import load_model
-
-model = load_model("mlx-community/Kokoro-82M-bf16")
-# Or use a quantized variant for lower memory usage:
-# model = load_model("mlx-community/Kokoro-82M-8bit")
-# model = load_model("mlx-community/Kokoro-82M-4bit")
-
-# Generate with different voices
-for result in model.generate(
-    text="Welcome to MLX-Audio!",
-    voice="af_heart",  # American female
-    speed=1.0,
-    lang_code="a"  # American English
-):
-    audio = result.audio
-```
-
-**Available Voices:**
-- American English: `af_heart`, `af_bella`, `af_nova`, `af_sky`, `am_adam`, `am_echo`, etc.
-- British English: `bf_alice`, `bf_emma`, `bm_daniel`, `bm_george`, etc.
-- Japanese: `jf_alpha`, `jm_kumo`, etc.
-- Chinese: `zf_xiaobei`, `zm_yunxi`, etc.
-
-**Language Codes:**
-| Code | Language | Note |
-|------|----------|------|
-| `a` | American English | Default |
-| `b` | British English | |
-| `j` | Japanese | Requires `pip install misaki[ja]` |
-| `z` | Mandarin Chinese | Requires `pip install misaki[zh]` |
-| `e` | Spanish | |
-| `f` | French | |
-
 ### Qwen3-TTS
 
 Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control, and voice design capabilities.
@@ -216,6 +205,46 @@ mlx_audio.tts.generate \
 ```
 
 See the [Ming Omni TTS README](mlx_audio/tts/models/bailingmm/README.md) for CLI and Python cookbook examples, and the [Ming Omni Dense README](mlx_audio/tts/models/dense/README.md) for the `mlx-community/Ming-omni-tts-0.5B-bf16` workflow.
+
+### Kokoro TTS
+
+Kokoro is a fast, multilingual TTS model with 54 voice presets.
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/Kokoro-82M-bf16")
+# Or use a quantized variant for lower memory usage:
+# model = load_model("mlx-community/Kokoro-82M-8bit")
+# model = load_model("mlx-community/Kokoro-82M-4bit")
+
+# Generate with different voices
+for result in model.generate(
+    text="Welcome to MLX-Audio!",
+    voice="af_heart",  # American female
+    speed=1.0,
+    lang_code="a"  # American English
+):
+    audio = result.audio
+```
+
+**Available Voices:**
+- American English: `af_heart`, `af_bella`, `af_nova`, `af_sky`, `am_adam`, `am_echo`, etc.
+- British English: `bf_alice`, `bf_emma`, `bm_daniel`, `bm_george`, etc.
+- Japanese: `jf_alpha`, `jm_kumo`, etc.
+- Chinese: `zf_xiaobei`, `zm_yunxi`, etc.
+
+Kokoro requires `pip install misaki` for text processing. Japanese and Mandarin may additionally require `pip install misaki[ja]` or `pip install misaki[zh]`.
+
+**Language Codes:**
+| Code | Language | Note |
+|------|----------|------|
+| `a` | American English | Default; requires `pip install misaki` |
+| `b` | British English | Requires `pip install misaki` |
+| `j` | Japanese | Requires `pip install misaki[ja]` |
+| `z` | Mandarin Chinese | Requires `pip install misaki[zh]` |
+| `e` | Spanish | Requires `pip install misaki` |
+| `f` | French | Requires `pip install misaki` |
 
 ### CSM (Voice Cloning)
 

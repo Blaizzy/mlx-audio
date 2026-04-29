@@ -82,6 +82,7 @@ nav:
       - Kokoro: models/tts/kokoro.md
       - Qwen3-TTS: models/tts/qwen3-tts.md
       - Voxtral TTS: models/tts/voxtral-tts.md
+      - Svara TTS: models/tts/svara.md
       - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
       - Dia: models/tts/dia.md

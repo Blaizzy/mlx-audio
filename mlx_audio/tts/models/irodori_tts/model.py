@@ -200,9 +200,12 @@ class SelfAttention(nn.Module):
 
 class JointAttention(nn.Module):
     """
-    Joint attention over latent self-tokens, text context, and speaker context.
+    Joint attention over latent self-tokens, text context, and speaker/caption context.
     Uses half-RoPE: RoPE applied to the first half of head dimensions.
-    No latent KV cache (blockwise generation not needed for inference).
+
+    Exactly one of speaker_ctx_dim or caption_ctx_dim must be provided.
+    The corresponding weight keys (wk_speaker/wv_speaker or wk_caption/wv_caption)
+    are created accordingly so that loaded PyTorch weights map directly.
     """
 
     def __init__(
@@ -210,8 +213,9 @@ class JointAttention(nn.Module):
         dim: int,
         heads: int,
         text_ctx_dim: int,
-        speaker_ctx_dim: int,
+        speaker_ctx_dim: Optional[int],
         norm_eps: float,
+        caption_ctx_dim: Optional[int] = None,
     ):
         super().__init__()
         self.heads = heads
@@ -221,12 +225,21 @@ class JointAttention(nn.Module):
         self.wv = nn.Linear(dim, dim, bias=False)
         self.wk_text = nn.Linear(text_ctx_dim, dim, bias=False)
         self.wv_text = nn.Linear(text_ctx_dim, dim, bias=False)
-        self.wk_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
-        self.wv_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
         self.gate = nn.Linear(dim, dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
         self.q_norm = RMSNorm((heads, self.head_dim), eps=norm_eps)
         self.k_norm = RMSNorm((heads, self.head_dim), eps=norm_eps)
+
+        if speaker_ctx_dim is not None:
+            self.wk_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
+            self.wv_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
+            self._context_mode = "speaker"
+        elif caption_ctx_dim is not None:
+            self.wk_caption = nn.Linear(caption_ctx_dim, dim, bias=False)
+            self.wv_caption = nn.Linear(caption_ctx_dim, dim, bias=False)
+            self._context_mode = "caption"
+        else:
+            raise ValueError("Either speaker_ctx_dim or caption_ctx_dim must be set")
 
     def _apply_rotary_half(self, y: mx.array, freqs_cis: RotaryCache) -> mx.array:
         """Apply RoPE to the first half of head dimensions only."""
@@ -256,14 +269,31 @@ class JointAttention(nn.Module):
         k = self.k_norm(k)
         return k, v
 
+    def get_kv_cache_caption(self, caption_state: mx.array) -> KVCache:
+        bsz = caption_state.shape[0]
+        k = self.wk_caption(caption_state).reshape(
+            bsz, caption_state.shape[1], self.heads, self.head_dim
+        )
+        v = self.wv_caption(caption_state).reshape(
+            bsz, caption_state.shape[1], self.heads, self.head_dim
+        )
+        k = self.k_norm(k)
+        return k, v
+
+    def get_kv_cache_context(self, context_state: mx.array) -> KVCache:
+        """Dispatch to speaker or caption KV cache based on model mode."""
+        if self._context_mode == "caption":
+            return self.get_kv_cache_caption(context_state)
+        return self.get_kv_cache_speaker(context_state)
+
     def __call__(
         self,
         x: mx.array,
         text_mask: mx.array,
-        speaker_mask: mx.array,
+        context_mask: mx.array,
         freqs_cis: RotaryCache,
         kv_cache_text: KVCache,
-        kv_cache_speaker: KVCache,
+        kv_cache_context: KVCache,
         start_pos: int = 0,
     ) -> mx.array:
         bsz, seq_len = x.shape[:2]
@@ -281,13 +311,13 @@ class JointAttention(nn.Module):
         k_self = self._apply_rotary_half(k_self, (q_cos, q_sin))
 
         k_text, v_text = kv_cache_text
-        k_speaker, v_speaker = kv_cache_speaker
+        k_ctx, v_ctx = kv_cache_context
 
-        k = mx.concatenate([k_self, k_text, k_speaker], axis=1)
-        v = mx.concatenate([v_self, v_text, v_speaker], axis=1)
+        k = mx.concatenate([k_self, k_text, k_ctx], axis=1)
+        v = mx.concatenate([v_self, v_text, v_ctx], axis=1)
 
         self_mask = mx.ones((bsz, seq_len), dtype=mx.bool_)
-        full_mask = mx.concatenate([self_mask, text_mask, speaker_mask], axis=1)
+        full_mask = mx.concatenate([self_mask, text_mask, context_mask], axis=1)
         full_mask = mx.broadcast_to(
             full_mask[:, None, :], (bsz, seq_len, full_mask.shape[1])
         )
@@ -333,6 +363,7 @@ class TextEncoder(nn.Module):
     """
     Text encoder: embedding + non-causal Transformer blocks.
     Applies mask zeroing after each block so fully-masked positions stay zero.
+    Used for both text and caption encoding.
     """
 
     def __init__(
@@ -426,13 +457,19 @@ class DiffusionBlock(nn.Module):
         heads: int,
         mlp_hidden_dim: int,
         text_ctx_dim: int,
-        speaker_ctx_dim: int,
+        speaker_ctx_dim: Optional[int],
         adaln_rank: int,
         norm_eps: float,
+        caption_ctx_dim: Optional[int] = None,
     ):
         super().__init__()
         self.attention = JointAttention(
-            dim, heads, text_ctx_dim, speaker_ctx_dim, norm_eps
+            dim,
+            heads,
+            text_ctx_dim,
+            speaker_ctx_dim,
+            norm_eps,
+            caption_ctx_dim=caption_ctx_dim,
         )
         self.mlp = SwiGLU(dim, mlp_hidden_dim)
         self.attention_adaln = LowRankAdaLN(dim, adaln_rank, norm_eps)
@@ -443,20 +480,20 @@ class DiffusionBlock(nn.Module):
         x: mx.array,
         cond_embed: mx.array,
         text_mask: mx.array,
-        speaker_mask: mx.array,
+        context_mask: mx.array,
         freqs_cis: RotaryCache,
         kv_cache_text: KVCache,
-        kv_cache_speaker: KVCache,
+        kv_cache_context: KVCache,
         start_pos: int = 0,
     ) -> mx.array:
         x_norm, attn_gate = self.attention_adaln(x, cond_embed)
         x = x + attn_gate * self.attention(
             x_norm,
             text_mask,
-            speaker_mask,
+            context_mask,
             freqs_cis,
             kv_cache_text,
-            kv_cache_speaker,
+            kv_cache_context,
             start_pos,
         )
         x_norm, mlp_gate = self.mlp_adaln(x, cond_embed)
@@ -472,6 +509,10 @@ class DiffusionBlock(nn.Module):
 class IrodoriDiT(nn.Module):
     """
     Irodori-TTS DiT model (MLX port of TextToLatentRFDiT).
+
+    Supports two conditioning modes (mutually exclusive):
+      - Speaker mode (use_speaker_condition=True): ref audio latent → speaker embedding
+      - Caption mode (use_caption_condition=True): style text → caption embedding
 
     Input x_t : (B, S, latent_dim * latent_patch_size)
     Output v_t : same shape — velocity prediction for Rectified Flow ODE.
@@ -490,17 +531,34 @@ class IrodoriDiT(nn.Module):
             mlp_ratio=cfg.text_mlp_ratio_resolved,
             norm_eps=cfg.norm_eps,
         )
-        # ReferenceLatentEncoder receives patched speaker latents
-        self.speaker_encoder = ReferenceLatentEncoder(
-            in_dim=cfg.speaker_patched_latent_dim,
-            dim=cfg.speaker_dim,
-            heads=cfg.speaker_heads,
-            num_layers=cfg.speaker_layers,
-            mlp_ratio=cfg.speaker_mlp_ratio_resolved,
-            norm_eps=cfg.norm_eps,
-        )
         self.text_norm = RMSNorm(cfg.text_dim, eps=cfg.norm_eps)
-        self.speaker_norm = RMSNorm(cfg.speaker_dim, eps=cfg.norm_eps)
+
+        if cfg.use_speaker_condition:
+            self.speaker_encoder = ReferenceLatentEncoder(
+                in_dim=cfg.speaker_patched_latent_dim,
+                dim=cfg.speaker_dim,
+                heads=cfg.speaker_heads,
+                num_layers=cfg.speaker_layers,
+                mlp_ratio=cfg.speaker_mlp_ratio_resolved,
+                norm_eps=cfg.norm_eps,
+            )
+            self.speaker_norm = RMSNorm(cfg.speaker_dim, eps=cfg.norm_eps)
+            context_dim = cfg.speaker_dim
+            speaker_ctx_dim: Optional[int] = cfg.speaker_dim
+            caption_ctx_dim: Optional[int] = None
+        else:
+            self.caption_encoder = TextEncoder(
+                vocab_size=cfg.caption_vocab_size_resolved,
+                dim=cfg.caption_dim_resolved,
+                heads=cfg.caption_heads_resolved,
+                num_layers=cfg.caption_layers_resolved,
+                mlp_ratio=cfg.caption_mlp_ratio_resolved,
+                norm_eps=cfg.norm_eps,
+            )
+            self.caption_norm = RMSNorm(cfg.caption_dim_resolved, eps=cfg.norm_eps)
+            context_dim = cfg.caption_dim_resolved
+            speaker_ctx_dim = None
+            caption_ctx_dim = cfg.caption_dim_resolved
 
         # Timestep → conditioning embedding (3 × model_dim for shift/scale/gate)
         self.cond_module = nn.Sequential(
@@ -519,51 +577,68 @@ class IrodoriDiT(nn.Module):
                 heads=cfg.num_heads,
                 mlp_hidden_dim=mlp_hidden,
                 text_ctx_dim=cfg.text_dim,
-                speaker_ctx_dim=cfg.speaker_dim,
+                speaker_ctx_dim=speaker_ctx_dim,
                 adaln_rank=cfg.adaln_rank,
                 norm_eps=cfg.norm_eps,
+                caption_ctx_dim=caption_ctx_dim,
             )
             for _ in range(cfg.num_layers)
         ]
         self.out_norm = RMSNorm(cfg.model_dim, eps=cfg.norm_eps)
         self.out_proj = nn.Linear(cfg.model_dim, cfg.patched_latent_dim, bias=True)
 
+        self._context_dim = context_dim
+
     # ------------------------------------------------------------------
-    # Condition encoding (text + speaker) — can be cached across steps
+    # Condition encoding (text + speaker/caption) — cached across steps
     # ------------------------------------------------------------------
 
     def encode_conditions(
         self,
         text_input_ids: mx.array,
         text_mask: mx.array,
-        ref_latent: mx.array,
-        ref_mask: mx.array,
+        ref_latent: Optional[mx.array] = None,
+        ref_mask: Optional[mx.array] = None,
+        caption_input_ids: Optional[mx.array] = None,
+        caption_mask: Optional[mx.array] = None,
     ) -> Tuple[mx.array, mx.array, mx.array, mx.array]:
         """
-        Encode text and reference latent into conditioning states.
-        Patches the reference latent before encoding.
-        Returns (text_state, text_mask, speaker_state, speaker_mask).
+        Encode text and context (speaker latent or caption) into conditioning states.
+        Returns (text_state, text_mask, context_state, context_mask).
         """
-        ref_latent, ref_mask = patch_sequence_with_mask(
-            ref_latent, ref_mask, self.cfg.speaker_patch_size
-        )
         text_state = self.text_norm(self.text_encoder(text_input_ids, text_mask))
-        speaker_state = self.speaker_norm(self.speaker_encoder(ref_latent, ref_mask))
-        return text_state, text_mask, speaker_state, ref_mask
+
+        if self.cfg.use_speaker_condition:
+            assert ref_latent is not None and ref_mask is not None
+            ref_latent_p, ref_mask_p = patch_sequence_with_mask(
+                ref_latent, ref_mask, self.cfg.speaker_patch_size
+            )
+            context_state = self.speaker_norm(
+                self.speaker_encoder(ref_latent_p, ref_mask_p)
+            )
+            context_mask = ref_mask_p
+        else:
+            assert caption_input_ids is not None and caption_mask is not None
+            context_state = self.caption_norm(
+                self.caption_encoder(caption_input_ids, caption_mask)
+            )
+            context_mask = caption_mask
+
+        return text_state, text_mask, context_state, context_mask
 
     def build_kv_cache(
         self,
         text_state: mx.array,
-        speaker_state: mx.array,
+        context_state: mx.array,
     ) -> Tuple[List[KVCache], List[KVCache]]:
-        """Pre-compute per-layer text/speaker KV projections for fast sampling."""
+        """Pre-compute per-layer text/context KV projections for fast sampling."""
         kv_text = [
             block.attention.get_kv_cache_text(text_state) for block in self.blocks
         ]
-        kv_speaker = [
-            block.attention.get_kv_cache_speaker(speaker_state) for block in self.blocks
+        kv_context = [
+            block.attention.get_kv_cache_context(context_state) for block in self.blocks
         ]
-        return kv_text, kv_speaker
+        return kv_text, kv_context
 
     # ------------------------------------------------------------------
     # Forward (with pre-encoded conditions)
@@ -581,6 +656,8 @@ class IrodoriDiT(nn.Module):
         kv_speaker: Optional[List[KVCache]] = None,
         start_pos: int = 0,
     ) -> mx.array:
+        # NOTE: speaker_state/speaker_mask/kv_speaker are the generic "context"
+        # (either speaker or caption depending on cfg.use_caption_condition).
         t_embed = get_timestep_embedding(t, self.cfg.timestep_embed_dim).astype(
             x_t.dtype
         )
@@ -598,7 +675,7 @@ class IrodoriDiT(nn.Module):
             kv_s = (
                 kv_speaker[i]
                 if kv_speaker is not None
-                else block.attention.get_kv_cache_speaker(speaker_state)
+                else block.attention.get_kv_cache_context(speaker_state)
             )
             x = block(
                 x,

@@ -495,7 +495,15 @@ class Model(nn.Module):
                 and "weight" in k
                 and len(v.shape) == 3
             ):
-                v = v.transpose(0, 2, 1)
+                # MLX Conv1d expects weights in (out_channels, kernel_size, in_channels)
+                # layout, while PyTorch uses (out_channels, in_channels, kernel_size).
+                # Models converted from PyTorch checkpoints need transposing; models
+                # already saved in MLX-native layout (e.g. bf16 safetensors) do not.
+                # Detect PyTorch layout: shape[-1] > shape[-2] indicates
+                # (out, in, kernel) where kernel > in (true for depthwise convs).
+                # When kernel_size == 1 the shapes are symmetric and no-op either way.
+                if v.shape[-1] > v.shape[-2]:
+                    v = v.transpose(0, 2, 1)
 
             sanitized[k] = v
         return sanitized

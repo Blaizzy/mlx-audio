@@ -16,6 +16,39 @@ from mlx_audio.stt.utils import get_model_path
 from ..base import STTOutput
 from .config import AudioConfig, ModelConfig
 
+# Voxtral's three EOS-equivalent token ids. Used as the default when a
+# loaded tokenizer has no `eos_token_ids` populated.
+_VOXTRAL_EOS_TOKEN_IDS = [2, 4, 32000]
+
+
+def _ensure_eos_token_ids_list(tokenizer, default=_VOXTRAL_EOS_TOKEN_IDS):
+    """Set `tokenizer.eos_token_ids` as a list, surviving the base
+    class's attribute-access magic.
+
+    `transformers.PreTrainedTokenizerBase` overrides `__getattr__` to
+    collapse any missing `*_id` / `*_ids` attribute lookup to the
+    corresponding single-token id (`eos_token_id` etc.), and overrides
+    `__setattr__` to reject non-string values for those keys. Together
+    these make `tok.eos_token_ids = [2, 4, 32000]` either silently
+    return the wrong value on read-back, or raise on assignment.
+
+    Bypass both by writing through the instance `__dict__` directly:
+    `__getattr__` only fires when the attribute is absent from
+    `__dict__`, so a `__dict__` write shadows the descriptor cleanly
+    on subsequent reads. Per Python data model.
+
+    If the tokenizer already has a list/tuple/set value present in
+    `__dict__`, preserve it (coerced to list); otherwise install
+    `default`.
+    """
+    existing = tokenizer.__dict__.get("eos_token_ids")
+    if isinstance(existing, set):
+        existing = sorted(existing)
+    elif not isinstance(existing, (list, tuple)):
+        existing = default
+    tokenizer.__dict__["eos_token_ids"] = list(existing)
+    return tokenizer.__dict__["eos_token_ids"]
+
 
 class Attention(nn.Module):
     def __init__(
@@ -288,9 +321,7 @@ class Model(nn.Module):
 
         processor = AutoProcessor.from_pretrained(str(model_path))
         model._processor = processor
-        model._processor.tokenizer.eos_token_ids = getattr(
-            model._processor.tokenizer, "eos_token_ids", [2, 4, 32000]
-        )
+        _ensure_eos_token_ids_list(model._processor.tokenizer)
 
         # Store model_repo for transcription requests
         if not hasattr(model.config, "model_repo") or model.config.model_repo is None:

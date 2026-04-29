@@ -1,8 +1,28 @@
 import inspect
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass
 from typing import Optional
 
 from mlx_audio.base import BaseModelArgs
+
+SAMPLE_RATE = 16000
+FRAME_RATE = 12.5
+HOP_LENGTH = 160
+RAW_AUDIO_LENGTH_PER_TOK = int(SAMPLE_RATE // FRAME_RATE)  # 1280
+AUDIO_LENGTH_PER_TOK = RAW_AUDIO_LENGTH_PER_TOK // HOP_LENGTH  # 8
+
+
+def _num_audio_tokens(audio_len: int) -> int:
+    if audio_len % HOP_LENGTH != 0:
+        audio_len = math.ceil(audio_len / HOP_LENGTH - 1)
+    else:
+        audio_len = audio_len // HOP_LENGTH
+    return math.ceil(audio_len / AUDIO_LENGTH_PER_TOK)
+
+
+def _num_delay_tokens(delay_ms: float) -> int:
+    delay_len = int(delay_ms / 1000.0 * SAMPLE_RATE)
+    return _num_audio_tokens(delay_len)
 
 
 @dataclass

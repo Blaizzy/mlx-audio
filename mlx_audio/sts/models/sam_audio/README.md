@@ -2,6 +2,13 @@
 
 MLX implementation of [SAM-Audio](https://github.com/facebookresearch/sam-audio) (Segment Anything Model for Audio) - a foundation model for audio source separation using text prompts.
 
+For the MLX-converted `mlx-community/sam-audio-large` repo, the generic STS loader now works:
+
+```python
+from mlx_audio.sts import load
+
+model = load("mlx-community/sam-audio-large")
+```
 
 ## Installation
 
@@ -406,4 +413,3 @@ for chunk, is_last in model.audio_codec.decode_streaming(
 
 SAM-Audio models are gated on HuggingFace. Request access at:
 https://huggingface.co/facebook/sam-audio-large
-

@@ -39,6 +39,7 @@ MODEL_REMAPPING = {
     "longcat": "longcat_audiodit",
     "omnivoice": "omnivoice",
     "melotts": "melotts",
+    "moss_tts_nano": "moss_tts_nano",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]

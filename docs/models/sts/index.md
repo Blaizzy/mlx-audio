@@ -20,8 +20,11 @@ MLX Audio provides speech-to-speech models for audio source separation, speech e
 
 [SAM-Audio](https://github.com/facebookresearch/sam-audio) (Segment Anything Model for Audio) is Meta's foundation model for audio source separation using text prompts. Describe what you want to extract, and SAM-Audio separates it from the mix.
 
-!!! note "Gated model"
-    SAM-Audio weights are gated on HuggingFace. Request access at [facebook/sam-audio-large](https://huggingface.co/facebook/sam-audio-large).
+```python
+from mlx_audio.sts import load
+
+model = load("mlx-community/sam-audio-large")
+```
 
 ### Quick Start
 
@@ -136,6 +139,12 @@ Control the quality vs speed tradeoff:
 |-------|-----------|------|
 | **LFM2.5-Audio 4bit** | 4-bit quantized | [mlx-community/LFM2.5-Audio-1.5B-4bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-4bit) |
 | **LFM2.5-Audio 8bit** | 8-bit quantized | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
+
+```python
+from mlx_audio.sts import load
+
+model = load("mlx-community/LFM2.5-Audio-1.5B-4bit")
+```
 
 ### Text-to-Speech
 
@@ -284,14 +293,20 @@ config = GenerationConfig(
 | **moshiko q8** | 8-bit quantized | -- | [kyutai/moshiko-mlx-q8](https://huggingface.co/kyutai/moshiko-mlx-q8) |
 | **moshiko q4** | 4-bit quantized | ~8GB | [kyutai/moshiko-mlx-q4](https://huggingface.co/kyutai/moshiko-mlx-q4) |
 
+```python
+from mlx_audio.sts import load
+
+model = load("kyutai/moshiko-mlx-q4")
+```
+
 ### Usage
 
 ```python
-from mlx_audio.sts import load
+from mlx_audio.sts.models.moshi import MoshiSTSModel
 import sounddevice as sd
 import numpy as np
 
-model = load("kyutai/moshiko-mlx-q4", quantized=4)
+model = MoshiSTSModel.from_pretrained("kyutai/moshiko-mlx-q4", quantized=4)
 
 stream = sd.OutputStream(samplerate=24000, channels=1, dtype=np.float32)
 stream.start()
@@ -325,6 +340,12 @@ stream.close()
 | **MossFormer2 SE** | fp32 | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **MossFormer2 SE 8bit** | int8 | [starkdmi/MossFormer2_SE_48K_MLX-8bit](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX-8bit) |
 | **MossFormer2 SE 4bit** | int4 | [starkdmi/MossFormer2_SE_48K_MLX-4bit](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX-4bit) |
+
+```python
+from mlx_audio.sts import load
+
+model = load("starkdmi/MossFormer2_SE_48K_MLX")
+```
 
 ### Usage
 
@@ -370,6 +391,14 @@ stream.close()
 ## DeepFilterNet
 
 [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) is a speech enhancement model for noise suppression, available in versions 1, 2, and 3. The MLX port supports all three versions with stateful streaming processing.
+
+The standard STS loader defaults to `v3`:
+
+```python
+from mlx_audio.sts import load
+
+model = load("mlx-community/DeepFilterNet-mlx")
+```
 
 ### Usage
 

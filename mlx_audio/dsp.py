@@ -5,6 +5,7 @@ that can be imported without pulling in TTS or STT dependencies.
 """
 
 import math
+import warnings
 
 __all__ = [
     "hanning",
@@ -16,6 +17,10 @@ __all__ = [
     "istft",
     "ISTFTCache",
     "mel_filters",
+    "integrated_loudness",
+    "lfilter",
+    "normalize_loudness",
+    "normalize_peak",
     # Kaldi-compatible features
     "compute_deltas_kaldi",
     "mel_scale_kaldi",
@@ -27,6 +32,7 @@ from functools import lru_cache
 from typing import Optional
 
 import mlx.core as mx
+import numpy as np
 
 
 # Common window functions
@@ -88,6 +94,277 @@ STR_TO_WINDOW_FN = {
 }
 
 
+def _validate_loudness_audio(data: np.ndarray, rate: int, block_size: float) -> None:
+    if not isinstance(data, np.ndarray):
+        raise ValueError("Data must be of type numpy.ndarray.")
+
+    if not np.issubdtype(data.dtype, np.floating):
+        raise ValueError("Data must be floating point.")
+
+    if data.ndim == 2 and data.shape[1] > 5:
+        raise ValueError("Audio must have five channels or less.")
+
+    if data.shape[0] < block_size * rate:
+        raise ValueError("Audio must have length greater than the block size.")
+
+
+def _biquad_coefficients(
+    gain_db: float,
+    q_factor: float,
+    center_freq: float,
+    rate: int,
+    filter_type: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    amplitude = 10 ** (gain_db / 40.0)
+    omega = 2.0 * math.pi * (center_freq / rate)
+    alpha = math.sin(omega) / (2.0 * q_factor)
+
+    if filter_type == "high_shelf":
+        b0 = amplitude * (
+            (amplitude + 1)
+            + (amplitude - 1) * math.cos(omega)
+            + 2 * math.sqrt(amplitude) * alpha
+        )
+        b1 = -2 * amplitude * ((amplitude - 1) + (amplitude + 1) * math.cos(omega))
+        b2 = amplitude * (
+            (amplitude + 1)
+            + (amplitude - 1) * math.cos(omega)
+            - 2 * math.sqrt(amplitude) * alpha
+        )
+        a0 = (
+            (amplitude + 1)
+            - (amplitude - 1) * math.cos(omega)
+            + 2 * math.sqrt(amplitude) * alpha
+        )
+        a1 = 2 * ((amplitude - 1) - (amplitude + 1) * math.cos(omega))
+        a2 = (
+            (amplitude + 1)
+            - (amplitude - 1) * math.cos(omega)
+            - 2 * math.sqrt(amplitude) * alpha
+        )
+    elif filter_type == "high_pass":
+        b0 = (1 + math.cos(omega)) / 2
+        b1 = -(1 + math.cos(omega))
+        b2 = (1 + math.cos(omega)) / 2
+        a0 = 1 + alpha
+        a1 = -2 * math.cos(omega)
+        a2 = 1 - alpha
+    else:
+        raise ValueError(f"Unsupported filter type: {filter_type}")
+
+    return np.array([b0, b1, b2]) / a0, np.array([a0, a1, a2]) / a0
+
+
+def lfilter(b: np.ndarray, a: np.ndarray, data: np.ndarray) -> np.ndarray:
+    """Apply a 1-D causal linear filter.
+
+    This implements the standard direct-form II transposed recurrence for the
+    1-D DSP paths used in this package.
+    """
+    b = np.asarray(b, dtype=np.float64)
+    a = np.asarray(a, dtype=np.float64)
+    data = np.asarray(data)
+
+    if data.ndim != 1:
+        raise ValueError("dsp.lfilter only supports 1-D input")
+    if a.size == 0 or a[0] == 0:
+        raise ValueError("filter denominator must have a non-zero leading term")
+    if b.size == 0:
+        return np.zeros_like(data)
+
+    b = b / a[0]
+    a = a / a[0]
+
+    dtype = np.result_type(data.dtype, b.dtype, a.dtype)
+    x = data.astype(dtype, copy=False)
+    y = np.empty_like(x, dtype=dtype)
+
+    state_len = max(len(a), len(b)) - 1
+    if state_len == 0:
+        return b[0] * x
+
+    state = np.zeros(state_len, dtype=dtype)
+    for n, sample in enumerate(x):
+        output = b[0] * sample + state[0]
+        for i in range(1, state_len):
+            feedforward = b[i] * sample if i < len(b) else 0.0
+            feedback = a[i] * output if i < len(a) else 0.0
+            state[i - 1] = state[i] + feedforward - feedback
+        feedforward = b[state_len] * sample if state_len < len(b) else 0.0
+        feedback = a[state_len] * output if state_len < len(a) else 0.0
+        state[-1] = feedforward - feedback
+        y[n] = output
+
+    return y
+
+
+def _apply_lfilter(b: np.ndarray, a: np.ndarray, data: np.ndarray) -> np.ndarray:
+    return lfilter(b, a, data)
+
+
+def _k_weight_audio(data: np.ndarray, rate: int) -> np.ndarray:
+    weighted = np.array(data, dtype=np.float64, copy=True)
+
+    high_shelf_b, high_shelf_a = _biquad_coefficients(
+        4.0, 1 / math.sqrt(2), 1500.0, rate, "high_shelf"
+    )
+    high_pass_b, high_pass_a = _biquad_coefficients(0.0, 0.5, 38.0, rate, "high_pass")
+
+    for channel in range(weighted.shape[1]):
+        weighted[:, channel] = _apply_lfilter(
+            high_shelf_b, high_shelf_a, weighted[:, channel]
+        )
+        weighted[:, channel] = _apply_lfilter(
+            high_pass_b, high_pass_a, weighted[:, channel]
+        )
+
+    return weighted
+
+
+def integrated_loudness(
+    data: np.ndarray,
+    rate: int,
+    block_size: float = 0.400,
+    overlap: float = 0.75,
+) -> float:
+    """Measure integrated loudness in LUFS using BS.1770 K-weighting."""
+    input_data = np.array(data, copy=True)
+    _validate_loudness_audio(input_data, rate, block_size)
+
+    if input_data.ndim == 1:
+        input_data = input_data.reshape(input_data.shape[0], 1)
+
+    input_data = _k_weight_audio(input_data, rate)
+
+    num_channels = input_data.shape[1]
+    num_samples = input_data.shape[0]
+    channel_gains = [1.0, 1.0, 1.0, 1.41, 1.41]
+    absolute_threshold = -70.0
+    step = 1.0 - overlap
+
+    duration_seconds = num_samples / rate
+    num_blocks = int(
+        np.round(((duration_seconds - block_size) / (block_size * step))) + 1
+    )
+    block_indices = np.arange(0, num_blocks)
+    mean_square = np.zeros((num_channels, num_blocks), dtype=np.float64)
+
+    for channel in range(num_channels):
+        for block_index in block_indices:
+            lower = int(block_size * (block_index * step) * rate)
+            upper = int(block_size * (block_index * step + 1) * rate)
+            mean_square[channel, block_index] = (1.0 / (block_size * rate)) * np.sum(
+                np.square(input_data[lower:upper, channel])
+            )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        block_loudness = [
+            -0.691
+            + 10.0
+            * np.log10(
+                np.sum(
+                    [
+                        channel_gains[channel] * mean_square[channel, block_index]
+                        for channel in range(num_channels)
+                    ]
+                )
+            )
+            for block_index in block_indices
+        ]
+
+    gated_blocks = [
+        block_index
+        for block_index, loudness in enumerate(block_loudness)
+        if loudness >= absolute_threshold
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        gated_mean_square = [
+            np.mean([mean_square[channel, block_index] for block_index in gated_blocks])
+            for channel in range(num_channels)
+        ]
+
+    relative_threshold = (
+        -0.691
+        + 10.0
+        * np.log10(
+            np.sum(
+                [
+                    channel_gains[channel] * gated_mean_square[channel]
+                    for channel in range(num_channels)
+                ]
+            )
+        )
+        - 10.0
+    )
+
+    gated_blocks = [
+        block_index
+        for block_index, loudness in enumerate(block_loudness)
+        if loudness > relative_threshold and loudness > absolute_threshold
+    ]
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", category=RuntimeWarning)
+        gated_mean_square = np.nan_to_num(
+            np.array(
+                [
+                    np.mean(
+                        [
+                            mean_square[channel, block_index]
+                            for block_index in gated_blocks
+                        ]
+                    )
+                    for channel in range(num_channels)
+                ]
+            )
+        )
+
+    with np.errstate(divide="ignore"):
+        return float(
+            -0.691
+            + 10.0
+            * np.log10(
+                np.sum(
+                    [
+                        channel_gains[channel] * gated_mean_square[channel]
+                        for channel in range(num_channels)
+                    ]
+                )
+            )
+        )
+
+
+def normalize_loudness(
+    data: np.ndarray,
+    input_loudness: float,
+    target_loudness: float,
+) -> np.ndarray:
+    """Normalize audio to a target loudness in LUFS."""
+    delta_loudness = target_loudness - input_loudness
+    gain = np.power(10.0, delta_loudness / 20.0)
+    output = gain * data
+
+    if np.max(np.abs(output)) >= 1.0:
+        warnings.warn("Possible clipped samples in output.")
+
+    return output
+
+
+def normalize_peak(data: np.ndarray, target_peak_db: float) -> np.ndarray:
+    """Normalize audio to a target peak in dBFS."""
+    current_peak = np.max(np.abs(data))
+    gain = np.power(10.0, target_peak_db / 20.0) / current_peak
+    output = gain * data
+
+    if np.max(np.abs(output)) >= 1.0:
+        warnings.warn("Possible clipped samples in output.")
+
+    return output
+
+
 # STFT and ISTFT
 def stft(
     x,
@@ -131,8 +408,7 @@ def stft(
     num_frames = 1 + (x.shape[0] - n_fft) // hop_length
     if num_frames <= 0:
         raise ValueError(
-            f"Input is too short (length={x.shape[0]}) for n_fft={n_fft} with "
-            f"hop_length={hop_length} and center={center}."
+            f"Input is too short (length={x.shape[0]}) for n_fft={n_fft} with hop_length={hop_length} and center={center}."
         )
 
     shape = (num_frames, n_fft)

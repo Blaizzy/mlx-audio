@@ -12,7 +12,6 @@ import numpy as np
 import tqdm
 from mlx.utils import tree_map, tree_unflatten
 from mlx_lm.models.base import create_causal_mask
-from scipy.io.wavfile import write as write_wav
 from transformers import BertTokenizer
 
 from ..base import BaseModelArgs, GenerationResult

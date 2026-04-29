@@ -7,17 +7,7 @@ import numpy as np
 from transformers import AutoProcessor
 
 from mlx_audio.stt.utils import load as load_mlx
-
-# Try to import load_audio from mlx_audio, fallback if needed
-try:
-    from mlx_audio.stt.utils import load_audio
-except ImportError:
-    # Fallback to simple librosa load if internal util not available
-    import librosa
-
-    def load_audio(file):
-        audio, _ = librosa.load(file, sr=16000)
-        return mx.array(audio)
+from mlx_audio.stt.utils import load_audio
 
 
 def main():

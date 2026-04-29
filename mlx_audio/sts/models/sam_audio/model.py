@@ -260,6 +260,64 @@ class SAMAudio(nn.Module):
 
         return sanitized
 
+    def load_weights(self, weights, strict: bool = False):
+        # Match weights to MLX parameter shapes, transposing where PyTorch and
+        # MLX store equivalent tensors differently.
+        mlx_params = dict(nn.utils.tree_flatten(self.parameters()))
+
+        new_weights = []
+        loaded_keys = set()
+
+        for key, value in weights:
+            if key not in mlx_params:
+                continue
+
+            target_shape = mlx_params[key].shape
+            value_shape = value.shape
+
+            if value_shape != target_shape:
+                if len(value_shape) == 2 and value_shape == target_shape[::-1]:
+                    value = mx.transpose(value)
+                elif len(value_shape) == 3 and len(target_shape) == 3:
+                    if value_shape == (
+                        target_shape[0],
+                        target_shape[2],
+                        target_shape[1],
+                    ):
+                        value = mx.transpose(value, (0, 2, 1))
+                    elif value_shape == (
+                        target_shape[2],
+                        target_shape[0],
+                        target_shape[1],
+                    ):
+                        value = mx.transpose(value, (1, 2, 0))
+                    elif (
+                        value_shape[1:] == (1, 1) and value_shape[0] == target_shape[2]
+                    ):
+                        value = mx.transpose(value, (1, 2, 0))
+                    elif value_shape != target_shape:
+                        continue
+                elif value_shape != target_shape:
+                    continue
+
+            new_weights.append((key, value))
+            loaded_keys.add(key)
+
+        missing = {k for k in mlx_params.keys() - loaded_keys if "wm_model" not in k}
+        if strict and missing:
+            raise ValueError(
+                f"Missing {len(missing)} SAM-Audio parameters after load: "
+                f"{', '.join(sorted(missing)[:10])}"
+            )
+        if 0 < len(missing) < 50:
+            import warnings
+
+            warnings.warn(
+                f"Missing {len(missing)} parameters: {', '.join(sorted(missing)[:10])}..."
+            )
+
+        return super().load_weights(new_weights, strict=strict)
+
     def align_inputs(
         self,
         noisy_audio: mx.array,
@@ -1177,55 +1235,8 @@ class SAMAudio(nn.Module):
 
 def _load_weights(model: SAMAudio, weights: dict, strict: bool = False) -> SAMAudio:
     """Load PyTorch weights into MLX model."""
-    import mlx.nn as nn
-
-    # Sanitize weights (remove unwanted keys, combine LSTM biases, rename)
     sanitized = model.sanitize(weights)
-
-    # Get MLX parameter names and shapes
-    mlx_params = dict(nn.utils.tree_flatten(model.parameters()))
-
-    # Match weights to parameters, transposing as needed
-    new_weights = []
-    loaded_keys = set()
-
-    for key, value in sanitized.items():
-        if key not in mlx_params:
-            continue
-
-        target_shape = mlx_params[key].shape
-        v, t = value.shape, target_shape
-
-        if v != t:
-            # 2D: Linear layers
-            if len(v) == 2 and v == t[::-1]:
-                value = mx.transpose(value)
-            # 3D: Conv layers
-            elif len(v) == 3 and len(t) == 3:
-                if (v[0], v[1], v[2]) == (t[0], t[2], t[1]):  # Conv1d
-                    value = mx.transpose(value, (0, 2, 1))
-                elif (v[0], v[1], v[2]) == (t[2], t[0], t[1]):  # ConvTranspose1d
-                    value = mx.transpose(value, (1, 2, 0))
-                elif v[1:] == (1, 1) and v[0] == t[2]:  # Weight norm (N,1,1)->(1,1,N)
-                    value = mx.transpose(value, (1, 2, 0))
-                elif v != t:
-                    continue
-            elif v != t:
-                continue
-
-        new_weights.append((key, value))
-        loaded_keys.add(key)
-
-    # Warn about missing params (exclude wm_model since watermarking is disabled)
-    missing = {k for k in mlx_params.keys() - loaded_keys if "wm_model" not in k}
-    if 0 < len(missing) < 50:
-        import warnings
-
-        warnings.warn(
-            f"Missing {len(missing)} parameters: {', '.join(sorted(missing)[:10])}..."
-        )
-
-    model.load_weights(new_weights, strict=strict)
+    model.load_weights(list(sanitized.items()), strict=strict)
     mx.eval(model.parameters())
     model.eval()
     return model

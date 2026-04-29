@@ -2,16 +2,17 @@
 
 32-layer causal transformer with:
 - Causal conv1d stem (128 -> 1280, stride 1; 1280 -> 1280, stride 2)
-- Interleaved RoPE (theta=1M)
+- Interleaved RoPE (theta=1M), fused via mx.fast.rope
 - Sliding window attention (750)
 - SwiGLU FFN
 - Selective biases (wq/wv/wo yes, wk no; w2 only in FFN)
 - 4x downsample + adapter MLP
 
 Optimizations:
-- RoPE frequencies computed once and shared across all 32 layers
-- Attention mask computed once and shared across all 32 layers
-- Interleave via stack+reshape instead of indexed assignment
+- RoPE applied via the fused mx.fast.rope kernel (traditional=True) instead of
+  a Python interleave — matches the voxmlx path and avoids 32 layers' worth
+  of manual reshape/stack overhead per step.
+- Attention mask computed once per chunk and shared across all 32 layers.
 """
 
 import math
@@ -20,38 +21,6 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import EncoderConfig
-
-
-def _interleaved_rope(x, cos, sin, n_heads, head_dim):
-    """Apply interleaved (GPT-J style) RoPE.
-
-    Rotates consecutive pairs: (x[0], x[1]), (x[2], x[3]), ...
-    x: [seq, n_heads * head_dim]
-    cos, sin: [seq, head_dim // 2]
-    """
-    seq_len = x.shape[0]
-    x = x.reshape(seq_len, n_heads, head_dim)
-    x1 = x[..., ::2]  # even indices
-    x2 = x[..., 1::2]  # odd indices
-    cos = cos[:, None, :]  # [seq, 1, hd/2]
-    sin = sin[:, None, :]
-    o1 = x1 * cos - x2 * sin
-    o2 = x2 * cos + x1 * sin
-    # Interleave back via stack (avoids indexed assignment on zeros)
-    out = mx.stack([o1, o2], axis=-1).reshape(seq_len, n_heads, head_dim)
-    return out.reshape(seq_len, n_heads * head_dim)
-
-
-def _compute_rope_freqs(positions, head_dim, theta):
-    """Compute cos/sin frequencies for RoPE.
-
-    positions: [seq_len] int array
-    Returns: (cos, sin) each [seq_len, head_dim // 2]
-    """
-    half_dim = head_dim // 2
-    freqs = 1.0 / (theta ** (mx.arange(0, head_dim, 2, dtype=mx.float32) / head_dim))
-    angles = positions[:, None].astype(mx.float32) * freqs[None, :]
-    return mx.cos(angles), mx.sin(angles)
 
 
 class CausalConv1d(nn.Module):
@@ -91,27 +60,41 @@ class EncoderAttention(nn.Module):
         self.wv = nn.Linear(config.dim, attn_dim, bias=True)
         self.wo = nn.Linear(attn_dim, config.dim, bias=True)
 
-    def __call__(self, x, rope_cos, rope_sin, mask, cache=None):
+    def __call__(self, x, rope_offset, mask, cache=None):
         """
         Args:
             x: [seq, dim]
-            rope_cos, rope_sin: precomputed [seq, head_dim // 2]
-            mask: precomputed additive mask, or "causal" string
-            cache: optional RotatingKVCache for chunked encoding
+            rope_offset: absolute position of the first token in ``x``.
+            mask: precomputed additive mask, or "causal" string.
+            cache: optional RotatingKVCache for chunked encoding.
         """
         seq_len = x.shape[0]
         q = self.wq(x)
         k = self.wk(x)
         v = self.wv(x)
 
-        # RoPE (using pre-computed frequencies)
-        q = _interleaved_rope(q, rope_cos, rope_sin, self.n_heads, self.head_dim)
-        k = _interleaved_rope(k, rope_cos, rope_sin, self.n_heads, self.head_dim)
-
         # Reshape for attention: [1, n_heads, seq, head_dim]
         q = q.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         k = k.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
         v = v.reshape(1, seq_len, self.n_heads, self.head_dim).transpose(0, 2, 1, 3)
+
+        # Fused RoPE (traditional=True = GPT-J style interleaved pairs).
+        q = mx.fast.rope(
+            q,
+            self.head_dim,
+            traditional=True,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=rope_offset,
+        )
+        k = mx.fast.rope(
+            k,
+            self.head_dim,
+            traditional=True,
+            base=self.rope_theta,
+            scale=1.0,
+            offset=rope_offset,
+        )
 
         # Update KV cache if provided (for chunked encoding)
         if cache is not None:
@@ -141,10 +124,10 @@ class EncoderLayer(nn.Module):
         self.feed_forward_w3 = nn.Linear(config.dim, config.hidden_dim, bias=False)
         self.feed_forward_w2 = nn.Linear(config.hidden_dim, config.dim, bias=True)
 
-    def __call__(self, x, rope_cos, rope_sin, mask, cache=None):
+    def __call__(self, x, rope_offset, mask, cache=None):
         # Attention
         h = self.attention_norm(x)
-        h = self.attention(h, rope_cos, rope_sin, mask, cache=cache)
+        h = self.attention(h, rope_offset, mask, cache=cache)
         x = x + h
 
         # SwiGLU FFN
@@ -227,14 +210,11 @@ class AudioEncoder(nn.Module):
             x = conv_out[chunk_start:chunk_end]
             chunk_len = x.shape[0]
 
-            positions = mx.arange(chunk_start, chunk_end)
-            rope_cos, rope_sin = _compute_rope_freqs(
-                positions, self.config.head_dim, self.config.rope_theta
-            )
-
+            # The mask depends only on chunk_len + cache offset, not on the
+            # layer weights — compute it once and reuse across all 32 layers.
+            mask = caches[0].make_mask(chunk_len, window_size=sw)
             for i, layer in enumerate(self.transformer_layers):
-                mask = caches[i].make_mask(chunk_len, window_size=sw)
-                x = layer(x, rope_cos, rope_sin, mask, cache=caches[i])
+                x = layer(x, chunk_start, mask, cache=caches[i])
 
             yield self.transformer_norm(x)
 
@@ -268,14 +248,9 @@ class AudioEncoder(nn.Module):
         Returns:
             mx.array: [seq/4, decoder_dim] adapter output
         """
-        seq_len = conv_out.shape[0]
-        positions = mx.arange(seq_len)
-        rope_cos, rope_sin = _compute_rope_freqs(
-            positions, self.config.head_dim, self.config.rope_theta
-        )
         x = conv_out
         for layer in self.transformer_layers:
-            x = layer(x, rope_cos, rope_sin, "causal")
+            x = layer(x, 0, "causal")
         x = self.transformer_norm(x)
         return self.downsample_and_project(x)
 

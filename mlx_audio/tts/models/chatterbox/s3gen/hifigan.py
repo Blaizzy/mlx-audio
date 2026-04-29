@@ -7,7 +7,7 @@ import mlx.nn as nn
 
 def hann_window_periodic(size: int) -> mx.array:
     """
-    Create periodic Hann window (fftbins=True), matching scipy.signal.get_window('hann', size, fftbins=True).
+    Create periodic Hann window (fftbins=True).
 
     Uses size in denominator instead of size-1, which is the correct window for STFT.
     """

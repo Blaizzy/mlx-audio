@@ -27,8 +27,7 @@ def extract_package_name(req: str) -> str:
     """Extract package name from Requires-Dist string.
 
     Examples:
-        'tiktoken>=0.9.0; extra == "stt"' -> 'tiktoken'
-        'misaki[en]>=0.8.2; extra == "tts"' -> 'misaki'
+        'mistral-common[audio]; extra == "tts"' -> 'mistral-common'
     """
     import re
 
@@ -83,7 +82,6 @@ class TestOptionalDeps:
         requires = meta.get_all("Requires-Dist") or []
         stt_deps = [r for r in requires if 'extra == "stt"' in r]
         dep_names = [extract_package_name(r) for r in stt_deps]
-        assert "tiktoken" in dep_names, f"tiktoken not in stt deps: {dep_names}"
 
     def test_tts_extra_defined(self):
         """Verify [tts] extra contains expected deps."""
@@ -91,7 +89,30 @@ class TestOptionalDeps:
         requires = meta.get_all("Requires-Dist") or []
         tts_deps = [r for r in requires if 'extra == "tts"' in r]
         dep_names = [extract_package_name(r) for r in tts_deps]
-        assert "misaki" in dep_names, f"misaki not in tts deps: {dep_names}"
+        assert (
+            "misaki" not in dep_names
+        ), f"misaki should not be a shared tts dep: {dep_names}"
+        assert (
+            "phonemizer-fork" not in dep_names
+        ), f"phonemizer-fork should not be a shared tts dep: {dep_names}"
+
+    def test_model_specific_text_deps_not_in_shared_extras(self):
+        """Verify model-specific text deps are not pulled into shared extras."""
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        model_specific_text_deps = {
+            "misaki",
+            "num2words",
+            "spacy",
+            "espeakng-loader",
+            "phonemizer-fork",
+        }
+
+        for extra in ("tts", "sts", "all"):
+            extra_deps = [r for r in requires if f'extra == "{extra}"' in r]
+            dep_names = {extract_package_name(r) for r in extra_deps}
+            unexpected = model_specific_text_deps & dep_names
+            assert not unexpected, f"{extra} extra still includes {unexpected}"
 
     def test_server_extra_defined(self):
         """Verify [server] extra contains expected deps."""
@@ -101,6 +122,8 @@ class TestOptionalDeps:
         dep_names = [extract_package_name(r) for r in server_deps]
         assert "fastapi" in dep_names, f"fastapi not in server deps: {dep_names}"
         assert "uvicorn" in dep_names, f"uvicorn not in server deps: {dep_names}"
+        assert "webrtcvad" in dep_names, f"webrtcvad not in server deps: {dep_names}"
+        assert "setuptools" in dep_names, f"setuptools not in server deps: {dep_names}"
 
     def test_dev_extra_defined(self):
         """Verify [dev] extra contains expected deps."""

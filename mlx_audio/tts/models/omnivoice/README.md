@@ -20,7 +20,8 @@ Architecture: bidirectional Qwen3-0.6B backbone with iterative masked diffusion 
 from transformers import AutoTokenizer
 from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
 from mlx_audio.tts.models.omnivoice.omnivoice import Model, OmniVoiceConfig
-import mlx.core as mx, json, soundfile as sf, numpy as np
+from mlx_audio.audio_io import write as audio_write
+import mlx.core as mx, json, numpy as np
 
 model_path = "path/to/OmniVoice"
 
@@ -45,12 +46,15 @@ result = next(model.generate(
     tokenizer=tokenizer,
     text_tokenizer=text_tokenizer,
 ))
-sf.write("output.wav", np.array(result.audio), result.sample_rate)
+audio_write("output.wav", np.array(result.audio), result.sample_rate)
 ```
 
 ### Voice cloning
 
 ```python
+from mlx_audio.audio_io import write as audio_write
+import numpy as np
+
 result = next(model.generate(
     text="Hello, this is OmniVoice.",
     language="en",
@@ -59,7 +63,7 @@ result = next(model.generate(
     tokenizer=tokenizer,
     text_tokenizer=text_tokenizer,
 ))
-sf.write("output_cloned.wav", np.array(result.audio), result.sample_rate)
+audio_write("output_cloned.wav", np.array(result.audio), result.sample_rate)
 ```
 
 ### CLI

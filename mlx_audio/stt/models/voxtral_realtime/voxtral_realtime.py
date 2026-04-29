@@ -14,7 +14,6 @@ Optimizations:
 - Sampling uses logits directly (skips softmax+log round-trip)
 """
 
-import math
 import time
 from pathlib import Path
 from typing import List, Optional, Union
@@ -25,30 +24,15 @@ import numpy as np
 
 from ..base import STTOutput
 from .audio import compute_mel_filters, compute_mel_spectrogram
-from .config import ModelConfig
+from .config import (
+    RAW_AUDIO_LENGTH_PER_TOK,
+    SAMPLE_RATE,
+    ModelConfig,
+    _num_delay_tokens,
+)
 from .decoder import Decoder, compute_time_embedding
 from .encoder import AudioEncoder
 from .tokenizer import TekkenTokenizer
-
-# Derived streaming constants
-SAMPLE_RATE = 16000
-FRAME_RATE = 12.5
-RAW_AUDIO_LENGTH_PER_TOK = int(SAMPLE_RATE // FRAME_RATE)  # 1280
-HOP_LENGTH = 160
-AUDIO_LENGTH_PER_TOK = RAW_AUDIO_LENGTH_PER_TOK // HOP_LENGTH  # 8
-
-
-def _num_audio_tokens(audio_len):
-    if audio_len % HOP_LENGTH != 0:
-        audio_len = math.ceil(audio_len / HOP_LENGTH - 1)
-    else:
-        audio_len = audio_len // HOP_LENGTH
-    return math.ceil(audio_len / AUDIO_LENGTH_PER_TOK)
-
-
-def _num_delay_tokens(delay_ms):
-    delay_len = int(delay_ms / 1000.0 * SAMPLE_RATE)
-    return _num_audio_tokens(delay_len)
 
 
 def _pad_audio_streaming(audio_array, n_left_pad_tokens, n_right_pad_tokens):
@@ -76,6 +60,9 @@ class Model(nn.Module):
         # Will be set in post_load_hook
         self._tokenizer = None
         self._mel_filters = None
+        # Sentinel so _ensure_ada_scales is callable even if post_load_hook
+        # has not run yet (e.g. unit tests that build Model directly).
+        self._ada_scale_delay = -1
 
     def _ensure_mel_filters(self):
         if self._mel_filters is None:
@@ -93,16 +80,13 @@ class Model(nn.Module):
     ) -> np.ndarray:
         """Load and resample audio from file path or array to 16kHz float32 numpy."""
         if isinstance(audio_input, (str, Path)):
-            import soundfile as sf
+            from mlx_audio.audio_io import read as audio_read
+            from mlx_audio.utils import resample_audio
 
-            audio_np, sr = sf.read(str(audio_input), dtype="float32")
+            audio_np, sr = audio_read(str(audio_input), dtype="float32")
             audio_np = audio_np.flatten()
             if sr != SAMPLE_RATE:
-                # Resample to 16kHz
-                from scipy.signal import resample
-
-                n_samples = int(len(audio_np) * SAMPLE_RATE / sr)
-                audio_np = resample(audio_np, n_samples).astype(np.float32)
+                audio_np = resample_audio(audio_np, sr, SAMPLE_RATE)
             return audio_np
         if isinstance(audio_input, list):
             audio_input = audio_input[0]
@@ -141,6 +125,10 @@ class Model(nn.Module):
             from .decoder import compute_time_embedding
 
             t_cond = compute_time_embedding(float(n_delay), self.config.decoder.dim)
+            # Match the dtype the AdaRMSNorm weights were demoted to so the
+            # matmul doesn't silently upcast (see post_load_hook).
+            ada_weight = self.decoder.layers[0].ada_rms_norm_t_cond.ada_down.weight
+            t_cond = t_cond.astype(ada_weight.dtype)
             self.decoder.precompute_ada_scales(t_cond)
             for scale in self.decoder._ada_scales:
                 if scale is not None:
@@ -219,7 +207,7 @@ class Model(nn.Module):
         prefill_start = time.time()
         h, cache = self.decoder.forward(prefix_embeds, start_pos=0)
         logits = self.decoder.logits(h[-1])
-        cache_arrays = [t for lc in cache for t in lc[:2]]
+        cache_arrays = [a for c in cache for a in (c.keys, c.values) if a is not None]
         mx.eval(logits, *cache_arrays)
 
         if verbose:
@@ -340,6 +328,73 @@ class Model(nn.Module):
             prompt_tps=prompt_len / total_time if total_time > 0 else 0,
             generation_tps=len(generated) / decode_time if decode_time > 0 else 0,
         )
+
+    def create_streaming_session(
+        self,
+        *,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        transcription_delay_ms: Optional[int] = None,
+    ):
+        """Create a stateful streaming session for this model.
+
+        Returns a ``VoxtralStreamingSession`` whose ``feed()`` is a cheap
+        thread-safe queue push (safe to call from an asyncio loop), and
+        whose ``step()`` / ``finalize_step()`` run one short unit of MLX
+        work. Call ``step()`` repeatedly from an executor thread between
+        audio feeds; between calls the executor is free for other work.
+        """
+        from .streaming import VoxtralStreamingSession
+
+        return VoxtralStreamingSession(
+            self,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            transcription_delay_ms=transcription_delay_ms,
+        )
+
+    def generate_streaming(
+        self,
+        source,
+        *,
+        max_tokens: int = 4096,
+        temperature: float = 0.0,
+        verbose: bool = False,
+        transcription_delay_ms: Optional[int] = None,
+    ):
+        """Yield text deltas while audio is streamed in from ``source``.
+
+        Thin wrapper around ``create_streaming_session`` that consumes the
+        ``StreamingAudioSource`` in the calling thread (held for the life
+        of the generation). For cooperative integrations that need to
+        interleave MLX work with other tasks, prefer building your own
+        loop on top of ``create_streaming_session`` instead.
+        """
+        sess = self.create_streaming_session(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            transcription_delay_ms=transcription_delay_ms,
+        )
+
+        start_time = time.time()
+        while True:
+            samples, closed = source.read()
+            if samples.size > 0:
+                sess.feed(samples)
+            if closed:
+                sess.close()
+            for delta in sess.step(max_decode_tokens=16):
+                yield delta
+            if sess.done:
+                break
+
+        if verbose:
+            total = time.time() - start_time
+            print(
+                f"Streaming generate: {len(sess.generated)} tokens in {total:.3f}s "
+                f"({len(sess.generated) / total:.0f} tok/s)"
+            )
+        mx.clear_cache()
 
     def _generate_stream(
         self, audio_np, max_tokens, temperature, verbose, transcription_delay_ms=None
@@ -503,14 +558,16 @@ class Model(nn.Module):
         return new_weights
 
     def model_quant_predicate(self, p, m):
-        """Skip quantization on encoder norms, ada norms, embeddings."""
-        skip_patterns = [
-            "norm",
-            "ada_rms_norm",
-            "tok_embeddings",
-            "conv_layers",
-            "audio_language_projection",
-        ]
+        """Quantize all big linears; only skip the small ones that hurt quality.
+
+        Per-step memory bandwidth dominates decode time, so the tied
+        ``tok_embeddings`` matmul in ``decoder.logits`` and the audio adapter
+        projections MUST be quantized to match voxmlx's throughput. Only the
+        norms, the tiny AdaRMSNorm MLPs, and the conv stem (3×128 kernels) are
+        skipped — matmul kernels on those are negligible and quantizing them
+        would cost more in quality than it saves in bandwidth.
+        """
+        skip_patterns = ["norm", "ada_rms_norm", "conv_layers"]
         return not any(pat in p for pat in skip_patterns)
 
     @classmethod
@@ -524,9 +581,19 @@ class Model(nn.Module):
         # Precompute mel filters
         model._ensure_mel_filters()
 
-        # Precompute ada scales from time conditioning (tracked for runtime override)
+        # No dtype/quantization coercion here: the framework's
+        # ``apply_quantization`` already decides per-module whether to quantize
+        # based on whether ``<path>.scales`` is present in the checkpoint
+        # (see mlx_audio.utils.apply_quantization). That makes the model adapt
+        # automatically — an old fp16 / unquantized-embedding checkpoint keeps
+        # its old layout (and old perf), a new bf16 / 4-bit-embedding
+        # checkpoint runs at full speed. Any dtype upgrade belongs in the
+        # converter, not at load time.
         n_delay = _num_delay_tokens(model.config.transcription_delay_ms)
         t_cond = compute_time_embedding(float(n_delay), model.config.decoder.dim)
+        # Match whatever dtype the AdaRMSNorm weights ended up in.
+        ada_weight = model.decoder.layers[0].ada_rms_norm_t_cond.ada_down.weight
+        t_cond = t_cond.astype(ada_weight.dtype)
         model.decoder.precompute_ada_scales(t_cond)
         model._ada_scale_delay = n_delay
         # Evaluate ada scales eagerly

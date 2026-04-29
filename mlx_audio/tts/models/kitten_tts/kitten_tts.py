@@ -1,3 +1,4 @@
+import importlib
 import math
 import time
 from dataclasses import dataclass
@@ -14,6 +15,11 @@ from .istftnet import AdainResBlk1d, ConvWeighted, Generator
 from .modules import AlbertEmbeddings, AlbertModelArgs, ProsodyPredictor, TextEncoder
 from .preprocess import TextPreprocessor
 from .quant import maybe_fake_quant
+
+PHONEMIZER_INSTALL_MESSAGE = (
+    "KittenTTS requires the optional 'phonemizer-fork' package for text processing. "
+    "Install it with: pip install phonemizer-fork"
+)
 
 
 def basic_english_tokenize(text: str) -> List[str]:
@@ -404,14 +410,16 @@ class Model(nn.Module):
             model._load_voices(voices_path)
         return model
 
+    def _get_phonemizer_backend(self):
+        try:
+            backend = importlib.import_module("phonemizer.backend")
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(PHONEMIZER_INSTALL_MESSAGE) from exc
+        return backend.EspeakBackend
+
     def _get_phonemizer(self):
         if self._phonemizer is None:
-            try:
-                from phonemizer.backend import EspeakBackend
-            except Exception as exc:  # pragma: no cover
-                raise ImportError(
-                    "phonemizer is required for KittenTTS. Install with `pip install phonemizer`."
-                ) from exc
+            EspeakBackend = self._get_phonemizer_backend()
 
             self._phonemizer = EspeakBackend(
                 language="en-us", preserve_punctuation=True, with_stress=True

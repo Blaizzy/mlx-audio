@@ -521,6 +521,15 @@ def load_weights(model_path: Path) -> dict:
     if not weight_files:
         raise FileNotFoundError(f"No safetensors found in {model_path}")
 
+    # Mistral-native repos (e.g. mistralai/Voxtral-*) ship BOTH
+    # ``consolidated*.safetensors`` and HF-format shards in the same snapshot.
+    # The two use different key schemas, so merging them yields garbage after
+    # ``model.sanitize()``. Prefer the Mistral-native file when present — our
+    # sanitize implementations target that layout.
+    consolidated = [f for f in weight_files if Path(f).name.startswith("consolidated")]
+    if consolidated:
+        weight_files = consolidated
+
     weights = {}
     for wf in weight_files:
         if "tokenizer" in wf:

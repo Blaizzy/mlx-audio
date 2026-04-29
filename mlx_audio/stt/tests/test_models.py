@@ -1,10 +1,15 @@
+import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
 import mlx.core as mx
 import numpy as np
+
+from mlx_audio.audio_io import write as audio_write
 
 
 class TestWhisperModel(unittest.TestCase):
@@ -258,6 +263,357 @@ class TestWhisperModel(unittest.TestCase):
         args_pad_call, _ = mock_pad_or_trim.call_args
         self.assertEqual(args_pad_call[0].shape, (100, self.dims.n_mels))
         self.assertEqual(args_pad_call[1], self.N_FRAMES)
+
+
+def _cohere_small_config_dict() -> dict[str, Any]:
+    return {
+        "model_type": "cohere_asr",
+        "vocab_size": 64,
+        "supported_languages": ["en", "ja"],
+        "encoder": {
+            "feat_in": 16,
+            "feat_out": -1,
+            "n_layers": 1,
+            "d_model": 32,
+            "n_heads": 4,
+            "ff_expansion_factor": 2,
+            "conv_kernel_size": 3,
+            "subsampling_factor": 8,
+            "subsampling_conv_channels": 8,
+            "pos_emb_max_len": 128,
+        },
+        "head": {"hidden_size": 24, "num_classes": 64, "log_softmax": True},
+        "transf_decoder": {
+            "config_dict": {
+                "hidden_size": 24,
+                "inner_size": 48,
+                "num_attention_heads": 4,
+                "num_layers": 1,
+                "max_sequence_length": 128,
+            }
+        },
+        "preprocessor": {
+            "sample_rate": 16000,
+            "features": 16,
+            "n_fft": 512,
+            "window_size": 0.025,
+            "window_stride": 0.01,
+            "window": "hann",
+            "dither": 1e-5,
+            "pad_to": 0,
+            "pad_value": 0.0,
+            "preemph": 0.97,
+            "log": True,
+        },
+    }
+
+
+def _cohere_small_config():
+    from mlx_audio.stt.models.cohere_asr.config import ModelConfig
+
+    return ModelConfig.from_dict(_cohere_small_config_dict())
+
+
+def _write_cohere_tokenizer_files(tmp_path: Path) -> tuple[Path, Path, Path]:
+    import sentencepiece as spm
+
+    corpus_path = tmp_path / "corpus.txt"
+    corpus_path.write_text(
+        "hello world\nif not there will be a big crisis\neuropean parliament\n",
+        encoding="utf-8",
+    )
+
+    special_tokens = [
+        "<pad>",
+        "<|endoftext|>",
+        "<|startoftranscript|>",
+        "<|startofcontext|>",
+        "<|emo:undefined|>",
+        "<|en|>",
+        "<|ja|>",
+        "<|pnc|>",
+        "<|nopnc|>",
+        "<|noitn|>",
+        "<|notimestamp|>",
+        "<|nodiarize|>",
+    ]
+
+    spm.SentencePieceTrainer.train(
+        input=str(corpus_path),
+        model_prefix=str(tmp_path / "toy"),
+        vocab_size=64,
+        model_type="bpe",
+        user_defined_symbols=",".join(special_tokens),
+        unk_piece="<unk>",
+        bos_id=-1,
+        eos_id=-1,
+        pad_id=-1,
+        hard_vocab_limit=False,
+    )
+
+    tokenizer_config = {
+        "bos_token": "<|startoftranscript|>",
+        "eos_token": "<|endoftext|>",
+        "pad_token": "<pad>",
+        "unk_token": "<unk>",
+        "additional_special_tokens": [
+            "<|startofcontext|>",
+            "<|emo:undefined|>",
+            "<|en|>",
+            "<|ja|>",
+            "<|pnc|>",
+            "<|nopnc|>",
+            "<|noitn|>",
+            "<|notimestamp|>",
+            "<|nodiarize|>",
+        ],
+    }
+    special_tokens_map = {
+        "bos_token": "<|startoftranscript|>",
+        "eos_token": "<|endoftext|>",
+        "pad_token": "<pad>",
+        "unk_token": "<unk>",
+        "additional_special_tokens": tokenizer_config["additional_special_tokens"],
+    }
+
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    special_tokens_map_path = tmp_path / "special_tokens_map.json"
+    tokenizer_config_path.write_text(json.dumps(tokenizer_config), encoding="utf-8")
+    special_tokens_map_path.write_text(json.dumps(special_tokens_map), encoding="utf-8")
+
+    return (
+        tmp_path / "toy.model",
+        tokenizer_config_path,
+        special_tokens_map_path,
+    )
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("sentencepiece") is not None,
+    "sentencepiece is required for quantized Cohere tests",
+)
+class TestCohereQuantizedModel(unittest.TestCase):
+    @staticmethod
+    def _small_config():
+        return _cohere_small_config()
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        cls._workdirs = []
+        tmp_path = Path(cls._tmpdir.name)
+        (
+            cls.tokenizer_model_path,
+            cls.tokenizer_config_path,
+            cls.special_tokens_map_path,
+        ) = _write_cohere_tokenizer_files(tmp_path)
+        cls.audio_fixture_path = tmp_path / "toy.wav"
+
+        sample_rate = 16_000
+        duration_seconds = 1.0
+        time_axis = np.linspace(
+            0.0,
+            duration_seconds,
+            int(sample_rate * duration_seconds),
+            endpoint=False,
+            dtype=np.float32,
+        )
+        waveform = (
+            0.25 * np.sin(2 * np.pi * 220.0 * time_axis)
+            + 0.15 * np.sin(2 * np.pi * 440.0 * time_axis)
+        ).astype(np.float32)
+        audio_write(str(cls.audio_fixture_path), waveform, sample_rate, format="wav")
+
+    @classmethod
+    def tearDownClass(cls):
+        for workdir in cls._workdirs:
+            workdir.cleanup()
+        cls._tmpdir.cleanup()
+
+    def _small_config_dict(self):
+        return _cohere_small_config_dict()
+
+    def _build_quantized_checkpoint(self, bits: int) -> Path:
+        from mlx_lm.utils import save_model
+
+        from mlx_audio.convert import convert
+        from mlx_audio.stt.models.cohere_asr.cohere_asr import Model, STTOutput
+
+        self.STTOutput = STTOutput
+        workdir = tempfile.TemporaryDirectory(prefix=f"cohere-quant-{bits}-")
+        self._workdirs.append(workdir)
+        workdir_path = Path(workdir.name)
+        source_dir = workdir_path / "source"
+        output_dir = workdir_path / "output"
+        source_dir.mkdir(parents=True, exist_ok=True)
+
+        config_dict = self._small_config_dict()
+        config = self._small_config()
+        model = Model(config)
+
+        save_model(source_dir, model, donate_model=True)
+        (source_dir / "config.json").write_text(
+            json.dumps(config_dict), encoding="utf-8"
+        )
+        for file_path in [
+            self.tokenizer_model_path,
+            self.tokenizer_config_path,
+            self.special_tokens_map_path,
+        ]:
+            target_name = (
+                "tokenizer.model"
+                if file_path == self.tokenizer_model_path
+                else file_path.name
+            )
+            (source_dir / target_name).write_bytes(file_path.read_bytes())
+
+        convert(
+            hf_path=str(source_dir),
+            mlx_path=str(output_dir),
+            quantize=True,
+            q_group_size=64,
+            q_bits=bits,
+            model_domain="stt",
+        )
+
+        return output_dir
+
+    def _assert_quantized_generation(self, bits: int):
+        from mlx_audio.stt import load
+
+        checkpoint_dir = self._build_quantized_checkpoint(bits)
+        model = cast(Any, load(str(checkpoint_dir)))
+        output = model.generate(
+            str(self.audio_fixture_path),
+            language="en",
+            punctuation=True,
+            max_tokens=8,
+        )
+
+        self.assertIsInstance(output, self.STTOutput)
+        self.assertIsInstance(output.text, str)
+
+    def test_quantized_8bit_generate(self):
+        self._assert_quantized_generation(8)
+
+    def test_quantized_4bit_generate(self):
+        self._assert_quantized_generation(4)
+
+
+@unittest.skipUnless(
+    importlib.util.find_spec("sentencepiece") is not None,
+    "sentencepiece is required for Cohere tokenizer tests",
+)
+class TestCohereTokenizer(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls._tmpdir = tempfile.TemporaryDirectory()
+        tmp_path = Path(cls._tmpdir.name)
+        (
+            cls.model_path,
+            cls.tokenizer_config_path,
+            cls.special_tokens_map_path,
+        ) = _write_cohere_tokenizer_files(tmp_path)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmpdir.cleanup()
+
+    def test_prompt_tokens(self):
+        from mlx_audio.stt.models.cohere_asr.tokenizer import CohereAsrTokenizer
+
+        tokenizer = CohereAsrTokenizer(
+            str(self.model_path),
+            str(self.tokenizer_config_path),
+            str(self.special_tokens_map_path),
+        )
+        tokens = tokenizer.build_prompt_tokens("en", punctuation=True)
+        self.assertEqual(len(tokens), 9)
+        sp = cast(Any, tokenizer.sp)
+        self.assertEqual(tokens[0], sp.piece_to_id("<|startofcontext|>"))
+        self.assertEqual(tokens[1], tokenizer.bos_token_id)
+        self.assertEqual(tokens[-1], sp.piece_to_id("<|nodiarize|>"))
+
+
+class TestCohereAudioFrontend(unittest.TestCase):
+    def test_extract_features_shape_and_lengths(self):
+        from mlx_audio.stt.models.cohere_asr.audio import CohereAudioFrontend
+        from mlx_audio.stt.models.cohere_asr.config import PreprocessorConfig
+
+        frontend = CohereAudioFrontend(
+            PreprocessorConfig(sample_rate=16000, features=16, n_fft=512)
+        )
+        frontend.fb = mx.random.normal((16, 257))
+
+        waveform = np.random.randn(16000).astype(np.float32)
+        features, lengths = frontend([waveform])
+        mx.eval(features, lengths)
+
+        self.assertEqual(features.shape[0], 1)
+        self.assertEqual(features.shape[2], 16)
+        self.assertEqual(lengths.tolist(), [100])
+
+
+class TestCohereChunking(unittest.TestCase):
+    def test_energy_chunking_splits_long_audio(self):
+        from mlx_audio.stt.models.cohere_asr.cohere_asr import split_audio_chunks_energy
+
+        waveform = np.ones(16_000 * 8, dtype=np.float32)
+        waveform[16_000 * 3 : 16_000 * 3 + 800] = 0.0
+        chunks = split_audio_chunks_energy(
+            waveform=waveform,
+            sample_rate=16_000,
+            max_audio_clip_s=4.0,
+            overlap_chunk_second=1.0,
+            min_energy_window_samples=400,
+        )
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(chunks[0][0], 0)
+        self.assertEqual(chunks[-1][1], waveform.shape[0])
+
+    def test_join_chunk_texts_language_separator(self):
+        from mlx_audio.stt.models.cohere_asr.cohere_asr import join_chunk_texts
+
+        self.assertEqual(
+            join_chunk_texts(["hello", "world"], language="en"), "hello world"
+        )
+        self.assertEqual(join_chunk_texts(["你", "好"], language="zh"), "你好")
+
+
+class TestCohereSanitize(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.stt.models.cohere_asr.cohere_asr import Model
+
+        self.model = Model(_cohere_small_config())
+
+    def test_decoder_key_mapping(self):
+        weights = {
+            "transf_decoder._embedding.token_embedding.weight": mx.zeros((64, 24))
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("transf_decoder.embedding.token_embedding.weight", sanitized)
+
+    def test_conv_transpose(self):
+        weights = {"encoder.pre_encode.conv.0.weight": mx.zeros((8, 1, 3, 3))}
+        sanitized = self.model.sanitize(weights)
+        self.assertEqual(
+            sanitized["encoder.pre_encode.conv.0.weight"].shape,
+            (8, 3, 3, 1),
+        )
+
+    def test_drops_frontend_weights(self):
+        weights = {"preprocessor.featurizer.fb": mx.zeros((1, 16, 257))}
+        sanitized = self.model.sanitize(weights)
+        self.assertEqual(sanitized, {})
+
+
+class TestCohereConfig(unittest.TestCase):
+    def test_defaults_from_reference_shape(self):
+        config = _cohere_small_config()
+        self.assertEqual(config.model_type, "cohere_asr")
+        self.assertEqual(config.min_energy_window_samples, 1600)
+        self.assertEqual(config.preprocessor.win_length, 400)
+        self.assertEqual(config.preprocessor.hop_length, 160)
 
 
 class TestParakeetModel(unittest.TestCase):

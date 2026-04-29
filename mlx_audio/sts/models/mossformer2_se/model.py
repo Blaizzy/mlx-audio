@@ -32,7 +32,7 @@ MAX_WAV_VALUE = 32768.0
 DEFAULT_REPO = "starkdmi/MossFormer2_SE_48K_MLX"
 
 
-class MossFormer2SEModel:
+class MossFormer2SEModel(nn.Module):
     """MossFormer2 SE speech enhancement model.
 
     Handles model loading, audio processing, and enhancement.
@@ -45,20 +45,32 @@ class MossFormer2SEModel:
 
     def __init__(
         self,
-        model,
         config: MossFormer2SEConfig,
+        model: Optional[MossFormer2SE] = None,
     ):
         """Initialize model.
 
         Args:
-            model: Loaded MossFormer2 model (TestNet)
             config: Model configuration
+            model: Loaded MossFormer2 model wrapper
         """
-        self.model = model
+        super().__init__()
+        self._enable_fast_layer_norm()
+        self.model = model if model is not None else MossFormer2SE(config)
         self.config = config
         self._istft_cache = ISTFTCache()
         self._window = None
         self._warmed_up = False
+
+    @staticmethod
+    def _enable_fast_layer_norm() -> None:
+        nn.LayerNorm.__call__ = lambda self, x: mx.fast.layer_norm(
+            x, self.weight, self.bias, self.eps
+        )
+
+    def load_weights(self, weights, strict: bool = False):
+        self.model.update(tree_unflatten(list(weights)))
+        return self
 
     @classmethod
     def from_pretrained(
@@ -102,10 +114,7 @@ class MossFormer2SEModel:
 
         print(f"Loading MossFormer2 SE 48K ({precision})...")
 
-        # Enable fast LayerNorm
-        nn.LayerNorm.__call__ = lambda self, x: mx.fast.layer_norm(
-            x, self.weight, self.bias, self.eps
-        )
+        cls._enable_fast_layer_norm()
 
         config = MossFormer2SEConfig.from_dict(config_dict)
         model = MossFormer2SE(config)
@@ -130,7 +139,7 @@ class MossFormer2SEModel:
         total_params = sum(v.size for v in weights.values() if hasattr(v, "size"))
         print(f"Model loaded: {total_params:,} parameters")
 
-        return cls(model=model.model, config=config)
+        return cls(config=config, model=model)
 
     def warmup(self, chunked: bool = False) -> None:
         """Warm up model for optimal performance.

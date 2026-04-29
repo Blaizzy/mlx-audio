@@ -42,6 +42,7 @@ class Model(nn.Module):
         self.model = IrodoriDiT(config.dit)
         self.dacvae: DACVAE | None = None
         self._tokenizer = None
+        self._caption_tokenizer = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -127,6 +128,18 @@ class Model(nn.Module):
             )
         return self._tokenizer
 
+    def _get_caption_tokenizer(self):
+        if self._caption_tokenizer is None:
+            from transformers import AutoTokenizer
+
+            repo = self.config.dit.caption_tokenizer_repo_resolved
+            # Reuse text tokenizer if repo is the same
+            if repo == self.config.dit.text_tokenizer_repo:
+                self._caption_tokenizer = self._get_tokenizer()
+            else:
+                self._caption_tokenizer = AutoTokenizer.from_pretrained(repo)
+        return self._caption_tokenizer
+
     def _prepare_text(
         self, text: str, max_length: Optional[int] = None
     ) -> tuple[mx.array, mx.array]:
@@ -144,6 +157,18 @@ class Model(nn.Module):
             tokenizer=self._get_tokenizer(),
             max_length=max_length,
             add_bos=self.config.dit.text_add_bos,
+        )
+
+    def _prepare_caption(
+        self, caption: str, max_length: Optional[int] = None
+    ) -> tuple[mx.array, mx.array]:
+        if max_length is None:
+            max_length = self.config.max_caption_length
+        return encode_text(
+            caption,
+            tokenizer=self._get_caption_tokenizer(),
+            max_length=max_length,
+            add_bos=self.config.dit.caption_add_bos_resolved,
         )
 
     # ------------------------------------------------------------------
@@ -191,15 +216,23 @@ class Model(nn.Module):
         text: str,
         ref_latent: Optional[mx.array] = None,
         ref_mask: Optional[mx.array] = None,
+        caption: Optional[str] = None,
         rng_seed: int = 0,
         **sampling_kwargs,
     ) -> mx.array:
         text_input_ids, text_mask = self._prepare_text(text)
 
-        if ref_latent is None:
-            ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
-        if ref_mask is None:
-            ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
+        caption_input_ids: Optional[mx.array] = None
+        caption_mask: Optional[mx.array] = None
+
+        if self.config.dit.use_caption_condition:
+            cap = caption or ""
+            caption_input_ids, caption_mask = self._prepare_caption(cap)
+        else:
+            if ref_latent is None:
+                ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
+            if ref_mask is None:
+                ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
 
         sampler_cfg = dict(self.config.sampler.__dict__)
         for k, v in sampling_kwargs.items():
@@ -212,6 +245,8 @@ class Model(nn.Module):
             text_mask=text_mask,
             ref_latent=ref_latent,
             ref_mask=ref_mask,
+            caption_input_ids=caption_input_ids,
+            caption_mask=caption_mask,
             rng_seed=rng_seed,
             latent_dim=self.config.dit.patched_latent_dim,
             **sampler_cfg,
@@ -226,9 +261,12 @@ class Model(nn.Module):
         text: str,
         voice: str | None = None,
         ref_audio: str | mx.array | None = None,
+        caption: str | None = None,
         stream: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
+        # instruct is an alias for caption (mlx-audio convention)
+        caption = caption or kwargs.pop("instruct", None)
         if stream:
             raise NotImplementedError("Irodori-TTS streaming is not yet implemented.")
 
@@ -262,15 +300,20 @@ class Model(nn.Module):
             text=text,
             ref_latent=ref_latent,
             ref_mask=ref_mask,
+            caption=caption,
             rng_seed=int(kwargs.get("rng_seed", 0)),
             **{k: v for k, v in kwargs.items() if k != "rng_seed"},
         )
 
         # Decode latent → waveform
-        # latent_out: (1, T, 128)
-        latent_for_decode = mx.transpose(latent_out, (0, 2, 1))  # (1, 128, T)
-        audio_out = self.dacvae.decode(latent_for_decode)  # (1, L, 1)
+        # latent_out: (1, T, latent_dim)
+        latent_for_decode = mx.transpose(latent_out, (0, 2, 1))  # (1, latent_dim, T)
+        # Use chunked decoding to avoid large ConvTranspose1d intermediates on
+        # 16 GB unified-memory systems (stride-8 block creates a ~17 GB tensor
+        # at T=750 in a single pass; 50-frame chunks keep it under ~1.2 GB).
+        audio_out = self.dacvae.decode(latent_for_decode, chunk_size=50)  # (1, L, 1)
         audio_out = audio_out[:, :, 0]  # (1, L)
+        mx.eval(audio_out)
 
         # Trim trailing silence
         silence_t = _find_silence_point(latent_out[0])

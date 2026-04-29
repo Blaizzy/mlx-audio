@@ -10,13 +10,14 @@ Kokoro is a fast, lightweight (82M parameter) multilingual TTS model with 54 bui
 
 ## Installation
 
-Extra dependencies are needed for some languages:
+Kokoro requires `misaki` for text processing in all languages:
 
 ```bash
-# Japanese support
-pip install misaki[ja]
+# Base dependency
+pip install misaki
 
-# Chinese support
+# Optional language support
+pip install misaki[ja]
 pip install misaki[zh]
 ```
 
@@ -67,12 +68,12 @@ pip install misaki[zh]
 
 | Code | Language | Extra Dependency |
 |------|----------|-----------------|
-| `a` | American English | -- |
-| `b` | British English | -- |
+| `a` | American English | `pip install misaki` |
+| `b` | British English | `pip install misaki` |
 | `j` | Japanese | `pip install misaki[ja]` |
 | `z` | Mandarin Chinese | `pip install misaki[zh]` |
-| `e` | Spanish | -- |
-| `f` | French | -- |
+| `e` | Spanish | `pip install misaki` |
+| `f` | French | `pip install misaki` |
 
 ## Available Voices
 

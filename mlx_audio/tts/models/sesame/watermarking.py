@@ -3,9 +3,9 @@ import argparse
 import mlx.core as mx
 import numpy as np
 import silentcipher
-from scipy import signal
 
 from mlx_audio.audio_io import read as audio_read
+from mlx_audio.utils import resample_audio
 
 # This watermark key is public, it is not secure.
 # If using CSM 1B in another application, use a new private key and keep it secret.
@@ -24,14 +24,6 @@ def load_watermarker() -> silentcipher.server.Model:
         model_type="44.1k",
     )
     return model
-
-
-def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    gcd = np.gcd(orig_sr, target_sr)
-    up = target_sr // gcd
-    down = orig_sr // gcd
-    resampled = signal.resample_poly(audio, up, down, padtype="edge")
-    return resampled
 
 
 def watermark(

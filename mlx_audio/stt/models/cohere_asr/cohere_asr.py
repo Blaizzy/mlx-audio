@@ -5,6 +5,7 @@ from typing import Dict, Iterable, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from mlx.utils import tree_flatten
 
 from mlx_audio.stt.models.base import STTOutput
 
@@ -673,6 +674,7 @@ class Model(nn.Module):
             )
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        model_weights = dict(tree_flatten(self.parameters()))
         sanitized = {}
         for key, value in weights.items():
             if key.startswith("preprocessor."):
@@ -690,10 +692,22 @@ class Model(nn.Module):
                     "transf_decoder._decoder.", "transf_decoder.decoder."
                 )
 
-            if value.ndim == 3 and new_key.endswith("weight"):
-                value = mx.transpose(value, (0, 2, 1))
-            elif value.ndim == 4 and new_key.endswith("weight"):
-                value = mx.transpose(value, (0, 2, 3, 1))
+            expected = model_weights.get(new_key)
+            if expected is not None and hasattr(expected, "shape"):
+                if value.shape != expected.shape:
+                    if value.ndim == 3:
+                        transposed = mx.transpose(value, (0, 2, 1))
+                        if transposed.shape == expected.shape:
+                            value = transposed
+                    elif value.ndim == 4:
+                        transposed = mx.transpose(value, (0, 2, 3, 1))
+                        if transposed.shape == expected.shape:
+                            value = transposed
+            elif new_key.endswith("weight"):
+                if value.ndim == 3:
+                    value = mx.transpose(value, (0, 2, 1))
+                elif value.ndim == 4:
+                    value = mx.transpose(value, (0, 2, 3, 1))
 
             sanitized[new_key] = value
 
@@ -751,7 +765,7 @@ class Model(nn.Module):
         self, waveforms: List[np.ndarray]
     ) -> Tuple[mx.array, mx.array, mx.array]:
         input_features, lengths = self.audio_frontend(waveforms)
-        conv_weight = self.encoder.pre_encode.out.weight
+        conv_weight = self.encoder.pre_encode.conv[0].weight
         if input_features.dtype != conv_weight.dtype:
             input_features = input_features.astype(conv_weight.dtype)
 

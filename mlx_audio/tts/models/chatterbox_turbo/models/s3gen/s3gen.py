@@ -3,10 +3,11 @@
 import logging
 from typing import Dict, Optional, Tuple
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+
+from mlx_audio.utils import resample_audio
 
 from .decoder import ConditionalDecoder
 from .encoder import UpsampleConformerEncoder
@@ -120,9 +121,7 @@ class S3Token2Mel(nn.Module):
         # Resample to 24kHz for mel extraction
         ref_wav_np = np.array(ref_wav[0])
         if ref_sr != S3GEN_SR:
-            ref_wav_24k = librosa.resample(
-                ref_wav_np, orig_sr=ref_sr, target_sr=S3GEN_SR
-            )
+            ref_wav_24k = resample_audio(ref_wav_np, ref_sr, S3GEN_SR)
         else:
             ref_wav_24k = ref_wav_np
 
@@ -153,7 +152,7 @@ class S3Token2Mel(nn.Module):
 
         # Resample to 16kHz for speaker encoder
         if ref_sr != S3_SR:
-            ref_wav_16k = librosa.resample(ref_wav_np, orig_sr=ref_sr, target_sr=S3_SR)
+            ref_wav_16k = resample_audio(ref_wav_np, ref_sr, S3_SR)
         else:
             ref_wav_16k = ref_wav_np
 

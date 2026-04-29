@@ -73,14 +73,15 @@ def sample_euler_cfg(
     model: IrodoriDiT,
     text_input_ids: mx.array,
     text_mask: mx.array,
-    ref_latent: mx.array,
-    ref_mask: mx.array,
+    ref_latent: Optional[mx.array],
+    ref_mask: Optional[mx.array],
     latent_dim: int,
     rng_seed: int = 0,
     sequence_length: int = 750,
     num_steps: int = 40,
     cfg_scale_text: float = 3.0,
     cfg_scale_speaker: float = 5.0,
+    cfg_scale_caption: float = 3.0,
     cfg_guidance_mode: str = "independent",
     cfg_scale: Optional[float] = None,
     cfg_min_t: float = 0.5,
@@ -92,15 +93,17 @@ def sample_euler_cfg(
     speaker_kv_scale: Optional[float] = None,
     speaker_kv_min_t: Optional[float] = None,
     speaker_kv_max_layers: Optional[int] = None,
+    caption_input_ids: Optional[mx.array] = None,
+    caption_mask: Optional[mx.array] = None,
     **_ignored,
 ) -> mx.array:
     """
     Euler sampler for Rectified Flow ODE with Classifier-Free Guidance.
 
     Supports three CFG modes:
-      independent : text and speaker guidance computed in a single 3x-batch forward pass.
-      joint       : single combined unconditional (both text and speaker zeroed).
-      alternating : text-uncond and speaker-uncond alternate each step.
+      independent : text and context guidance computed in a single 3x-batch forward pass.
+      joint       : single combined unconditional (both text and context zeroed).
+      alternating : text-uncond and context-uncond alternate each step.
 
     Returns latent of shape (batch, sequence_length, latent_dim).
     """
@@ -108,6 +111,12 @@ def sample_euler_cfg(
     if cfg_scale is not None:
         cfg_scale_text = float(cfg_scale)
         cfg_scale_speaker = float(cfg_scale)
+        cfg_scale_caption = float(cfg_scale)
+
+    # Resolve context CFG scale based on conditioning mode
+    cfg_scale_context = (
+        cfg_scale_caption if model.cfg.use_caption_condition else cfg_scale_speaker
+    )
 
     cfg_guidance_mode = cfg_guidance_mode.strip().lower()
     if cfg_guidance_mode not in {"independent", "joint", "alternating"}:
@@ -118,7 +127,7 @@ def sample_euler_cfg(
 
     batch_size = text_input_ids.shape[0]
     has_text_cfg = cfg_scale_text > 0
-    has_speaker_cfg = cfg_scale_speaker > 0
+    has_speaker_cfg = cfg_scale_context > 0
 
     # ---- encode conditions once ----
     text_state_cond, text_mask_cond, speaker_state_cond, speaker_mask_cond = (
@@ -127,6 +136,8 @@ def sample_euler_cfg(
             text_mask=text_mask,
             ref_latent=ref_latent,
             ref_mask=ref_mask,
+            caption_input_ids=caption_input_ids,
+            caption_mask=caption_mask,
         )
     )
     mx.eval(text_state_cond, speaker_state_cond)
@@ -260,7 +271,7 @@ def sample_euler_cfg(
                     v_pred = (
                         v_cond
                         + cfg_scale_text * (v_cond - v_uncond_text)
-                        + cfg_scale_speaker * (v_cond - v_uncond_speaker)
+                        + cfg_scale_context * (v_cond - v_uncond_speaker)
                     )
 
                 elif has_text_cfg:
@@ -309,18 +320,18 @@ def sample_euler_cfg(
                         kv_speaker=kv_speaker_cfg,
                     )
                     v_cond, v_uncond_speaker = mx.split(v_out, 2, axis=0)
-                    v_pred = v_cond + cfg_scale_speaker * (v_cond - v_uncond_speaker)
+                    v_pred = v_cond + cfg_scale_context * (v_cond - v_uncond_speaker)
 
             elif cfg_guidance_mode == "joint":
                 if has_text_cfg and has_speaker_cfg:
-                    if abs(cfg_scale_text - cfg_scale_speaker) > 1e-6:
+                    if abs(cfg_scale_text - cfg_scale_context) > 1e-6:
                         raise ValueError(
                             "cfg_guidance_mode='joint' requires equal text/speaker scales. "
                             "Use cfg_scale or set both to the same value."
                         )
                     joint_scale = cfg_scale_text
                 else:
-                    joint_scale = cfg_scale_text if has_text_cfg else cfg_scale_speaker
+                    joint_scale = cfg_scale_text if has_text_cfg else cfg_scale_context
 
                 v_cond = model.forward_with_conditions(
                     x_t=x_t,
@@ -381,7 +392,7 @@ def sample_euler_cfg(
                         kv_text=kv_text_cond,
                         kv_speaker=kv_speaker_uncond_alt,
                     )
-                    v_pred = v_cond + cfg_scale_speaker * (v_cond - v_uncond)
+                    v_pred = v_cond + cfg_scale_context * (v_cond - v_uncond)
 
         else:
             # no CFG this step

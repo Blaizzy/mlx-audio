@@ -14,6 +14,22 @@ enables efficient inference on Apple Silicon.
 ## Quick Start
 
 ```python
+from mlx_audio.sts import load
+from mlx_audio.sts.models.mossformer2_se import save_audio
+
+# Standard STS loader
+model = load("starkdmi/MossFormer2_SE_48K_MLX")
+
+# Enhance audio
+enhanced = model.enhance("noisy.wav")
+
+# Save result
+save_audio(enhanced, "enhanced.wav", 48000)
+```
+
+Or use the model-specific initializer directly:
+
+```python
 from mlx_audio.sts.models.mossformer2_se import (
     MossFormer2SEModel,
     save_audio,
