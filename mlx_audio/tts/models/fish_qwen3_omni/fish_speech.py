@@ -739,6 +739,7 @@ class Model(nn.Module):
             )
             next_result = self.model(next_input[:, :, None], cache=cache)
             logits = next_result.logits[:, -1]
+            hidden_state = next_result.hidden_states[:, -1]
 
         if not generated_steps:
             raise RuntimeError(
