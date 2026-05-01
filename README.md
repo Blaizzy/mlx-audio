@@ -663,6 +663,11 @@ WAV format works without ffmpeg.
 }
 ```
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the PR workflow, local checks, and
+commit-signing expectations for contributions to `main`.
+
 ## Acknowledgements
 
 - [Apple MLX Team](https://github.com/ml-explore/mlx) for the MLX framework
