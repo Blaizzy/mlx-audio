@@ -38,7 +38,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
@@ -930,8 +930,25 @@ async def stt_transcriptions(
     context: Optional[str] = Form(None),
     prefill_step_size: int = Form(2048),
     text: Optional[str] = Form(None),
+    response_format: str = Form("ndjson"),
 ):
-    """Transcribe audio using an STT model in OpenAI format."""
+    """Transcribe audio using an STT model.
+
+    The default ``response_format`` (``ndjson``) preserves mlx-audio's native
+    ``application/x-ndjson`` streaming transport, where each line is a JSON
+    object emitted by the underlying STT model (text deltas while streaming,
+    or the full whisper segment payload for batch transcription).
+
+    For OpenAI Audio API compatibility, ``response_format`` also accepts:
+
+    * ``text`` -- ``text/plain`` body with the final transcript only.
+    * ``json`` -- ``application/json`` body shaped ``{"text": "..."}``.
+    * ``verbose_json`` -- ``application/json`` body with the full payload
+      from the underlying model (``text``, ``segments``, ``language``,
+      ...), passed through unchanged.
+
+    See https://platform.openai.com/docs/api-reference/audio/createTranscription
+    """
     payload = TranscriptionRequest(
         model=model,
         language=language,
@@ -961,6 +978,46 @@ async def stt_transcriptions(
         normalized_kwargs=payload.model_dump(exclude={"model"}, exclude_none=True),
         stream=payload.stream,
     )
+
+    if response_format in ("text", "json", "verbose_json"):
+        full: Optional[dict] = None
+        accumulated = ""
+        try:
+            while True:
+                chunk = await _next_inference_chunk(handle)
+                if chunk.kind == "done":
+                    break
+                if chunk.kind == "error":
+                    raise chunk.error
+                line = chunk.payload
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                for raw in str(line).splitlines():
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        obj = json.loads(raw)
+                    except Exception:
+                        continue
+                    if isinstance(obj, dict) and (
+                        "segments" in obj or "language" in obj
+                    ):
+                        full = obj
+                    elif isinstance(obj, dict) and "text" in obj:
+                        accumulated += obj.get("text") or ""
+        finally:
+            handle.cancel()
+
+        if full is None:
+            full = {"text": accumulated}
+
+        if response_format == "text":
+            return PlainTextResponse((full.get("text") or "").strip())
+        if response_format == "json":
+            return JSONResponse({"text": (full.get("text") or "").strip()})
+        # verbose_json: full payload (text, segments, language, ...) as-is
+        return JSONResponse(full)
 
     return StreamingResponse(
         _stream_inference_results(handle, request),

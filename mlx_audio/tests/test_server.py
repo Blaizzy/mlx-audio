@@ -171,6 +171,110 @@ def test_stt_transcriptions(client, mock_model_provider):
 
 
 # ---------------------------------------------------------------------------
+# OpenAI-compatible response_format tests for /v1/audio/transcriptions
+# ---------------------------------------------------------------------------
+
+
+def _make_transcription_audio_buffer():
+    """Build a tiny mp3 buffer suitable as the ``file`` upload field."""
+    sample_rate = 16000
+    duration = 1
+    frequency = 440
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    audio_data = 0.5 * np.sin(2 * np.pi * frequency * t).astype(np.float32)
+    buffer = io.BytesIO()
+    audio_write(buffer, audio_data, sample_rate, format="mp3")
+    buffer.seek(0)
+    return buffer
+
+
+def _post_transcription(client, mock_model_provider, mock_return, *, response_format):
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value=mock_return)
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    return client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={"model": "test_stt_model", "response_format": response_format},
+    )
+
+
+def test_stt_transcriptions_response_format_text(client, mock_model_provider):
+    """response_format=text returns plain text body with the transcript."""
+    response = _post_transcription(
+        client,
+        mock_model_provider,
+        {"text": "Hello world."},
+        response_format="text",
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "Hello world."
+
+
+def test_stt_transcriptions_response_format_json(client, mock_model_provider):
+    """response_format=json returns the OpenAI minimal {"text": ...} shape."""
+    response = _post_transcription(
+        client,
+        mock_model_provider,
+        {"text": "Hello world."},
+        response_format="json",
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"text": "Hello world."}
+
+
+def test_stt_transcriptions_response_format_verbose_json(client, mock_model_provider):
+    """response_format=verbose_json passes the full model payload through unchanged."""
+    full_payload = {
+        "text": "Hello world.",
+        "language": "en",
+        "segments": [
+            {"id": 0, "text": "Hello", "start": 0.0, "end": 0.5},
+            {"id": 1, "text": " world.", "start": 0.5, "end": 1.0},
+        ],
+    }
+    response = _post_transcription(
+        client,
+        mock_model_provider,
+        full_payload,
+        response_format="verbose_json",
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["text"] == "Hello world."
+    assert body["language"] == "en"
+    assert [s["text"] for s in body["segments"]] == ["Hello", " world."]
+
+
+def test_stt_transcriptions_default_format_preserves_ndjson(
+    client, mock_model_provider
+):
+    """Without response_format, the legacy application/x-ndjson stream is preserved."""
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value={"text": "hi"})
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={"model": "test_stt_model"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    # Each line in the body should be a JSON object.
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert lines, "expected at least one ndjson line"
+    import json as _json
+
+    for line in lines:
+        _json.loads(line)
+
+
+# ---------------------------------------------------------------------------
 # WebSocket realtime streaming tests
 # ---------------------------------------------------------------------------
 

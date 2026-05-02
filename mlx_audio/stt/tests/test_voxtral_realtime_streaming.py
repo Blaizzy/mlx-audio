@@ -6,6 +6,8 @@ Covers the pieces that do not require downloaded model weights:
   chunking regimes.
 - StreamingCausalConv1d: parity with CausalConv1d on a randomly
   initialized module (no quantized checkpoint needed).
+- AudioEncoder.downsample_and_project: short tail rows stack with
+  downsampled chunks (decoder-width empty slice for concat).
 
 The end-to-end (encoder + session) parity lives in a weight-gated
 test class that skips cleanly when the model checkpoint is absent.
@@ -23,7 +25,8 @@ from mlx_audio.stt.models.voxtral_realtime.audio import (
     compute_mel_filters,
     compute_mel_spectrogram,
 )
-from mlx_audio.stt.models.voxtral_realtime.encoder import CausalConv1d
+from mlx_audio.stt.models.voxtral_realtime.config import EncoderConfig
+from mlx_audio.stt.models.voxtral_realtime.encoder import AudioEncoder, CausalConv1d
 from mlx_audio.stt.models.voxtral_realtime.streaming import (
     StreamingAudioSource,
     StreamingCausalConv1d,
@@ -201,6 +204,24 @@ class TestStreamingCausalConv1dParity(unittest.TestCase):
         for chunk in (4, 8, 12):
             with self.subTest(chunk=chunk):
                 self._run_case(kernel_size=4, stride=4, n_in=40, chunk=chunk)
+
+
+class TestAudioEncoder(unittest.TestCase):
+    """Weight-free checks on Voxtral Realtime AudioEncoder."""
+
+    def test_downsample_and_project_short_tail_concatenates(self):
+        """seq_len < downsample_factor yields (0, decoder_dim), not encoder dim."""
+        cfg = EncoderConfig(n_layers=1)
+        ds = cfg.downsample_factor
+        enc = AudioEncoder(cfg)
+        a = enc.downsample_and_project(mx.zeros((2 * ds, cfg.dim), dtype=mx.float32))
+        b = enc.downsample_and_project(mx.zeros((ds - 2, cfg.dim), dtype=mx.float32))
+        decoder_dim = enc.audio_language_projection_2.weight.shape[0]
+        self.assertEqual(tuple(a.shape), (2, decoder_dim))
+        self.assertEqual(tuple(b.shape), (0, decoder_dim))
+        merged = mx.concatenate([a, b], axis=0)
+        mx.eval(merged)
+        self.assertEqual(tuple(merged.shape), (2, decoder_dim))
 
 
 def _voxtral_weights_path() -> str:

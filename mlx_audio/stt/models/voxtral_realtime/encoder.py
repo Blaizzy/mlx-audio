@@ -231,7 +231,8 @@ class AudioEncoder(nn.Module):
         ds = self.config.downsample_factor
         ds_len = seq_len // ds
         if ds_len == 0:
-            return encoded[:0]  # empty
+            decoder_dim = self.audio_language_projection_2.weight.shape[0]
+            return mx.zeros((0, decoder_dim), dtype=encoded.dtype)
         x = encoded[: ds_len * ds].reshape(ds_len, self.config.dim * ds)
         x = nn.gelu(self.audio_language_projection_0(x))
         return self.audio_language_projection_2(x)

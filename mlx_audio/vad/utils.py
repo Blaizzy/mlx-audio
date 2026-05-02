@@ -5,7 +5,10 @@ import mlx.nn as nn
 
 from mlx_audio.utils import base_load_model
 
-MODEL_REMAPPING = {}
+MODEL_REMAPPING = {
+    "silero": "silero_vad",
+    "silero-vad": "silero_vad",
+}
 
 
 def load_model(

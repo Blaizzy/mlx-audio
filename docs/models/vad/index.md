@@ -8,9 +8,35 @@ MLX Audio provides voice activity detection and speaker diarization models for i
 
 | Model | Provider | Use Case | Speakers | Streaming | Repo |
 |-------|----------|----------|----------|-----------|------|
+| [**Silero VAD**](#silero-vad) | Silero | Voice activity detection | -- | Yes | [mlx-community/silero-vad](https://huggingface.co/mlx-community/silero-vad) |
 | [**Sortformer v1**](#sortformer-v1) | NVIDIA | Speaker diarization | Up to 4 | Basic | [mlx-community/diar_sortformer_4spk-v1-fp16](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp16) |
 | [**Sortformer v2.1**](#sortformer-v21) | NVIDIA | Streaming speaker diarization | Up to 4 | AOSC | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp16) |
 | [**Smart Turn**](#smart-turn) | Pipecat AI | Turn endpoint detection | -- | -- | [mlx-community/smart-turn-v3](https://huggingface.co/mlx-community/smart-turn-v3) |
+
+---
+
+## Silero VAD
+
+Silero VAD is a small neural speech/non-speech detector. Includes both the 16kHz and 8kHz branches and supports low-level streaming state.
+
+### Usage
+
+```python
+from mlx_audio.vad import load
+
+model = load("mlx-community/silero-vad")
+timestamps = model.get_speech_timestamps("audio.wav", return_seconds=True)
+print(timestamps)
+```
+
+### Streaming Chunks
+
+```python
+state = model.initial_state(sample_rate=16000)
+probability, state = model.feed(chunk, state, sample_rate=16000)  # chunk: 512 samples
+```
+
+At 8kHz, pass 256-sample chunks and `sample_rate=8000`.
 
 ---
 

@@ -157,10 +157,11 @@ for result in model.generate(
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
+| **Silero VAD** | Lightweight speech/non-speech detection with streaming state | Language-agnostic | [mlx-community/silero-vad](https://huggingface.co/mlx-community/silero-vad) |
 | **Sortformer v1** | NVIDIA's end-to-end speaker diarization (up to 4 speakers) | Language-agnostic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
 | **Sortformer v2.1** | NVIDIA's streaming speaker diarization with AOSC compression | Language-agnostic | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32) |
 
-See the [Sortformer README](mlx_audio/vad/models/sortformer/README.md) for API details, streaming examples, and model conversion.
+See the model READMEs for API details, streaming examples, and conversion steps.
 
 ### Speech-to-Speech (STS)
 
