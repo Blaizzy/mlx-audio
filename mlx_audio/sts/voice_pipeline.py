@@ -50,24 +50,12 @@ class VoicePipeline:
         self.transcription_queue = asyncio.Queue()
         self.output_audio_queue = asyncio.Queue(maxsize=50)
 
-        self.mlx_lock = asyncio.Lock()
-
-    async def init_models(self):
-        logger.info(f"Loading text generation model: {self.llm_model}")
-        self.llm, self.tokenizer = await asyncio.to_thread(
-            lambda: load_llm(self.llm_model)
-        )
-
-        logger.info(f"Loading text-to-speech model: {self.tts_model}")
-        self.tts = await asyncio.to_thread(lambda: load_tts(self.tts_model))
-
-        logger.info(f"Loading speech-to-text model: {self.stt_model}")
-        self.stt = load_stt(self.stt_model)
+        self.llm_loaded = asyncio.Event()
+        self.tts_loaded = asyncio.Event()
 
     async def start(self):
+        self.player = AudioPlayer(sample_rate=self.output_sample_rate)
         self.loop = asyncio.get_running_loop()
-
-        await self.init_models()
 
         tasks = [
             asyncio.create_task(self._listener()),
@@ -107,6 +95,11 @@ class VoicePipeline:
 
     async def _listener(self):
         frame_size = int(self.input_sample_rate * (self.frame_duration_ms / 1000.0))
+        logger.info(f"Loading speech-to-text model: {self.stt_model}")
+        self.stt = load_stt(self.stt_model)
+        self.tts_loaded.wait()
+        self.llm_loaded.wait()
+
         stream = sd.InputStream(
             samplerate=self.input_sample_rate,
             blocksize=frame_size,
@@ -151,7 +144,10 @@ class VoicePipeline:
                         if frames:
 
                             logger.info("Processing voice input...")
-                            await self._process_audio(frames)
+                            text = self._process_audio(frames)
+                            if text:
+                                logger.info(f"Transcribed: {text}")
+                                await self.transcription_queue.put(text)
 
                         frames = []
                         speaking_detected = False
@@ -175,22 +171,20 @@ class VoicePipeline:
 
         self.loop.call_soon_threadsafe(_enqueue)
 
-    async def _process_audio(self, frames):
+    def _process_audio(self, frames):
         audio = (
             np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float32) / 32768.0
         )
 
-        async with self.mlx_lock:
-            result = await asyncio.to_thread(self.stt.generate, mx.array(audio))
-        text = result.text.strip()
-
-        if text:
-            logger.info(f"Transcribed: {text}")
-            await self.transcription_queue.put(text)
+        result = self.stt.generate(mx.array(audio))
+        return result.text.strip()
 
     # response generation
 
     async def _response_processor(self):
+        logger.info(f"Loading text generation model: {self.llm_model}")
+        self.llm, self.tokenizer = load_llm(self.llm_model)
+        self.llm_loaded.set()
         while True:
             text = await self.transcription_queue.get()
             await self._generate_response(text)
@@ -213,10 +207,9 @@ class VoicePipeline:
                 },
                 {"role": "user", "content": text},
             ]
-            async with self.mlx_lock:
-                response_text = await asyncio.to_thread(
-                    _get_llm_response, self.llm, self.tokenizer, messages, verbose=False
-                )
+            response_text = _get_llm_response(
+                self.llm, self.tokenizer, messages, verbose=False
+            )
 
             logger.info(f"Generated response: {response_text}")
 
@@ -251,15 +244,13 @@ class VoicePipeline:
                 loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
 
         try:
-            async with self.mlx_lock:
-                await asyncio.to_thread(
-                    _tts_stream,
-                    self.tts,
-                    text,
-                    self.output_sample_rate,
-                    self.output_audio_queue,
-                    cancel_event,
-                )
+            _tts_stream(
+                self.tts,
+                text,
+                self.output_sample_rate,
+                self.output_audio_queue,
+                cancel_event,
+            )
         except asyncio.CancelledError:
             # The coroutine itself was cancelled from outside → just exit cleanly.
             pass
@@ -267,8 +258,9 @@ class VoicePipeline:
             logger.error("Speech synthesis error: %s", exc)
 
     async def _audio_output_processor(self):
-        self.player = AudioPlayer(sample_rate=self.output_sample_rate)
-
+        logger.info(f"Loading text-to-speech model: {self.tts_model}")
+        self.tts = load_tts(self.tts_model)  # pyright: ignore[reportArgumentType]
+        self.tts_loaded.set()
         try:
             while True:
                 audio = await self.output_audio_queue.get()
