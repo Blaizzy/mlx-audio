@@ -191,12 +191,6 @@ class VoicePipeline:
             self.transcription_queue.task_done()
 
     async def _generate_response(self, text):
-        def _get_llm_response(llm, tokenizer, messages, *, verbose=False):
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            return generate_text(llm, tokenizer, prompt, verbose=verbose).strip()
-
         try:
             logger.info("Generating response...")
 
@@ -207,9 +201,14 @@ class VoicePipeline:
                 },
                 {"role": "user", "content": text},
             ]
-            response_text = _get_llm_response(
-                self.llm, self.tokenizer, messages, verbose=False
+
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
             )
+
+            response_text = generate_text(
+                self.llm, self.tokenizer, prompt, verbose=False
+            ).strip()
 
             logger.info(f"Generated response: {response_text}")
 
@@ -230,27 +229,20 @@ class VoicePipeline:
         """
         loop = self.loop
 
-        def _tts_stream(tts, txt, rate, queue, cancel_ev: asyncio.Event):
-            # This runs in a worker thread, so we *must* poll a thread‑safe flag.
-            for chunk in tts.generate(
-                txt,
-                sample_rate=rate,
+        try:
+            for chunk in self.tts.generate(
+                text,
+                sample_rate=self.output_sample_rate,
                 stream=True,
                 streaming_interval=self.streaming_interval,
                 verbose=False,
             ):
-                if cancel_ev.is_set():  # <-- stop immediately
+                if cancel_event.is_set():  # <-- stop immediately
                     break
-                loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
+                loop.call_soon_threadsafe(
+                    self.output_audio_queue.put_nowait, chunk.audio
+                )
 
-        try:
-            _tts_stream(
-                self.tts,
-                text,
-                self.output_sample_rate,
-                self.output_audio_queue,
-                cancel_event,
-            )
         except asyncio.CancelledError:
             # The coroutine itself was cancelled from outside → just exit cleanly.
             pass
