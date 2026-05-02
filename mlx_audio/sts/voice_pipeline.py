@@ -9,7 +9,7 @@ import webrtcvad
 from mlx_lm.generate import generate as generate_text
 from mlx_lm.utils import load as load_llm
 
-from mlx_audio.stt.models.whisper import Model as Whisper
+from mlx_audio.stt import load as load_stt
 from mlx_audio.tts.audio_player import AudioPlayer
 from mlx_audio.tts.utils import load_model as load_tts
 
@@ -62,7 +62,7 @@ class VoicePipeline:
         self.tts = await asyncio.to_thread(lambda: load_tts(self.tts_model))
 
         logger.info(f"Loading speech-to-text model: {self.stt_model}")
-        self.stt = Whisper.from_pretrained(self.stt_model)
+        self.stt = load_stt(self.stt_model)
 
     async def start(self):
         self.loop = asyncio.get_running_loop()
