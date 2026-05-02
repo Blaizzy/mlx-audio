@@ -57,6 +57,7 @@ __all__ = [
     "SAMAudioProcessor",
     "SeparationResult",
     "VoicePipeline",
+    "VoicePipelineConfig",
     "load",
     "load_model",
     "save_audio",
@@ -64,13 +65,18 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name == "VoicePipeline":
+    if name in {
+        "VoicePipeline",
+        "VoicePipelineConfig",
+    }:
         try:
-            from .voice_pipeline import VoicePipeline
+            _voice_pipeline = importlib.import_module("mlx_audio.sts.voice_pipeline")
         except ImportError:
-            VoicePipeline = None
-        globals()[name] = VoicePipeline
-        return VoicePipeline
+            value = None
+        else:
+            value = getattr(_voice_pipeline, name)
+        globals()[name] = value
+        return value
 
     if name in _LAZY_EXPORTS:
         module_name, attr_name = _LAZY_EXPORTS[name]
