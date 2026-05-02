@@ -97,8 +97,8 @@ class VoicePipeline:
         frame_size = int(self.input_sample_rate * (self.frame_duration_ms / 1000.0))
         logger.info(f"Loading speech-to-text model: {self.stt_model}")
         self.stt = load_stt(self.stt_model)
-        self.tts_loaded.wait()
-        self.llm_loaded.wait()
+        await self.tts_loaded.wait()
+        await self.llm_loaded.wait()
 
         stream = sd.InputStream(
             samplerate=self.input_sample_rate,
