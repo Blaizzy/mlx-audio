@@ -62,8 +62,12 @@ class SileroMlxBackend:
             1.0 - np.prod((1.0 - probs_32[:n]).reshape(-1, _BLOCKS_PER_256MS), axis=1)
         ).astype(np.float32)
         speech_pad_blocks = max(0, int(self.speech_pad_ms / 1000 / _BLOCK_DUR_S))
-        min_speech_blocks = max(1, int(self.min_speech_duration_ms / 1000 / _BLOCK_DUR_S))
-        min_silence_blocks = max(1, int(self.min_silence_duration_ms / 1000 / _BLOCK_DUR_S))
+        min_speech_blocks = max(
+            1, int(self.min_speech_duration_ms / 1000 / _BLOCK_DUR_S)
+        )
+        min_silence_blocks = max(
+            1, int(self.min_silence_duration_ms / 1000 / _BLOCK_DUR_S)
+        )
         actual_len = int(waveform.shape[0])
         runs: List[SpeechRun] = []
         in_speech = False
@@ -102,9 +106,7 @@ class SileroMlxBackend:
 def get_backend(name) -> VADBackend:
     if name is True or name == "silero-mlx":
         return SileroMlxBackend()
-    raise ValueError(
-        f"unknown vad backend: {name!r} (supported: True, 'silero-mlx')"
-    )
+    raise ValueError(f"unknown vad backend: {name!r} (supported: True, 'silero-mlx')")
 
 
 def _split_long(start: int, end: int, max_chunk_samples: int) -> List[List[int]]:
