@@ -6,6 +6,47 @@ from unittest.mock import patch
 import mlx.core as mx
 
 
+def _tiny_dacvae_config():
+    from mlx_audio.codec.models.dacvae import DACVAEConfig
+
+    return DACVAEConfig(
+        encoder_dim=8,
+        encoder_rates=[2, 2],
+        latent_dim=16,
+        decoder_dim=32,
+        decoder_rates=[2, 2],
+        n_codebooks=2,
+        codebook_size=16,
+        codebook_dim=8,
+    )
+
+
+def _tiny_sam_audio_config():
+    from mlx_audio.sts.models.sam_audio.config import (
+        SAMAudioConfig,
+        T5EncoderConfig,
+        TransformerConfig,
+    )
+
+    codebook_dim = 8
+    return SAMAudioConfig(
+        in_channels=6 * codebook_dim,
+        audio_codec=_tiny_dacvae_config(),
+        text_encoder=T5EncoderConfig(name="tiny-t5", dim=16, max_length=8),
+        transformer=TransformerConfig(
+            dim=32,
+            n_heads=4,
+            n_layers=1,
+            context_dim=32,
+            out_channels=2 * codebook_dim,
+            frequency_embedding_dim=16,
+            multiple_of=8,
+            max_positions=64,
+        ),
+        anchor_embedding_dim=8,
+    )
+
+
 class TestSAMAudioConfig(unittest.TestCase):
     """Tests for SAM-Audio configuration classes."""
 
@@ -103,11 +144,9 @@ class TestDACVAECodec(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         from mlx_audio.codec.models.dacvae import DACVAE
-        from mlx_audio.sts.models.sam_audio.config import DACVAEConfig
 
-        self.config = DACVAEConfig()
+        self.config = _tiny_dacvae_config()
         self.codec = DACVAE(self.config)
-        self.codec.hop_length = 192
 
     def test_codec_initialization(self):
         """Test DACVAE initialization."""
@@ -119,7 +158,7 @@ class TestDACVAECodec(unittest.TestCase):
 
     def test_codec_hop_length(self):
         """Test DACVAE hop_length property."""
-        expected_hop = 192
+        expected_hop = 4
         self.assertEqual(self.codec.hop_length, expected_hop)
 
     def test_codec_encode_shape(self):
@@ -191,10 +230,9 @@ class TestSAMAudioModel(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from mlx_audio.sts.models.sam_audio.config import SAMAudioConfig
         from mlx_audio.sts.models.sam_audio.model import SAMAudio
 
-        self.config = SAMAudioConfig()
+        self.config = _tiny_sam_audio_config()
         self.model = SAMAudio(self.config)
         self.model.eval()
 
@@ -246,7 +284,7 @@ class TestSAMAudioModel(unittest.TestCase):
         expected_frames = samples // self.model.audio_codec.hop_length
         self.assertEqual(features.shape[0], batch_size)
         self.assertEqual(features.shape[1], expected_frames)
-        self.assertEqual(features.shape[2], 256)  # 2 * 128
+        self.assertEqual(features.shape[2], 2 * self.config.audio_codec.codebook_dim)
 
 
 class TestSAMAudioProcessor(unittest.TestCase):
@@ -302,10 +340,9 @@ class TestODEStepFunctions(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
-        from mlx_audio.sts.models.sam_audio.config import SAMAudioConfig
         from mlx_audio.sts.models.sam_audio.model import SAMAudio
 
-        self.config = SAMAudioConfig()
+        self.config = _tiny_sam_audio_config()
         self.model = SAMAudio(self.config)
         self.model.eval()
 
@@ -313,11 +350,11 @@ class TestODEStepFunctions(unittest.TestCase):
         """Test Euler ODE step output shape."""
         batch_size = 1
         seq_len = 2
-        channels = 256
+        channels = 2 * self.config.audio_codec.codebook_dim
 
         noisy_audio = mx.zeros((batch_size, seq_len, channels))
         audio_features = mx.zeros((batch_size, seq_len, channels))
-        text_features = mx.zeros((batch_size, 5, 768))
+        text_features = mx.zeros((batch_size, 5, self.config.text_encoder.dim))
 
         result = self.model._ode_step_euler(
             t=0.0,
@@ -338,11 +375,11 @@ class TestODEStepFunctions(unittest.TestCase):
         """Test Midpoint ODE step output shape."""
         batch_size = 1
         seq_len = 2
-        channels = 256
+        channels = 2 * self.config.audio_codec.codebook_dim
 
         noisy_audio = mx.zeros((batch_size, seq_len, channels))
         audio_features = mx.zeros((batch_size, seq_len, channels))
-        text_features = mx.zeros((batch_size, 5, 768))
+        text_features = mx.zeros((batch_size, 5, self.config.text_encoder.dim))
 
         result = self.model._ode_step_midpoint(
             t=0.0,

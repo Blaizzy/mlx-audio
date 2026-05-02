@@ -1,5 +1,6 @@
 """Tests for DeepFilterNet STS model."""
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -131,6 +132,10 @@ class TestDeepFilterNetRuntimeHelpers(unittest.TestCase):
         self.assertIsInstance(y2, np.ndarray)
 
 
+@unittest.skipUnless(
+    os.environ.get("MLX_AUDIO_RUN_STS_INTEGRATION") == "1",
+    "Set MLX_AUDIO_RUN_STS_INTEGRATION=1 to run DeepFilterNet pretrained tests",
+)
 class TestDeepFilterNetIntegration(unittest.TestCase):
     """End-to-end integration tests with real model weights.
 

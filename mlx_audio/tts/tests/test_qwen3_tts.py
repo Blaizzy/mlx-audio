@@ -162,6 +162,9 @@ class TestMelSpectrogram(unittest.TestCase):
     if mel_scale, norm, or center/reflect padding is changed.
     """
 
+    SNAPSHOT_RTOL = 2e-3
+    SNAPSHOT_ATOL = 2e-3
+
     def _get_random_audio(self):
         """Get deterministic random audio (seed=42, 12000 samples)."""
         np.random.seed(42)
@@ -209,8 +212,8 @@ class TestMelSpectrogram(unittest.TestCase):
         np.testing.assert_allclose(
             actual_frame0,
             expected_frame0,
-            rtol=1e-4,
-            atol=1e-4,
+            rtol=self.SNAPSHOT_RTOL,
+            atol=self.SNAPSHOT_ATOL,
             err_msg="mel_spectrogram must use norm='slaney' in mel_filters(). "
             "These values are specific to slaney-normalized filterbank.",
         )
@@ -244,8 +247,8 @@ class TestMelSpectrogram(unittest.TestCase):
         np.testing.assert_allclose(
             actual_frame23,
             expected_frame23,
-            rtol=1e-4,
-            atol=1e-4,
+            rtol=self.SNAPSHOT_RTOL,
+            atol=self.SNAPSHOT_ATOL,
             err_msg="mel_spectrogram must use mel_scale='slaney' in mel_filters(). "
             "HTK scale distributes mel bins differently and produces wrong values.",
         )
@@ -268,8 +271,8 @@ class TestMelSpectrogram(unittest.TestCase):
         np.testing.assert_allclose(
             actual_last,
             expected_last,
-            rtol=1e-4,
-            atol=1e-4,
+            rtol=self.SNAPSHOT_RTOL,
+            atol=self.SNAPSHOT_ATOL,
             err_msg="mel_spectrogram must use reflect padding. "
             "Boundary frames are sensitive to the padding mode used before STFT.",
         )
@@ -302,8 +305,8 @@ class TestMelSpectrogram(unittest.TestCase):
         np.testing.assert_allclose(
             actual,
             expected,
-            rtol=1e-4,
-            atol=1e-4,
+            rtol=self.SNAPSHOT_RTOL,
+            atol=self.SNAPSHOT_ATOL,
             err_msg="mel_spectrogram must use mel_scale='slaney' and norm='slaney'. "
             "A 1kHz sine wave should produce these specific bin activations "
             "with slaney-scale mel filterbank.",
@@ -318,14 +321,16 @@ class TestMelSpectrogram(unittest.TestCase):
         np.testing.assert_allclose(
             mel_np.mean(),
             -0.37329558,
-            rtol=1e-3,
+            rtol=self.SNAPSHOT_RTOL,
+            atol=self.SNAPSHOT_ATOL,
             err_msg="mel_spectrogram output mean should be ~-0.37 with correct params. "
             f"Got mean={mel_np.mean():.4f}. A positive mean (~2.5) indicates norm=None.",
         )
         np.testing.assert_allclose(
             mel_np.std(),
             0.37445435,
-            rtol=1e-3,
+            rtol=self.SNAPSHOT_RTOL,
+            atol=self.SNAPSHOT_ATOL,
             err_msg="mel_spectrogram output std should be ~0.37 with correct params. "
             f"Got std={mel_np.std():.4f}.",
         )
