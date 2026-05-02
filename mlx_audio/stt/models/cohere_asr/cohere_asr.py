@@ -973,23 +973,16 @@ class Model(nn.Module):
         self,
         waveform: np.ndarray,
         *,
-        backend_name: str,
-        aggressiveness: int = 3,
+        backend_selector: Union[bool, str] = True,
         merge_gap_s: float = 1.0,
         max_chunk_s: float = 30.0,
     ) -> Tuple[List[np.ndarray], List[Dict[str, Union[int, float, None]]]]:
-        from .vad import SileroCoremlBackend, WebRTCBackend, segment_audio
+        from .vad import get_backend, segment_audio
 
         sr = self.sample_rate
-        if backend_name == "silero-coreml":
-            if not hasattr(self, "_vad_backend"):
-                self._vad_backend = SileroCoremlBackend()
-            backend = self._vad_backend
-        else:
-            cached = getattr(self, "_vad_backend_webrtc", None)
-            if cached is None or cached.aggressiveness != aggressiveness:
-                self._vad_backend_webrtc = WebRTCBackend(aggressiveness=aggressiveness)
-            backend = self._vad_backend_webrtc
+        if not hasattr(self, "_vad_backend"):
+            self._vad_backend = get_backend(backend_selector)
+        backend = self._vad_backend
 
         if backend.sample_rate != sr:
             raise ValueError(
@@ -1097,7 +1090,6 @@ class Model(nn.Module):
         stream: bool = False,
         sample_rate: Optional[int] = None,
         vad: Union[bool, str] = False,
-        vad_aggressiveness: int = 3,
         vad_merge_gap_s: float = 1.0,
         vad_max_chunk_s: float = 30.0,
         **kwargs,
@@ -1110,14 +1102,10 @@ class Model(nn.Module):
         start_time = time.time()
         self._validate_language(language)
         waveform = self._to_mono(audio, sample_rate=sample_rate)
-        vad_backend = (
-            "silero-coreml" if vad is True else (vad if isinstance(vad, str) else None)
-        )
-        if vad_backend in ("silero-coreml", "webrtc"):
+        if vad:
             segment_waveforms, segment_meta = self._segment_with_vad(
                 waveform,
-                backend_name=vad_backend,
-                aggressiveness=vad_aggressiveness,
+                backend_selector=vad,
                 merge_gap_s=vad_merge_gap_s,
                 max_chunk_s=vad_max_chunk_s,
             )

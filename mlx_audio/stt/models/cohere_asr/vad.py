@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import List, Optional, Protocol, Tuple
+from typing import List, Protocol
 
 import numpy as np
+
+DEFAULT_SILERO_REPO = "mlx-community/silero-vad"
+_CHUNK_SAMPLES = 512
+_BLOCKS_PER_256MS = 8
+_BLOCK_SAMPLES = _CHUNK_SAMPLES * _BLOCKS_PER_256MS
+_BLOCK_DUR_S = _BLOCK_SAMPLES / 16000
 
 
 @dataclass
@@ -19,214 +24,87 @@ class VADBackend(Protocol):
     def detect_speech(self, waveform: np.ndarray) -> List[SpeechRun]: ...
 
 
-class SileroCoremlBackend:
+class SileroMlxBackend:
     sample_rate: int = 16000
 
     def __init__(
         self,
         *,
+        repo_id: str = DEFAULT_SILERO_REPO,
         threshold: float = 0.5,
         min_speech_duration_ms: int = 250,
         min_silence_duration_ms: int = 100,
         speech_pad_ms: int = 30,
     ) -> None:
+        self.repo_id = repo_id
         self.threshold = threshold
         self.min_speech_duration_ms = min_speech_duration_ms
         self.min_silence_duration_ms = min_silence_duration_ms
         self.speech_pad_ms = speech_pad_ms
         self._model = None
 
-    def _load(self):
-        try:
-            import coremltools as ct
-        except ImportError as exc:
-            raise ImportError(
-                "vad='silero-coreml' requires coremltools. "
-                "Install with: pip install coremltools"
-            ) from exc
+    def _load(self) -> None:
+        from mlx_audio.vad import load as load_vad
 
-        override = os.environ.get("MLX_AUDIO_SILERO_COREML")
-        if override and os.path.isdir(override):
-            model_path = override
-        else:
-            from huggingface_hub import snapshot_download
-
-            cache_dir = os.path.expanduser(
-                "~/.cache/mlx-audio/vad/silero-vad-coreml-mlx-audio"
-            )
-            snapshot_root = snapshot_download(
-                repo_id="beshkenadze/silero-vad-coreml-mlx-audio",
-                allow_patterns=["silero_vad_v6_256ms.mlpackage/**"],
-                local_dir=cache_dir,
-            )
-            model_path = os.path.join(snapshot_root, "silero_vad_v6_256ms.mlpackage")
-        self._model = ct.models.MLModel(model_path)
+        self._model = load_vad(self.repo_id)
 
     def detect_speech(self, waveform: np.ndarray) -> List[SpeechRun]:
         if self._model is None:
             self._load()
-        m = self._model
         sr = self.sample_rate
-        chunk_total = 4096
-        ctx_size = 64
-        chunks_per_block = 8
-        block_dur_s = chunks_per_block * 512 / sr
-
-        audio = waveform.astype(np.float32)
-        pad = chunk_total - len(audio) % chunk_total
-        if pad and pad < chunk_total:
-            audio = np.concatenate([audio, np.zeros(pad, dtype=np.float32)])
-        n_blocks = len(audio) // chunk_total
-
-        h = np.zeros((1, 128), dtype=np.float32)
-        c = np.zeros((1, 128), dtype=np.float32)
-        context = np.zeros(ctx_size, dtype=np.float32)
-        block_probs = np.zeros(n_blocks, dtype=np.float32)
-        for i in range(n_blocks):
-            block = audio[i * chunk_total : (i + 1) * chunk_total]
-            with_ctx = np.concatenate([context, block])[None, :].astype(np.float32)
-            out = m.predict(
-                {
-                    "audio_input": with_ctx,
-                    "hidden_state": h,
-                    "cell_state": c,
-                }
-            )
-            block_probs[i] = out["vad_output"].flatten()[0]
-            h = out["new_hidden_state"]
-            c = out["new_cell_state"]
-            context = block[-ctx_size:]
-
-        runs = _hysteresis_runs(
-            probs=block_probs,
-            block_size=chunk_total,
-            block_dur_s=block_dur_s,
-            threshold=self.threshold,
-            min_speech_duration_ms=self.min_speech_duration_ms,
-            min_silence_duration_ms=self.min_silence_duration_ms,
-            speech_pad_ms=self.speech_pad_ms,
-        )
-        actual_len = len(waveform)
-        return [
-            SpeechRun(min(r.start_sample, actual_len), min(r.end_sample, actual_len))
-            for r in runs
-            if r.start_sample < actual_len
-        ]
-
-
-class WebRTCBackend:
-    sample_rate: int = 16000
-
-    def __init__(
-        self,
-        *,
-        aggressiveness: int = 3,
-        frame_ms: int = 30,
-        padding_ms: int = 300,
-        min_speech_ms: int = 200,
-    ) -> None:
-        self.aggressiveness = aggressiveness
-        self.frame_ms = frame_ms
-        self.padding_ms = padding_ms
-        self.min_speech_ms = min_speech_ms
-        self._vad = None
-
-    def detect_speech(self, waveform: np.ndarray) -> List[SpeechRun]:
-        if self._vad is None:
-            try:
-                import webrtcvad
-            except ImportError as exc:
-                raise ImportError(
-                    "vad='webrtc' requires webrtcvad. "
-                    "Install with: pip install webrtcvad"
-                ) from exc
-            self._vad = webrtcvad.Vad(self.aggressiveness)
-
-        sr = self.sample_rate
-        audio_int16 = (waveform * 32767).clip(-32768, 32767).astype(np.int16)
-        frame_samples = int(sr * self.frame_ms / 1000)
-        pad_frames = self.padding_ms // self.frame_ms
-        min_speech_frames = self.min_speech_ms // self.frame_ms
-
+        probs_32 = np.array(
+            self._model._predict_proba_array(waveform.astype(np.float32), sr)
+        ).reshape(-1)
+        n = (probs_32.shape[0] // _BLOCKS_PER_256MS) * _BLOCKS_PER_256MS
+        if n == 0:
+            return []
+        probs_256 = (
+            1.0 - np.prod((1.0 - probs_32[:n]).reshape(-1, _BLOCKS_PER_256MS), axis=1)
+        ).astype(np.float32)
+        speech_pad_blocks = max(0, int(self.speech_pad_ms / 1000 / _BLOCK_DUR_S))
+        min_speech_blocks = max(1, int(self.min_speech_duration_ms / 1000 / _BLOCK_DUR_S))
+        min_silence_blocks = max(1, int(self.min_silence_duration_ms / 1000 / _BLOCK_DUR_S))
+        actual_len = int(waveform.shape[0])
         runs: List[SpeechRun] = []
-        cur_start = None
-        speech_run = 0
+        in_speech = False
+        seg_start = 0
+        last_speech = -1
         silent_run = 0
-        for i in range(0, len(audio_int16) - frame_samples + 1, frame_samples):
-            frame = audio_int16[i : i + frame_samples]
-            is_speech = self._vad.is_speech(frame.tobytes(), sr)
-            if is_speech:
-                if cur_start is None:
-                    cur_start = max(0, i - pad_frames * frame_samples)
-                speech_run += 1
+        for idx, p in enumerate(probs_256):
+            if p >= self.threshold:
+                if not in_speech:
+                    seg_start = max(0, idx - speech_pad_blocks)
+                    in_speech = True
+                last_speech = idx
                 silent_run = 0
-            else:
-                if cur_start is not None:
-                    silent_run += 1
-                    if silent_run > pad_frames:
-                        if speech_run >= min_speech_frames:
-                            runs.append(SpeechRun(cur_start, i + frame_samples))
-                        cur_start = None
-                        speech_run = 0
-                        silent_run = 0
-        if cur_start is not None and speech_run >= min_speech_frames:
-            runs.append(SpeechRun(cur_start, len(audio_int16)))
-
-        min_dur_samples = int(0.3 * sr)
-        return [r for r in runs if r.end_sample - r.start_sample >= min_dur_samples]
-
-
-def _hysteresis_runs(
-    probs: np.ndarray,
-    *,
-    block_size: int,
-    block_dur_s: float,
-    threshold: float,
-    min_speech_duration_ms: int,
-    min_silence_duration_ms: int,
-    speech_pad_ms: int,
-) -> List[SpeechRun]:
-    speech_pad_blocks = max(0, int(speech_pad_ms / 1000 / block_dur_s))
-    min_speech_blocks = max(1, int(min_speech_duration_ms / 1000 / block_dur_s))
-    min_silence_blocks = max(1, int(min_silence_duration_ms / 1000 / block_dur_s))
-
-    runs: List[SpeechRun] = []
-    in_speech = False
-    seg_start = 0
-    last_speech_idx = -1
-    silent_run = 0
-    n_blocks = len(probs)
-    for idx, p in enumerate(probs):
-        if p >= threshold:
-            if not in_speech:
-                seg_start = max(0, idx - speech_pad_blocks)
-                in_speech = True
-            last_speech_idx = idx
-            silent_run = 0
-        else:
-            if in_speech:
+            elif in_speech:
                 silent_run += 1
                 if silent_run >= min_silence_blocks:
-                    seg_end = min(last_speech_idx + 1 + speech_pad_blocks, n_blocks)
+                    seg_end = min(last_speech + 1 + speech_pad_blocks, len(probs_256))
                     if seg_end - seg_start >= min_speech_blocks:
-                        runs.append(
-                            SpeechRun(seg_start * block_size, seg_end * block_size)
-                        )
+                        s = seg_start * _BLOCK_SAMPLES
+                        e = min(seg_end * _BLOCK_SAMPLES, actual_len)
+                        if s < e:
+                            runs.append(SpeechRun(s, e))
                     in_speech = False
                     silent_run = 0
-                    last_speech_idx = -1
-    if in_speech:
-        if n_blocks - seg_start >= min_speech_blocks:
-            runs.append(SpeechRun(seg_start * block_size, n_blocks * block_size))
-    return runs
+                    last_speech = -1
+        if in_speech:
+            end_idx = min(len(probs_256), last_speech + 1 + speech_pad_blocks)
+            if end_idx - seg_start >= min_speech_blocks:
+                s = seg_start * _BLOCK_SAMPLES
+                e = min(end_idx * _BLOCK_SAMPLES, actual_len)
+                if s < e:
+                    runs.append(SpeechRun(s, e))
+        return runs
 
 
 def get_backend(name) -> VADBackend:
-    if name is True or name == "silero-coreml":
-        return SileroCoremlBackend()
-    if name == "webrtc":
-        return WebRTCBackend()
-    raise ValueError(f"unknown vad backend: {name!r}")
+    if name is True or name == "silero-mlx":
+        return SileroMlxBackend()
+    raise ValueError(
+        f"unknown vad backend: {name!r} (supported: True, 'silero-mlx')"
+    )
 
 
 def _split_long(start: int, end: int, max_chunk_samples: int) -> List[List[int]]:
