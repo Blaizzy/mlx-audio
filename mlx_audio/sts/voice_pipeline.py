@@ -50,6 +50,10 @@ class VoicePipeline:
         self.turn_audio_buffer = []
         self.max_buffer_samples = 16000 * 8  # 8 seconds at 16kHz
 
+        # Smart Turn endpoint detector
+        self.smart_turn = load_vad("mlx-community/smart-turn-v3", strict=True)
+        self.smart_turn_threshold = 0.5
+
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
         self.output_audio_queue = asyncio.Queue(maxsize=50)
