@@ -28,7 +28,7 @@ class VoicePipeline:
         output_sample_rate=24_000,
         streaming_interval=3,
         frame_duration_ms=30,
-        vad_model=3,
+        vad_mode=3,
         stt_model="mlx-community/whisper-large-v3-turbo-asr-fp16",
         llm_model="Qwen/Qwen2.5-0.5B-Instruct-4bit",
         tts_model="mlx-community/csm-1b-fp16",
@@ -44,7 +44,7 @@ class VoicePipeline:
         self.llm_model = llm_model
         self.tts_model = tts_model
 
-        self.vad = webrtcvad.Vad(vad_model)
+        self.vad = webrtcvad.Vad(vad_mode)
 
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
@@ -280,7 +280,7 @@ async def main():
         default="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
         help="LLM model",
     )
-    parser.add_argument("--vad_model", type=int, default=3, help="VAD mode")
+    parser.add_argument("--vad_mode", type=int, default=3, help="VAD mode")
     parser.add_argument(
         "--silence_duration", type=float, default=1.5, help="Silence duration"
     )
@@ -296,7 +296,7 @@ async def main():
         stt_model=args.stt_model,
         tts_model=args.tts_model,
         llm_model=args.llm_model,
-        vad_model=args.vad_model,
+        vad_mode=args.vad_mode,
         silence_duration=args.silence_duration,
         silence_threshold=args.silence_threshold,
         streaming_interval=args.streaming_interval,
