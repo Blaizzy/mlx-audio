@@ -28,6 +28,7 @@ class VoicePipeline:
         output_sample_rate=24_000,
         streaming_interval=3,
         frame_duration_ms=32,
+        smart_turn_trigger_silence_ms=500,
         stt_model="mlx-community/whisper-large-v3-turbo-asr-fp16",
         llm_model="Qwen/Qwen2.5-0.5B-Instruct-4bit",
         tts_model="mlx-community/csm-1b-fp16",
@@ -53,6 +54,7 @@ class VoicePipeline:
         # Smart Turn endpoint detector
         self.smart_turn = load_vad("mlx-community/smart-turn-v3", strict=True)
         self.smart_turn_threshold = 0.5
+        self.smart_turn_trigger_silence_ms = smart_turn_trigger_silence_ms
 
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
@@ -108,8 +110,8 @@ class VoicePipeline:
 
         frames = []
         silent_frames = 0
-        frames_until_silence = int(
-            self.silence_duration * 1000 / self.frame_duration_ms
+        frames_until_smart_turn = int(
+            self.smart_turn_trigger_silence_ms / self.frame_duration_ms
         )
         speaking_detected = False
         smart_turn_evaluated = False  # Track if we've already asked Smart Turn
@@ -144,7 +146,10 @@ class VoicePipeline:
                     self.turn_audio_buffer.append(frame)
                     self._trim_turn_buffer()
 
-                    if silent_frames > frames_until_silence and not smart_turn_evaluated:
+                    if (
+                        silent_frames > frames_until_smart_turn
+                        and not smart_turn_evaluated
+                    ):
                         smart_turn_evaluated = True
 
                         # Ask Smart Turn: has the user finished?
@@ -206,7 +211,9 @@ class VoicePipeline:
     def _trim_turn_buffer(self):
         """Trim turn_audio_buffer to max_buffer_samples (oldest frames drop off)."""
         total_samples = sum(f.size for f in self.turn_audio_buffer)
-        while total_samples > self.max_buffer_samples and len(self.turn_audio_buffer) > 1:
+        while (
+            total_samples > self.max_buffer_samples and len(self.turn_audio_buffer) > 1
+        ):
             total_samples -= self.turn_audio_buffer[0].size
             self.turn_audio_buffer.pop(0)
 
@@ -325,6 +332,12 @@ async def main():
         "--silence_threshold", type=float, default=0.03, help="Silence threshold"
     )
     parser.add_argument(
+        "--smart_turn_trigger_silence_ms",
+        type=int,
+        default=500,
+        help="Silence duration (ms) before asking Smart Turn",
+    )
+    parser.add_argument(
         "--streaming_interval", type=int, default=3, help="Streaming interval"
     )
     args = parser.parse_args()
@@ -336,6 +349,7 @@ async def main():
         silence_duration=args.silence_duration,
         silence_threshold=args.silence_threshold,
         streaming_interval=args.streaming_interval,
+        smart_turn_trigger_silence_ms=args.smart_turn_trigger_silence_ms,
     )
     await pipeline.start()
 
