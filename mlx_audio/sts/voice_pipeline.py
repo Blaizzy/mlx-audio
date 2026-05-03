@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import warnings
 
 import mlx.core as mx
 import numpy as np
@@ -22,8 +23,8 @@ logger = logging.getLogger(__name__)
 class VoicePipeline:
     def __init__(
         self,
-        silence_threshold=0.03,
-        silence_duration=1.5,
+        silence_threshold=None,
+        silence_duration=None,
         input_sample_rate=16_000,
         output_sample_rate=24_000,
         streaming_interval=3,
@@ -33,6 +34,22 @@ class VoicePipeline:
         llm_model="Qwen/Qwen2.5-0.5B-Instruct-4bit",
         tts_model="mlx-community/csm-1b-fp16",
     ):
+        if silence_threshold is not None:
+            warnings.warn(
+                "silence_threshold is deprecated and has no effect. "
+                "VAD is now handled by silero and Smart Turn. "
+                "See smart_turn_trigger_silence_ms",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if silence_duration is not None:
+            warnings.warn(
+                "silence_duration is deprecated and has no effect. "
+                "VAD is now handled by silero and Smart Turn. "
+                "See smart_turn_trigger_silence_ms",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.input_sample_rate = input_sample_rate
