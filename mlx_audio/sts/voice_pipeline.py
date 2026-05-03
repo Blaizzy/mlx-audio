@@ -1,17 +1,18 @@
 import argparse
 import asyncio
 import logging
+import warnings
 
 import mlx.core as mx
 import numpy as np
 import sounddevice as sd
-import webrtcvad
 from mlx_lm.generate import generate as generate_text
 from mlx_lm.utils import load as load_llm
 
-from mlx_audio.stt.models.whisper import Model as Whisper
+from mlx_audio.stt import load as load_stt
 from mlx_audio.tts.audio_player import AudioPlayer
 from mlx_audio.tts.utils import load_model as load_tts
+from mlx_audio.vad import load as load_vad
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -22,17 +23,33 @@ logger = logging.getLogger(__name__)
 class VoicePipeline:
     def __init__(
         self,
-        silence_threshold=0.03,
-        silence_duration=1.5,
+        silence_threshold=None,
+        silence_duration=None,
         input_sample_rate=16_000,
         output_sample_rate=24_000,
         streaming_interval=3,
-        frame_duration_ms=30,
-        vad_mode=3,
+        frame_duration_ms=32,
+        smart_turn_trigger_silence_ms=500,
         stt_model="mlx-community/whisper-large-v3-turbo-asr-fp16",
         llm_model="Qwen/Qwen2.5-0.5B-Instruct-4bit",
         tts_model="mlx-community/csm-1b-fp16",
     ):
+        if silence_threshold is not None:
+            warnings.warn(
+                "silence_threshold is deprecated and has no effect. "
+                "VAD is now handled by silero and Smart Turn. "
+                "See smart_turn_trigger_silence_ms",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if silence_duration is not None:
+            warnings.warn(
+                "silence_duration is deprecated and has no effect. "
+                "VAD is now handled by silero and Smart Turn. "
+                "See smart_turn_trigger_silence_ms",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         self.silence_threshold = silence_threshold
         self.silence_duration = silence_duration
         self.input_sample_rate = input_sample_rate
@@ -44,30 +61,28 @@ class VoicePipeline:
         self.llm_model = llm_model
         self.tts_model = tts_model
 
-        self.vad = webrtcvad.Vad(vad_mode)
+        self.vad = load_vad("mlx-community/silero-vad")
+        self.vad_threshold = 0.5
+
+        # Rolling buffer of current turn audio (float32 arrays), capped at 8s
+        self.turn_audio_buffer = []
+        self.max_buffer_samples = 16000 * 8  # 8 seconds at 16kHz
+
+        # Smart Turn endpoint detector
+        self.smart_turn = load_vad("mlx-community/smart-turn-v3", strict=True)
+        self.smart_turn_threshold = 0.5
+        self.smart_turn_trigger_silence_ms = smart_turn_trigger_silence_ms
 
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
         self.output_audio_queue = asyncio.Queue(maxsize=50)
 
-        self.mlx_lock = asyncio.Lock()
-
-    async def init_models(self):
-        logger.info(f"Loading text generation model: {self.llm_model}")
-        self.llm, self.tokenizer = await asyncio.to_thread(
-            lambda: load_llm(self.llm_model)
-        )
-
-        logger.info(f"Loading text-to-speech model: {self.tts_model}")
-        self.tts = await asyncio.to_thread(lambda: load_tts(self.tts_model))
-
-        logger.info(f"Loading speech-to-text model: {self.stt_model}")
-        self.stt = Whisper.from_pretrained(self.stt_model)
+        self.llm_loaded = asyncio.Event()
+        self.tts_loaded = asyncio.Event()
 
     async def start(self):
+        self.player = AudioPlayer(sample_rate=self.output_sample_rate)
         self.loop = asyncio.get_running_loop()
-
-        await self.init_models()
 
         tasks = [
             asyncio.create_task(self._listener()),
@@ -83,35 +98,27 @@ class VoicePipeline:
 
     # speech detection and transcription
 
-    def _is_silent(self, audio_data):
-        if isinstance(audio_data, bytes):
-            audio_np = np.frombuffer(audio_data, dtype=np.int16)
-            audio_np = (
-                audio_np.astype(np.float32) / 32768.0
-            )  # Normalize if input is bytes
-        else:
-            audio_np = audio_data
-
-        # Ensure audio_np is float32 for energy calculation.
-        audio_np = audio_np.astype(np.float32)
-
-        energy = np.linalg.norm(audio_np) / np.sqrt(audio_np.size)
-        return energy < self.silence_threshold
-
-    def _voice_activity_detection(self, frame):
-        try:
-            return self.vad.is_speech(frame, self.input_sample_rate)
-        except ValueError:
-            # fall back to energy-based detection
-            return not self._is_silent(frame)
+    def _voice_activity_detection(self, frame_np: np.ndarray):
+        """Frame must be float32, 512 samples at 16kHz."""
+        prob, self.vad_state = self.vad.feed(
+            mx.array(frame_np), self.vad_state, sample_rate=16000
+        )
+        return float(prob.item()) > self.vad_threshold
 
     async def _listener(self):
-        frame_size = int(self.input_sample_rate * (self.frame_duration_ms / 1000.0))
+        frame_size = 512  # Silero expects 512 samples at 16kHz
+        self.vad_state = self.vad.initial_state(sample_rate=16000)
+
+        logger.info(f"Loading speech-to-text model: {self.stt_model}")
+        self.stt = load_stt(self.stt_model)
+        await self.tts_loaded.wait()
+        await self.llm_loaded.wait()
+
         stream = sd.InputStream(
             samplerate=self.input_sample_rate,
             blocksize=frame_size,
             channels=1,
-            dtype="int16",
+            dtype="float32",
             callback=self._sd_callback,
         )
         stream.start()
@@ -120,10 +127,11 @@ class VoicePipeline:
 
         frames = []
         silent_frames = 0
-        frames_until_silence = int(
-            self.silence_duration * 1000 / self.frame_duration_ms
+        frames_until_smart_turn = int(
+            self.smart_turn_trigger_silence_ms / self.frame_duration_ms
         )
         speaking_detected = False
+        smart_turn_evaluated = False  # Track if we've already asked Smart Turn
 
         try:
             while True:
@@ -133,7 +141,12 @@ class VoicePipeline:
                 if is_speech:
                     speaking_detected = True
                     silent_frames = 0
+                    smart_turn_evaluated = False  # Reset — new speech
                     frames.append(frame)
+
+                    # Buffer audio for Smart Turn analysis (Step 2)
+                    self.turn_audio_buffer.append(frame)
+                    self._trim_turn_buffer()
 
                     # Cancel the current TTS task
                     if hasattr(self, "current_tts_task") and self.current_tts_task:
@@ -146,16 +159,53 @@ class VoicePipeline:
                     silent_frames += 1
                     frames.append(frame)
 
-                    if silent_frames > frames_until_silence:
-                        # Process the voice input
-                        if frames:
+                    # Also buffer trailing silence for Smart Turn context
+                    self.turn_audio_buffer.append(frame)
+                    self._trim_turn_buffer()
 
-                            logger.info("Processing voice input...")
-                            await self._process_audio(frames)
+                    if (
+                        silent_frames > frames_until_smart_turn
+                        and not smart_turn_evaluated
+                    ):
+                        smart_turn_evaluated = True
 
-                        frames = []
-                        speaking_detected = False
-                        silent_frames = 0
+                        # Ask Smart Turn: has the user finished?
+                        turn_audio = np.concatenate(self.turn_audio_buffer)
+                        result = self.smart_turn.predict_endpoint(
+                            turn_audio,
+                            sample_rate=16000,
+                            threshold=self.smart_turn_threshold,
+                        )
+
+                        if result.prediction == 1:
+                            # Turn is complete → send to STT
+                            logger.info(
+                                "Smart Turn: turn complete (p=%.2f)", result.probability
+                            )
+                            if frames:
+                                logger.info("Processing voice input...")
+                                text = self._process_audio(frames)
+                                if text:
+                                    logger.info(f"Transcribed: {text}")
+                                    await self.transcription_queue.put([text, True])
+
+                            frames = []
+                            self.turn_audio_buffer = []
+                            speaking_detected = False
+                            silent_frames = 0
+                        else:
+                            # Turn is incomplete → keep listening
+                            logger.info(
+                                "Smart Turn: turn incomplete (p=%.2f), keeping listener open",
+                                result.probability,
+                            )
+                            if frames:
+                                logger.info("Processing partial voice input...")
+                                text = self._process_audio(frames)
+                                if text:
+                                    logger.info(f"Transcribed: {text}")
+                                    await self.transcription_queue.put([text, False])
+                            # Do NOT reset speaking_detected — stay in "listening" state
         except (asyncio.CancelledError, KeyboardInterrupt):
             stream.stop()
             stream.close()
@@ -165,7 +215,7 @@ class VoicePipeline:
             stream.close()
 
     def _sd_callback(self, indata, frames, _time, status):
-        data = indata.reshape(-1).tobytes()
+        data = indata.reshape(-1).astype(np.float32)
 
         def _enqueue():
             try:
@@ -175,34 +225,34 @@ class VoicePipeline:
 
         self.loop.call_soon_threadsafe(_enqueue)
 
-    async def _process_audio(self, frames):
-        audio = (
-            np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float32) / 32768.0
-        )
+    def _trim_turn_buffer(self):
+        """Trim turn_audio_buffer to max_buffer_samples (oldest frames drop off)."""
+        total_samples = sum(f.size for f in self.turn_audio_buffer)
+        while (
+            total_samples > self.max_buffer_samples and len(self.turn_audio_buffer) > 1
+        ):
+            total_samples -= self.turn_audio_buffer[0].size
+            self.turn_audio_buffer.pop(0)
 
-        async with self.mlx_lock:
-            result = await asyncio.to_thread(self.stt.generate, mx.array(audio))
-        text = result.text.strip()
+    def _process_audio(self, frames):
+        audio = np.concatenate(frames)
 
-        if text:
-            logger.info(f"Transcribed: {text}")
-            await self.transcription_queue.put(text)
+        result = self.stt.generate(mx.array(audio))
+        return result.text.strip()
 
     # response generation
 
     async def _response_processor(self):
+        logger.info(f"Loading text generation model: {self.llm_model}")
+        self.llm, self.tokenizer = load_llm(self.llm_model)
+        self.llm_loaded.set()
         while True:
-            text = await self.transcription_queue.get()
-            await self._generate_response(text)
+            text, turn_complete = await self.transcription_queue.get()
+            if turn_complete:
+                await self._generate_response(text)
             self.transcription_queue.task_done()
 
     async def _generate_response(self, text):
-        def _get_llm_response(llm, tokenizer, messages, *, verbose=False):
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            return generate_text(llm, tokenizer, prompt, verbose=verbose).strip()
-
         try:
             logger.info("Generating response...")
 
@@ -213,10 +263,14 @@ class VoicePipeline:
                 },
                 {"role": "user", "content": text},
             ]
-            async with self.mlx_lock:
-                response_text = await asyncio.to_thread(
-                    _get_llm_response, self.llm, self.tokenizer, messages, verbose=False
-                )
+
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+
+            response_text = generate_text(
+                self.llm, self.tokenizer, prompt, verbose=False
+            ).strip()
 
             logger.info(f"Generated response: {response_text}")
 
@@ -237,29 +291,20 @@ class VoicePipeline:
         """
         loop = self.loop
 
-        def _tts_stream(tts, txt, rate, queue, cancel_ev: asyncio.Event):
-            # This runs in a worker thread, so we *must* poll a thread‑safe flag.
-            for chunk in tts.generate(
-                txt,
-                sample_rate=rate,
+        try:
+            for chunk in self.tts.generate(
+                text,
+                sample_rate=self.output_sample_rate,
                 stream=True,
                 streaming_interval=self.streaming_interval,
                 verbose=False,
             ):
-                if cancel_ev.is_set():  # <-- stop immediately
+                if cancel_event.is_set():  # <-- stop immediately
                     break
-                loop.call_soon_threadsafe(queue.put_nowait, chunk.audio)
-
-        try:
-            async with self.mlx_lock:
-                await asyncio.to_thread(
-                    _tts_stream,
-                    self.tts,
-                    text,
-                    self.output_sample_rate,
-                    self.output_audio_queue,
-                    cancel_event,
+                loop.call_soon_threadsafe(
+                    self.output_audio_queue.put_nowait, chunk.audio
                 )
+
         except asyncio.CancelledError:
             # The coroutine itself was cancelled from outside → just exit cleanly.
             pass
@@ -267,8 +312,9 @@ class VoicePipeline:
             logger.error("Speech synthesis error: %s", exc)
 
     async def _audio_output_processor(self):
-        self.player = AudioPlayer(sample_rate=self.output_sample_rate)
-
+        logger.info(f"Loading text-to-speech model: {self.tts_model}")
+        self.tts = load_tts(self.tts_model)  # pyright: ignore[reportArgumentType]
+        self.tts_loaded.set()
         try:
             while True:
                 audio = await self.output_audio_queue.get()
@@ -296,12 +342,17 @@ async def main():
         default="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
         help="LLM model",
     )
-    parser.add_argument("--vad_mode", type=int, default=3, help="VAD mode")
     parser.add_argument(
-        "--silence_duration", type=float, default=1.5, help="Silence duration"
+        "--silence_duration", type=float, default=None, help="Deprecated, no effect"
     )
     parser.add_argument(
-        "--silence_threshold", type=float, default=0.03, help="Silence threshold"
+        "--silence_threshold", type=float, default=None, help="Deprecated, no effect"
+    )
+    parser.add_argument(
+        "--smart_turn_trigger_silence_ms",
+        type=int,
+        default=500,
+        help="Silence duration (ms) before asking Smart Turn",
     )
     parser.add_argument(
         "--streaming_interval", type=int, default=3, help="Streaming interval"
@@ -312,10 +363,10 @@ async def main():
         stt_model=args.stt_model,
         tts_model=args.tts_model,
         llm_model=args.llm_model,
-        vad_mode=args.vad_mode,
         silence_duration=args.silence_duration,
         silence_threshold=args.silence_threshold,
         streaming_interval=args.streaming_interval,
+        smart_turn_trigger_silence_ms=args.smart_turn_trigger_silence_ms,
     )
     await pipeline.start()
 
