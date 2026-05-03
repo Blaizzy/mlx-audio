@@ -418,7 +418,10 @@ class Model(nn.Module):
                     return False
                 # Check if we have quantized weights (scales) for this path
                 # Need to check in the appropriate weight dict based on prefix
-                if path.startswith("t3."):
+                if path.startswith("ve."):
+                    weight_path = path[3:]  # Remove "ve." prefix
+                    return f"{weight_path}.scales" in ve_weights
+                elif path.startswith("t3."):
                     weight_path = path[3:]  # Remove "t3." prefix
                     return f"{weight_path}.scales" in t3_weights
                 elif path.startswith("s3gen."):

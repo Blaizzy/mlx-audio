@@ -1,5 +1,6 @@
 import importlib.resources
 import importlib.util
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1468,6 +1469,61 @@ class TestChatterboxModel(unittest.TestCase):
         self.assertIn("ve.lstm.weight", result)
         self.assertIn("t3.tfmr.weight", result)
         self.assertIn("s3gen.flow.weight", result)
+
+
+class TestChatterboxFromPretrainedQuantization(unittest.TestCase):
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.nn.quantize")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.mx.load")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.T3")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.S3Token2Wav")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.VoiceEncoder")
+    @patch("mlx_audio.tts.models.chatterbox.chatterbox.S3TokenizerV2")
+    def test_from_pretrained_quantizes_ve_projection_when_quantized_weights_exist(
+        self,
+        mock_s3_tokenizer,
+        mock_ve_class,
+        mock_s3gen_class,
+        mock_t3_class,
+        mock_mx_load,
+        mock_quantize,
+    ):
+        """Regression test for chatterbox-4bit loader: ve.proj must be quantized when scales exist."""
+        from mlx_audio.tts.models.chatterbox.chatterbox import Model
+
+        class StopAfterQuantize(Exception):
+            pass
+
+        quantizable_module = type(
+            "QuantizableModule", (), {"to_quantized": lambda self: None}
+        )()
+        non_quantizable_module = object()
+
+        def fake_quantize(model, group_size, bits, class_predicate):
+            self.assertEqual(group_size, 64)
+            self.assertEqual(bits, 4)
+            self.assertTrue(class_predicate("ve.proj", quantizable_module))
+            self.assertFalse(class_predicate("ve.lstm.layers.0", quantizable_module))
+            self.assertFalse(class_predicate("ve.proj", non_quantizable_module))
+            self.assertFalse(class_predicate("t3.tfmr", quantizable_module))
+            raise StopAfterQuantize
+
+        mock_quantize.side_effect = fake_quantize
+        mock_mx_load.return_value = {
+            "ve.proj.weight": mx.zeros((256, 32), dtype=mx.uint32),
+            "ve.proj.scales": mx.zeros((256, 4)),
+            "ve.proj.biases": mx.zeros((256, 4)),
+            "ve.proj.bias": mx.zeros((256,)),
+        }
+
+        with TemporaryDirectory() as tmpdir:
+            model_dir = Path(tmpdir)
+            (model_dir / "model.safetensors").write_bytes(b"stub")
+            (model_dir / "config.json").write_text(
+                json.dumps({"quantization": {"bits": 4, "group_size": 64}})
+            )
+
+            with self.assertRaises(StopAfterQuantize):
+                Model.from_pretrained(model_dir)
 
 
 class TestChatterboxTurboConfig(unittest.TestCase):
