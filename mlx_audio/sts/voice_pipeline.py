@@ -112,6 +112,7 @@ class VoicePipeline:
             self.silence_duration * 1000 / self.frame_duration_ms
         )
         speaking_detected = False
+        smart_turn_evaluated = False  # Track if we've already asked Smart Turn
 
         try:
             while True:
@@ -121,6 +122,7 @@ class VoicePipeline:
                 if is_speech:
                     speaking_detected = True
                     silent_frames = 0
+                    smart_turn_evaluated = False  # Reset — new speech
                     frames.append(frame)
 
                     # Buffer audio for Smart Turn analysis (Step 2)
@@ -138,20 +140,44 @@ class VoicePipeline:
                     silent_frames += 1
                     frames.append(frame)
 
-                    if silent_frames > frames_until_silence:
-                        # Process the voice input
-                        if frames:
+                    # Also buffer trailing silence for Smart Turn context
+                    self.turn_audio_buffer.append(frame)
+                    self._trim_turn_buffer()
 
-                            logger.info("Processing voice input...")
-                            text = self._process_audio(frames)
-                            if text:
-                                logger.info(f"Transcribed: {text}")
-                                await self.transcription_queue.put(text)
+                    if silent_frames > frames_until_silence and not smart_turn_evaluated:
+                        smart_turn_evaluated = True
 
-                        frames = []
-                        self.turn_audio_buffer = []
-                        speaking_detected = False
-                        silent_frames = 0
+                        # Ask Smart Turn: has the user finished?
+                        turn_audio = np.concatenate(self.turn_audio_buffer)
+                        result = self.smart_turn.predict_endpoint(
+                            turn_audio,
+                            sample_rate=16000,
+                            threshold=self.smart_turn_threshold,
+                        )
+
+                        if result.prediction == 1:
+                            # Turn is complete → send to STT
+                            logger.info(
+                                "Smart Turn: turn complete (p=%.2f)", result.probability
+                            )
+                            if frames:
+                                logger.info("Processing voice input...")
+                                text = self._process_audio(frames)
+                                if text:
+                                    logger.info(f"Transcribed: {text}")
+                                    await self.transcription_queue.put(text)
+
+                            frames = []
+                            self.turn_audio_buffer = []
+                            speaking_detected = False
+                            silent_frames = 0
+                        else:
+                            # Turn is incomplete → keep listening
+                            logger.info(
+                                "Smart Turn: turn incomplete (p=%.2f), keeping listener open",
+                                result.probability,
+                            )
+                            # Do NOT reset speaking_detected — stay in "listening" state
         except (asyncio.CancelledError, KeyboardInterrupt):
             stream.stop()
             stream.close()
