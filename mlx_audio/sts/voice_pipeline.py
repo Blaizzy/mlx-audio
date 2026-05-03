@@ -46,6 +46,10 @@ class VoicePipeline:
         self.vad = load_vad("mlx-community/silero-vad")
         self.vad_threshold = 0.5
 
+        # Rolling buffer of current turn audio (float32 arrays), capped at 8s
+        self.turn_audio_buffer = []
+        self.max_buffer_samples = 16000 * 8  # 8 seconds at 16kHz
+
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
         self.output_audio_queue = asyncio.Queue(maxsize=50)
@@ -115,6 +119,10 @@ class VoicePipeline:
                     silent_frames = 0
                     frames.append(frame)
 
+                    # Buffer audio for Smart Turn analysis (Step 2)
+                    self.turn_audio_buffer.append(frame)
+                    self._trim_turn_buffer()
+
                     # Cancel the current TTS task
                     if hasattr(self, "current_tts_task") and self.current_tts_task:
                         # Signal the generator loop to stop
@@ -137,6 +145,7 @@ class VoicePipeline:
                                 await self.transcription_queue.put(text)
 
                         frames = []
+                        self.turn_audio_buffer = []
                         speaking_detected = False
                         silent_frames = 0
         except (asyncio.CancelledError, KeyboardInterrupt):
@@ -157,6 +166,13 @@ class VoicePipeline:
                 return
 
         self.loop.call_soon_threadsafe(_enqueue)
+
+    def _trim_turn_buffer(self):
+        """Trim turn_audio_buffer to max_buffer_samples (oldest frames drop off)."""
+        total_samples = sum(f.size for f in self.turn_audio_buffer)
+        while total_samples > self.max_buffer_samples and len(self.turn_audio_buffer) > 1:
+            total_samples -= self.turn_audio_buffer[0].size
+            self.turn_audio_buffer.pop(0)
 
     def _process_audio(self, frames):
         audio = np.concatenate(frames)
