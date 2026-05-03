@@ -343,10 +343,10 @@ async def main():
         help="LLM model",
     )
     parser.add_argument(
-        "--silence_duration", type=float, default=1.5, help="Silence duration"
+        "--silence_duration", type=float, default=None, help="Deprecated, no effect"
     )
     parser.add_argument(
-        "--silence_threshold", type=float, default=0.03, help="Silence threshold"
+        "--silence_threshold", type=float, default=None, help="Deprecated, no effect"
     )
     parser.add_argument(
         "--smart_turn_trigger_silence_ms",
