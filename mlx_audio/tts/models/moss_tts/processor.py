@@ -27,6 +27,7 @@ class UserMessage(Message):
     sound_event: Optional[str] = None
     ambient_sound: Optional[str] = None
     language: Optional[str] = None
+    scene: Optional[str] = None
 
     def __post_init__(self):
         template = """<user_inst>
@@ -44,6 +45,8 @@ class UserMessage(Message):
 {ambient_sound}
 - Language:
 {language}
+- Scene:
+{scene}
 - Text:
 {text}
 </user_inst>"""
@@ -54,7 +57,9 @@ class UserMessage(Message):
         elif isinstance(self.reference, list):
             reference_parts = []
             for speaker_idx, speaker_reference in enumerate(self.reference):
-                if speaker_reference is not None:
+                if speaker_reference is None:
+                    reference_parts.append(f"[S{speaker_idx + 1}]: None")
+                else:
                     reference_parts.append(
                         f"[S{speaker_idx + 1}]:\n{AUDIO_PLACEHOLDER}"
                     )
@@ -71,6 +76,7 @@ class UserMessage(Message):
             .replace("{sound_event}", str(self.sound_event))
             .replace("{ambient_sound}", str(self.ambient_sound))
             .replace("{language}", str(self.language))
+            .replace("{scene}", str(self.scene))
             .replace("{text}", str(self.text))
         )
         self._audio_codes_list = audio_codes_list
@@ -105,6 +111,7 @@ USER_MESSAGE_FIELDS = (
     "sound_event",
     "ambient_sound",
     "language",
+    "scene",
 )
 
 
@@ -170,8 +177,8 @@ class MossTTSDelayProcessor:
             return token[0] if token else ""
         return str(token)
 
-    @staticmethod
     def build_user_message(
+        self,
         text: Optional[str] = None,
         reference: Optional[list[Optional[Any]]] = None,
         instruction: Optional[str] = None,
@@ -180,6 +187,7 @@ class MossTTSDelayProcessor:
         sound_event: Optional[str] = None,
         ambient_sound: Optional[str] = None,
         language: Optional[str] = None,
+        scene: Optional[str] = None,
     ) -> dict[str, Any]:
         if reference is not None and not isinstance(reference, list):
             reference = [reference]
@@ -192,6 +200,7 @@ class MossTTSDelayProcessor:
             sound_event=sound_event,
             ambient_sound=ambient_sound,
             language=language,
+            scene=scene,
         ).to_dict()
 
     @staticmethod
@@ -324,11 +333,8 @@ class MossTTSDelayProcessor:
             audio_gen_slot_token = self.audio_assistant_gen_slot_token
             audio_delay_slot_token = self.audio_assistant_delay_slot_token
 
-        n_vq = (
-            int(audio_codes_list[0].shape[1])
-            if audio_codes_list
-            else self.model_config.n_vq
-        )
+        n_vq = int(self.model_config.n_vq)
+        audio_codes_list = self._normalize_audio_codes_list(audio_codes_list, n_vq)
         if len(audio_codes_list) > 1 and AUDIO_PLACEHOLDER in content:
             content, audio_codes_list = self._merge_consecutive_audio_placeholders(
                 content, audio_codes_list
@@ -401,6 +407,27 @@ class MossTTSDelayProcessor:
         if text_codes.shape[0] != delay_audio_codes.shape[0]:
             text_codes = text_codes[: delay_audio_codes.shape[0]]
         return mx.concatenate([text_codes[:, None], delay_audio_codes], axis=1)
+
+    @staticmethod
+    def _normalize_audio_codes_list(
+        audio_codes_list: list[mx.array],
+        n_vq: int,
+    ) -> list[mx.array]:
+        normalized = []
+        for audio_codes in audio_codes_list:
+            if audio_codes.ndim != 2:
+                raise ValueError(
+                    f"Expected audio codes shape [frames, n_vq], got {audio_codes.shape}"
+                )
+            if audio_codes.shape[1] < n_vq and audio_codes.shape[0] >= n_vq:
+                audio_codes = audio_codes.transpose(1, 0)
+            if audio_codes.shape[1] < n_vq:
+                raise ValueError(
+                    f"audio_codes channels ({audio_codes.shape[1]}) < "
+                    f"model n_vq ({n_vq})"
+                )
+            normalized.append(audio_codes[:, :n_vq].astype(mx.int32))
+        return normalized
 
     def __call__(
         self,

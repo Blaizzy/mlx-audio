@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Generator, Sequence
@@ -20,6 +21,22 @@ from .processor import (
 from .sampling import sample_token
 
 _INT64_MAX = 9223372036854775807
+
+
+def _as_reference_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _collapse_reference_list(values: list):
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return values
 
 
 class MossTTSRMSNorm(nn.Module):
@@ -256,6 +273,7 @@ class Model(nn.Module):
             )
         self.tokenizer = None
         self.audio_tokenizer = None
+        self.generation_config: dict[str, object] = {}
 
     @property
     def sample_rate(self) -> int:
@@ -282,7 +300,29 @@ class Model(nn.Module):
             )
         except Exception:
             model.tokenizer = None
+        model.generation_config = cls._load_generation_config(model_path)
         return model
+
+    @staticmethod
+    def _load_generation_config(model_path: Path) -> dict[str, object]:
+        generation_config_path = model_path / "generation_config.json"
+        if not generation_config_path.exists():
+            return {}
+        try:
+            with open(generation_config_path, encoding="utf-8") as f:
+                config = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return config if isinstance(config, dict) else {}
+
+    def _generation_config_value(self, key: str, default):
+        value = self.generation_config.get(key, default)
+        return default if value is None else value
+
+    def _processor(self):
+        if self.config.is_local_transformer:
+            return MossTTSLocalProcessor(self.tokenizer, self.config)
+        return MossTTSDelayProcessor(self.tokenizer, self.config)
 
     def model_quant_predicate(self, path: str, module) -> bool:
         del module
@@ -874,11 +914,11 @@ class Model(nn.Module):
         self,
         text: str,
         ref_audio=None,
-        ref_text: str | None = None,
-        prompt_audio_codes: mx.array | None = None,
+        ref_text: str | list[str] | None = None,
+        prompt_audio_codes: mx.array | list[mx.array] | None = None,
         mode: str = "generation",
         stream: bool = False,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         if stream:
@@ -887,33 +927,50 @@ class Model(nn.Module):
             raise ValueError("Tokenizer is not initialized.")
 
         started_at = time.perf_counter()
-        processor = (
-            MossTTSLocalProcessor(self.tokenizer, self.config)
-            if self.config.is_local_transformer
-            else MossTTSDelayProcessor(self.tokenizer, self.config)
-        )
+        processor = self._processor()
 
         if prompt_audio_codes is None and ref_audio is not None:
-            prompt_audio_codes = self.encode_reference_audio(
-                ref_audio,
-                sample_rate=kwargs.get("ref_audio_sample_rate"),
-                num_quantizers=self.config.n_vq,
-                source=kwargs.get("audio_tokenizer_source"),
-            )
-        elif prompt_audio_codes is not None and not isinstance(
-            prompt_audio_codes, mx.array
-        ):
-            prompt_audio_codes = mx.array(prompt_audio_codes, dtype=mx.int32)
+            encoded_audio_codes = [
+                self.encode_reference_audio(
+                    ref_audio_item,
+                    sample_rate=kwargs.get("ref_audio_sample_rate"),
+                    num_quantizers=self.config.n_vq,
+                    source=kwargs.get("audio_tokenizer_source"),
+                )
+                for ref_audio_item in _as_reference_list(ref_audio)
+            ]
+            prompt_audio_codes = _collapse_reference_list(encoded_audio_codes)
+        elif prompt_audio_codes is not None:
+            if isinstance(prompt_audio_codes, (list, tuple)):
+                prompt_audio_codes = [
+                    (
+                        item
+                        if isinstance(item, mx.array)
+                        else mx.array(item, dtype=mx.int32)
+                    )
+                    for item in prompt_audio_codes
+                ]
+            elif not isinstance(prompt_audio_codes, mx.array):
+                prompt_audio_codes = mx.array(prompt_audio_codes, dtype=mx.int32)
 
         normalized_mode = str(mode or "generation").strip().lower()
         if normalized_mode in {"voice_clone", "direct"}:
             normalized_mode = "generation"
         if normalized_mode not in {"generation", "continuation"}:
             raise ValueError("mode must be generation or continuation")
+        ref_text_values = _as_reference_list(ref_text)
+        if normalized_mode == "continuation" and len(ref_text_values) > 1:
+            raise ValueError("MOSS-TTS continuation mode accepts one ref_text value.")
+        prompt_audio_codes_list = _as_reference_list(prompt_audio_codes)
+        if normalized_mode == "continuation" and len(prompt_audio_codes_list) > 1:
+            raise ValueError(
+                "MOSS-TTS continuation mode accepts one reference audio segment."
+            )
+        ref_text_value = ref_text_values[0] if ref_text_values else ""
 
         user_kwargs = {
             "text": (
-                text if normalized_mode == "generation" else (ref_text or "") + text
+                text if normalized_mode == "generation" else ref_text_value + text
             ),
             "tokens": kwargs.get("tokens"),
             "instruction": kwargs.get("instruction"),
@@ -921,9 +978,10 @@ class Model(nn.Module):
             "sound_event": kwargs.get("sound_event"),
             "ambient_sound": kwargs.get("ambient_sound"),
             "language": kwargs.get("language"),
+            "scene": kwargs.get("scene"),
         }
         if normalized_mode == "generation" and prompt_audio_codes is not None:
-            user_kwargs["reference"] = [prompt_audio_codes]
+            user_kwargs["reference"] = prompt_audio_codes_list
 
         if normalized_mode == "generation":
             conversations = [processor.build_user_message(**user_kwargs)]
@@ -935,7 +993,7 @@ class Model(nn.Module):
             conversations = [
                 processor.build_user_message(**user_kwargs),
                 processor.build_assistant_message(
-                    audio_codes_list=[prompt_audio_codes]
+                    audio_codes_list=prompt_audio_codes_list
                 ),
             ]
 
@@ -943,7 +1001,7 @@ class Model(nn.Module):
         if self.config.is_local_transformer:
             outputs = self.generate_local_ids(
                 batch["input_ids"],
-                max_new_tokens=int(max_tokens),
+                max_new_tokens=int(max_tokens if max_tokens is not None else 4096),
                 text_temperature=float(kwargs.get("text_temperature", 1.5)),
                 text_top_p=float(kwargs.get("text_top_p", 1.0)),
                 text_top_k=int(kwargs.get("text_top_k", 50)),
@@ -959,18 +1017,48 @@ class Model(nn.Module):
                 n_vq_for_inference=kwargs.get("n_vq_for_inference"),
             )
         else:
+            max_new_tokens = int(
+                max_tokens
+                if max_tokens is not None
+                else self._generation_config_value("max_new_tokens", 4096)
+            )
+            text_temperature = float(
+                kwargs.get(
+                    "text_temperature",
+                    self._generation_config_value("temperature", 1.5),
+                )
+            )
+            text_top_p = float(
+                kwargs.get("text_top_p", self._generation_config_value("top_p", 1.0))
+            )
+            audio_temperature = float(
+                kwargs.get(
+                    "audio_temperature",
+                    self._generation_config_value("temperature", 1.7),
+                )
+            )
+            audio_top_p = float(
+                kwargs.get("audio_top_p", self._generation_config_value("top_p", 0.8))
+            )
+            audio_top_k = int(
+                kwargs.get("audio_top_k", self._generation_config_value("top_k", 25))
+            )
+            audio_repetition_penalty = float(
+                kwargs.get(
+                    "audio_repetition_penalty",
+                    self._generation_config_value("repetition_penalty", 1.0),
+                )
+            )
             outputs = self.generate_delay_pattern_ids(
                 batch["input_ids"],
-                max_new_tokens=int(max_tokens),
-                text_temperature=float(kwargs.get("text_temperature", 1.5)),
-                text_top_p=float(kwargs.get("text_top_p", 1.0)),
+                max_new_tokens=max_new_tokens,
+                text_temperature=text_temperature,
+                text_top_p=text_top_p,
                 text_top_k=int(kwargs.get("text_top_k", 50)),
-                audio_temperature=float(kwargs.get("audio_temperature", 1.7)),
-                audio_top_p=float(kwargs.get("audio_top_p", 0.8)),
-                audio_top_k=int(kwargs.get("audio_top_k", 25)),
-                audio_repetition_penalty=float(
-                    kwargs.get("audio_repetition_penalty", 1.0)
-                ),
+                audio_temperature=audio_temperature,
+                audio_top_p=audio_top_p,
+                audio_top_k=audio_top_k,
+                audio_repetition_penalty=audio_repetition_penalty,
             )
         audio, token_count = self._decode_generated_audio(
             outputs,

@@ -1,7 +1,9 @@
 import argparse
+import inspect
 import os
 import sys
-from typing import Optional, Tuple, Union
+from os import PathLike
+from typing import Any, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -119,10 +121,33 @@ def write_joined_audio(
     audio_write(file_name, audio, sample_rate, format=audio_format)
 
 
+def _as_reference_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return [value]
+
+
+def _collapse_reference_list(values: list[Any]) -> Any:
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return values
+
+
+def _model_accepts_ref_text(model: nn.Module) -> bool:
+    try:
+        return "ref_text" in inspect.signature(model.generate).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
-    max_tokens: int = 1200,
+    max_tokens: Optional[int] = 1200,
     voice: str = "af_heart",
     prompt: Optional[str] = None,
     instruct: Optional[str] = None,
@@ -131,8 +156,8 @@ def generate_audio(
     cfg_scale: Optional[float] = None,
     ddpm_steps: Optional[int] = None,
     sigma: Optional[float] = None,
-    ref_audio: Optional[str] = None,
-    ref_text: Optional[str] = None,
+    ref_audio: Optional[Union[str, list[str]]] = None,
+    ref_text: Optional[Union[str, list[str]]] = None,
     stt_model: Optional[
         Union[str, nn.Module]
     ] = "mlx-community/whisper-large-v3-turbo-asr-fp16",
@@ -181,41 +206,73 @@ def generate_audio(
         if model is None:
             raise ValueError("Model path or model instance must be provided.")
 
-        if stt_model is None and (ref_audio and ref_text is None):
-            raise ValueError(
-                "STT model path or model instance must be provided when ref_text is missing."
-            )
-
         if isinstance(model, str):
             # Load model
             model = load_model(model_path=model)
 
-        # Load reference audio for voice matching if specified
-        if ref_audio:
-            if not os.path.exists(ref_audio):
-                raise FileNotFoundError(f"Reference audio file not found: {ref_audio}")
+        ref_audio_values = _as_reference_list(ref_audio)
+        ref_text_values = _as_reference_list(ref_text)
+        if (
+            ref_audio_values
+            and ref_text_values
+            and len(ref_text_values) != len(ref_audio_values)
+        ):
+            raise ValueError("ref_audio and ref_text lists must have the same length.")
+        if len(ref_text_values) > 1 and not ref_audio_values:
+            raise ValueError(
+                "Multiple ref_text values require matching ref_audio values."
+            )
 
+        # Load reference audio for voice matching if specified
+        if ref_audio_values:
             normalize = False
             if hasattr(model, "model_type") and model.model_type == "spark":
                 normalize = True
 
-            ref_audio = load_audio(
-                ref_audio, sample_rate=model.sample_rate, volume_normalize=normalize
-            )
-            if not ref_text:
-                import inspect
+            loaded_ref_audio = []
+            for ref_audio_item in ref_audio_values:
+                if isinstance(ref_audio_item, (str, PathLike)):
+                    ref_audio_path = os.fspath(ref_audio_item)
+                    if not os.path.exists(ref_audio_path):
+                        raise FileNotFoundError(
+                            f"Reference audio file not found: {ref_audio_path}"
+                        )
+                    loaded_ref_audio.append(
+                        load_audio(
+                            ref_audio_path,
+                            sample_rate=model.sample_rate,
+                            volume_normalize=normalize,
+                        )
+                    )
+                else:
+                    loaded_ref_audio.append(ref_audio_item)
+            ref_audio = _collapse_reference_list(loaded_ref_audio)
 
-                if "ref_text" in inspect.signature(model.generate).parameters:
-                    print("Ref_text not found. Transcribing ref_audio...")
-                    from mlx_audio.stt import load as load_stt_model
+            if ref_text_values:
+                ref_text = _collapse_reference_list(ref_text_values)
+            elif _model_accepts_ref_text(model):
+                if stt_model is None:
+                    raise ValueError(
+                        "STT model path or model instance must be provided when "
+                        "ref_text is missing."
+                    )
+                print("Ref_text not found. Transcribing ref_audio...")
+                from mlx_audio.stt import load as load_stt_model
 
-                    if isinstance(stt_model, str):
-                        stt_model = load_stt_model(stt_model)
-                    ref_text = stt_model.generate(ref_audio).text
+                if isinstance(stt_model, str):
+                    stt_model = load_stt_model(stt_model)
+                transcribed_ref_text = [
+                    stt_model.generate(audio).text for audio in loaded_ref_audio
+                ]
 
-                    del stt_model
-                    mx.clear_cache()
-                    print(f"\033[94mRef_text:\033[0m {ref_text}")
+                del stt_model
+                mx.clear_cache()
+                ref_text = _collapse_reference_list(transcribed_ref_text)
+                print(f"\033[94mRef_text:\033[0m {ref_text}")
+            else:
+                ref_text = None
+        elif ref_text_values:
+            ref_text = _collapse_reference_list(ref_text_values)
 
         # Load AudioPlayer
         player = AudioPlayer(sample_rate=model.sample_rate) if play else None
@@ -245,7 +302,6 @@ def generate_audio(
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             temperature=temperature,
-            max_tokens=max_tokens,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
@@ -253,6 +309,8 @@ def generate_audio(
             use_zero_spk_emb=use_zero_spk_emb,
             **kwargs,
         )
+        if max_tokens is not None:
+            gen_kwargs["max_tokens"] = max_tokens
         if prompt is not None:
             gen_kwargs["prompt"] = prompt
         if sigma is not None:
@@ -375,7 +433,7 @@ def parse_args():
     parser.add_argument(
         "--max_tokens",
         type=int,
-        default=1200,
+        default=None,
         help="Maximum number of tokens to generate",
     )
     parser.add_argument(
@@ -443,10 +501,18 @@ def parse_args():
         "--audio_format", type=str, default="wav", help="Output audio format"
     )
     parser.add_argument(
-        "--ref_audio", type=str, default=None, help="Path to reference audio"
+        "--ref_audio",
+        type=str,
+        action="append",
+        default=None,
+        help="Path to reference audio. Repeat for multiple references.",
     )
     parser.add_argument(
-        "--ref_text", type=str, default=None, help="Caption for reference audio"
+        "--ref_text",
+        type=str,
+        action="append",
+        default=None,
+        help="Caption for reference audio. Repeat to match repeated --ref_audio.",
     )
     parser.add_argument(
         "--stt_model",
