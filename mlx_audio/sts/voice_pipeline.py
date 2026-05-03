@@ -165,7 +165,7 @@ class VoicePipeline:
                                 text = self._process_audio(frames)
                                 if text:
                                     logger.info(f"Transcribed: {text}")
-                                    await self.transcription_queue.put(text)
+                                    await self.transcription_queue.put([text, True])
 
                             frames = []
                             self.turn_audio_buffer = []
@@ -177,6 +177,12 @@ class VoicePipeline:
                                 "Smart Turn: turn incomplete (p=%.2f), keeping listener open",
                                 result.probability,
                             )
+                            if frames:
+                                logger.info("Processing partial voice input...")
+                                text = self._process_audio(frames)
+                                if text:
+                                    logger.info(f"Transcribed: {text}")
+                                    await self.transcription_queue.put([text, False])
                             # Do NOT reset speaking_detected — stay in "listening" state
         except (asyncio.CancelledError, KeyboardInterrupt):
             stream.stop()
@@ -217,8 +223,9 @@ class VoicePipeline:
         self.llm, self.tokenizer = load_llm(self.llm_model)
         self.llm_loaded.set()
         while True:
-            text = await self.transcription_queue.get()
-            await self._generate_response(text)
+            text, turn_complete = await self.transcription_queue.get()
+            if turn_complete:
+                await self._generate_response(text)
             self.transcription_queue.task_done()
 
     async def _generate_response(self, text):
