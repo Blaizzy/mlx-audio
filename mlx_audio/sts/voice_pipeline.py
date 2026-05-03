@@ -5,13 +5,13 @@ import logging
 import mlx.core as mx
 import numpy as np
 import sounddevice as sd
-import webrtcvad
 from mlx_lm.generate import generate as generate_text
 from mlx_lm.utils import load as load_llm
 
 from mlx_audio.stt import load as load_stt
 from mlx_audio.tts.audio_player import AudioPlayer
 from mlx_audio.tts.utils import load_model as load_tts
+from mlx_audio.vad import load as load_vad
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -27,8 +27,7 @@ class VoicePipeline:
         input_sample_rate=16_000,
         output_sample_rate=24_000,
         streaming_interval=3,
-        frame_duration_ms=30,
-        vad_mode=3,
+        frame_duration_ms=32,
         stt_model="mlx-community/whisper-large-v3-turbo-asr-fp16",
         llm_model="Qwen/Qwen2.5-0.5B-Instruct-4bit",
         tts_model="mlx-community/csm-1b-fp16",
@@ -44,7 +43,8 @@ class VoicePipeline:
         self.llm_model = llm_model
         self.tts_model = tts_model
 
-        self.vad = webrtcvad.Vad(vad_mode)
+        self.vad = load_vad("mlx-community/silero-vad")
+        self.vad_threshold = 0.5
 
         self.input_audio_queue = asyncio.Queue(maxsize=50)
         self.transcription_queue = asyncio.Queue()
@@ -71,30 +71,17 @@ class VoicePipeline:
 
     # speech detection and transcription
 
-    def _is_silent(self, audio_data):
-        if isinstance(audio_data, bytes):
-            audio_np = np.frombuffer(audio_data, dtype=np.int16)
-            audio_np = (
-                audio_np.astype(np.float32) / 32768.0
-            )  # Normalize if input is bytes
-        else:
-            audio_np = audio_data
-
-        # Ensure audio_np is float32 for energy calculation.
-        audio_np = audio_np.astype(np.float32)
-
-        energy = np.linalg.norm(audio_np) / np.sqrt(audio_np.size)
-        return energy < self.silence_threshold
-
-    def _voice_activity_detection(self, frame):
-        try:
-            return self.vad.is_speech(frame, self.input_sample_rate)
-        except ValueError:
-            # fall back to energy-based detection
-            return not self._is_silent(frame)
+    def _voice_activity_detection(self, frame_np: np.ndarray):
+        """Frame must be float32, 512 samples at 16kHz."""
+        prob, self.vad_state = self.vad.feed(
+            mx.array(frame_np), self.vad_state, sample_rate=16000
+        )
+        return float(prob.item()) > self.vad_threshold
 
     async def _listener(self):
-        frame_size = int(self.input_sample_rate * (self.frame_duration_ms / 1000.0))
+        frame_size = 512  # Silero expects 512 samples at 16kHz
+        self.vad_state = self.vad.initial_state(sample_rate=16000)
+
         logger.info(f"Loading speech-to-text model: {self.stt_model}")
         self.stt = load_stt(self.stt_model)
         await self.tts_loaded.wait()
@@ -104,7 +91,7 @@ class VoicePipeline:
             samplerate=self.input_sample_rate,
             blocksize=frame_size,
             channels=1,
-            dtype="int16",
+            dtype="float32",
             callback=self._sd_callback,
         )
         stream.start()
@@ -161,7 +148,7 @@ class VoicePipeline:
             stream.close()
 
     def _sd_callback(self, indata, frames, _time, status):
-        data = indata.reshape(-1).tobytes()
+        data = indata.reshape(-1).astype(np.float32)
 
         def _enqueue():
             try:
@@ -172,9 +159,7 @@ class VoicePipeline:
         self.loop.call_soon_threadsafe(_enqueue)
 
     def _process_audio(self, frames):
-        audio = (
-            np.frombuffer(b"".join(frames), dtype=np.int16).astype(np.float32) / 32768.0
-        )
+        audio = np.concatenate(frames)
 
         result = self.stt.generate(mx.array(audio))
         return result.text.strip()
@@ -280,7 +265,6 @@ async def main():
         default="mlx-community/Qwen2.5-0.5B-Instruct-4bit",
         help="LLM model",
     )
-    parser.add_argument("--vad_mode", type=int, default=3, help="VAD mode")
     parser.add_argument(
         "--silence_duration", type=float, default=1.5, help="Silence duration"
     )
@@ -296,7 +280,6 @@ async def main():
         stt_model=args.stt_model,
         tts_model=args.tts_model,
         llm_model=args.llm_model,
-        vad_mode=args.vad_mode,
         silence_duration=args.silence_duration,
         silence_threshold=args.silence_threshold,
         streaming_interval=args.streaming_interval,
