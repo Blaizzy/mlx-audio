@@ -455,8 +455,12 @@ class Model(nn.Module):
         return remapped
 
     def _build_conversation(
-        self, prompt_texts: list[str], prompt_tokens: list[mx.array]
+        self,
+        prompt_texts: list[str],
+        prompt_tokens: list[mx.array],
+        instruct: Optional[str] = None,
     ) -> Conversation:
+        style_instruction = instruct.strip() if instruct else ""
         conversation = Conversation()
         if prompt_texts and prompt_tokens:
             tagged_prompt_texts = []
@@ -465,16 +469,23 @@ class Model(nn.Module):
                     tagged_prompt_texts.append(text)
                 else:
                     tagged_prompt_texts.append(f"<|speaker:{idx}|>{text}")
+            system_prompt = (
+                "convert the provided text to speech reference to the following:\n\n"
+            )
+            if style_instruction:
+                system_prompt += f"Style instruction: {style_instruction}\n\n"
+            system_prompt += "Text:\n"
             system_parts = [
-                TextPart(
-                    "convert the provided text to speech reference to the following:\n\nText:\n"
-                ),
+                TextPart(system_prompt),
                 TextPart("\n".join(tagged_prompt_texts)),
                 TextPart("\n\nSpeech:\n"),
                 VQPart(mx.concatenate(prompt_tokens, axis=1)),
             ]
         else:
-            system_parts = [TextPart("convert the provided text to speech")]
+            system_prompt = "convert the provided text to speech"
+            if style_instruction:
+                system_prompt += f"\n\nStyle instruction: {style_instruction}"
+            system_parts = [TextPart(system_prompt)]
 
         conversation.append(
             Message(
@@ -937,6 +948,7 @@ class Model(nn.Module):
         voice: Optional[str] = None,
         ref_audio: Optional[mx.array] = None,
         ref_text: Optional[str] = None,
+        instruct: Optional[str] = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
         top_p: float = 0.7,
@@ -961,7 +973,9 @@ class Model(nn.Module):
             ref_audio, ref_text
         )
 
-        base_conversation = self._build_conversation(prompt_texts, prompt_tokens)
+        base_conversation = self._build_conversation(
+            prompt_texts, prompt_tokens, instruct=instruct
+        )
         batches = self._split_generation_text(text, chunk_length)
 
         conversation = Conversation(list(base_conversation.messages))
@@ -1045,6 +1059,7 @@ class Model(nn.Module):
         voices: Optional[list[Optional[str]]] = None,
         ref_audios: Optional[list[Optional[mx.array]]] = None,
         ref_texts: Optional[list[Optional[str]]] = None,
+        instructs: Optional[list[Optional[str]]] = None,
         max_tokens: int = 1024,
         temperature: float = 0.7,
         top_p: float = 0.7,
@@ -1069,6 +1084,8 @@ class Model(nn.Module):
             ref_audios = kwargs.pop("ref_audio")
         if ref_texts is None and "ref_text" in kwargs:
             ref_texts = kwargs.pop("ref_text")
+        if instructs is None and "instruct" in kwargs:
+            instructs = kwargs.pop("instruct")
         kwargs.clear()
 
         batch_size = len(texts)
@@ -1082,13 +1099,16 @@ class Model(nn.Module):
 
         ref_audio_list = self._normalize_batch_arg("ref_audios", ref_audios, batch_size)
         ref_text_list = self._normalize_batch_arg("ref_texts", ref_texts, batch_size)
+        instruct_list = self._normalize_batch_arg("instructs", instructs, batch_size)
 
         states = []
         for idx, text in enumerate(texts):
             prompt_texts, prompt_tokens = self._prepare_reference_prompt(
                 ref_audio_list[idx], ref_text_list[idx]
             )
-            base_conversation = self._build_conversation(prompt_texts, prompt_tokens)
+            base_conversation = self._build_conversation(
+                prompt_texts, prompt_tokens, instruct=instruct_list[idx]
+            )
             states.append(
                 {
                     "sequence_idx": idx,
