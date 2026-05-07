@@ -499,10 +499,10 @@ class Model(nn.Module):
                 # layout, while PyTorch uses (out_channels, in_channels, kernel_size).
                 # Models converted from PyTorch checkpoints need transposing; models
                 # already saved in MLX-native layout (e.g. bf16 safetensors) do not.
-                # Detect PyTorch layout: shape[-1] > shape[-2] indicates
-                # (out, in, kernel) where kernel > in (true for depthwise convs).
-                # When kernel_size == 1 the shapes are symmetric and no-op either way.
-                if v.shape[-1] > v.shape[-2]:
+                # Detect PyTorch layout by shape:
+                #   - depthwise (kernel > 1): PyTorch (out, 1, kernel) → shape[-1] > shape[-2]
+                #   - pointwise (kernel == 1): PyTorch (out, in, 1)   → shape[-2] > shape[-1]
+                if v.shape[-1] > v.shape[-2] or (v.shape[-1] == 1 and v.shape[-2] > 1):
                     v = v.transpose(0, 2, 1)
 
             sanitized[k] = v
