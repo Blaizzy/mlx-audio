@@ -499,21 +499,10 @@ class Model(nn.Module):
                 # layout, while PyTorch uses (out_channels, in_channels, kernel_size).
                 # Models converted from PyTorch checkpoints need transposing; models
                 # already saved in MLX-native layout (e.g. bf16 safetensors) do not.
-                #
-                # depth_conv (kernel > 1):
-                #   PyTorch (out, 1, kernel) vs MLX (out, kernel, 1)
-                #   → transpose when shape[-1] > shape[-2]
-                #
-                # up_conv / down_conv (kernel == 1):
-                #   PyTorch (out, in, 1) vs MLX (out, 1, in)
-                #   → shape[-1]==1 with shape[-2]>1 is unambiguously PyTorch layout
-                #     (MLX native would have shape[-2]==1 instead)
-                #   The original condition (shape[-1] > shape[-2]) missed this case
-                #   because 1 > in_channels is always False.
-                if "depth_conv" in k:
-                    if v.shape[-1] > v.shape[-2]:
-                        v = v.transpose(0, 2, 1)
-                elif v.shape[-1] == 1 and v.shape[-2] > 1:  # up_conv / down_conv
+                # depth_conv (kernel > 1) needs the shape heuristic to distinguish
+                # PyTorch (out, 1, kernel) from MLX (out, kernel, 1). up_conv and
+                # down_conv always use kernel_size=1, so they are always transposed.
+                if "depth_conv" not in k or v.shape[-1] > v.shape[-2]:
                     v = v.transpose(0, 2, 1)
 
             sanitized[k] = v
