@@ -4,7 +4,7 @@ MLX support for Xiaomi's `MiMo-V2.5-ASR`.
 
 ## Available Model
 
-- [mlx-community/MiMo-V2.5-ASR-MLX](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX)
+- [MiMo-V2.5-ASR](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX)
 
 The model repo resolves its audio tokenizer from `mlx-community/MiMo-Audio-Tokenizer`
 via `mlx_manifest.json`, so the default Hugging Face path works without extra

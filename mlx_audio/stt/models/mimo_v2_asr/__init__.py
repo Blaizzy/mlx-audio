@@ -1,6 +1,4 @@
-from .asr import MiMoASR
+from .asr import MiMoASR, Model
 from .config import MiMoAudioConfig as ModelConfig
-
-Model = MiMoASR
 
 __all__ = ["MiMoASR", "Model", "ModelConfig"]
