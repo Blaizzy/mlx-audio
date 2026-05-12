@@ -13,6 +13,7 @@ MODEL_REMAPPING = {
     "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
+    "mimo_v2_asr": "mimo_v2_asr",
     "sensevoice": "sensevoice",
     "voxtral": "voxtral",
     "voxtral_realtime": "voxtral_realtime",
@@ -24,6 +25,20 @@ MODEL_REMAPPING = {
     "granite_speech": "granite_speech",
     "qwen2_audio": "qwen2_audio",
 }
+
+
+def _looks_like_mimo(model_name: list[str] | None, config: dict | None) -> bool:
+    if config:
+        architectures = config.get("architectures") or []
+        if isinstance(architectures, list) and any(
+            "MiMoV2ASR" in str(arch) for arch in architectures
+        ):
+            return True
+    for part in model_name or []:
+        lowered = part.lower()
+        if "mimo" in lowered:
+            return True
+    return False
 
 
 def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
@@ -79,10 +94,36 @@ def load_model(
     Returns:
         nn.Module: The loaded and initialized model.
     """
+    if isinstance(model_path, str):
+        model_name = [part.lower() for part in Path(model_path).parts if part]
+        resolved_path = get_model_path(
+            model_path,
+            revision=kwargs.get("revision"),
+            force_download=kwargs.get("force_download", False),
+        )
+    elif isinstance(model_path, Path):
+        model_name = [part.lower() for part in model_path.parts if part]
+        resolved_path = model_path
+    else:
+        raise ValueError(f"Invalid model path type: {type(model_path)}")
+
+    config = load_config(resolved_path)
+    if _looks_like_mimo(model_name, config):
+        from mlx_audio.stt.models.mimo_v2_asr import MiMoASR
+
+        audio_tokenizer_dir = kwargs.pop("audio_tokenizer_dir", None)
+        return MiMoASR.from_pretrained(
+            resolved_path,
+            audio_tokenizer_dir=audio_tokenizer_dir,
+            revision=kwargs.get("revision"),
+            force_download=kwargs.get("force_download", False),
+        )
+
     return base_load_model(
-        model_path=model_path,
+        model_path=resolved_path,
         category="stt",
         model_remapping=MODEL_REMAPPING,
+        model_name_parts=model_name,
         lazy=lazy,
         strict=strict,
         **kwargs,
