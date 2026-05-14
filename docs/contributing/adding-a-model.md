@@ -40,15 +40,27 @@ mlx_audio/tts/models/my_model/
 
 ### Base Classes
 
-TTS models use the base classes from `mlx_audio/tts/models/base.py`:
+TTS and STT models share the same high-level pattern — a config dataclass plus
+an `mlx.nn.Module` exported as `Model` — but their runtime interfaces differ.
+
+- **TTS** models typically use `mlx_audio/tts/models/base.py` and yield
+  `GenerationResult` objects containing waveform data.
+- **STT** models usually return structured transcription results such as
+  `.text`, `.segments`, `.sentences`, timestamps, or streaming chunks.
+
+For shared config parsing, TTS models commonly use `BaseModelArgs`:
 
 - **`BaseModelArgs`** -- Dataclass for model configuration. Includes a `from_dict()` class method that filters unknown keys automatically.
-- **`GenerationResult`** -- Dataclass returned by `generate()`. Contains `audio`, `sample_rate`, `token_count`, timing information, and streaming flags.
-- **`BatchGenerationResult`** -- Dataclass for batch generation results.
+- **`GenerationResult`** -- TTS dataclass returned by `generate()`. Contains `audio`, `sample_rate`, `token_count`, timing information, and streaming flags.
+- **`BatchGenerationResult`** -- TTS dataclass for batch generation results.
 
 ### Model Configuration
 
-Create a dataclass for your model's config that extends `BaseModelArgs`:
+Create a dataclass for your model's config. Use fields that match your domain:
+TTS models often include `sample_rate`, while STT models usually focus on audio
+frontend, tokenizer, or decoder settings.
+
+For example, a TTS config can extend `BaseModelArgs`:
 
 ```python
 from dataclasses import dataclass
@@ -65,7 +77,12 @@ class MyModelConfig(BaseModelArgs):
 
 ### Model Class
 
-Your model should be an `mlx.nn.Module` with a `generate()` method that yields `GenerationResult` objects:
+Your model should be an `mlx.nn.Module`, but the public inference method should
+match the domain.
+
+#### TTS example
+
+TTS models usually implement `generate()` and yield `GenerationResult` objects:
 
 ```python
 import mlx.nn as nn
@@ -110,6 +127,26 @@ class MyModel(nn.Module):
             processing_time_seconds=0.0,
             peak_memory_usage=0.0,
         )
+```
+
+#### STT example
+
+STT models usually accept audio input and return structured transcription
+results:
+
+```python
+import mlx.nn as nn
+
+class MySTTModel(nn.Module):
+    def __init__(self, config: MyModelConfig):
+        super().__init__()
+        self.config = config
+        self.model_type = config.model_type
+
+    def generate(self, audio: str, **kwargs):
+        """Transcribe audio and return a structured result."""
+        # Your transcription logic here
+        return self._transcribe(audio, **kwargs)
 ```
 
 ### `__init__.py`
@@ -166,7 +203,13 @@ If the `model_type` in `config.json` differs from your directory name, add an en
 
 ### Convert Weights
 
-If your model's original weights are in PyTorch format, use the conversion script:
+If the upstream model already ships loadable `.safetensors` weights, use those
+directly and skip `torch`.
+
+If the original weights are only available as `.pt`, ONNX, or another
+non-MLX format, you will need a conversion step to produce the final MLX
+`model.safetensors` layout. When the source model is already supported by the
+repository-wide conversion entry point, a typical command looks like this:
 
 ```bash
 python -m mlx_audio.convert \
@@ -174,6 +217,11 @@ python -m mlx_audio.convert \
     --mlx-path ./my-model-bf16 \
     --dtype bfloat16
 ```
+
+Otherwise, add a model-specific `convert.py` when the model needs custom
+remapping, extra exported artifacts, or other one-off steps that should stay
+reproducible for future contributors. Document the exact input files and
+conversion steps so someone else can regenerate the same output.
 
 ### Publish to Hugging Face
 
@@ -189,7 +237,9 @@ the `mlx-community` org when possible.
 
 ### Test
 
-Write a basic test:
+Write a basic test that matches the model category.
+
+#### TTS test
 
 ```python
 from mlx_audio.tts.utils import load_model
@@ -199,6 +249,18 @@ def test_my_model():
     results = list(model.generate("Hello, world!"))
     assert len(results) > 0
     assert results[0].audio.shape[0] > 0
+```
+
+#### STT test
+
+```python
+from mlx_audio.stt.utils import load_model
+
+def test_my_stt_model():
+    model = load_model("path/to/my-stt-model")
+    result = model.generate("audio.wav")
+    assert isinstance(result.text, str)
+    assert result.text
 ```
 
 Run it:
