@@ -15,6 +15,8 @@ from .config import DecoderInnerConfig, EncoderConfig, ModelConfig
 from .tokenizer import CohereAsrTokenizer
 
 NO_SPACE_LANGS = {"ja", "zh"}
+DEFAULT_BATCH_SIZE = 1
+MAX_AUTO_BATCH_SIZE = 32
 
 
 class ConvSubsampling(nn.Module):
@@ -600,13 +602,19 @@ class TokenClassifierHead(nn.Module):
         return logits
 
 
+Waveform = Union[np.ndarray, mx.array]
+
+
 def split_audio_chunks_energy(
-    waveform: np.ndarray,
+    waveform: Waveform,
     sample_rate: int,
     max_audio_clip_s: float,
     overlap_chunk_second: float,
     min_energy_window_samples: int,
 ) -> List[Tuple[int, int]]:
+    if not isinstance(waveform, mx.array):
+        waveform = mx.array(waveform, dtype=mx.float32)
+
     chunk_size = max(1, int(round(max_audio_clip_s * sample_rate)))
     boundary_context = max(1, int(round(overlap_chunk_second * sample_rate)))
     total_samples = waveform.shape[0]
@@ -637,7 +645,7 @@ def split_audio_chunks_energy(
 
 
 def _find_split_point_energy(
-    waveform: np.ndarray,
+    waveform: mx.array,
     start_idx: int,
     end_idx: int,
     min_energy_window_samples: int,
@@ -646,16 +654,16 @@ def _find_split_point_energy(
     if segment.shape[0] <= min_energy_window_samples:
         return (start_idx + end_idx) // 2
 
-    quietest_idx = start_idx
-    min_energy = float("inf")
-    upper = segment.shape[0] - min_energy_window_samples
-    for offset in range(0, upper, min_energy_window_samples):
-        window = segment[offset : offset + min_energy_window_samples]
-        energy = float(np.sqrt(np.mean(window * window)))
-        if energy < min_energy:
-            min_energy = energy
-            quietest_idx = start_idx + offset
-    return quietest_idx
+    usable_samples = (segment.shape[0] // min_energy_window_samples) * (
+        min_energy_window_samples
+    )
+    if usable_samples <= 0:
+        return (start_idx + end_idx) // 2
+
+    windows = segment[:usable_samples].reshape(-1, min_energy_window_samples)
+    energies = mx.mean(windows * windows, axis=1)
+    quietest_window = int(mx.argmin(energies).item())
+    return start_idx + quietest_window * min_energy_window_samples
 
 
 def join_chunk_texts(texts: Iterable[str], language: str) -> str:
@@ -766,37 +774,32 @@ class Model(nn.Module):
         self,
         audio: Union[str, Path, np.ndarray, mx.array],
         sample_rate: Optional[int] = None,
-    ) -> np.ndarray:
+    ) -> mx.array:
         from mlx_audio.stt.utils import load_audio, resample_audio
 
         if isinstance(audio, (str, Path)):
-            return np.array(
-                load_audio(str(audio), sr=self.sample_rate), dtype=np.float32
-            )
-
-        if isinstance(audio, mx.array):
-            arr = np.array(audio)
+            arr = load_audio(str(audio), sr=self.sample_rate, dtype=mx.float32)
+        elif isinstance(audio, mx.array):
+            arr = audio.astype(mx.float32)
         else:
-            arr = np.asarray(audio, dtype=np.float32)
+            arr = mx.array(audio, dtype=mx.float32)
 
         if arr.ndim == 2:
             if arr.shape[0] <= 8 and arr.shape[1] > arr.shape[0]:
-                arr = arr.mean(axis=0)
+                arr = mx.mean(arr, axis=0)
             else:
-                arr = arr.mean(axis=1)
+                arr = mx.mean(arr, axis=1)
 
         if sample_rate is not None and sample_rate != self.sample_rate:
-            arr = resample_audio(
-                arr.astype(np.float32, copy=False), sample_rate, self.sample_rate
-            )
+            arr = resample_audio(arr, sample_rate, self.sample_rate).astype(mx.float32)
 
         if arr.ndim != 1:
             raise ValueError(f"Expected mono waveform, got shape {arr.shape}.")
 
-        return arr.astype(np.float32, copy=False)
+        return arr.astype(mx.float32)
 
     def _encode_waveforms(
-        self, waveforms: List[np.ndarray]
+        self, waveforms: List[Waveform]
     ) -> Tuple[mx.array, mx.array, mx.array]:
         input_features, lengths = self.audio_frontend(waveforms)
         conv_weight = self.encoder.pre_encode.conv[0].weight
@@ -811,17 +814,56 @@ class Model(nn.Module):
             mx.arange(encoder_hidden_states.shape[1])[None, :]
             < encoder_lengths[:, None]
         )
+        mx.async_eval(encoder_hidden_states, encoder_lengths, encoder_mask)
         return encoder_hidden_states, encoder_lengths, encoder_mask
+
+    def _resolve_batch_size(self, batch_size: Optional[int]) -> int:
+        if batch_size is None:
+            return self._auto_batch_size()
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1.")
+        return int(batch_size)
+
+    def _auto_batch_size(self) -> int:
+        if not mx.metal.is_available():
+            return DEFAULT_BATCH_SIZE
+
+        try:
+            max_rec_size = mx.device_info().get("max_recommended_working_set_size", 0)
+        except Exception:
+            return DEFAULT_BATCH_SIZE
+
+        max_rec_gb = max_rec_size / 2**30
+        if max_rec_gb >= 96:
+            batch_size = 32
+        elif max_rec_gb >= 64:
+            batch_size = 16
+        elif max_rec_gb >= 32:
+            batch_size = 8
+        elif max_rec_gb >= 24:
+            batch_size = 4
+        else:
+            batch_size = DEFAULT_BATCH_SIZE
+
+        return min(max(1, self.config.batch_size), batch_size, MAX_AUTO_BATCH_SIZE)
+
+    def _resolve_max_tokens(self, max_tokens: int, prompt_len: int) -> int:
+        if max_tokens < 0:
+            raise ValueError("max_tokens must be non-negative.")
+        decoder_max_len = self.config.transf_decoder.config_dict.max_sequence_length
+        available_tokens = max(0, decoder_max_len - prompt_len)
+        return min(int(max_tokens), available_tokens)
 
     def _generate_batch_tokens(
         self,
-        waveforms: List[np.ndarray],
+        waveforms: List[Waveform],
         prompt_tokens: List[int],
         max_tokens: int,
     ) -> Tuple[List[List[int]], int]:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not initialized. Load the model first.")
 
+        max_tokens = self._resolve_max_tokens(max_tokens, len(prompt_tokens))
         encoder_hidden_states, _, encoder_mask = self._encode_waveforms(waveforms)
         batch_size = len(waveforms)
         prompt_ids = mx.array([prompt_tokens] * batch_size, dtype=mx.int32)
@@ -880,7 +922,7 @@ class Model(nn.Module):
 
     def _transcribe_waveforms_batched(
         self,
-        waveforms: List[np.ndarray],
+        waveforms: List[Waveform],
         language: str,
         punctuation: bool,
         batch_size: int,
@@ -924,11 +966,13 @@ class Model(nn.Module):
                 texts[original_idx] = batch_texts[row_idx].strip()
                 generation_counts[original_idx] = len(generated_ids[row_idx])
 
+            mx.clear_cache()
+
         return texts, generation_counts, len(prompt_tokens)
 
     def _prepare_segments(
-        self, waveforms: List[np.ndarray]
-    ) -> Tuple[List[np.ndarray], List[Dict[str, Union[int, float, None]]]]:
+        self, waveforms: List[Waveform]
+    ) -> Tuple[List[mx.array], List[Dict[str, Union[int, float, None]]]]:
         segment_waveforms = []
         segment_meta = []
         fast_path_threshold_s = max(
@@ -936,6 +980,9 @@ class Model(nn.Module):
         )
 
         for sample_idx, waveform in enumerate(waveforms):
+            if not isinstance(waveform, mx.array):
+                waveform = mx.array(waveform, dtype=mx.float32)
+
             duration_s = waveform.shape[0] / self.sample_rate
             if duration_s <= fast_path_threshold_s:
                 segment_waveforms.append(waveform)
@@ -957,7 +1004,7 @@ class Model(nn.Module):
                 min_energy_window_samples=self.config.min_energy_window_samples,
             )
             for chunk_idx, (start_idx, end_idx) in enumerate(chunks):
-                segment_waveforms.append(waveform[start_idx:end_idx].copy())
+                segment_waveforms.append(waveform[start_idx:end_idx])
                 segment_meta.append(
                     {
                         "sample_idx": sample_idx,
@@ -1021,7 +1068,7 @@ class Model(nn.Module):
         *,
         language: str,
         audio_files: Optional[List[str]] = None,
-        audio_arrays: Optional[List[np.ndarray]] = None,
+        audio_arrays: Optional[List[Waveform]] = None,
         sample_rates: Optional[List[int]] = None,
         punctuation: bool = True,
         batch_size: Optional[int] = None,
@@ -1056,7 +1103,7 @@ class Model(nn.Module):
             segment_waveforms,
             language=language,
             punctuation=punctuation,
-            batch_size=batch_size or self.config.batch_size,
+            batch_size=self._resolve_batch_size(batch_size),
             max_tokens=max_tokens,
         )
 
@@ -1115,7 +1162,7 @@ class Model(nn.Module):
             segment_waveforms,
             language=language,
             punctuation=punctuation,
-            batch_size=batch_size or self.config.batch_size,
+            batch_size=self._resolve_batch_size(batch_size),
             max_tokens=max_tokens,
         )
 

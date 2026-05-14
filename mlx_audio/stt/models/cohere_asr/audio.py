@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable, List, Tuple
+from typing import Iterable, List, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -65,24 +65,26 @@ class CohereAudioFrontend:
         if win_key in weights:
             self.window = weights[win_key].astype(mx.float32)
 
-    def _normalize_waveform(self, waveform) -> np.ndarray:
+    def _normalize_waveform(self, waveform: Union[mx.array, np.ndarray]) -> mx.array:
         if isinstance(waveform, mx.array):
-            waveform = np.array(waveform)
-        arr = np.asarray(waveform, dtype=np.float32)
+            arr = waveform.astype(mx.float32)
+        else:
+            arr = mx.array(waveform, dtype=mx.float32)
+
         if arr.ndim == 2:
             if arr.shape[0] <= 8 and arr.shape[1] > arr.shape[0]:
-                arr = arr.mean(axis=0)
+                arr = mx.mean(arr, axis=0)
             else:
-                arr = arr.mean(axis=1)
+                arr = mx.mean(arr, axis=1)
         if arr.ndim != 1:
             raise ValueError(f"Expected mono waveform, got shape {arr.shape}.")
-        return arr.astype(np.float32, copy=False)
+        return arr
 
-    def _apply_dither(self, waveform: np.ndarray) -> np.ndarray:
+    def _apply_dither(self, waveform: mx.array) -> mx.array:
         if self.config.dither <= 0:
             return waveform
-        rng = np.random.default_rng(seed=waveform.shape[0])
-        noise = rng.standard_normal(waveform.shape[0], dtype=np.float32)
+        key = mx.random.key(waveform.shape[0])
+        noise = mx.random.normal(shape=waveform.shape, key=key, dtype=mx.float32)
         return waveform + self.config.dither * noise
 
     def _sequence_length(self, num_samples: int) -> int:
@@ -92,7 +94,7 @@ class CohereAudioFrontend:
         waveform = self._normalize_waveform(waveform)
         waveform = self._apply_dither(waveform)
 
-        x = mx.array(waveform, dtype=mx.float32)
+        x = waveform
         if self.config.preemph > 0 and x.shape[0] > 1:
             x = mx.concatenate(
                 [x[:1], x[1:] - self.config.preemph * x[:-1]],
@@ -114,7 +116,7 @@ class CohereAudioFrontend:
         if self.config.log:
             mel = mx.log(mel + self.config.log_zero_guard_value)
 
-        seq_len = self._sequence_length(len(waveform))
+        seq_len = self._sequence_length(waveform.shape[0])
         seq_len = min(seq_len, mel.shape[1])
 
         if self.config.normalize == "per_feature" and seq_len > 0:

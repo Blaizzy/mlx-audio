@@ -553,6 +553,23 @@ class TestCohereAudioFrontend(unittest.TestCase):
         self.assertEqual(features.shape[2], 16)
         self.assertEqual(lengths.tolist(), [100])
 
+    def test_extract_features_accepts_mlx_waveform(self):
+        from mlx_audio.stt.models.cohere_asr.audio import CohereAudioFrontend
+        from mlx_audio.stt.models.cohere_asr.config import PreprocessorConfig
+
+        frontend = CohereAudioFrontend(
+            PreprocessorConfig(sample_rate=16000, features=16, n_fft=512)
+        )
+        frontend.fb = mx.random.normal((16, 257))
+
+        waveform = mx.zeros((16000,), dtype=mx.float32)
+        features, lengths = frontend([waveform])
+        mx.eval(features, lengths)
+
+        self.assertEqual(features.shape[0], 1)
+        self.assertEqual(features.shape[2], 16)
+        self.assertEqual(lengths.tolist(), [100])
+
 
 class TestCohereChunking(unittest.TestCase):
     def test_energy_chunking_splits_long_audio(self):
@@ -560,6 +577,22 @@ class TestCohereChunking(unittest.TestCase):
 
         waveform = np.ones(16_000 * 8, dtype=np.float32)
         waveform[16_000 * 3 : 16_000 * 3 + 800] = 0.0
+        chunks = split_audio_chunks_energy(
+            waveform=waveform,
+            sample_rate=16_000,
+            max_audio_clip_s=4.0,
+            overlap_chunk_second=1.0,
+            min_energy_window_samples=400,
+        )
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(chunks[0][0], 0)
+        self.assertEqual(chunks[-1][1], waveform.shape[0])
+
+    def test_energy_chunking_accepts_mlx_audio(self):
+        from mlx_audio.stt.models.cohere_asr.cohere_asr import split_audio_chunks_energy
+
+        waveform = mx.ones((16_000 * 8,), dtype=mx.float32)
+        waveform = mx.where(mx.arange(waveform.shape[0]) < 16_000 * 3, waveform, 0.5)
         chunks = split_audio_chunks_energy(
             waveform=waveform,
             sample_rate=16_000,
@@ -614,6 +647,94 @@ class TestCohereConfig(unittest.TestCase):
         self.assertEqual(config.min_energy_window_samples, 1600)
         self.assertEqual(config.preprocessor.win_length, 400)
         self.assertEqual(config.preprocessor.hop_length, 160)
+
+
+class TestCohereBatching(unittest.TestCase):
+    def _build_model(self):
+        from mlx_audio.stt.models.cohere_asr.cohere_asr import Model
+        from mlx_audio.stt.models.cohere_asr.config import ModelConfig
+
+        config_dict = _cohere_small_config_dict()
+        config_dict["batch_size"] = 128
+        return Model(ModelConfig.from_dict(config_dict))
+
+    def test_safe_default_batch_size(self):
+        model = self._build_model()
+
+        self.assertEqual(model._resolve_batch_size(4), 4)
+        with self.assertRaises(ValueError):
+            model._resolve_batch_size(0)
+
+        with patch(
+            "mlx_audio.stt.models.cohere_asr.cohere_asr.mx.metal.is_available",
+            return_value=False,
+        ):
+            self.assertEqual(model._resolve_batch_size(None), 1)
+
+        with (
+            patch(
+                "mlx_audio.stt.models.cohere_asr.cohere_asr.mx.metal.is_available",
+                return_value=True,
+            ),
+            patch(
+                "mlx_audio.stt.models.cohere_asr.cohere_asr.mx.device_info",
+                return_value={"max_recommended_working_set_size": 128 * 2**30},
+            ),
+        ):
+            self.assertEqual(model._resolve_batch_size(None), 32)
+
+    def test_max_tokens_clamped_to_decoder_context(self):
+        model = self._build_model()
+
+        self.assertEqual(model._resolve_max_tokens(8192, prompt_len=9), 119)
+        self.assertEqual(model._resolve_max_tokens(16, prompt_len=9), 16)
+        with self.assertRaises(ValueError):
+            model._resolve_max_tokens(-1, prompt_len=9)
+
+    def test_generate_uses_resolved_default_batch_size(self):
+        model = self._build_model()
+        waveform = np.zeros(16_000, dtype=np.float32)
+
+        with (
+            patch(
+                "mlx_audio.stt.models.cohere_asr.cohere_asr.mx.metal.is_available",
+                return_value=True,
+            ),
+            patch(
+                "mlx_audio.stt.models.cohere_asr.cohere_asr.mx.device_info",
+                return_value={"max_recommended_working_set_size": 128 * 2**30},
+            ),
+            patch.object(
+                model,
+                "_transcribe_waveforms_batched",
+                return_value=(["ok"], [1], 9),
+            ) as transcribe,
+        ):
+            output = model.generate(waveform, language="en")
+
+        self.assertEqual(output.text, "ok")
+        self.assertEqual(transcribe.call_args.kwargs["batch_size"], 32)
+
+    def test_audio_normalization_stays_in_mlx(self):
+        model = self._build_model()
+        stereo = np.zeros((16_000, 2), dtype=np.float32)
+
+        mono = model._to_mono(stereo)
+
+        self.assertIsInstance(mono, mx.array)
+        self.assertEqual(mono.shape, (16_000,))
+
+    def test_prepared_segments_are_mlx_slices(self):
+        model = self._build_model()
+        model.config.max_audio_clip_s = 1.0
+        model.config.overlap_chunk_second = 0.25
+        waveform = mx.zeros((16_000 * 3,), dtype=mx.float32)
+
+        segments, metadata = model._prepare_segments([waveform])
+
+        self.assertGreater(len(segments), 1)
+        self.assertEqual(len(segments), len(metadata))
+        self.assertTrue(all(isinstance(segment, mx.array) for segment in segments))
 
 
 class TestParakeetModel(unittest.TestCase):

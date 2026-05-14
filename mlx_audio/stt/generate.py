@@ -46,6 +46,12 @@ def parse_args():
         help="Maximum number of new tokens to generate",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Batch size for models that support batched transcription",
+    )
+    parser.add_argument(
         "--language",
         type=str,
         default="en",
