@@ -5,6 +5,8 @@ from typing import Any
 
 from mlx_audio.tts.models.base import BaseModelArgs
 
+DEFAULT_TEXT_ENCODER = "mlx-community/gemma-3-12b-it-8bit"
+
 
 def _filter_fields(cls, values: dict[str, Any]) -> dict[str, Any]:
     allowed = {f.name for f in fields(cls)}
@@ -82,8 +84,7 @@ class ModelConfig(BaseModelArgs):
     architecture: str = "DiT-FlowMatching"
     base_model: str = "ltx-2.3-22b-dev-audio-only"
     parameters: str = "3.3B"
-    text_encoder: str = "unsloth/gemma-3-12b-it-bnb-4bit"
-    mlx_text_encoder: str = "mlx-community/gemma-3-text-12b-it-4bit"
+    text_encoder: str = DEFAULT_TEXT_ENCODER
     text_encoder_hidden_size: int = 3840
     model_path: str | None = None
 

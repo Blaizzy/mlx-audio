@@ -7812,6 +7812,7 @@ def test_config_maps_hf_dramabox_defaults_to_mlx_defaults():
     assert config.transformer.num_layers == 48
     assert config.transformer.audio_num_attention_heads == 32
     assert config.audio.sample_rate == 48000
+    assert config.text_encoder == "mlx-community/gemma-3-12b-it-8bit"
     assert config.inference_defaults.rescale_scale == "auto"
     assert "off-sync audio" in config.inference_defaults.negative_prompt
 
@@ -7825,7 +7826,7 @@ def test_dramabox_model_alias_is_registered():
 
 def test_dramabox_text_encoder_override_refreshes_cache(monkeypatch):
     model = dramabox_module.Model.__new__(dramabox_module.Model)
-    model.config = ModelConfig.from_dict({"mlx_text_encoder": "default-gemma"})
+    model.config = ModelConfig.from_dict({"text_encoder": "default-gemma"})
     model._text_encoder = None
     model._tokenizer = None
     model._text_encoder_id = None
@@ -7893,6 +7894,66 @@ def test_dramabox_generate_does_not_pass_prompt_masks_to_dit(monkeypatch):
     assert result.audio.shape == (480, 2)
     assert captured["context_mask"] is None
     assert captured["negative_context_mask"] is None
+
+
+def test_dramabox_generate_uses_ref_audio_argument(monkeypatch):
+    model = dramabox_module.Model.__new__(dramabox_module.Model)
+    model.config = ModelConfig.from_dict({})
+    model.transformer = object()
+
+    ref_audio = mx.zeros((480,), dtype=mx.float32)
+    captured = {}
+
+    def fake_encode_prompt_contexts(prompts, text_encoder_id=None):
+        del prompts, text_encoder_id
+        return [(mx.zeros((1, 2, 4), dtype=mx.float32), None)]
+
+    def fake_encode_reference_audio(value):
+        captured["ref_audio"] = value
+        return mx.zeros((1, 8, 1, 16), dtype=mx.float32)
+
+    def fake_append_reference_latent(state, tools, reference_latent):
+        del tools
+        captured["reference_latent_shape"] = reference_latent.shape
+        return state
+
+    def fake_guided_euler_loop(**kwargs):
+        return kwargs["state"]
+
+    class FakeAudioVAE:
+        def decode(self, latents):
+            del latents
+            return mx.zeros((1, 2, 1, 64), dtype=mx.float32)
+
+    class FakeVocoder:
+        def __call__(self, mel):
+            del mel
+            return mx.zeros((1, 2, 480), dtype=mx.float32)
+
+    model._encode_prompt_contexts = fake_encode_prompt_contexts
+    model._encode_reference_audio = fake_encode_reference_audio
+    model.audio_vae = FakeAudioVAE()
+    model.vocoder = FakeVocoder()
+    monkeypatch.setattr(
+        dramabox_module,
+        "append_reference_latent",
+        fake_append_reference_latent,
+    )
+    monkeypatch.setattr(dramabox_module, "guided_euler_loop", fake_guided_euler_loop)
+
+    result = next(
+        model.generate(
+            "hello",
+            ref_audio=ref_audio,
+            cfg_scale=1.0,
+            gen_duration=0.1,
+            steps=1,
+        )
+    )
+
+    assert result.audio.shape == (480, 2)
+    assert captured["ref_audio"] is ref_audio
+    assert captured["reference_latent_shape"] == (1, 8, 1, 16)
 
 
 def test_converter_maps_dramabox_keys_to_module_tree():

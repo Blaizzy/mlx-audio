@@ -7,6 +7,7 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 
 SOURCE_REPO = "ResembleAI/Dramabox"
+DEFAULT_TEXT_ENCODER = "mlx-community/gemma-3-12b-it-8bit"
 DEFAULT_ALLOW_PATTERNS = [
     "config.json",
     "README.md",
@@ -112,6 +113,8 @@ def convert(
 
     config = json.loads((source_path / "config.json").read_text())
     config["model_type"] = "dramabox-tts"
+    config["text_encoder"] = DEFAULT_TEXT_ENCODER
+    config.pop("mlx_text_encoder", None)
     config.setdefault("inference_defaults", {})
     config["inference_defaults"]["rescale_scale"] = "auto"
     config["mlx_audio"] = {

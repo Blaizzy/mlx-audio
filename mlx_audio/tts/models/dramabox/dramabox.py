@@ -104,7 +104,7 @@ class Model(nn.Module):
         return estimate_speech_duration(text, speed=speed)
 
     def _ensure_text_encoder(self, model_id: str | None = None):
-        model_id = model_id or self.config.mlx_text_encoder
+        model_id = model_id or self.config.text_encoder
         if (
             self._text_encoder is None
             or self._tokenizer is None
@@ -130,8 +130,18 @@ class Model(nn.Module):
             contexts.append((context, mask))
         return contexts
 
-    def _encode_voice_reference(self, voice_ref: str | Path) -> mx.array:
-        audio, sample_rate = read_audio(voice_ref, always_2d=True, dtype="float32")
+    def _encode_reference_audio(
+        self, ref_audio: str | Path | mx.array | np.ndarray
+    ) -> mx.array:
+        if isinstance(ref_audio, (str, Path)):
+            audio, sample_rate = read_audio(ref_audio, always_2d=True, dtype="float32")
+        else:
+            audio = np.array(ref_audio, dtype=np.float32)
+            sample_rate = self.sample_rate
+            if audio.ndim == 1:
+                audio = audio[:, None]
+            elif audio.ndim == 2 and audio.shape[0] <= 2 and audio.shape[1] > 2:
+                audio = audio.T
         audio = audio.astype(np.float32)
         if audio.shape[1] == 1:
             audio = np.repeat(audio, 2, axis=1)
@@ -187,9 +197,9 @@ class Model(nn.Module):
         shape = target_shape_for_duration(duration + pad_start, self.config.audio)
         tools = AudioLatentTools(AudioPatchifier(), shape)
         state = tools.create_initial_state(dtype=mx.bfloat16)
-        voice_ref = kwargs.get("voice_ref", kwargs.get("ref_audio", None))
-        if voice_ref is not None:
-            reference_latent = self._encode_voice_reference(voice_ref)
+        ref_audio = kwargs.get("ref_audio", None)
+        if ref_audio is not None:
+            reference_latent = self._encode_reference_audio(ref_audio)
             state = append_reference_latent(state, tools, reference_latent)
         state = add_gaussian_noise(
             state,
@@ -202,10 +212,7 @@ class Model(nn.Module):
             prompts.append(str(kwargs.get("negative_prompt", defaults.negative_prompt)))
         contexts = self._encode_prompt_contexts(
             prompts,
-            text_encoder_id=kwargs.get(
-                "mlx_text_encoder",
-                kwargs.get("text_encoder_model", self.config.mlx_text_encoder),
-            ),
+            text_encoder_id=kwargs.get("text_encoder_model", self.config.text_encoder),
         )
         context, context_mask = contexts[0]
         negative_context = contexts[1][0] if cfg_scale > 1.0 else None
