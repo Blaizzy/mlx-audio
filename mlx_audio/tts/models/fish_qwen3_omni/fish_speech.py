@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Optional, Union
 
@@ -357,7 +358,7 @@ class DualARTransformer(nn.Module):
         return self.fast_output(x[:, -1])
 
 
-@mx.compile
+@partial(mx.compile, inputs=mx.random.state, outputs=mx.random.state)
 def _sample_logits(
     logits: mx.array, temperature: float, top_p: float, top_k: int
 ) -> mx.array:
