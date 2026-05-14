@@ -4,6 +4,7 @@ from . import (
     glmasr,
     granite_speech,
     lasr_ctc,
+    mimo_v2_asr,
     parakeet,
     qwen3_asr,
     sensevoice,

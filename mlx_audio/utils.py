@@ -389,18 +389,21 @@ def base_load_model(
     )
     model = model_class.Model(model_config)
 
-    # Load weights
-    weights = load_weights(model_path)
+    if hasattr(model, "load_weights_from_path"):
+        model.load_weights_from_path(model_path, config=config, strict=strict)
+    else:
+        # Load weights
+        weights = load_weights(model_path)
 
-    # Sanitize weights if the model has a sanitize method
-    if hasattr(model, "sanitize"):
-        weights = model.sanitize(weights)
+        # Sanitize weights if the model has a sanitize method
+        if hasattr(model, "sanitize"):
+            weights = model.sanitize(weights)
 
-    # Apply quantization if specified
-    model_quant_predicate = getattr(model, "model_quant_predicate", None)
-    apply_quantization(model, config, weights, model_quant_predicate)
+        # Apply quantization if specified
+        model_quant_predicate = getattr(model, "model_quant_predicate", None)
+        apply_quantization(model, config, weights, model_quant_predicate)
 
-    model.load_weights(list(weights.items()), strict=strict)
+        model.load_weights(list(weights.items()), strict=strict)
 
     if not lazy:
         mx.eval(model.parameters())

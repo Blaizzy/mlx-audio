@@ -5,7 +5,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from mlx_audio.utils import base_load_model, get_model_path, load_config
+from mlx_audio.utils import base_load_model, get_model_path
 
 SAMPLE_RATE = 16000
 
@@ -13,6 +13,7 @@ MODEL_REMAPPING = {
     "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
+    "mimo": "mimo_v2_asr",
     "sensevoice": "sensevoice",
     "voxtral": "voxtral",
     "voxtral_realtime": "voxtral_realtime",

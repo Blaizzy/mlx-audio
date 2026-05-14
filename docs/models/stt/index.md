@@ -13,6 +13,7 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | [**Whisper**](whisper.md) | OpenAI | Various | 99+ | -- | Segment + Word | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Distil-Whisper** | HuggingFace | Various | EN | -- | Segment | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | [**Parakeet**](parakeet.md) | NVIDIA | 0.6B | EN (v2), 25 EU (v3) | Yes | Sentence + Word | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **MiMo-V2.5-ASR** | Xiaomi | 7B | ZH, EN | -- | -- | [MiMo-V2.5-ASR](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX) |
 | [**Voxtral Realtime**](voxtral-realtime.md) | Mistral | 4B | Multiple | Yes | -- | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | **Qwen3-ASR** | Alibaba | 0.6B / 1.7B | ZH, EN, JA, KO + more | Yes | Segment | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
 | **Qwen3-ForcedAligner** | Alibaba | 0.6B | ZH, EN, JA, KO + more | -- | Word-level | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
