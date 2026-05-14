@@ -69,6 +69,8 @@ def _log_mel_spectrogram(
 
 
 class Model(nn.Module):
+    preserve_ref_audio_path = True
+
     def __init__(self, config: ModelConfig | dict):
         super().__init__()
         self.config = (
