@@ -6,9 +6,84 @@ on:
       - main
 
 jobs:
-  # Style checks run once
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      shared: ${{ steps.compute.outputs.shared }}
+      domains: ${{ steps.compute.outputs.domains }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - id: filter
+        uses: tj-actions/changed-files@v45
+        with:
+          files_yaml: |
+            shared:
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'MANIFEST.in'
+              - 'pytest.ini'
+              - '.pre-commit-config.yaml'
+              - '.github/workflows/tests.yml'
+              - 'mlx_audio/utils.py'
+              - 'mlx_audio/dsp.py'
+              - 'mlx_audio/audio_io.py'
+              - 'mlx_audio/__init__.py'
+              - 'mlx_audio/tests/**'
+            stt:
+              - 'mlx_audio/stt/**'
+            tts:
+              - 'mlx_audio/tts/**'
+            sts:
+              - 'mlx_audio/sts/**'
+            codec:
+              - 'mlx_audio/codec/**'
+            vad:
+              - 'mlx_audio/vad/**'
+            lid:
+              - 'mlx_audio/lid/**'
+
+      - id: compute
+        env:
+          SHARED: ${{ steps.filter.outputs.shared_any_changed }}
+          STT: ${{ steps.filter.outputs.stt_any_changed }}
+          TTS: ${{ steps.filter.outputs.tts_any_changed }}
+          STS: ${{ steps.filter.outputs.sts_any_changed }}
+          CODEC: ${{ steps.filter.outputs.codec_any_changed }}
+          VAD: ${{ steps.filter.outputs.vad_any_changed }}
+          LID: ${{ steps.filter.outputs.lid_any_changed }}
+        run: |
+          set -e
+          if [ "$SHARED" = "true" ]; then
+            domains='["stt","tts","sts","codec","vad","lid"]'
+          else
+            domains='[]'
+            for d in stt tts sts codec vad lid; do
+              case "$d" in
+                stt)   val="$STT"   ;;
+                tts)   val="$TTS"   ;;
+                sts)   val="$STS"   ;;
+                codec) val="$CODEC" ;;
+                vad)   val="$VAD"   ;;
+                lid)   val="$LID"   ;;
+              esac
+              if [ "$val" = "true" ]; then
+                domains=$(echo "$domains" | jq -c ". + [\"$d\"]")
+              fi
+            done
+          fi
+          echo "shared=${SHARED:-false}" >> "$GITHUB_OUTPUT"
+          echo "domains=$domains" >> "$GITHUB_OUTPUT"
+          echo "Computed shared=${SHARED:-false} domains=$domains"
+
   style:
     runs-on: macos-14
+    needs: changes
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -27,10 +102,10 @@ jobs:
             exit 1
           fi
 
-  # Core tests (DSP, utils)
   core:
     runs-on: macos-14
-    needs: style
+    needs: [changes, style]
+    if: needs.changes.outputs.shared == 'true'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -48,12 +123,10 @@ jobs:
       - name: Run core tests
         run: pytest -s mlx_audio/tests/
 
-  # Modular installation tests - validates issue #287
-  # Only verifies imports work with minimal deps installed.
-  # Full tests run separately with all deps (test files import models that need extra deps).
   modular:
     runs-on: macos-14
-    needs: style
+    needs: [changes, style]
+    if: needs.changes.outputs.shared == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -77,27 +150,14 @@ jobs:
       - name: Verify ${{ matrix.extra }} imports
         run: python -c "${{ matrix.verify }}; print('${{ matrix.extra }} imports OK')"
 
-  # Full test suites - need all deps
   tests:
     runs-on: macos-14
-    needs: style
+    needs: [changes, style]
+    if: needs.changes.outputs.domains != '[]'
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: TTS
-            path: mlx_audio/tts/tests
-          - name: STT
-            path: mlx_audio/stt/tests
-          - name: STS
-            path: mlx_audio/sts/tests
-          - name: LID
-            path: mlx_audio/lid/tests
-          - name: Codec
-            path: mlx_audio/codec/tests
-          - name: VAD
-            path: mlx_audio/vad/tests
-
+        domain: ${{ fromJSON(needs.changes.outputs.domains) }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -107,5 +167,5 @@ jobs:
       - name: Install all deps
         run: pip install -e ".[all,dev]"
 
-      - name: Run ${{ matrix.name }} tests
-        run: pytest -s ${{ matrix.path }}/
+      - name: Run ${{ matrix.domain }} tests
+        run: pytest -s mlx_audio/${{ matrix.domain }}/tests/
