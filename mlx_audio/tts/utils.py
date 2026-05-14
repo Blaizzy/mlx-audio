@@ -37,6 +37,7 @@ MODEL_REMAPPING = {
     "kugelaudio": "kugelaudio",
     "audiodit": "longcat_audiodit",
     "longcat": "longcat_audiodit",
+    "dramabox-tts": "dramabox",
     "omnivoice": "omnivoice",
     "melotts": "melotts",
     "moss_tts_nano": "moss_tts_nano",

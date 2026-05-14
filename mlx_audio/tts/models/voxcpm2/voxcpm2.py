@@ -208,24 +208,15 @@ class Model(nn.Module):
             audio_feat: (T, P, D) array of latent patches.
         """
         if isinstance(audio_input, str):
-            import soundfile as sf
+            from mlx_audio.audio_io import read as read_audio
+            from mlx_audio.utils import resample_audio
 
-            audio, sr = sf.read(audio_input, dtype="float32")
+            audio, sr = read_audio(audio_input, dtype="float32")
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
 
             if sr != self._encode_sample_rate:
-                try:
-                    import librosa
-
-                    audio = librosa.resample(
-                        audio, orig_sr=sr, target_sr=self._encode_sample_rate
-                    )
-                except ImportError:
-                    import scipy.signal
-
-                    num_samples = int(len(audio) * self._encode_sample_rate / sr)
-                    audio = scipy.signal.resample(audio, num_samples)
+                audio = resample_audio(audio, sr, self._encode_sample_rate)
         else:
             # mx.array or numpy array — assume loaded at model.sample_rate,
             # resample to encoder rate if needed
