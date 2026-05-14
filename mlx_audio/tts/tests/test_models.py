@@ -7718,5 +7718,756 @@ class TestMossTTSDelayModel(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Dramabox tests
+# ---------------------------------------------------------------------------
+
+import math
+
+import mlx.core as mx
+import numpy as np
+
+from mlx_audio.tts.models.dramabox import dramabox as dramabox_module
+from mlx_audio.tts.models.dramabox.audio_vae import (
+    AudioDecoder,
+    AudioEncoder,
+    CausalityAxis,
+    NormType,
+)
+from mlx_audio.tts.models.dramabox.config import ModelConfig
+from mlx_audio.tts.models.dramabox.convert import sanitize_weights
+from mlx_audio.tts.models.dramabox.duration import estimate_speech_duration
+from mlx_audio.tts.models.dramabox.guidance import (
+    MultiModalGuiderParams,
+    auto_rescale_for_cfg,
+    calculate_guided_prediction,
+)
+from mlx_audio.tts.models.dramabox.layers import FeedForward, gelu_approx, rms_norm
+from mlx_audio.tts.models.dramabox.latent import (
+    AudioLatentShape,
+    AudioLatentTools,
+    AudioPatchifier,
+    LatentState,
+    add_gaussian_noise,
+    append_reference_latent,
+)
+from mlx_audio.tts.models.dramabox.rope import (
+    LTXRopeType,
+    apply_interleaved_rotary_emb,
+    apply_split_rotary_emb,
+    precompute_freqs_cis,
+)
+from mlx_audio.tts.models.dramabox.scheduler import (
+    ltx2_sigmas,
+    to_denoised,
+    to_velocity,
+)
+from mlx_audio.tts.models.dramabox.sampling import (
+    aligned_frame_count,
+    guided_euler_loop,
+    patch_long_clip_silence_prior,
+    resolve_generation_duration,
+    target_shape_for_duration,
+)
+from mlx_audio.tts.models.dramabox.text_conditioning import (
+    DramaboxTextConditioner,
+    Embeddings1DConnector,
+    FeatureExtractorV2,
+    binary_to_additive_attention_mask,
+    norm_and_concat_per_token_rms,
+    rescale_norm,
+    stack_hidden_states,
+)
+from mlx_audio.tts.models.dramabox.timestep import (
+    AdaLayerNormSingle,
+    get_timestep_embedding,
+)
+from mlx_audio.tts.models.dramabox.transformer import (
+    AudioOnlyLTXModel,
+    Modality,
+    X0Model,
+)
+from mlx_audio.tts.models.dramabox.vocoder import Vocoder
+from mlx_audio.tts.models.dramabox.vocoder import UpSample1d
+from mlx_audio.tts.utils import get_model_and_args
+
+
+def test_config_maps_hf_dramabox_defaults_to_mlx_defaults():
+    config = ModelConfig.from_dict(
+        {
+            "model_type": "dramabox-tts",
+            "num_layers": 48,
+            "audio_num_attention_heads": 32,
+            "audio_attention_head_dim": 64,
+            "audio_cross_attention_dim": 2048,
+            "audio": {"sample_rate": 48000, "vae_channels": 8, "mel_bins": 16},
+            "inference_defaults": {
+                "cfg_scale": 2.5,
+                "stg_scale": 1.5,
+                "rescale_scale": 0.0,
+            },
+        }
+    )
+
+    assert config.model_type == "dramabox-tts"
+    assert config.transformer.num_layers == 48
+    assert config.transformer.audio_num_attention_heads == 32
+    assert config.audio.sample_rate == 48000
+    assert config.inference_defaults.rescale_scale == "auto"
+    assert "off-sync audio" in config.inference_defaults.negative_prompt
+
+
+def test_dramabox_model_alias_is_registered():
+    model_class, model_type = get_model_and_args("dramabox-tts", ["dramabox"])
+    assert model_type == "dramabox"
+    assert hasattr(model_class, "Model")
+    assert hasattr(model_class, "ModelConfig")
+
+
+def test_dramabox_text_encoder_override_refreshes_cache(monkeypatch):
+    model = dramabox_module.Model.__new__(dramabox_module.Model)
+    model.config = ModelConfig.from_dict({"mlx_text_encoder": "default-gemma"})
+    model._text_encoder = None
+    model._tokenizer = None
+    model._text_encoder_id = None
+    calls = []
+
+    def fake_load_text_encoder(model_id):
+        calls.append(model_id)
+        return object(), object()
+
+    monkeypatch.setattr(
+        dramabox_module,
+        "load_text_encoder",
+        fake_load_text_encoder,
+    )
+
+    model._ensure_text_encoder()
+    model._ensure_text_encoder()
+    model._ensure_text_encoder("other-gemma")
+
+    assert calls == ["default-gemma", "other-gemma"]
+
+
+def test_dramabox_generate_does_not_pass_prompt_masks_to_dit(monkeypatch):
+    model = dramabox_module.Model.__new__(dramabox_module.Model)
+    model.config = ModelConfig.from_dict({})
+    model.transformer = object()
+
+    captured = {}
+
+    def fake_encode_prompt_contexts(prompts, text_encoder_id=None):
+        del prompts, text_encoder_id
+        return [
+            (
+                mx.zeros((1, 2, 4), dtype=mx.float32),
+                mx.array([[1, 0]], dtype=mx.int32),
+            ),
+            (
+                mx.zeros((1, 3, 4), dtype=mx.float32),
+                mx.array([[1, 1, 0]], dtype=mx.int32),
+            ),
+        ]
+
+    def fake_guided_euler_loop(**kwargs):
+        captured["context_mask"] = kwargs["context_mask"]
+        captured["negative_context_mask"] = kwargs["negative_context_mask"]
+        return kwargs["state"]
+
+    class FakeAudioVAE:
+        def decode(self, latents):
+            del latents
+            return mx.zeros((1, 2, 1, 64), dtype=mx.float32)
+
+    class FakeVocoder:
+        def __call__(self, mel):
+            del mel
+            return mx.zeros((1, 2, 480), dtype=mx.float32)
+
+    model._encode_prompt_contexts = fake_encode_prompt_contexts
+    model.audio_vae = FakeAudioVAE()
+    model.vocoder = FakeVocoder()
+    monkeypatch.setattr(dramabox_module, "guided_euler_loop", fake_guided_euler_loop)
+
+    result = next(model.generate("hello", cfg_scale=2.0, gen_duration=0.1, steps=1))
+
+    assert result.audio.shape == (480, 2)
+    assert captured["context_mask"] is None
+    assert captured["negative_context_mask"] is None
+
+
+def test_converter_maps_dramabox_keys_to_module_tree():
+    weights = {
+        "model.diffusion_model.audio_patchify_proj.weight": mx.zeros((4, 4)),
+        "model.diffusion_model.audio_embeddings_connector.learnable_registers": mx.zeros(
+            (2, 4)
+        ),
+        "text_embedding_projection.audio_aggregate_embed.weight": mx.zeros((4, 4)),
+        "audio_vae.encoder.conv_in.conv.weight": mx.zeros((4, 5, 3, 3)),
+        "vocoder.vocoder.conv_pre.weight": mx.zeros((4, 5, 3)),
+        "vocoder.vocoder.ups.0.weight": mx.zeros((8, 5, 4)),
+        "vae.per_channel_statistics.mean-of-means": mx.zeros((4,)),
+    }
+    mapped = sanitize_weights(weights)
+    assert "transformer.audio_patchify_proj.weight" in mapped
+    assert "text_conditioner.audio_connector.learnable_registers" in mapped
+    assert "text_conditioner.feature_extractor.audio_aggregate_embed.weight" in mapped
+    assert "audio_vae.encoder.conv_in.conv.weight" in mapped
+    assert mapped["audio_vae.encoder.conv_in.conv.weight"].shape == (4, 3, 3, 5)
+    assert mapped["vocoder.vocoder.conv_pre.weight"].shape == (4, 3, 5)
+    assert mapped["vocoder.vocoder.ups.0.weight"].shape == (5, 4, 8)
+    assert "audio_vae.encoder.per_channel_statistics.mean_of_means" in mapped
+    assert "audio_vae.decoder.per_channel_statistics.mean_of_means" in mapped
+
+    remapped = sanitize_weights(mapped)
+    assert remapped["audio_vae.encoder.conv_in.conv.weight"].shape == (4, 3, 3, 5)
+    assert remapped["vocoder.vocoder.conv_pre.weight"].shape == (4, 3, 5)
+    assert remapped["vocoder.vocoder.ups.0.weight"].shape == (5, 4, 8)
+
+
+def test_audio_vae_encoder_decoder_shapes_with_small_config():
+    encoder = AudioEncoder(
+        ch=8,
+        ch_mult=(1, 2),
+        num_res_blocks=1,
+        in_channels=2,
+        z_channels=2,
+        mel_bins=8,
+        norm_type=NormType.PIXEL,
+        causality_axis=CausalityAxis.HEIGHT,
+    )
+    decoder = AudioDecoder(
+        ch=8,
+        ch_mult=(1, 2),
+        num_res_blocks=1,
+        out_ch=2,
+        z_channels=2,
+        mel_bins=8,
+        norm_type=NormType.PIXEL,
+        causality_axis=CausalityAxis.HEIGHT,
+    )
+
+    spectrogram = mx.zeros((1, 2, 9, 8), dtype=mx.float32)
+    latent = encoder(spectrogram)
+    decoded = decoder(latent)
+
+    assert latent.shape == (1, 2, 5, 4)
+    assert decoded.shape == (1, 2, 17, 8)
+
+
+def test_vocoder_shape_with_small_non_amp_config():
+    vocoder = Vocoder(
+        resblock_kernel_sizes=[3],
+        upsample_rates=[2, 2],
+        upsample_kernel_sizes=[4, 4],
+        resblock_dilation_sizes=[[1, 3, 5]],
+        upsample_initial_channel=8,
+        resblock="1",
+        output_sampling_rate=16000,
+        in_channels=16,
+        out_channels=2,
+    )
+
+    mel = mx.zeros((1, 2, 5, 8), dtype=mx.float32)
+    audio = vocoder(mel)
+
+    assert audio.shape == (1, 2, 20)
+
+
+def test_bigvgan_upsample_preserves_reference_length_formula():
+    upsample = UpSample1d(ratio=2, kernel_size=12)
+    x = mx.zeros((1, 3, 85), dtype=mx.float32)
+    y = upsample(x)
+    assert y.shape == (1, 3, 170)
+
+
+def test_duration_estimator_matches_reference_style_heuristic():
+    assert estimate_speech_duration('A woman says, "Hello."') == 3.0
+    prompt = 'A villain laughs maniacally, "Hahahahaha!" ' 'He pauses. "Now it begins."'
+    assert estimate_speech_duration(prompt) == 8.6
+
+
+def test_audio_patchifier_round_trip_and_positions():
+    patchifier = AudioPatchifier()
+    shape = AudioLatentShape(batch=1, channels=8, frames=4, mel_bins=16)
+    latent = mx.arange(math.prod(shape.to_mlx_shape()), dtype=mx.float32).reshape(
+        shape.to_mlx_shape()
+    )
+
+    patched = patchifier.patchify(latent)
+    restored = patchifier.unpatchify(patched, shape)
+    positions = patchifier.get_patch_grid_bounds(shape)
+
+    assert patched.shape == (1, 4, 128)
+    np.testing.assert_array_equal(np.array(restored), np.array(latent))
+    np.testing.assert_allclose(
+        np.array(positions[0, 0, :, 0]),
+        np.array([0.0, 0.01, 0.05, 0.09], dtype=np.float32),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    np.testing.assert_allclose(
+        np.array(positions[0, 0, :, 1]),
+        np.array([0.01, 0.05, 0.09, 0.13], dtype=np.float32),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_reference_latent_conditioning_appends_asymmetric_mask():
+    shape = AudioLatentShape(batch=1, channels=8, frames=3, mel_bins=16)
+    tools = AudioLatentTools(AudioPatchifier(), shape)
+    state = tools.create_initial_state()
+    ref = mx.ones((1, 8, 2, 16), dtype=mx.float32)
+
+    conditioned = append_reference_latent(state, tools, ref)
+
+    assert conditioned.latent.shape == (1, 5, 128)
+    assert conditioned.denoise_mask.shape == (1, 5, 1)
+    assert conditioned.positions.shape == (1, 1, 5, 2)
+    np.testing.assert_array_equal(
+        np.array(conditioned.attention_mask[0]),
+        np.array(
+            [
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1],
+                [1, 1, 1, 1, 1],
+                [0, 0, 0, 1, 1],
+                [0, 0, 0, 1, 1],
+            ],
+            dtype=np.float32,
+        ),
+    )
+    np.testing.assert_array_equal(np.array(conditioned.denoise_mask[0, 3:]), 0.0)
+    np.testing.assert_allclose(
+        np.array(conditioned.positions[0, 0, 3:, 0]),
+        np.array([0.5, 0.51], dtype=np.float32),
+        atol=1e-6,
+    )
+
+
+def _expected_ltx2_sigmas(steps, latent_shape):
+    tokens = math.prod(latent_shape[2:])
+    sigmas = np.linspace(1.0, 0.0, steps + 1, dtype=np.float32)
+    slope = (2.05 - 0.95) / (4096 - 1024)
+    intercept = 0.95 - slope * 1024
+    shift = tokens * slope + intercept
+    shifted = np.where(
+        sigmas != 0,
+        math.exp(shift) / (math.exp(shift) + (1 / sigmas - 1)),
+        0,
+    )
+    one_minus = 1.0 - shifted[:-1]
+    scale = one_minus[-1] / (1.0 - 0.1)
+    return np.concatenate([1.0 - one_minus / scale, shifted[-1:]]).astype(np.float32)
+
+
+def test_ltx2_scheduler_matches_reference_formula():
+    latent = mx.zeros((1, 5, 3, 4), dtype=mx.float32)
+    sigmas = ltx2_sigmas(steps=4, latent=latent)
+
+    np.testing.assert_allclose(
+        np.array(sigmas),
+        _expected_ltx2_sigmas(4, latent.shape),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert sigmas[0].item() == 1.0
+    assert sigmas[-1].item() == 0.0
+
+
+def test_add_gaussian_noise_preserves_frozen_reference_tokens():
+    state = LatentState(
+        latent=mx.array([[[0.0], [3.0]]], dtype=mx.float32),
+        denoise_mask=mx.array([[[1.0], [0.0]]], dtype=mx.float32),
+        positions=mx.zeros((1, 1, 2, 2), dtype=mx.float32),
+        clean_latent=mx.array([[[0.0], [3.0]]], dtype=mx.float32),
+        attention_mask=None,
+    )
+
+    noised = add_gaussian_noise(state, seed=0)
+
+    assert not np.isclose(np.array(noised.latent[0, 0, 0]), 0.0)
+    np.testing.assert_allclose(np.array(noised.latent[0, 1, 0]), 3.0, atol=1e-6)
+
+
+def test_velocity_and_denoised_are_inverse():
+    sample = mx.array([1.0, 2.0, 3.0], dtype=mx.float32)
+    denoised = mx.array([0.5, 1.0, 1.5], dtype=mx.float32)
+    sigma = mx.array(0.25, dtype=mx.float32)
+
+    velocity = to_velocity(sample, sigma, denoised)
+    restored = to_denoised(sample, velocity, sigma)
+
+    np.testing.assert_allclose(np.array(restored), np.array(denoised), atol=1e-6)
+
+
+def test_auto_rescale_and_guidance_math():
+    assert auto_rescale_for_cfg(1.5) == 0.0
+    assert auto_rescale_for_cfg(2.5) == 0.3
+    assert auto_rescale_for_cfg(4.0) == 0.8
+    assert auto_rescale_for_cfg(10.0) == 1.0
+
+    cond = mx.array([[1.0, 2.0]], dtype=mx.float32)
+    uncond_text = mx.array([[0.5, 1.5]], dtype=mx.float32)
+    perturbed = mx.array([[0.75, 1.75]], dtype=mx.float32)
+    params = MultiModalGuiderParams(cfg_scale=2.0, stg_scale=0.5)
+
+    guided = calculate_guided_prediction(cond, uncond_text, perturbed, 0.0, params)
+    expected = cond + (cond - uncond_text) + 0.5 * (cond - perturbed)
+    np.testing.assert_allclose(np.array(guided), np.array(expected), atol=1e-6)
+
+
+def test_text_feature_extractor_v2_normalizes_and_masks_hidden_states():
+    h0 = mx.array(
+        [[[3.0, 4.0], [0.0, 0.0], [1.0, 2.0]]],
+        dtype=mx.float32,
+    )
+    h1 = h0 * 2
+    mask = mx.array([[1, 0, 1]], dtype=mx.int32)
+    stacked = stack_hidden_states([h0, h1])
+    normed = norm_and_concat_per_token_rms(stacked, mask)
+
+    assert stacked.shape == (1, 3, 2, 2)
+    assert normed.shape == (1, 3, 4)
+    np.testing.assert_array_equal(
+        np.array(normed[0, 1]), np.zeros((4,), dtype=np.float32)
+    )
+    variance = np.mean(np.array(stacked[0, 0]) ** 2, axis=0, keepdims=True)
+    expected_first = (np.array(stacked[0, 0]) / np.sqrt(variance + 1e-6)).reshape(4)
+    np.testing.assert_allclose(np.array(normed[0, 0]), expected_first, atol=1e-6)
+
+
+def test_feature_extractor_v2_shape_with_small_dimensions():
+    extractor = FeatureExtractorV2(embedding_dim=2, audio_inner_dim=4, num_layers=2)
+    # Make the projection deterministic and simple.
+    extractor.audio_aggregate_embed.weight = mx.ones((4, 4), dtype=mx.float32)
+    extractor.audio_aggregate_embed.bias = mx.zeros((4,), dtype=mx.float32)
+
+    h0 = mx.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=mx.float32)
+    h1 = h0 + 1
+    mask = mx.array([[1, 1]], dtype=mx.int32)
+    out = extractor([h0, h1], mask)
+
+    expected_input = norm_and_concat_per_token_rms(stack_hidden_states([h0, h1]), mask)
+    expected_input = rescale_norm(expected_input, target_dim=4, source_dim=2)
+    expected = np.sum(np.array(expected_input), axis=-1, keepdims=True).repeat(
+        4, axis=-1
+    )
+    assert out.shape == (1, 2, 4)
+    np.testing.assert_allclose(np.array(out), expected, rtol=5e-4, atol=1e-5)
+
+
+def test_embeddings_connector_replaces_padding_and_returns_binary_mask():
+    connector = Embeddings1DConnector(
+        attention_head_dim=2,
+        num_attention_heads=1,
+        num_layers=0,
+        num_learnable_registers=2,
+    )
+    connector.learnable_registers = mx.array(
+        [[10.0, 20.0], [30.0, 40.0]], dtype=mx.float32
+    )
+    hidden = mx.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=mx.float32)
+    binary_mask = mx.array([[1, 0]], dtype=mx.int32)
+    additive_mask = binary_to_additive_attention_mask(binary_mask, dtype=mx.float32)
+
+    replaced, returned_mask = connector._replace_padded_with_learnable_registers(
+        hidden, additive_mask
+    )
+    encoded, encoded_mask = connector(hidden, additive_mask)
+
+    np.testing.assert_allclose(np.array(replaced[0, 0]), [1.0, 2.0], atol=1e-6)
+    np.testing.assert_allclose(np.array(replaced[0, 1]), [30.0, 40.0], atol=1e-6)
+    np.testing.assert_array_equal(np.array(returned_mask), np.zeros((1, 1, 1, 2)))
+    assert encoded.shape == hidden.shape
+    assert encoded_mask.shape == additive_mask.shape
+
+
+def test_embeddings_connector_compacts_left_padded_tokens_like_reference():
+    connector = Embeddings1DConnector(
+        attention_head_dim=2,
+        num_attention_heads=1,
+        num_layers=0,
+        num_learnable_registers=2,
+    )
+    connector.learnable_registers = mx.array(
+        [[10.0, 20.0], [30.0, 40.0]], dtype=mx.float32
+    )
+    hidden = mx.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=mx.float32)
+    binary_mask = mx.array([[0, 1]], dtype=mx.int32)
+    additive_mask = binary_to_additive_attention_mask(binary_mask, dtype=mx.float32)
+
+    replaced, returned_mask = connector._replace_padded_with_learnable_registers(
+        hidden, additive_mask
+    )
+
+    np.testing.assert_allclose(np.array(replaced[0, 0]), [3.0, 4.0], atol=1e-6)
+    np.testing.assert_allclose(np.array(replaced[0, 1]), [30.0, 40.0], atol=1e-6)
+    np.testing.assert_array_equal(np.array(returned_mask), np.zeros((1, 1, 1, 2)))
+
+
+def test_dramabox_text_conditioner_small_path_shapes():
+    conditioner = DramaboxTextConditioner(
+        embedding_dim=2,
+        audio_inner_dim=4,
+        num_gemma_layers=2,
+        connector_layers=0,
+        connector_heads=1,
+        connector_head_dim=4,
+        connector_num_learnable_registers=None,
+    )
+    conditioner.feature_extractor.audio_aggregate_embed.weight = mx.ones(
+        (4, 4), dtype=mx.float32
+    )
+    conditioner.feature_extractor.audio_aggregate_embed.bias = mx.zeros(
+        (4,), dtype=mx.float32
+    )
+
+    h0 = mx.array([[[1.0, 2.0], [3.0, 4.0]]], dtype=mx.float32)
+    h1 = h0 + 1
+    mask = mx.array([[1, 0]], dtype=mx.int32)
+    encoded, encoded_mask = conditioner([h0, h1], mask)
+
+    assert encoded.shape == (1, 2, 4)
+    assert encoded_mask.shape == (1, 2)
+    np.testing.assert_array_equal(np.array(encoded_mask), np.ones((1, 2)))
+
+
+def test_rope_interleaved_and_split_application():
+    x = mx.array([[[1.0, 2.0, 3.0, 4.0]]], dtype=mx.float32)
+    cos = mx.zeros_like(x)
+    sin = mx.ones_like(x)
+
+    interleaved = apply_interleaved_rotary_emb(x, cos, sin)
+    np.testing.assert_array_equal(
+        np.array(interleaved),
+        np.array([[[-2.0, 1.0, -4.0, 3.0]]], dtype=np.float32),
+    )
+
+    x_split = mx.array([[[[1.0, 2.0, 3.0, 4.0]]]], dtype=mx.float32)
+    cos_split = mx.zeros((1, 1, 1, 2), dtype=mx.float32)
+    sin_split = mx.ones((1, 1, 1, 2), dtype=mx.float32)
+    split = apply_split_rotary_emb(x_split, cos_split, sin_split)
+    np.testing.assert_array_equal(
+        np.array(split),
+        np.array([[[[-3.0, -4.0, 1.0, 2.0]]]], dtype=np.float32),
+    )
+
+
+def test_precompute_audio_split_rope_shapes():
+    patchifier = AudioPatchifier()
+    shape = AudioLatentShape(batch=1, channels=8, frames=3, mel_bins=16)
+    positions = patchifier.get_patch_grid_bounds(shape)
+    cos, sin = precompute_freqs_cis(
+        positions,
+        dim=2048,
+        out_dtype=mx.float32,
+        theta=10000.0,
+        max_pos=[20.0],
+        use_middle_indices_grid=True,
+        num_attention_heads=32,
+        rope_type=LTXRopeType.SPLIT,
+        double_precision=True,
+    )
+
+    assert cos.shape == (1, 32, 3, 32)
+    assert sin.shape == (1, 32, 3, 32)
+    np.testing.assert_allclose(
+        np.array(cos * cos + sin * sin),
+        1.0,
+        rtol=1e-6,
+        atol=1e-6,
+    )
+
+
+def test_ltx_layers_rms_norm_gelu_and_feed_forward_shape():
+    x = mx.array([[[1.0, 2.0, 3.0, 4.0]]], dtype=mx.float32)
+    out = rms_norm(x)
+    expected = np.array(x) / np.sqrt(
+        np.mean(np.array(x) ** 2, axis=-1, keepdims=True) + 1e-6
+    )
+    np.testing.assert_allclose(np.array(out), expected, atol=1e-6)
+
+    gelu = gelu_approx(mx.array([-1.0, 0.0, 1.0], dtype=mx.float32))
+    expected_gelu = (
+        0.5
+        * np.array([-1.0, 0.0, 1.0])
+        * (
+            1
+            + np.tanh(
+                np.sqrt(2 / np.pi)
+                * (
+                    np.array([-1.0, 0.0, 1.0])
+                    + 0.044715 * np.array([-1.0, 0.0, 1.0]) ** 3
+                )
+            )
+        )
+    )
+    np.testing.assert_allclose(np.array(gelu), expected_gelu, atol=1e-6)
+
+    ff = FeedForward(dim=4, dim_out=4)
+    y = ff(x)
+    assert y.shape == x.shape
+
+
+def test_timestep_embedding_and_adaln_shapes():
+    emb = get_timestep_embedding(
+        mx.array([1.0, 2.0], dtype=mx.float32),
+        embedding_dim=6,
+        flip_sin_to_cos=True,
+        downscale_freq_shift=0,
+    )
+    assert emb.shape == (2, 6)
+
+    adaln = AdaLayerNormSingle(embedding_dim=12, embedding_coefficient=9)
+    timestep, embedded = adaln(mx.array([1.0, 2.0], dtype=mx.float32))
+    assert timestep.shape == (2, 108)
+    assert embedded.shape == (2, 12)
+
+
+def test_audio_only_ltx_model_shape_with_tiny_config():
+    config = ModelConfig.from_dict(
+        {
+            "transformer": {
+                "num_layers": 1,
+                "audio_num_attention_heads": 1,
+                "audio_attention_head_dim": 4,
+                "audio_in_channels": 4,
+                "audio_out_channels": 4,
+                "audio_cross_attention_dim": 4,
+                "norm_eps": 1e-6,
+                "audio_positional_embedding_max_pos": [20.0],
+                "timestep_scale_multiplier": 1000,
+                "use_middle_indices_grid": True,
+                "rope_type": "split",
+                "frequencies_precision": "float64",
+                "apply_gated_attention": False,
+                "cross_attention_adaln": True,
+            }
+        }
+    ).transformer
+    model = AudioOnlyLTXModel(config)
+    latent = mx.zeros((1, 3, 4), dtype=mx.float32)
+    sigma = mx.array([1.0], dtype=mx.float32)
+    timesteps = mx.ones((1, 3), dtype=mx.float32)
+    positions = mx.array(
+        [[[[0.0, 0.01], [0.01, 0.05], [0.05, 0.09]]]], dtype=mx.float32
+    )
+    context = mx.zeros((1, 2, 4), dtype=mx.float32)
+    context_mask = mx.ones((1, 2), dtype=mx.int32)
+    audio = Modality(
+        latent=latent,
+        sigma=sigma,
+        timesteps=timesteps,
+        positions=positions,
+        context=context,
+        context_mask=context_mask,
+    )
+    velocity = model(audio)
+    denoised = X0Model(model)(audio)
+    assert velocity.shape == latent.shape
+    assert denoised.shape == latent.shape
+
+
+def test_sampling_duration_shape_and_long_clip_patch():
+    audio_config = ModelConfig.from_dict({}).audio
+    assert aligned_frame_count(3.0, fps=25.0) == 73
+    assert resolve_generation_duration("hello", gen_duration=4.5) == 4.5
+    shape = target_shape_for_duration(3.0, audio_config)
+    assert shape.batch == 1
+    assert shape.channels == 8
+    assert shape.mel_bins == 16
+
+    latent = mx.zeros((1, 1, 515, 1), dtype=mx.float32)
+    latent[:, :, 511, :] = 3.0
+    latent[:, :, 514, :] = 6.0
+    patched = patch_long_clip_silence_prior(latent)
+    np.testing.assert_allclose(np.array(patched[:, :, 512, :]), 4.0, atol=1e-6)
+    np.testing.assert_allclose(np.array(patched[:, :, 513, :]), 5.0, atol=1e-6)
+
+
+def test_guided_euler_loop_runs_with_identity_x0_model():
+    shape = AudioLatentShape(batch=1, channels=1, frames=2, mel_bins=2)
+    tools = AudioLatentTools(AudioPatchifier(), shape)
+    state = tools.create_initial_state()
+    state = LatentState(
+        latent=mx.ones_like(state.latent),
+        denoise_mask=state.denoise_mask,
+        positions=state.positions,
+        clean_latent=state.clean_latent,
+        attention_mask=state.attention_mask,
+    )
+    context = mx.zeros((1, 1, 2), dtype=mx.float32)
+
+    def identity_x0(modality, stg_blocks=None):
+        return mx.zeros_like(modality.latent)
+
+    out = guided_euler_loop(
+        state=state,
+        x0_model=identity_x0,
+        context=context,
+        steps=2,
+    )
+    assert out.latent.shape == state.latent.shape
+    np.testing.assert_allclose(np.array(out.latent), 0.0, atol=1e-5)
+
+
+def test_guided_euler_loop_uses_negative_context_mask():
+    shape = AudioLatentShape(batch=1, channels=1, frames=1, mel_bins=1)
+    tools = AudioLatentTools(AudioPatchifier(), shape)
+    state = tools.create_initial_state()
+    seen_masks = []
+
+    def mask_sensitive_x0(modality, stg_blocks=None):
+        del stg_blocks
+        if modality.context_mask is None:
+            seen_masks.append(None)
+        else:
+            seen_masks.append(float(mx.sum(modality.context_mask).item()))
+        return mx.zeros_like(modality.latent)
+
+    guided_euler_loop(
+        state=state,
+        x0_model=mask_sensitive_x0,
+        context=mx.zeros((1, 2, 1), dtype=mx.float32),
+        negative_context=mx.zeros((1, 3, 1), dtype=mx.float32),
+        context_mask=mx.array([[1, 0]], dtype=mx.int32),
+        negative_context_mask=mx.array([[1, 1, 0]], dtype=mx.int32),
+        steps=2,
+        guider_params=MultiModalGuiderParams(cfg_scale=2.0, stg_scale=0.0),
+    )
+
+    assert 1.0 in seen_masks
+    assert 2.0 in seen_masks
+
+
+def test_guided_euler_loop_keeps_reference_tokens_clean():
+    state = LatentState(
+        latent=mx.array([[[1.0], [7.0]]], dtype=mx.float32),
+        denoise_mask=mx.array([[[1.0], [0.0]]], dtype=mx.float32),
+        positions=mx.zeros((1, 1, 2, 2), dtype=mx.float32),
+        clean_latent=mx.array([[[0.0], [7.0]]], dtype=mx.float32),
+        attention_mask=None,
+    )
+    seen_timesteps = []
+
+    def zero_x0(modality, stg_blocks=None):
+        del stg_blocks
+        seen_timesteps.append(np.array(modality.timesteps))
+        return mx.zeros_like(modality.latent)
+
+    out = guided_euler_loop(
+        state=state,
+        x0_model=zero_x0,
+        context=mx.zeros((1, 1, 1), dtype=mx.float32),
+        steps=2,
+    )
+
+    np.testing.assert_allclose(np.array(out.latent[:, 0]), 0.0, atol=1e-5)
+    np.testing.assert_allclose(np.array(out.latent[:, 1]), 7.0, atol=1e-5)
+    assert all(step[0, 1] == 0.0 for step in seen_timesteps)
+
+
 if __name__ == "__main__":
     unittest.main()
