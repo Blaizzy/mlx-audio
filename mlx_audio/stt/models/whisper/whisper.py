@@ -316,6 +316,120 @@ class ModelDimensions:
 ModelConfig = ModelDimensions
 
 
+# Each canonical openai/whisper-* variant has a unique architecture signature.
+# Identifying the variant from config.json dims (rather than the directory
+# name) makes the fallback robust to arbitrary repo naming
+# (whisper-large-v3-mlx-4bit, whisper-base.en-mlx, user-renamed local dirs).
+# Signature: (n_audio_state, n_mels, n_audio_layer, n_text_layer, n_vocab).
+# large-v1 and large-v2 share architecture; v2 is the more common upstream
+# choice and its processor files are interchangeable with v1's.  Issue #645.
+_WHISPER_ARCH_TO_OPENAI = {
+    # Multilingual variants (vocab 51865)
+    (384, 80, 4, 4, 51865): "openai/whisper-tiny",
+    (512, 80, 6, 6, 51865): "openai/whisper-base",
+    (768, 80, 12, 12, 51865): "openai/whisper-small",
+    (1024, 80, 24, 24, 51865): "openai/whisper-medium",
+    (1280, 80, 32, 32, 51865): "openai/whisper-large-v2",
+    # English-only variants (vocab 51864 — no language tokens)
+    (384, 80, 4, 4, 51864): "openai/whisper-tiny.en",
+    (512, 80, 6, 6, 51864): "openai/whisper-base.en",
+    (768, 80, 12, 12, 51864): "openai/whisper-small.en",
+    (1024, 80, 24, 24, 51864): "openai/whisper-medium.en",
+    # large-v3 (added Cantonese token + 128 mel bins)
+    (1280, 128, 32, 32, 51866): "openai/whisper-large-v3",
+    # large-v3-turbo (4 decoder layers vs 32)
+    (1280, 128, 32, 4, 51866): "openai/whisper-large-v3-turbo",
+}
+
+
+def _whisper_arch_signature(
+    model_path: Path,
+) -> Optional[Tuple[int, int, int, int, int]]:
+    """Read config.json from ``model_path`` and return its 5-tuple of dims.
+
+    Returns None if config.json is missing, unreadable, or doesn't expose
+    the expected whisper dimensions. Handles both openai/mlx-style keys
+    (``n_audio_state``, ``n_mels``, …) and HF Transformers-style keys
+    (``d_model``, ``num_mel_bins``, …).
+    """
+    cfg_path = model_path / "config.json"
+    if not cfg_path.is_file():
+        return None
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except Exception:
+        return None
+    n_audio_state = cfg.get("n_audio_state") or cfg.get("d_model")
+    n_mels = cfg.get("n_mels") or cfg.get("num_mel_bins")
+    n_audio_layer = cfg.get("n_audio_layer") or cfg.get("encoder_layers")
+    n_text_layer = cfg.get("n_text_layer") or cfg.get("decoder_layers")
+    n_vocab = cfg.get("n_vocab") or cfg.get("vocab_size")
+    if None in (n_audio_state, n_mels, n_audio_layer, n_text_layer, n_vocab):
+        return None
+    return (n_audio_state, n_mels, n_audio_layer, n_text_layer, n_vocab)
+
+
+def _canonical_openai_whisper_repo(model_path: Path) -> Optional[str]:
+    """Return the canonical openai/whisper-* repo for ``model_path``.
+
+    Identifies the architecture from config.json dims rather than parsing
+    the directory name, so quantization suffixes and renames don't matter.
+    Returns None when the architecture isn't a recognized canonical variant
+    so the caller preserves the prior "warn and set _processor=None" path.
+    """
+    sig = _whisper_arch_signature(model_path)
+    if sig is None:
+        return None
+    return _WHISPER_ARCH_TO_OPENAI.get(sig)
+
+
+def _load_whisper_processor(model_path: Path):
+    """Load WhisperProcessor for ``model_path``, with canonical-openai fallback.
+
+    Falls back only on ``OSError`` from the local load (transformers' signal
+    for missing files). Other exceptions — corrupt JSON, permission errors,
+    etc. — propagate so a fine-tuned local checkpoint can't be silently
+    masked by the canonical processor (a vocab mismatch would generate
+    garbage transcription with no error signal).
+
+    Network: when the fallback fires, the canonical processor is fetched
+    from the HF Hub (~4 MB).  Set ``HF_HUB_OFFLINE=1`` or
+    ``TRANSFORMERS_OFFLINE=1`` in air-gapped environments to suppress this
+    — transformers will raise a clear offline-mode error instead of waiting
+    on a network timeout.
+
+    Returns the processor or ``None`` if neither the local load nor the
+    canonical fallback succeeds.
+    """
+    try:
+        from transformers import WhisperProcessor
+    except ImportError as e:
+        warnings.warn(f"Could not load WhisperProcessor: {e}.")
+        return None
+
+    try:
+        return WhisperProcessor.from_pretrained(str(model_path))
+    except OSError as local_err:
+        canonical = _canonical_openai_whisper_repo(model_path)
+        if canonical is None:
+            warnings.warn(f"Could not load WhisperProcessor: {local_err}.")
+            return None
+        try:
+            processor = WhisperProcessor.from_pretrained(canonical)
+        except Exception as fallback_err:
+            warnings.warn(
+                f"Could not load WhisperProcessor locally or from {canonical}: "
+                f"local={local_err} fallback={fallback_err}"
+            )
+            return None
+        warnings.warn(
+            f"Loaded WhisperProcessor from {canonical} as fallback because "
+            f"{model_path} is missing processor files: {local_err}",
+            stacklevel=2,
+        )
+        return processor
+
+
 def sinusoids(length, channels, max_timescale=10000):
     """Returns sinusoids for positional embedding"""
     assert channels % 2 == 0
@@ -692,14 +806,7 @@ class Model(nn.Module):
         Returns:
             The model with processor initialized
         """
-        try:
-            from transformers import WhisperProcessor
-
-            processor = WhisperProcessor.from_pretrained(str(model_path))
-            model._processor = processor
-        except Exception as e:
-            model._processor = None
-            warnings.warn(f"Could not load WhisperProcessor: {e}.")
+        model._processor = _load_whisper_processor(Path(model_path))
 
         # Load alignment heads from generation_config.json for word-level timestamps
         gen_config_path = Path(model_path) / "generation_config.json"
