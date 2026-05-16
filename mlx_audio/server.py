@@ -39,6 +39,7 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from huggingface_hub.errors import RepositoryNotFoundError
 from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
@@ -227,6 +228,31 @@ class SeparationTaskPayload:
 
 def _load_model_for_inference(model_name: str):
     return model_provider.load_model(model_name)
+
+
+async def _preflight_model_load(model_name: str) -> None:
+    """Load ``model_name`` synchronously and translate failures into HTTPException.
+
+    Routes that return a ``StreamingResponse`` commit the HTTP status + headers
+    before the body generator runs, so any failure inside the inference worker
+    surfaces as 200 OK with an empty body. Pre-flighting the load here lets the
+    framework's exception handlers turn the failure into a real HTTP error
+    response. Warm models are a no-op (``ModelProvider.load_model`` is cached).
+    """
+    try:
+        await asyncio.to_thread(_load_model_for_inference, model_name)
+    except HTTPException:
+        raise
+    except RepositoryNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Model not found: {model_name!r} is not a known HuggingFace repo or local path",
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to load model {model_name!r}: {exc}",
+        ) from exc
 
 
 class STTExecutionAdapter(BaseModelExecutionAdapter):
@@ -900,6 +926,8 @@ async def tts_speech(payload: SpeechRequest, request: Request):
                 detail=f"Reference audio file not found: {payload.ref_audio}",
             )
 
+    await _preflight_model_load(payload.model)
+
     handle = get_inference_broker().submit(
         endpoint_kind="tts",
         model_name=payload.model,
@@ -965,6 +993,8 @@ async def stt_transcriptions(
     tmp = io.BytesIO(data)
     audio, sr = audio_read(tmp, always_2d=False)
     tmp.close()
+
+    await _preflight_model_load(payload.model)
 
     handle = get_inference_broker().submit(
         endpoint_kind="stt",

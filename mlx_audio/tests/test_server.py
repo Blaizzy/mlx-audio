@@ -2,9 +2,11 @@ import functools
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import mlx.core as mx
 import numpy as np
 import pytest
+from huggingface_hub.errors import RepositoryNotFoundError
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
@@ -121,7 +123,7 @@ def test_tts_speech(client, mock_model_provider):
         == "attachment; filename=speech.mp3"
     )
 
-    mock_model_provider.load_model.assert_called_once_with("test_tts_model")
+    mock_model_provider.load_model.assert_any_call("test_tts_model")
     mock_tts_model.generate.assert_called_once()
 
     args, kwargs = mock_tts_model.generate.call_args
@@ -134,6 +136,86 @@ def test_tts_speech(client, mock_model_provider):
         assert len(audio_data) > 0
     except Exception as e:
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
+
+
+def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
+    """Construct a RepositoryNotFoundError shaped like the real HF client raises."""
+    request = httpx.Request("GET", f"https://huggingface.co/api/models/{model_name}")
+    response = httpx.Response(404, request=request)
+    return RepositoryNotFoundError(f"404 Client Error. Repository Not Found", response=response)
+
+
+def test_tts_speech_bad_model_returns_404_not_silent_200(client, mock_model_provider):
+    """Regression: bad model ids must surface as 4xx, not 200 OK with empty body.
+
+    Before the pre-flight fix, ``StreamingResponse`` committed the response
+    headers (200 OK) before the worker thread tried to load the model, so any
+    HuggingFace failure ended up as a clean zero-byte body. The fix loads the
+    model synchronously before returning the response.
+    """
+
+    def _raise(model_name):
+        raise _hf_repo_not_found(model_name)
+
+    mock_model_provider.load_model = MagicMock(side_effect=_raise)
+
+    payload = {
+        "model": "does-not-exist-on-hf",
+        "input": "hi",
+        "response_format": "wav",
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 404, (
+        f"expected 404 for bad model, got {response.status_code} "
+        f"(body length={len(response.content)})"
+    )
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "detail" in body
+    assert "does-not-exist-on-hf" in body["detail"]
+
+
+def test_tts_speech_load_failure_returns_500(client, mock_model_provider):
+    """Non-HF load failures should surface as 500 with a JSON detail body."""
+
+    def _raise(model_name):
+        raise RuntimeError("checkpoint is corrupted")
+
+    mock_model_provider.load_model = MagicMock(side_effect=_raise)
+
+    payload = {"model": "some-model", "input": "hi", "response_format": "wav"}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "detail" in body
+    assert "some-model" in body["detail"]
+
+
+def test_stt_transcriptions_bad_model_returns_404(client, mock_model_provider):
+    """Same silent-200 hazard applies to the default ndjson streaming response."""
+
+    def _raise(model_name):
+        raise _hf_repo_not_found(model_name)
+
+    mock_model_provider.load_model = MagicMock(side_effect=_raise)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={"model": "does-not-exist-on-hf"},
+    )
+
+    assert response.status_code == 404, (
+        f"expected 404 for bad model, got {response.status_code} "
+        f"(body length={len(response.content)})"
+    )
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "detail" in body
+    assert "does-not-exist-on-hf" in body["detail"]
 
 
 def test_stt_transcriptions(client, mock_model_provider):
@@ -164,7 +246,7 @@ def test_stt_transcriptions(client, mock_model_provider):
     assert response.status_code == 200
     assert response.json() == {"text": "This is a test transcription."}
 
-    mock_model_provider.load_model.assert_called_once_with("test_stt_model")
+    mock_model_provider.load_model.assert_any_call("test_stt_model")
     mock_stt_model.generate.assert_called_once()
 
     assert mock_stt_model.generate.call_args[0][0].startswith("/tmp/")
