@@ -8,7 +8,15 @@ Original: [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS)
 
 ## Models
 
-### v2 (recommended)
+### v3 (recommended)
+
+| Model | HuggingFace | Conditioning |
+|---|---|---|
+| `mlx-community/Irodori-TTS-500M-v3-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-500M-v3-fp16) | Voice cloning + automatic duration |
+| `mlx-community/Irodori-TTS-500M-v3-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-500M-v3-8bit) | Voice cloning + automatic duration |
+| `mlx-community/Irodori-TTS-500M-v3-4bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-500M-v3-4bit) | Voice cloning + automatic duration |
+
+### v2
 
 | Model | HuggingFace | Conditioning |
 |---|---|---|
@@ -33,7 +41,7 @@ Original: [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS)
 from mlx_audio.tts.generate import generate_audio
 
 generate_audio(
-    model="mlx-community/Irodori-TTS-500M-v2-fp16",
+    model="mlx-community/Irodori-TTS-500M-v3-fp16",
     text="今日はいい天気ですね。",
     ref_audio="speaker.wav",
     file_prefix="output",
@@ -42,7 +50,7 @@ generate_audio(
 
 ```bash
 python -m mlx_audio.tts.generate \
-  --model mlx-community/Irodori-TTS-500M-v2-fp16 \
+  --model mlx-community/Irodori-TTS-500M-v3-fp16 \
   --text "今日はいい天気ですね。" \
   --ref_audio speaker.wav
 ```
@@ -67,6 +75,41 @@ python -m mlx_audio.tts.generate \
   --instruct "落ち着いた、近い距離感の女性話者"
 ```
 
+## v3 Features
+
+### Automatic Duration Prediction
+
+v3 base models include an integrated duration predictor that automatically estimates
+output length from the input text and reference audio. When `--seconds` is omitted,
+the duration is predicted automatically:
+
+```python
+generate_audio(
+    model="mlx-community/Irodori-TTS-500M-v3-fp16",
+    text="今日はいい天気ですね。",
+    ref_audio="speaker.wav",
+    file_prefix="output",
+    # seconds is auto-predicted; use duration_scale to adjust
+    duration_scale=1.0,  # >1 longer, <1 shorter
+)
+```
+
+### Sway Sampling
+
+For faster inference, Sway Sampling can be combined with fewer Euler steps:
+
+```python
+generate_audio(
+    model="mlx-community/Irodori-TTS-500M-v3-fp16",
+    text="今日はいい天気ですね。",
+    ref_audio="speaker.wav",
+    file_prefix="output",
+    num_steps=6,
+    t_schedule_mode="sway",
+    sway_coeff=-1.0,
+)
+```
+
 ## Memory requirements
 
 The default `sequence_length=750` requires approximately 24GB of unified memory.
@@ -74,8 +117,9 @@ On 16GB machines, use reduced settings:
 
 ```python
 generate_audio(
-    model="mlx-community/Irodori-TTS-500M-v2-fp16",
+    model="mlx-community/Irodori-TTS-500M-v3-fp16",
     text="こんにちは。",
+    ref_audio="speaker.wav",
     sequence_length=300,
     cfg_guidance_mode="alternating",
     file_prefix="output",
@@ -94,10 +138,12 @@ With `cfg_guidance_mode="independent"` (default), multiply memory by ~3.
 
 ## Notes
 
+- v3 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
+  and includes an integrated duration predictor for automatic output length estimation.
 - v2 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
   and is bundled in the converted model weights.
 - v1 uses `facebook/dacvae-watermarked`, downloaded automatically on first use.
 
 ## License
 
-MIT License. See [Aratako/Irodori-TTS-500M-v2](https://huggingface.co/Aratako/Irodori-TTS-500M-v2) for details.
+MIT License. See [Aratako/Irodori-TTS-500M-v3](https://huggingface.co/Aratako/Irodori-TTS-500M-v3) for details.

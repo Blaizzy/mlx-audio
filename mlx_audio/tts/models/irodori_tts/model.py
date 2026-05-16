@@ -76,6 +76,31 @@ def patch_sequence_with_mask(
     return seq, mask
 
 
+def _safe_attention_mask(
+    x: mx.array,
+    mask: mx.array,
+) -> Tuple[mx.array, mx.array]:
+    """Ensure at least one position is valid per batch for attention pooling."""
+    if mask.ndim != 2 or mask.shape[0] != x.shape[0] or mask.shape[1] != x.shape[1]:
+        raise ValueError(
+            f"mask must have shape (B, S) matching x, got x={tuple(x.shape)} "
+            f"mask={tuple(mask.shape)}"
+        )
+    mask = mask.astype(mx.bool_)
+    has_any = mx.any(mask, axis=1)
+    if mx.all(has_any):
+        return x, mask
+    if x.shape[1] <= 0:
+        raise ValueError("Cannot attention-pool an empty sequence.")
+    x = mx.copy(x)
+    mask = mx.copy(mask)
+    x = mx.where(has_any[:, None, None], x, mx.zeros_like(x))
+    # Set first position valid for batches with no valid positions
+    fallback = ~has_any
+    mask = mx.where(fallback[:, None], mx.concatenate([mx.ones((x.shape[0], 1), dtype=mx.bool_), mask[:, 1:]], axis=1), mask)
+    return x, mask
+
+
 # ---------------------------------------------------------------------------
 # Normalisation layers
 # ---------------------------------------------------------------------------
@@ -502,6 +527,442 @@ class DiffusionBlock(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Duration predictor components (v3)
+# ---------------------------------------------------------------------------
+
+
+class DurationSwiGLUBlock(nn.Module):
+    """SwiGLU block with optional AdaRN-Zero modulation for duration predictor."""
+
+    def __init__(
+        self,
+        dim: int,
+        hidden_dim: int,
+        norm_eps: float,
+        cond_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        self.norm = RMSNorm(dim, eps=norm_eps)
+        self.mlp = SwiGLU(dim, hidden_dim)
+        self.cond_dim = cond_dim
+        self.modulation = None
+        if cond_dim is not None:
+            self.modulation = nn.Linear(cond_dim, dim * 3)
+            # Zero-init for stable training
+            self.modulation.weight = self.modulation.weight * 0.0
+            self.modulation.bias = self.modulation.bias * 0.0
+
+    def __call__(self, x: mx.array, cond: Optional[mx.array] = None) -> mx.array:
+        h = self.norm(x)
+        if self.modulation is not None:
+            if cond is None:
+                raise ValueError("cond is required for AdaRN-Zero duration blocks.")
+            shift, scale, gate = mx.split(self.modulation(nn.silu(cond)), 3, axis=-1)
+            if h.ndim == 3 and shift.ndim == 2:
+                shift = shift[:, None, :]
+                scale = scale[:, None, :]
+                gate = gate[:, None, :]
+            h = h * (1.0 + scale) + shift
+            return x + mx.tanh(gate) * self.mlp(h)
+        return x + self.mlp(h)
+
+
+class AttentionPooling(nn.Module):
+    """Attention pooling to reduce sequence to single vector."""
+
+    def __init__(self, dim: int, heads: int, norm_eps: float):
+        super().__init__()
+        self.dim = dim
+        self.heads = heads
+        self.head_dim = dim // heads
+        self.query = mx.zeros((1, 1, dim))
+        self.q_norm = RMSNorm(dim, eps=norm_eps)
+        self.k_norm = RMSNorm(dim, eps=norm_eps)
+        self.wq = nn.Linear(dim, dim, bias=False)
+        self.wk = nn.Linear(dim, dim, bias=False)
+        self.wv = nn.Linear(dim, dim, bias=False)
+        self.wo = nn.Linear(dim, dim, bias=False)
+
+    def __call__(self, x: mx.array, mask: mx.array) -> mx.array:
+        if x.ndim != 3 or x.shape[-1] != self.dim:
+            raise ValueError(f"x must have shape (B, S, {self.dim}), got {tuple(x.shape)}")
+        x, mask = _safe_attention_mask(x, mask)
+        bsz, seq_len, _ = x.shape
+        q = mx.broadcast_to(self.query.astype(x.dtype), (bsz, 1, self.dim))
+        q = self.wq(self.q_norm(q)).reshape(bsz, 1, self.heads, self.head_dim)
+        k = self.wk(self.k_norm(x)).reshape(bsz, seq_len, self.heads, self.head_dim)
+        v = self.wv(x).reshape(bsz, seq_len, self.heads, self.head_dim)
+        attn_mask = _bool_to_additive_mask(mask)
+        y = mx.fast.scaled_dot_product_attention(
+            q=mx.transpose(q, (0, 2, 1, 3)),
+            k=mx.transpose(k, (0, 2, 1, 3)),
+            v=mx.transpose(v, (0, 2, 1, 3)),
+            scale=1.0 / math.sqrt(self.head_dim),
+            mask=attn_mask,
+        )
+        y = mx.transpose(y, (0, 2, 1, 3)).reshape(bsz, 1, self.dim)
+        return self.wo(y).squeeze(1)
+
+
+class CrossAttentionPooling(nn.Module):
+    """Cross-attention pooling: query attends to context sequence."""
+
+    def __init__(
+        self,
+        query_dim: int,
+        context_dim: int,
+        output_dim: int,
+        heads: int,
+        norm_eps: float,
+    ):
+        super().__init__()
+        self.query_dim = query_dim
+        self.context_dim = context_dim
+        self.output_dim = output_dim
+        self.heads = heads
+        self.head_dim = output_dim // heads
+        self.q_norm = RMSNorm(query_dim, eps=norm_eps)
+        self.k_norm = RMSNorm(context_dim, eps=norm_eps)
+        self.wq = nn.Linear(query_dim, output_dim, bias=False)
+        self.wk = nn.Linear(context_dim, output_dim, bias=False)
+        self.wv = nn.Linear(context_dim, output_dim, bias=False)
+        self.wo = nn.Linear(output_dim, output_dim, bias=False)
+
+    def __call__(
+        self,
+        query: mx.array,
+        context: mx.array,
+        context_mask: mx.array,
+    ) -> mx.array:
+        if query.ndim != 2 or query.shape[-1] != self.query_dim:
+            raise ValueError(
+                f"query must have shape (B, {self.query_dim}), got {tuple(query.shape)}"
+            )
+        if context.ndim != 3 or context.shape[-1] != self.context_dim:
+            raise ValueError(
+                f"context must have shape (B, S, {self.context_dim}), got {tuple(context.shape)}"
+            )
+        context, context_mask = _safe_attention_mask(context, context_mask)
+        bsz, seq_len, _ = context.shape
+        q = query[:, None, :]
+        q = self.wq(self.q_norm(q)).reshape(bsz, 1, self.heads, self.head_dim)
+        k = self.wk(self.k_norm(context)).reshape(bsz, seq_len, self.heads, self.head_dim)
+        v = self.wv(context).reshape(bsz, seq_len, self.heads, self.head_dim)
+        attn_mask = _bool_to_additive_mask(context_mask)
+        y = mx.fast.scaled_dot_product_attention(
+            q=mx.transpose(q, (0, 2, 1, 3)),
+            k=mx.transpose(k, (0, 2, 1, 3)),
+            v=mx.transpose(v, (0, 2, 1, 3)),
+            scale=1.0 / math.sqrt(self.head_dim),
+            mask=attn_mask,
+        )
+        y = mx.transpose(y, (0, 2, 1, 3)).reshape(bsz, 1, self.output_dim)
+        return self.wo(y).squeeze(1)
+
+
+class DurationPredictor(nn.Module):
+    """
+    Duration predictor that regresses log1p(num_frames) from text state + aux features.
+
+    Ported from Irodori-TTS v3 (Aratako/Irodori-TTS).
+    Supports multiple speaker fusion strategies:
+      - concat: simple concatenation
+      - adarn: AdaRN modulation
+      - adarn_zero: AdaRN-Zero with zero-init modulation (v3 default)
+      - speaker_cross_attn: cross-attention pooling over speaker sequence
+      - text_cross_attn: cross-attention pooling over text sequence
+
+    The default v3 architecture is 'token_sum_adarn_zero_no_aux', which
+    processes each text token through DurationSwiGLUBlocks with speaker
+    AdaRN-Zero modulation, then sums frame predictions.
+    """
+
+    def __init__(
+        self,
+        *,
+        text_dim: int,
+        aux_dim: int,
+        hidden_dim: int,
+        layers: int,
+        norm_eps: float,
+        speaker_dim: Optional[int] = None,
+        speaker_fusion: str = "concat",
+        attention_heads: int = 8,
+        architecture: str = "token_sum_adarn_zero_no_aux",
+        token_init_frames: float = 9.0,
+    ):
+        super().__init__()
+        self.text_dim = text_dim
+        self.aux_dim = aux_dim
+        self.hidden_dim = hidden_dim
+        self.speaker_dim = speaker_dim
+        self.speaker_fusion = speaker_fusion
+        self.duration_architecture = architecture
+
+        self.null_speaker = None
+        if speaker_dim is not None:
+            self.null_speaker = mx.zeros((speaker_dim,))
+
+        # Token-sum architecture (v3 default)
+        self.token_input_proj = None
+        self.token_blocks = None
+        self.token_out_norm = None
+        self.token_out_proj = None
+
+        # Pooled architecture components
+        self.text_pool = None
+        self.text_adarn_norm = None
+        self.text_adarn = None
+        self.speaker_cross_attn = None
+        self.text_cross_attn = None
+        self.input_proj = None
+        self.blocks = None
+        self.out_norm = None
+        self.out_proj = None
+
+        if architecture == "token_sum_adarn_zero_no_aux":
+            self.token_input_proj = nn.Linear(text_dim, hidden_dim)
+            self.token_blocks = [
+                DurationSwiGLUBlock(
+                    dim=hidden_dim,
+                    hidden_dim=hidden_dim,
+                    norm_eps=norm_eps,
+                    cond_dim=speaker_dim,
+                )
+                for _ in range(layers)
+            ]
+            self.token_out_norm = RMSNorm(hidden_dim, eps=norm_eps)
+            self.token_out_proj = nn.Linear(hidden_dim, 1)
+            self.token_out_proj.weight = self.token_out_proj.weight * 0.0
+            bias_init = math.log(math.expm1(token_init_frames))
+            self.token_out_proj.bias = mx.full(self.token_out_proj.bias.shape, bias_init)
+            return
+
+        # Pooled architecture
+        self.text_pool = AttentionPooling(
+            dim=text_dim,
+            heads=attention_heads,
+            norm_eps=norm_eps,
+        )
+
+        if speaker_dim is not None:
+            if speaker_fusion == "concat":
+                input_dim = text_dim + speaker_dim + aux_dim
+            elif speaker_fusion == "adarn":
+                input_dim = text_dim + aux_dim
+                self.text_adarn_norm = RMSNorm(text_dim, eps=norm_eps)
+                self.text_adarn = nn.Linear(speaker_dim, text_dim * 2)
+                self.text_adarn.weight = self.text_adarn.weight * 0.0
+                self.text_adarn.bias = self.text_adarn.bias * 0.0
+            elif speaker_fusion == "adarn_zero":
+                input_dim = text_dim + aux_dim
+            elif speaker_fusion == "speaker_cross_attn":
+                input_dim = text_dim * 2 + aux_dim
+                self.speaker_cross_attn = CrossAttentionPooling(
+                    query_dim=text_dim,
+                    context_dim=speaker_dim,
+                    output_dim=text_dim,
+                    heads=attention_heads,
+                    norm_eps=norm_eps,
+                )
+            elif speaker_fusion == "text_cross_attn":
+                input_dim = text_dim + speaker_dim + aux_dim
+                self.text_cross_attn = CrossAttentionPooling(
+                    query_dim=speaker_dim,
+                    context_dim=text_dim,
+                    output_dim=text_dim,
+                    heads=attention_heads,
+                    norm_eps=norm_eps,
+                )
+            else:
+                raise ValueError(f"Unsupported duration speaker fusion: {speaker_fusion!r}")
+        else:
+            input_dim = text_dim + aux_dim
+
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        block_cond_dim = speaker_dim if speaker_fusion == "adarn_zero" else None
+        self.blocks = [
+            DurationSwiGLUBlock(
+                dim=hidden_dim,
+                hidden_dim=hidden_dim,
+                norm_eps=norm_eps,
+                cond_dim=block_cond_dim,
+            )
+            for _ in range(layers)
+        ]
+        self.out_norm = RMSNorm(hidden_dim, eps=norm_eps)
+        self.out_proj = nn.Linear(hidden_dim, 1)
+
+    def _speaker_vec(
+        self,
+        batch_size: int,
+        dtype,
+        speaker_state: Optional[mx.array],
+        has_speaker: mx.array,
+    ) -> mx.array:
+        if self.null_speaker is None or self.speaker_dim is None:
+            raise RuntimeError("Duration speaker modules are missing.")
+        null_vec = mx.broadcast_to(self.null_speaker.astype(dtype)[None, :], (batch_size, self.speaker_dim))
+        if speaker_state is None:
+            return null_vec
+        speaker_vec = speaker_state[:, 0].astype(dtype)
+        return mx.where(has_speaker[:, None], speaker_vec, null_vec)
+
+    def __call__(
+        self,
+        text_state: mx.array,
+        text_mask: mx.array,
+        aux_features: mx.array,
+        speaker_state: Optional[mx.array] = None,
+        speaker_mask: Optional[mx.array] = None,
+        has_speaker: Optional[mx.array] = None,
+    ) -> mx.array:
+        if text_state.ndim != 3 or text_state.shape[-1] != self.text_dim:
+            raise ValueError(
+                f"text_state must have shape (B, S, {self.text_dim}), got {tuple(text_state.shape)}"
+            )
+        if aux_features.ndim != 2 or aux_features.shape[1] != self.aux_dim:
+            raise ValueError(
+                f"aux_features must have shape (B, {self.aux_dim}), got {tuple(aux_features.shape)}"
+            )
+        text_state, text_mask = _safe_attention_mask(text_state, text_mask)
+        aux_features = aux_features.astype(text_state.dtype)
+
+        # Token-sum architecture
+        if self.duration_architecture == "token_sum_adarn_zero_no_aux":
+            if self.speaker_dim is None:
+                raise RuntimeError("Token-sum duration architecture requires speaker modules.")
+            if has_speaker is None:
+                raise ValueError("has_speaker is required for speaker-conditioned duration prediction.")
+            has_speaker = has_speaker.astype(mx.bool_)
+            speaker_vec = self._speaker_vec(
+                batch_size=text_state.shape[0],
+                dtype=text_state.dtype,
+                speaker_state=speaker_state,
+                has_speaker=has_speaker,
+            )
+            h = self.token_input_proj(text_state)
+            for block in self.token_blocks:
+                h = block(h, cond=speaker_vec)
+            token_logits = self.token_out_proj(self.token_out_norm(h)).squeeze(-1)
+            # NOTE: MLX lacks mx.softplus; equivalent to log(1 + exp(x))
+            token_frames = mx.log(1.0 + mx.exp(token_logits.astype(mx.float32)))
+            total_frames = mx.sum(token_frames * text_mask.astype(token_frames.dtype), axis=1)
+            return mx.log1p(mx.maximum(total_frames, 0.0))
+
+        # Pooled architecture
+        if self.text_pool is None:
+            raise RuntimeError("Pooled duration modules are missing.")
+        text_vec = self.text_pool(text_state, text_mask)
+
+        if self.speaker_dim is None:
+            x = mx.concatenate([text_vec, aux_features], axis=-1)
+            h = self.input_proj(x)
+            for block in self.blocks:
+                h = block(h)
+            return self.out_proj(self.out_norm(h)).squeeze(-1)
+
+        if has_speaker is None:
+            raise ValueError("has_speaker is required for speaker-conditioned duration prediction.")
+        has_speaker = has_speaker.astype(mx.bool_)
+        speaker_vec = self._speaker_vec(
+            batch_size=text_vec.shape[0],
+            dtype=text_vec.dtype,
+            speaker_state=speaker_state,
+            has_speaker=has_speaker,
+        )
+
+        if self.speaker_fusion == "concat":
+            x = mx.concatenate([text_vec, speaker_vec, aux_features], axis=-1)
+            cond = None
+        elif self.speaker_fusion == "adarn":
+            if self.text_adarn_norm is None or self.text_adarn is None:
+                raise RuntimeError("AdaRN duration speaker modules are missing.")
+            scale, shift = mx.split(self.text_adarn(speaker_vec), 2, axis=-1)
+            text_vec = self.text_adarn_norm(text_vec) * (1.0 + scale) + shift
+            x = mx.concatenate([text_vec, aux_features], axis=-1)
+            cond = None
+        elif self.speaker_fusion == "adarn_zero":
+            x = mx.concatenate([text_vec, aux_features], axis=-1)
+            cond = speaker_vec
+        elif self.speaker_fusion == "speaker_cross_attn":
+            if self.speaker_cross_attn is None:
+                raise RuntimeError("speaker_cross_attn duration module is missing.")
+            speaker_context, speaker_context_mask = self._speaker_sequence(
+                batch_size=text_vec.shape[0],
+                dtype=text_vec.dtype,
+                speaker_state=speaker_state,
+                speaker_mask=speaker_mask,
+                has_speaker=has_speaker,
+            )
+            context_vec = self.speaker_cross_attn(
+                query=text_vec,
+                context=speaker_context,
+                context_mask=speaker_context_mask,
+            )
+            x = mx.concatenate([text_vec, context_vec, aux_features], axis=-1)
+            cond = None
+        elif self.speaker_fusion == "text_cross_attn":
+            if self.text_cross_attn is None:
+                raise RuntimeError("text_cross_attn duration module is missing.")
+            context_vec = self.text_cross_attn(
+                query=speaker_vec,
+                context=text_state,
+                context_mask=text_mask,
+            )
+            x = mx.concatenate([context_vec, speaker_vec, aux_features], axis=-1)
+            cond = None
+        else:
+            raise RuntimeError(f"Unsupported duration speaker fusion: {self.speaker_fusion!r}")
+
+        h = self.input_proj(x)
+        for block in self.blocks:
+            h = block(h, cond=cond)
+        return self.out_proj(self.out_norm(h)).squeeze(-1)
+
+    def _speaker_sequence(
+        self,
+        batch_size: int,
+        dtype,
+        speaker_state: Optional[mx.array],
+        speaker_mask: Optional[mx.array],
+        has_speaker: mx.array,
+    ) -> Tuple[mx.array, mx.array]:
+        if self.null_speaker is None or self.speaker_dim is None:
+            raise RuntimeError("Duration speaker modules are missing.")
+        null_token = mx.broadcast_to(
+            self.null_speaker.astype(dtype)[None, None, :],
+            (batch_size, 1, self.speaker_dim),
+        )
+        if speaker_state is None:
+            return null_token, mx.ones((batch_size, 1), dtype=mx.bool_)
+        if speaker_state.ndim != 3 or speaker_state.shape[0] != batch_size:
+            raise ValueError(
+                f"speaker_state must have shape (B, S, D), got {tuple(speaker_state.shape)}"
+            )
+        if speaker_state.shape[-1] != self.speaker_dim:
+            raise ValueError(
+                f"speaker_state last dim must be {self.speaker_dim}, got {speaker_state.shape[-1]}"
+            )
+        speaker_state = speaker_state.astype(dtype)
+        if speaker_mask is None:
+            speaker_mask = mx.ones(
+                (batch_size, speaker_state.shape[1]), dtype=mx.bool_
+            )
+        elif speaker_mask.ndim != 2 or speaker_mask.shape[:2] != speaker_state.shape[:2]:
+            raise ValueError(
+                "speaker_mask must have shape matching speaker_state (B, S), "
+                f"got speaker_state={tuple(speaker_state.shape)} mask={tuple(speaker_mask.shape)}"
+            )
+        speaker_mask = speaker_mask.astype(mx.bool_)
+        real_mask = speaker_mask & has_speaker[:, None]
+        fallback_mask = ~mx.any(real_mask, axis=1, keepdims=True)
+        context = mx.concatenate([speaker_state, null_token], axis=1)
+        context_mask = mx.concatenate([real_mask, fallback_mask], axis=1)
+        return context, context_mask
+
+
+# ---------------------------------------------------------------------------
 # Main DiT model
 # ---------------------------------------------------------------------------
 
@@ -559,6 +1020,25 @@ class IrodoriDiT(nn.Module):
             context_dim = cfg.caption_dim_resolved
             speaker_ctx_dim = None
             caption_ctx_dim = cfg.caption_dim_resolved
+
+        # Duration predictor (v3)
+        self.duration_predictor = None
+        if cfg.use_duration_predictor:
+            duration_speaker_dim = None
+            if cfg.use_speaker_condition:
+                duration_speaker_dim = cfg.speaker_dim
+            self.duration_predictor = DurationPredictor(
+                text_dim=cfg.text_dim,
+                aux_dim=cfg.duration_aux_dim,
+                hidden_dim=cfg.duration_hidden_dim,
+                layers=cfg.duration_layers,
+                norm_eps=cfg.norm_eps,
+                speaker_dim=duration_speaker_dim,
+                speaker_fusion=cfg.duration_speaker_fusion,
+                attention_heads=cfg.duration_attention_heads,
+                architecture=cfg.duration_architecture,
+                token_init_frames=cfg.duration_token_init_frames,
+            )
 
         # Timestep → conditioning embedding (3 × model_dim for shift/scale/gate)
         self.cond_module = nn.Sequential(
@@ -626,6 +1106,54 @@ class IrodoriDiT(nn.Module):
 
         return text_state, text_mask, context_state, context_mask
 
+    def encode_conditions_full(
+        self,
+        text_input_ids: mx.array,
+        text_mask: mx.array,
+        ref_latent: Optional[mx.array] = None,
+        ref_mask: Optional[mx.array] = None,
+        caption_input_ids: Optional[mx.array] = None,
+        caption_mask: Optional[mx.array] = None,
+    ) -> Tuple[mx.array, mx.array, Optional[mx.array], Optional[mx.array], Optional[mx.array], Optional[mx.array]]:
+        """
+        Encode all conditions including both speaker and caption states.
+        Returns (text_state, text_mask, speaker_state, speaker_mask, caption_state, caption_mask).
+        """
+        text_state = self.text_norm(self.text_encoder(text_input_ids, text_mask))
+
+        speaker_state = None
+        speaker_mask = None
+        if self.cfg.use_speaker_condition:
+            if ref_latent is not None and ref_mask is not None:
+                ref_latent_p, ref_mask_p = patch_sequence_with_mask(
+                    ref_latent, ref_mask, self.cfg.speaker_patch_size
+                )
+                speaker_state = self.speaker_norm(
+                    self.speaker_encoder(ref_latent_p, ref_mask_p)
+                )
+                speaker_mask = ref_mask_p
+            else:
+                # Zero speaker state for duration prediction with no reference
+                speaker_state = mx.zeros(
+                    (text_input_ids.shape[0], 1, self.cfg.speaker_dim),
+                    dtype=text_state.dtype,
+                )
+                speaker_mask = mx.zeros(
+                    (text_input_ids.shape[0], 1),
+                    dtype=mx.bool_,
+                )
+
+        caption_state = None
+        caption_mask = None
+        if self.cfg.use_caption_condition:
+            if caption_input_ids is not None and caption_mask is not None:
+                caption_state = self.caption_norm(
+                    self.caption_encoder(caption_input_ids, caption_mask)
+                )
+                caption_mask = caption_mask
+
+        return text_state, text_mask, speaker_state, speaker_mask, caption_state, caption_mask
+
     def build_kv_cache(
         self,
         text_state: mx.array,
@@ -639,6 +1167,47 @@ class IrodoriDiT(nn.Module):
             block.attention.get_kv_cache_context(context_state) for block in self.blocks
         ]
         return kv_text, kv_context
+
+    @staticmethod
+    def masked_mean(state: mx.array, mask: mx.array) -> mx.array:
+        """Compute masked mean over sequence dimension."""
+        mask_f = mask[..., None].astype(state.dtype)
+        denom = mx.maximum(mx.sum(mask_f, axis=1), 1.0)
+        return mx.sum(state * mask_f, axis=1) / denom
+
+    def predict_duration_log_frames(
+        self,
+        text_state: mx.array,
+        text_mask: mx.array,
+        speaker_state: Optional[mx.array],
+        speaker_mask: Optional[mx.array],
+        duration_features: mx.array,
+        has_speaker: Optional[mx.array],
+    ) -> mx.array:
+        """
+        Predict log1p(num_frames) from text state and duration features.
+        Returns (B,) array of log frame predictions.
+        """
+        if self.duration_predictor is None:
+            raise RuntimeError("Duration predictor is disabled for this model.")
+        if duration_features.ndim != 2:
+            raise ValueError(
+                f"duration_features must have shape (B, D), got {tuple(duration_features.shape)}"
+            )
+        if duration_features.shape[1] != self.cfg.duration_aux_dim:
+            raise ValueError(
+                f"duration_features dim mismatch: "
+                f"expected {self.cfg.duration_aux_dim}, got {duration_features.shape[1]}"
+            )
+        pred = self.duration_predictor(
+            text_state,
+            text_mask=text_mask,
+            aux_features=duration_features,
+            speaker_state=speaker_state,
+            speaker_mask=speaker_mask,
+            has_speaker=has_speaker,
+        )
+        return pred.astype(mx.float32)
 
     # ------------------------------------------------------------------
     # Forward (with pre-encoded conditions)
