@@ -721,11 +721,16 @@ __all__ = [
 
 
 def is_valid_module_name(name: str) -> bool:
-    """Check if a string is a valid Python module name."""
+    """Check if a string is a valid Python module name.
+
+    Rejects names containing '.' (e.g. "parakeet_tdt_0.6b"), which
+    importlib.util.find_spec would otherwise interpret as a package
+    path and crash with ModuleNotFoundError on the synthetic parent.
+    """
     if not name or not isinstance(name, str):
         return False
 
-    return name[0].isalpha() or name[0] == "_"
+    return name.isidentifier()
 
 
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
