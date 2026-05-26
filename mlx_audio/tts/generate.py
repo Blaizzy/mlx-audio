@@ -144,6 +144,10 @@ def _model_accepts_ref_text(model: nn.Module) -> bool:
         return False
 
 
+def _model_preserves_ref_audio_paths(model: nn.Module) -> bool:
+    return getattr(model, "preserve_ref_audio_path", False) is True
+
+
 def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
@@ -223,33 +227,50 @@ def generate_audio(
                 "Multiple ref_text values require matching ref_audio values."
             )
 
-        # Load reference audio for voice matching if specified
+        # Load reference audio for voice matching if specified. Some models own
+        # reference preprocessing and should receive paths unchanged.
         if ref_audio_values:
             normalize = False
             if hasattr(model, "model_type") and model.model_type == "spark":
                 normalize = True
 
-            loaded_ref_audio = []
-            for ref_audio_item in ref_audio_values:
-                if isinstance(ref_audio_item, (str, PathLike)):
-                    ref_audio_path = os.fspath(ref_audio_item)
-                    if not os.path.exists(ref_audio_path):
-                        raise FileNotFoundError(
-                            f"Reference audio file not found: {ref_audio_path}"
+            preserve_ref_paths = _model_preserves_ref_audio_paths(model)
+            if preserve_ref_paths:
+                loaded_ref_audio = []
+                for ref_audio_item in ref_audio_values:
+                    if isinstance(ref_audio_item, (str, PathLike)):
+                        ref_audio_path = os.fspath(ref_audio_item)
+                        if not os.path.exists(ref_audio_path):
+                            raise FileNotFoundError(
+                                f"Reference audio file not found: {ref_audio_path}"
+                            )
+                        loaded_ref_audio.append(ref_audio_path)
+                    else:
+                        loaded_ref_audio.append(ref_audio_item)
+            else:
+                loaded_ref_audio = []
+                for ref_audio_item in ref_audio_values:
+                    if isinstance(ref_audio_item, (str, PathLike)):
+                        ref_audio_path = os.fspath(ref_audio_item)
+                        if not os.path.exists(ref_audio_path):
+                            raise FileNotFoundError(
+                                f"Reference audio file not found: {ref_audio_path}"
+                            )
+                        loaded_ref_audio.append(
+                            load_audio(
+                                ref_audio_path,
+                                sample_rate=model.sample_rate,
+                                volume_normalize=normalize,
+                            )
                         )
-                    loaded_ref_audio.append(
-                        load_audio(
-                            ref_audio_path,
-                            sample_rate=model.sample_rate,
-                            volume_normalize=normalize,
-                        )
-                    )
-                else:
-                    loaded_ref_audio.append(ref_audio_item)
+                    else:
+                        loaded_ref_audio.append(ref_audio_item)
             ref_audio = _collapse_reference_list(loaded_ref_audio)
 
             if ref_text_values:
                 ref_text = _collapse_reference_list(ref_text_values)
+            elif preserve_ref_paths:
+                ref_text = None
             elif _model_accepts_ref_text(model):
                 if stt_model is None:
                     raise ValueError(
@@ -292,6 +313,10 @@ def generate_audio(
             f"\033[94mLanguage:\033[0m {lang_code}"
         )
 
+        extra_kwargs = {
+            key: value for key, value in kwargs.items() if value is not None
+        }
+
         gen_kwargs = dict(
             text=text,
             voice=voice,
@@ -299,18 +324,20 @@ def generate_audio(
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
-            cfg_scale=cfg_scale,
-            ddpm_steps=ddpm_steps,
             temperature=temperature,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
             instruct=instruct,
             use_zero_spk_emb=use_zero_spk_emb,
-            **kwargs,
+            **extra_kwargs,
         )
         if max_tokens is not None:
             gen_kwargs["max_tokens"] = max_tokens
+        if cfg_scale is not None:
+            gen_kwargs["cfg_scale"] = cfg_scale
+        if ddpm_steps is not None:
+            gen_kwargs["ddpm_steps"] = ddpm_steps
         if prompt is not None:
             gen_kwargs["prompt"] = prompt
         if sigma is not None:
@@ -469,8 +496,8 @@ def parse_args():
     parser.add_argument(
         "--cfg_scale",
         type=float,
-        default=1.5,
-        help="Classifier-free guidance scale. Lower (≈1.0-1.5) is often more stable.",
+        default=None,
+        help="Classifier-free guidance scale. Defaults to the model configuration.",
     )
     parser.add_argument(
         "--ddpm_steps",
@@ -480,6 +507,41 @@ def parse_args():
     )
 
     parser.add_argument("--speed", type=float, default=1.0, help="Speed of the audio")
+    parser.add_argument(
+        "--gen_duration",
+        type=float,
+        default=None,
+        help="Optional model-specific generation duration in seconds.",
+    )
+    parser.add_argument(
+        "--duration_multiplier",
+        type=float,
+        default=None,
+        help="Optional model-specific automatic duration multiplier.",
+    )
+    parser.add_argument(
+        "--steps",
+        type=int,
+        default=None,
+        help="Optional model-specific generation step count.",
+    )
+    parser.add_argument(
+        "--stg_scale",
+        type=float,
+        default=None,
+        help="Optional model-specific spatiotemporal guidance scale.",
+    )
+    parser.add_argument(
+        "--stg_block",
+        type=int,
+        default=None,
+        help="Optional model-specific spatiotemporal guidance block.",
+    )
+    parser.add_argument(
+        "--rescale_scale",
+        default=None,
+        help="Optional model-specific CFG rescale value.",
+    )
     parser.add_argument(
         "--gender", type=str, default="male", help="Gender of the voice [male, female]"
     )
