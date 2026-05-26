@@ -166,10 +166,11 @@ def load_config(model_path: Union[str, Path], **kwargs) -> dict:
     if isinstance(model_path, str):
         model_path = get_model_path(model_path, **kwargs)
 
-    config_file = model_path / "config.json"
-    if config_file.exists():
-        with open(config_file, encoding="utf-8") as f:
-            return json.load(f)
+    for name in ("config.json", "model_config.json"):
+        config_file = model_path / name
+        if config_file.exists():
+            with open(config_file, encoding="utf-8") as f:
+                return json.load(f)
 
     raise FileNotFoundError(f"Config not found at {model_path}")
 
