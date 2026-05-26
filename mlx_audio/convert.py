@@ -395,7 +395,8 @@ def generate_readme_content(
     tags = ["mlx"] + config.tags
     tags.append("mlx-audio")
 
-    content = dedent(f"""\
+    content = dedent(
+        f"""\
         # {upload_repo}
 
         This model was converted to MLX format from [`{hf_path}`](https://huggingface.co/{hf_path}) using mlx-audio version **{__version__}**.
@@ -417,7 +418,8 @@ def generate_readme_content(
         ```python\
         {config.python_example.format(repo=upload_repo)}
         ```
-        """)
+        """
+    )
 
     return tags, content
 

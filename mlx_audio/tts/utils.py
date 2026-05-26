@@ -180,7 +180,8 @@ def upload_to_hub(path: str, upload_repo: str, hf_path: str):
 
     card = ModelCard.load(hf_path)
     card.data.tags = ["mlx"] if card.data.tags is None else card.data.tags + ["mlx"]
-    card.text = dedent(f"""
+    card.text = dedent(
+        f"""
         # {upload_repo}
         This model was converted to MLX format from [`{hf_path}`](https://huggingface.co/{hf_path}) using mlx-audio version **{__version__}**.
         Refer to the [original model card](https://huggingface.co/{hf_path}) for more details on the model.
@@ -193,7 +194,8 @@ def upload_to_hub(path: str, upload_repo: str, hf_path: str):
         ```bash
         python -m mlx_audio.tts.generate --model {upload_repo} --text "Describe this image."
         ```
-        """)
+        """
+    )
     card.save(os.path.join(path, "README.md"))
 
     logging.set_verbosity_info()
