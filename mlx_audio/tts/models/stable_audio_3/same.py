@@ -125,9 +125,7 @@ class SAMEDiffAttention(nn.Module):
         attn = mx.softmax((q @ k.transpose(0, 1, 3, 2)) * scale, axis=-1)
         out = attn @ v
 
-        attn_diff = mx.softmax(
-            (q_diff @ k_diff.transpose(0, 1, 3, 2)) * scale, axis=-1
-        )
+        attn_diff = mx.softmax((q_diff @ k_diff.transpose(0, 1, 3, 2)) * scale, axis=-1)
         out_diff = attn_diff @ v
 
         out = (out - out_diff).transpose(0, 2, 1, 3).reshape(B, L, -1)

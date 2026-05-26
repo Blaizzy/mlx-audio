@@ -235,9 +235,7 @@ class TransformerBlock(nn.Module):
         x = x * mx.sigmoid(1 - gate_self)
         x = x + residual
 
-        x = x + self.cross_attn(
-            self.cross_attend_norm(x), cond_tokens, mask=cond_mask
-        )
+        x = x + self.cross_attn(self.cross_attend_norm(x), cond_tokens, mask=cond_mask)
 
         if local_cond is not None and hasattr(self, "to_local_embed"):
             lc = self.to_local_embed[0](local_cond)

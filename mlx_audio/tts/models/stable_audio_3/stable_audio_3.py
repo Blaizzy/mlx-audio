@@ -19,9 +19,8 @@ import mlx.nn as nn
 import numpy as np
 
 from ..base import BaseModelArgs, GenerationResult
-from .dit import DiTConfig, DiffusionTransformer
+from .dit import DiffusionTransformer, DiTConfig
 from .same import Pretransform, SAMEConfig
-
 
 CONV_SUFFIXES = {
     "preprocess_conv.weight",
@@ -216,9 +215,8 @@ class Model(nn.Module):
         return result
 
     def _load_t5gemma(self, model_path: str):
-        from transformers import AutoConfig, AutoTokenizer, T5GemmaEncoderModel
-
         import torch
+        from transformers import AutoConfig, AutoTokenizer, T5GemmaEncoderModel
 
         t5_path = Path(model_path) / "t5gemma-b-b-ul2"
         if not t5_path.exists():
