@@ -62,7 +62,6 @@ uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prereleas
 ```
 
 ### For development:
-
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
 cd mlx-audio
