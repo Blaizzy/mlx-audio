@@ -40,8 +40,14 @@ The best audio processing library built on Apple's MLX framework, providing fast
 ## Installation
 
 ### Using pip
+Without web interface:
 ```bash
 pip install mlx-audio
+```
+
+With web interface:
+```bash
+pip install “mlx-audio[server]"
 ```
 
 ### Using uv to install only the command line tools
@@ -55,7 +61,7 @@ Latest code from github:
 uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prerelease=allow
 ```
 
-### For development or web interface:
+### For development:
 
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
