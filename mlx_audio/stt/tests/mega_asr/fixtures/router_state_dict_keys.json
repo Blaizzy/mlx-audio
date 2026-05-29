@@ -1,0 +1,116 @@
+{
+  "classifier.0.bias": [
+    128
+  ],
+  "classifier.0.weight": [
+    128,
+    256
+  ],
+  "classifier.3.bias": [
+    2
+  ],
+  "classifier.3.weight": [
+    2,
+    128
+  ],
+  "frontend.conv.0.bias": [
+    128
+  ],
+  "frontend.conv.0.weight": [
+    128,
+    80,
+    3
+  ],
+  "frontend.conv.1.bias": [
+    128
+  ],
+  "frontend.conv.1.num_batches_tracked": [],
+  "frontend.conv.1.running_mean": [
+    128
+  ],
+  "frontend.conv.1.running_var": [
+    128
+  ],
+  "frontend.conv.1.weight": [
+    128
+  ],
+  "frontend.conv.4.bias": [
+    256
+  ],
+  "frontend.conv.4.weight": [
+    256,
+    128,
+    3
+  ],
+  "frontend.conv.5.bias": [
+    256
+  ],
+  "frontend.conv.5.num_batches_tracked": [],
+  "frontend.conv.5.running_mean": [
+    256
+  ],
+  "frontend.conv.5.running_var": [
+    256
+  ],
+  "frontend.conv.5.weight": [
+    256
+  ],
+  "pooling.query.bias": [
+    1
+  ],
+  "pooling.query.weight": [
+    1,
+    256
+  ],
+  "pos_encoder.pe": [
+    1,
+    850,
+    256
+  ],
+  "transformer.layers.0.linear1.bias": [
+    1024
+  ],
+  "transformer.layers.0.linear1.weight": [
+    1024,
+    256
+  ],
+  "transformer.layers.0.linear2.bias": [
+    256
+  ],
+  "transformer.layers.0.linear2.weight": [
+    256,
+    1024
+  ],
+  "transformer.layers.0.norm1.bias": [
+    256
+  ],
+  "transformer.layers.0.norm1.weight": [
+    256
+  ],
+  "transformer.layers.0.norm2.bias": [
+    256
+  ],
+  "transformer.layers.0.norm2.weight": [
+    256
+  ],
+  "transformer.layers.0.self_attn.in_proj_bias": [
+    768
+  ],
+  "transformer.layers.0.self_attn.in_proj_weight": [
+    768,
+    256
+  ],
+  "transformer.layers.0.self_attn.out_proj.bias": [
+    256
+  ],
+  "transformer.layers.0.self_attn.out_proj.weight": [
+    256,
+    256
+  ],
+  "transformer.norm.bias": [
+    256
+  ],
+  "transformer.norm.weight": [
+    256
+  ]
+}

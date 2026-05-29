@@ -2,6 +2,7 @@
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import mlx.core as mx
 import numpy as np
@@ -11,6 +12,22 @@ from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
 )
+
+
+def _top_p_keep_mask(scores, top_p):
+    probs = mx.softmax(scores, axis=-1)
+    sorted_indices = mx.argsort(scores, axis=-1)
+    sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+    sorted_remove = mx.cumsum(sorted_probs, axis=-1) <= (1 - top_p)
+    remove = mx.put_along_axis(
+        mx.zeros_like(sorted_remove), sorted_indices, sorted_remove, axis=-1
+    )
+    return ~remove
+
+
+def _min_p_keep_mask(scores, min_p):
+    probs = mx.softmax(scores, axis=-1)
+    return probs >= mx.max(probs, axis=-1, keepdims=True) * min_p
 
 
 class TestReflectPad1d(unittest.TestCase):
@@ -399,6 +416,88 @@ def _make_generation_test_model(text_token_count: int = 10):
     )
     model._sample_token = lambda *args, **kwargs: mx.array([[1]], dtype=mx.int32)
     return model
+
+
+class TestQwen3TTSSamplingFilters(unittest.TestCase):
+    def test_sample_token_scales_before_top_p_filtering(self):
+        logits = mx.array([[[3.0, 2.0, 1.0, 0.0]]], dtype=mx.float32)
+        captured = {}
+
+        def capture_sample(scores, temperature):
+            captured["scores"] = scores
+            captured["temperature"] = temperature
+            return mx.argmax(scores, axis=-1)
+
+        with patch(
+            "mlx_audio.tts.models.qwen3_tts.qwen3_tts.categorical_sampling",
+            side_effect=capture_sample,
+        ):
+            Model._sample_token(
+                Model.__new__(Model),
+                logits,
+                temperature=2.0,
+                top_k=0,
+                top_p=0.8,
+                repetition_penalty=1.0,
+                min_p=0.0,
+            )
+
+        scaled_logits = mx.array([[1.5, 1.0, 0.5, 0.0]], dtype=mx.float32)
+        expected_mask = _top_p_keep_mask(scaled_logits, 0.8)
+        expected_scores = mx.where(expected_mask, scaled_logits, -float("inf"))
+        actual_mask = mx.isfinite(captured["scores"])
+
+        np.testing.assert_allclose(
+            np.array(captured["scores"]), np.array(expected_scores)
+        )
+        np.testing.assert_array_equal(np.array(actual_mask), np.array(expected_mask))
+        self.assertEqual(captured["temperature"], 1.0)
+
+    def test_sample_token_batch_scales_before_min_p_filtering(self):
+        logits = mx.array(
+            [
+                [[3.0, 2.0, 1.0, 0.0]],
+                [[0.0, 1.0, 2.0, 3.0]],
+            ],
+            dtype=mx.float32,
+        )
+        captured = {}
+
+        def capture_sample(scores, temperature):
+            captured["scores"] = scores
+            captured["temperature"] = temperature
+            return mx.argmax(scores, axis=-1)
+
+        with patch(
+            "mlx_audio.tts.models.qwen3_tts.qwen3_tts.categorical_sampling",
+            side_effect=capture_sample,
+        ):
+            Model._sample_token_batch(
+                Model.__new__(Model),
+                logits,
+                temperature=2.0,
+                top_k=0,
+                top_p=1.0,
+                repetition_penalty=1.0,
+                min_p=0.3,
+            )
+
+        scaled_logits = mx.array(
+            [
+                [1.5, 1.0, 0.5, 0.0],
+                [0.0, 0.5, 1.0, 1.5],
+            ],
+            dtype=mx.float32,
+        )
+        expected_mask = _min_p_keep_mask(scaled_logits, 0.3)
+        expected_scores = mx.where(expected_mask, scaled_logits, -float("inf"))
+        actual_mask = mx.isfinite(captured["scores"])
+
+        np.testing.assert_allclose(
+            np.array(captured["scores"]), np.array(expected_scores)
+        )
+        np.testing.assert_array_equal(np.array(actual_mask), np.array(expected_mask))
+        self.assertEqual(captured["temperature"], 1.0)
 
 
 class TestQwen3TTSMaxTokens(unittest.TestCase):
