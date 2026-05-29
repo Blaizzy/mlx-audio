@@ -494,7 +494,9 @@ def test_transcription_request_word_timestamps_accepted():
     """TranscriptionRequest accepts word_timestamps=True."""
     from mlx_audio.server import TranscriptionRequest
 
-    req = TranscriptionRequest(model="test-model", word_timestamps=True, timestamp_granularities="word")
+    req = TranscriptionRequest(
+        model="test-model", word_timestamps=True, timestamp_granularities="word"
+    )
     assert req.word_timestamps is True
     assert req.timestamp_granularities == "word"
 
@@ -529,7 +531,9 @@ def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
     assert captured_kwargs.get("word_timestamps") is True
 
 
-def test_stt_word_timestamps_verbose_json_words_passthrough(client, mock_model_provider):
+def test_stt_word_timestamps_verbose_json_words_passthrough(
+    client, mock_model_provider
+):
     """verbose_json response includes words[] from the model when word_timestamps=True."""
     full_payload = {
         "text": "Hello world.",
