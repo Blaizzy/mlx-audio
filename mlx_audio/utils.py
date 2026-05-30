@@ -87,6 +87,7 @@ DEFAULT_ALLOW_PATTERNS = [
     "*.model",
     "*.tiktoken",
     "*.txt",
+    "*.jinja",
     "*.jsonl",
     "*.yaml",
     "*.npz",

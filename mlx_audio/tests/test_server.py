@@ -558,3 +558,140 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]
     assert len(text_msgs) >= 1, f"Expected legacy text message, got: {messages}"
+
+
+# --- /v1/realtime server-side VAD turn detection --------------------------
+
+
+class _FakeStreamingSession:
+    """Minimal streaming session: emits one delta once the audio is closed."""
+
+    input_sample_rate = 16000
+
+    def __init__(self):
+        self._closed = False
+        self._emitted = False
+
+    def feed(self, samples):
+        pass
+
+    def close(self):
+        self._closed = True
+
+    def step(self, max_decode_tokens=4):
+        if self._closed and not self._emitted:
+            self._emitted = True
+            return ["bonjour"]
+        return []
+
+    @property
+    def done(self):
+        return self._closed and self._emitted
+
+
+class _FakeStreamingModel:
+    def create_streaming_session(self, *, temperature=0.0, **kwargs):
+        return _FakeStreamingSession()
+
+
+class _FakeVadModel:
+    """Returns a scripted speech probability per consumed 512-sample frame."""
+
+    def __init__(self, probs):
+        self._probs = probs
+
+    def initial_state(self, sample_rate=16000):
+        return {"i": 0}
+
+    def feed(self, chunk, state, sample_rate=16000):
+        i = state["i"]
+        p = self._probs[i] if i < len(self._probs) else 0.0
+        return mx.array([[p]]), {"i": i + 1}
+
+
+def test_realtime_ws_server_vad_auto_commits(client, mock_model_provider, monkeypatch):
+    """With server_vad the server detects end-of-speech, emits
+    speech_started/stopped, auto-commits and returns the transcript — the
+    client never sends input_audio_buffer.commit."""
+    import base64
+
+    from mlx_audio.realtime_vad import VAD_FRAME_SIZE
+
+    mock_model_provider.load_model = MagicMock(return_value=_FakeStreamingModel())
+    # Four speech frames, then silence — enough to open then close a turn.
+    probs = [0.9] * 4 + [0.0] * 60
+    monkeypatch.setattr(
+        "mlx_audio.server._load_realtime_vad_model",
+        lambda name: _FakeVadModel(probs),
+    )
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 16000},
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "silence_duration_ms": 160,
+                            },
+                        }
+                    }
+                },
+            }
+        )
+        updated = ws.receive_json()
+        assert updated["type"] == "session.updated"
+        assert (
+            updated["session"]["audio"]["input"]["turn_detection"]["type"]
+            == "server_vad"
+        )
+
+        pcm = np.zeros(VAD_FRAME_SIZE * 40, dtype=np.int16).tobytes()
+        ws.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(pcm).decode(),
+            }
+        )
+
+        events = []
+        while True:
+            evt = ws.receive_json()
+            events.append(evt)
+            if evt["type"] == ("conversation.item.input_audio_transcription.completed"):
+                break
+
+    types = [e["type"] for e in events]
+    assert "input_audio_buffer.speech_started" in types
+    assert "input_audio_buffer.speech_stopped" in types
+    assert "input_audio_buffer.committed" in types
+    # speech_started precedes speech_stopped.
+    assert types.index("input_audio_buffer.speech_started") < types.index(
+        "input_audio_buffer.speech_stopped"
+    )
+    assert events[-1]["transcript"] == "bonjour"
+
+
+def test_realtime_ws_rejects_semantic_vad(client, mock_model_provider):
+    """semantic_vad is not implemented yet → the server replies with an error
+    rather than silently ignoring the request."""
+    mock_model_provider.load_model = MagicMock(return_value=_FakeStreamingModel())
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {"input": {"turn_detection": {"type": "semantic_vad"}}}
+                },
+            }
+        )
+        evt = ws.receive_json()
+        assert evt["type"] == "error"
+        assert "semantic_vad" in evt["error"]["message"]

@@ -301,6 +301,7 @@ def convert(
         "*.safetensors",
         "*.yaml",
         "*.txt",
+        "*.jinja",
     ]:
         files = glob.glob(str(model_path / pattern))
         for file in files:

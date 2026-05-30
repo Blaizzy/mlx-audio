@@ -44,6 +44,14 @@ from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
+from mlx_audio.realtime_vad import (
+    VAD_SAMPLE_RATE,
+    ServerVadConfig,
+    StreamingVad,
+    TurnDetectionError,
+    TurnEventKind,
+    parse_turn_detection,
+)
 from mlx_audio.server_inference import (
     BaseModelExecutionAdapter,
     InferenceBroker,
@@ -1465,6 +1473,36 @@ def _resolve_realtime_model_name(requested_model: Optional[str]) -> Optional[str
     return configured or None
 
 
+_REALTIME_VAD_MODEL_DEFAULT: str = "mlx-community/silero-vad"
+_realtime_vad_models: Dict[str, Any] = {}
+
+
+def _resolve_vad_model_name() -> str:
+    """Return the VAD model used for server-side turn detection.
+
+    Read at request time from ``$MLX_AUDIO_VAD_MODEL`` (settable via the
+    ``--vad-model`` CLI flag), defaulting to Silero.
+    """
+    return (
+        os.getenv("MLX_AUDIO_VAD_MODEL") or ""
+    ).strip() or _REALTIME_VAD_MODEL_DEFAULT
+
+
+def _load_realtime_vad_model(name: str):
+    """Load and cache a streaming VAD model for server-side turn detection.
+
+    Kept behind a module-level indirection so the realtime endpoint can be
+    exercised with a fake VAD model in tests without hitting Hugging Face.
+    """
+    model = _realtime_vad_models.get(name)
+    if model is None:
+        from mlx_audio.vad import load as load_vad
+
+        model = load_vad(name)
+        _realtime_vad_models[name] = model
+    return model
+
+
 @app.websocket("/v1/realtime")
 async def realtime_ws(websocket: WebSocket):
     """OpenAI Realtime API-compatible WebSocket endpoint.
@@ -1487,6 +1525,14 @@ async def realtime_ws(websocket: WebSocket):
     ``conversation.item.added``, ``input_audio_buffer.committed``,
     ``conversation.item.input_audio_transcription.delta`` /
     ``.completed``, and ``error``.
+
+    Turn detection follows OpenAI's ``turn_detection`` on
+    ``session.audio.input``. With ``{"type": "server_vad"}`` the server runs a
+    streaming VAD (Silero by default, see ``--vad-model``), emits
+    ``input_audio_buffer.speech_started`` / ``input_audio_buffer.speech_stopped``
+    and auto-commits each turn — the client never sends
+    ``input_audio_buffer.commit``. With ``null`` (the default) the client drives
+    commits manually. ``semantic_vad`` is not implemented yet.
 
     Model is selected via ``?model=<id>`` or ``session.update.model``;
     defaults to ``$MLX_AUDIO_REALTIME_MODEL``.
@@ -1532,16 +1578,22 @@ async def realtime_ws(websocket: WebSocket):
     full_text_parts: list[str] = []
     current_item_id: Optional[str] = None
     client_input_rate = _REALTIME_DEFAULT_CLIENT_RATE
+    turn_config: Optional[ServerVadConfig] = None
+    turn_detector: Optional[StreamingVad] = None
 
     def _new_item_id() -> str:
         return f"item_{uuid.uuid4().hex[:16]}"
 
     async def drain_deltas(max_decode_tokens: int = 8) -> bool:
-        """Run one session.step off-loop, ship deltas. Returns session.done."""
+        """Run one session.step, ship deltas. Returns session.done.
+
+        MLX runs inline on the event-loop thread (not via a worker thread):
+        MLX streams are thread-bound, so all realtime MLX work — the
+        transcription step and the VAD — must share one thread, otherwise you
+        hit "no Stream(gpu, N) in current thread".
+        """
         async with REALTIME_INFERENCE_LOCK:
-            deltas = await asyncio.to_thread(
-                session.step, max_decode_tokens=max_decode_tokens
-            )
+            deltas = session.step(max_decode_tokens=max_decode_tokens)
         for delta in deltas:
             full_text_parts.append(delta)
             await send_event(
@@ -1565,6 +1617,33 @@ async def realtime_ws(websocket: WebSocket):
             }
         )
 
+    async def finalize_turn() -> None:
+        """Commit the current turn: emit ``committed``, drain the remaining
+        transcription, emit ``completed``, then reopen a fresh session.
+
+        Shared by the manual ``input_audio_buffer.commit`` path and the
+        server-VAD auto-commit path.
+        """
+        nonlocal session, full_text_parts, current_item_id
+        await send_event(
+            {
+                "type": "input_audio_buffer.committed",
+                "item_id": current_item_id,
+                "previous_item_id": None,
+            }
+        )
+        async with REALTIME_INFERENCE_LOCK:
+            session.close()
+        while not await drain_deltas(max_decode_tokens=16):
+            pass
+        await send_done()
+        async with REALTIME_INFERENCE_LOCK:
+            session = _open_streaming_session(
+                model, temperature=temperature, delay_ms=transcription_delay_ms
+            )
+        full_text_parts = []
+        current_item_id = None
+
     session_id = f"sess_{uuid.uuid4().hex[:16]}"
 
     def _session_snapshot() -> dict:
@@ -1577,7 +1656,7 @@ async def realtime_ws(websocket: WebSocket):
                 "input": {
                     "format": {"type": "audio/pcm", "rate": client_input_rate},
                     "transcription": {"model": model_name},
-                    "turn_detection": None,
+                    "turn_detection": turn_config.to_dict() if turn_config else None,
                 }
             },
         }
@@ -1628,6 +1707,28 @@ async def realtime_ws(websocket: WebSocket):
                     full_text_parts = []
                     current_item_id = None
 
+                if "turn_detection" in audio_input:
+                    try:
+                        turn_config = parse_turn_detection(
+                            audio_input.get("turn_detection")
+                        )
+                    except TurnDetectionError as e:
+                        await send_error(str(e))
+                        continue
+                    if turn_config is None:
+                        turn_detector = None
+                    else:
+                        try:
+                            vad_model = _load_realtime_vad_model(
+                                _resolve_vad_model_name()
+                            )
+                        except Exception as e:
+                            turn_config = None
+                            turn_detector = None
+                            await send_error(f"vad load failed: {e}")
+                            continue
+                        turn_detector = StreamingVad(vad_model, turn_config)
+
                 await send_event(
                     {"type": "session.updated", "session": _session_snapshot()}
                 )
@@ -1636,7 +1737,10 @@ async def realtime_ws(websocket: WebSocket):
                 audio_b64 = msg.get("audio", "")
                 if not audio_b64:
                     continue
-                if current_item_id is None:
+                # In server-VAD mode the conversation item is created on
+                # ``speech_started`` (below) to match OpenAI; in manual-commit
+                # mode it is created on the first appended audio.
+                if current_item_id is None and turn_detector is None:
                     current_item_id = _new_item_id()
                     await send_event(
                         {
@@ -1659,6 +1763,48 @@ async def realtime_ws(websocket: WebSocket):
                 # Opportunistic draining between chunks so deltas flow early.
                 await drain_deltas(max_decode_tokens=8)
 
+                if turn_detector is not None:
+                    vad_samples = _resample_pcm16_to_rate(
+                        pcm16, client_input_rate, VAD_SAMPLE_RATE
+                    )
+                    async with REALTIME_INFERENCE_LOCK:
+                        # Inline (see drain_deltas): VAD MLX must share the
+                        # transcription thread, or MLX streams collide.
+                        turn_events = turn_detector.process(vad_samples)
+                    for turn_event in turn_events:
+                        if turn_event.kind is TurnEventKind.SPEECH_STARTED:
+                            if current_item_id is None:
+                                current_item_id = _new_item_id()
+                                await send_event(
+                                    {
+                                        "type": "conversation.item.added",
+                                        "item": {
+                                            "id": current_item_id,
+                                            "object": "realtime.item",
+                                            "type": "message",
+                                            "role": "user",
+                                            "content": [{"type": "input_audio"}],
+                                        },
+                                    }
+                                )
+                            await send_event(
+                                {
+                                    "type": "input_audio_buffer.speech_started",
+                                    "audio_start_ms": turn_event.audio_ms,
+                                    "item_id": current_item_id,
+                                }
+                            )
+                        else:
+                            await send_event(
+                                {
+                                    "type": "input_audio_buffer.speech_stopped",
+                                    "audio_end_ms": turn_event.audio_ms,
+                                    "item_id": current_item_id,
+                                }
+                            )
+                            await finalize_turn()
+                            turn_detector.reset_turn()
+
             elif msg_type == "input_audio_buffer.commit":
                 if current_item_id is None:
                     current_item_id = _new_item_id()
@@ -1674,30 +1820,16 @@ async def realtime_ws(websocket: WebSocket):
                             },
                         }
                     )
-                await send_event(
-                    {
-                        "type": "input_audio_buffer.committed",
-                        "item_id": current_item_id,
-                        "previous_item_id": None,
-                    }
-                )
-                async with REALTIME_INFERENCE_LOCK:
-                    session.close()
-                while not await drain_deltas(max_decode_tokens=16):
-                    pass
-                await send_done()
-                async with REALTIME_INFERENCE_LOCK:
-                    session = _open_streaming_session(
-                        model,
-                        temperature=temperature,
-                        delay_ms=transcription_delay_ms,
-                    )
-                full_text_parts = []
-                current_item_id = None
+                await finalize_turn()
+                if turn_detector is not None:
+                    turn_detector.reset_turn()
 
     except WebSocketDisconnect:
         pass
     except Exception as e:
+        import traceback
+
+        traceback.print_exc()
         try:
             await send_error(str(e))
         except Exception:
@@ -1839,6 +1971,16 @@ def main():
         ),
     )
     parser.add_argument(
+        "--vad-model",
+        type=str,
+        default=None,
+        help=(
+            "Streaming VAD model used for server-side turn detection on "
+            "/v1/realtime (server_vad). Overrides $MLX_AUDIO_VAD_MODEL "
+            "(default: mlx-community/silero-vad)."
+        ),
+    )
+    parser.add_argument(
         "--realtime",
         action="store_true",
         help="Start the server for /v1/realtime usage.",
@@ -1860,6 +2002,8 @@ def main():
         os.environ["MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS"] = str(
             args.realtime_transcription_delay_ms
         )
+    if args.vad_model:
+        os.environ["MLX_AUDIO_VAD_MODEL"] = args.vad_model
     if args.tts_max_batch_size is not None:
         os.environ["MLX_AUDIO_TTS_MAX_BATCH_SIZE"] = str(args.tts_max_batch_size)
 

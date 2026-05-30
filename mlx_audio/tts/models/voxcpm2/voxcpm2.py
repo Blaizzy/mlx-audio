@@ -192,7 +192,22 @@ class Model(nn.Module):
     def _tokenize(self, text: str):
         """Tokenize text without BOS token (matching PyTorch behavior)."""
         tokens = self.tokenizer.tokenize(text)
+        tokens = self._split_multichar_chinese_tokens(tokens)
         return self.tokenizer.convert_tokens_to_ids(tokens)
+
+    @staticmethod
+    def _split_multichar_chinese_tokens(tokens: list[str]) -> list[str]:
+        """Split multi-character Chinese tokens to match OpenBMB VoxCPM2."""
+        processed = []
+        for token in tokens:
+            clean_token = token.replace("▁", "")
+            if len(clean_token) >= 2 and all(
+                "\u4e00" <= char <= "\u9fff" for char in clean_token
+            ):
+                processed.extend(list(clean_token))
+            else:
+                processed.append(token)
+        return processed
 
     def _encode_wav(
         self, audio_input, padding_mode: str = "right", trim_silence_vad: bool = False

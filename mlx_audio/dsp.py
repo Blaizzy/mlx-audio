@@ -505,7 +505,18 @@ def mel_filters(
     f_max: Optional[float] = None,
     norm: Optional[str] = None,
     mel_scale: str = "htk",
+    precise: bool = False,
 ) -> mx.array:
+    """Triangular mel filterbank as an mx.array of shape (n_mels, n_fft // 2 + 1).
+
+    Args:
+        precise: If True, compute the filterbank in float64 on the CPU stream
+            and cast to float32 before returning. Default float32 path drifts
+            ~5e-6 from a torchaudio float64 reference — enough to perturb the
+            CTC decode in numerically sensitive models (e.g. granite_speech_nar).
+            One-time cost at lru_cache miss; runtime use is unaffected.
+    """
+
     def hz_to_mel(freq, mel_scale="htk"):
         if mel_scale == "htk":
             return 2595.0 * math.log10(1.0 + freq / 700.0)
@@ -539,37 +550,43 @@ def mel_filters(
 
     f_max = f_max or sample_rate / 2
 
-    # generate frequency points
+    def _build(dtype):
+        # generate frequency points
 
-    n_freqs = n_fft // 2 + 1
-    all_freqs = mx.linspace(0, sample_rate // 2, n_freqs)
+        n_freqs = n_fft // 2 + 1
+        all_freqs = mx.linspace(0, sample_rate // 2, n_freqs, dtype=dtype)
 
-    # convert frequencies to mel and back to hz
+        # convert frequencies to mel and back to hz
 
-    m_min = hz_to_mel(f_min, mel_scale)
-    m_max = hz_to_mel(f_max, mel_scale)
-    m_pts = mx.linspace(m_min, m_max, n_mels + 2)
-    f_pts = mel_to_hz(m_pts, mel_scale)
+        m_min = hz_to_mel(f_min, mel_scale)
+        m_max = hz_to_mel(f_max, mel_scale)
+        m_pts = mx.linspace(m_min, m_max, n_mels + 2, dtype=dtype)
+        f_pts = mel_to_hz(m_pts, mel_scale)
 
-    # compute slopes for filterbank
+        # compute slopes for filterbank
 
-    f_diff = f_pts[1:] - f_pts[:-1]
-    slopes = mx.expand_dims(f_pts, 0) - mx.expand_dims(all_freqs, 1)
+        f_diff = f_pts[1:] - f_pts[:-1]
+        slopes = mx.expand_dims(f_pts, 0) - mx.expand_dims(all_freqs, 1)
 
-    # calculate overlapping triangular filters
+        # calculate overlapping triangular filters
 
-    down_slopes = (-slopes[:, :-2]) / f_diff[:-1]
-    up_slopes = slopes[:, 2:] / f_diff[1:]
-    filterbank = mx.maximum(
-        mx.zeros_like(down_slopes), mx.minimum(down_slopes, up_slopes)
-    )
+        down_slopes = (-slopes[:, :-2]) / f_diff[:-1]
+        up_slopes = slopes[:, 2:] / f_diff[1:]
+        filterbank = mx.maximum(
+            mx.zeros_like(down_slopes), mx.minimum(down_slopes, up_slopes)
+        )
 
-    if norm == "slaney":
-        enorm = 2.0 / (f_pts[2 : n_mels + 2] - f_pts[:n_mels])
-        filterbank *= mx.expand_dims(enorm, 0)
+        if norm == "slaney":
+            enorm = 2.0 / (f_pts[2 : n_mels + 2] - f_pts[:n_mels])
+            filterbank *= mx.expand_dims(enorm, 0)
 
-    filterbank = filterbank.moveaxis(0, 1)
-    return filterbank
+        return filterbank.moveaxis(0, 1)
+
+    if precise:
+        # float64 isn't supported on the GPU stream — compute on CPU then cast.
+        with mx.stream(mx.cpu):
+            return _build(mx.float64).astype(mx.float32)
+    return _build(mx.float32)
 
 
 class ISTFTCache:

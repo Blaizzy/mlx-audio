@@ -60,7 +60,7 @@ uv tool install --force git+https://github.com/Blaizzy/mlx-audio.git --prereleas
 ```bash
 git clone https://github.com/Blaizzy/mlx-audio.git
 cd mlx-audio
-pip install -e ".[dev]"
+pip install -e ".[dev, server]"
 ```
 
 ## Quick Start
@@ -131,7 +131,7 @@ for result in model.generate(
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
 | **LongCat-AudioDiT** | SOTA diffusion TTS in waveform latent space with voice cloning | ZH, EN | [mlx-community/LongCat-AudioDiT-1B-bf16](https://huggingface.co/mlx-community/LongCat-AudioDiT-1B-bf16) |
 | **MeloTTS** | Lightweight VITS2-based TTS with streaming | EN (more coming) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
-| **MOSS-TTS** | 8B delay-pattern and 1.7B local-transformer multilingual TTS with voice cloning | 20 languages | [OpenMOSS-Team/MOSS-TTS](https://huggingface.co/OpenMOSS-Team/MOSS-TTS), [OpenMOSS-Team/MOSS-TTS-Local-Transformer](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer) |
+| **MOSS-TTS** | 8B delay-pattern and 1.7B local-transformer multilingual TTS with voice cloning | 31 languages | [OpenMOSS-Team/MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5), [OpenMOSS-Team/MOSS-TTS](https://huggingface.co/OpenMOSS-Team/MOSS-TTS), [OpenMOSS-Team/MOSS-TTS-Local-Transformer](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer) |
 | **MOSS-TTS-Nano** | Tiny multilingual voice-cloning TTS | 20 languages | [mlx-community/MOSS-TTS-Nano-100M](https://huggingface.co/mlx-community/MOSS-TTS-Nano-100M) |
 | **Higgs Audio v2** | 3B Llama-backed TTS with real-time voice cloning | EN, ZH, KO, DE, ES | [bf16 (upstream)](https://huggingface.co/bosonai/higgs-audio-v2-generation-3B-base), [q8](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q8), [q6](https://huggingface.co/mlx-community/higgs-audio-v2-3B-mlx-q6) |
 
@@ -142,6 +142,7 @@ for result in model.generate(
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Distil-Whisper** | Distilled fast Whisper variants | EN | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
+| **Mega-ASR** | Routed Qwen3-ASR with automatic clean/base vs degraded/LoRA switching | EN (fixtures), multilingual Qwen3-ASR backbone | [README](mlx_audio/stt/models/mega_asr/README.md) |
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |

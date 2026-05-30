@@ -1,3 +1,4 @@
+import math
 from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
@@ -42,7 +43,10 @@ def interpolate(
         size = []
         for i in range(spatial_dims):
             # Use ceiling instead of floor to match PyTorch behavior
-            curr_size = max(1, int(mx.ceil(input.shape[i + 2] * scale_factor[i])))
+            curr_size = max(
+                1,
+                int(math.ceil(float(input.shape[i + 2]) * float(scale_factor[i]))),
+            )
             size.append(curr_size)
 
     # Handle 1D case (N, C, W)
