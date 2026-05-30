@@ -93,6 +93,7 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 |-------|-------------|-----------|------|
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [mlx-community/Kokoro-82M-bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
+| **OmniVoice** | Zero-shot multilingual TTS with voice cloning, batch generation, and nonverbal tags | 646+ languages | [mlx-community/OmniVoice-bf16](https://huggingface.co/mlx-community/OmniVoice-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
@@ -198,6 +199,37 @@ audio = results[0].audio  # mx.array
 ```
 
 See the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md) for voice cloning, CustomVoice, VoiceDesign, and all available models.
+
+### OmniVoice
+
+OmniVoice is a zero-shot multilingual TTS model for 646+ languages with voice cloning, batch generation, pronunciation controls, and nonverbal tags such as `[laughter]` and `[sigh]`. It uses a bidirectional Qwen3 backbone with iterative masked generation and a HiggsAudioV2 acoustic tokenizer.
+
+```python
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/OmniVoice-bf16")
+
+# Basic multilingual TTS
+for result in model.generate(
+    text="Hello from OmniVoice running on Apple Silicon.",
+    language="english",
+    duration_s=5.0,
+    num_steps=32,
+):
+    audio = result.audio
+
+# Zero-shot voice cloning
+for result in model.generate(
+    text="This sentence uses the reference speaker.",
+    language="english",
+    ref_audio="reference.wav",
+    ref_text="Transcript of the reference audio.",
+    duration_s=5.0,
+):
+    audio = result.audio
+```
+
+For stable voice cloning, provide `ref_text` that matches the reference clip. OmniVoice also supports `generate_batch()` for batched TTS and inline pronunciation controls.
 
 ### Ming Omni TTS (BailingMM)
 
