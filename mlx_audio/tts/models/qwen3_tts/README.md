@@ -60,7 +60,6 @@ All generation methods support streaming via `stream=True`. Audio chunks are yie
 
 ```python
 from mlx_audio.tts.utils import load_model
-import soundfile as sf
 
 model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-6bit")
 

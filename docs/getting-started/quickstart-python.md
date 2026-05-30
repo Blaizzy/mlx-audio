@@ -4,16 +4,23 @@ Use the mlx-audio Python API to generate speech, transcribe audio, and process a
 
 ## Text-to-Speech
 
+!!! note
+    These TTS quickstart examples use `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
+
 ### Basic Generation
 
 ```python
 from mlx_audio.tts.utils import load_model
 
 # Load a TTS model
-model = load_model("mlx-community/Kokoro-82M-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
 
 # Generate speech
-for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
+for result in model.generate(
+    "Hello from MLX-Audio!",
+    voice="Chelsie",
+    lang_code="English",
+):
     print(f"Generated {result.audio.shape[0]} samples")
     # result.audio contains the waveform as mx.array
 ```
@@ -23,26 +30,18 @@ for result in model.generate("Hello from MLX-Audio!", voice="af_heart"):
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Kokoro-82M-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
 
 for result in model.generate(
     text="Welcome to MLX-Audio!",
-    voice="af_heart",     # American female
-    speed=1.0,
-    lang_code="a",        # American English
+    voice="Ethan",
+    lang_code="English",
 ):
     audio = result.audio
 ```
 
-!!! tip "Kokoro Language Codes"
-    | Code | Language |
-    |------|----------|
-    | `a` | American English (default) |
-    | `b` | British English |
-    | `j` | Japanese (requires `pip install misaki[ja]`) |
-    | `z` | Mandarin Chinese (requires `pip install misaki[zh]`) |
-    | `e` | Spanish |
-    | `f` | French |
+!!! tip "Qwen3-TTS Base Model"
+    Pass `voice` to pick a preset speaker and `lang_code` to hint the language, for example `voice="Chelsie"` and `lang_code="English"`.
 
 ### Voxtral TTS
 
@@ -60,11 +59,11 @@ for result in model.generate(text="Hello, how are you today?", voice="casual_mal
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
 results = list(model.generate(
     text="Hello, welcome to MLX-Audio!",
     voice="Chelsie",
-    language="English",
+    lang_code="English",
 ))
 
 audio = results[0].audio  # mx.array

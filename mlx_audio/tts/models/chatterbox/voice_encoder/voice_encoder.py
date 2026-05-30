@@ -4,6 +4,8 @@ from typing import Dict, List, Optional
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_audio.utils import resample_audio
+
 from .config import VoiceEncConfig
 from .melspec import melspectrogram
 
@@ -398,23 +400,11 @@ class VoiceEncoder(nn.Module):
         Returns:
             Embeddings
         """
-        import scipy.signal
-
         # Resample if needed
         if sample_rate != self.hp.sample_rate:
-            import numpy as np
-
-            resampled_wavs = []
-            for wav in wavs:
-                # Convert to numpy for resampling
-                wav_np = np.array(wav)
-                # Calculate resampling ratio
-                gcd = math.gcd(sample_rate, self.hp.sample_rate)
-                up = self.hp.sample_rate // gcd
-                down = sample_rate // gcd
-                wav_resampled = scipy.signal.resample_poly(wav_np, up, down)
-                resampled_wavs.append(mx.array(wav_resampled))
-            wavs = resampled_wavs
+            wavs = [
+                resample_audio(wav, sample_rate, self.hp.sample_rate) for wav in wavs
+            ]
 
         # Trim silence if requested
         if trim_top_db is not None:

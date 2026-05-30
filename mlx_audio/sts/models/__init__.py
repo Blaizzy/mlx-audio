@@ -16,6 +16,7 @@ from .lfm_audio import (
     LFM2AudioProcessor,
     LFMModality,
 )
+from .mel_roformer import MelRoFormer, MelRoFormerConfig, MelRoFormerResult
 from .moshi import MoshiConfig, MoshiSTSModel
 from .mossformer2_se import MossFormer2SE, MossFormer2SEConfig, MossFormer2SEModel
 from .sam_audio import (
@@ -55,4 +56,8 @@ __all__ = [
     # Moshi
     "MoshiConfig",
     "MoshiSTSModel",
+    # Mel-Band-RoFormer
+    "MelRoFormer",
+    "MelRoFormerConfig",
+    "MelRoFormerResult",
 ]

@@ -27,6 +27,14 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | **Moonshine** | Useful Sensors | 27M / 61M | EN | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta | 1B | 1000+ | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/mms/README.md) |
 
+!!! note "Cohere quantized local checkpoints"
+    Cohere Transcribe can be loaded from local MLX-converted checkpoints, including 8-bit and 4-bit variants. To generate these variants explicitly, use `--q-bits 8` or `--q-bits 4` together with `--quantize`.
+
+    - 8-bit: `python -m mlx_audio.convert --model-domain stt --quantize --q-bits 8`
+    - 4-bit: `python -m mlx_audio.convert --model-domain stt --quantize --q-bits 4`
+
+    You can also pass `--q-group-size` to control the quantization group size when needed.
+
 ## Unified API
 
 All STT models share the same loading interface:

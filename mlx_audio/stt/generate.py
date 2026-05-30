@@ -15,7 +15,7 @@ from mlx.utils import tree_reduce
 from mlx_audio.stt.utils import load_model
 
 
-def parse_args():
+def parse_args(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
         description="Generate transcriptions from audio files"
     )
@@ -44,6 +44,17 @@ def parse_args():
         type=int,
         default=8192,
         help="Maximum number of new tokens to generate",
+    )
+    parser.add_argument(
+        "--max-parallel-segments",
+        dest="batch_size",
+        type=int,
+        default=None,
+        metavar="SEGMENTS",
+        help=(
+            "Maximum number of audio segments to transcribe in parallel for "
+            "models that support segment batching"
+        ),
     )
     parser.add_argument(
         "--language",
@@ -98,7 +109,7 @@ def parse_args():
         default="",
         help="Text to align (for forced alignment models)",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def format_timestamp(seconds: float) -> str:

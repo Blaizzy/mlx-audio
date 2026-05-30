@@ -2,7 +2,6 @@
 # LFM2.5-Audio: Processor for audio and text
 
 import json
-import math
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
@@ -392,47 +391,13 @@ class LFM2AudioProcessor:
         orig_sr: int,
         target_sr: int,
     ) -> mx.array:
-        """Resample audio using scipy's high-quality polyphase resampling."""
+        """Resample audio with polyphase filtering."""
         if orig_sr == target_sr:
             return audio
 
-        import numpy as np
-        from scipy import signal
+        from mlx_audio.utils import resample_audio
 
-        # Convert to numpy for scipy processing
-        audio_np = np.array(audio)
-        orig_dtype = audio_np.dtype
-
-        # Calculate target length
-        if audio_np.ndim == 1:
-            orig_len = audio_np.shape[0]
-            new_len = int(orig_len * target_sr / orig_sr)
-            resampled_np = signal.resample_poly(
-                audio_np.astype(np.float64),
-                target_sr,
-                orig_sr,
-            ).astype(orig_dtype)
-        elif audio_np.ndim == 2:
-            # Shape: (channels, samples) or (batch, samples)
-            orig_len = audio_np.shape[-1]
-            new_len = int(orig_len * target_sr / orig_sr)
-            resampled_np = signal.resample_poly(
-                audio_np.astype(np.float64),
-                target_sr,
-                orig_sr,
-                axis=-1,
-            ).astype(orig_dtype)
-        else:  # 3D: (batch, channels, samples)
-            orig_len = audio_np.shape[-1]
-            new_len = int(orig_len * target_sr / orig_sr)
-            resampled_np = signal.resample_poly(
-                audio_np.astype(np.float64),
-                target_sr,
-                orig_sr,
-                axis=-1,
-            ).astype(orig_dtype)
-
-        return mx.array(resampled_np)
+        return resample_audio(audio, orig_sr, target_sr, axis=-1)
 
 
 @dataclass

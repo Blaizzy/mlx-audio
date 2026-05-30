@@ -1,16 +1,15 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
-import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Generator, Optional, Union
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from scipy import signal
+
+from mlx_audio.utils import load_audio, resample_audio
 
 from ..base import GenerationResult
 from .config import ModelConfig
@@ -30,37 +29,6 @@ SPEECH_VOCAB_SIZE = 6561  # Size of speech token vocabulary
 SOT = "[START]"
 EOT = "[STOP]"
 SPACE = "[SPACE]"
-
-
-def resample_audio(audio: mx.array, orig_sr: int, target_sr: int) -> mx.array:
-    """
-    Resample audio to a target sample rate using scipy.
-
-    Args:
-        audio: Audio waveform as MLX array (samples,) or (channels, samples)
-        orig_sr: Original sample rate
-        target_sr: Target sample rate
-
-    Returns:
-        Resampled audio as MLX array
-    """
-    if orig_sr == target_sr:
-        return audio
-
-    # Convert to numpy for scipy
-    import numpy as np
-
-    audio_np = np.array(audio)
-
-    # Calculate resampling factors
-    gcd = math.gcd(orig_sr, target_sr)
-    up = target_sr // gcd
-    down = orig_sr // gcd
-
-    # Resample
-    resampled = signal.resample_poly(audio_np, up, down, padtype="edge")
-
-    return mx.array(resampled)
 
 
 def punc_norm(text: str) -> str:
@@ -450,7 +418,10 @@ class Model(nn.Module):
                     return False
                 # Check if we have quantized weights (scales) for this path
                 # Need to check in the appropriate weight dict based on prefix
-                if path.startswith("t3."):
+                if path.startswith("ve."):
+                    weight_path = path[3:]  # Remove "ve." prefix
+                    return f"{weight_path}.scales" in ve_weights
+                elif path.startswith("t3."):
                     weight_path = path[3:]  # Remove "t3." prefix
                     return f"{weight_path}.scales" in t3_weights
                 elif path.startswith("s3gen."):
@@ -658,8 +629,8 @@ class Model(nn.Module):
         """
         # Ensure 1D waveform
         if isinstance(ref_wav, str):
-            ref_wav, ref_sr = librosa.load(ref_wav, sr=S3GEN_SR)
-            ref_wav = mx.array(ref_wav)
+            ref_wav = load_audio(ref_wav, sample_rate=S3GEN_SR)
+            ref_sr = S3GEN_SR
 
         if ref_wav.ndim == 2:
             ref_wav = ref_wav.squeeze(0)

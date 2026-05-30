@@ -4,6 +4,9 @@ from .config import DACVAEConfig, SAMAudioConfig, T5EncoderConfig, TransformerCo
 from .model import SAMAudio, SeparationResult
 from .processor import Batch, SAMAudioProcessor, save_audio
 
+Model = SAMAudio
+ModelConfig = SAMAudioConfig
+
 __all__ = [
     "SAMAudio",
     "SAMAudioProcessor",
@@ -14,4 +17,6 @@ __all__ = [
     "DACVAEConfig",
     "T5EncoderConfig",
     "TransformerConfig",
+    "Model",
+    "ModelConfig",
 ]

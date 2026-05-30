@@ -113,6 +113,7 @@ class ModelConfig:
     overlap_chunk_second: float = 5.0
     min_energy_window_samples: int = 1600
     batch_size: int = 64
+    max_safe_bytes: int = 10 * 1024 * 1024 * 1024
     sample_rate: int = 16000
     supported_languages: List[str] = field(
         default_factory=lambda: [

@@ -56,6 +56,7 @@ python -m mlx_audio.stt.generate \
 | `--format` | `txt` | Output format: `txt`, `srt`, `vtt`, `json` |
 | `--language` | `en` | Language code |
 | `--max-tokens` | `8192` | Maximum output tokens |
+| `--max-parallel-segments` | `null` | Maximum audio segments to transcribe in parallel for models that support segment batching |
 | `--chunk-duration` | `30.0` | Chunk duration in seconds |
 | `--stream` | `false` | Stream transcription output |
 | `--context` | `null` | Hotwords or metadata string |

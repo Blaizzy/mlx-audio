@@ -35,6 +35,7 @@ class DeepFilterNetConfig:
     """
 
     # Audio parameters
+    model_version: str = "DeepFilterNet3"
     sample_rate: int = 48000
 
     # STFT parameters
@@ -116,6 +117,7 @@ class DeepFilterNetConfig:
         """Convert config to dictionary."""
         return {
             "sample_rate": self.sample_rate,
+            "model_version": self.model_version,
             "fft_size": self.fft_size,
             "hop_size": self.hop_size,
             "nb_erb": self.nb_erb,
@@ -170,6 +172,7 @@ class DeepFilterNet2Config(DeepFilterNetConfig):
     DeepFilterNet2 is optimized for embedded devices while maintaining quality.
     """
 
+    model_version: str = "DeepFilterNet2"
     conv_ch: int = 16
     emb_hidden_dim: int = 256
     df_hidden_dim: int = 256
@@ -184,6 +187,7 @@ class DeepFilterNet3Config(DeepFilterNetConfig):
     DeepFilterNet3 adds perceptually motivated improvements.
     """
 
+    model_version: str = "DeepFilterNet3"
     conv_ch: int = 16
     emb_hidden_dim: int = 256
     df_hidden_dim: int = 256

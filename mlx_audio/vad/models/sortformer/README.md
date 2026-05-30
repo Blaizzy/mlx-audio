@@ -193,9 +193,9 @@ for result in model.generate_stream("meeting.wav", chunk_duration=5.0, verbose=T
 ### Streaming from a list of chunks
 
 ```python
-import soundfile as sf
+from mlx_audio.audio_io import read as audio_read
 
-audio, sr = sf.read("meeting.wav")
+audio, sr = audio_read("meeting.wav")
 chunk_size = int(5.0 * sr)
 chunks = [audio[i:i+chunk_size] for i in range(0, len(audio), chunk_size)]
 

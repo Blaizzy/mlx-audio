@@ -11,10 +11,15 @@ from .config import MossFormer2SEConfig
 from .model import MossFormer2SEModel
 from .mossformer2_se_wrapper import MossFormer2SE
 
+Model = MossFormer2SEModel
+ModelConfig = MossFormer2SEConfig
+
 __all__ = [
     "MossFormer2SEConfig",
     "MossFormer2SE",
     "MossFormer2SEModel",
+    "Model",
+    "ModelConfig",
     "load_audio",
     "save_audio",
 ]

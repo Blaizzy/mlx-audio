@@ -71,8 +71,22 @@ class AudioPlayer:
         return sum(map(len, self.audio_buffer))
 
     def queue_audio(self, samples):
+        samples = np.asarray(samples, dtype=np.float32)
         if not len(samples):
             return
+        if samples.ndim == 0:
+            samples = samples.reshape(1)
+        elif samples.ndim == 2:
+            if samples.shape[1] == 1:
+                samples = samples[:, 0]
+            elif samples.shape[0] == 1:
+                samples = samples[0]
+            elif samples.shape[0] <= 8 and samples.shape[0] < samples.shape[1]:
+                samples = samples.mean(axis=0)
+            else:
+                samples = samples.mean(axis=1)
+        elif samples.ndim > 2:
+            samples = samples.reshape(-1)
 
         now = time.perf_counter()
 
@@ -90,7 +104,7 @@ class AudioPlayer:
             self.window_start = now
 
         with self.buffer_lock:
-            self.audio_buffer.append(np.asarray(samples))
+            self.audio_buffer.append(samples)
 
         # start playback only when we have enough buffered audio
         needed = int(self.arrival_rate * self.min_buffer_seconds)
@@ -98,6 +112,14 @@ class AudioPlayer:
             self.start_stream()
 
     def wait_for_drain(self):
+        # If the stream never started (e.g. short text whose total audio fell
+        # below the min_buffer_seconds threshold), force-start it now so the
+        # buffered audio is played instead of hanging forever.
+        if not self.playing:
+            if self.buffered_samples() > 0:
+                self.start_stream()
+            else:
+                return
         return self.drain_event.wait()
 
     def stop(self):

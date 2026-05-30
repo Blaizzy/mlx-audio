@@ -2,11 +2,12 @@
 
 from typing import List, Optional, Union
 
-import librosa
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from numpy.lib.stride_tricks import as_strided
+
+from mlx_audio.utils import resample_audio, trim_silence
 
 from .config import VoiceEncConfig
 from .melspec import melspectrogram
@@ -289,19 +290,15 @@ class VoiceEncoder(nn.Module):
         """
         Wrapper around embeds_from_mels that takes raw waveforms.
         """
+        wavs = [np.asarray(wav, dtype=np.float32) for wav in wavs]
+
         if sample_rate != self.hp.sample_rate:
             wavs = [
-                librosa.resample(
-                    wav,
-                    orig_sr=sample_rate,
-                    target_sr=self.hp.sample_rate,
-                    res_type="kaiser_fast",
-                )
-                for wav in wavs
+                resample_audio(wav, sample_rate, self.hp.sample_rate) for wav in wavs
             ]
 
         if trim_top_db:
-            wavs = [librosa.effects.trim(wav, top_db=trim_top_db)[0] for wav in wavs]
+            wavs = [trim_silence(wav, top_db=trim_top_db) for wav in wavs]
 
         if "rate" not in kwargs:
             kwargs["rate"] = 1.3  # Resemble's default value

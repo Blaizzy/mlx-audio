@@ -2,11 +2,11 @@ import math
 
 import mlx.core as mx
 import numpy as np
-import pyloudnorm as pyln
-import scipy.signal
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec import DAC
+from mlx_audio.dsp import integrated_loudness, normalize_loudness, normalize_peak
+from mlx_audio.utils import resample_audio
 
 
 def process_audio_array(
@@ -35,17 +35,16 @@ def process_audio_array(
         audio_padded = audio_np
 
     # measure and normalize loudness
-    meter = pyln.Meter(sample_rate, block_size=block_size)
-    measured_loudness = meter.integrated_loudness(audio_padded)
-    normalized = pyln.normalize.loudness(
-        audio_padded, measured_loudness, target_loudness
+    measured_loudness = integrated_loudness(
+        audio_padded, sample_rate, block_size=block_size
     )
+    normalized = normalize_loudness(audio_padded, measured_loudness, target_loudness)
 
     # apply peak limiting if necessary
     peak_value = np.max(np.abs(normalized))
     threshold_value = 10 ** (peak_limit / 20)
     if peak_value > threshold_value:
-        normalized = pyln.normalize.peak(normalized, peak_limit)
+        normalized = normalize_peak(normalized, peak_limit)
 
     if original_length < min_samples:
         normalized = normalized[:original_length]
@@ -67,7 +66,7 @@ class DacInterface:
         if len(audio_np.shape) < 2:
             audio_np = audio_np.reshape(1, -1)
 
-        channels, length = audio_np.shape[-2:]
+        channels = audio_np.shape[-2]
 
         if target_channels == 1:
             if channels > 1:
@@ -79,13 +78,7 @@ class DacInterface:
                 audio_np = audio_np[..., :2, :]
 
         if sr != target_sr:
-            new_length = int(length * target_sr / sr)
-            resampled = np.zeros((target_channels, new_length))
-
-            for ch in range(target_channels):
-                resampled[ch] = scipy.signal.resample(audio_np[ch], new_length)
-
-            audio_np = resampled
+            audio_np = resample_audio(audio_np, sr, target_sr, axis=-1)
 
         return mx.array(audio_np)
 

@@ -14,14 +14,13 @@ from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.models.llama import LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
 from mlx_lm.sample_utils import make_sampler
-from scipy import signal
 from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
-from mlx_audio.utils import load_audio
+from mlx_audio.utils import load_audio, resample_audio
 
 from ..base import GenerationResult
 from .attention import Attention
@@ -33,14 +32,6 @@ except ImportError:
 
 MIMI_REPO = "kyutai/moshiko-pytorch-bf16"
 TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
-
-
-def resample_audio(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    gcd = np.gcd(orig_sr, target_sr)
-    up = target_sr // gcd
-    down = orig_sr // gcd
-    resampled = signal.resample_poly(audio, up, down, padtype="edge")
-    return resampled
 
 
 @dataclass

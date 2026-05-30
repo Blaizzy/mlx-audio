@@ -42,12 +42,22 @@ class MoshiSTSModel:
 
     @classmethod
     def from_pretrained(
-        cls, model_name_or_path: str, quantized: Optional[int] = None
+        cls,
+        model_name_or_path: str,
+        quantized: Optional[int] = None,
+        revision: Optional[str] = None,
+        force_download: bool = False,
     ) -> "MoshiSTSModel":
         if Path(model_name_or_path).exists():
             model_path = Path(model_name_or_path)
         else:
-            model_path = Path(snapshot_download(model_name_or_path))
+            model_path = Path(
+                snapshot_download(
+                    model_name_or_path,
+                    revision=revision,
+                    force_download=force_download,
+                )
+            )
 
         config = MoshiConfig(hf_repo=model_name_or_path, quantized=quantized)
         model = cls(config)

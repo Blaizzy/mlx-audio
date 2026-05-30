@@ -2,9 +2,11 @@
 
 from functools import lru_cache
 
-import librosa
+import mlx.core as mx
 import numpy as np
-from scipy import signal
+
+from mlx_audio.dsp import lfilter
+from mlx_audio.utils import mel_filters, stft
 
 from .config import VoiceEncConfig
 
@@ -12,18 +14,22 @@ from .config import VoiceEncConfig
 @lru_cache()
 def mel_basis(hp: VoiceEncConfig):
     assert hp.fmax <= hp.sample_rate // 2
-    return librosa.filters.mel(
-        sr=hp.sample_rate,
-        n_fft=hp.n_fft,
-        n_mels=hp.num_mels,
-        fmin=hp.fmin,
-        fmax=hp.fmax,
+    return np.array(
+        mel_filters(
+            sample_rate=hp.sample_rate,
+            n_fft=hp.n_fft,
+            n_mels=hp.num_mels,
+            f_min=hp.fmin,
+            f_max=hp.fmax,
+            norm="slaney",
+            mel_scale="slaney",
+        )
     )  # -> (nmel, nfreq)
 
 
 def preemphasis(wav, hp: VoiceEncConfig):
     assert hp.preemphasis != 0
-    wav = signal.lfilter([1, -hp.preemphasis], [1], wav)
+    wav = lfilter([1, -hp.preemphasis], [1], wav)
     wav = np.clip(wav, -1, 1)
     return wav
 
@@ -58,14 +64,16 @@ def melspectrogram(wav, hp: VoiceEncConfig, pad=True):
 
 
 def _stft(y, hp: VoiceEncConfig, pad=True):
-    return librosa.stft(
-        y,
+    spec = stft(
+        mx.array(np.asarray(y, dtype=np.float32)),
+        window="hann",
         n_fft=hp.n_fft,
         hop_length=hp.hop_size,
         win_length=hp.win_size,
         center=pad,
         pad_mode="reflect",
     )
+    return np.array(spec).T
 
 
 def _amp_to_db(x, hp: VoiceEncConfig):

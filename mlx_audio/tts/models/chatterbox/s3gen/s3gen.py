@@ -1,11 +1,11 @@
 # Ported from https://github.com/resemble-ai/chatterbox
 
-import math
 from typing import Dict, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from scipy import signal
+
+from mlx_audio.utils import resample_audio
 
 from .decoder import ConditionalDecoder
 from .f0_predictor import ConvRNNF0Predictor
@@ -15,21 +15,6 @@ from .hifigan import HiFTGenerator
 from .mel import mel_spectrogram
 from .transformer.upsample_encoder import UpsampleConformerEncoder
 from .xvector import CAMPPlus
-
-
-def resample_audio(audio: mx.array, orig_sr: int, target_sr: int) -> mx.array:
-    """Resample audio using scipy (numpy required for scipy)."""
-    if orig_sr == target_sr:
-        return audio
-    import numpy as np
-
-    audio_np = np.array(audio)
-    gcd = math.gcd(orig_sr, target_sr)
-    up = target_sr // gcd
-    down = orig_sr // gcd
-    resampled = signal.resample_poly(audio_np, up, down, padtype="edge")
-    return mx.array(resampled.astype(np.float32))
-
 
 # Constants
 S3GEN_SR = 24000

@@ -2,9 +2,11 @@ import functools
 import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import mlx.core as mx
 import numpy as np
 import pytest
+from huggingface_hub.errors import RepositoryNotFoundError
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
@@ -121,7 +123,7 @@ def test_tts_speech(client, mock_model_provider):
         == "attachment; filename=speech.mp3"
     )
 
-    mock_model_provider.load_model.assert_called_once_with("test_tts_model")
+    mock_model_provider.load_model.assert_any_call("test_tts_model")
     mock_tts_model.generate.assert_called_once()
 
     args, kwargs = mock_tts_model.generate.call_args
@@ -134,6 +136,88 @@ def test_tts_speech(client, mock_model_provider):
         assert len(audio_data) > 0
     except Exception as e:
         pytest.fail(f"Failed to read or validate MP3 content: {e}")
+
+
+def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
+    """Construct a RepositoryNotFoundError shaped like the real HF client raises."""
+    request = httpx.Request("GET", f"https://huggingface.co/api/models/{model_name}")
+    response = httpx.Response(404, request=request)
+    return RepositoryNotFoundError(
+        f"404 Client Error. Repository Not Found", response=response
+    )
+
+
+def test_tts_speech_bad_model_returns_404_not_silent_200(client, mock_model_provider):
+    """Regression: bad model ids must surface as 4xx, not 200 OK with empty body.
+
+    Before the pre-flight fix, ``StreamingResponse`` committed the response
+    headers (200 OK) before the worker thread tried to load the model, so any
+    HuggingFace failure ended up as a clean zero-byte body. The fix loads the
+    model synchronously before returning the response.
+    """
+
+    def _raise(model_name):
+        raise _hf_repo_not_found(model_name)
+
+    mock_model_provider.load_model = MagicMock(side_effect=_raise)
+
+    payload = {
+        "model": "does-not-exist-on-hf",
+        "input": "hi",
+        "response_format": "wav",
+    }
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 404, (
+        f"expected 404 for bad model, got {response.status_code} "
+        f"(body length={len(response.content)})"
+    )
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "detail" in body
+    assert "does-not-exist-on-hf" in body["detail"]
+
+
+def test_tts_speech_load_failure_returns_500(client, mock_model_provider):
+    """Non-HF load failures should surface as 500 with a JSON detail body."""
+
+    def _raise(model_name):
+        raise RuntimeError("checkpoint is corrupted")
+
+    mock_model_provider.load_model = MagicMock(side_effect=_raise)
+
+    payload = {"model": "some-model", "input": "hi", "response_format": "wav"}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "detail" in body
+    assert "some-model" in body["detail"]
+
+
+def test_stt_transcriptions_bad_model_returns_404(client, mock_model_provider):
+    """Same silent-200 hazard applies to the default ndjson streaming response."""
+
+    def _raise(model_name):
+        raise _hf_repo_not_found(model_name)
+
+    mock_model_provider.load_model = MagicMock(side_effect=_raise)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={"model": "does-not-exist-on-hf"},
+    )
+
+    assert response.status_code == 404, (
+        f"expected 404 for bad model, got {response.status_code} "
+        f"(body length={len(response.content)})"
+    )
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert "detail" in body
+    assert "does-not-exist-on-hf" in body["detail"]
 
 
 def test_stt_transcriptions(client, mock_model_provider):
@@ -164,10 +248,114 @@ def test_stt_transcriptions(client, mock_model_provider):
     assert response.status_code == 200
     assert response.json() == {"text": "This is a test transcription."}
 
-    mock_model_provider.load_model.assert_called_once_with("test_stt_model")
+    mock_model_provider.load_model.assert_any_call("test_stt_model")
     mock_stt_model.generate.assert_called_once()
 
     assert mock_stt_model.generate.call_args[0][0].startswith("/tmp/")
+
+
+# ---------------------------------------------------------------------------
+# OpenAI-compatible response_format tests for /v1/audio/transcriptions
+# ---------------------------------------------------------------------------
+
+
+def _make_transcription_audio_buffer():
+    """Build a tiny mp3 buffer suitable as the ``file`` upload field."""
+    sample_rate = 16000
+    duration = 1
+    frequency = 440
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    audio_data = 0.5 * np.sin(2 * np.pi * frequency * t).astype(np.float32)
+    buffer = io.BytesIO()
+    audio_write(buffer, audio_data, sample_rate, format="mp3")
+    buffer.seek(0)
+    return buffer
+
+
+def _post_transcription(client, mock_model_provider, mock_return, *, response_format):
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value=mock_return)
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    return client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={"model": "test_stt_model", "response_format": response_format},
+    )
+
+
+def test_stt_transcriptions_response_format_text(client, mock_model_provider):
+    """response_format=text returns plain text body with the transcript."""
+    response = _post_transcription(
+        client,
+        mock_model_provider,
+        {"text": "Hello world."},
+        response_format="text",
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert response.text == "Hello world."
+
+
+def test_stt_transcriptions_response_format_json(client, mock_model_provider):
+    """response_format=json returns the OpenAI minimal {"text": ...} shape."""
+    response = _post_transcription(
+        client,
+        mock_model_provider,
+        {"text": "Hello world."},
+        response_format="json",
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    assert response.json() == {"text": "Hello world."}
+
+
+def test_stt_transcriptions_response_format_verbose_json(client, mock_model_provider):
+    """response_format=verbose_json passes the full model payload through unchanged."""
+    full_payload = {
+        "text": "Hello world.",
+        "language": "en",
+        "segments": [
+            {"id": 0, "text": "Hello", "start": 0.0, "end": 0.5},
+            {"id": 1, "text": " world.", "start": 0.5, "end": 1.0},
+        ],
+    }
+    response = _post_transcription(
+        client,
+        mock_model_provider,
+        full_payload,
+        response_format="verbose_json",
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["text"] == "Hello world."
+    assert body["language"] == "en"
+    assert [s["text"] for s in body["segments"]] == ["Hello", " world."]
+
+
+def test_stt_transcriptions_default_format_preserves_ndjson(
+    client, mock_model_provider
+):
+    """Without response_format, the legacy application/x-ndjson stream is preserved."""
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value={"text": "hi"})
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={"model": "test_stt_model"},
+    )
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/x-ndjson")
+    # Each line in the body should be a JSON object.
+    lines = [line for line in response.text.splitlines() if line.strip()]
+    assert lines, "expected at least one ndjson line"
+    import json as _json
+
+    for line in lines:
+        _json.loads(line)
 
 
 # ---------------------------------------------------------------------------
@@ -370,3 +558,241 @@ def test_realtime_ws_streaming_disabled_fallback(client, mock_model_provider):
     # Should have at least one legacy text message
     text_msgs = [m for m in messages if "text" in m and "type" not in m]
     assert len(text_msgs) >= 1, f"Expected legacy text message, got: {messages}"
+
+
+# --- /v1/realtime server-side VAD turn detection --------------------------
+
+
+class _FakeStreamingSession:
+    """Minimal streaming session: emits one delta once the audio is closed."""
+
+    input_sample_rate = 16000
+
+    def __init__(self):
+        self._closed = False
+        self._emitted = False
+
+    def feed(self, samples):
+        pass
+
+    def close(self):
+        self._closed = True
+
+    def step(self, max_decode_tokens=4):
+        if self._closed and not self._emitted:
+            self._emitted = True
+            return ["bonjour"]
+        return []
+
+    @property
+    def done(self):
+        return self._closed and self._emitted
+
+
+class _FakeStreamingModel:
+    def create_streaming_session(self, *, temperature=0.0, **kwargs):
+        return _FakeStreamingSession()
+
+
+class _FakeVadModel:
+    """Returns a scripted speech probability per consumed 512-sample frame."""
+
+    def __init__(self, probs):
+        self._probs = probs
+
+    def initial_state(self, sample_rate=16000):
+        return {"i": 0}
+
+    def feed(self, chunk, state, sample_rate=16000):
+        i = state["i"]
+        p = self._probs[i] if i < len(self._probs) else 0.0
+        return mx.array([[p]]), {"i": i + 1}
+
+
+def test_realtime_ws_server_vad_auto_commits(client, mock_model_provider, monkeypatch):
+    """With server_vad the server detects end-of-speech, emits
+    speech_started/stopped, auto-commits and returns the transcript — the
+    client never sends input_audio_buffer.commit."""
+    import base64
+
+    from mlx_audio.realtime_vad import VAD_FRAME_SIZE
+
+    mock_model_provider.load_model = MagicMock(return_value=_FakeStreamingModel())
+    # Four speech frames, then silence — enough to open then close a turn.
+    probs = [0.9] * 4 + [0.0] * 60
+    monkeypatch.setattr(
+        "mlx_audio.server._load_realtime_vad_model",
+        lambda name: _FakeVadModel(probs),
+    )
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 16000},
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "silence_duration_ms": 160,
+                            },
+                        }
+                    }
+                },
+            }
+        )
+        updated = ws.receive_json()
+        assert updated["type"] == "session.updated"
+        assert (
+            updated["session"]["audio"]["input"]["turn_detection"]["type"]
+            == "server_vad"
+        )
+
+        pcm = np.zeros(VAD_FRAME_SIZE * 40, dtype=np.int16).tobytes()
+        ws.send_json(
+            {
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(pcm).decode(),
+            }
+        )
+
+        events = []
+        while True:
+            evt = ws.receive_json()
+            events.append(evt)
+            if evt["type"] == ("conversation.item.input_audio_transcription.completed"):
+                break
+
+    types = [e["type"] for e in events]
+    assert "input_audio_buffer.speech_started" in types
+    assert "input_audio_buffer.speech_stopped" in types
+    assert "input_audio_buffer.committed" in types
+    # speech_started precedes speech_stopped.
+    assert types.index("input_audio_buffer.speech_started") < types.index(
+        "input_audio_buffer.speech_stopped"
+    )
+    assert events[-1]["transcript"] == "bonjour"
+
+
+def test_realtime_ws_rejects_semantic_vad(client, mock_model_provider):
+    """semantic_vad is not implemented yet → the server replies with an error
+    rather than silently ignoring the request."""
+    mock_model_provider.load_model = MagicMock(return_value=_FakeStreamingModel())
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {"input": {"turn_detection": {"type": "semantic_vad"}}}
+                },
+            }
+        )
+        evt = ws.receive_json()
+        assert evt["type"] == "error"
+        assert "semantic_vad" in evt["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# word_timestamps form field tests
+# ---------------------------------------------------------------------------
+
+
+def test_transcription_request_word_timestamps_defaults():
+    """TranscriptionRequest defaults word_timestamps=False, timestamp_granularities=None."""
+    from mlx_audio.server import TranscriptionRequest
+
+    req = TranscriptionRequest(model="test-model")
+    assert req.word_timestamps is False
+    assert req.timestamp_granularities is None
+
+
+def test_transcription_request_word_timestamps_accepted():
+    """TranscriptionRequest accepts word_timestamps=True."""
+    from mlx_audio.server import TranscriptionRequest
+
+    req = TranscriptionRequest(
+        model="test-model", word_timestamps=True, timestamp_granularities="word"
+    )
+    assert req.word_timestamps is True
+    assert req.timestamp_granularities == "word"
+
+
+def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
+    """word_timestamps=true form field reaches stt_model.generate() as a kwarg.
+
+    The STTExecutionAdapter allowlist (_STT_EXTRA_KWARGS) must pass word_timestamps
+    through even when it isn't declared in the model's generate() signature.
+    """
+    captured_kwargs: dict = {}
+
+    def mock_generate(path, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"text": "hello", "segments": [], "language": "en"}
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = mock_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "verbose_json",
+            "word_timestamps": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs.get("word_timestamps") is True
+
+
+def test_stt_word_timestamps_verbose_json_words_passthrough(
+    client, mock_model_provider
+):
+    """verbose_json response includes words[] from the model when word_timestamps=True."""
+    full_payload = {
+        "text": "Hello world.",
+        "language": "en",
+        "segments": [
+            {
+                "id": 0,
+                "text": "Hello world.",
+                "start": 0.0,
+                "end": 1.0,
+                "words": [
+                    {"word": "Hello", "start": 0.0, "end": 0.5, "probability": 0.99},
+                    {"word": "world.", "start": 0.5, "end": 1.0, "probability": 0.98},
+                ],
+            }
+        ],
+    }
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value=full_payload)
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "verbose_json",
+            "word_timestamps": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["text"] == "Hello world."
+    segments = body.get("segments", [])
+    assert len(segments) == 1
+    words = segments[0].get("words", [])
+    assert len(words) == 2
+    assert words[0]["word"] == "Hello"
+    assert words[1]["word"] == "world."

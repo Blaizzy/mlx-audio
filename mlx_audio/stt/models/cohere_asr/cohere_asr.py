@@ -5,6 +5,8 @@ from typing import Dict, Iterable, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from mlx.utils import tree_flatten
+from mlx_lm.models.cache import KVCache
 
 from mlx_audio.stt.models.base import STTOutput
 
@@ -13,6 +15,8 @@ from .config import DecoderInnerConfig, EncoderConfig, ModelConfig
 from .tokenizer import CohereAsrTokenizer
 
 NO_SPACE_LANGS = {"ja", "zh"}
+DEFAULT_BATCH_SIZE = 1
+MAX_AUTO_BATCH_SIZE = 32
 
 
 class ConvSubsampling(nn.Module):
@@ -347,19 +351,38 @@ class DecoderAttention(nn.Module):
         hidden_states: mx.array,
         context_states: Optional[mx.array] = None,
         attention_mask: Optional[mx.array] = None,
-        cache: Optional[Tuple[mx.array, mx.array]] = None,
-    ) -> Tuple[mx.array, Tuple[mx.array, mx.array]]:
+        cache=None,
+    ):
         query = self._reshape(self.query_net(hidden_states))
-        source = hidden_states if context_states is None else context_states
 
-        if cache is not None and context_states is not None:
-            key, value = cache
-        else:
-            key = self._reshape(self.key_net(source))
-            value = self._reshape(self.value_net(source))
-            if cache is not None and context_states is None:
+        if context_states is None:
+            key = self._reshape(self.key_net(hidden_states))
+            value = self._reshape(self.value_net(hidden_states))
+            if isinstance(cache, KVCache):
+                key, value = cache.update_and_fetch(key, value)
+                new_cache = cache
+            elif (
+                isinstance(cache, tuple)
+                and cache[0] is not None
+                and cache[1] is not None
+            ):
                 key = mx.concatenate([cache[0], key], axis=2)
                 value = mx.concatenate([cache[1], value], axis=2)
+                new_cache = (key, value)
+            else:
+                new_cache = (key, value)
+        else:
+            if (
+                isinstance(cache, tuple)
+                and cache[0] is not None
+                and cache[1] is not None
+            ):
+                key, value = cache
+                new_cache = cache
+            else:
+                key = self._reshape(self.key_net(context_states))
+                value = self._reshape(self.value_net(context_states))
+                new_cache = (key, value)
 
         output = mx.fast.scaled_dot_product_attention(
             query,
@@ -371,7 +394,7 @@ class DecoderAttention(nn.Module):
         output = output.transpose(0, 2, 1, 3).reshape(
             hidden_states.shape[0], hidden_states.shape[1], self.hidden_size
         )
-        return self.out_projection(output), (key, value)
+        return self.out_projection(output), new_cache
 
 
 class DecoderFeedForward(nn.Module):
@@ -516,9 +539,9 @@ class TransformerDecoderWrapper(nn.Module):
         input_ids: mx.array,
         encoder_hidden_states: mx.array,
         encoder_mask: Optional[mx.array] = None,
-        cache: Optional[List[Dict[str, Tuple[mx.array, mx.array]]]] = None,
+        cache=None,
         start_pos: int = 0,
-    ) -> Tuple[mx.array, List[Dict[str, Tuple[mx.array, mx.array]]]]:
+    ):
         batch, seq_len = input_ids.shape
         positions = mx.arange(start_pos, start_pos + seq_len, dtype=mx.int32)
         positions = mx.broadcast_to(positions[None, :], (batch, seq_len))
@@ -529,12 +552,17 @@ class TransformerDecoderWrapper(nn.Module):
             self_attention_mask = nn.MultiHeadAttention.create_additive_causal_mask(
                 seq_len
             ).astype(hidden_states.dtype)
-            if (
-                cache is not None
-                and cache[0] is not None
-                and cache[0]["self_attn"] is not None
-            ):
-                cached_len = cache[0]["self_attn"][0].shape[2]
+            cached_len = 0
+            if cache is not None and cache[0] is not None:
+                self_attn_cache = cache[0]["self_attn"]
+                if isinstance(self_attn_cache, KVCache):
+                    cached_len = self_attn_cache.offset
+                elif (
+                    isinstance(self_attn_cache, tuple)
+                    and self_attn_cache[0] is not None
+                ):
+                    cached_len = self_attn_cache[0].shape[2]
+            if cached_len > 0:
                 prefix = mx.zeros((seq_len, cached_len), dtype=hidden_states.dtype)
                 self_attention_mask = mx.concatenate(
                     [prefix, self_attention_mask], axis=1
@@ -574,13 +602,19 @@ class TokenClassifierHead(nn.Module):
         return logits
 
 
+Waveform = Union[np.ndarray, mx.array]
+
+
 def split_audio_chunks_energy(
-    waveform: np.ndarray,
+    waveform: Waveform,
     sample_rate: int,
     max_audio_clip_s: float,
     overlap_chunk_second: float,
     min_energy_window_samples: int,
 ) -> List[Tuple[int, int]]:
+    if not isinstance(waveform, mx.array):
+        waveform = mx.array(waveform, dtype=mx.float32)
+
     chunk_size = max(1, int(round(max_audio_clip_s * sample_rate)))
     boundary_context = max(1, int(round(overlap_chunk_second * sample_rate)))
     total_samples = waveform.shape[0]
@@ -611,7 +645,7 @@ def split_audio_chunks_energy(
 
 
 def _find_split_point_energy(
-    waveform: np.ndarray,
+    waveform: mx.array,
     start_idx: int,
     end_idx: int,
     min_energy_window_samples: int,
@@ -620,16 +654,16 @@ def _find_split_point_energy(
     if segment.shape[0] <= min_energy_window_samples:
         return (start_idx + end_idx) // 2
 
-    quietest_idx = start_idx
-    min_energy = float("inf")
-    upper = segment.shape[0] - min_energy_window_samples
-    for offset in range(0, upper, min_energy_window_samples):
-        window = segment[offset : offset + min_energy_window_samples]
-        energy = float(np.sqrt(np.mean(window * window)))
-        if energy < min_energy:
-            min_energy = energy
-            quietest_idx = start_idx + offset
-    return quietest_idx
+    usable_samples = (segment.shape[0] // min_energy_window_samples) * (
+        min_energy_window_samples
+    )
+    if usable_samples <= 0:
+        return (start_idx + end_idx) // 2
+
+    windows = segment[:usable_samples].reshape(-1, min_energy_window_samples)
+    energies = mx.mean(windows * windows, axis=1)
+    quietest_window = int(mx.argmin(energies).item())
+    return start_idx + quietest_window * min_energy_window_samples
 
 
 def join_chunk_texts(texts: Iterable[str], language: str) -> str:
@@ -662,6 +696,15 @@ class Model(nn.Module):
         self.audio_frontend = CohereAudioFrontend(config.preprocessor)
         self._tokenizer: Optional[CohereAsrTokenizer] = None
 
+    def make_cache(self):
+        n_layers = len(self.transf_decoder.decoder.layers)
+        caches = []
+        for _ in range(n_layers):
+            kv = KVCache()
+            kv.step = 512
+            caches.append({"self_attn": kv, "cross_attn": (None, None)})
+        return caches
+
     @property
     def sample_rate(self) -> int:
         return self.config.sample_rate
@@ -673,6 +716,7 @@ class Model(nn.Module):
             )
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        model_weights = dict(tree_flatten(self.parameters()))
         sanitized = {}
         for key, value in weights.items():
             if key.startswith("preprocessor."):
@@ -690,10 +734,22 @@ class Model(nn.Module):
                     "transf_decoder._decoder.", "transf_decoder.decoder."
                 )
 
-            if value.ndim == 3 and new_key.endswith("weight"):
-                value = mx.transpose(value, (0, 2, 1))
-            elif value.ndim == 4 and new_key.endswith("weight"):
-                value = mx.transpose(value, (0, 2, 3, 1))
+            expected = model_weights.get(new_key)
+            if expected is not None and hasattr(expected, "shape"):
+                if value.shape != expected.shape:
+                    if value.ndim == 3:
+                        transposed = mx.transpose(value, (0, 2, 1))
+                        if transposed.shape == expected.shape:
+                            value = transposed
+                    elif value.ndim == 4:
+                        transposed = mx.transpose(value, (0, 2, 3, 1))
+                        if transposed.shape == expected.shape:
+                            value = transposed
+            elif new_key.endswith("weight"):
+                if value.ndim == 3:
+                    value = mx.transpose(value, (0, 2, 1))
+                elif value.ndim == 4:
+                    value = mx.transpose(value, (0, 2, 3, 1))
 
             sanitized[new_key] = value
 
@@ -718,40 +774,35 @@ class Model(nn.Module):
         self,
         audio: Union[str, Path, np.ndarray, mx.array],
         sample_rate: Optional[int] = None,
-    ) -> np.ndarray:
+    ) -> mx.array:
         from mlx_audio.stt.utils import load_audio, resample_audio
 
         if isinstance(audio, (str, Path)):
-            return np.array(
-                load_audio(str(audio), sr=self.sample_rate), dtype=np.float32
-            )
-
-        if isinstance(audio, mx.array):
-            arr = np.array(audio)
+            arr = load_audio(str(audio), sr=self.sample_rate, dtype=mx.float32)
+        elif isinstance(audio, mx.array):
+            arr = audio.astype(mx.float32)
         else:
-            arr = np.asarray(audio, dtype=np.float32)
+            arr = mx.array(audio, dtype=mx.float32)
 
         if arr.ndim == 2:
             if arr.shape[0] <= 8 and arr.shape[1] > arr.shape[0]:
-                arr = arr.mean(axis=0)
+                arr = mx.mean(arr, axis=0)
             else:
-                arr = arr.mean(axis=1)
+                arr = mx.mean(arr, axis=1)
 
         if sample_rate is not None and sample_rate != self.sample_rate:
-            arr = resample_audio(
-                arr.astype(np.float32, copy=False), sample_rate, self.sample_rate
-            )
+            arr = resample_audio(arr, sample_rate, self.sample_rate).astype(mx.float32)
 
         if arr.ndim != 1:
             raise ValueError(f"Expected mono waveform, got shape {arr.shape}.")
 
-        return arr.astype(np.float32, copy=False)
+        return arr.astype(mx.float32)
 
     def _encode_waveforms(
-        self, waveforms: List[np.ndarray]
+        self, waveforms: List[Waveform]
     ) -> Tuple[mx.array, mx.array, mx.array]:
         input_features, lengths = self.audio_frontend(waveforms)
-        conv_weight = self.encoder.pre_encode.out.weight
+        conv_weight = self.encoder.pre_encode.conv[0].weight
         if input_features.dtype != conv_weight.dtype:
             input_features = input_features.astype(conv_weight.dtype)
 
@@ -763,73 +814,115 @@ class Model(nn.Module):
             mx.arange(encoder_hidden_states.shape[1])[None, :]
             < encoder_lengths[:, None]
         )
+        mx.async_eval(encoder_hidden_states, encoder_lengths, encoder_mask)
         return encoder_hidden_states, encoder_lengths, encoder_mask
+
+    def _resolve_batch_size(self, batch_size: Optional[int]) -> int:
+        if batch_size is None:
+            return self._auto_batch_size()
+        if batch_size < 1:
+            raise ValueError("batch_size must be at least 1.")
+        return int(batch_size)
+
+    def _auto_batch_size(self) -> int:
+        if not mx.metal.is_available():
+            return DEFAULT_BATCH_SIZE
+
+        try:
+            max_rec_size = mx.device_info().get("max_recommended_working_set_size", 0)
+        except Exception:
+            return DEFAULT_BATCH_SIZE
+
+        max_rec_gb = max_rec_size / 2**30
+        if max_rec_gb >= 96:
+            batch_size = 32
+        elif max_rec_gb >= 64:
+            batch_size = 16
+        elif max_rec_gb >= 32:
+            batch_size = 8
+        elif max_rec_gb >= 24:
+            batch_size = 4
+        else:
+            batch_size = DEFAULT_BATCH_SIZE
+
+        return min(max(1, self.config.batch_size), batch_size, MAX_AUTO_BATCH_SIZE)
+
+    def _resolve_max_tokens(self, max_tokens: int, prompt_len: int) -> int:
+        if max_tokens < 0:
+            raise ValueError("max_tokens must be non-negative.")
+        decoder_max_len = self.config.transf_decoder.config_dict.max_sequence_length
+        available_tokens = max(0, decoder_max_len - prompt_len)
+        return min(int(max_tokens), available_tokens)
 
     def _generate_batch_tokens(
         self,
-        waveforms: List[np.ndarray],
+        waveforms: List[Waveform],
         prompt_tokens: List[int],
         max_tokens: int,
     ) -> Tuple[List[List[int]], int]:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not initialized. Load the model first.")
 
+        max_tokens = self._resolve_max_tokens(max_tokens, len(prompt_tokens))
         encoder_hidden_states, _, encoder_mask = self._encode_waveforms(waveforms)
         batch_size = len(waveforms)
         prompt_ids = mx.array([prompt_tokens] * batch_size, dtype=mx.int32)
-        logits, cache = self.transf_decoder(
+        cache = self.make_cache()
+        hidden, cache = self.transf_decoder(
             prompt_ids,
             encoder_hidden_states,
             encoder_mask=encoder_mask,
-            cache=None,
+            cache=cache,
             start_pos=0,
         )
-        logits = self.log_softmax(logits)
+        lm_head = self.log_softmax.mlp.layer0
+        logits = lm_head(hidden[:, -1:, :])
 
         if max_tokens <= 0:
             return [[] for _ in range(batch_size)], len(prompt_tokens)
 
-        next_tokens = mx.argmax(logits[:, -1, :], axis=-1)
-        next_tokens_np = np.array(next_tokens)
         eos_id = self._tokenizer.eos_token_id
-        finished = next_tokens_np == eos_id
-        generated = [[] for _ in range(batch_size)]
-
-        for idx, token_id in enumerate(next_tokens_np.tolist()):
-            if token_id != eos_id:
-                generated[idx].append(int(token_id))
-
+        eos_mx = mx.array(eos_id, dtype=mx.int32)
         prompt_len = len(prompt_tokens)
-        current_tokens = next_tokens_np.astype(np.int32)
 
+        current_tokens = mx.argmax(logits[:, -1, :], axis=-1).astype(mx.int32)
+        finished = current_tokens == eos_mx
+        token_steps: List[mx.array] = [current_tokens]
+
+        sync_interval = 16
         for step in range(max_tokens - 1):
-            if bool(np.all(finished)):
+            if (step + 1) % sync_interval == 0 and bool(mx.all(finished)):
                 break
 
-            feed_tokens = current_tokens.copy()
-            feed_tokens[finished] = eos_id
-            logits, cache = self.transf_decoder(
-                mx.array(feed_tokens[:, None], dtype=mx.int32),
+            feed_tokens = mx.where(finished, eos_mx, current_tokens)
+            hidden, cache = self.transf_decoder(
+                feed_tokens[:, None],
                 encoder_hidden_states,
                 encoder_mask=encoder_mask,
                 cache=cache,
                 start_pos=prompt_len + step,
             )
-            logits = self.log_softmax(logits)
-            current_tokens = np.array(mx.argmax(logits[:, -1, :], axis=-1)).astype(
-                np.int32
-            )
+            logits = lm_head(hidden)
+            current_tokens = mx.argmax(logits[:, -1, :], axis=-1).astype(mx.int32)
+            token_steps.append(current_tokens)
+            finished = finished | (current_tokens == eos_mx)
+            mx.eval(current_tokens, finished)
 
-            for idx, token_id in enumerate(current_tokens.tolist()):
-                if not finished[idx] and token_id != eos_id:
-                    generated[idx].append(int(token_id))
-            finished = finished | (current_tokens == eos_id)
+        all_tokens_np = np.asarray(mx.stack(token_steps, axis=1))
+
+        generated: List[List[int]] = [[] for _ in range(batch_size)]
+        for b in range(batch_size):
+            for token_id in all_tokens_np[b].tolist():
+                tid = int(token_id)
+                if tid == eos_id:
+                    break
+                generated[b].append(tid)
 
         return generated, prompt_len
 
     def _transcribe_waveforms_batched(
         self,
-        waveforms: List[np.ndarray],
+        waveforms: List[Waveform],
         language: str,
         punctuation: bool,
         batch_size: int,
@@ -845,6 +938,17 @@ class Model(nn.Module):
 
         texts = [""] * len(waveforms)
         generation_counts = [0] * len(waveforms)
+
+        max_safe_bytes = getattr(self.config, "max_safe_bytes", 0)
+        if max_safe_bytes > 0 and order:
+            longest_samples = waveforms[order[0]].shape[0]
+            hop = self.config.preprocessor.hop_length
+            t_mel = (longest_samples // hop) + 1
+            n_heads = self.config.encoder.n_heads
+            bytes_per_chunk = n_heads * t_mel * t_mel * 2
+            safe_bs = max(1, max_safe_bytes // max(bytes_per_chunk, 1))
+            if safe_bs < batch_size:
+                batch_size = safe_bs
 
         for start in range(0, len(order), batch_size):
             batch_indices = order[start : start + batch_size]
@@ -862,11 +966,13 @@ class Model(nn.Module):
                 texts[original_idx] = batch_texts[row_idx].strip()
                 generation_counts[original_idx] = len(generated_ids[row_idx])
 
+            mx.clear_cache()
+
         return texts, generation_counts, len(prompt_tokens)
 
     def _prepare_segments(
-        self, waveforms: List[np.ndarray]
-    ) -> Tuple[List[np.ndarray], List[Dict[str, Union[int, float, None]]]]:
+        self, waveforms: List[Waveform]
+    ) -> Tuple[List[mx.array], List[Dict[str, Union[int, float, None]]]]:
         segment_waveforms = []
         segment_meta = []
         fast_path_threshold_s = max(
@@ -874,6 +980,9 @@ class Model(nn.Module):
         )
 
         for sample_idx, waveform in enumerate(waveforms):
+            if not isinstance(waveform, mx.array):
+                waveform = mx.array(waveform, dtype=mx.float32)
+
             duration_s = waveform.shape[0] / self.sample_rate
             if duration_s <= fast_path_threshold_s:
                 segment_waveforms.append(waveform)
@@ -895,7 +1004,7 @@ class Model(nn.Module):
                 min_energy_window_samples=self.config.min_energy_window_samples,
             )
             for chunk_idx, (start_idx, end_idx) in enumerate(chunks):
-                segment_waveforms.append(waveform[start_idx:end_idx].copy())
+                segment_waveforms.append(waveform[start_idx:end_idx])
                 segment_meta.append(
                     {
                         "sample_idx": sample_idx,
@@ -907,12 +1016,59 @@ class Model(nn.Module):
 
         return segment_waveforms, segment_meta
 
+    def _segment_with_vad(
+        self,
+        waveform: np.ndarray,
+        *,
+        backend_selector: Union[bool, str] = True,
+        merge_gap_s: float = 1.0,
+        max_chunk_s: float = 30.0,
+    ) -> Tuple[List[np.ndarray], List[Dict[str, Union[int, float, None]]]]:
+        from .vad import get_backend, segment_audio
+
+        sr = self.sample_rate
+        if not hasattr(self, "_vad_backend"):
+            self._vad_backend = get_backend(backend_selector)
+        backend = self._vad_backend
+
+        if backend.sample_rate != sr:
+            raise ValueError(
+                f"vad backend expects sr={backend.sample_rate}, model uses {sr}"
+            )
+
+        runs = segment_audio(
+            waveform, backend, merge_gap_s=merge_gap_s, max_chunk_s=max_chunk_s
+        )
+        if not runs:
+            return [waveform], [
+                {
+                    "sample_idx": 0,
+                    "chunk_idx": 0,
+                    "start": 0.0,
+                    "end": waveform.shape[0] / sr,
+                }
+            ]
+
+        segment_waveforms = []
+        segment_meta = []
+        for chunk_idx, run in enumerate(runs):
+            segment_waveforms.append(waveform[run.start_sample : run.end_sample].copy())
+            segment_meta.append(
+                {
+                    "sample_idx": 0,
+                    "chunk_idx": chunk_idx,
+                    "start": run.start_sample / sr,
+                    "end": run.end_sample / sr,
+                }
+            )
+        return segment_waveforms, segment_meta
+
     def transcribe(
         self,
         *,
         language: str,
         audio_files: Optional[List[str]] = None,
-        audio_arrays: Optional[List[np.ndarray]] = None,
+        audio_arrays: Optional[List[Waveform]] = None,
         sample_rates: Optional[List[int]] = None,
         punctuation: bool = True,
         batch_size: Optional[int] = None,
@@ -947,7 +1103,7 @@ class Model(nn.Module):
             segment_waveforms,
             language=language,
             punctuation=punctuation,
-            batch_size=batch_size or self.config.batch_size,
+            batch_size=self._resolve_batch_size(batch_size),
             max_tokens=max_tokens,
         )
 
@@ -980,6 +1136,9 @@ class Model(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         sample_rate: Optional[int] = None,
+        vad: Union[bool, str] = False,
+        vad_merge_gap_s: float = 1.0,
+        vad_max_chunk_s: float = 30.0,
         **kwargs,
     ) -> STTOutput:
         if stream:
@@ -990,12 +1149,20 @@ class Model(nn.Module):
         start_time = time.time()
         self._validate_language(language)
         waveform = self._to_mono(audio, sample_rate=sample_rate)
-        segment_waveforms, segment_meta = self._prepare_segments([waveform])
+        if vad:
+            segment_waveforms, segment_meta = self._segment_with_vad(
+                waveform,
+                backend_selector=vad,
+                merge_gap_s=vad_merge_gap_s,
+                max_chunk_s=vad_max_chunk_s,
+            )
+        else:
+            segment_waveforms, segment_meta = self._prepare_segments([waveform])
         texts, generation_counts, prompt_len = self._transcribe_waveforms_batched(
             segment_waveforms,
             language=language,
             punctuation=punctuation,
-            batch_size=batch_size or self.config.batch_size,
+            batch_size=self._resolve_batch_size(batch_size),
             max_tokens=max_tokens,
         )
 

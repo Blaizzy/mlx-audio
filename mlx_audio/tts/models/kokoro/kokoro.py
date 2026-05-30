@@ -137,11 +137,27 @@ class Model(nn.Module):
         d = self.predictor.text_encoder(d_en, s, input_lengths, text_mask)
         x, _ = self.predictor.lstm(d)
         duration = self.predictor.duration_proj(x)
+        max_frames_per_phoneme = 100
         duration = mx.sigmoid(duration).sum(axis=-1) / speed
-        pred_dur = mx.clip(mx.round(duration), a_min=1, a_max=None).astype(mx.int32)[0]
-        indices = mx.concatenate(
-            [mx.repeat(mx.array(i), int(n)) for i, n in enumerate(pred_dur)]
+        duration = mx.nan_to_num(
+            duration, nan=1.0, posinf=max_frames_per_phoneme, neginf=1.0
         )
+        pred_dur = mx.clip(
+            mx.round(duration), a_min=1, a_max=max_frames_per_phoneme
+        ).astype(mx.int32)[0]
+        indices_list = []
+        for i, n in enumerate(pred_dur):
+            count = min(max(int(n), 0), max_frames_per_phoneme)
+            if count > 0:
+                indices_list.append(mx.repeat(mx.array(i), count))
+        if not indices_list:
+            silence = mx.zeros((1, 1))
+            return (
+                self.Output(audio=silence, pred_dur=pred_dur)
+                if return_output
+                else silence
+            )
+        indices = mx.concatenate(indices_list)
         pred_aln_trg = mx.zeros((input_ids.shape[1], indices.shape[0]))
         pred_aln_trg[indices, mx.arange(indices.shape[0])] = 1
         pred_aln_trg = pred_aln_trg[None, :]
@@ -162,8 +178,10 @@ class Model(nn.Module):
 
     def sanitize(self, weights):
         sanitized_weights = {}
+        has_packed_quantized_weights = any(
+            key.endswith(".scales") or key.endswith(".biases") for key in weights
+        )
         for key, state_dict in weights.items():
-
             if key.startswith("bert"):
                 if "position_ids" in key:
                     # Remove unused position_ids
@@ -176,7 +194,6 @@ class Model(nn.Module):
                 sanitized_weights[key] = state_dict
 
             if key.startswith("text_encoder"):
-
                 if key.endswith((".gamma", ".beta")):
                     base_key = key.rsplit(".", 1)[0]
                     if key.endswith(".gamma"):
@@ -186,7 +203,9 @@ class Model(nn.Module):
 
                     sanitized_weights[new_key] = state_dict
                 elif "weight_v" in key:
-                    if check_array_shape(state_dict):
+                    if has_packed_quantized_weights:
+                        sanitized_weights[key] = state_dict
+                    elif check_array_shape(state_dict):
                         sanitized_weights[key] = state_dict
                     else:
                         sanitized_weights[key] = state_dict.transpose(0, 2, 1)
@@ -210,13 +229,23 @@ class Model(nn.Module):
 
             if key.startswith("predictor"):
                 if "F0_proj.weight" in key:
-                    sanitized_weights[key] = state_dict.transpose(0, 2, 1)
+                    sanitized_weights[key] = (
+                        state_dict
+                        if has_packed_quantized_weights
+                        else state_dict.transpose(0, 2, 1)
+                    )
 
                 elif "N_proj.weight" in key:
-                    sanitized_weights[key] = state_dict.transpose(0, 2, 1)
+                    sanitized_weights[key] = (
+                        state_dict
+                        if has_packed_quantized_weights
+                        else state_dict.transpose(0, 2, 1)
+                    )
 
                 elif "weight_v" in key:
-                    if check_array_shape(state_dict):
+                    if has_packed_quantized_weights:
+                        sanitized_weights[key] = state_dict
+                    elif check_array_shape(state_dict):
                         sanitized_weights[key] = state_dict
                     else:
                         sanitized_weights[key] = state_dict.transpose(0, 2, 1)
@@ -239,7 +268,11 @@ class Model(nn.Module):
                     sanitized_weights[key] = state_dict
 
             if key.startswith("decoder"):
-                sanitized_weights[key] = self.decoder.sanitize(key, state_dict)
+                sanitized_weights[key] = self.decoder.sanitize(
+                    key,
+                    state_dict,
+                    has_packed_quantized_weights=has_packed_quantized_weights,
+                )
         return sanitized_weights
 
     @property

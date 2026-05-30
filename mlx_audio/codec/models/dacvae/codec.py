@@ -48,9 +48,16 @@ def normalize_weight(x: mx.array, except_dim: int = 0) -> mx.array:
 
 
 def snake(x: mx.array, alpha: mx.array) -> mx.array:
-    """Snake activation function."""
-    recip = 1.0 / (alpha + 1e-9)
-    return x + recip * mx.power(mx.sin(alpha * x), 2)
+    """Snake activation function.
+
+    Computed in float32 to avoid inf/NaN when x or alpha is float16:
+    alpha near zero in float16 makes 1/(alpha+eps) = inf, and inf*sin²(0) = NaN.
+    """
+    dtype = x.dtype
+    x32 = x.astype(mx.float32)
+    a32 = alpha.astype(mx.float32)
+    recip = 1.0 / (a32 + 1e-9)
+    return (x32 + recip * mx.power(mx.sin(a32 * x32), 2)).astype(dtype)
 
 
 class Snake1d(nn.Module):

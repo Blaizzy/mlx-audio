@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Generator, Optional
@@ -13,6 +14,7 @@ from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.utils import load_audio as load_audio_any
 
 from .config import ModelConfig
+from .duration import build_duration_features
 from .model import IrodoriDiT
 from .sampling import sample_euler_cfg
 from .text import encode_text, normalize_text
@@ -42,6 +44,7 @@ class Model(nn.Module):
         self.model = IrodoriDiT(config.dit)
         self.dacvae: DACVAE | None = None
         self._tokenizer = None
+        self._caption_tokenizer = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -127,6 +130,18 @@ class Model(nn.Module):
             )
         return self._tokenizer
 
+    def _get_caption_tokenizer(self):
+        if self._caption_tokenizer is None:
+            from transformers import AutoTokenizer
+
+            repo = self.config.dit.caption_tokenizer_repo_resolved
+            # Reuse text tokenizer if repo is the same
+            if repo == self.config.dit.text_tokenizer_repo:
+                self._caption_tokenizer = self._get_tokenizer()
+            else:
+                self._caption_tokenizer = AutoTokenizer.from_pretrained(repo)
+        return self._caption_tokenizer
+
     def _prepare_text(
         self, text: str, max_length: Optional[int] = None
     ) -> tuple[mx.array, mx.array]:
@@ -144,6 +159,18 @@ class Model(nn.Module):
             tokenizer=self._get_tokenizer(),
             max_length=max_length,
             add_bos=self.config.dit.text_add_bos,
+        )
+
+    def _prepare_caption(
+        self, caption: str, max_length: Optional[int] = None
+    ) -> tuple[mx.array, mx.array]:
+        if max_length is None:
+            max_length = self.config.max_caption_length
+        return encode_text(
+            caption,
+            tokenizer=self._get_caption_tokenizer(),
+            max_length=max_length,
+            add_bos=self.config.dit.caption_add_bos_resolved,
         )
 
     # ------------------------------------------------------------------
@@ -191,31 +218,122 @@ class Model(nn.Module):
         text: str,
         ref_latent: Optional[mx.array] = None,
         ref_mask: Optional[mx.array] = None,
+        caption: Optional[str] = None,
         rng_seed: int = 0,
+        seconds: Optional[float] = None,
+        duration_scale: float = 1.0,
+        min_seconds: float = 0.5,
+        max_seconds: float = 30.0,
         **sampling_kwargs,
-    ) -> mx.array:
+    ) -> tuple[mx.array, int]:
+        """
+        Generate latents from text and optional reference audio.
+        Returns (latent, latent_steps) where latent_steps is the number of frames.
+        """
         text_input_ids, text_mask = self._prepare_text(text)
 
-        if ref_latent is None:
-            ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
-        if ref_mask is None:
-            ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
+        caption_input_ids: Optional[mx.array] = None
+        caption_mask: Optional[mx.array] = None
+
+        if self.config.dit.use_caption_condition:
+            cap = caption or ""
+            caption_input_ids, caption_mask = self._prepare_caption(cap)
+        else:
+            if ref_latent is None:
+                ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
+            if ref_mask is None:
+                ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
+
+        # Determine sequence length
+        if seconds is not None:
+            # Manual duration
+            clamped_seconds = min(max_seconds, max(min_seconds, float(seconds)))
+            target_samples = int(clamped_seconds * self.config.sample_rate)
+            latent_steps = math.ceil(
+                target_samples / self.config.audio_downsample_factor
+            )
+        elif self.config.dit.use_duration_predictor:
+            # Predict duration using the integrated predictor
+            text_for_features = normalize_text(text)
+            token_count = int(text_mask.sum())
+            has_speaker = bool(ref_mask is not None and mx.any(ref_mask))
+
+            duration_features = build_duration_features(
+                [text_for_features],
+                token_counts=[token_count],
+                max_text_len=self.config.max_text_length,
+                has_speaker=[has_speaker],
+            )
+
+            # Encode conditions for duration prediction
+            text_state, text_mask_full, speaker_state, speaker_mask, _, _ = (
+                self.model.encode_conditions_full(
+                    text_input_ids=text_input_ids,
+                    text_mask=text_mask,
+                    ref_latent=ref_latent,
+                    ref_mask=ref_mask,
+                    caption_input_ids=caption_input_ids,
+                    caption_mask=caption_mask,
+                )
+            )
+
+            has_speaker_arr = mx.array([has_speaker], dtype=mx.bool_)
+            pred_log_frames = self.model.predict_duration_log_frames(
+                text_state=text_state,
+                text_mask=text_mask_full,
+                speaker_state=speaker_state,
+                speaker_mask=speaker_mask,
+                duration_features=duration_features,
+                has_speaker=has_speaker_arr,
+            )
+            pred_frames = float(mx.expm1(pred_log_frames[0]).item())
+            scaled_frames = pred_frames * duration_scale
+            min_frames = max(
+                1,
+                math.ceil(
+                    min_seconds
+                    * self.config.sample_rate
+                    / self.config.audio_downsample_factor
+                ),
+            )
+            max_frames = max(
+                1,
+                math.floor(
+                    max_seconds
+                    * self.config.sample_rate
+                    / self.config.audio_downsample_factor
+                ),
+            )
+            latent_steps = int(round(scaled_frames))
+            latent_steps = max(min_frames, min(max_frames, latent_steps))
+        else:
+            # Fallback to 30 seconds
+            latent_steps = self.config.sampler.sequence_length
+
+        patched_steps = math.ceil(latent_steps / self.config.dit.latent_patch_size)
 
         sampler_cfg = dict(self.config.sampler.__dict__)
+        # Remove sequence_length since we compute it dynamically
+        sampler_cfg.pop("sequence_length", None)
         for k, v in sampling_kwargs.items():
             if k in sampler_cfg:
                 sampler_cfg[k] = v
 
-        return sample_euler_cfg(
+        latent_out = sample_euler_cfg(
             model=self.model,
             text_input_ids=text_input_ids,
             text_mask=text_mask,
             ref_latent=ref_latent,
             ref_mask=ref_mask,
+            caption_input_ids=caption_input_ids,
+            caption_mask=caption_mask,
             rng_seed=rng_seed,
             latent_dim=self.config.dit.patched_latent_dim,
+            sequence_length=patched_steps,
             **sampler_cfg,
         )
+
+        return latent_out, latent_steps
 
     # ------------------------------------------------------------------
     # Main generate interface
@@ -226,9 +344,12 @@ class Model(nn.Module):
         text: str,
         voice: str | None = None,
         ref_audio: str | mx.array | None = None,
+        caption: str | None = None,
         stream: bool = False,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
+        # instruct is an alias for caption (mlx-audio convention)
+        caption = caption or kwargs.pop("instruct", None)
         if stream:
             raise NotImplementedError("Irodori-TTS streaming is not yet implemented.")
 
@@ -258,23 +379,50 @@ class Model(nn.Module):
             ref_latent, ref_mask = self._encode_ref_audio(audio)
 
         # Run diffusion sampler
-        latent_out = self.generate_latents(
+        latent_out, latent_steps = self.generate_latents(
             text=text,
             ref_latent=ref_latent,
             ref_mask=ref_mask,
+            caption=caption,
             rng_seed=int(kwargs.get("rng_seed", 0)),
-            **{k: v for k, v in kwargs.items() if k != "rng_seed"},
+            seconds=kwargs.get("seconds"),
+            duration_scale=float(kwargs.get("duration_scale", 1.0)),
+            min_seconds=float(
+                kwargs.get("min_seconds", self.config.sampler.min_seconds)
+            ),
+            max_seconds=float(
+                kwargs.get("max_seconds", self.config.sampler.max_seconds)
+            ),
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k
+                not in (
+                    "rng_seed",
+                    "seconds",
+                    "duration_scale",
+                    "min_seconds",
+                    "max_seconds",
+                )
+            },
         )
 
         # Decode latent → waveform
-        # latent_out: (1, T, 128)
-        latent_for_decode = mx.transpose(latent_out, (0, 2, 1))  # (1, 128, T)
-        audio_out = self.dacvae.decode(latent_for_decode)  # (1, L, 1)
+        # latent_out: (1, T, latent_dim)
+        latent_for_decode = mx.transpose(latent_out, (0, 2, 1))  # (1, latent_dim, T)
+        # Use chunked decoding to avoid large ConvTranspose1d intermediates on
+        # 16 GB unified-memory systems (stride-8 block creates a ~17 GB tensor
+        # at T=750 in a single pass; 50-frame chunks keep it under ~1.2 GB).
+        audio_out = self.dacvae.decode(latent_for_decode, chunk_size=50)  # (1, L, 1)
         audio_out = audio_out[:, :, 0]  # (1, L)
+        mx.eval(audio_out)
 
         # Trim trailing silence
         silence_t = _find_silence_point(latent_out[0])
         trim_samples = silence_t * self.config.audio_downsample_factor
+        # Also clamp to the predicted/manual duration
+        target_samples = latent_steps * self.config.audio_downsample_factor
+        trim_samples = min(trim_samples, target_samples)
         audio_out = audio_out[:, :trim_samples]
 
         audio = audio_out[0]  # (L,)

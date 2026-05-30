@@ -2,6 +2,12 @@
 
 MLX implementation of [Moshi](https://github.com/kyutai-labs/moshi) from Kyutai Labs. Moshi is a full-duplex speech-to-speech foundation model that can listen and talk at the same time in real-time.
 
+```python
+from mlx_audio.sts import load
+
+model = load("kyutai/moshiko-mlx-q4")
+```
+
 ## Features
 
 - Full-duplex: Handles concurrent input and output audio streams
@@ -12,12 +18,12 @@ MLX implementation of [Moshi](https://github.com/kyutai-labs/moshi) from Kyutai 
 ## Usage
 
 ```python
-from mlx_audio.sts import load
+from mlx_audio.sts.models.moshi import MoshiSTSModel
 import sounddevice as sd
 import numpy as np
 
 # Load quantized model directly from HuggingFace
-model = load("kyutai/moshiko-mlx-q4", quantized=4)
+model = MoshiSTSModel.from_pretrained("kyutai/moshiko-mlx-q4", quantized=4)
 
 # Open audio output stream
 stream = sd.OutputStream(samplerate=24000, channels=1, dtype=np.float32)

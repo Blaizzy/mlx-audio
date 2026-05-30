@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 from huggingface_hub import hf_hub_download
 
@@ -42,19 +43,27 @@ DEFAULT_CONFIGS = {
 }
 
 
-class DeepFilterNetModel:
+class DeepFilterNetModel(nn.Module):
     """Pure-MLX DeepFilterNet inference runtime."""
 
     def __init__(
         self,
-        model: DfNet,
         config: DeepFilterNetConfig,
-        model_dir: Path,
-        model_version: str = "DeepFilterNet3",
+        model: Optional[Union[DfNet, DfNetV1]] = None,
+        model_dir: Optional[Path] = None,
+        model_version: Optional[str] = None,
     ):
+        super().__init__()
+        if model_version is None:
+            model_version = getattr(config, "model_version", "DeepFilterNet3")
+        if model is None:
+            model = (
+                DfNetV1(config) if model_version == "DeepFilterNet" else DfNet(config)
+            )
+
         self.model = model
         self.config = config
-        self.model_dir = model_dir
+        self.model_dir = Path(model_dir) if model_dir is not None else None
         self.model_version = model_version
 
         # From libDF: wnorm = 1 / (fft_size^2 / (2 * hop_size))
@@ -72,6 +81,19 @@ class DeepFilterNetModel:
             and self.erb_fb.shape[0] == (self.config.fft_size // 2 + 1)
             and self.erb_fb.shape[1] == self.config.nb_erb
         )
+
+    def load_weights(self, weights, strict: bool = False):
+        weight_dict = dict(weights)
+        loaded = load_df_weights(self.model, weight_dict)
+        if strict and loaded != len(weight_dict):
+            raise ValueError(
+                f"Loaded {loaded} of {len(weight_dict)} DeepFilterNet tensors"
+            )
+        return self
+
+    def post_load_hook(self, model_path: Path) -> "DeepFilterNetModel":
+        self.model_dir = Path(model_path)
+        return self
 
     @classmethod
     def from_pretrained(

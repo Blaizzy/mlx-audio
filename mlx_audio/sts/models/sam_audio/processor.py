@@ -9,7 +9,7 @@ from typing import List, Optional, Tuple, Union
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.utils import get_model_path
+from mlx_audio.utils import get_model_path, resample_audio
 
 from .config import DACVAEConfig
 
@@ -34,33 +34,16 @@ def load_audio(audio_path: str, target_sr: int = 48000) -> Tuple[np.ndarray, int
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    audio = None
-    sr = None
-
-    # Try miniaudio first
     try:
         from mlx_audio.audio_io import read as audio_read
 
         audio, sr = audio_read(audio_path)
-    except ImportError:
-        pass
-    except Exception:
-        # miniaudio failed, try librosa
-        pass
-
-    # Fallback to librosa
-    if audio is None:
-        try:
-            import librosa
-
-            audio, sr = librosa.load(audio_path, sr=None)
-        except ImportError:
-            raise ImportError(
-                "Please install miniaudio or librosa for audio loading: "
-                "pip install miniaudio librosa"
-            )
-        except Exception as e:
-            raise RuntimeError(f"Failed to load audio file {audio_path}: {e}")
+    except ImportError as e:
+        raise ImportError(
+            "Please install miniaudio for audio loading: pip install miniaudio"
+        ) from e
+    except Exception as e:
+        raise RuntimeError(f"Failed to load audio file {audio_path}: {e}")
 
     # Convert to mono if stereo
     if audio.ndim > 1:
@@ -68,23 +51,9 @@ def load_audio(audio_path: str, target_sr: int = 48000) -> Tuple[np.ndarray, int
 
     # Resample if needed
     if sr != target_sr:
-        try:
-            import librosa
+        audio = resample_audio(audio, sr, target_sr)
 
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=target_sr)
-        except ImportError:
-            try:
-                import scipy.signal
-
-                num_samples = int(len(audio) * target_sr / sr)
-                audio = scipy.signal.resample(audio, num_samples)
-            except ImportError:
-                raise ImportError(
-                    "Please install librosa or scipy for resampling: "
-                    "pip install librosa scipy"
-                )
-
-    return audio.astype(np.float32), target_sr
+    return np.asarray(audio, dtype=np.float32), target_sr
 
 
 def batch_audio(
@@ -419,19 +388,6 @@ def save_audio(
     if audio.ndim > 1:
         audio = audio.squeeze()
 
-    try:
-        from mlx_audio.audio_io import write as audio_write
+    from mlx_audio.audio_io import write as audio_write
 
-        audio_write(path, audio, sample_rate)
-    except ImportError:
-        try:
-            from scipy.io import wavfile
-
-            # Normalize to int16 range
-            audio_int = (audio * 32767).astype(np.int16)
-            wavfile.write(path, sample_rate, audio_int)
-        except ImportError:
-            raise ImportError(
-                "Please install miniaudio or scipy for audio saving: "
-                "pip install miniaudio scipy"
-            )
+    audio_write(path, audio, sample_rate)

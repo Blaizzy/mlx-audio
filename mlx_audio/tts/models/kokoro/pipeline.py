@@ -1,16 +1,63 @@
+from __future__ import annotations
+
+import importlib
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from numbers import Number
 from pathlib import Path
-from typing import Any, Generator, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-from misaki import en, espeak
 
 from .voice import load_voice_tensor
+
+if TYPE_CHECKING:
+    from misaki import en
+
+MISAKI_INSTALL_MESSAGE = (
+    "Kokoro requires the optional 'misaki' package for text processing. "
+    "Install it with: pip install misaki"
+)
+
+
+@lru_cache(maxsize=None)
+def _import_misaki_submodule(
+    module_name: str, extra_install: Optional[str] = None
+) -> Any:
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        message = MISAKI_INSTALL_MESSAGE
+        if extra_install is not None:
+            message = f"{message}. {extra_install}"
+        raise ImportError(message) from exc
+
+
+def _get_misaki_en() -> Any:
+    return _import_misaki_submodule("misaki.en")
+
+
+def _get_misaki_espeak() -> Any:
+    return _import_misaki_submodule("misaki.espeak")
+
+
+def _get_misaki_ja() -> Any:
+    return _import_misaki_submodule(
+        "misaki.ja",
+        "For Japanese, you may also need: pip install misaki[ja]",
+    )
+
+
+def _get_misaki_zh() -> Any:
+    return _import_misaki_submodule(
+        "misaki.zh",
+        "For Mandarin Chinese, you may also need: pip install misaki[zh]",
+    )
+
 
 ALIASES = {
     "en": "a",
@@ -28,7 +75,7 @@ ALIASES = {
 }
 
 LANG_CODES = dict(
-    # pip install misaki[en]
+    # pip install misaki
     a="American English",
     b="British English",
     # espeak-ng
@@ -94,6 +141,8 @@ class KokoroPipeline:
         self.model = model
         self.voices = {}
         if lang_code in "ab":
+            en = _get_misaki_en()
+            espeak = _get_misaki_espeak()
             try:
                 fallback = espeak.EspeakFallback(british=lang_code == "b")
             except Exception as e:
@@ -104,26 +153,13 @@ class KokoroPipeline:
                 trf=trf, british=lang_code == "b", fallback=fallback, unk=""
             )
         elif lang_code == "j":
-            try:
-                from misaki import ja
-
-                self.g2p = ja.JAG2P()
-            except ImportError:
-                logging.error(
-                    "You need to `pip install misaki[ja]` to use lang_code='j'"
-                )
-                raise
+            ja = _get_misaki_ja()
+            self.g2p = ja.JAG2P()
         elif lang_code == "z":
-            try:
-                from misaki import zh
-
-                self.g2p = zh.ZHG2P()
-            except ImportError:
-                logging.error(
-                    "You need to `pip install misaki[zh]` to use lang_code='z'"
-                )
-                raise
+            zh = _get_misaki_zh()
+            self.g2p = zh.ZHG2P()
         else:
+            espeak = _get_misaki_espeak()
             language = LANG_CODES[lang_code]
             logging.warning(
                 f"Using EspeakG2P(language='{language}'). Chunking logic not yet implemented, so long texts may be truncated unless you split them with '\\n'."

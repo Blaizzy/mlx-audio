@@ -2027,17 +2027,13 @@ class Model(nn.Module):
 
     @staticmethod
     def _resample(waveform: mx.array, orig_sr: int, target_sr: int) -> mx.array:
-        """Resample audio using scipy (no librosa dependency)."""
+        """Resample audio to ``target_sr``."""
         if orig_sr == target_sr:
             return waveform
-        import numpy as np
-        from scipy import signal as scipy_signal
 
-        gcd = math.gcd(orig_sr, target_sr)
-        resampled = scipy_signal.resample_poly(
-            np.array(waveform), target_sr // gcd, orig_sr // gcd
-        ).astype(np.float32)
-        return mx.array(resampled)
+        from mlx_audio.utils import resample_audio
+
+        return resample_audio(waveform, orig_sr, target_sr)
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
