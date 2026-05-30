@@ -32,9 +32,10 @@ The API will be available at `http://localhost:8000` and the Studio UI at `http:
 | `--log-dir` | `logs` | Directory for server logs |
 | `--realtime-model` | `null` | Default model for `/v1/realtime` when the client omits `?model=` |
 | `--realtime-transcription-delay-ms` | `null` | Transcription latency/quality knob for models that support it (e.g. `voxtral_realtime`) |
+| `--vad-model` | `mlx-community/silero-vad` | Streaming VAD model used for server-side turn detection (`server_vad`) on `/v1/realtime` |
 | `--tts-max-batch-size` | `8` | Maximum compatible TTS speech requests per continuous batch session |
 
-The two realtime flags also read from `MLX_AUDIO_REALTIME_MODEL` and `MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS` if present; the CLI flags take precedence.
+The two realtime flags also read from `MLX_AUDIO_REALTIME_MODEL` and `MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS` if present; the CLI flags take precedence. `--vad-model` likewise reads from `MLX_AUDIO_VAD_MODEL`.
 The TTS batching flag also reads from `MLX_AUDIO_TTS_MAX_BATCH_SIZE`; the CLI flag takes precedence.
 
 ### CORS Configuration
@@ -191,9 +192,9 @@ If none is set, the server replies with an `error` event and closes the socket.
 
 | Type | Purpose |
 |------|---------|
-| `session.update` | Change the model, input sample rate, or transcription config |
+| `session.update` | Change the model, input sample rate, transcription config, or turn detection mode |
 | `input_audio_buffer.append` | Append a chunk of base64-encoded PCM16 to the current item |
-| `input_audio_buffer.commit` | Signal end-of-utterance; the server drains deltas and emits `completed` |
+| `input_audio_buffer.commit` | Signal end-of-utterance; the server drains deltas and emits `completed`. Manual-commit mode only — unused under `server_vad` |
 
 **Declaring the input sample rate.** The server assumes incoming PCM is 24 kHz by default (the OpenAI Realtime client convention). If you are sending audio at a different rate — e.g. a 16 kHz microphone capture or a 48 kHz file — tell the server via `session.update` so it resamples correctly. Without this, 16 kHz audio interpreted as 24 kHz would sound sped-up to the model and transcribe as garbage.
 
@@ -208,13 +209,43 @@ If none is set, the server replies with an `error` event and closes the socket.
 
 This only declares *your* input rate. The server resamples from that to whatever rate the model expects internally — you never need to match the model's native rate.
 
+**Turn detection (`server_vad`).** By default (`turn_detection: null`) the client owns turn boundaries and signals end-of-utterance with `input_audio_buffer.commit`. Set `turn_detection` to `{"type": "server_vad"}` via `session.update` and the server instead runs a streaming VAD (Silero by default — see `--vad-model`) over the incoming audio: it detects when the speaker starts and stops, emits `input_audio_buffer.speech_started` / `input_audio_buffer.speech_stopped`, and auto-commits each turn. In this mode the client never sends `input_audio_buffer.commit`.
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "audio": {
+      "input": {
+        "turn_detection": {
+          "type": "server_vad",
+          "threshold": 0.5,
+          "prefix_padding_ms": 300,
+          "silence_duration_ms": 500
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Purpose |
+|-------|---------|---------|
+| `threshold` | `0.5` | Speech-probability threshold above which a VAD frame counts as speech |
+| `prefix_padding_ms` | `300` | Shifts the reported `audio_start_ms` earlier; does not gate transcription |
+| `silence_duration_ms` | `500` | Sub-threshold audio after speech before the turn is considered finished |
+
+To use a different VAD model, launch the server with `--vad-model <id>` (or set `MLX_AUDIO_VAD_MODEL`). `semantic_vad` is not implemented yet — requesting it returns an `error` event.
+
 **Server → client events:**
 
 | Type | Purpose |
 |------|---------|
-| `session.created` / `session.updated` | Session snapshot (id, model, input format) |
+| `session.created` / `session.updated` | Session snapshot (id, model, input format, turn detection) |
 | `conversation.item.added` | New user item opened for the next audio chunk |
-| `input_audio_buffer.committed` | Acknowledges a commit from the client |
+| `input_audio_buffer.speech_started` | (`server_vad`) Speaker started; carries `audio_start_ms` |
+| `input_audio_buffer.speech_stopped` | (`server_vad`) Speaker stopped; the server auto-commits the turn |
+| `input_audio_buffer.committed` | Acknowledges a commit — client `commit` or `server_vad` auto-commit |
 | `conversation.item.input_audio_transcription.delta` | Incremental transcript token(s) |
 | `conversation.item.input_audio_transcription.completed` | Final transcript for the item |
 | `error` | Error message; the socket may close afterwards |

@@ -9,6 +9,7 @@ import glob
 import importlib
 import importlib.util
 import json
+import keyword
 import logging
 import re
 from pathlib import Path
@@ -86,6 +87,7 @@ DEFAULT_ALLOW_PATTERNS = [
     "*.model",
     "*.tiktoken",
     "*.txt",
+    "*.jinja",
     "*.jsonl",
     "*.yaml",
     "*.npz",
@@ -725,10 +727,17 @@ __all__ = [
 
 def is_valid_module_name(name: str) -> bool:
     """Check if a string is a valid Python module name."""
-    if not name or not isinstance(name, str):
-        return False
+    return isinstance(name, str) and name.isidentifier() and not keyword.iskeyword(name)
 
-    return name[0].isalpha() or name[0] == "_"
+
+def _has_model_module(module_path: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_path) is not None
+    except ModuleNotFoundError as exc:
+        missing_name = exc.name or ""
+        if module_path == missing_name or module_path.startswith(f"{missing_name}."):
+            return False
+        raise
 
 
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
@@ -759,7 +768,7 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
             if not is_valid_module_name(arch):
                 continue
             module_path = f"mlx_audio.{category}.models.{arch}"
-            if importlib.util.find_spec(module_path) is not None:
+            if _has_model_module(module_path):
                 return category
 
     # First pass: check for explicit remapping matches (higher priority)
@@ -770,7 +779,7 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
                 if not is_valid_module_name(arch):
                     continue
                 module_path = f"mlx_audio.{category}.models.{arch}"
-                if importlib.util.find_spec(module_path) is not None:
+                if _has_model_module(module_path):
                     return category
 
     # Second pass: check for direct module matches (fallback)
@@ -778,7 +787,7 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
         for hint in candidates:
             if hint not in remap and is_valid_module_name(hint):
                 module_path = f"mlx_audio.{category}.models.{hint}"
-                if importlib.util.find_spec(module_path) is not None:
+                if _has_model_module(module_path):
                     return category
 
     return None

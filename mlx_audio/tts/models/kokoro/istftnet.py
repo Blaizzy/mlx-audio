@@ -547,7 +547,7 @@ class SineGen:
         self.sampling_rate = samp_rate
         self.voiced_threshold = voiced_threshold
         self.flag_for_pulse = flag_for_pulse
-        self.upsample_scale = upsample_scale
+        self.upsample_scale = int(upsample_scale)
 
     def _f02uv(self, f0: mx.array) -> mx.array:
         return mx.array(f0 > self.voiced_threshold, dtype=mx.float32)
@@ -708,16 +708,15 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         self.num_kernels = len(resblock_kernel_sizes)
         self.num_upsamples = len(upsample_rates)
-        upsample_rates = mx.array(upsample_rates)
+        upsample_rates = tuple(int(rate) for rate in upsample_rates)
+        total_upsample = math.prod(upsample_rates) * int(gen_istft_hop_size)
         self.m_source = SourceModuleHnNSF(
             sampling_rate=24000,
-            upsample_scale=mx.prod(upsample_rates) * gen_istft_hop_size,
+            upsample_scale=total_upsample,
             harmonic_num=8,
             voiced_threshod=10,
         )
-        self.f0_upsamp = nn.Upsample(
-            scale_factor=mx.prod(upsample_rates) * gen_istft_hop_size
-        )
+        self.f0_upsamp = nn.Upsample(scale_factor=total_upsample)
         self.noise_convs = []
         self.noise_res = []
         self.ups = []
@@ -741,7 +740,7 @@ class Generator(nn.Module):
                 self.resblocks.append(AdaINResBlock1(ch, k, d, style_dim))
             c_cur = upsample_initial_channel // (2 ** (i + 1))
             if i + 1 < len(upsample_rates):
-                stride_f0 = int(mx.prod(upsample_rates[i + 1 :]))
+                stride_f0 = math.prod(upsample_rates[i + 1 :])
                 self.noise_convs.append(
                     nn.Conv1d(
                         gen_istft_n_fft + 2,

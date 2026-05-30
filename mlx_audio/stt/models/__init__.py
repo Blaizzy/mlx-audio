@@ -3,6 +3,7 @@ from . import (
     fireredasr2,
     glmasr,
     granite_speech,
+    granite_speech_nar,
     lasr_ctc,
     mimo_v2_asr,
     parakeet,

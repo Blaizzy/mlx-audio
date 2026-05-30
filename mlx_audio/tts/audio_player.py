@@ -112,6 +112,14 @@ class AudioPlayer:
             self.start_stream()
 
     def wait_for_drain(self):
+        # If the stream never started (e.g. short text whose total audio fell
+        # below the min_buffer_seconds threshold), force-start it now so the
+        # buffered audio is played instead of hanging forever.
+        if not self.playing:
+            if self.buffered_samples() > 0:
+                self.start_stream()
+            else:
+                return
         return self.drain_event.wait()
 
     def stop(self):

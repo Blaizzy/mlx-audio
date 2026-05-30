@@ -44,6 +44,23 @@ class Qwen3BatchInputs:
     ref_codes: Optional[mx.array] = None
 
 
+def _apply_probability_filters(
+    logits: mx.array,
+    top_p: float,
+    min_p: float,
+) -> mx.array:
+    if not (0.0 < top_p < 1.0 or min_p > 0.0):
+        return logits
+
+    logprobs = nn.log_softmax(logits, axis=-1)
+    if 0.0 < top_p < 1.0:
+        logprobs = apply_top_p(logprobs, top_p)
+    if min_p > 0.0:
+        logprobs = apply_min_p(logprobs, min_p)
+
+    return mx.where(logprobs == -mx.inf, -float("inf"), logits)
+
+
 def mel_spectrogram(
     audio: mx.array,
     n_fft: int = 1024,
@@ -828,6 +845,9 @@ class Model(nn.Module):
         if temperature <= 0:
             return mx.argmax(logits, axis=-1, keepdims=True)
 
+        if temperature != 1.0:
+            logits = logits / temperature
+
         eos_logit = None
         if eos_token_id is not None and eos_token_id < logits.shape[-1]:
             eos_logit = logits[:, eos_token_id : eos_token_id + 1]
@@ -835,17 +855,13 @@ class Model(nn.Module):
         if top_k > 0 and top_k < logits.shape[-1]:
             logits = apply_top_k(logits, top_k)
 
-        if 0.0 < top_p < 1.0:
-            logits = apply_top_p(logits, top_p)
-
-        if min_p > 0.0:
-            logits = apply_min_p(logits, min_p)
+        logits = _apply_probability_filters(logits, top_p, min_p)
 
         if eos_logit is not None:
             eos_idx = mx.array([[eos_token_id]], dtype=mx.int32)
             logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
-        token = categorical_sampling(logits, temperature)
+        token = categorical_sampling(logits, 1.0)
         return token[:, None]
 
     def _sample_token_batch(
@@ -903,6 +919,9 @@ class Model(nn.Module):
         if temperature <= 0:
             return mx.argmax(logits, axis=-1, keepdims=True)
 
+        if temperature != 1.0:
+            logits = logits / temperature
+
         # Preserve EOS logit before filtering
         eos_logit = None
         if eos_token_id is not None and eos_token_id < logits.shape[-1]:
@@ -911,18 +930,14 @@ class Model(nn.Module):
         if top_k > 0 and top_k < logits.shape[-1]:
             logits = apply_top_k(logits, top_k)
 
-        if 0.0 < top_p < 1.0:
-            logits = apply_top_p(logits, top_p)
-
-        if min_p > 0.0:
-            logits = apply_min_p(logits, min_p)
+        logits = _apply_probability_filters(logits, top_p, min_p)
 
         # Restore EOS logit
         if eos_logit is not None:
             eos_idx = mx.full((logits.shape[0], 1), eos_token_id, dtype=mx.int32)
             logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
-        tokens = categorical_sampling(logits, temperature)  # [batch]
+        tokens = categorical_sampling(logits, 1.0)  # [batch]
         return tokens[:, None]  # [batch, 1]
 
     def _suppress_codec_tokens(self, eos_token_id: int) -> List[int]:

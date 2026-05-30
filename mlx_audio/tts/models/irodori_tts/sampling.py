@@ -95,6 +95,8 @@ def sample_euler_cfg(
     speaker_kv_max_layers: Optional[int] = None,
     caption_input_ids: Optional[mx.array] = None,
     caption_mask: Optional[mx.array] = None,
+    t_schedule_mode: str = "linear",
+    sway_coeff: float = -1.0,
     **_ignored,
 ) -> mx.array:
     """
@@ -223,7 +225,18 @@ def sample_euler_cfg(
     if truncation_factor is not None:
         x_t = x_t * float(truncation_factor)
 
-    t_schedule = np.linspace(1.0 * init_scale, 0.0, num_steps + 1, dtype=np.float32)
+    t_schedule_np = np.linspace(1.0 * init_scale, 0.0, num_steps + 1, dtype=np.float32)
+
+    # Sway Sampling (v3)
+    t_schedule_mode_norm = str(t_schedule_mode).strip().lower()
+    if t_schedule_mode_norm == "sway":
+        sway_coeff_value = float(sway_coeff)
+        u = np.linspace(0.0, 1.0, num_steps + 1, dtype=np.float32)
+        u = u + sway_coeff_value * (np.cos(0.5 * np.pi * u) + u - 1.0)
+        u = np.clip(u, 0.0, 1.0)
+        t_schedule_np = (1.0 - u) * init_scale
+
+    t_schedule = t_schedule_np
 
     speaker_kv_active = speaker_kv_scale is not None
 

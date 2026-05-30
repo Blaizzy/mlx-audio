@@ -192,7 +192,22 @@ class Model(nn.Module):
     def _tokenize(self, text: str):
         """Tokenize text without BOS token (matching PyTorch behavior)."""
         tokens = self.tokenizer.tokenize(text)
+        tokens = self._split_multichar_chinese_tokens(tokens)
         return self.tokenizer.convert_tokens_to_ids(tokens)
+
+    @staticmethod
+    def _split_multichar_chinese_tokens(tokens: list[str]) -> list[str]:
+        """Split multi-character Chinese tokens to match OpenBMB VoxCPM2."""
+        processed = []
+        for token in tokens:
+            clean_token = token.replace("▁", "")
+            if len(clean_token) >= 2 and all(
+                "\u4e00" <= char <= "\u9fff" for char in clean_token
+            ):
+                processed.extend(list(clean_token))
+            else:
+                processed.append(token)
+        return processed
 
     def _encode_wav(
         self, audio_input, padding_mode: str = "right", trim_silence_vad: bool = False
@@ -208,24 +223,15 @@ class Model(nn.Module):
             audio_feat: (T, P, D) array of latent patches.
         """
         if isinstance(audio_input, str):
-            import soundfile as sf
+            from mlx_audio.audio_io import read as read_audio
+            from mlx_audio.utils import resample_audio
 
-            audio, sr = sf.read(audio_input, dtype="float32")
+            audio, sr = read_audio(audio_input, dtype="float32")
             if audio.ndim > 1:
                 audio = audio.mean(axis=1)
 
             if sr != self._encode_sample_rate:
-                try:
-                    import librosa
-
-                    audio = librosa.resample(
-                        audio, orig_sr=sr, target_sr=self._encode_sample_rate
-                    )
-                except ImportError:
-                    import scipy.signal
-
-                    num_samples = int(len(audio) * self._encode_sample_rate / sr)
-                    audio = scipy.signal.resample(audio, num_samples)
+                audio = resample_audio(audio, sr, self._encode_sample_rate)
         else:
             # mx.array or numpy array — assume loaded at model.sample_rate,
             # resample to encoder rate if needed

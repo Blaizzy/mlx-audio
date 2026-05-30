@@ -7,6 +7,7 @@ from typing import Any, Optional
 import mlx.core as mx
 
 from .config import ModelConfig
+from .text import normalize_tts_text
 
 AUDIO_PLACEHOLDER = "<|audio|>"
 
@@ -28,28 +29,26 @@ class UserMessage(Message):
     ambient_sound: Optional[str] = None
     language: Optional[str] = None
     scene: Optional[str] = None
+    include_scene: bool = False
 
     def __post_init__(self):
-        template = """<user_inst>
-- Reference(s):
-{reference}
-- Instruction:
-{instruction}
-- Tokens:
-{tokens}
-- Quality:
-{quality}
-- Sound Event:
-{sound_event}
-- Ambient Sound:
-{ambient_sound}
-- Language:
-{language}
-- Scene:
-{scene}
-- Text:
-{text}
-</user_inst>"""
+        fields = [
+            ("Reference(s)", "{reference}"),
+            ("Instruction", "{instruction}"),
+            ("Tokens", "{tokens}"),
+            ("Quality", "{quality}"),
+            ("Sound Event", "{sound_event}"),
+            ("Ambient Sound", "{ambient_sound}"),
+            ("Language", "{language}"),
+        ]
+        if self.include_scene:
+            fields.append(("Scene", "{scene}"))
+        fields.append(("Text", "{text}"))
+        template = (
+            "<user_inst>\n"
+            + "\n".join(f"- {label}:\n{placeholder}" for label, placeholder in fields)
+            + "\n</user_inst>"
+        )
 
         audio_codes_list = []
         if self.reference is None:
@@ -170,6 +169,9 @@ class MossTTSDelayProcessor:
         )
         self.audio_start_token = self._id_to_token(model_config.audio_start_token_id)
         self.audio_end_token = self._id_to_token(model_config.audio_end_token_id)
+        self.include_scene = (
+            not model_config.is_local_transformer and int(model_config.n_vq) == 16
+        )
 
     def _id_to_token(self, token_id: int) -> str:
         token = self.tokenizer.convert_ids_to_tokens(int(token_id))
@@ -191,6 +193,7 @@ class MossTTSDelayProcessor:
     ) -> dict[str, Any]:
         if reference is not None and not isinstance(reference, list):
             reference = [reference]
+        text = normalize_tts_text(text)
         return UserMessage(
             text=text,
             reference=reference,
@@ -201,6 +204,7 @@ class MossTTSDelayProcessor:
             ambient_sound=ambient_sound,
             language=language,
             scene=scene,
+            include_scene=self.include_scene,
         ).to_dict()
 
     @staticmethod
