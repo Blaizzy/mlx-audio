@@ -5,7 +5,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from mlx_audio.utils import base_load_model, get_model_path
+from mlx_audio.utils import base_load_model, get_model_path, load_config
 
 SAMPLE_RATE = 16000
 
