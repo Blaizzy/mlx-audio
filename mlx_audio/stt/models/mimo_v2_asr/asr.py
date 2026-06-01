@@ -1,6 +1,5 @@
 import json
 import time
-from glob import glob
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -33,33 +32,10 @@ class Model(nn.Module):
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        return dict(weights)
+        return {f"model.{key}": value for key, value in weights.items()}
 
-    def load_weights_from_path(
-        self,
-        model_path: Path,
-        *,
-        config: dict,
-        strict: bool = False,
-    ) -> None:
-        quantization = config.get("quantization_config") or config.get("quantization")
-        if quantization:
-            from mlx_lm.utils import quantize_model
-
-            self.model, _ = quantize_model(
-                self.model,
-                config,
-                group_size=quantization.get("group_size"),
-                bits=quantization.get("bits"),
-                mode=quantization.get("mode", "affine"),
-            )
-
-        for weight_file in sorted(glob(str(model_path / "model*.safetensors"))):
-            self.model.load_weights(
-                list(self.sanitize(mx.load(weight_file)).items()),
-                strict=strict,
-            )
-            mx.eval(self.model.parameters())
+    def model_quant_predicate(self, path: str, module: nn.Module) -> bool:
+        return path.startswith("model.")
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
