@@ -21,7 +21,6 @@ import numpy as np
 
 from mlx_audio.utils import hanning, mel_filters, stft
 
-
 # ── MiMo audio constants ───────────────────────────────────────────
 SAMPLE_RATE = 24000
 N_FFT = 960

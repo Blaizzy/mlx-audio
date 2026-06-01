@@ -68,10 +68,13 @@ def _make_kv_cache(num_layers: int):
 
 # ── Qwen2 imports (from mlx_lm) ─────────────────────────────────────
 
+
 def _get_qwen2_model_and_args():
     """Import Qwen2Model and ModelArgs from mlx_lm."""
     try:
-        from mlx_lm.models.qwen2 import Model as Qwen2Model, ModelArgs
+        from mlx_lm.models.qwen2 import Model as Qwen2Model
+        from mlx_lm.models.qwen2 import ModelArgs
+
         return Qwen2Model, ModelArgs
     except ImportError:
         raise ImportError(
@@ -87,10 +90,14 @@ def _to_qwen2_args(config: MiMoAudioConfig, **overrides) -> "ModelArgs":
         hidden_size=overrides.get("hidden_size", config.hidden_size),
         num_hidden_layers=overrides.get("num_hidden_layers", config.num_hidden_layers),
         intermediate_size=overrides.get("intermediate_size", config.intermediate_size),
-        num_attention_heads=overrides.get("num_attention_heads", config.num_attention_heads),
+        num_attention_heads=overrides.get(
+            "num_attention_heads", config.num_attention_heads
+        ),
         rms_norm_eps=config.rms_norm_eps,
         vocab_size=config.vocab_size,
-        num_key_value_heads=overrides.get("num_key_value_heads", config.num_key_value_heads),
+        num_key_value_heads=overrides.get(
+            "num_key_value_heads", config.num_key_value_heads
+        ),
         max_position_embeddings=config.max_position_embeddings,
         rope_theta=overrides.get("rope_theta", config.rope_theta),
         rope_traditional=False,
@@ -100,6 +107,7 @@ def _to_qwen2_args(config: MiMoAudioConfig, **overrides) -> "ModelArgs":
 
 
 # ── Causal mask helper ──────────────────────────────────────────────
+
 
 def create_causal_mask(seq_len: int, offset: int = 0) -> mx.array:
     """Create a causal attention mask for local transformer decoding."""
@@ -111,6 +119,7 @@ def create_causal_mask(seq_len: int, offset: int = 0) -> mx.array:
 
 
 # ── Sampler ─────────────────────────────────────────────────────────
+
 
 class MiMoSampler:
     """
@@ -150,11 +159,15 @@ class MiMoSampler:
             sorted_remove[:, -1] = False
             remove = mx.zeros_like(sorted_remove)
             remove = mx.put_along_axis(remove, sorted_indices, sorted_remove, axis=-1)
-            scores = mx.where(remove, mx.array(float("-inf"), dtype=scores.dtype), scores)
+            scores = mx.where(
+                remove, mx.array(float("-inf"), dtype=scores.dtype), scores
+            )
 
         return scores
 
-    def sample(self, scores: mx.array, removed_tokens: Optional[List[int]] = None) -> mx.array:
+    def sample(
+        self, scores: mx.array, removed_tokens: Optional[List[int]] = None
+    ) -> mx.array:
         """
         Sample from logits.
 
@@ -170,7 +183,7 @@ class MiMoSampler:
         scores = self.process(scores)
 
         # Remove forbidden tokens
-        for t in (removed_tokens or []):
+        for t in removed_tokens or []:
             if t < scores.shape[-1]:
                 scores[:, t] = float("-inf")
 
@@ -183,6 +196,7 @@ class MiMoSampler:
 
 
 # ── MiMoAudioMLX ────────────────────────────────────────────────────
+
 
 class MiMoAudioMLX(nn.Module):
     """
@@ -329,10 +343,12 @@ class MiMoAudioMLX(nn.Module):
         # Reshape: [B, audio_c, T_groups*gs] → [B, T_groups, audio_c, gs]
         speech_input_ids = speech_input_ids.reshape(
             B, audio_c, T_groups, group_size
-        ).transpose(0, 2, 1, 3)  # [B, T_groups, audio_c, group_size]
+        ).transpose(
+            0, 2, 1, 3
+        )  # [B, T_groups, audio_c, group_size]
 
         # Mark speech positions (where text token is empty)
-        is_speech = (text_input_ids == self.config.empty_idx)  # [B, T_groups]
+        is_speech = text_input_ids == self.config.empty_idx  # [B, T_groups]
 
         # Speech embeddings: sum across audio channels
         speech_embeds = mx.zeros(
@@ -347,7 +363,7 @@ class MiMoAudioMLX(nn.Module):
             cur_embeds = embed(cur_ids)  # [B, T_groups, group_size, input_local_dim]
 
             # Zero out padding positions
-            empty_mask = (cur_ids == empty_id)
+            empty_mask = cur_ids == empty_id
             cur_embeds = mx.where(
                 empty_mask[..., None],
                 mx.zeros_like(cur_embeds),
@@ -363,14 +379,18 @@ class MiMoAudioMLX(nn.Module):
         speech_embeds = speech_embeds * is_speech[:, :, None, None].astype(mx.float32)
 
         # ── speech_group_downcast: flatten group_size dim → 4096 ──
-        speech_grouped = speech_embeds.reshape(B, T_groups, -1)  # [B, T_groups, input_dim*gs]
-        speech_group_embeds = self.speech_group_downcast(speech_grouped)  # [B, T_groups, 4096]
+        speech_grouped = speech_embeds.reshape(
+            B, T_groups, -1
+        )  # [B, T_groups, input_dim*gs]
+        speech_group_embeds = self.speech_group_downcast(
+            speech_grouped
+        )  # [B, T_groups, 4096]
 
         # ── Text embeddings ──
         text_embeds = self.model.embed_tokens(text_input_ids)  # [B, T_groups, 4096]
 
         # Zero out empty text positions
-        text_zero_mask = (text_input_ids == self.config.empty_idx)
+        text_zero_mask = text_input_ids == self.config.empty_idx
         text_embeds = mx.where(
             text_zero_mask[..., None],
             mx.zeros_like(text_embeds),
@@ -506,7 +526,9 @@ class MiMoAudioMLX(nn.Module):
                     cur_scores = cur_lm_head(last_step)[:, -1, :]  # [B, cb_size]
 
                     # Sample token (avoiding empty)
-                    cur_token = local_sampler.sample(cur_scores, removed_tokens=[cur_empty])
+                    cur_token = local_sampler.sample(
+                        cur_scores, removed_tokens=[cur_empty]
+                    )
                     # cur_token: [B]
 
                     # Store
@@ -515,7 +537,9 @@ class MiMoAudioMLX(nn.Module):
                         local_tokens[:, row_idx, idx] = cur_token[:B]
 
                     # Embed for next step
-                    cur_embed = self.speech_embeddings[idx](cur_token[:, None])  # [B, 1, input_local_dim]
+                    cur_embed = self.speech_embeddings[idx](
+                        cur_token[:, None]
+                    )  # [B, 1, input_local_dim]
                     if self.speech_embeddings_to_local is not None:
                         cur_embed = self.speech_embeddings_to_local(cur_embed)
                     current_input = current_input + cur_embed
@@ -572,7 +596,7 @@ class MiMoAudioMLX(nn.Module):
                 text_logits, local_hidden, cache = self(current_ids, cache=cache)
             else:
                 # Incremental: only pass new tokens (last group_size positions per channel)
-                new_ids = current_ids[:, :, -self.group_size:]  # [B, ac+1, gs]
+                new_ids = current_ids[:, :, -self.group_size :]  # [B, ac+1, gs]
                 text_logits, local_hidden, cache = self(new_ids, cache=cache)
 
             # Sample text token
@@ -580,7 +604,7 @@ class MiMoAudioMLX(nn.Module):
             next_text_token = global_sampler.sample(text_scores)  # [B]
 
             # Check if we need speech tokens
-            need_speech = (next_text_token[0] == self.config.empty_idx)
+            need_speech = next_text_token[0] == self.config.empty_idx
 
             if need_speech:
                 next_speech_tokens = self.local_forward(
@@ -605,7 +629,9 @@ class MiMoAudioMLX(nn.Module):
             )  # [B, group_size, audio_channels+1]
 
             # Reshape to match current_ids layout: [B, audio_channels+1, group_size]
-            next_tokens = next_tokens.transpose(0, 2, 1)  # [B, audio_channels+1, group_size]
+            next_tokens = next_tokens.transpose(
+                0, 2, 1
+            )  # [B, audio_channels+1, group_size]
 
             # Append
             current_ids = mx.concatenate([current_ids, next_tokens], axis=-1)

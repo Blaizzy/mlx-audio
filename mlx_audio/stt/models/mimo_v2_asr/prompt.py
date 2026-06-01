@@ -13,7 +13,6 @@ from typing import List, Optional
 
 import mlx.core as mx
 
-
 # ── ASR prompt templates ────────────────────────────────────────────
 
 ASR_ZH_TEMPLATES = [
@@ -46,6 +45,7 @@ ASR_EN_TEMPLATES = [
 
 
 # ── Input segment builder ───────────────────────────────────────────
+
 
 class InputSegment:
     """
@@ -148,11 +148,13 @@ class InputSegment:
             text_ids = mx.full((text_len,), self.text_empty_id, dtype=mx.int32)
 
             if self.add_sosp_eosp:
-                text_ids = mx.concatenate([
-                    mx.array([self.sosp_id], dtype=mx.int32),
-                    text_ids,
-                    mx.array([self.eosp_id], dtype=mx.int32),
-                ])
+                text_ids = mx.concatenate(
+                    [
+                        mx.array([self.sosp_id], dtype=mx.int32),
+                        text_ids,
+                        mx.array([self.eosp_id], dtype=mx.int32),
+                    ]
+                )
                 n_groups += 2
 
                 # Add zero speech rows for sosp/eosp markers
@@ -162,11 +164,14 @@ class InputSegment:
                     sosp_speech[:, i] = self.speech_empty_ids[i]
                     eosp_speech[:, i] = self.speech_empty_ids[i]
 
-                speech_mat = mx.concatenate([
-                    sosp_speech.reshape(1, -1),
-                    speech_mat,
-                    eosp_speech.reshape(1, -1),
-                ], axis=0)
+                speech_mat = mx.concatenate(
+                    [
+                        sosp_speech.reshape(1, -1),
+                        speech_mat,
+                        eosp_speech.reshape(1, -1),
+                    ],
+                    axis=0,
+                )
 
             # Expand text with filler tokens
             text_ids = self.expand_with_fillers(text_ids, filler=-100)
@@ -184,6 +189,7 @@ class InputSegment:
 
 
 # ── ASR prompt builder ──────────────────────────────────────────────
+
 
 def build_asr_prompt(
     audio_codes: mx.array,  # (total_tokens,) — flattened speech codes [T*8]

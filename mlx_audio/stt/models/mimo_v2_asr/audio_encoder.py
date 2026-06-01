@@ -29,8 +29,8 @@ import mlx.nn as nn
 
 from .quantization import ResidualVectorQuantizer
 
-
 # ── Rotary Position Embedding helpers ───────────────────────────────
+
 
 def rotate_half(x: mx.array) -> mx.array:
     """Rotate half the hidden dims of the input."""
@@ -45,6 +45,7 @@ def apply_rotary_pos_emb(x: mx.array, cos: mx.array, sin: mx.array) -> mx.array:
 
 
 # ── Config ──────────────────────────────────────────────────────────
+
 
 @dataclass
 class AudioEncoderConfig:
@@ -74,7 +75,12 @@ class AudioEncoderConfig:
 
     @property
     def max_source_positions(self) -> int:
-        return self.max_audio_seconds * self.sampling_rate // self.hop_length // self.stride_size
+        return (
+            self.max_audio_seconds
+            * self.sampling_rate
+            // self.hop_length
+            // self.stride_size
+        )
 
     @classmethod
     def from_dict(cls, d: dict) -> "AudioEncoderConfig":
@@ -83,6 +89,7 @@ class AudioEncoderConfig:
 
 
 # ── Activation helper ───────────────────────────────────────────────
+
 
 def _act_fn(name: str):
     if name == "gelu":
@@ -96,6 +103,7 @@ def _act_fn(name: str):
 
 # ── Layer norm factory ──────────────────────────────────────────────
 
+
 def _layer_norm(ln_type: str, dim: int, eps: float = 1e-5):
     if ln_type == "LayerNorm":
         return nn.LayerNorm(dim, eps=eps)
@@ -105,6 +113,7 @@ def _layer_norm(ln_type: str, dim: int, eps: float = 1e-5):
 
 
 # ── Rotary Embedding ────────────────────────────────────────────────
+
 
 class RotaryEmbedding(nn.Module):
     """
@@ -124,7 +133,9 @@ class RotaryEmbedding(nn.Module):
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self.inv_freq = inv_freq
 
-    def __call__(self, x: mx.array, position_ids: Optional[mx.array] = None) -> Tuple[mx.array, mx.array]:
+    def __call__(
+        self, x: mx.array, position_ids: Optional[mx.array] = None
+    ) -> Tuple[mx.array, mx.array]:
         """
         Compute cos/sin for the given input.
 
@@ -144,7 +155,7 @@ class RotaryEmbedding(nn.Module):
         # (dim/2,) @ (seq_len,) → (seq_len, dim/2)
         freqs = mx.matmul(
             self.inv_freq[:, None],  # (dim/2, 1)
-            position_ids[None, :],   # (1, seq_len)
+            position_ids[None, :],  # (1, seq_len)
         ).T  # (seq_len, dim/2)
 
         # Duplicate for full rotary dim: cat(freqs, freqs)
@@ -156,6 +167,7 @@ class RotaryEmbedding(nn.Module):
 
 
 # ── Attention (HF-compatible key names) ─────────────────────────────
+
 
 class Attention(nn.Module):
     """
@@ -179,7 +191,7 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
         self.causal = causal
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
         # Match HF key names exactly
         self.k_proj = nn.Linear(embed_dim, embed_dim, bias=False)
@@ -231,18 +243,23 @@ class Attention(nn.Module):
 
         # Scaled dot-product attention
         attn_output = mx.fast.scaled_dot_product_attention(
-            query, key, value,
+            query,
+            key,
+            value,
             scale=self.scale,
             mask=mask,
         )
 
         # (1, n_heads, seq_len, head_dim) → (1, seq_len, embed_dim)
-        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(1, seq_len, self.embed_dim)
+        attn_output = attn_output.transpose(0, 2, 1, 3).reshape(
+            1, seq_len, self.embed_dim
+        )
         attn_output = self.out_proj(attn_output)
         return attn_output[0]  # remove batch dim
 
 
 # ── Transformer Layer ───────────────────────────────────────────────
+
 
 class TransformerLayer(nn.Module):
     """Pre-norm Transformer layer with RoPE and full (non-causal) attention."""
@@ -283,6 +300,7 @@ class TransformerLayer(nn.Module):
 
 # ── Audio Encoder ───────────────────────────────────────────────────
 
+
 class AudioEncoder(nn.Module):
     """MiMo Audio Tokenizer encoder (Conv → Transformer → RVQ)."""
 
@@ -303,10 +321,15 @@ class AudioEncoder(nn.Module):
         self.skip_layer_idx = config.encoder_skip_layer_id
 
         # Convolutional front-end
-        self.conv1 = nn.Conv1d(config.n_mels, config.d_model, kernel_size=config.kernel_size, padding=1)
+        self.conv1 = nn.Conv1d(
+            config.n_mels, config.d_model, kernel_size=config.kernel_size, padding=1
+        )
         self.conv2 = nn.Conv1d(
-            config.d_model, config.d_model,
-            kernel_size=config.kernel_size, stride=config.stride_size, padding=1,
+            config.d_model,
+            config.d_model,
+            kernel_size=config.kernel_size,
+            stride=config.stride_size,
+            padding=1,
         )
 
         # Transformer layers
@@ -324,8 +347,10 @@ class AudioEncoder(nn.Module):
         # Optional down-sampling via Conv1d (matching HF's Sequential[Conv1d, GELU])
         if config.avg_pooler > 1:
             self.down_sample = nn.Conv1d(
-                config.d_model, config.d_model,
-                kernel_size=config.avg_pooler, stride=config.avg_pooler,
+                config.d_model,
+                config.d_model,
+                kernel_size=config.avg_pooler,
+                stride=config.avg_pooler,
                 bias=False,
             )
             self.down_sample_norm = _layer_norm(config.ln_type, config.d_model)
@@ -361,12 +386,12 @@ class AudioEncoder(nn.Module):
         """
         # Convert mel (n_mels, L) → NLC (1, L, n_mels)
         x = mel.T[None]  # (1, L, n_mels)
-        x = nn.gelu(self.conv1(x))   # (1, L, d_model)
-        x = nn.gelu(self.conv2(x))   # (1, L//2, d_model)
+        x = nn.gelu(self.conv1(x))  # (1, L, d_model)
+        x = nn.gelu(self.conv2(x))  # (1, L//2, d_model)
 
         # Flatten batch
         x = x * self.embed_scale
-        x = x[0]                     # (T, d_model)
+        x = x[0]  # (T, d_model)
 
         # RoPE embeddings
         cos, sin = self.position_embedding(x)  # (T, head_dim)

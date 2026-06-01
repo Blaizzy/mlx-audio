@@ -12,7 +12,8 @@ from mlx_audio.utils import get_model_path, load_weights
 
 from .audio_encoder import AudioEncoder, AudioEncoderConfig
 from .config import MiMoAudioConfig
-from .mel import SAMPLE_RATE as AUDIO_SAMPLE_RATE, log_mel_spectrogram
+from .mel import SAMPLE_RATE as AUDIO_SAMPLE_RATE
+from .mel import log_mel_spectrogram
 from .model import MiMoAudioMLX, MiMoSampler
 from .prompt import build_asr_prompt
 

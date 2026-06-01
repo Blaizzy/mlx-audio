@@ -18,8 +18,8 @@ from typing import List, Optional, Union
 import mlx.core as mx
 import mlx.nn as nn
 
-
 # ── EuclideanCodebook (encode-only) ─────────────────────────────────
+
 
 class EuclideanCodebook(nn.Module):
     """
@@ -80,6 +80,7 @@ class EuclideanCodebook(nn.Module):
 
 # ── VectorQuantization ──────────────────────────────────────────────
 
+
 class VectorQuantization(nn.Module):
     """
     Single vector quantizer with optional input/output projections.
@@ -128,10 +129,13 @@ class VectorQuantization(nn.Module):
 
 # ── ResidualVectorQuantization ──────────────────────────────────────
 
+
 class ResidualVectorQuantization(nn.Module):
     """Stack of VectorQuantization layers applied in residual fashion."""
 
-    def __init__(self, num_quantizers: int, codebook_size: Union[int, List[int]], **kwargs):
+    def __init__(
+        self, num_quantizers: int, codebook_size: Union[int, List[int]], **kwargs
+    ):
         super().__init__()
         if isinstance(codebook_size, int):
             codebook_size = [codebook_size] * num_quantizers
@@ -166,6 +170,7 @@ class ResidualVectorQuantization(nn.Module):
 
 
 # ── ResidualVectorQuantizer (public API) ────────────────────────────
+
 
 class ResidualVectorQuantizer(nn.Module):
     """
