@@ -86,6 +86,7 @@ nav:
       - Svara TTS: models/tts/svara.md
       - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
+      - Miso TTS: models/tts/miso-tts.md
       - Dia: models/tts/dia.md
       - Chatterbox: models/tts/chatterbox.md
     - Speech-to-Text:

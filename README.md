@@ -121,6 +121,7 @@ for result in model.generate(
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
 | **OmniVoice** | Zero-shot multilingual TTS with voice cloning, batch generation, and nonverbal tags | 646+ languages | [mlx-community/OmniVoice-bf16](https://huggingface.co/mlx-community/OmniVoice-bf16) |
 | **CSM** | Conversational Speech Model with voice cloning | EN | [mlx-community/csm-1b](https://huggingface.co/mlx-community/csm-1b) |
+| **Miso TTS** | 8B conversational RVQ transformer with voice/audio context | EN | [bf16](https://huggingface.co/mlx-community/MisoTTS-bf16), [8bit](https://huggingface.co/mlx-community/MisoTTS-8bit) |
 | **Dia** | Dialogue-focused TTS | EN | [mlx-community/Dia-1.6B-fp16](https://huggingface.co/mlx-community/Dia-1.6B-fp16) |
 | **OuteTTS** | Efficient TTS model | EN | [mlx-community/OuteTTS-1.0-0.6B-fp16](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) |
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
@@ -643,6 +644,20 @@ python -m mlx_audio.convert \
     --mlx-path ./Kokoro-82M-bf16 \
     --dtype bfloat16 \
     --upload-repo username/Kokoro-82M-bf16 (optional: if you want to upload the model to Hugging Face)
+```
+
+For Miso TTS, quantize from the published MLX bf16 checkpoint. The upstream
+`MisoLabs/MisoTTS` repository does not include the `config.json` expected by the
+standard converter:
+
+```bash
+python -m mlx_audio.convert \
+    --hf-path mlx-community/MisoTTS-bf16 \
+    --mlx-path ./MisoTTS-8bit \
+    --model-domain tts \
+    --quantize \
+    --q-bits 8 \
+    --upload-repo username/MisoTTS-8bit
 ```
 
 **Options:**
