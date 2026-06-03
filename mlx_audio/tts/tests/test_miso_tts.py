@@ -5,10 +5,7 @@ from mlx_audio.utils import get_model_class, get_model_name_parts
 
 
 def test_miso_tts_default_config_matches_upstream_shape():
-    from mlx_audio.tts.models.miso_tts import (
-        DEFAULT_CONFIG,
-        MISO_TTS_WATERMARK,
-    )
+    from mlx_audio.tts.models.miso_tts import DEFAULT_CONFIG, MISO_TTS_WATERMARK
 
     assert DEFAULT_CONFIG["model_type"] == "miso_tts"
     assert DEFAULT_CONFIG["backbone_flavor"] == "llama-8B"
@@ -71,10 +68,7 @@ def test_miso_tts_sanitize_maps_upstream_weight_names():
     assert sanitized["model.backbone.layers.0.mlp.gate_proj.weight"] == "w1"
     assert sanitized["model.backbone.layers.0.input_layernorm.weight"] == "norm"
     assert sanitized["model.codebook0_head.weight"] == "codebook0_head"
-    assert (
-        sanitized["model.decoder.layers.0.self_attn.k_proj.weight"]
-        == "decoder_attn"
-    )
+    assert sanitized["model.decoder.layers.0.self_attn.k_proj.weight"] == "decoder_attn"
     assert sanitized["model.decoder.norm.weight"] == "decoder_norm"
     assert sanitized["model.projection.weight"] == "projection"
     assert sanitized["model.text_embeddings.weight"] == "text_embeddings"
