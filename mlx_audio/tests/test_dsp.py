@@ -49,14 +49,41 @@ def test_dsp_all_exports():
         "STR_TO_WINDOW_FN",
         "stft",
         "istft",
+        "ISTFTCache",
         "mel_filters",
         "integrated_loudness",
+        "lfilter",
         "normalize_loudness",
         "normalize_peak",
+        "compute_deltas_kaldi",
+        "mel_scale_kaldi",
+        "inverse_mel_scale_kaldi",
+        "get_mel_banks_kaldi",
+        "compute_fbank_kaldi",
     ]
 
     for name in expected:
         assert hasattr(dsp, name), f"Missing export: {name}"
+
+    # Type sanity checks for the public API surface
+    assert callable(dsp.hanning)
+    assert callable(dsp.hamming)
+    assert callable(dsp.blackman)
+    assert callable(dsp.bartlett)
+    assert isinstance(dsp.STR_TO_WINDOW_FN, dict)
+    assert callable(dsp.stft)
+    assert callable(dsp.istft)
+    assert isinstance(dsp.ISTFTCache, type)
+    assert callable(dsp.mel_filters)
+    assert callable(dsp.integrated_loudness)
+    assert callable(dsp.lfilter)
+    assert callable(dsp.normalize_loudness)
+    assert callable(dsp.normalize_peak)
+    assert callable(dsp.compute_deltas_kaldi)
+    assert callable(dsp.mel_scale_kaldi)
+    assert callable(dsp.inverse_mel_scale_kaldi)
+    assert callable(dsp.get_mel_banks_kaldi)
+    assert callable(dsp.compute_fbank_kaldi)
 
 
 def test_lfilter_fir_and_iir():
