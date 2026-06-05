@@ -123,6 +123,9 @@ class Model(nn.Module):
     def sanitize(self, weights: dict) -> dict:
         # converter already matches MLX layout/keys; nothing to remap.
         return weights
+        # NOTE: no model_quant_predicate — quantize the full model. The encoder is
+        # ~90% of params, so protecting it saves ~2%; q8 over the full model is
+        # the effective sweet spot (-41% size, content-lossless). See parity_test.
 
     # ---- prompt fusion ----
     def _fuse(self, encoded: mx.array, prompt_id: int) -> mx.array:
