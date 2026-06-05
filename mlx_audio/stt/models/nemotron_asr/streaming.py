@@ -8,8 +8,10 @@ cache_last_time):
 Per chunk: Q = new frames, K/V = [attn_cache + new]; depthwise conv prepends the
 conv_cache instead of zero-padding. With the window sized to the allowed left
 context, no attention mask is needed — so streaming output is frame-identical to
-the offline (chunked_limited) encoder. Subsampling is done up-front on the
-provided mel; incremental subsampling can wrap this later.
+the offline (chunked_limited) encoder. Subsampling is also incremental: each mel
+chunk is subsampled with a 16-frame mel cache, emitting only newly-stable frames
+(causal dw-striding has no real future dependency; the per-chunk boundary frame
+is recomputed next chunk).
 """
 
 import mlx.core as mx
@@ -50,17 +52,42 @@ def native_chunk_frames(conformer) -> int:
     return int(conformer.args.att_context_size[1]) + 1
 
 
+_PRE_ENCODE_MEL_CACHE = 16  # mel frames of left context for incremental subsampling
+# (>= causal receptive field of the 8x dw-striding stack)
+
+
 def _iter_chunks(conformer, mel, chunk_frames):
-    """Yield (encoder_frames_for_chunk) streaming over the conformer."""
+    """Yield encoder frames per chunk — fully incremental: chunk-wise causal
+    subsampling (16-frame mel cache) feeding the cache-aware conformer. Output is
+    frame-identical to offline at chunk_frames == native_chunk_frames."""
     left_cache = int(conformer.args.att_context_size[0])
     conv_left = conformer.args.conv_kernel_size - 1
-    feats = conformer.pre_encode(mel)  # (1, T', d) — subsample up-front
-    T = feats.shape[1]
+    sf = conformer.args.subsampling_factor
+    M = chunk_frames * sf  # mel frames consumed per chunk
+    N = mel.shape[1]
     n = len(conformer.layers)
     attn_cache = [None] * n
     conv_cache = [None] * n
-    for s in range(0, T, chunk_frames):
-        x = feats[:, s : s + chunk_frames]
+    mel_cache = None
+    emitted = 0  # encoder frames emitted so far
+    consumed = 0  # mel frames consumed so far
+    while consumed < N:
+        m = mel[:, consumed : consumed + M]
+        cache_len = 0 if mel_cache is None else mel_cache.shape[1]
+        win = m if mel_cache is None else mx.concatenate([mel_cache, m], axis=1)
+        sub = conformer.pre_encode(win)  # incremental subsample of this window
+        L = consumed + m.shape[1]
+        is_final = L >= N
+        base = (consumed - cache_len) // sf  # global index of window frame 0
+        lo = emitted - base
+        hi = sub.shape[1] if is_final else (L // sf - base)  # stable frames only
+        feats = sub[:, lo:hi]
+        emitted = base + hi
+        consumed = L
+        mel_cache = win[:, -_PRE_ENCODE_MEL_CACHE:]
+        if feats.shape[1] == 0:
+            continue
+        x = feats
         for li, layer in enumerate(conformer.layers):
             x, attn_cache[li], conv_cache[li] = _stream_block(
                 layer,
