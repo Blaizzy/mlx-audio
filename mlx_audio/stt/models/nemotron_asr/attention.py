@@ -66,6 +66,29 @@ class RelPositionMultiHeadAttention(nn.Module):
         o = o.transpose(0, 2, 1, 3).reshape(B, T, -1)
         return self.linear_out(o)
 
+    def stream(self, q_in: mx.array, kv_in: mx.array, pos_emb: mx.array) -> mx.array:
+        """Cache-aware step: q_in (B,c,d) attends to kv_in (B,L,d), no mask
+        (the L-window IS the allowed context). pos_emb is for length L (2L-1)."""
+        q = self.linear_q(q_in)
+        k = self.linear_k(kv_in)
+        v = self.linear_v(kv_in)
+        p = self.linear_pos(pos_emb)
+        B, c, _ = q.shape
+        L = kv_in.shape[1]
+        pos_len = p.shape[1]
+        q = q.reshape(B, c, self.n_head, self.head_dim)
+        q_u = (q + self.pos_bias_u).transpose(0, 2, 1, 3)
+        q_v = (q + self.pos_bias_v).transpose(0, 2, 1, 3)
+        k = k.reshape(B, L, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        v = v.reshape(B, L, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        p = p.reshape(1, pos_len, self.n_head, self.head_dim).transpose(0, 2, 1, 3)
+        matrix_bd = mx.matmul(q_v, p.swapaxes(-2, -1))
+        matrix_bd = self.rel_shift(matrix_bd)[:, :, :, :L] * self.scale
+        o = mx.fast.scaled_dot_product_attention(
+            q_u, k, v, scale=self.scale, mask=matrix_bd
+        )
+        return self.linear_out(o.transpose(0, 2, 1, 3).reshape(B, c, -1))
+
 
 class RelPositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 5000):
@@ -88,9 +111,11 @@ class RelPositionalEncoding(nn.Module):
         self.max_len = max_len
 
     def __call__(self, x: mx.array) -> mx.array:
-        T = x.shape[1]
-        if T > self.max_len:
-            self._build(T + 1)
+        return self.pos_emb_for(x.shape[1], x.dtype)
+
+    def pos_emb_for(self, length: int, dtype=mx.float32) -> mx.array:
+        """Positional embedding for a window of `length` frames (2*length-1)."""
+        if length > self.max_len:
+            self._build(length + 1)
         center = self._pe.shape[1] // 2
-        pos_emb = self._pe[:, center - (T - 1) : center + T].astype(x.dtype)
-        return pos_emb
+        return self._pe[:, center - (length - 1) : center + length].astype(dtype)

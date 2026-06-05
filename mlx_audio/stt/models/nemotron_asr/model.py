@@ -55,6 +55,17 @@ class STTOutput:
         return f"STTOutput(text={self.text!r}, language={self.language!r})"
 
 
+class StreamingResult:
+    def __init__(self, text, new_text, tokens, is_final):
+        self.text = text
+        self.new_text = new_text
+        self.tokens = tokens
+        self.is_final = is_final
+
+    def __repr__(self):
+        return f"StreamingResult(new={self.new_text!r}, final={self.is_final})"
+
+
 class Model(nn.Module):
     def __init__(self, config):
         super().__init__()
@@ -206,3 +217,50 @@ class Model(nn.Module):
         if strip_lang_tags:
             text, lang = strip_lang_tag(text)
         return STTOutput(text=text, language=lang or target_lang, tokens=ids)
+
+    def stream_generate(
+        self,
+        audio: Union[str, Path, mx.array],
+        *,
+        target_lang: str = "en-US",
+        chunk_frames: Optional[int] = None,
+        strip_lang_tags: bool = True,
+        dtype: mx.Dtype = mx.float32,
+        **kwargs,
+    ):
+        """Cache-aware streaming transcription. Yields StreamingResult per chunk
+        (token-identical to generate() at the native chunk size)."""
+        from mlx_audio.stt.models.nemotron_asr.streaming import stream_transcribe
+
+        if isinstance(audio, (str, Path)):
+            audio = load_audio(audio, self.preprocess_args.sample_rate, dtype=dtype)
+        else:
+            audio = audio.astype(dtype)
+        mel = log_mel_spectrogram(
+            audio,
+            self.preprocessor.featurizer.fb,
+            self.preprocessor.featurizer.window,
+            self.preprocess_args,
+        ).astype(dtype)
+        prompt_id = self._resolve_prompt_id(target_lang)
+
+        def _result(item, is_final):
+            new, all_ids = item
+            text = self.tokenizer.decode(all_ids)
+            if strip_lang_tags:
+                text, _ = strip_lang_tag(text)
+            return StreamingResult(
+                text=text,
+                new_text=self.tokenizer.decode(new) if new else "",
+                tokens=list(all_ids),
+                is_final=is_final,
+            )
+
+        # lazy: one-item lookahead so the last chunk is flagged is_final
+        prev = None
+        for item in stream_transcribe(self, mel, prompt_id, chunk_frames):
+            if prev is not None:
+                yield _result(prev, False)
+            prev = item
+        if prev is not None:
+            yield _result(prev, True)
