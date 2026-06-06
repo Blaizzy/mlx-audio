@@ -38,6 +38,13 @@ def parse_args(argv: Optional[List[str]] = None):
         choices=["txt", "srt", "vtt", "json"],
         help="Output format (txt, srt, vtt, or json)",
     )
+    parser.add_argument(
+        "--max-line-length",
+        type=int,
+        default=None,
+        help="Split srt/vtt cues at punctuation so each stays within roughly "
+        "this many characters (default: no splitting)",
+    )
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
     parser.add_argument(
         "--max-tokens",
@@ -125,21 +132,59 @@ def format_vtt_timestamp(seconds: float) -> str:
     return format_timestamp(seconds).replace(",", ".")
 
 
-def _get_cues(segments):
+def _split_cue(cue, max_line_length):
+    """Split a long cue into shorter ones at sentence/clause boundaries.
+
+    Models that only return segment-level timestamps (e.g. Qwen3-ASR) can emit
+    one cue per 30s chunk, which renders as a multi-line subtitle covering half
+    the screen. We break it at punctuation and spread the cue's time span across
+    the pieces proportionally to their length, so each cue fits on one line.
+    """
+    text = cue["text"]
+    pieces, buf = [], ""
+    for ch in text:
+        buf += ch
+        if ch in "。！？.!?；;\n" or (len(buf) >= max_line_length and ch in "，、,"):
+            pieces.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        pieces.append(buf.strip())
+    pieces = [p for p in pieces if p]
+    if len(pieces) <= 1:
+        return [cue]
+
+    total = sum(len(p) for p in pieces)
+    span = cue["end"] - cue["start"]
+    out, start = [], cue["start"]
+    for p in pieces:
+        end = start + span * len(p) / total
+        out.append({"start": start, "end": end, "text": p})
+        start = end
+    out[-1]["end"] = cue["end"]
+    return out
+
+
+def _get_cues(segments, max_line_length=None):
     """Extract unified cues from any model's output (Parakeet or Whisper).
 
     Uses word-level cues when available, otherwise falls back to segment-level.
     """
     if hasattr(segments, "sentences"):
-        return [
+        cues = [
             {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
         ]
-    cues = []
-    for s in segments.segments:
-        cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
-        if "words" in s and s["words"]:
-            for w in s["words"]:
-                cues.append({"start": w["start"], "end": w["end"], "text": w["word"]})
+    else:
+        cues = []
+        for s in segments.segments:
+            cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
+            if "words" in s and s["words"]:
+                for w in s["words"]:
+                    cues.append(
+                        {"start": w["start"], "end": w["end"], "text": w["word"]}
+                    )
+
+    if max_line_length:
+        cues = [c for cue in cues for c in _split_cue(cue, max_line_length)]
     return cues
 
 
@@ -152,13 +197,13 @@ def save_as_txt(segments, output_path: str):
         f.write(segments.text)
 
 
-def save_as_srt(segments, output_path: str):
+def save_as_srt(segments, output_path: str, max_line_length=None):
     with (
         open(f"{output_path}.srt", "w", encoding="utf-8")
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
-        for i, cue in enumerate(_get_cues(segments), 1):
+        for i, cue in enumerate(_get_cues(segments, max_line_length), 1):
             f.write(f"{i}\n")
             f.write(
                 f"{format_timestamp(cue['start'])} --> {format_timestamp(cue['end'])}\n"
@@ -166,14 +211,14 @@ def save_as_srt(segments, output_path: str):
             f.write(f"{cue['text']}\n\n")
 
 
-def save_as_vtt(segments, output_path: str):
+def save_as_vtt(segments, output_path: str, max_line_length=None):
     with (
         open(f"{output_path}.vtt", "w", encoding="utf-8")
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
         f.write("WEBVTT\n\n")
-        for i, cue in enumerate(_get_cues(segments), 1):
+        for i, cue in enumerate(_get_cues(segments, max_line_length), 1):
             f.write(f"{i}\n")
             f.write(
                 f"{format_vtt_timestamp(cue['start'])} --> {format_vtt_timestamp(cue['end'])}\n"
@@ -287,6 +332,7 @@ def generate_transcription(
     format: str = "txt",
     verbose: bool = False,
     text: str = "",
+    max_line_length: Optional[int] = None,
     **kwargs,
 ):
     """Generate transcriptions from audio files.
@@ -415,9 +461,9 @@ def generate_transcription(
             print("[WARNING] No segments found, saving as plain text.")
         save_as_txt(segments, output_path)
     elif format == "srt":
-        save_as_srt(segments, output_path)
+        save_as_srt(segments, output_path, max_line_length)
     elif format == "vtt":
-        save_as_vtt(segments, output_path)
+        save_as_vtt(segments, output_path, max_line_length)
     elif format == "json":
         save_as_json(segments, output_path)
 
