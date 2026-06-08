@@ -615,6 +615,15 @@ class SineGen:
         # Generate UV signal
         uv = self._f02uv(f0)
 
+        # Length-match guard: _f02sine's internal phase upsampling can yield a
+        # time dimension one hop longer than uv for certain f0 lengths, which
+        # makes the noise broadcast below fail with a [broadcast_shapes] error
+        # on a significant fraction of real inputs. Truncate both to the common
+        # length (a <=1-hop trim of the excitation signal, inaudible).
+        seq_len = min(sine_waves.shape[1], uv.shape[1])
+        sine_waves = sine_waves[:, :seq_len, :]
+        uv = uv[:, :seq_len, :]
+
         # Generate noise
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         noise = noise_amp * mx.random.normal(sine_waves.shape)
