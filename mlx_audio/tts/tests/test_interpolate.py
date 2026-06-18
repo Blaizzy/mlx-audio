@@ -37,6 +37,11 @@ class TestInterpolate(unittest.TestCase):
         result = interpolate(x, scale_factor=2)
         self.assertEqual(result.shape, (2, 3, 8))
 
+        # Avoid expanding exact integer output sizes because of float64 drift.
+        x = mx.array(np.zeros((1, 1, 296400)))
+        result = interpolate(x, scale_factor=1 / 300)
+        self.assertEqual(result.shape, (1, 1, 988))
+
     def test_interpolate1d_nearest(self):
         """Test 1D nearest neighbor interpolation."""
         # Create a simple test array

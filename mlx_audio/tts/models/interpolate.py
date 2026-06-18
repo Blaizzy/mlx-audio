@@ -4,6 +4,13 @@ from typing import List, Optional, Tuple, Union
 import mlx.core as mx
 
 
+def _ceil_with_float_tolerance(value: float) -> int:
+    nearest_int = round(value)
+    if abs(value - nearest_int) < 1e-9:
+        value = nearest_int
+    return int(math.ceil(value))
+
+
 def interpolate(
     input: mx.array,
     size: Optional[Union[int, Tuple[int, ...], List[int]]] = None,
@@ -43,9 +50,10 @@ def interpolate(
         size = []
         for i in range(spatial_dims):
             # Use ceiling instead of floor to match PyTorch behavior
+            scaled_size = float(input.shape[i + 2]) * float(scale_factor[i])
             curr_size = max(
                 1,
-                int(math.ceil(float(input.shape[i + 2]) * float(scale_factor[i]))),
+                _ceil_with_float_tolerance(scaled_size),
             )
             size.append(curr_size)
 
