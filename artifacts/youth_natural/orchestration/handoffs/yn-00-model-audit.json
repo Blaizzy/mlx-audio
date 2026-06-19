@@ -1,0 +1,66 @@
+{
+  "task_id": "yn-00-model-audit",
+  "status": "completed",
+  "original_status": "completed_read_only_source_audit",
+  "branch": "feature/zonos2-youth-natural-sft",
+  "commit": "4ee95391967e6ff802970a300d68c67bd8809158",
+  "files_changed": [],
+  "artifacts_created": [],
+  "commands_run": [
+    "git status --short --branch",
+    "git rev-parse HEAD",
+    "git diff -- mlx_audio/tts/generate.py mlx_audio/tts/models/zonos2/model.py",
+    "rg --files",
+    "nl -ba mlx_audio/tts/models/zonos2/{config.py,prompt.py,generation.py,model.py,speaker_encoder.py,convert.py}",
+    "nl -ba mlx_audio/{utils.py,tts/utils.py,tts/generate.py,tts/tests/test_zonos2.py}",
+    "rg -n for ZONOS2 markers/limits/loading terms",
+    "git diff --check"
+  ],
+  "tests_run": [
+    "git diff --check: passed"
+  ],
+  "tests_not_run": [
+    "No unit tests run",
+    "No model load/full inference run",
+    "No DAC decode run",
+    "No speaker encoder run"
+  ],
+  "data_accessed": [
+    "Repository source under /Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
+    "Git metadata for branch/commit/status",
+    "Local model config metadata at /Users/elishipley/VoiceForge/models/zonos2-8bit/config.json was briefly inspected for parity; no weights, audio, datasets, or embeddings were read"
+  ],
+  "claims": [
+    "Core defaults are 28 layers, dim 2048, head_dim 128, n_kv_heads 4, max_seqlen 6144, 9 codebooks, codebook_size 1024, eoa_id 1024, audio_pad_id 1025, text_vocab 519, sample_rate 44100, DAC repo mlx-community/descript-audio-codec-44khz.",
+    "Default attention derives 16 query heads from dim/head_dim and 4 KV heads from config; intermediate_size defaults to 3072; audio_vocab_size is codebook_size + 2; frame_width is n_codebooks + 1.",
+    "Prompt rows are 9 audio columns plus one text column. Text bytes use BOS/EOS ids 2/3 with byte IDs offset by 192; marker rows fill audio columns with audio_pad_id and put the text/conditioning token in the last column.",
+    "Conditioning marker ids are allocated at the tail of text_vocab for speaking rate, quality buckets, speaker background, and accurate mode.",
+    "Speaker conditioning adds a speaker slot plus speaker-background/accurate-mode marker rows before the text prompt, then replaces hidden state position 0 with the projected speaker embedding.",
+    "Speaker embedding path accepts either a 2048-D embedding or one ref_audio, not both; optional LDA projects 2048 to 1024 before projection to model dim.",
+    "Delay layout is triangular shear/shear_up over codebooks. Prompt silence is sheared, generation stores delayed rows, decode calls shear_up, clips codes into [0, codebook_size-1], feeds DAC as [B, codebooks, frames], and trims to frames * 512 samples.",
+    "Attention uses wq Linear(dim, num_heads * head_dim), combined wkv ChunkedLinear(dim, 2 * num_kv_heads * head_dim, divisor=2), and wo Linear(num_heads * head_dim, dim). Defaults imply wq 2048->2048, wkv 2048->1024, wo 2048->2048.",
+    "MoE layers are enabled for layer indexes 3 through 26 inclusive under defaults; layer 26 uses special top_k 2 while others use top_k 1. Router is down_proj -> RouterMLP -> softmax/topk; experts are SwitchGLU with 16 experts and intermediate_size 3072.",
+    "Output head is one linear multi_output of dim -> n_codebooks * audio_vocab_size, reshaped to [..., 9, 1026], with tanh softcap 15 by default.",
+    "Sampling defaults are ZONOS2-native: temperature 1.15, top_k 106, top_p 0.0, min_p 0.18, repetition_penalty 1.2. CLI wrapper removes generic defaults for zonos2 so they do not override model defaults.",
+    "EOS is audio EOA, not text EOS: any generated codebook id equal to eoa_id sets eos_frame to step - max_eos_codebook and runs an n_codebooks+1 countdown; generated frames append text_vocab as the text column placeholder.",
+    "Max sequence budget is only partially enforced in source: config has max_seqlen 6144, but generate defaults to 1024 generated frames and does not visibly cap prompt_tokens + generated tokens against max_seqlen.",
+    "Checkpoint loading goes through base_load_model: config is loaded, model class is resolved, weights are loaded, quantization is applied from config/quantization_config and .scales metadata, then weights load and post_load_hook stores model_path.",
+    "Converter maps Sonic expert/router keys, writes sharded safetensors/config, and can bundle the Qwen3 speaker encoder.",
+    "GenerationResult supports streaming flags, and current model.py emits streaming chunks/final chunks, but README still says streaming is not implemented."
+  ],
+  "known_risks": [
+    "Worktree was dirty before audit; two modified files are pre-existing and were not touched.",
+    "No weight tensors were loaded, so actual checkpoint tensor shapes were not verified against declared module shapes.",
+    "No training code or loss-target builder was found for ZONOS2; invalid target conventions are inferable only from inference behavior.",
+    "max_seqlen exists in config but runtime generation does not visibly enforce prompt plus generation length against it.",
+    "Streaming code exists in the working tree, but this audit did not run streaming probes; README text appears stale.",
+    "DAC and speaker extraction paths were inspected only, not executed."
+  ],
+  "integration_notes": [
+    "Future patches should preserve frame width 10: nine audio codebook columns plus one text column.",
+    "Speaker conditioning must keep hidden-state replacement behavior at speaker_token_position 0.",
+    "Streaming or chunking patches must respect codebook_delay = n_codebooks - 1 and decode only stable de-delayed frames.",
+    "Any sequence-limit patch should account for prompt length plus generated frames and max_seqlen 6144.",
+    "Loader/quantization patches should stay compatible with apply_quantization using config quantization metadata plus .scales tensors."
+  ]
+}

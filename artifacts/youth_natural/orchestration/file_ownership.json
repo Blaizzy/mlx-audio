@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "branch": "feature/zonos2-youth-natural-sft",
+  "lead_owned_paths": [
+    "artifacts/youth_natural/orchestration/ORCHESTRATION_PLAN.md",
+    "artifacts/youth_natural/orchestration/task_ledger.jsonl",
+    "artifacts/youth_natural/orchestration/session_registry.jsonl",
+    "artifacts/youth_natural/orchestration/file_ownership.json",
+    "artifacts/youth_natural/orchestration/integration_log.jsonl"
+  ],
+  "active_write_ownership": {
+    "yn-01-data-pipeline": [
+      "mlx_audio/research/zonos2_youth/data.py",
+      "mlx_audio/research/zonos2_youth/privacy.py",
+      "research/specs/youth_dataset_item.schema.json",
+      "tests/research/test_youth_data_pipeline.py"
+    ],
+    "yn-01-mlx-training": [
+      "mlx_audio/research/zonos2_youth/adapter.py",
+      "mlx_audio/research/zonos2_youth/train.py",
+      "mlx_audio/research/zonos2_youth/export.py",
+      "research/specs/youth_adapter_manifest.schema.json",
+      "tests/research/test_youth_adapter.py"
+    ],
+    "yn-01-eval-harness": [
+      "mlx_audio/research/zonos2_youth/eval.py",
+      "mlx_audio/research/zonos2_youth/metrics.py",
+      "research/specs/youth_generation_record.schema.json",
+      "tests/research/test_youth_eval.py"
+    ],
+    "yn-01-orchestration-tests": [
+      "research/specs/youth_agent_handoff.schema.json",
+      "tests/research/test_youth_orchestration.py"
+    ]
+  },
+  "read_only_review_tasks": [
+    "yn-00-model-audit",
+    "yn-00-rights-audit",
+    "yn-00-hardware-audit",
+    "yn-00-repo-conventions",
+    "yn-00-test-gap-audit"
+  ],
+  "private_data_exclusions": [
+    "raw audio",
+    "minor speaker embeddings",
+    "private dataset paths",
+    "access tokens",
+    "identity metadata"
+  ]
+}

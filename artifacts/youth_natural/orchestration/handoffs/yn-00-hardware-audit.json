@@ -1,0 +1,65 @@
+{
+  "task_id": "yn-00-hardware-audit",
+  "status": "completed",
+  "original_status": "completed_read_only",
+  "branch": "feature/zonos2-youth-natural-sft",
+  "commit": "4ee95391967e6ff802970a300d68c67bd8809158",
+  "files_changed": [],
+  "artifacts_created": [],
+  "commands_run": [
+    "pwd; uname -a; sysctl chip/arm64/memory",
+    "sw_vers; df -h .; git branch --show-current; git rev-parse HEAD; git status --short --branch",
+    "python3 --version; local env hint check; light mlx import/default_device check",
+    "rg --files for repo metadata files",
+    "python3 importlib.metadata version checks",
+    "sed -n '1,220p' pyproject.toml",
+    "git diff --stat; git status --porcelain=v1",
+    "df -g .; sysctl cpu counts",
+    "rg for YouthNatural/LoRA/safety/quantization terms excluding model binaries",
+    "find shallow local env/model-name hints",
+    "git log -1 metadata"
+  ],
+  "tests_run": [
+    "Light Python import availability check for mlx, mlx.core, numpy, torch",
+    "Light MLX default device check returned Device(gpu, 0)"
+  ],
+  "tests_not_run": [
+    "No ZONOS2 inference",
+    "No training",
+    "No model loading",
+    "No dataset access",
+    "No downloads",
+    "No repo test suite"
+  ],
+  "data_accessed": [
+    "Local system metadata: uname, sysctl, sw_vers, df",
+    "Repository metadata: git branch, commit, status, diff stat, pyproject.toml, shallow file/name searches",
+    "Python package metadata from system python"
+  ],
+  "claims": [
+    "Apple chip: Apple M3 Pro",
+    "macOS: 26.3.1 (a), build 25D771280a",
+    "Architecture: arm64",
+    "Unified memory: 19327352832 bytes, approximately 18 GiB",
+    "Disk free: approximately 20-21 GiB and volume 96% full",
+    "System Python: /Library/Frameworks/Python.framework/Versions/3.13/bin/python3, Python 3.13.7",
+    "MLX version visible to system Python: 0.31.2",
+    "mlx_audio package was not installed in system Python",
+    "Light MLX check reports default_device Device(gpu, 0)",
+    "CPU counts: 11 logical, 5 performance physical, 6 efficiency physical",
+    "Repo was dirty before audit: mlx_audio/tts/generate.py and mlx_audio/tts/models/zonos2/model.py modified",
+    "Last commit subject: Merge pull request #791 from lucasnewman/add-zonos2"
+  ],
+  "known_risks": [
+    "Only about 20-21 GiB free disk is tight for model probes, checkpoints, and cached artifacts.",
+    "18 GiB unified memory is modest for ZONOS2-class BF16 work; memory pressure risk is high.",
+    "No obvious project virtualenv was present; Python/package results are from system Python and may not match the intended runtime.",
+    "Repo has pre-existing modified files, so integration should avoid assuming a clean baseline."
+  ],
+  "integration_notes": [
+    "Use concurrency 1 for any ZONOS2/YouthNaturalLoRA probe on this machine.",
+    "Do not run parallel model loads or simultaneous training/inference workers.",
+    "Operational probe order for safety is 4-bit, then 8-bit, then BF16; quality reference order remains BF16, then 8-bit, then 4-bit.",
+    "Free disk space before heavy model probes."
+  ]
+}

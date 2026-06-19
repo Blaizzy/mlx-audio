@@ -1,0 +1,55 @@
+{
+  "task_id": "yn-00-test-gap-audit",
+  "status": "completed",
+  "original_status": "completed_read_only",
+  "branch": "feature/zonos2-youth-natural-sft",
+  "commit": "4ee95391967e6ff802970a300d68c67bd8809158",
+  "files_changed": [],
+  "artifacts_created": [],
+  "commands_run": [
+    "rg memory for VoiceForge/ZONOS2/YouthNaturalLoRA/LoRA context",
+    "pwd && find .. -name AGENTS.md -print",
+    "git status --short --branch",
+    "rg --files",
+    "rg for YouthNatural/youth/natural/LoRA/Common Voice terms",
+    "git rev-parse --abbrev-ref HEAD && git rev-parse HEAD && git diff --stat && git status --short",
+    "git ls-files filtered for youth/natural/lora/zonos2/train/adapter/manifest/common/voice/wkv/generation/metadata/split/duplicate",
+    "git diff -- mlx_audio/tts/generate.py mlx_audio/tts/models/zonos2/model.py",
+    "nl reads of mlx_audio/tts/tests/test_zonos2.py",
+    "nl reads of mlx_audio/tts/models/zonos2/model.py",
+    "nl reads of mlx_audio/tts/models/zonos2/generation.py",
+    "nl reads of mlx_audio/tts/models/zonos2/prompt.py",
+    "git ls-files filtered for audio/checkpoint/binary extensions",
+    "nl reads of pyproject.toml and pytest config candidates"
+  ],
+  "tests_run": [],
+  "tests_not_run": [
+    "No pytest run: task was read_only_analysis and pytest may create cache files; no implementation exists for YouthNaturalLoRA-specific tests yet."
+  ],
+  "data_accessed": [
+    "repo source files",
+    "repo test files",
+    "git metadata",
+    "tracked file list",
+    "memory summary for repo context only"
+  ],
+  "claims": [
+    "No tracked files matching YouthNaturalLoRA/youth-natural training implementation were found.",
+    "Current ZONOS2 tests cover prompt layout, shear/unshear, sampler filtering, EOS delay, tiny forward shape, reference path preservation, speaker encoder shape/sanitization, and converter key mapping.",
+    "Requested YouthNaturalLoRA coverage is mostly absent and should be added with synthetic text/metadata/token fixtures.",
+    "Tracked repo already contains unrelated sample WAV fixtures, so a new no-raw-audio-in-Git test should scope to YouthNaturalLoRA artifacts/manifest paths rather than banning all existing WAVs globally.",
+    "Recommended synthetic tests: manifest/orchestration validation, data filters/splits, prompt layout, LoRA adapter math, resume/generation records."
+  ],
+  "known_risks": [
+    "Audit cannot verify untracked implementation files outside searched paths.",
+    "Exact test imports depend on eventual YouthNaturalLoRA module names.",
+    "Eager/compiled consistency may need conditional skip behavior depending on MLX compile support in the local environment.",
+    "No private data or full model behavior was inspected, so model-quality claims are out of scope."
+  ],
+  "integration_notes": [
+    "Keep all YouthNaturalLoRA tests synthetic and under tmp_path.",
+    "Mark real-weight or real-audio tests with an integration marker; proposed high-value tests should not need weights.",
+    "Use policy tests around manifest contents and artifact paths: hashes, relative paths, and metadata, never raw audio bytes or embedding arrays.",
+    "Adapter tests can use tiny MLX modules and deterministic arrays to prove zero init, strength-zero parity, value-only wkv targeting, gradient filtering, merge parity, and save/reload/resume."
+  ]
+}

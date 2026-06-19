@@ -1,0 +1,63 @@
+{
+  "task_id": "yn-00-repo-conventions",
+  "status": "completed",
+  "original_status": "complete",
+  "branch": "feature/zonos2-youth-natural-sft",
+  "commit": "4ee95391967e6ff802970a300d68c67bd8809158",
+  "files_changed": [],
+  "artifacts_created": [],
+  "commands_run": [
+    "pwd && git status --short --branch",
+    "rg --files",
+    "sed -n '1,240p' pyproject.toml",
+    "sed -n '1,240p' .gitignore",
+    "find .. -name AGENTS.md -print",
+    "git rev-parse --abbrev-ref HEAD && git rev-parse HEAD",
+    "find mlx_audio/research",
+    "rg for argparse and CLI patterns",
+    "sed reads of tts generate, stt eval schema/cli/runner, zonos2 README/tests",
+    "find audio/checkpoint/cache artifacts",
+    "python setuptools.find_packages check",
+    "git ls-files",
+    "git check-ignore"
+  ],
+  "tests_run": [],
+  "tests_not_run": [
+    "No pytest/unittest suites run by request: read_only_analysis and no heavyweight tests."
+  ],
+  "data_accessed": [
+    "Repo source and metadata only under /Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
+    "pyproject.toml",
+    ".gitignore",
+    "mlx_audio/tts/generate.py",
+    "mlx_audio/stt/eval/*",
+    "mlx_audio/stt/tests/eval/*",
+    "mlx_audio/tts/tests/test_zonos2.py",
+    "mlx_audio/tts/tests/test_generate.py",
+    "mlx_audio/tts/models/zonos2/README.md",
+    "git status, branch, commit, ls-files, check-ignore"
+  ],
+  "claims": [
+    "pyproject uses setuptools package discovery with include = ['mlx_audio', 'mlx_audio.*']; normal packages need __init__.py to be discovered.",
+    "mlx_audio/research/zonos2_youth directories already exist but are empty and have no __init__.py, so setuptools.find_packages does not currently include mlx_audio.research or mlx_audio.research.zonos2_youth.",
+    "CLI convention is argparse with main(), optional argv in newer eval CLI, and console scripts named as dotted module paths.",
+    "Recommended CLI location: mlx_audio/research/zonos2_youth/cli.py with main(argv=None), plus __main__.py for python -m support.",
+    "Schema style favors stdlib dataclasses, pathlib.Path, Mapping metadata, and JSON/JSONL artifacts; avoid adding pydantic.",
+    ".gitignore currently ignores output/ and *.safetensors only. It does not ignore outputs/, audio-cache/, raw audio extensions globally, checkpoints directories, *.pt, *.pth, *.ckpt, *.onnx, *.gguf, or research artifact directories.",
+    "There are already tracked wav fixtures/examples in the repo, so new ignore rules should preserve explicit fixtures/examples rather than blanket-remove existing assets.",
+    "Worktree was already dirty before inspection: mlx_audio/tts/generate.py and mlx_audio/tts/models/zonos2/model.py are modified."
+  ],
+  "known_risks": [
+    "Empty research directories are not tracked by git and will not ship unless files such as __init__.py are added.",
+    "Adding a console script without package markers would likely fail after packaging.",
+    "Broad *.wav ignores could hide legitimate small test fixtures; prefer scoped artifact directories plus explicit fixture exceptions if needed.",
+    "Unstaged diffs in modified runtime files may affect integration details."
+  ],
+  "integration_notes": [
+    "Add mlx_audio/research/__init__.py and mlx_audio/research/zonos2_youth/__init__.py before relying on imports or packaging.",
+    "Follow stt/eval for research runner shape: schema.py, cli.py, runner.py, JSONL predictions, summary.json, summary.txt, output_dir creation, skip-existing behavior if long-running.",
+    "Use argparse rather than click/typer; no new CLI dependency is needed.",
+    "Tests should avoid model downloads and heavyweight MLX generation; use tiny dataclasses, tmp_path files, fake models, and mocked generation paths.",
+    "Consider scoped .gitignore additions for outputs, audio-cache, artifacts, checkpoints, and heavyweight model/checkpoint extensions."
+  ]
+}

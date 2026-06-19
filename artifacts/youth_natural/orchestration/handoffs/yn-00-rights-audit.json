@@ -1,0 +1,76 @@
+{
+  "task_id": "yn-00-rights-audit",
+  "status": "completed",
+  "original_status": "completed_read_only",
+  "branch": null,
+  "commit": null,
+  "files_changed": [],
+  "artifacts_created": [],
+  "commands_run": [
+    "git -C /Users/elishipley rev-parse --is-inside-work-tree --show-toplevel --abbrev-ref HEAD HEAD",
+    "curl official Common Voice, Mozilla legal-docs, MDC, GitHub API, and LDC pages/PDFs",
+    "rg over fetched official text for license/terms evidence"
+  ],
+  "tests_run": [],
+  "tests_not_run": [
+    "No code tests: rights audit only",
+    "No data validation/training: explicit non-goal"
+  ],
+  "data_accessed": [
+    {
+      "url": "https://datacollective.mozillafoundation.org/ -> https://mozilladatacollective.com/",
+      "checked": "2026-06-19",
+      "type": "official public terms/catalog pages"
+    },
+    {
+      "url": "https://commonvoice.mozilla.org/en/terms plus https://raw.githubusercontent.com/mozilla/legal-docs/prod/en/common_voice_terms.md",
+      "checked": "2026-06-19",
+      "type": "official public legal terms"
+    },
+    {
+      "url": "https://catalog.ldc.upenn.edu/LDC2021S05 and license PDF",
+      "checked": "2026-06-19",
+      "type": "official public LDC catalog/license"
+    },
+    {
+      "url": "https://catalog.ldc.upenn.edu/LDC2007S18 and license PDF",
+      "checked": "2026-06-19",
+      "type": "official public LDC catalog/license"
+    },
+    {
+      "url": "https://catalog.ldc.upenn.edu/LDC97S63 and license PDFs",
+      "checked": "2026-06-19",
+      "type": "official public LDC catalog/license"
+    },
+    {
+      "url": "https://github.com/facebookresearch/expresso",
+      "checked": "2026-06-19",
+      "type": "official public GitHub URL, returned 404 via API"
+    },
+    {
+      "url": "https://speechbot.github.io/expresso/",
+      "checked": "2026-06-19",
+      "type": "official Expresso project page used because requested GitHub URL was unavailable"
+    }
+  ],
+  "claims": [
+    "permissive_release: allowed only for dataset-level CC0/permissive sources and consent-cleared private recordings, with exact dataset URL/version, license string, accepted terms, and MDC/Common Voice no-reidentification/no-mirroring compliance notes.",
+    "research_noncommercial: allowed for private/internal research only when terms are accepted; not for public/commercial YouthNaturalLoRA release. Expresso is CC BY-NC 4.0; MyST and CSLU are non-commercial/research bounded.",
+    "separately_licensed: blocked until executed license grants the exact training/release use. MyST, CSLU, and CMU Kids require signed/provider agreements and possibly commercial addenda.",
+    "user_consent_private: allowed only with documented speaker consent and guardian consent for minors covering voice/likeness/model-training grant, commercial/release/downstream rights, retention, deletion, revocation, privacy, and biometric terms.",
+    "blocked_or_unknown: do not use unlicensed or missing-license datasets, private audio without consent, NC/research-only data for public/commercial release, unreviewed MDC datasets, or the exact facebookresearch/expresso GitHub URL until resolved."
+  ],
+  "known_risks": [
+    "This is not a final legal decision.",
+    "CC0 lowers copyright friction but does not eliminate privacy, publicity, biometric, or anti-reidentification obligations.",
+    "MDC terms are platform terms in addition to dataset licenses.",
+    "Children's speech datasets carry elevated consent/privacy risk even when licensed.",
+    "Training on NC/research-only data may contaminate releasable model weights."
+  ],
+  "integration_notes": [
+    "For YouthNaturalLoRA release builds, keep a manifest that excludes Expresso and LDC unless legal signs off on an exact license grant.",
+    "Tag each source row with lane, license URL, checked date, allowed_use, prohibited_use, and evidence_path.",
+    "Prefer Common Voice CC0/MDC verified datasets plus explicit private-consent recordings for releasable LoRA work.",
+    "Keep restricted research experiments physically and logically separate from release checkpoints."
+  ]
+}
