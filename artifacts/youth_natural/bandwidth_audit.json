@@ -1,0 +1,6 @@
+{
+  "format_version": 1,
+  "status": "synthetic_policy_only",
+  "tiers": ["unknown", "narrowband_low", "narrowband_16k", "wideband_mid", "fullband"],
+  "not_run_reason": "No local waveform snapshot was supplied for a measured bandwidth audit."
+}

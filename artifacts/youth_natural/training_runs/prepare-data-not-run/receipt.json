@@ -1,0 +1,22 @@
+{
+  "command": "prepare-data",
+  "config": {
+    "allowed_sources": [
+      "Mozilla Common Voice Scripted Speech English v26.0",
+      "Mozilla Common Voice Spontaneous Speech English v4.0",
+      "user_consent_private"
+    ],
+    "blocked_without_license": [
+      "MyST LDC2021S05",
+      "CSLU Kids Speech LDC2007S18",
+      "CMU Kids Corpus LDC97S63",
+      "Expresso for release-lane adapters"
+    ],
+    "default_lane": "permissive_release",
+    "format_version": 1,
+    "not_run_reason": "No local rights-checked dataset archive was supplied for this branch run.",
+    "run_dir": "artifacts/youth_natural/training_runs/prepare-data-not-run"
+  },
+  "reason": "No local rights-checked dataset archive was supplied for this branch run.",
+  "status": "not_run"
+}

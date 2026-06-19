@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "required": [
+    "generation_id",
+    "prompt_hash",
+    "provided_age_band",
+    "reference_hashes",
+    "rights_lane",
+    "base_hash",
+    "adapter_strength",
+    "sampling",
+    "seed",
+    "audio_hash",
+    "local_audio_path",
+    "checkpoint_stage",
+    "future_preference_eligible"
+  ],
+  "type": "object"
+}

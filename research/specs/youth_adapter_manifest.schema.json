@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "adapter_name": {
+      "const": "YouthNaturalLoRA"
+    }
+  },
+  "required": [
+    "adapter_name",
+    "format_version",
+    "base_checkpoint_hash",
+    "rank",
+    "alpha",
+    "target_modules",
+    "lineage"
+  ],
+  "type": "object"
+}

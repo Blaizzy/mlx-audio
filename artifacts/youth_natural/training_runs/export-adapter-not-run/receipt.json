@@ -1,0 +1,8 @@
+{
+  "command": "export-adapter",
+  "config": {
+    "checkpoint": "artifacts/youth_natural/training_runs/synthetic-overfit"
+  },
+  "reason": "No real checkpoint was supplied for export in this run.",
+  "status": "not_run"
+}

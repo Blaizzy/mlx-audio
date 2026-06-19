@@ -42,6 +42,27 @@ test.ipynb
 output/
 *.safetensors
 
+# YouthNaturalLoRA local artifacts and private data boundaries
+outputs/
+research_outputs/
+audio-cache/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+artifacts/youth_natural/raw_data/
+artifacts/youth_natural/audio-cache/
+artifacts/youth_natural/checkpoints/
+artifacts/youth_natural/training_runs/**/audio/
+artifacts/youth_natural/training_runs/**/*.wav
+artifacts/youth_natural/training_runs/**/*.flac
+artifacts/youth_natural/training_runs/**/*.mp3
+artifacts/youth_natural/training_runs/**/*.m4a
+artifacts/youth_natural/training_runs/**/*.npz
+artifacts/youth_natural/training_runs/**/*.npy
+
 # uv
 .build
 claude.md

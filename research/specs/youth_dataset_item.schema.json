@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "age_band": {
+      "enum": [
+        "adult",
+        "child",
+        "teen",
+        "unknown"
+      ]
+    },
+    "rights_lane": {
+      "enum": [
+        "blocked_or_unknown",
+        "permissive_release",
+        "research_noncommercial",
+        "separately_licensed",
+        "user_consent_private"
+      ]
+    }
+  },
+  "required": [
+    "dataset",
+    "release",
+    "rights_lane",
+    "terms_hash",
+    "speaker_id",
+    "session_id",
+    "recording_id",
+    "age_band",
+    "language",
+    "original_transcript",
+    "normalized_transcript",
+    "source_audio_hash",
+    "generated_split"
+  ],
+  "type": "object"
+}

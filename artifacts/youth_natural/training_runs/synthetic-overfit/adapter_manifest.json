@@ -1,0 +1,38 @@
+{
+  "adapter_name": "YouthNaturalLoRA",
+  "alpha": 16.0,
+  "base_checkpoint_hash": "synthetic_fixture",
+  "created_at": "2026-06-19",
+  "dtype": "float32",
+  "format_version": 1,
+  "lineage": {
+    "dataset_snapshots": [
+      "synthetic_fixture"
+    ],
+    "stage": "tiny_overfit"
+  },
+  "rank": 8,
+  "scaling": "alpha / rank",
+  "strength_behavior": "strength 0.0 produces exact zero adapter contribution",
+  "target_modules": [
+    {
+      "kind": "lora",
+      "name": "layers.*.attention.wq",
+      "rank": 8
+    },
+    {
+      "kind": "value_slice_lora",
+      "name": "layers.*.attention.wkv.value",
+      "rank": 8,
+      "value_slice": [
+        0,
+        "kv_dim"
+      ]
+    },
+    {
+      "kind": "lora",
+      "name": "layers.*.attention.wo",
+      "rank": 8
+    }
+  ]
+}

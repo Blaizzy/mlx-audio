@@ -1,0 +1,27 @@
+{
+  "command": "evaluate",
+  "config": {
+    "format_version": 1,
+    "metrics": [
+      "wer",
+      "cer",
+      "speaker_similarity",
+      "f0_distribution",
+      "energy_dynamics",
+      "pause_distribution",
+      "speaking_rate",
+      "effective_bandwidth",
+      "codebook_entropy",
+      "moe_occupancy",
+      "peak_memory"
+    ],
+    "promotion": {
+      "automatic": false,
+      "requires_independent_review": true
+    },
+    "run_dir": "artifacts/youth_natural/training_runs/evaluate-not-run",
+    "sealed_generation_bank_required": true
+  },
+  "reason": "Evaluation needs immutable generation manifests from Studio and adapter checkpoints; none were supplied in this synthetic-only run.",
+  "status": "not_run"
+}

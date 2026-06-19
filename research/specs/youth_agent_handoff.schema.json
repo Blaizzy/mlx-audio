@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "artifacts_created": {
+      "type": "array"
+    },
+    "files_changed": {
+      "type": "array"
+    },
+    "status": {
+      "enum": [
+        "blocked",
+        "completed",
+        "failed",
+        "partial"
+      ]
+    }
+  },
+  "required": [
+    "task_id",
+    "status",
+    "branch",
+    "commit",
+    "files_changed",
+    "artifacts_created",
+    "commands_run",
+    "tests_run",
+    "tests_not_run",
+    "data_accessed",
+    "claims",
+    "known_risks",
+    "integration_notes"
+  ],
+  "type": "object"
+}

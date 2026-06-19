@@ -1,0 +1,97 @@
+{
+  "final_legal_decision": "not_provided",
+  "format_version": 1,
+  "generated_at": "2026-06-19",
+  "records": [
+    {
+      "acquisition_date": "not_acquired",
+      "checked_date": "2026-06-19",
+      "commercial_use_status": "dataset license is permissive; platform/privacy terms still apply",
+      "consent_notes": "Use provided self-declared age metadata only; do not infer age.",
+      "dataset_terms_url": "https://mozilladatacollective.com/datasets/cmqim2hn800ssnr07gvmpcnwu",
+      "decision": "allowed_with_constraints",
+      "evidence_urls": [
+        "https://mozilladatacollective.com/datasets/cmqim2hn800ssnr07gvmpcnwu",
+        "https://github.com/common-voice/cv-dataset/"
+      ],
+      "exact_release": "v26.0 / cv-corpus-26.0-2026-06-12",
+      "forbidden_uses": [
+        "speaker re-identification",
+        "dataset re-hosting or re-sharing outside allowed platform terms"
+      ],
+      "license": "CC0-1.0",
+      "model_release_status": "allowed only for release-lane snapshots that exclude restricted data",
+      "redistribution_rule": "Do not re-host or re-share the dataset in this project.",
+      "rights_lane": "permissive_release",
+      "source": "Mozilla Common Voice Scripted Speech English",
+      "terms_hash": "d37feca9a403cb23fd59405bc73e13672337f5e27bc10bf381912dc34b21c3d1"
+    },
+    {
+      "acquisition_date": "not_acquired",
+      "checked_date": "2026-06-19",
+      "commercial_use_status": "dataset license is permissive; platform/privacy terms still apply",
+      "consent_notes": "Do not assume speakers are young without official metadata.",
+      "dataset_terms_url": "https://mozilladatacollective.com/organization/cmfh0j9o10006ns07jq45h7xk",
+      "decision": "allowed_with_constraints",
+      "evidence_urls": [
+        "https://mozilladatacollective.com/organization/cmfh0j9o10006ns07jq45h7xk",
+        "https://github.com/common-voice/cv-dataset/"
+      ],
+      "exact_release": "v4.0 / sps-corpus-4.0-2026-06-12",
+      "forbidden_uses": [
+        "speaker re-identification",
+        "dataset re-hosting or re-sharing outside allowed platform terms"
+      ],
+      "license": "CC0-1.0",
+      "model_release_status": "allowed only as conversational-style source, not youth-labeled unless metadata says so",
+      "redistribution_rule": "Do not re-host or re-share the dataset in this project.",
+      "rights_lane": "permissive_release",
+      "source": "Mozilla Common Voice Spontaneous Speech English",
+      "terms_hash": "014137ad3990a537be3f6804dc01814606c4591307c1c82219e3c5b9629332d5"
+    },
+    {
+      "acquisition_date": "not_acquired",
+      "checked_date": "2026-06-19",
+      "commercial_use_status": "blocked unless separate Boulder Learning commercial license exists",
+      "consent_notes": "Children's speech; keep local and private.",
+      "dataset_terms_url": "https://catalog.ldc.upenn.edu/LDC2021S05",
+      "decision": "blocked_for_release_allowed_only_after_license_acceptance",
+      "evidence_urls": [
+        "https://catalog.ldc.upenn.edu/LDC2021S05"
+      ],
+      "exact_release": "LDC2021S05",
+      "forbidden_uses": [
+        "commercial use without separate license",
+        "unlicensed redistribution"
+      ],
+      "license": "LDC agreement, non-commercial/research by default",
+      "model_release_status": "research-only until counsel/user supplies executed license",
+      "redistribution_rule": "No redistribution from this project.",
+      "rights_lane": "research_noncommercial",
+      "source": "MyST Children's Conversational Speech",
+      "terms_hash": "9e469da038b79cb75c8bd85a8b1c5aeaf1821ebe774ab113efc6135a4d22cff0"
+    },
+    {
+      "acquisition_date": "not_acquired",
+      "checked_date": "2026-06-19",
+      "commercial_use_status": "noncommercial only",
+      "consent_notes": "Small speaker count; cap sampling if used in private research.",
+      "dataset_terms_url": "https://speechbot.github.io/expresso/",
+      "decision": "blocked_for_release_research_only",
+      "evidence_urls": [
+        "https://speechbot.github.io/expresso/"
+      ],
+      "exact_release": "project page current on 2026-06-19",
+      "forbidden_uses": [
+        "commercial use",
+        "release-lane contamination"
+      ],
+      "license": "CC BY-NC 4.0 per rights audit",
+      "model_release_status": "research-only, not release-lane",
+      "redistribution_rule": "Follow project license; do not include raw audio here.",
+      "rights_lane": "research_noncommercial",
+      "source": "Expresso conversational speech",
+      "terms_hash": "c6b79c0858ba6f8405cb601537fb01a1188e1aeba2b047d6f8d0354812e5cf24"
+    }
+  ]
+}

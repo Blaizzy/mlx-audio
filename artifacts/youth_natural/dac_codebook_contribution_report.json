@@ -1,0 +1,5 @@
+{
+  "format_version": 1,
+  "status": "not_run",
+  "not_run_reason": "Pinned DAC contribution experiment requires representative legal audio and a serialized model/DAC job."
+}

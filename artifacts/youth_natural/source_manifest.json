@@ -1,0 +1,30 @@
+{
+  "format_version": 1,
+  "generated_at": "2026-06-19",
+  "models": {
+    "base": "Zyphra/ZONOS2",
+    "dac": "mlx-community/descript-audio-codec-44khz",
+    "mlx_checkpoint": "mlx-community/Zyphra-ZONOS2",
+    "speaker_encoder": "marksverdhei/Qwen3-Voice-Embedding-12Hz-1.7B"
+  },
+  "python_packages": {
+    "mlx": "0.31.2",
+    "mlx-audio": "0.4.4",
+    "mlx-lm": "0.31.3",
+    "numpy": "2.4.6"
+  },
+  "repository": {
+    "branch": "feature/zonos2-youth-natural-sft",
+    "commit": "ad81a2e7f1754382cac658bbe4628ecf5904a74e",
+    "path": "/Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
+    "status_short": "M .gitignore\n M mlx_audio/tts/generate.py\n M mlx_audio/tts/models/zonos2/model.py\n M pyproject.toml\n?? artifacts/youth_natural/bandwidth_audit.json\n?? artifacts/youth_natural/baseline_report.md\n?? artifacts/youth_natural/dac_codebook_contribution_report.json\n?? artifacts/youth_natural/dataset_rights_report.json\n?? artifacts/youth_natural/dataset_snapshot_manifest.json\n?? artifacts/youth_natural/environment.json\n?? artifacts/youth_natural/evaluation_report.md\n?? artifacts/youth_natural/merge_parity_report.json\n?? artifacts/youth_natural/model_card.md\n?? artifacts/youth_natural/tiny_overfit_report.md\n?? artifacts/youth_natural/training_runs/\n?? mlx_audio/research/\n?? research/configs/\n?? research/specs/\n?? research/youth_natural/BANDWIDTH_POLICY.md\n?? research/youth_natural/DATASET_POLICY.md\n?? research/youth_natural/EVALUATION_PLAN.md\n?? research/youth_natural/FUTURE_RL_HANDOFF.md\n?? research/youth_natural/TRAINING_PLAN.md"
+  },
+  "zonos2_source_paths": [
+    "mlx_audio/tts/models/zonos2/config.py",
+    "mlx_audio/tts/models/zonos2/prompt.py",
+    "mlx_audio/tts/models/zonos2/generation.py",
+    "mlx_audio/tts/models/zonos2/model.py",
+    "mlx_audio/tts/models/zonos2/speaker_encoder.py",
+    "mlx_audio/tts/models/zonos2/convert.py"
+  ]
+}

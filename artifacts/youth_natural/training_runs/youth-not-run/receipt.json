@@ -1,0 +1,29 @@
+{
+  "command": "train:youth",
+  "config": {
+    "adapter_name": "YouthNaturalLoRA",
+    "alpha": 16,
+    "base_policy": "frozen",
+    "format_version": 1,
+    "rank": 8,
+    "real_training_gate": {
+      "requires_dataset_snapshot": true,
+      "requires_disk_headroom_gib": 40,
+      "requires_memory_probe": true,
+      "serialize_metal_jobs": true
+    },
+    "run_dir": "artifacts/youth_natural/training_runs/synthetic-overfit",
+    "stage_order": [
+      "synthetic_overfit",
+      "youth",
+      "natural"
+    ],
+    "target_modules": [
+      "attention.wq",
+      "attention.wkv.value",
+      "attention.wo"
+    ]
+  },
+  "reason": "Real MLX training was not run because this command requires an explicit rights-checked dataset snapshot, sufficient disk, and a selected model tier.",
+  "status": "not_run"
+}

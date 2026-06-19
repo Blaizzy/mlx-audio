@@ -1,0 +1,33 @@
+{
+  "claims": [
+    "No real model weights loaded.",
+    "No private or youth audio accessed.",
+    "Manifest/export path exercised with synthetic metadata."
+  ],
+  "config": {
+    "adapter_name": "YouthNaturalLoRA",
+    "alpha": 16,
+    "base_policy": "frozen",
+    "format_version": 1,
+    "rank": 8,
+    "real_training_gate": {
+      "requires_dataset_snapshot": true,
+      "requires_disk_headroom_gib": 40,
+      "requires_memory_probe": true,
+      "serialize_metal_jobs": true
+    },
+    "run_dir": "artifacts/youth_natural/training_runs/synthetic-overfit",
+    "stage_order": [
+      "synthetic_overfit",
+      "youth",
+      "natural"
+    ],
+    "target_modules": [
+      "attention.wq",
+      "attention.wkv.value",
+      "attention.wo"
+    ]
+  },
+  "mode": "synthetic_fixture",
+  "status": "completed"
+}

@@ -92,6 +92,7 @@ docs = [
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
 "mlx_audio.sts.generate" = "mlx_audio.sts.generate:main"
+"mlx_audio.research.zonos2_youth" = "mlx_audio.research.zonos2_youth.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Blaizzy/mlx-audio"

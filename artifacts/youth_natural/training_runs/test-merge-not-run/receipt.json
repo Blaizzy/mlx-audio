@@ -1,0 +1,8 @@
+{
+  "command": "test-merge",
+  "config": {
+    "adapter": "artifacts/youth_natural/training_runs/synthetic-overfit/adapter_manifest.json"
+  },
+  "reason": "No real adapter was supplied for floating-point merge parity in this run.",
+  "status": "not_run"
+}
