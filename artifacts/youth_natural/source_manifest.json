@@ -15,9 +15,9 @@
   },
   "repository": {
     "branch": "feature/zonos2-youth-natural-sft",
-    "commit": "ad81a2e7f1754382cac658bbe4628ecf5904a74e",
+    "commit": "f30c24ce0e47b728fba30a610777950cf54c7020",
     "path": "/Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
-    "status_short": "M .gitignore\n M mlx_audio/tts/generate.py\n M mlx_audio/tts/models/zonos2/model.py\n M pyproject.toml\n?? artifacts/youth_natural/bandwidth_audit.json\n?? artifacts/youth_natural/baseline_report.md\n?? artifacts/youth_natural/dac_codebook_contribution_report.json\n?? artifacts/youth_natural/dataset_rights_report.json\n?? artifacts/youth_natural/dataset_snapshot_manifest.json\n?? artifacts/youth_natural/environment.json\n?? artifacts/youth_natural/evaluation_report.md\n?? artifacts/youth_natural/merge_parity_report.json\n?? artifacts/youth_natural/model_card.md\n?? artifacts/youth_natural/tiny_overfit_report.md\n?? artifacts/youth_natural/training_runs/\n?? mlx_audio/research/\n?? research/configs/\n?? research/specs/\n?? research/youth_natural/BANDWIDTH_POLICY.md\n?? research/youth_natural/DATASET_POLICY.md\n?? research/youth_natural/EVALUATION_PLAN.md\n?? research/youth_natural/FUTURE_RL_HANDOFF.md\n?? research/youth_natural/TRAINING_PLAN.md"
+    "status_short": "M artifacts/youth_natural/environment.json\n M mlx_audio/tts/generate.py\n M mlx_audio/tts/models/zonos2/model.py"
   },
   "zonos2_source_paths": [
     "mlx_audio/tts/models/zonos2/config.py",
