@@ -10,6 +10,8 @@ from mlx_audio.research.zonos2_youth.adapter import (
     LoRASpec,
     LoRAWeights,
     assert_value_slice_only,
+    load_lora_weights,
+    save_lora_weights,
 )
 from mlx_audio.research.zonos2_youth.bandwidth import (
     bandwidth_tier,
@@ -56,6 +58,21 @@ class TestYouthNaturalAdapter(unittest.TestCase):
             lineage={"dataset_snapshots": ["synthetic"]},
         )
         validate_adapter_manifest(manifest.to_dict())
+
+    def test_lora_safetensors_save_reload(self):
+        import tempfile
+        from pathlib import Path
+
+        spec = LoRASpec(name="attention.wo", base_weight_shape=(3, 4), rank=2)
+        lora = LoRAWeights.exact_zero(spec)
+        lora.a = mx.ones_like(lora.a)
+        lora.b = mx.ones_like(lora.b)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "adapter.safetensors"
+            save_lora_weights(path, [lora])
+            loaded = load_lora_weights(path, [spec])[0]
+            self.assertTrue(bool(mx.allclose(loaded.a, lora.a)))
+            self.assertTrue(bool(mx.allclose(loaded.b, lora.b)))
 
 
 class TestYouthNaturalBandwidth(unittest.TestCase):
@@ -124,4 +141,3 @@ class TestYouthNaturalEvaluation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

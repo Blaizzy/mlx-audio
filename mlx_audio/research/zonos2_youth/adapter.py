@@ -121,3 +121,32 @@ def write_adapter_manifest(path: str | Path, manifest: AdapterManifest) -> None:
         encoding="utf-8",
     )
 
+
+def save_lora_weights(path: str | Path, weights: list[LoRAWeights]) -> None:
+    """Save adapter-only tensors in a portable Safetensors file."""
+
+    tensors: dict[str, mx.array] = {}
+    metadata: dict[str, str] = {}
+    for item in weights:
+        safe_name = item.spec.name.replace("/", ".")
+        tensors[f"{safe_name}.lora_a"] = item.a
+        tensors[f"{safe_name}.lora_b"] = item.b
+        metadata[f"{safe_name}.spec"] = json.dumps(asdict(item.spec), sort_keys=True)
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mx.save_safetensors(str(path), tensors, metadata=metadata)
+
+
+def load_lora_weights(path: str | Path, specs: list[LoRASpec]) -> list[LoRAWeights]:
+    tensors = mx.load(str(path))
+    loaded: list[LoRAWeights] = []
+    for spec in specs:
+        safe_name = spec.name.replace("/", ".")
+        loaded.append(
+            LoRAWeights(
+                spec=spec,
+                a=tensors[f"{safe_name}.lora_a"],
+                b=tensors[f"{safe_name}.lora_b"],
+            )
+        )
+    return loaded
