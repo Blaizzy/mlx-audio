@@ -1,6 +1,6 @@
 {
-  "git_commit": "f30c24ce0e47b728fba30a610777950cf54c7020",
+  "git_commit": "8b554858e9ea57e68cded2eb57de9a41119bd2b7",
   "platform": "macOS-26.3.1-arm64-arm-64bit",
   "python": "3.11.15",
-  "repo_root": "/Users/elishipley/VoiceForge/external/mlx-audio-zonos2"
+  "repo_root": "<repo>"
 }

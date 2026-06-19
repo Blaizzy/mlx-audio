@@ -15,9 +15,10 @@
   },
   "repository": {
     "branch": "feature/zonos2-youth-natural-sft",
-    "commit": "f30c24ce0e47b728fba30a610777950cf54c7020",
-    "path": "/Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
-    "status_short": "M artifacts/youth_natural/environment.json\n M mlx_audio/tts/generate.py\n M mlx_audio/tts/models/zonos2/model.py"
+    "commit": "8b554858e9ea57e68cded2eb57de9a41119bd2b7",
+    "path": "<repo>",
+    "status_note": "Captured before audit artifacts were written.",
+    "status_short": "M mlx_audio/tts/generate.py\n M mlx_audio/tts/models/zonos2/model.py"
   },
   "zonos2_source_paths": [
     "mlx_audio/tts/models/zonos2/config.py",
