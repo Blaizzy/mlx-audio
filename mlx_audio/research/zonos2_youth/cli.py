@@ -40,6 +40,7 @@ def _load_config(path: str | None) -> dict[str, Any]:
 
 def cmd_audit(args: argparse.Namespace) -> int:
     root = _root_from_args(args)
+    status_before_writes = _git(root, "status", "--short")
     env = {
         "platform": platform.platform(),
         "python": sys.version.split()[0],
@@ -65,7 +66,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
             "path": "<repo>",
             "commit": env.get("git_commit", "unknown"),
             "branch": _git(root, "rev-parse", "--abbrev-ref", "HEAD"),
-            "status_short": _git(root, "status", "--short"),
+            "status_short": status_before_writes,
+            "status_note": "Captured before audit artifacts were written.",
         },
         "models": {
             "base": "Zyphra/ZONOS2",
