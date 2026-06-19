@@ -19,6 +19,15 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def _root_from_args(args: argparse.Namespace) -> Path:
+    return Path(args.root or _repo_root()).resolve()
+
+
+def _resolve_output_path(args: argparse.Namespace, path: str | Path) -> Path:
+    value = Path(path)
+    return value if value.is_absolute() else _root_from_args(args) / value
+
+
 def _load_config(path: str | None) -> dict[str, Any]:
     if not path:
         return {}
@@ -30,11 +39,11 @@ def _load_config(path: str | None) -> dict[str, Any]:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    root = Path(args.root or _repo_root())
+    root = _root_from_args(args)
     env = {
         "platform": platform.platform(),
         "python": sys.version.split()[0],
-        "repo_root": str(root),
+        "repo_root": "<repo>",
     }
     try:
         env["git_commit"] = subprocess.check_output(
@@ -53,7 +62,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         "format_version": 1,
         "generated_at": "2026-06-19",
         "repository": {
-            "path": str(root),
+            "path": "<repo>",
             "commit": env.get("git_commit", "unknown"),
             "branch": _git(root, "rev-parse", "--abbrev-ref", "HEAD"),
             "status_short": _git(root, "status", "--short"),
@@ -114,14 +123,14 @@ def _package_version(name: str) -> str:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    root = Path(args.root or _repo_root())
+    root = _root_from_args(args)
     result = validate_orchestration(root)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0
 
 
 def cmd_emit_schemas(args: argparse.Namespace) -> int:
-    root = Path(args.root or _repo_root())
+    root = _root_from_args(args)
     out_dir = root / "research" / "specs"
     out_dir.mkdir(parents=True, exist_ok=True)
     mapping = {
@@ -146,7 +155,13 @@ def cmd_prepare_data(args: argparse.Namespace) -> int:
         "No dataset archive was supplied; synthetic fixtures are used by tests.",
     )
     out = write_not_run_receipt(
-        Path(config.get("run_dir", "artifacts/youth_natural/training_runs/prepare-data-not-run")),
+        _resolve_output_path(
+            args,
+            config.get(
+                "run_dir",
+                "artifacts/youth_natural/training_runs/prepare-data-not-run",
+            ),
+        ),
         command="prepare-data",
         reason=reason,
         config=config,
@@ -157,7 +172,10 @@ def cmd_prepare_data(args: argparse.Namespace) -> int:
 
 def cmd_overfit(args: argparse.Namespace) -> int:
     config = _load_config(args.config)
-    run_dir = Path(config.get("run_dir", "artifacts/youth_natural/training_runs/synthetic-overfit"))
+    run_dir = _resolve_output_path(
+        args,
+        config.get("run_dir", "artifacts/youth_natural/training_runs/synthetic-overfit"),
+    )
     report = synthetic_overfit(run_dir, config=config)
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0
@@ -170,11 +188,12 @@ def cmd_train(args: argparse.Namespace) -> int:
         "rights-checked dataset snapshot, sufficient disk, and a selected model tier."
     )
     stage_run_dirs = config.get("stage_run_dirs", {})
-    run_dir = Path(
-        stage_run_dirs.get(
-            args.stage,
-            f"artifacts/youth_natural/training_runs/{args.stage}-not-run",
-        )
+    configured_run_dir = config.get("run_dir")
+    run_dir = _resolve_output_path(
+        args,
+        stage_run_dirs.get(args.stage)
+        or configured_run_dir
+        or f"artifacts/youth_natural/training_runs/{args.stage}-not-run",
     )
     out = write_not_run_receipt(run_dir, command=f"train:{args.stage}", reason=reason, config=config)
     print(json.dumps(out, indent=2, sort_keys=True))
@@ -188,7 +207,10 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         "none were supplied in this synthetic-only run."
     )
     out = write_not_run_receipt(
-        Path(config.get("run_dir", "artifacts/youth_natural/training_runs/evaluate-not-run")),
+        _resolve_output_path(
+            args,
+            config.get("run_dir", "artifacts/youth_natural/training_runs/evaluate-not-run"),
+        ),
         command="evaluate",
         reason=reason,
         config=config,
@@ -200,7 +222,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def cmd_export_adapter(args: argparse.Namespace) -> int:
     config = {"checkpoint": args.checkpoint}
     out = write_not_run_receipt(
-        Path("artifacts/youth_natural/training_runs/export-adapter-not-run"),
+        _resolve_output_path(args, "artifacts/youth_natural/training_runs/export-adapter-not-run"),
         command="export-adapter",
         reason="No real checkpoint was supplied for export in this run.",
         config=config,
@@ -212,7 +234,7 @@ def cmd_export_adapter(args: argparse.Namespace) -> int:
 def cmd_test_merge(args: argparse.Namespace) -> int:
     config = {"adapter": args.adapter}
     out = write_not_run_receipt(
-        Path("artifacts/youth_natural/training_runs/test-merge-not-run"),
+        _resolve_output_path(args, "artifacts/youth_natural/training_runs/test-merge-not-run"),
         command="test-merge",
         reason="No real adapter was supplied for floating-point merge parity in this run.",
         config=config,

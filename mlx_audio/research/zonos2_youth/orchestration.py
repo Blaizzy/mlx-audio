@@ -56,4 +56,3 @@ def assert_no_private_artifact_paths(paths: list[str]) -> None:
         lowered = path.lower()
         if any(token in lowered for token in forbidden):
             raise ValidationError(f"private-looking path is not allowed in Git: {path}")
-

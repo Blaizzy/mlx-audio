@@ -117,4 +117,3 @@ def masked_cross_entropy(
         "per_codebook_loss": per_codebook_loss,
         "per_codebook_accuracy": per_codebook_accuracy,
     }
-

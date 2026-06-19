@@ -54,4 +54,3 @@ def codebook_policy_for_tier(tier: str) -> dict[str, object]:
         "kl_weight": [0.0] * 9,
         "notes": "Full-band or unknown-safe default.",
     }
-

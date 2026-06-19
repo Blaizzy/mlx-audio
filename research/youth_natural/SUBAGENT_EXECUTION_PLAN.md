@@ -2,7 +2,7 @@
 
 Branch: `feature/zonos2-youth-natural-sft`
 
-Lead workspace: `/Users/elishipley/VoiceForge/external/mlx-audio-zonos2`
+Lead workspace: `<repo>`
 
 The lead session owns orchestration, contracts, integration, final rights decisions,
 final promotion decisions, and final evidence. Write-capable subtasks use

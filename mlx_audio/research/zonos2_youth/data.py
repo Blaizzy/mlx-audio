@@ -252,4 +252,3 @@ def attach_reference_pairs(items: list[DatasetItem]) -> list[DatasetItem]:
             )
         )
     return paired
-

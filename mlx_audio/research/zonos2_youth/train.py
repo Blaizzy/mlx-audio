@@ -46,7 +46,11 @@ def synthetic_overfit(run_dir: str | Path, *, config: dict[str, Any] | None = No
             },
             {"name": "layers.*.attention.wo", "kind": "lora", "rank": 8},
         ],
-        lineage={"dataset_snapshots": ["synthetic_fixture"], "stage": "tiny_overfit"},
+        lineage={
+            "dataset_snapshots": ["synthetic_fixture"],
+            "rights_lanes": ["permissive_release"],
+            "stage": "tiny_overfit",
+        },
     )
     write_adapter_manifest(run_dir / "adapter_manifest.json", manifest)
     report = {
@@ -64,4 +68,3 @@ def synthetic_overfit(run_dir: str | Path, *, config: dict[str, Any] | None = No
         encoding="utf-8",
     )
     return report
-

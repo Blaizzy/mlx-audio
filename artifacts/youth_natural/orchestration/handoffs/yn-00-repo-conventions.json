@@ -26,7 +26,7 @@
     "No pytest/unittest suites run by request: read_only_analysis and no heavyweight tests."
   ],
   "data_accessed": [
-    "Repo source and metadata only under /Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
+    "Repo source and metadata only under <repo>",
     "pyproject.toml",
     ".gitignore",
     "mlx_audio/tts/generate.py",

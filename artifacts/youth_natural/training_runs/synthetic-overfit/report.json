@@ -22,6 +22,10 @@
       "youth",
       "natural"
     ],
+    "stage_run_dirs": {
+      "natural": "artifacts/youth_natural/training_runs/natural-not-run",
+      "youth": "artifacts/youth_natural/training_runs/youth-not-run"
+    },
     "target_modules": [
       "attention.wq",
       "attention.wkv.value",

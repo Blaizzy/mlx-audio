@@ -1,0 +1,37 @@
+{
+  "task_id": "yn-02-correctness-repro-review",
+  "status": "completed",
+  "branch": null,
+  "commit": null,
+  "files_changed": [],
+  "artifacts_created": [
+    "artifacts/youth_natural/orchestration/handoffs/yn-02-correctness-repro-review.json"
+  ],
+  "commands_run": [
+    "Read YouthNaturalLoRA scaffold, tests, CLI, manifests, and orchestration artifacts",
+    "Inspected adapter LoRA shape handling and CLI run-directory behavior",
+    "Reviewed committed artifact contents for reproducibility drift"
+  ],
+  "tests_run": [],
+  "tests_not_run": [
+    "No code was modified by this read-only reviewer",
+    "No real ZONOS2 model load, training, or dataset preparation"
+  ],
+  "data_accessed": [
+    "Git-tracked source, tests, and synthetic artifacts only"
+  ],
+  "claims": [
+    "Tracked manifests had drifted from the integration branch commit and needed regeneration or explicit not-run status",
+    "Chunked LoRA guards needed to reject non-ZONOS2 combined wkv chunk layouts",
+    "Relative CLI output paths needed to resolve under the selected repository root rather than caller cwd",
+    "Some committed files contained trailing blank lines that made diff checks fail from the branch base"
+  ],
+  "known_risks": [
+    "No full-model deterministic Studio generation was available in this review",
+    "Review was limited to the synthetic scaffold and existing local tests"
+  ],
+  "integration_notes": [
+    "Lead should patch LoRA guards, root-relative CLI output, artifact freshness, and whitespace before accepting the review gate",
+    "Rerun YouthNatural synthetic tests, existing ZONOS2 tests, orchestration validation, path scan, and diff checks after repairs"
+  ]
+}

@@ -3,6 +3,36 @@
   "properties": {
     "adapter_name": {
       "const": "YouthNaturalLoRA"
+    },
+    "lineage": {
+      "properties": {
+        "dataset_snapshots": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "rights_lanes": {
+          "items": {
+            "enum": [
+              "blocked_or_unknown",
+              "permissive_release",
+              "research_noncommercial",
+              "separately_licensed",
+              "user_consent_private"
+            ]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "dataset_snapshots",
+        "rights_lanes"
+      ],
+      "type": "object"
+    },
+    "release_eligible": {
+      "type": "boolean"
     }
   },
   "required": [

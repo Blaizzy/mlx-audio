@@ -51,13 +51,43 @@ class TestYouthNaturalAdapter(unittest.TestCase):
         self.assertFalse(bool(mx.allclose(original[1], merged[1])))
         assert_value_slice_only(original, merged, (0, 3))
 
+    def test_chunked_lora_rejects_non_wkv_chunk_count(self):
+        spec = LoRASpec(
+            name="bad.wkv",
+            base_weight_shape=(3, 3, 4),
+            rank=2,
+            target="chunked_value",
+            value_slice=(0, 3),
+        )
+        with self.assertRaises(ValueError):
+            LoRAWeights.exact_zero(spec)
+
+    def test_lora_rejects_weight_shape_mismatch(self):
+        spec = LoRASpec(name="attention.wq", base_weight_shape=(3, 4), rank=2)
+        lora = LoRAWeights.exact_zero(spec)
+        with self.assertRaises(ValueError):
+            lora.apply_to_weight(mx.zeros((4, 4)))
+
     def test_adapter_manifest_validates(self):
         manifest = AdapterManifest(
             base_checkpoint_hash="abc",
             target_modules=[{"name": "layers.0.attention.wq", "rank": 8}],
-            lineage={"dataset_snapshots": ["synthetic"]},
+            lineage={"dataset_snapshots": ["synthetic"], "rights_lanes": ["permissive_release"]},
         )
         validate_adapter_manifest(manifest.to_dict())
+
+    def test_release_manifest_rejects_restricted_lanes(self):
+        manifest = AdapterManifest(
+            base_checkpoint_hash="abc",
+            target_modules=[{"name": "layers.0.attention.wq", "rank": 8}],
+            lineage={
+                "dataset_snapshots": ["restricted"],
+                "rights_lanes": ["research_noncommercial"],
+            },
+        ).to_dict()
+        manifest["release_eligible"] = True
+        with self.assertRaises(Exception):
+            validate_adapter_manifest(manifest)
 
     def test_lora_safetensors_save_reload(self):
         import tempfile

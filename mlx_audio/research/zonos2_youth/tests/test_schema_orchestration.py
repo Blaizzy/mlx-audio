@@ -33,7 +33,7 @@ class TestYouthNaturalOrchestration(unittest.TestCase):
         }.items():
             path = ROOT / "research" / "specs" / name
             self.assertTrue(path.exists(), path)
-            self.assertEqual(load_json(path)["$schema"], schema_for(kind)["$schema"])
+            self.assertEqual(load_json(path), schema_for(kind))
 
     def test_handoff_schema_validation_accepts_persisted_handoffs(self):
         handoff_dir = ROOT / "artifacts" / "youth_natural" / "orchestration" / "handoffs"
@@ -87,6 +87,28 @@ class TestYouthNaturalOrchestration(unittest.TestCase):
             self.assertNotIn("speaker_embedding", lowered)
             self.assertNotIn("raw_audio", lowered)
 
+    def test_tracked_youth_artifacts_do_not_contain_local_absolute_paths(self):
+        tracked = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "ls-files",
+                "artifacts/youth_natural",
+                "research/youth_natural",
+                "research/configs",
+            ],
+            text=True,
+        ).splitlines()
+        forbidden = ("/Users/", "/var/folders/")
+        for rel in tracked:
+            path = ROOT / rel
+            if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif"}:
+                continue
+            text = path.read_text(encoding="utf-8")
+            for needle in forbidden:
+                self.assertNotIn(needle, text, rel)
+
 
 class TestYouthNaturalManifests(unittest.TestCase):
     def test_synthetic_adapter_manifest_validates(self):
@@ -104,4 +126,3 @@ class TestYouthNaturalManifests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

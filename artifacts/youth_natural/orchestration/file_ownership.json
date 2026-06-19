@@ -38,7 +38,9 @@
     "yn-00-rights-audit",
     "yn-00-hardware-audit",
     "yn-00-repo-conventions",
-    "yn-00-test-gap-audit"
+    "yn-00-test-gap-audit",
+    "yn-02-correctness-repro-review",
+    "yn-02-rights-privacy-review"
   ],
   "private_data_exclusions": [
     "raw audio",

@@ -7,6 +7,10 @@
   "target_modules": ["attention.wq", "attention.wkv.value", "attention.wo"],
   "base_policy": "frozen",
   "stage_order": ["synthetic_overfit", "youth", "natural"],
+  "stage_run_dirs": {
+    "youth": "artifacts/youth_natural/training_runs/youth-not-run",
+    "natural": "artifacts/youth_natural/training_runs/natural-not-run"
+  },
   "real_training_gate": {
     "requires_dataset_snapshot": true,
     "requires_memory_probe": true,

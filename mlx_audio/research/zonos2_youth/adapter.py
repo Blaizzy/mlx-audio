@@ -34,6 +34,8 @@ class LoRAWeights:
         if len(spec.base_weight_shape) == 2:
             out_features, in_features = spec.base_weight_shape
         elif len(spec.base_weight_shape) == 3 and spec.value_slice is not None:
+            if spec.base_weight_shape[0] != 2:
+                raise ValueError("chunked wkv LoRA requires exactly two chunks")
             _, out_per_chunk, in_features = spec.base_weight_shape
             start, end = spec.value_slice
             out_features = int(end) - int(start)
@@ -50,10 +52,17 @@ class LoRAWeights:
         return (self.b @ self.a) * self.spec.scaling
 
     def apply_to_weight(self, weight: mx.array, *, strength: float = 1.0) -> mx.array:
+        if tuple(int(x) for x in weight.shape) != tuple(self.spec.base_weight_shape):
+            raise ValueError(
+                f"weight shape {tuple(weight.shape)} does not match spec "
+                f"{self.spec.base_weight_shape}"
+            )
         delta = self.delta().astype(weight.dtype) * float(strength)
         if len(weight.shape) == 2:
             return weight + delta
         if len(weight.shape) == 3 and self.spec.value_slice is not None:
+            if int(weight.shape[0]) != 2:
+                raise ValueError("chunked wkv LoRA requires exactly two chunks")
             start, end = self.spec.value_slice
             updated = mx.array(weight)
             value = updated[1]

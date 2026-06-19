@@ -70,4 +70,3 @@ def anti_studio_score(studio: dict[str, float], candidate: dict[str, float]) -> 
     }
     score = sum(improvements.values()) / len(improvements) - sum(penalties.values())
     return {"score": score, **improvements, **penalties}
-

@@ -22,6 +22,19 @@ class TestYouthNaturalCliReceipts(unittest.TestCase):
             check=True,
         )
 
+    def run_cli_from(self, cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        env = dict(__import__("os").environ)
+        env["PYTHONPATH"] = str(ROOT)
+        return subprocess.run(
+            [sys.executable, "-m", "mlx_audio.research.zonos2_youth", *args],
+            cwd=cwd,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+
     def test_validate_orchestration_command(self):
         result = self.run_cli("validate-orchestration")
         payload = json.loads(result.stdout)
@@ -53,7 +66,40 @@ class TestYouthNaturalCliReceipts(unittest.TestCase):
             tracked_audio = list(run_dir.glob("*.wav"))
             self.assertEqual(tracked_audio, [])
 
+    def test_train_honors_explicit_temp_run_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / "config.yaml"
+            run_dir = Path(tmp) / "train-youth"
+            config.write_text(json.dumps({"run_dir": str(run_dir)}), encoding="utf-8")
+            result = self.run_cli("train", "--stage", "youth", "--config", str(config))
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "not_run")
+            self.assertTrue((run_dir / "receipt.json").exists())
+            self.assertEqual(payload["config"]["run_dir"], str(run_dir))
+
+    def test_relative_train_run_dir_resolves_under_root_from_outside_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            root = Path(tmp) / "root"
+            root.mkdir()
+            config = Path(tmp) / "config.yaml"
+            config.write_text(json.dumps({"run_dir": "relative-train"}), encoding="utf-8")
+            result = self.run_cli_from(
+                outside,
+                "--root",
+                str(root),
+                "train",
+                "--stage",
+                "youth",
+                "--config",
+                str(config),
+            )
+            payload = json.loads(result.stdout)
+            self.assertEqual(payload["status"], "not_run")
+            self.assertTrue((root / "relative-train" / "receipt.json").exists())
+            self.assertFalse((outside / "relative-train").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
-

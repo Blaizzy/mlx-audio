@@ -9,6 +9,9 @@
     "dataset_snapshots": [
       "synthetic_fixture"
     ],
+    "rights_lanes": [
+      "permissive_release"
+    ],
     "stage": "tiny_overfit"
   },
   "rank": 8,

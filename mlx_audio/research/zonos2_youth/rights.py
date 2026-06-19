@@ -121,6 +121,40 @@ def default_rights_records(checked_date: str = "2026-06-19") -> list[RightsRecor
             decision="blocked_for_release_research_only",
             evidence_urls=["https://speechbot.github.io/expresso/"],
         ),
+        RightsRecord(
+            source="CSLU Kids Speech",
+            exact_release="LDC2007S18",
+            acquisition_date="not_acquired",
+            license="LDC agreement required; non-commercial/research by default",
+            dataset_terms_url="https://catalog.ldc.upenn.edu/LDC2007S18",
+            forbidden_uses=["commercial use without executed license", "unlicensed redistribution"],
+            redistribution_rule="No redistribution from this project.",
+            commercial_use_status="blocked unless executed agreement permits the intended use",
+            model_release_status="separately licensed only; excluded from release-lane defaults",
+            consent_notes="Children's speech; require signed/provider terms and privacy review.",
+            terms_hash=hash_terms_text("CSLU Kids Speech LDC2007S18 agreement required"),
+            rights_lane="separately_licensed",
+            checked_date=checked_date,
+            decision="blocked_until_executed_license",
+            evidence_urls=["https://catalog.ldc.upenn.edu/LDC2007S18"],
+        ),
+        RightsRecord(
+            source="CMU Kids Corpus",
+            exact_release="LDC97S63",
+            acquisition_date="not_acquired",
+            license="LDC individual or organization agreement required",
+            dataset_terms_url="https://catalog.ldc.upenn.edu/LDC97S63",
+            forbidden_uses=["unlicensed redistribution", "release use without exact grant"],
+            redistribution_rule="No redistribution from this project.",
+            commercial_use_status="blocked unless executed agreement permits the intended use",
+            model_release_status="separately licensed only; excluded from release-lane defaults",
+            consent_notes="Children's speech; require signed/provider terms and privacy review.",
+            terms_hash=hash_terms_text("CMU Kids Corpus LDC97S63 agreement required"),
+            rights_lane="separately_licensed",
+            checked_date=checked_date,
+            decision="blocked_until_executed_license",
+            evidence_urls=["https://catalog.ldc.upenn.edu/LDC97S63"],
+        ),
     ]
 
 
@@ -137,4 +171,3 @@ def write_rights_report(path: str | Path, records: list[RightsRecord]) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(out, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-

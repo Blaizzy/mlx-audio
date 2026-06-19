@@ -1,0 +1,37 @@
+{
+  "task_id": "yn-02-rights-privacy-review",
+  "status": "completed",
+  "branch": null,
+  "commit": null,
+  "files_changed": [],
+  "artifacts_created": [
+    "artifacts/youth_natural/orchestration/handoffs/yn-02-rights-privacy-review.json"
+  ],
+  "commands_run": [
+    "Read YouthNaturalLoRA policy docs, rights report, manifests, Git ignore rules, and orchestration artifacts",
+    "Inspected dataset-lane records and adapter lineage validation",
+    "Searched Git-tracked YouthNaturalLoRA artifacts for local absolute paths and private-data indicators"
+  ],
+  "tests_run": [],
+  "tests_not_run": [
+    "No code was modified by this read-only reviewer",
+    "No private datasets, raw youth audio, or speaker embeddings were accessed"
+  ],
+  "data_accessed": [
+    "Git-tracked source, policy docs, synthetic artifacts, and public dataset metadata references only"
+  ],
+  "claims": [
+    "Tracked artifacts contained local absolute paths that should be scrubbed before sharing the branch",
+    "Rights registry needed separately licensed CSLU Kids Speech and CMU Kids Corpus records",
+    "Adapter manifest validation needed to prevent release-eligible artifacts from restricted rights lanes",
+    "Git ignore rules should cover all YouthNaturalLoRA raw media and embedding artifacts, not only training-run subdirectories"
+  ],
+  "known_risks": [
+    "Rights review did not grant legal permission for any dataset",
+    "No official dataset archive was acquired or inspected in this run"
+  ],
+  "integration_notes": [
+    "Lead should scrub absolute local paths, add separately licensed dataset records, enforce adapter lineage lanes, and broaden media/embedding ignores",
+    "Rerun artifact path scans and rights/schema tests after repairs"
+  ]
+}

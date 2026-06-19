@@ -144,6 +144,8 @@ class TestYouthNaturalDataPolicy(unittest.TestCase):
             lanes["Mozilla Common Voice Scripted Speech English"], "permissive_release"
         )
         self.assertEqual(lanes["MyST Children's Conversational Speech"], "research_noncommercial")
+        self.assertEqual(lanes["CSLU Kids Speech"], "separately_licensed")
+        self.assertEqual(lanes["CMU Kids Corpus"], "separately_licensed")
 
     def test_invalid_rights_lane_rejected(self):
         rows = [
@@ -172,4 +174,3 @@ class TestYouthNaturalDataPolicy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

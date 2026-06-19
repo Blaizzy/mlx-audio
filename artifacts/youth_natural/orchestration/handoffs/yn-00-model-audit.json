@@ -26,9 +26,9 @@
     "No speaker encoder run"
   ],
   "data_accessed": [
-    "Repository source under /Users/elishipley/VoiceForge/external/mlx-audio-zonos2",
+    "Repository source under <repo>",
     "Git metadata for branch/commit/status",
-    "Local model config metadata at /Users/elishipley/VoiceForge/models/zonos2-8bit/config.json was briefly inspected for parity; no weights, audio, datasets, or embeddings were read"
+    "Local model config metadata at <user-home>/VoiceForge/models/zonos2-8bit/config.json was briefly inspected for parity; no weights, audio, datasets, or embeddings were read"
   ],
   "claims": [
     "Core defaults are 28 layers, dim 2048, head_dim 128, n_kv_heads 4, max_seqlen 6144, 9 codebooks, codebook_size 1024, eoa_id 1024, audio_pad_id 1025, text_vocab 519, sample_rate 44100, DAC repo mlx-community/descript-audio-codec-44khz.",

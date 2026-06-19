@@ -92,6 +92,50 @@
       "rights_lane": "research_noncommercial",
       "source": "Expresso conversational speech",
       "terms_hash": "c6b79c0858ba6f8405cb601537fb01a1188e1aeba2b047d6f8d0354812e5cf24"
+    },
+    {
+      "acquisition_date": "not_acquired",
+      "checked_date": "2026-06-19",
+      "commercial_use_status": "blocked unless executed agreement permits the intended use",
+      "consent_notes": "Children's speech; require signed/provider terms and privacy review.",
+      "dataset_terms_url": "https://catalog.ldc.upenn.edu/LDC2007S18",
+      "decision": "blocked_until_executed_license",
+      "evidence_urls": [
+        "https://catalog.ldc.upenn.edu/LDC2007S18"
+      ],
+      "exact_release": "LDC2007S18",
+      "forbidden_uses": [
+        "commercial use without executed license",
+        "unlicensed redistribution"
+      ],
+      "license": "LDC agreement required; non-commercial/research by default",
+      "model_release_status": "separately licensed only; excluded from release-lane defaults",
+      "redistribution_rule": "No redistribution from this project.",
+      "rights_lane": "separately_licensed",
+      "source": "CSLU Kids Speech",
+      "terms_hash": "99097f3ddfdab72238c86ed167d1a5a25fe31fb832f582710ebb50e5f3575ce8"
+    },
+    {
+      "acquisition_date": "not_acquired",
+      "checked_date": "2026-06-19",
+      "commercial_use_status": "blocked unless executed agreement permits the intended use",
+      "consent_notes": "Children's speech; require signed/provider terms and privacy review.",
+      "dataset_terms_url": "https://catalog.ldc.upenn.edu/LDC97S63",
+      "decision": "blocked_until_executed_license",
+      "evidence_urls": [
+        "https://catalog.ldc.upenn.edu/LDC97S63"
+      ],
+      "exact_release": "LDC97S63",
+      "forbidden_uses": [
+        "unlicensed redistribution",
+        "release use without exact grant"
+      ],
+      "license": "LDC individual or organization agreement required",
+      "model_release_status": "separately licensed only; excluded from release-lane defaults",
+      "redistribution_rule": "No redistribution from this project.",
+      "rights_lane": "separately_licensed",
+      "source": "CMU Kids Corpus",
+      "terms_hash": "359aa581287d90621813f1b3b23d0e099c597bac3d3391de5cd90a818b83d9e7"
     }
   ]
 }

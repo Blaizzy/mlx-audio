@@ -62,6 +62,12 @@ artifacts/youth_natural/training_runs/**/*.mp3
 artifacts/youth_natural/training_runs/**/*.m4a
 artifacts/youth_natural/training_runs/**/*.npz
 artifacts/youth_natural/training_runs/**/*.npy
+artifacts/youth_natural/**/*.wav
+artifacts/youth_natural/**/*.flac
+artifacts/youth_natural/**/*.mp3
+artifacts/youth_natural/**/*.m4a
+artifacts/youth_natural/**/*embedding*.npy
+artifacts/youth_natural/**/*embedding*.npz
 
 # uv
 .build

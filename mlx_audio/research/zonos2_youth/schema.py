@@ -149,6 +149,19 @@ def validate_adapter_manifest(record: Mapping[str, Any]) -> None:
     _require_list(obj["target_modules"], name="target_modules")
     lineage = _require_mapping(obj["lineage"], name="lineage")
     _require_list(lineage.get("dataset_snapshots", []), name="dataset_snapshots")
+    rights_lanes = lineage.get("rights_lanes", [])
+    _require_list(rights_lanes, name="lineage.rights_lanes")
+    for lane in rights_lanes:
+        if lane not in RIGHTS_LANES:
+            raise ValidationError(f"invalid lineage rights lane: {lane}")
+    if obj.get("release_eligible", False):
+        restricted = {
+            "research_noncommercial",
+            "separately_licensed",
+            "blocked_or_unknown",
+        }
+        if any(lane in restricted for lane in rights_lanes):
+            raise ValidationError("release_eligible adapters must not include restricted lanes")
 
 
 def validate_generation_record(record: Mapping[str, Any]) -> None:
@@ -280,7 +293,21 @@ def schema_for(kind: str) -> dict[str, Any]:
                 "target_modules",
                 "lineage",
             ],
-            "properties": {"adapter_name": {"const": "YouthNaturalLoRA"}},
+            "properties": {
+                "adapter_name": {"const": "YouthNaturalLoRA"},
+                "release_eligible": {"type": "boolean"},
+                "lineage": {
+                    "type": "object",
+                    "required": ["dataset_snapshots", "rights_lanes"],
+                    "properties": {
+                        "dataset_snapshots": {"type": "array", "items": {"type": "string"}},
+                        "rights_lanes": {
+                            "type": "array",
+                            "items": {"enum": sorted(RIGHTS_LANES)},
+                        },
+                    },
+                },
+            },
         },
         "generation_record": {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -306,4 +333,3 @@ def schema_for(kind: str) -> dict[str, Any]:
         return schemas[kind]
     except KeyError as exc:
         raise ValidationError(f"unknown schema kind: {kind}") from exc
-

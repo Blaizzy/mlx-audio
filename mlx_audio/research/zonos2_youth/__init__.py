@@ -18,4 +18,3 @@ __all__ = [
     "STATUS_VALUES",
     "ValidationError",
 ]
-

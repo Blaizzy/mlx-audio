@@ -7,7 +7,7 @@
   "files_changed": [],
   "artifacts_created": [],
   "commands_run": [
-    "git -C /Users/elishipley rev-parse --is-inside-work-tree --show-toplevel --abbrev-ref HEAD HEAD",
+    "git -C <user-home> rev-parse --is-inside-work-tree --show-toplevel --abbrev-ref HEAD HEAD",
     "curl official Common Voice, Mozilla legal-docs, MDC, GitHub API, and LDC pages/PDFs",
     "rg over fetched official text for license/terms evidence"
   ],
