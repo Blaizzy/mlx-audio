@@ -596,6 +596,24 @@ def parse_args():
         action="store_true",
         help="Optional model-specific zero speaker embedding mode (e.g., Ming Omni).",
     )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=None,
+        help="Audio duration in seconds (for diffusion models like Stable Audio 3).",
+    )
+    parser.add_argument(
+        "--sampler",
+        type=str,
+        default=None,
+        help="Sampler type (e.g., 'pingpong', 'euler' for Stable Audio 3).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducible generation.",
+    )
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
     parser.add_argument(
