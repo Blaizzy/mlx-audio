@@ -316,6 +316,200 @@ class ModelDimensions:
 ModelConfig = ModelDimensions
 
 
+# Each canonical openai/whisper-* variant has a unique architecture signature.
+# Identifying the variant from config.json dims (rather than the directory
+# name) makes the fallback robust to arbitrary repo naming
+# (whisper-large-v3-mlx-4bit, whisper-base.en-mlx, user-renamed local dirs).
+# Signature: (n_audio_state, n_mels, n_audio_layer, n_text_layer, n_vocab).
+# large-v1 and large-v2 share architecture; v2 is the more common upstream
+# choice and its processor files are interchangeable with v1's.  Issue #645.
+_WHISPER_ARCH_TO_OPENAI = {
+    # Multilingual variants (vocab 51865)
+    (384, 80, 4, 4, 51865): "openai/whisper-tiny",
+    (512, 80, 6, 6, 51865): "openai/whisper-base",
+    (768, 80, 12, 12, 51865): "openai/whisper-small",
+    (1024, 80, 24, 24, 51865): "openai/whisper-medium",
+    (1280, 80, 32, 32, 51865): "openai/whisper-large-v2",
+    # English-only variants (vocab 51864 — no language tokens)
+    (384, 80, 4, 4, 51864): "openai/whisper-tiny.en",
+    (512, 80, 6, 6, 51864): "openai/whisper-base.en",
+    (768, 80, 12, 12, 51864): "openai/whisper-small.en",
+    (1024, 80, 24, 24, 51864): "openai/whisper-medium.en",
+    # large-v3 (added Cantonese token + 128 mel bins)
+    (1280, 128, 32, 32, 51866): "openai/whisper-large-v3",
+    # large-v3-turbo (4 decoder layers vs 32)
+    (1280, 128, 32, 4, 51866): "openai/whisper-large-v3-turbo",
+    # distil-whisper variants (Hugging Face, not openai) — out of scope for
+    # this fallback. They have their own canonical repos (e.g.
+    # ``distil-whisper/distil-large-v3``) and would need a separate mapping
+    # if the project decides to support them.
+}
+
+
+def _whisper_arch_signature(
+    model_path: Path,
+) -> Optional[Tuple[int, int, int, int, int]]:
+    """Read config.json from ``model_path`` and return its 5-tuple of dims.
+
+    Returns None if config.json is missing, malformed (``JSONDecodeError``),
+    or doesn't expose the expected whisper dimensions. Read errors that
+    indicate a real filesystem problem (``PermissionError`` and other
+    ``OSError``) propagate rather than being masked as "no signature".
+    Handles both openai/mlx-style keys (``n_audio_state``, ``n_mels``, …)
+    and HF Transformers-style keys (``d_model``, ``num_mel_bins``, …).
+    """
+    cfg_path = model_path / "config.json"
+    if not cfg_path.is_file():
+        return None
+    # PermissionError / other OSError from read_text() propagates — a real
+    # filesystem issue should not be masked by silently returning None.
+    # Only swallow JSONDecodeError so a malformed local config.json still
+    # falls through to the existing "warn and return None" path rather than
+    # crashing the load.
+    try:
+        cfg = json.loads(cfg_path.read_text())
+    except json.JSONDecodeError:
+        return None
+    n_audio_state = cfg.get("n_audio_state") or cfg.get("d_model")
+    n_mels = cfg.get("n_mels") or cfg.get("num_mel_bins")
+    n_audio_layer = cfg.get("n_audio_layer") or cfg.get("encoder_layers")
+    n_text_layer = cfg.get("n_text_layer") or cfg.get("decoder_layers")
+    n_vocab = cfg.get("n_vocab") or cfg.get("vocab_size")
+    if None in (n_audio_state, n_mels, n_audio_layer, n_text_layer, n_vocab):
+        return None
+    return (n_audio_state, n_mels, n_audio_layer, n_text_layer, n_vocab)
+
+
+def _canonical_openai_whisper_repo(model_path: Path) -> Optional[str]:
+    """Return the canonical openai/whisper-* repo for ``model_path``.
+
+    Identifies the architecture from config.json dims rather than parsing
+    the directory name, so quantization suffixes and renames don't matter.
+    Returns None when the architecture isn't a recognized canonical variant
+    so the caller preserves the prior "warn and set _processor=None" path.
+    """
+    sig = _whisper_arch_signature(model_path)
+    if sig is None:
+        return None
+    return _WHISPER_ARCH_TO_OPENAI.get(sig)
+
+
+def _has_local_processor_files(model_path: Path) -> bool:
+    """Return True if ``model_path`` ships its own WhisperProcessor files.
+
+    The canonical-openai fallback should only fire when the local directory
+    is missing these files — not when the local load fails for other reasons
+    (cache/auth/path issues that would be masked by an unexpected HF Hub
+    download). ``preprocessor_config.json`` is the feature extractor; either
+    ``tokenizer.json`` or ``tokenizer_config.json`` covers the tokenizer
+    side.
+
+    The ``is True`` comparisons coerce the result to a strict boolean so a
+    mocked ``Path`` (whose ``is_file()`` returns a truthy ``MagicMock``)
+    reads as "files absent" — the caller's gate then falls through to the
+    existing fallback behavior instead of misclassifying a mock as a
+    complete local directory.
+    """
+    return (model_path / "preprocessor_config.json").is_file() is True and (
+        (model_path / "tokenizer.json").is_file() is True
+        or (model_path / "tokenizer_config.json").is_file() is True
+    )
+
+
+def _load_whisper_processor(model_path: Path):
+    """Load WhisperProcessor for ``model_path``, with canonical-openai fallback.
+
+    The local-load catch is narrow: only the "missing processor files"
+    scenario (the local directory lacks ``preprocessor_config.json`` /
+    tokenizer files) triggers the canonical fallback. A local directory
+    that *does* ship processor files but still raised propagates the error
+    so genuinely-broken local checkpoints (auth, cache, corrupt files)
+    surface their real cause instead of being masked by a network download.
+
+    The canonical fetch itself is best-effort graceful degradation: any
+    failure (offline mode, 401/404, network error, or a malformed canonical
+    config) is converted to a warning + ``None``, matching the pre-fix
+    "warn and set _processor=None" behavior. The user then gets the clear
+    "Processor not found" error at transcribe time.
+
+    Network: when the fallback fires, the canonical processor is fetched
+    from the HF Hub (~4 MB). Set ``HF_HUB_OFFLINE=1`` or
+    ``TRANSFORMERS_OFFLINE=1`` in air-gapped environments — transformers
+    raises an offline-mode error that is caught here and surfaced via the
+    warning path (preferable to a long network timeout).
+
+    Returns the processor or ``None`` if neither the local load nor the
+    canonical fallback succeeds.
+    """
+    try:
+        from transformers import WhisperProcessor
+    except ImportError as e:
+        warnings.warn(f"Could not load WhisperProcessor: {e}.")
+        return None
+
+    # Same expected-exception set as the fallback path below: OSError plus
+    # the HF Hub / network errors transformers raises when files aren't
+    # available (RepositoryNotFoundError, EntryNotFoundError, OfflineMode,
+    # RequestException). Imported lazily to keep the optional deps optional.
+    _expected_local_errors = [OSError]
+    # Import each HF error class separately so a missing one doesn't take
+    # out the whole catch list. Older huggingface_hub versions don't ship
+    # OfflineModeError; HfHubHTTPError has been stable since 0.16.
+    try:
+        from huggingface_hub.errors import HfHubHTTPError
+
+        _expected_local_errors.append(HfHubHTTPError)
+    except ImportError:
+        pass
+    try:
+        from huggingface_hub.errors import OfflineModeError
+
+        _expected_local_errors.append(OfflineModeError)
+    except ImportError:
+        pass
+    try:
+        from requests.exceptions import RequestException
+
+        _expected_local_errors.append(RequestException)
+    except ImportError:
+        pass
+
+    try:
+        return WhisperProcessor.from_pretrained(str(model_path))
+    except tuple(_expected_local_errors) as local_err:
+        # Only the "missing processor files" scenario should trigger the
+        # canonical fallback. A local directory that ships its own
+        # processor files but still raised indicates something else
+        # (auth, cache, env) — propagate so the user sees the real cause.
+        if _has_local_processor_files(model_path):
+            raise
+        canonical = _canonical_openai_whisper_repo(model_path)
+        if canonical is None:
+            warnings.warn(f"Could not load WhisperProcessor: {local_err}.")
+            return None
+        # The canonical fetch is best-effort graceful degradation: any
+        # failure (offline mode, 401/404, network error, or a malformed
+        # canonical config) degrades to a warning + ``None``, exactly as
+        # the pre-fix "warn and set _processor=None" path did. The user
+        # then sees the clear "Processor not found" error at transcribe
+        # time. The local-load catch above is the one that's narrowed, so
+        # genuinely-broken *local* checkpoints still surface their cause.
+        try:
+            processor = WhisperProcessor.from_pretrained(canonical)
+        except Exception as fallback_err:
+            warnings.warn(
+                f"Could not load WhisperProcessor locally or from {canonical}: "
+                f"local={local_err} fallback={fallback_err}"
+            )
+            return None
+        warnings.warn(
+            f"Loaded WhisperProcessor from {canonical} as fallback because "
+            f"{model_path} is missing processor files: {local_err}",
+            stacklevel=2,
+        )
+        return processor
+
+
 def sinusoids(length, channels, max_timescale=10000):
     """Returns sinusoids for positional embedding"""
     assert channels % 2 == 0
@@ -692,14 +886,7 @@ class Model(nn.Module):
         Returns:
             The model with processor initialized
         """
-        try:
-            from transformers import WhisperProcessor
-
-            processor = WhisperProcessor.from_pretrained(str(model_path))
-            model._processor = processor
-        except Exception as e:
-            model._processor = None
-            warnings.warn(f"Could not load WhisperProcessor: {e}.")
+        model._processor = _load_whisper_processor(Path(model_path))
 
         # Load alignment heads from generation_config.json for word-level timestamps
         gen_config_path = Path(model_path) / "generation_config.json"
