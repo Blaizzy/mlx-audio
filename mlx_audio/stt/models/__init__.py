@@ -5,6 +5,7 @@ from . import (
     granite_speech,
     granite_speech_nar,
     lasr_ctc,
+    mimo_v2_asr,
     parakeet,
     qwen3_asr,
     sensevoice,

@@ -13,6 +13,7 @@ MODEL_REMAPPING = {
     "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
+    "mimo": "mimo_v2_asr",
     "sensevoice": "sensevoice",
     "voxtral": "voxtral",
     "voxtral_realtime": "voxtral_realtime",
