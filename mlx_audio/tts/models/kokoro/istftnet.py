@@ -626,6 +626,14 @@ class SineGen:
         # Generate UV signal
         uv = self._f02uv(f0)
 
+        # Guard against interpolation rounding — _f02sine's scale_factor
+        # can produce sine_waves 1 frame longer than f0, causing a
+        # broadcast crash with noise_amp below. Trim both to the
+        # minimum common length so shapes always align.
+        min_len = min(sine_waves.shape[1], uv.shape[1])
+        sine_waves = sine_waves[:, :min_len, :]
+        uv = uv[:, :min_len, :]
+
         # Generate noise
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         noise = noise_amp * mx.random.normal(sine_waves.shape)
@@ -811,7 +819,10 @@ class Generator(nn.Module):
         x = self.conv_post(x, mx.conv1d)
         x = x.swapaxes(2, 1)
 
-        spec = mx.exp(x[:, : self.post_n_fft // 2 + 1, :])
+        # Clamp log-magnitude to [-10, 10] before exp to prevent float32
+        # overflow (inf → NaN in iSTFT). The conv_post output can reach
+        # ~1e11, which produces inf after mx.exp().
+        spec = mx.exp(mx.clip(x[:, : self.post_n_fft // 2 + 1, :], -10.0, 10.0))
         phase = mx.sin(x[:, self.post_n_fft // 2 + 1 :, :])
         result = self.stft.inverse(spec, phase)
         return result
