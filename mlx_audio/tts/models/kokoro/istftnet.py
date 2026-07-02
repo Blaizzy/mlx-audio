@@ -626,6 +626,14 @@ class SineGen:
         # Generate UV signal
         uv = self._f02uv(f0)
 
+        # Guard against interpolation rounding — _f02sine's scale_factor
+        # can produce sine_waves 1 frame longer than f0, causing a
+        # broadcast crash with noise_amp below. Trim both to the
+        # minimum common length so shapes always align.
+        min_len = min(sine_waves.shape[1], uv.shape[1])
+        sine_waves = sine_waves[:, :min_len, :]
+        uv = uv[:, :min_len, :]
+
         # Generate noise
         noise_amp = uv * self.noise_std + (1 - uv) * self.sine_amp / 3
         noise = noise_amp * mx.random.normal(sine_waves.shape)
