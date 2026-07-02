@@ -3,6 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import ANY, MagicMock, PropertyMock, patch
 
@@ -1199,6 +1200,106 @@ class TestGLMASRModel(unittest.TestCase):
 
         self.assertIs(model, loaded_model)
         mock_stt_load.assert_called_once_with(dummy_repo_id)
+
+
+class TestMossTranscribeDiarizeModel(unittest.TestCase):
+    """Tests for MOSS-Transcribe-Diarize configuration and loading hooks."""
+
+    def setUp(self):
+        from mlx_audio.stt.models.moss_transcribe_diarize.config import (
+            AudioConfig,
+            ModelConfig,
+            TextConfig,
+        )
+        from mlx_audio.stt.models.moss_transcribe_diarize.moss_transcribe_diarize import (
+            Model,
+        )
+
+        self.AudioConfig = AudioConfig
+        self.TextConfig = TextConfig
+        self.ModelConfig = ModelConfig
+        self.Model = Model
+
+    def test_model_config_defaults(self):
+        config = self.ModelConfig()
+
+        self.assertEqual(config.model_type, "moss_transcribe_diarize")
+        self.assertEqual(config.audio_config.num_mel_bins, 80)
+        self.assertEqual(config.audio_config.d_model, 1024)
+        self.assertEqual(config.text_config.hidden_size, 1024)
+        self.assertEqual(config.audio_merge_size, 4)
+        self.assertEqual(config.adaptor_input_dim, 4096)
+
+    def test_model_config_from_dict(self):
+        config = self.ModelConfig.from_dict(
+            {
+                "model_type": "moss_transcribe_diarize",
+                "audio_token_id": 123,
+                "audio_config": {"d_model": 512, "num_mel_bins": 80},
+                "text_config": {"hidden_size": 768, "vocab_size": 32000},
+                "audio_merge_size": 2,
+            }
+        )
+
+        self.assertEqual(config.audio_token_id, 123)
+        self.assertIsInstance(config.audio_config, self.AudioConfig)
+        self.assertIsInstance(config.text_config, self.TextConfig)
+        self.assertEqual(config.adaptor_input_dim, 1024)
+
+    def test_sanitize_maps_hf_keys_to_mlx_keys(self):
+        weights = {
+            "model.vq_adaptor.layers.0.weight": mx.zeros((4, 4)),
+            "model.vq_adwaptor.layers.2.bias": mx.zeros((4,)),
+            "model.whisper_encoder.conv1.weight": mx.zeros((8, 80, 3)),
+            "lm_head.weight": mx.zeros((8, 8)),
+        }
+
+        sanitized = self.Model.sanitize(weights)
+
+        self.assertIn("model.vq_adaptor.layers.layers.0.weight", sanitized)
+        self.assertIn("model.vq_adaptor.layers.layers.2.bias", sanitized)
+        self.assertNotIn("lm_head.weight", sanitized)
+        self.assertEqual(
+            sanitized["model.whisper_encoder.conv1.weight"].shape,
+            (8, 3, 80),
+        )
+
+    def test_parse_segments_from_compact_transcript(self):
+        text = "[0.48][S01]hello[1.66][2.00][S02]world[3.50]"
+
+        segments = self.Model._parse_segments(text, fallback_end=10.0)
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(segments[0]["start"], 0.48)
+        self.assertEqual(segments[0]["end"], 1.66)
+        self.assertEqual(segments[0]["speaker_id"], "S01")
+        self.assertEqual(segments[0]["text"], "[S01] hello")
+        self.assertEqual(segments[1]["speaker_id"], "S02")
+
+    def test_parse_segments_falls_back_without_timestamps(self):
+        text = "[S01] hello world"
+
+        segments = self.Model._parse_segments(text, fallback_end=4.25)
+
+        self.assertEqual(
+            segments,
+            [{"start": 0.0, "end": 4.25, "text": text}],
+        )
+
+    def test_audio_span_ids_include_time_markers(self):
+        model = object.__new__(self.Model)
+        model.config = SimpleNamespace(audio_token_id=151671)
+        model.audio_tokens_per_second = 12.5
+        model.time_marker_every_seconds = 5
+        model.enable_time_marker = True
+        model._digit_token_ids = {"5": 5, "1": 1, "0": 0}
+
+        ids = self.Model._audio_span_ids(model, 126)
+
+        self.assertEqual(ids.count(151671), 126)
+        self.assertIn(5, ids)
+        self.assertIn(1, ids)
+        self.assertIn(0, ids)
 
 
 class TestQwen3ASRConfig(unittest.TestCase):
