@@ -282,22 +282,29 @@ def get_model_class(
 
     # Stage 2: Check for partial matches in segments of the model name
     # Only do this if the initial mapping didn't find a match
+
     models_dir = Path(__file__).parent / category / "models"
     available_models = []
+
     if models_dir.exists() and models_dir.is_dir():
         for item in models_dir.iterdir():
             if item.is_dir() and not item.name.startswith("__"):
                 available_models.append(item.name)
 
-    if model_name is not None and model_type_mapped != model_type:
+# Exact model_type mapping must have highest priority.
+    if model_type_mapped is not None:
+        model_type = model_type_mapped
+
+# Only use model-name hints when no exact mapping exists.
+    elif model_name is not None:
         for part in model_name:
-            if part in available_models:
-                model_type = part
             if part in model_remapping:
                 model_type = model_remapping[part]
                 break
-    elif model_type_mapped is not None:
-        model_type = model_type_mapped
+
+            if part in available_models:
+                model_type = part
+                break
 
     try:
         module_path = f"mlx_audio.{category}.models.{model_type}"
