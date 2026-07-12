@@ -35,7 +35,7 @@ for word, pcm_frame in model.generate(steps=150):
     if word:
         # Print inner monologue as it generates
         print(word, end="", flush=True)
-        
+
     if pcm_frame is not None:
         # Stream audio directly to speakers
         stream.write(np.array(pcm_frame))

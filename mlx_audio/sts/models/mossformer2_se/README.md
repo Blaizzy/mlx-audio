@@ -1,6 +1,6 @@
 # MossFormer2 SE - Speech Enhancement for MLX
 
-MossFormer2 SE is a speech enhancement model based on the MossFormer2 architecture from 
+MossFormer2 SE is a speech enhancement model based on the MossFormer2 architecture from
 [ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio). This MLX port
 enables efficient inference on Apple Silicon.
 
@@ -98,7 +98,7 @@ model = MossFormer2SEModel.from_pretrained("starkdmi/MossFormer2_SE_48K_MLX-8bit
 
 ```bibtex
 @article{zhao2023mossformer2,
-  title={MossFormer2: Combining Transformer and RNN-Free Recurrent Network 
+  title={MossFormer2: Combining Transformer and RNN-Free Recurrent Network
          for Enhanced Time-Domain Monaural Speech Separation},
   author={Zhao, Shengkui and Ma, Yukun and others},
   journal={arXiv preprint arXiv:2312.11825},

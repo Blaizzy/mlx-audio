@@ -2,7 +2,7 @@
 
 ## Why? Because I can, that's why
 
-I grabbed a copy of the American King James Bible at [openbible.com](https://openbible.com/texts.htm)  
+I grabbed a copy of the American King James Bible at [openbible.com](https://openbible.com/texts.htm)
 I wrote me a script to call the mx_audio.server and convert, verse by verse.
 It took me **28 hours and 05 minutes** to convert all **31,102** verses, resulting in **86h32m36s**.
 I ran it on a Mac Mini M4pro, 12 cores, 24GB Ram;
