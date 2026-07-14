@@ -1510,7 +1510,21 @@ class Model(nn.Module):
         instruction: Optional[str] = None,
         prompt_latent: Optional[mx.array] = None,
         prompt_text: Optional[str] = None,
+        spk_emb: Optional[mx.array] = None,
+        use_zero_spk_emb: bool = False,
     ) -> Tuple[mx.array, mx.array]:
+        # Speaker identity block (official MoE cloning path):
+        #   "  speaker_1:" + <spk> + <audioPatch> + "</spk>\n"
+        # The <audioPatch> embedding right after <spk> is replaced by
+        # spk_head(campplus_embedding) below — this anchors WHO is speaking.
+        spk_emb_prompt = []
+        if spk_emb is not None:
+            spk_emb_prompt = (
+                self._encode("  speaker_1:")
+                + self._encode("<spk>")
+                + self._encode("<audioPatch>")
+                + self._encode("</spk>\n")
+            )
         prompt_text_token = []
         prompt_latent_token = []
         if prompt_latent is not None and prompt_text is not None:
@@ -1541,6 +1555,7 @@ class Model(nn.Module):
         input_part = (
             self._encode("<role>HUMAN</role>")
             + self._encode(prompt)
+            + spk_emb_prompt
             + prompt2
             + prompt_text_token
             + self._encode(text)
@@ -1552,6 +1567,25 @@ class Model(nn.Module):
 
         input_ids = mx.array(input_part, dtype=mx.int32)[None, :]
         inputs_embeds = self.model.model.word_embeddings(input_ids)
+
+        # Inject speaker embedding at the <audioPatch> slot right after <spk>
+        # (mirrors official: inputs_embeds[0, spk_idx + 1] = spk_head(se)).
+        if spk_emb is not None:
+            se = self.spk_head(
+                spk_emb.reshape(1, -1).astype(inputs_embeds.dtype)
+            )  # (1, hidden)
+            if use_zero_spk_emb:
+                se = mx.zeros_like(se)
+            spk_token_id = self.tokenizer.convert_tokens_to_ids("<spk>")
+            spk_idx = input_part.index(spk_token_id)
+            inputs_embeds = mx.concatenate(
+                [
+                    inputs_embeds[:, : spk_idx + 1, :],
+                    se[:, None, :],
+                    inputs_embeds[:, spk_idx + 2 :, :],
+                ],
+                axis=1,
+            )
 
         if prompt_latent is not None:
             audio_token_id = self.tokenizer.convert_tokens_to_ids("<audio>")
@@ -1607,6 +1641,54 @@ class Model(nn.Module):
                 h = layer(h, mask, layer_cache)
         return self.model.model.norm(h)
 
+    # ---- Speaker identity (CampPlus) — mirrors official spkemb_extractor.py ----
+    def _campplus_session(self):
+        sess = getattr(self, "_campplus_sess", None)
+        if sess is None:
+            import onnxruntime
+
+            mp = getattr(self, "model_path", None)
+            onnx_path = Path(mp) / "campplus.onnx" if mp else None
+            if onnx_path is None or not onnx_path.exists():
+                raise FileNotFoundError(
+                    f"campplus.onnx not found in model dir ({mp}); "
+                    "download it from the original repo to enable speaker cloning."
+                )
+            opt = onnxruntime.SessionOptions()
+            opt.graph_optimization_level = (
+                onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+            )
+            opt.intra_op_num_threads = 2
+            sess = onnxruntime.InferenceSession(
+                str(onnx_path), sess_options=opt, providers=["CPUExecutionProvider"]
+            )
+            self._campplus_sess = sess
+        return sess
+
+    def _extract_spk_emb(self, ref_audio_path: str) -> mx.array:
+        """Official cloning pipeline: 16k mono -> kaldi fbank(80 bins, dither=0)
+        -> per-dim mean subtraction -> CampPlus ONNX -> (192,) identity vector."""
+        import kaldi_native_fbank as knf
+        import numpy as np
+
+        wav = np.array(
+            load_audio(ref_audio_path, sample_rate=16000), dtype=np.float32
+        ).reshape(-1)
+        opts = knf.FbankOptions()
+        opts.frame_opts.samp_freq = 16000
+        opts.frame_opts.dither = 0.0
+        opts.mel_opts.num_bins = 80
+        fbank = knf.OnlineFbank(opts)
+        fbank.accept_waveform(16000, wav)
+        fbank.input_finished()
+        feat = np.stack(
+            [fbank.get_frame(i) for i in range(fbank.num_frames_ready)]
+        ).astype(np.float32)
+        feat = feat - feat.mean(axis=0, keepdims=True)
+        sess = self._campplus_session()
+        emb = sess.run(None, {sess.get_inputs()[0].name: feat[None]})[0].flatten()
+        return mx.array(emb.astype(np.float32))
+
     def sample(
         self,
         prompt: str,
@@ -1619,6 +1701,8 @@ class Model(nn.Module):
         sigma: float = 0.25,
         temperature: float = 0.0,
         flow_steps: int = 10,
+        spk_emb: Optional[mx.array] = None,
+        use_zero_spk_emb: bool = False,
     ):
         prompt_latent = None
         if prompt_waveform is not None and prompt_text is not None:
@@ -1636,6 +1720,8 @@ class Model(nn.Module):
             instruction=instruction,
             prompt_latent=prompt_latent,
             prompt_text=prompt_text,
+            spk_emb=spk_emb,
+            use_zero_spk_emb=use_zero_spk_emb,
         )
 
         cache = [KVCache() for _ in range(self.llm_args.num_hidden_layers)]
@@ -1705,8 +1791,23 @@ class Model(nn.Module):
                 "Tokenizer is not initialized. Load model with load()/from_pretrained first."
             )
 
+        ref_audio_path = ref_audio if isinstance(ref_audio, str) else None
         if isinstance(ref_audio, str):
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+
+        # Speaker identity embedding — the official cloning path (use_spk_emb=True).
+        # Without it the input sequence is off-distribution vs training, which
+        # destabilizes voice identity and the stop head on expressive text.
+        use_zero_spk_emb = bool(kwargs.get("use_zero_spk_emb", False))
+        spk_emb = None
+        if not kwargs.get("disable_spk_emb", False):
+            if ref_audio_path is not None:
+                try:
+                    spk_emb = self._extract_spk_emb(ref_audio_path)
+                except Exception as e:  # graceful fallback to old behaviour
+                    print(f"[bailingmm] spk_emb extraction skipped: {e}")
+            if spk_emb is None and use_zero_spk_emb:
+                spk_emb = mx.zeros((192,))
 
         start_time = time.perf_counter()
         speech_chunks = []
@@ -1732,6 +1833,8 @@ class Model(nn.Module):
                 sigma=sigma,
                 temperature=temperature,
                 flow_steps=flow_steps,
+                spk_emb=spk_emb,
+                use_zero_spk_emb=use_zero_spk_emb,
             )
         ):
             speech_tmp, stream_state, past_key_values = self.audio.decode(
@@ -1801,6 +1904,7 @@ class Model(nn.Module):
         model.tokenizer = AutoTokenizer.from_pretrained(
             str(model_path), trust_remote_code=False
         )
+        model.model_path = str(model_path)  # for locating campplus.onnx (spk emb)
         return model
 
     @classmethod
