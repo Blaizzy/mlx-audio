@@ -7,7 +7,12 @@ from unittest.mock import patch
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.tts.models.qwen3_tts.qwen3_tts import Model, mel_spectrogram
+from mlx_audio.tts.models.qwen3_tts.qwen3_tts import (
+    Model,
+    _expected_codec_token_budget,
+    _progressive_eos_bias,
+    mel_spectrogram,
+)
 from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
@@ -542,6 +547,84 @@ class TestQwen3TTSMaxTokens(unittest.TestCase):
         )
 
         self.assertEqual(results[-1].token_count, 120)
+
+
+class TestQwen3TTSEosBias(unittest.TestCase):
+    def test_expected_codec_token_budget_matches_legacy_heuristic(self):
+        self.assertEqual(_expected_codec_token_budget(10), 75)
+        self.assertEqual(_expected_codec_token_budget(20), 120)
+
+    def test_progressive_eos_bias_ramps_after_expected_budget(self):
+        expected = 75
+        self.assertEqual(_progressive_eos_bias(0, expected), 0.0)
+        self.assertEqual(_progressive_eos_bias(expected, expected), 0.0)
+        self.assertEqual(_progressive_eos_bias(expected + 4, expected), 1.0)
+        self.assertEqual(_progressive_eos_bias(expected + 1000, expected), 20.0)
+
+    def test_sample_token_applies_eos_bias_before_sampling(self):
+        logits = mx.array([[[3.0, 2.0, 1.0, 0.0]]], dtype=mx.float32)
+        eos_token_id = 3
+        captured = {}
+
+        def capture_sample(scores, temperature):
+            captured["scores"] = scores
+            captured["temperature"] = temperature
+            return mx.argmax(scores, axis=-1)
+
+        with patch(
+            "mlx_audio.tts.models.qwen3_tts.qwen3_tts.categorical_sampling",
+            side_effect=capture_sample,
+        ):
+            Model._sample_token(
+                Model.__new__(Model),
+                logits,
+                temperature=1.0,
+                top_k=0,
+                top_p=1.0,
+                repetition_penalty=1.0,
+                eos_token_id=eos_token_id,
+                eos_bias=2.5,
+            )
+
+        scores = np.array(captured["scores"])
+        self.assertEqual(captured["temperature"], 1.0)
+        self.assertAlmostEqual(float(scores[0, eos_token_id]), 2.5)
+        np.testing.assert_allclose(scores[0, :eos_token_id], [3.0, 2.0, 1.0])
+
+    def test_sample_token_batch_applies_per_sequence_eos_bias(self):
+        logits = mx.array(
+            [
+                [[3.0, 2.0, 1.0, 0.0]],
+                [[0.0, 1.0, 2.0, 3.0]],
+            ],
+            dtype=mx.float32,
+        )
+        eos_token_id = 0
+        captured = {}
+
+        def capture_sample(scores, temperature):
+            captured["scores"] = scores
+            captured["temperature"] = temperature
+            return mx.argmax(scores, axis=-1)
+
+        with patch(
+            "mlx_audio.tts.models.qwen3_tts.qwen3_tts.categorical_sampling",
+            side_effect=capture_sample,
+        ):
+            Model._sample_token_batch(
+                Model.__new__(Model),
+                logits,
+                temperature=1.0,
+                top_k=0,
+                top_p=1.0,
+                repetition_penalty=1.0,
+                eos_token_id=eos_token_id,
+                eos_bias=[1.5, 0.0],
+            )
+
+        scores = np.array(captured["scores"])
+        self.assertAlmostEqual(float(scores[0, eos_token_id]), 4.5)
+        self.assertAlmostEqual(float(scores[1, eos_token_id]), 0.0)
 
 
 if __name__ == "__main__":

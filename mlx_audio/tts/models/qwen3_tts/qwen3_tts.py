@@ -61,6 +61,75 @@ def _apply_probability_filters(
     return mx.where(logprobs == -mx.inf, -float("inf"), logits)
 
 
+# Soft speech budget: ~3-5 codec tokens per text token at 12.5 Hz, with ~50% margin.
+_EOS_EXPECTED_TOKEN_FACTOR = 6
+_EOS_EXPECTED_TOKEN_FLOOR = 75
+_EOS_BIAS_SCALE = 0.25
+_EOS_BIAS_MAX = 20.0
+
+
+def _expected_codec_token_budget(text_token_count: int) -> int:
+    """Expected codec-token budget for an utterance before EOS bias ramps up."""
+    return max(
+        _EOS_EXPECTED_TOKEN_FLOOR, int(text_token_count) * _EOS_EXPECTED_TOKEN_FACTOR
+    )
+
+
+def _progressive_eos_bias(
+    step: int,
+    expected_tokens: int,
+    *,
+    scale: float = _EOS_BIAS_SCALE,
+    max_bias: float = _EOS_BIAS_MAX,
+) -> float:
+    """Growing EOS logit bias after the expected speech budget is exceeded.
+
+    Keeps max_tokens untouched (see #695) while encouraging codec EOS once the
+    model starts emitting post-speech pads / breath frames.
+    """
+    if step <= expected_tokens:
+        return 0.0
+    return min(max_bias, scale * float(step - expected_tokens))
+
+
+def _add_eos_bias(
+    logits: mx.array,
+    eos_token_id: Optional[int],
+    eos_bias: Union[float, List[float], mx.array],
+) -> mx.array:
+    """Add a scalar or per-sequence bias to the EOS logit column."""
+    if eos_token_id is None or eos_token_id >= logits.shape[-1]:
+        return logits
+
+    batch = logits.shape[0]
+    if isinstance(eos_bias, (list, tuple)):
+        if len(eos_bias) != batch:
+            raise ValueError(
+                f"eos_bias length ({len(eos_bias)}) must match batch size ({batch})"
+            )
+        if not any(b != 0 for b in eos_bias):
+            return logits
+        bias = mx.array(eos_bias, dtype=logits.dtype)[:, None]
+    elif isinstance(eos_bias, mx.array):
+        if eos_bias.size == 0:
+            return logits
+        bias = eos_bias.astype(logits.dtype)
+        if bias.ndim == 1:
+            bias = bias[:, None]
+        if bias.shape[0] != batch:
+            raise ValueError(
+                f"eos_bias batch ({bias.shape[0]}) must match logits batch ({batch})"
+            )
+    else:
+        if eos_bias == 0.0:
+            return logits
+        bias = mx.full((batch, 1), float(eos_bias), dtype=logits.dtype)
+
+    eos_idx = mx.full((batch, 1), eos_token_id, dtype=mx.int32)
+    eos_vals = mx.take_along_axis(logits, eos_idx, axis=-1) + bias
+    return mx.put_along_axis(logits, eos_idx, eos_vals, axis=-1)
+
+
 def mel_spectrogram(
     audio: mx.array,
     n_fft: int = 1024,
@@ -809,6 +878,7 @@ class Model(nn.Module):
         suppress_tokens: Optional[List[int]] = None,
         eos_token_id: Optional[int] = None,
         min_p: float = 0.0,
+        eos_bias: float = 0.0,
     ) -> mx.array:
 
         logits = logits[:, -1, :]  # Get last position [1, vocab_size]
@@ -843,10 +913,13 @@ class Model(nn.Module):
 
         # Greedy decoding if temperature is 0
         if temperature <= 0:
+            logits = _add_eos_bias(logits, eos_token_id, eos_bias)
             return mx.argmax(logits, axis=-1, keepdims=True)
 
         if temperature != 1.0:
             logits = logits / temperature
+
+        logits = _add_eos_bias(logits, eos_token_id, eos_bias)
 
         eos_logit = None
         if eos_token_id is not None and eos_token_id < logits.shape[-1]:
@@ -875,6 +948,7 @@ class Model(nn.Module):
         suppress_tokens: Optional[List[int]] = None,
         eos_token_id: Optional[int] = None,
         min_p: float = 0.0,
+        eos_bias: Union[float, List[float], mx.array] = 0.0,
     ) -> mx.array:
         """Batched sampling from [batch, seq_len, vocab] logits. Returns [batch, 1]."""
 
@@ -917,10 +991,13 @@ class Model(nn.Module):
 
         # Greedy decoding
         if temperature <= 0:
+            logits = _add_eos_bias(logits, eos_token_id, eos_bias)
             return mx.argmax(logits, axis=-1, keepdims=True)
 
         if temperature != 1.0:
             logits = logits / temperature
+
+        logits = _add_eos_bias(logits, eos_token_id, eos_bias)
 
         # Preserve EOS logit before filtering
         eos_logit = None
@@ -1823,10 +1900,10 @@ class Model(nn.Module):
         attention_mask = batch_inputs.attention_mask
         mx.eval(input_embeds, trailing_text_hidden, tts_pad_embed, attention_mask)
 
-        per_seq_max_tokens = [max_tokens] * batch_size
+        per_seq_expected_tokens = None
         if use_icl:
-            per_seq_max_tokens = [
-                min(max_tokens, max(75, len(self.tokenizer.encode(text)) * 6))
+            per_seq_expected_tokens = [
+                _expected_codec_token_budget(len(self.tokenizer.encode(text)))
                 for text in texts
             ]
 
@@ -1874,6 +1951,13 @@ class Model(nn.Module):
                 attention_mask=attention_mask,
             )
 
+            step_eos_bias: Union[float, List[float]] = 0.0
+            if per_seq_expected_tokens is not None:
+                step_eos_bias = [
+                    _progressive_eos_bias(step, expected)
+                    for expected in per_seq_expected_tokens
+                ]
+
             # Batched sampling — no per-sequence bool()/int() calls
             sampled_tokens = self._sample_token_batch(
                 logits,
@@ -1884,6 +1968,7 @@ class Model(nn.Module):
                 generated_tokens_per_seq=generated_token_ids,
                 suppress_tokens=suppress_tokens,
                 eos_token_id=eos_token_id,
+                eos_bias=step_eos_bias,
             )  # [batch, 1]
 
             # Mask finished sequences to EOS (vectorized, no sync)
@@ -1930,15 +2015,6 @@ class Model(nn.Module):
                     generated_codes[b].append(
                         all_codes[b : b + 1]
                     )  # [1, num_code_groups]
-
-            if use_icl:
-                finished_cpu = [
-                    finished_cpu[b] or len(generated_codes[b]) >= per_seq_max_tokens[b]
-                    for b in range(batch_size)
-                ]
-                finished = mx.array(finished_cpu, dtype=mx.bool_)
-                if all(finished_cpu):
-                    break
 
             # Extend attention_mask by one column of 1s (skipped for bs=1)
             if attention_mask is not None:
@@ -2249,6 +2325,7 @@ class Model(nn.Module):
         # Honor the caller-provided max_tokens; matches the base generation path.
         # A text-length-derived cap could clip slow or expressive utterances.
         effective_max_tokens = max_tokens
+        expected_tokens = _expected_codec_token_budget(len(self.tokenizer.encode(text)))
 
         # Initialize cache
         cache = self.talker.make_cache()
@@ -2294,6 +2371,7 @@ class Model(nn.Module):
                 generated_tokens=(generated_token_ids if generated_token_ids else None),
                 suppress_tokens=suppress_tokens,
                 eos_token_id=eos_token_id,
+                eos_bias=_progressive_eos_bias(step, expected_tokens),
             )
 
             # Lazy EOS check — defer sync to batch with input_embeds eval
@@ -2561,6 +2639,7 @@ class Model(nn.Module):
         # Honor the caller-provided max_tokens; matches the base generation path.
         # A text-length-derived cap could clip slow or expressive utterances.
         effective_max_tokens = max_tokens
+        expected_tokens = _expected_codec_token_budget(len(self.tokenizer.encode(text)))
 
         # Initialize cache
         cache = self.talker.make_cache()
@@ -2606,6 +2685,7 @@ class Model(nn.Module):
                 generated_tokens=(generated_token_ids if generated_token_ids else None),
                 suppress_tokens=suppress_tokens,
                 eos_token_id=eos_token_id,
+                eos_bias=_progressive_eos_bias(step, expected_tokens),
             )
 
             # Lazy EOS check — defer sync to batch with input_embeds eval
