@@ -31,6 +31,49 @@ def revert_delay_pattern(data: mx.array) -> mx.array:
     return mx.concatenate(rows, axis=0)
 
 
+def strip_stream_marker_columns(
+    aligned: mx.array,
+    bos_id: int,
+    eos_id: int,
+) -> mx.array:
+    """Drop delay-aligned columns that still carry stream BOS/EOS markers.
+
+    After ``revert_delay_pattern``, the EOS ramp-out leaves a trailing band of
+    mixed real-codes + ``audio_stream_eos_id`` (and a leading BOS band). The
+    common ``[:, 1:-1]`` trim only removes the all-marker edges; interior
+    contaminated columns survive and then ``clip(..., codebook_size - 1)`` maps
+    EOS/BOS onto the last valid codec id (1023), which decodes as a systematic
+    end-of-utterance breath / click.
+
+    This keeps only columns where every codebook is a real codec token.
+    """
+    assert aligned.ndim == 2, f"expected 2D [K, T], got {aligned.shape}"
+    if aligned.shape[1] == 0:
+        return aligned
+
+    # CPU scan is fine: T is O(seconds * 25 Hz), and we already sync elsewhere.
+    cols = aligned.tolist()  # list of K rows, each length T
+    num_codebooks = len(cols)
+    num_frames = len(cols[0]) if num_codebooks else 0
+    keep: list[int] = []
+    for t in range(num_frames):
+        if any(cols[k][t] == bos_id or cols[k][t] == eos_id for k in range(num_codebooks)):
+            continue
+        keep.append(t)
+
+    if not keep:
+        return mx.zeros((aligned.shape[0], 0), dtype=aligned.dtype)
+    if len(keep) == num_frames:
+        return aligned
+
+    # Contiguous keep range when markers only contaminate edges (normal case).
+    if keep[-1] - keep[0] + 1 == len(keep):
+        return aligned[:, keep[0] : keep[-1] + 1]
+
+    parts = [aligned[:, t : t + 1] for t in keep]
+    return mx.concatenate(parts, axis=1)
+
+
 def apply_delay_pattern(codebook_ids: mx.array, bos_id: int) -> mx.array:
     """Apply the delay pattern to a sequence of aligned codebook frames.
 

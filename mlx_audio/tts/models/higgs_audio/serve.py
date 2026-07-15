@@ -36,6 +36,7 @@ from .generation import (
     build_delay_pattern_mask,
     lookup_audio_embedding,
     revert_delay_pattern,
+    strip_stream_marker_columns,
 )
 from .higgs_audio import HiggsAudioModel
 
@@ -649,9 +650,13 @@ def iter_overlap_add_pcm(
     def _decode_current() -> Optional[np.ndarray]:
         sequence = mx.stack(frames_raw, axis=1).astype(mx.int32)
         aligned = revert_delay_pattern(sequence)
-        if aligned.shape[1] < 2:
+        if aligned.shape[1] == 0:
             return None
-        aligned = aligned[:, 1:-1]
+        aligned = strip_stream_marker_columns(
+            aligned,
+            bos_id=config.audio_stream_bos_id,
+            eos_id=config.audio_stream_eos_id,
+        )
         if aligned.shape[1] == 0:
             return None
         aligned = mx.clip(aligned, 0, audio_codebook_size - 1)

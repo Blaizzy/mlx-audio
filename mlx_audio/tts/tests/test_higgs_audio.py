@@ -13,6 +13,7 @@ from mlx_audio.tts.models.higgs_audio.generation import (
     lookup_audio_embedding,
     revert_delay_pattern,
     sample_audio,
+    strip_stream_marker_columns,
 )
 from mlx_audio.tts.models.higgs_audio.higgs_audio import HiggsAudioModel
 
@@ -77,6 +78,39 @@ class TestDelayPattern(unittest.TestCase):
         # After revert, shape is [K, L+K-1-K+1] = [K, L]
         self.assertEqual(reverted.shape, (K, L))
         np.testing.assert_array_equal(np.array(reverted), np.array(content))
+
+
+class TestStripStreamMarkerColumns(unittest.TestCase):
+    """EOS/BOS marker columns must not survive into codec decode."""
+
+    def test_strips_mixed_eos_tail_that_one_colon_misses(self):
+        """[:, 1:-1] leaves mixed EOS+code columns; strip removes them."""
+        bos_id, eos_id = 1024, 1025
+        # [K=4, T=6]: leading BOS, clean middle, trailing mixed/full EOS
+        aligned = mx.array(
+            [
+                [bos_id, 10, 11, 12, eos_id, eos_id],
+                [bos_id, 20, 21, eos_id, eos_id, 25],
+                [bos_id, 30, 31, 32, eos_id, 35],
+                [bos_id, 40, 41, 42, 43, eos_id],
+            ],
+            dtype=mx.int32,
+        )
+        naive = np.array(aligned[:, 1:-1])
+        self.assertTrue(np.any(naive == eos_id), "precondition: naive trim keeps EOS")
+
+        cleaned = strip_stream_marker_columns(aligned, bos_id=bos_id, eos_id=eos_id)
+        cleaned_np = np.array(cleaned)
+        self.assertEqual(cleaned_np.shape, (4, 2))
+        np.testing.assert_array_equal(
+            cleaned_np, np.array([[10, 11], [20, 21], [30, 31], [40, 41]])
+        )
+        self.assertFalse(np.any((cleaned_np == bos_id) | (cleaned_np == eos_id)))
+
+    def test_strip_noop_on_clean_codes(self):
+        aligned = mx.arange(12, dtype=mx.int32).reshape(3, 4)
+        out = strip_stream_marker_columns(aligned, bos_id=1024, eos_id=1025)
+        np.testing.assert_array_equal(np.array(out), np.array(aligned))
 
 
 class TestAudioEmbedding(unittest.TestCase):

@@ -29,6 +29,7 @@ from .generation import (
     lookup_audio_embedding,
     revert_delay_pattern,
     sample_audio,
+    strip_stream_marker_columns,
 )
 
 
@@ -433,10 +434,11 @@ class HiggsAudioModel(nn.Module):
                 through the audio dual-FFN path.
             max_new_frames: hard cap on generation length.
             temperature / top_p / top_k: sampling controls.
-            trim_boundaries: drop the synthetic BOS-seed (col 0) and EOS-seal
-                (col -1) columns after revert_delay_pattern. Default True;
-                required for clean codec decode (otherwise those columns
-                clip to codec token 1023 → audible click at sample-zero and end).
+            trim_boundaries: drop delay-pattern columns that still carry stream
+                BOS/EOS markers after revert (leading AUDIO_INIT / trailing EOS
+                ramp). Default True; required for clean codec decode — otherwise
+                ``clip`` maps those markers onto the last codec id and they
+                decode as a systematic breath/click at the ends.
 
         Returns:
             (aligned_tokens, info):
@@ -467,8 +469,12 @@ class HiggsAudioModel(nn.Module):
 
         sequence = mx.stack(frames, axis=1).astype(mx.int32)  # [K, N]
         aligned = revert_delay_pattern(sequence)  # [K, N-K+1]
-        if trim_boundaries and aligned.shape[1] >= 2:
-            aligned = aligned[:, 1:-1]
+        if trim_boundaries and aligned.shape[1] > 0:
+            aligned = strip_stream_marker_columns(
+                aligned,
+                bos_id=self.config.audio_stream_bos_id,
+                eos_id=self.config.audio_stream_eos_id,
+            )
         aligned = mx.clip(aligned, 0, self.config.audio_codebook_size - 1)
         info = {
             "num_frames_raw": sequence.shape[1],
