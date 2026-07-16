@@ -144,8 +144,28 @@ def _model_accepts_ref_text(model: nn.Module) -> bool:
         return False
 
 
+def _model_bool_flag(model: nn.Module, name: str, default: bool) -> bool:
+    value = inspect.getattr_static(model, name, default)
+    if isinstance(value, bool):
+        return value
+    return default
+
+
 def _model_preserves_ref_audio_paths(model: nn.Module) -> bool:
-    return getattr(model, "preserve_ref_audio_path", False) is True
+    return _model_bool_flag(model, "preserve_ref_audio_path", False)
+
+
+def _model_supports_multiple_references(model: nn.Module) -> bool:
+    return _model_bool_flag(model, "supports_multiple_references", True)
+
+
+def _should_preserve_ref_audio_path_item(model: nn.Module, ref_audio_item: Any) -> bool:
+    if not _model_preserves_ref_audio_paths(model):
+        return False
+    if not isinstance(ref_audio_item, (str, PathLike)):
+        return False
+    suffix = os.path.splitext(os.fspath(ref_audio_item))[1].lower()
+    return suffix in {".wav", ".wave"}
 
 
 def generate_audio(
@@ -176,6 +196,7 @@ def generate_audio(
     streaming_interval: float = 2.0,
     save: bool = False,
     use_zero_spk_emb: bool = False,
+    subdir: Optional[str] = None,
     **kwargs,
 ) -> None:
     """
@@ -212,7 +233,7 @@ def generate_audio(
 
         if isinstance(model, str):
             # Load model
-            model = load_model(model_path=model)
+            model = load_model(model_path=model, subdir=subdir)
 
         ref_audio_values = _as_reference_list(ref_audio)
         ref_text_values = _as_reference_list(ref_text)
@@ -226,6 +247,13 @@ def generate_audio(
             raise ValueError(
                 "Multiple ref_text values require matching ref_audio values."
             )
+        if not _model_supports_multiple_references(model) and (
+            len(ref_audio_values) > 1 or len(ref_text_values) > 1
+        ):
+            raise ValueError(
+                f"{getattr(model, 'model_type', 'This model')} supports only a single "
+                "ref_audio/ref_text pair."
+            )
 
         # Load reference audio for voice matching if specified. Some models own
         # reference preprocessing and should receive paths unchanged.
@@ -235,27 +263,17 @@ def generate_audio(
                 normalize = True
 
             preserve_ref_paths = _model_preserves_ref_audio_paths(model)
-            if preserve_ref_paths:
-                loaded_ref_audio = []
-                for ref_audio_item in ref_audio_values:
-                    if isinstance(ref_audio_item, (str, PathLike)):
-                        ref_audio_path = os.fspath(ref_audio_item)
-                        if not os.path.exists(ref_audio_path):
-                            raise FileNotFoundError(
-                                f"Reference audio file not found: {ref_audio_path}"
-                            )
+            loaded_ref_audio = []
+            for ref_audio_item in ref_audio_values:
+                if isinstance(ref_audio_item, (str, PathLike)):
+                    ref_audio_path = os.fspath(ref_audio_item)
+                    if not os.path.exists(ref_audio_path):
+                        raise FileNotFoundError(
+                            f"Reference audio file not found: {ref_audio_path}"
+                        )
+                    if _should_preserve_ref_audio_path_item(model, ref_audio_item):
                         loaded_ref_audio.append(ref_audio_path)
                     else:
-                        loaded_ref_audio.append(ref_audio_item)
-            else:
-                loaded_ref_audio = []
-                for ref_audio_item in ref_audio_values:
-                    if isinstance(ref_audio_item, (str, PathLike)):
-                        ref_audio_path = os.fspath(ref_audio_item)
-                        if not os.path.exists(ref_audio_path):
-                            raise FileNotFoundError(
-                                f"Reference audio file not found: {ref_audio_path}"
-                            )
                         loaded_ref_audio.append(
                             load_audio(
                                 ref_audio_path,
@@ -263,13 +281,15 @@ def generate_audio(
                                 volume_normalize=normalize,
                             )
                         )
-                    else:
-                        loaded_ref_audio.append(ref_audio_item)
+                else:
+                    loaded_ref_audio.append(ref_audio_item)
             ref_audio = _collapse_reference_list(loaded_ref_audio)
 
             if ref_text_values:
                 ref_text = _collapse_reference_list(ref_text_values)
-            elif preserve_ref_paths:
+            elif preserve_ref_paths and any(
+                isinstance(item, (str, PathLike)) for item in loaded_ref_audio
+            ):
                 ref_text = None
             elif _model_accepts_ref_text(model):
                 if stt_model is None:
@@ -442,11 +462,13 @@ def generate_audio(
         print(
             "This might be due to incorrect Python path. Check your project structure."
         )
+        raise
     except Exception as e:
         print(f"Error loading model: {e}")
         import traceback
 
         traceback.print_exc()
+        raise
 
 
 def parse_args():
@@ -561,6 +583,15 @@ def parse_args():
     parser.add_argument("--play", action="store_true", help="Play the output audio")
     parser.add_argument(
         "--audio_format", type=str, default="wav", help="Output audio format"
+    )
+    parser.add_argument(
+        "--subdir",
+        type=str,
+        default=None,
+        help=(
+            "Optional checkpoint subdir for multi-variant repos such as Dots. "
+            "Defaults to int4 when loading a Dots multi-variant root."
+        ),
     )
     parser.add_argument(
         "--ref_audio",

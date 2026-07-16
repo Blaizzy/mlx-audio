@@ -12,11 +12,15 @@ from mlx.utils import tree_flatten
 from mlx_audio.utils import (
     base_load_model,
     get_model_class,
+    get_model_name_parts,
     get_model_path,
     load_config,
 )
 
 MODEL_REMAPPING = {
+    "dots": "dots",
+    "dots_tts": "dots",
+    "dots_tts_mlx": "dots",
     "qwen3_tts": "qwen3_tts",
     "outetts": "outetts",
     "spark": "spark",
@@ -47,6 +51,49 @@ MODEL_REMAPPING = {
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
+
+_DOTS_MODEL_TYPES = {"dots", "dots_tts", "dots_tts_mlx"}
+_DOTS_DEFAULT_SUBDIR = "int4"
+_DOTS_REQUIRED_FILES = {
+    "config.json",
+    "llm_config.json",
+    "core.safetensors",
+    "vocoder.safetensors",
+    "speaker.safetensors",
+}
+
+
+def _looks_like_dots_checkpoint(
+    model_path: Path, config: Optional[dict] = None
+) -> bool:
+    config = config or {}
+    model_type = config.get("model_type") or config.get("architecture")
+    if isinstance(model_type, str) and model_type.lower() in _DOTS_MODEL_TYPES:
+        return True
+    if not model_path.exists() or not model_path.is_dir():
+        return False
+    names = {item.name for item in model_path.iterdir()}
+    return _DOTS_REQUIRED_FILES.issubset(names)
+
+
+def _load_config_if_exists(model_path: Path) -> dict:
+    config_path = model_path / "config.json"
+    if not config_path.exists():
+        return {}
+    return load_config(model_path)
+
+
+def _has_dots_model_hint(model_name_parts: List[str]) -> bool:
+    return any(part == "dots" or part in _DOTS_MODEL_TYPES for part in model_name_parts)
+
+
+def _looks_like_dots_variant_root(
+    model_path: Path, subdir: Optional[str] = None
+) -> bool:
+    variant_path = model_path / (subdir or _DOTS_DEFAULT_SUBDIR)
+    return _looks_like_dots_checkpoint(
+        variant_path, _load_config_if_exists(variant_path)
+    )
 
 
 # Get a list of all available model types from the models directory
@@ -98,9 +145,10 @@ def get_model_and_args(model_type: str, model_name: List[str]) -> Tuple[Any, str
 
 
 def load_model(
-    model_path: Path,
+    model_path: Union[str, Path],
     lazy: bool = False,
     strict: bool = True,
+    subdir: Optional[str] = None,
     **kwargs: Any,
 ) -> nn.Module:
     """
@@ -119,10 +167,51 @@ def load_model(
         FileNotFoundError: If the weight files (.safetensors) are not found.
         ValueError: If the model class or args class are not found or cannot be instantiated.
     """
+    model_name_parts = get_model_name_parts(model_path)
+    resolved_model_path = None
+
+    if isinstance(model_path, Path):
+        resolved_model_path = model_path.expanduser()
+    elif isinstance(model_path, str):
+        candidate = Path(model_path).expanduser()
+        if candidate.exists():
+            resolved_model_path = candidate
+        elif _has_dots_model_hint(model_name_parts):
+            from mlx_audio.tts.models import dots
+
+            return dots.load_model(
+                model_path=model_path,
+                lazy=lazy,
+                strict=strict,
+                subdir=subdir,
+                **kwargs,
+            )
+
+    if resolved_model_path is not None and (
+        _has_dots_model_hint(model_name_parts)
+        or _looks_like_dots_checkpoint(
+            resolved_model_path, _load_config_if_exists(resolved_model_path)
+        )
+        or _looks_like_dots_variant_root(resolved_model_path, subdir=subdir)
+    ):
+        from mlx_audio.tts.models import dots
+
+        return dots.load_model(
+            model_path=resolved_model_path,
+            lazy=lazy,
+            strict=strict,
+            subdir=subdir,
+            **kwargs,
+        )
+
+    if resolved_model_path is not None:
+        model_path = resolved_model_path
+
     return base_load_model(
         model_path=model_path,
         category="tts",
         model_remapping=MODEL_REMAPPING,
+        model_name_parts=model_name_parts,
         lazy=lazy,
         strict=strict,
         **kwargs,

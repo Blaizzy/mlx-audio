@@ -298,6 +298,20 @@ class TestGenerateAudio(unittest.TestCase):
 
     @patch("builtins.print")
     @patch("mlx_audio.tts.generate.audio_write")
+    def test_generate_audio_keeps_max_tokens_as_third_positional_arg(
+        self, mock_audio_write, _mock_print
+    ):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [self._result([0.1, 0.2])]
+
+        generate_audio("hello", model, 321, verbose=False)
+
+        self.assertEqual(model.generate.call_args.kwargs["max_tokens"], 321)
+        mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
     @patch("mlx_audio.tts.generate.load_audio")
     @patch("mlx_audio.tts.generate.os.path.exists")
     def test_generate_audio_preserves_reference_paths_for_models_that_opt_in(
@@ -324,6 +338,118 @@ class TestGenerateAudio(unittest.TestCase):
         mock_load_audio.assert_not_called()
         self.assertEqual(model.generate.call_args.kwargs["ref_audio"], "speaker.wav")
         mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.load_audio")
+    @patch("mlx_audio.tts.generate.os.path.exists")
+    def test_generate_audio_decodes_non_wav_refs_for_path_preserving_models(
+        self,
+        mock_exists,
+        mock_load_audio,
+        mock_audio_write,
+        _mock_print,
+    ):
+        mock_exists.return_value = True
+        decoded_ref = mx.array([0.1, 0.2, 0.3], dtype=mx.float32)
+        mock_load_audio.return_value = decoded_ref
+        model = MagicMock()
+        model.sample_rate = 48000
+        model.preserve_ref_audio_path = True
+        model.generate.return_value = [self._result([0.1, 0.2], sample_rate=48000)]
+
+        generate_audio(
+            text="hello",
+            model=model,
+            ref_audio="speaker.mp3",
+            ref_text="reference",
+            verbose=False,
+        )
+
+        mock_exists.assert_called_once_with("speaker.mp3")
+        mock_load_audio.assert_called_once_with(
+            "speaker.mp3",
+            sample_rate=48000,
+            volume_normalize=False,
+        )
+        self.assertIs(model.generate.call_args.kwargs["ref_audio"], decoded_ref)
+        mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.load_audio")
+    @patch("mlx_audio.stt.load")
+    @patch("mlx_audio.tts.generate.os.path.exists")
+    def test_generate_audio_transcribes_decoded_non_wav_refs_when_ref_text_missing(
+        self,
+        mock_exists,
+        mock_stt_load,
+        mock_load_audio,
+        mock_audio_write,
+        _mock_print,
+    ):
+        mock_exists.return_value = True
+        decoded_ref = mx.array([0.1, 0.2, 0.3], dtype=mx.float32)
+        mock_load_audio.return_value = decoded_ref
+        stt_model = MagicMock()
+        stt_model.generate.return_value = SimpleNamespace(text="auto transcript")
+        mock_stt_load.return_value = stt_model
+
+        class DummyModel:
+            preserve_ref_audio_path = True
+            sample_rate = 48000
+
+            def __init__(self, result):
+                self._result = result
+                self.calls = []
+
+            def generate(self, text, ref_audio=None, ref_text=None, **kwargs):
+                self.calls.append(
+                    {
+                        "text": text,
+                        "ref_audio": ref_audio,
+                        "ref_text": ref_text,
+                        **kwargs,
+                    }
+                )
+                return [self._result]
+
+        model = DummyModel(self._result([0.1, 0.2], sample_rate=48000))
+
+        generate_audio(
+            text="hello",
+            model=model,
+            ref_audio="speaker.mp3",
+            ref_text=None,
+            verbose=False,
+        )
+
+        mock_load_audio.assert_called_once_with(
+            "speaker.mp3",
+            sample_rate=48000,
+            volume_normalize=False,
+        )
+        stt_model.generate.assert_called_once_with(decoded_ref)
+        self.assertEqual(model.calls[0]["ref_text"], "auto transcript")
+        mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    def test_generate_audio_rejects_multiple_refs_for_single_reference_models(
+        self, _mock_print
+    ):
+        model = MagicMock()
+        model.sample_rate = 48000
+        model.model_type = "dots"
+        model.supports_multiple_references = False
+
+        with self.assertRaisesRegex(ValueError, "single ref_audio/ref_text pair"):
+            generate_audio(
+                text="hello",
+                model=model,
+                ref_audio=["s1.wav", "s2.wav"],
+                ref_text=["speaker one", "speaker two"],
+                verbose=False,
+            )
 
     @patch("builtins.print")
     @patch("mlx_audio.tts.generate.audio_write")
