@@ -17,6 +17,9 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "dots": "dots_tts",
+    "dots_tts": "dots_tts",
+    "dots_tts_mlx": "dots_tts",
     "qwen3_tts": "qwen3_tts",
     "outetts": "outetts",
     "spark": "spark",

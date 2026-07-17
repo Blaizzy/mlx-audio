@@ -89,6 +89,7 @@ nav:
       - CSM: models/tts/csm.md
       - Dia: models/tts/dia.md
       - Chatterbox: models/tts/chatterbox.md
+      - Dots TTS: models/tts/dots.md
     - Speech-to-Text:
       - models/stt/index.md
       - Whisper: models/stt/whisper.md

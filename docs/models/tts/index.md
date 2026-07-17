@@ -17,6 +17,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [**CSM / MisoTTS**](csm.md) | 1B / 8B | EN | Yes | Yes | Sesame-style conversational speech, voice cloning, multi-turn context |
 | [**Dia**](dia.md) | 1.6B | EN | -- | -- | Dialogue with `[S1]`/`[S2]` speaker tags |
 | [**Chatterbox**](chatterbox.md) | -- | EN + 15 languages | Yes | -- | Expressive, emotion exaggeration control |
+| [**Dots TTS**](dots.md) | -- | 24 languages | Yes | -- | 48 kHz multilingual cloning with transcript-conditioned prompts |
 | [KugelAudio](kugelaudio.md) | 7B | 24 European languages | -- | -- | VibeVoice-based multilingual TTS with diffusion decoding |
 | [Spark](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/spark) | 0.5B | EN, ZH | -- | -- | SparkTTS model |
 | [OuteTTS](https://huggingface.co/mlx-community/OuteTTS-1.0-0.6B-fp16) | 0.6B | EN | -- | -- | Efficient TTS |
