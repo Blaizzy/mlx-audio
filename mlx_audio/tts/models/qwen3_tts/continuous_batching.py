@@ -55,7 +55,7 @@ class Qwen3TTSBatchSession:
         self._pending: List[TTSBatchItem] = []
         self._active: List[_ActiveRequest] = []
         self._start_time = time.time()
-        self._step_count = 0
+        self._cache_cleared = True
 
     @property
     def idle(self) -> bool:
@@ -66,6 +66,8 @@ class Qwen3TTSBatchSession:
         return max(0, self.options.max_batch_size - len(self._active))
 
     def add(self, items: list[TTSBatchItem]) -> None:
+        if items:
+            self._cache_cleared = False
         self._pending.extend(items)
 
     def cancel(self, sequence_id: int) -> None:
@@ -75,6 +77,7 @@ class Qwen3TTSBatchSession:
         self._active = [
             state for state in self._active if state.sequence_id != sequence_id
         ]
+        self._clear_cache_if_idle()
 
     def step(self) -> list[TTSBatchEvent]:
         events: list[TTSBatchEvent] = []
@@ -84,11 +87,14 @@ class Qwen3TTSBatchSession:
         if self.available_slots > 0 and self._pending:
             events.extend(self._admit_pending())
 
-        self._step_count += 1
-        if self._step_count > 0 and self._step_count % 50 == 0:
-            mx.clear_cache()
+        self._clear_cache_if_idle()
 
         return events
+
+    def _clear_cache_if_idle(self) -> None:
+        if self.idle and not self._cache_cleared:
+            mx.clear_cache()
+            self._cache_cleared = True
 
     def _take_pending_batch(self) -> list[TTSBatchItem]:
         batch_size = min(self.available_slots, len(self._pending))

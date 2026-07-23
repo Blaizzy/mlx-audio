@@ -1408,10 +1408,6 @@ class Model(nn.Module):
                 generated_token_ids.append(int(next_token[0, 0]))
                 generated_codes.append(all_codes)
 
-                # Periodically clear cache to prevent memory buildup during long generation
-                if step > 0 and step % 50 == 0:
-                    mx.clear_cache()
-
                 # Update progress bar
                 pbar.update(1)
 
@@ -1471,7 +1467,6 @@ class Model(nn.Module):
                     )
 
                     chunk_start_time = time.time()
-                    mx.clear_cache()
 
             pbar.close()
 
@@ -1577,9 +1572,7 @@ class Model(nn.Module):
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
 
-            # Clear cache between segments
-
-            mx.clear_cache()
+        mx.clear_cache()
 
     @staticmethod
     def _same_shared_ref_value(left, right) -> bool:
@@ -1946,9 +1939,6 @@ class Model(nn.Module):
                     [attention_mask, mx.ones((batch_size, 1))], axis=1
                 )
 
-            if step > 0 and step % 50 == 0:
-                mx.clear_cache()
-
             pbar.update(1)
 
             # Streaming: decode context + new tokens, yield only new audio
@@ -2037,14 +2027,13 @@ class Model(nn.Module):
                         is_streaming_chunk=True,
                         is_final_chunk=True,
                     )
+            mx.clear_cache()
             return
 
         # Non-streaming: free generation state before decoding
         elapsed_time = time.time() - start_time
         del cache, attention_mask, input_embeds, trailing_text_hidden
         del tts_pad_embed, trailing_indices, finished, eos_fill
-        mx.clear_cache()
-
         for b in range(batch_size):
             if not generated_codes[b]:
                 continue
@@ -2069,7 +2058,8 @@ class Model(nn.Module):
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
             )
             del audio
-            mx.clear_cache()
+
+        mx.clear_cache()
 
     def generate_custom_voice(
         self,
@@ -2360,10 +2350,6 @@ class Model(nn.Module):
             generated_token_ids.append(int(next_token[0, 0]))
             generated_codes.append(all_codes)
 
-            # Periodically clear cache to prevent memory buildup during long generation
-            if step > 0 and step % 50 == 0:
-                mx.clear_cache()
-
             pbar.update(1)
 
             # Streaming: incrementally decode only new tokens
@@ -2411,7 +2397,6 @@ class Model(nn.Module):
                 )
 
                 chunk_start_time = time.time()
-                mx.clear_cache()
 
         pbar.close()
 
@@ -2464,6 +2449,7 @@ class Model(nn.Module):
             return
 
         if not generated_codes:
+            mx.clear_cache()
             return
 
         # Stack generated codes
@@ -2672,10 +2658,6 @@ class Model(nn.Module):
             generated_token_ids.append(int(next_token[0, 0]))
             generated_codes.append(all_codes)
 
-            # Periodically clear cache to prevent memory buildup during long generation
-            if step > 0 and step % 50 == 0:
-                mx.clear_cache()
-
             pbar.update(1)
 
             # Streaming: incrementally decode only new tokens
@@ -2723,7 +2705,6 @@ class Model(nn.Module):
                 )
 
                 chunk_start_time = time.time()
-                mx.clear_cache()
 
         pbar.close()
 
@@ -2776,6 +2757,7 @@ class Model(nn.Module):
             return
 
         if not generated_codes:
+            mx.clear_cache()
             return
 
         # Stack all generated codes
