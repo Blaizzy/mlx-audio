@@ -248,9 +248,27 @@ async def _preflight_model_load(model_name: str) -> None:
     surfaces as 200 OK with an empty body. Pre-flighting the load here lets the
     framework's exception handlers turn the failure into a real HTTP error
     response. Warm models are a no-op (``ModelProvider.load_model`` is cached).
+
+    The load is routed through the inference broker rather than
+    ``asyncio.to_thread``: MLX arrays are anchored to the stream of the thread
+    that materializes them, so a model loaded (and cached) on a transient
+    threadpool thread fails later on the broker thread with
+    ``RuntimeError: There is no Stream(gpu, 1) in current thread.``
+    Loading on the broker thread keeps model load and inference on the same
+    persistent thread.
     """
     try:
-        await asyncio.to_thread(_load_model_for_inference, model_name)
+        handle = get_inference_broker().submit(
+            endpoint_kind="model_load",
+            model_name=model_name,
+            payload=None,
+        )
+        while True:
+            chunk = await asyncio.to_thread(handle.result_queue.get)
+            if chunk.kind == "error":
+                raise chunk.error
+            if chunk.kind == "done":
+                break
     except HTTPException:
         raise
     except RepositoryNotFoundError as exc:
@@ -263,6 +281,19 @@ async def _preflight_model_load(model_name: str) -> None:
             status_code=500,
             detail=f"Failed to load model {model_name!r}: {exc}",
         ) from exc
+
+
+class ModelLoadExecutionAdapter(BaseModelExecutionAdapter):
+    """Load (and cache) a model on the broker thread without running inference.
+
+    Used by ``_preflight_model_load``. MLX arrays are anchored to the stream of
+    the thread that materializes them, so models must be loaded on the same
+    persistent thread that later evaluates them.
+    """
+
+    def run_serial(self, request: InferenceRequest) -> None:
+        _load_model_for_inference(request.model_name)
+        request.emit_done()
 
 
 _STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
@@ -824,6 +855,7 @@ def get_inference_broker() -> InferenceBroker:
     global INFERENCE_BROKER
     if INFERENCE_BROKER is None:
         broker = InferenceBroker()
+        broker.register_adapter("model_load", ModelLoadExecutionAdapter())
         broker.register_adapter("stt", STTExecutionAdapter())
         broker.register_adapter("tts", TTSExecutionAdapter())
         broker.register_adapter("separation", SeparationExecutionAdapter())
