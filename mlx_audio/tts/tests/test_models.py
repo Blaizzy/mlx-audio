@@ -3023,6 +3023,37 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             # token_count should be <= 2
             self.assertLessEqual(results[0].token_count, 2)
 
+    def test_generate_icl_streaming_clears_cache_once_at_end(self):
+        """Streaming avoids cache clears in the token and vocoder hot paths."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        model.speech_tokenizer.decoder.streaming_step.side_effect = (
+            lambda codes: mx.ones((1, 1, codes.shape[-1] * 1920))
+        )
+
+        with (
+            patch.object(model, "_sample_token", return_value=mx.array([[5]])),
+            patch(
+                "mlx_audio.tts.models.qwen3_tts.qwen3_tts.mx.clear_cache"
+            ) as mock_clear_cache,
+        ):
+            results = list(
+                model._generate_icl(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    max_tokens=51,
+                    repetition_penalty=1.5,
+                    stream=True,
+                    streaming_interval=0.1,
+                )
+            )
+
+        self.assertEqual(len(results), 51)
+        self.assertEqual(model.speech_tokenizer.decoder.streaming_step.call_count, 51)
+        mock_clear_cache.assert_called_once_with()
+
     def test_generate_icl_repetition_penalty_applied(self):
         """Test that repetition penalty is applied during generation."""
         model = self._make_icl_model()
@@ -3280,6 +3311,9 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             ),
             patch.object(model, "_sample_token_batch", side_effect=sample_batch),
             patch.object(model, "_predict_code_tokens", side_effect=predict_codes),
+            patch(
+                "mlx_audio.tts.models.qwen3_tts.qwen3_tts.mx.clear_cache"
+            ) as mock_clear_cache,
         ):
             results = list(
                 model.batch_generate(
@@ -3296,6 +3330,7 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         self.assertEqual(model.speech_tokenizer.decode.call_count, 2)
         decoded_codes = model.speech_tokenizer.decode.call_args_list[0][0][0]
         self.assertEqual(decoded_codes.shape[1], 6)  # ref_time(5) + generated(1)
+        mock_clear_cache.assert_called_once_with()
 
     def test_batch_generate_rejects_mixed_refs(self):
         """Qwen3 batch ICL currently accepts only one shared reference pair."""
@@ -3465,6 +3500,38 @@ class TestQwen3TTSStreamingDecode(unittest.TestCase):
 
         # streaming_interval=0.1 -> 1 token (minimum)
         self.assertEqual(max(1, int(0.1 * 12.5)), 1)
+
+    def test_non_streaming_generation_clears_cache_once_at_end(self):
+        """Standard generation clears the cache only after the final result."""
+        model = self._make_model()
+        hidden_size = model.config.talker_config.hidden_size
+        prepared_inputs = (
+            mx.zeros((1, 1, hidden_size)),
+            mx.zeros((1, 1, hidden_size)),
+            mx.zeros((1, 1, hidden_size)),
+        )
+
+        with (
+            patch.object(
+                model, "_prepare_generation_inputs", return_value=prepared_inputs
+            ),
+            patch.object(model, "_sample_token", return_value=mx.array([[5]])),
+            patch(
+                "mlx_audio.tts.models.qwen3_tts.qwen3_tts.mx.clear_cache"
+            ) as mock_clear_cache,
+        ):
+            results = list(
+                model.generate(
+                    text="Hello",
+                    max_tokens=51,
+                    stream=False,
+                    split_pattern="",
+                )
+            )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].token_count, 51)
+        mock_clear_cache.assert_called_once_with()
 
 
 @patch("importlib.resources.open_text", patched_open_text)

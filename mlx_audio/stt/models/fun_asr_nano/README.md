@@ -31,7 +31,7 @@ mlx_audio.stt.generate \
   --audio audio.wav \
   --output-path transcript \
   --language zh \
-  --gen-kwargs '{"hotwords": ["开放时间"]}'
+  --context "开放时间, 地址"
 ```
 
 ## Options
@@ -43,6 +43,10 @@ Hotwords can be supplied as a list of domain terms:
 ```python
 result = model.generate("audio.wav", language="zh", hotwords=["开放时间", "地址"])
 ```
+
+The shared CLI and OpenAI-compatible server API expose contextual biasing as a
+single `context` string. It is an alias for `hotwords`; non-empty values are
+mutually exclusive.
 
 Inverse text normalization is enabled by default. Set `itn=False` to ask the model to keep spoken-form text:
 

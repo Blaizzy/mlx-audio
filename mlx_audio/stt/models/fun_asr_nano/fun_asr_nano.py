@@ -396,6 +396,23 @@ class FunASRNano(nn.Module):
         return language
 
     @staticmethod
+    def _resolve_hotwords(
+        hotwords: Optional[Iterable[str]], context: Optional[str]
+    ) -> Optional[List[str]]:
+        resolved_hotwords = []
+        if hotwords is not None:
+            for item in hotwords:
+                word = item.strip()
+                if word:
+                    resolved_hotwords.append(word)
+        context = context.strip() if context is not None else ""
+        if resolved_hotwords and context:
+            raise ValueError("Pass either hotwords or context, not both.")
+        if resolved_hotwords:
+            return resolved_hotwords
+        return [context] if context else None
+
+    @staticmethod
     def _prompt_text(
         hotwords: Optional[Iterable[str]] = None,
         language: Optional[str] = None,
@@ -475,11 +492,13 @@ class FunASRNano(nn.Module):
         logits_processors=None,
         language: Optional[str] = None,
         hotwords: Optional[Iterable[str]] = None,
+        context: Optional[str] = None,
         itn: bool = True,
         prefill_step_size: int = 2048,
     ):
         from mlx_lm.generate import generate_step
 
+        hotwords = self._resolve_hotwords(hotwords, context)
         input_ids, inputs_embeds = self._build_inputs_embeds(
             audio, language=language, hotwords=hotwords, itn=itn
         )
@@ -558,6 +577,7 @@ class FunASRNano(nn.Module):
         repetition_context_size: int = 100,
         language: Optional[str] = None,
         hotwords: Optional[Iterable[str]] = None,
+        context: Optional[str] = None,
         itn: bool = True,
         prefill_step_size: int = 2048,
         chunk_duration: float = 1200.0,
@@ -572,6 +592,7 @@ class FunASRNano(nn.Module):
         del verbose, kwargs
         start_time = time.time()
         max_tokens = int(max_tokens or self.config.default_max_tokens)
+        hotwords = self._resolve_hotwords(hotwords, context)
 
         audio_input = audio[0] if isinstance(audio, list) else audio
         if isinstance(audio_input, (str, Path)):

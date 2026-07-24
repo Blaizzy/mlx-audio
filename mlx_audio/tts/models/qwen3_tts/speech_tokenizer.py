@@ -1176,8 +1176,6 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
             audios.append(audio)
 
         del wav_batch, batch_codes, codes_t
-        mx.clear_cache()
-
         return audios, audio_lengths
 
     def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 100):
@@ -1215,9 +1213,6 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
             mx.eval(wav_chunk)
 
             yield wav_chunk
-
-            # Clear cache after each chunk
-            mx.clear_cache()
 
             start_index = end_index
 

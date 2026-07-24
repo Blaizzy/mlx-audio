@@ -96,6 +96,7 @@ class TestBatchedGeneration(unittest.TestCase):
             [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
             max_tokens=3,
             sampler=lambda logits: next(sampler_outputs),
+            logits_processors=None,
             language="en",
             system_prompt=None,
             batch_size=2,
@@ -106,6 +107,43 @@ class TestBatchedGeneration(unittest.TestCase):
         self.assertEqual(texts, ["10 11", "20"])
         self.assertEqual(prompt_tokens, [1, 1])
         self.assertEqual(processed, [True, True])
+
+    def test_batched_generation_applies_logits_processors_per_row(self):
+        model = self.make_minimal_model()
+        sampler_outputs = iter(
+            [
+                mx.array([10, 20]),
+                mx.array([11, 21]),
+                mx.array([12, 22]),
+            ]
+        )
+        histories = []
+        processed_logits = []
+
+        def record_history(tokens, logits):
+            histories.append(tokens.tolist())
+            return logits + len(histories)
+
+        def sample(logits):
+            processed_logits.append(logits[:, 0].tolist())
+            return next(sampler_outputs)
+
+        model._generate_chunks_batched(
+            [(np.zeros(4), 0.0), (np.zeros(4), 1.0)],
+            max_tokens=3,
+            sampler=sample,
+            logits_processors=[record_history],
+            language="en",
+            system_prompt=None,
+            batch_size=2,
+            verbose=False,
+        )
+
+        self.assertEqual(
+            histories,
+            [[0], [0], [0, 10], [0, 20], [0, 10, 11], [0, 20, 21]],
+        )
+        self.assertEqual(processed_logits, [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
 
     def test_generate_rejects_invalid_batch_size(self):
         model = self.make_minimal_model()
@@ -132,6 +170,9 @@ class TestBatchedGeneration(unittest.TestCase):
         self.assertEqual(out.generation_tokens, 2)
         self.assertEqual(len(out.segments), 2)
         model._generate_chunks_batched.assert_called_once()
+        self.assertIsNone(
+            model._generate_chunks_batched.call_args.kwargs["logits_processors"]
+        )
 
 
 if __name__ == "__main__":
