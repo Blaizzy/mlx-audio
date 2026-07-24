@@ -37,7 +37,8 @@ The converted directory is directly uploadable to Hugging Face as `mlx-community
       --model mlx-community/Fun-ASR-Nano-2512 \
       --audio audio.wav \
       --output-path transcript \
-      --language zh
+      --language zh \
+      --context "开放时间, 地址"
     ```
 
 ## Options
@@ -45,6 +46,10 @@ The converted directory is directly uploadable to Hugging Face as `mlx-community
 `language` accepts ISO hints for the current Nano checkpoint: `zh`, Chinese dialect codes that map to the Chinese prompt (`yue`, `wuu`, `nan`, `hak`, `gan`, `hsn`, `cjy`), `en`, and `ja`. Pass `None` or `auto` to omit the language constraint.
 
 `hotwords` accepts a list of domain terms to include in the upstream prompt.
+The shared CLI and server `context` string is supported as an alias, so the same
+contextual biasing works through `mlx_audio.stt.generate --context ...` and
+`POST /v1/audio/transcriptions`. Non-empty `hotwords` and `context` values are
+mutually exclusive.
 
 `itn=False` asks the model to skip inverse text normalization.
 
