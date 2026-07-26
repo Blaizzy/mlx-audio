@@ -507,6 +507,10 @@ class MLXSTFT:
             x_stft = real_part + 1j * imag_part
 
             # Inverse STFT
+            # normalized=True selects window-squared (COLA) overlap-add
+            # normalization, matching torch.istft. The plain-window default
+            # attenuates the waveform by sum(w^2)/sum(w) = 0.75 (-2.5 dB) for
+            # Kokoro's periodic-hann win=4*hop configuration.
             audio = istft(
                 x_stft,
                 hop_length=self.hop_length,
@@ -514,6 +518,7 @@ class MLXSTFT:
                 window=self.window,
                 center=True,
                 length=None,
+                normalized=True,
             )
 
             reconstructed.append(audio)
@@ -560,7 +565,8 @@ class SineGen:
         # because 2 * np.pi * n doesn't affect phase
         rad_values = (f0_values / self.sampling_rate) % 1
         # initial phase noise (no noise for fundamental component)
-        rand_ini = mx.random.normal((f0_values.shape[0], f0_values.shape[2]))
+        # torch reference uses rand() — UNIFORM [0,1) phase offsets, not normal
+        rand_ini = mx.random.uniform(shape=(f0_values.shape[0], f0_values.shape[2]))
         rand_ini[:, 0] = 0
         rad_values[:, 0, :] = rad_values[:, 0, :] + rand_ini
         # instantanouse phase sine[t] = sin(2*pi \sum_i=1 ^{t} rad)
@@ -885,10 +891,18 @@ class AdainResBlk1d(nn.Module):
         x = self.norm1(x, s)
         x = self.actv(x)
 
-        # Manually implement grouped ConvTranspose1d since MLX doesn't support groups
+        # torch ConvTranspose1d(k=3, stride=2, padding=1, output_padding=1)
+        # maps T -> 2T by trimming one sample from the LEFT of the unpadded
+        # (2T+1) transpose-conv output. Left-zero-padding the padding=1 output
+        # instead shifts the residual branch one frame against the shortcut
+        # and replaces a computed tail sample with 0.
         x = x.swapaxes(2, 1)
-        x = self.pool(x, mx.conv_transpose1d) if self.upsample_type != "none" else x
-        x = mx.pad(x, ((0, 0), (1, 0), (0, 0))) if self.upsample_type != "none" else x
+        if self.upsample_type != "none":
+            orig_pad = self.pool.padding
+            self.pool.padding = 0
+            x = self.pool(x, mx.conv_transpose1d)
+            self.pool.padding = orig_pad
+            x = x[:, 1:, :]
         x = x.swapaxes(2, 1)
 
         x = x.swapaxes(2, 1)
