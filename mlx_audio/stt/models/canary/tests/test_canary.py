@@ -1,4 +1,10 @@
+import base64
+import io
+import json
+import math
+import tempfile
 import unittest
+from pathlib import Path
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -12,10 +18,12 @@ from mlx_audio.stt.models.canary.config import (
 )
 from mlx_audio.stt.models.canary.decoder import (
     CanaryDecoder,
+    FixedPositionalEncoding,
     MultiHeadCrossAttention,
     MultiHeadSelfAttention,
     TransformerDecoderBlock,
 )
+from mlx_audio.stt.models.canary.tokenizer import CanaryTokenizer
 
 
 def _small_encoder_config():
@@ -315,6 +323,312 @@ class TestModelSanitize(unittest.TestCase):
         weights = {"encoder_decoder_proj.weight": mx.zeros((32, 32))}
         sanitized = self.model.sanitize(weights)
         self.assertEqual(len(sanitized), 0)
+
+
+class TestModelSanitizeMLXNative(unittest.TestCase):
+    """MLX-native conversions (e.g. qfuxa/canary-mlx, Mediform/canary-1b-v2-mlx-q8)
+    already use MLX tensor layouts and flattened key names, so they must be
+    remapped *without* re-transposing conv weights."""
+
+    def setUp(self):
+        self.model = Model(_small_model_config())
+
+    def _sanitize(self, extra):
+        # A "head.classifier" key marks the checkpoint as MLX-native so that
+        # format detection selects the right path.
+        weights = {"head.classifier.weight": mx.zeros((64, 32))}
+        weights.update(extra)
+        return self.model.sanitize(weights)
+
+    def test_detected_via_head_classifier(self):
+        sanitized = self.model.sanitize({"head.classifier.weight": mx.zeros((64, 32))})
+        self.assertIn("decoder.output_proj.weight", sanitized)
+
+    def test_detected_via_decoder_layers(self):
+        weights = {
+            "transf_decoder.layers.0.first_sub_layer.linear_q.weight": mx.zeros(
+                (32, 32)
+            )
+        }
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("decoder.blocks.0.self_attn.q_proj.weight", sanitized)
+
+    def test_token_embedding_and_norm_mapping(self):
+        sanitized = self._sanitize(
+            {
+                "transf_decoder.token_embedding.weight": mx.zeros((64, 32)),
+                "transf_decoder.embedding_layer_norm.weight": mx.zeros((32,)),
+                "transf_decoder.final_layer_norm.weight": mx.zeros((32,)),
+            }
+        )
+        self.assertIn("decoder.embedding.weight", sanitized)
+        self.assertIn("decoder.embedding_layer_norm.weight", sanitized)
+        self.assertIn("decoder.final_norm.weight", sanitized)
+
+    def test_self_and_cross_attn_mapping(self):
+        sanitized = self._sanitize(
+            {
+                "transf_decoder.layers.0.first_sub_layer.linear_out.weight": mx.zeros(
+                    (32, 32)
+                ),
+                "transf_decoder.layers.0.second_sub_layer.linear_v.weight": mx.zeros(
+                    (32, 32)
+                ),
+            }
+        )
+        self.assertIn("decoder.blocks.0.self_attn.out_proj.weight", sanitized)
+        self.assertIn("decoder.blocks.0.cross_attn.v_proj.weight", sanitized)
+
+    def test_ffn_and_layer_norm_mapping(self):
+        sanitized = self._sanitize(
+            {
+                "transf_decoder.layers.0.third_sub_layer.linear1.weight": mx.zeros(
+                    (64, 32)
+                ),
+                "transf_decoder.layers.0.third_sub_layer.linear2.weight": mx.zeros(
+                    (32, 64)
+                ),
+                "transf_decoder.layers.0.layer_norm_1.weight": mx.zeros((32,)),
+                "transf_decoder.layers.0.layer_norm_2.weight": mx.zeros((32,)),
+                "transf_decoder.layers.0.layer_norm_3.weight": mx.zeros((32,)),
+            }
+        )
+        self.assertIn("decoder.blocks.0.ff1.weight", sanitized)
+        self.assertIn("decoder.blocks.0.ff2.weight", sanitized)
+        self.assertIn("decoder.blocks.0.self_attn_norm.weight", sanitized)
+        self.assertIn("decoder.blocks.0.cross_attn_norm.weight", sanitized)
+        self.assertIn("decoder.blocks.0.ff_norm.weight", sanitized)
+
+    def test_conv_weights_not_transposed(self):
+        # Already (out, kH, kW, in) and (out, kW, in) — must be left untouched.
+        sanitized = self._sanitize(
+            {
+                "encoder.pre_encode.conv.0.weight": mx.zeros((256, 3, 3, 1)),
+                "encoder.layers.0.conv.depthwise_conv.weight": mx.zeros((1024, 9, 1)),
+            }
+        )
+        self.assertEqual(
+            sanitized["encoder.conformer.pre_encode.conv.0.weight"].shape,
+            (256, 3, 3, 1),
+        )
+        self.assertEqual(
+            sanitized["encoder.conformer.layers.0.conv.depthwise_conv.weight"].shape,
+            (1024, 9, 1),
+        )
+
+    def test_preserves_quantization_tensors(self):
+        # scales/biases of a quantized linear must ride along with the weight.
+        sanitized = self._sanitize(
+            {
+                "transf_decoder.layers.0.first_sub_layer.linear_q.weight": mx.zeros(
+                    (32, 8)
+                ),
+                "transf_decoder.layers.0.first_sub_layer.linear_q.scales": mx.zeros(
+                    (32, 1)
+                ),
+                "transf_decoder.layers.0.first_sub_layer.linear_q.biases": mx.zeros(
+                    (32, 1)
+                ),
+            }
+        )
+        self.assertIn("decoder.blocks.0.self_attn.q_proj.scales", sanitized)
+        self.assertIn("decoder.blocks.0.self_attn.q_proj.biases", sanitized)
+
+    def test_third_sub_layer_unknown_key_warns(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sanitized = self._sanitize(
+                {
+                    "transf_decoder.layers.0.third_sub_layer.unknown_key.weight": mx.zeros(
+                        (32, 32)
+                    )
+                }
+            )
+        self.assertEqual(len(w), 1)
+        self.assertIn("RuntimeWarning", str(w[0].category))
+        self.assertIn("third_sub_layer", str(w[0].message))
+        # Key passes through with bare suffix, not prefixed with ff_
+        self.assertIn("decoder.blocks.0.unknown_key.weight", sanitized)
+
+    def test_unknown_sub_layer_prefix_warns(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sanitized = self._sanitize(
+                {"transf_decoder.layers.0.future_sublayer.weight": mx.zeros((32, 32))}
+            )
+        self.assertEqual(len(w), 1)
+        self.assertIn("RuntimeWarning", str(w[0].category))
+        self.assertIn("future_sublayer", str(w[0].message))
+        # Key passes through unchanged
+        self.assertIn("decoder.blocks.0.future_sublayer.weight", sanitized)
+
+
+class TestFixedPositionalEncoding(unittest.TestCase):
+    """The positional encoding is a computed sinusoidal table (NeMo divides it by
+    sqrt(d_model)); it must not regress to the all-zeros stub it used to be."""
+
+    def test_table_is_sinusoidal_not_zeros(self):
+        d_model, max_len = 32, 16
+        pe = FixedPositionalEncoding(d_model, max_len=max_len)
+        table = pe._pos_enc
+        mx.eval(table)
+        self.assertEqual(table.shape, (max_len, d_model))
+        self.assertGreater(float(mx.max(mx.abs(table))), 0.0)
+
+        # Position 0: sin(0)=0 at even indices, cos(0)=1 at odd indices, all /sqrt(d).
+        row0 = table[0]
+        mx.eval(row0)
+        self.assertAlmostEqual(float(row0[0]), 0.0, places=5)
+        self.assertAlmostEqual(float(row0[1]), 1.0 / math.sqrt(d_model), places=5)
+
+    def test_pos_enc_not_a_module_parameter(self):
+        pe = FixedPositionalEncoding(32, max_len=16)
+        params = pe.parameters()
+        # _pos_enc must NOT appear in parameters() so it is never serialized
+        # or treated as a trainable weight.
+        flat = dict(pe.parameters())
+        self.assertNotIn("_pos_enc", flat)
+        self.assertNotIn("pos_enc", flat)
+
+    def test_lookup_shape(self):
+        pe = FixedPositionalEncoding(32, max_len=16)
+        out = pe(mx.array([[0, 1, 2]]))
+        mx.eval(out)
+        self.assertEqual(out.shape, (1, 3, 32))
+
+
+class TestEmbeddedTokenizer(unittest.TestCase):
+    """Some conversions (e.g. Mediform/canary-1b-v2-mlx-q8) embed the
+    SentencePiece model as base64 in config.json instead of shipping a file."""
+
+    @staticmethod
+    def _train_tiny_sp_proto() -> bytes:
+        import sentencepiece as spm
+
+        lines = [
+            "the quick brown fox jumps over the lazy dog",
+            "hello world this is a test of sentencepiece",
+            "canary models transcribe speech to text",
+            "machine learning with mlx on apple silicon",
+        ] * 30
+        model_io = io.BytesIO()
+        spm.SentencePieceTrainer.train(
+            sentence_iterator=iter(lines),
+            model_writer=model_io,
+            vocab_size=64,
+            model_type="bpe",
+            character_coverage=1.0,
+            unk_id=0,
+            bos_id=-1,
+            eos_id=-1,
+            pad_id=-1,
+        )
+        return model_io.getvalue()
+
+    def test_tokenizer_from_proto_roundtrips(self):
+        proto = self._train_tiny_sp_proto()
+        tok = CanaryTokenizer(model_proto=proto)
+        self.assertEqual(tok.vocab_size, 64)
+        ids = tok.encode("hello world")
+        self.assertTrue(all(isinstance(i, int) for i in ids))
+        self.assertEqual(tok.decode(ids), "hello world")
+
+    def test_post_load_hook_reads_embedded_base64(self):
+        proto = self._train_tiny_sp_proto()
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            with open(path / "config.json", "w") as f:
+                json.dump(
+                    {"tokenizer": {"model_base64": base64.b64encode(proto).decode()}}, f
+                )
+            self.assertEqual(Model._load_embedded_tokenizer_proto(path), proto)
+
+            model = Model(_small_model_config())
+            model = Model.post_load_hook(model, path)
+            self.assertIsNotNone(model._tokenizer)
+            self.assertEqual(
+                model._tokenizer.decode(model._tokenizer.encode("text")), "text"
+            )
+
+    def test_post_load_hook_no_tokenizer_when_absent(self):
+        with tempfile.TemporaryDirectory() as d:
+            model = Model(_small_model_config())
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                model = Model.post_load_hook(model, Path(d))
+            self.assertIsNone(model._tokenizer)
+            self.assertEqual(len(w), 1)
+            self.assertIn("RuntimeWarning", str(w[0].category))
+            self.assertIn("No tokenizer found", str(w[0].message))
+
+    def test_post_load_hook_warns_when_config_has_no_tokenizer_key(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            with open(path / "config.json", "w") as f:
+                json.dump({"model_type": "canary"}, f)
+            model = Model(_small_model_config())
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                model = Model.post_load_hook(model, path)
+            self.assertIsNone(model._tokenizer)
+            self.assertEqual(len(w), 1)
+            self.assertIn("No tokenizer found", str(w[0].message))
+
+    def test_malformed_base64_returns_none_with_warning(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            with open(path / "config.json", "w") as f:
+                json.dump({"tokenizer": {"model_base64": "not-valid-base64!!!"}}, f)
+            import warnings
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = Model._load_embedded_tokenizer_proto(path)
+            self.assertIsNone(result)
+            self.assertEqual(len(w), 1)
+            self.assertIn("RuntimeWarning", str(w[0].category))
+
+    def test_tokens_path_only_tokenizer_raises_on_decode(self):
+        tok = CanaryTokenizer.__new__(CanaryTokenizer)
+        tok.token2id = {}
+        tok.id2token = {}
+        with self.assertRaises(RuntimeError):
+            tok.decode([1, 2, 3])
+        with self.assertRaises(RuntimeError):
+            tok.encode("hello")
+
+
+class TestSanitizeAlreadySanitized(unittest.TestCase):
+    """Weights already in internal MLX format (e.g. from a re-saved checkpoint)
+    must pass through sanitize() unchanged — no key remapping, no conv transpose."""
+
+    def setUp(self):
+        self.model = Model(_small_model_config())
+
+    def test_already_sanitized_passthrough(self):
+        weights = {
+            "decoder.blocks.0.self_attn.q_proj.weight": mx.zeros((32, 32)),
+            "encoder.conformer.pre_encode.conv.0.weight": mx.zeros((256, 3, 3, 1)),
+            "decoder.output_proj.weight": mx.zeros((64, 32)),
+        }
+        sanitized = self.model.sanitize(weights)
+        # Keys must be unchanged.
+        self.assertIn("decoder.blocks.0.self_attn.q_proj.weight", sanitized)
+        self.assertIn("encoder.conformer.pre_encode.conv.0.weight", sanitized)
+        self.assertIn("decoder.output_proj.weight", sanitized)
+        # Conv weight must NOT be transposed (already in MLX layout).
+        self.assertEqual(
+            sanitized["encoder.conformer.pre_encode.conv.0.weight"].shape,
+            (256, 3, 3, 1),
+        )
 
 
 class TestModel(unittest.TestCase):

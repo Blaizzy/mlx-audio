@@ -91,6 +91,86 @@ class TestMossAudioTokenizer(unittest.TestCase):
             self.assertEqual(decoded.shape, (3, 1))
             self.assertTrue(np.isfinite(np.asarray(decoded)).all())
 
+    def test_streaming_decoder_matches_offline_without_decoder_modules(self):
+        tokenizer = MossAudioTokenizer(
+            AudioTokenizerConfig.from_dict(tiny_config_dict())
+        )
+        codes = mx.array([[0, 1], [2, 3], [1, 0], [3, 2], [2, 1]], dtype=mx.int32)
+
+        offline = tokenizer.decode_audio_codes(codes, num_quantizers=2)
+        streaming = tokenizer.make_streaming_decoder(num_quantizers=2)
+        chunks = [
+            streaming.decode_frames(codes[:1]),
+            streaming.decode_frames(codes[1:3]),
+            streaming.decode_frames(codes[3:]),
+        ]
+
+        np.testing.assert_allclose(
+            np.asarray(mx.concatenate(chunks, axis=0)),
+            np.asarray(offline),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
+    def test_streaming_decoder_matches_offline_with_causal_transformer(self):
+        config = AudioTokenizerConfig.from_dict(
+            {
+                "sample_rate": 8,
+                "sampling_rate": 8,
+                "downsample_rate": 1,
+                "number_channels": 1,
+                "enable_channel_interleave": True,
+                "encoder_kwargs": [],
+                "decoder_kwargs": [
+                    {
+                        "module_type": "Transformer",
+                        "input_dimension": 4,
+                        "output_dimension": 4,
+                        "d_model": 4,
+                        "num_heads": 1,
+                        "num_layers": 1,
+                        "dim_feedforward": 8,
+                        "causal": True,
+                        "norm": "layer_norm",
+                        "positional_embedding": "rope",
+                        "max_period": 10000,
+                        "gating": "none",
+                        "layer_scale": 0.01,
+                        "conv_layout": True,
+                        "context_duration": 0.5,
+                    }
+                ],
+                "quantizer_kwargs": {
+                    "input_dim": 4,
+                    "rvq_dim": 4,
+                    "output_dim": 4,
+                    "num_quantizers": 2,
+                    "codebook_size": 8,
+                    "codebook_dim": 1,
+                },
+            }
+        )
+        tokenizer = MossAudioTokenizer(config)
+        codes = mx.array(
+            [[0, 1], [2, 3], [1, 0], [3, 2], [2, 1], [1, 3]],
+            dtype=mx.int32,
+        )
+
+        offline = tokenizer.decode_audio_codes(codes, num_quantizers=2)
+        streaming = tokenizer.make_streaming_decoder(num_quantizers=2)
+        chunks = [
+            streaming.decode_frames(codes[:2]),
+            streaming.decode_frames(codes[2:5]),
+            streaming.decode_frames(codes[5:]),
+        ]
+
+        np.testing.assert_allclose(
+            np.asarray(mx.concatenate(chunks, axis=0)),
+            np.asarray(offline),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+
     def test_from_model_dir_prefers_nested_audio_tokenizer(self):
         with TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -104,6 +184,61 @@ class TestMossAudioTokenizer(unittest.TestCase):
 
             self.assertEqual(tokenizer.sample_rate, 24000)
             self.assertEqual(tokenizer.channels, 1)
+
+    def test_same_dimension_projection_keys_force_linear_modules(self):
+        config = AudioTokenizerConfig.from_dict(
+            {
+                "sample_rate": 24000,
+                "sampling_rate": 24000,
+                "downsample_rate": 1,
+                "number_channels": 1,
+                "encoder_kwargs": [
+                    {
+                        "module_type": "Transformer",
+                        "input_dimension": 4,
+                        "output_dimension": 4,
+                        "d_model": 4,
+                        "num_heads": 1,
+                        "num_layers": 1,
+                        "dim_feedforward": 8,
+                        "causal": True,
+                        "norm": "layer_norm",
+                        "positional_embedding": "rope",
+                        "max_period": 10000,
+                        "gating": "none",
+                        "layer_scale": 0.01,
+                        "conv_layout": True,
+                    }
+                ],
+                "decoder_kwargs": [],
+                "quantizer_kwargs": {
+                    "input_dim": 4,
+                    "rvq_dim": 4,
+                    "output_dim": 4,
+                    "num_quantizers": 1,
+                    "codebook_size": 4,
+                    "codebook_dim": 1,
+                },
+            }
+        )
+
+        default_keys = dict(tree_flatten(MossAudioTokenizer(config).parameters()))
+        forced_keys = dict(
+            tree_flatten(
+                MossAudioTokenizer(
+                    config,
+                    projection_keys={
+                        "encoder.0.input_proj.weight",
+                        "encoder.0.output_proj.weight",
+                    },
+                ).parameters()
+            )
+        )
+
+        self.assertNotIn("encoder.0.input_proj.weight", default_keys)
+        self.assertNotIn("encoder.0.output_proj.weight", default_keys)
+        self.assertIn("encoder.0.input_proj.weight", forced_keys)
+        self.assertIn("encoder.0.output_proj.weight", forced_keys)
 
 
 if __name__ == "__main__":

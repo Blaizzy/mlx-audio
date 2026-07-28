@@ -1,4 +1,5 @@
 import random
+from math import ceil
 from typing import List
 
 import mlx.core as mx
@@ -74,6 +75,7 @@ class ResidualFSQ(nn.Module):
         self.codebook_size = self.layers[0].codebook_size
 
         self._scales = mx.array(scales)
+        mx.eval(self._scales)
 
         self.quantize_dropout = quantize_dropout and num_quantizers > 1
 

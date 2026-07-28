@@ -1,3 +1,4 @@
+import math
 from typing import List, Optional, Tuple
 
 import mlx.core as mx
@@ -146,15 +147,30 @@ class TransformerDecoderBlock(nn.Module):
 
 
 class FixedPositionalEncoding(nn.Module):
-    """Fixed sinusoidal positional encoding (matches NeMo's implementation)."""
+    """Fixed sinusoidal positional encoding (matches NeMo's implementation).
+
+    NeMo's ``FixedPositionalEncoding`` builds a sinusoidal table and scales it
+    by ``1/sqrt(d_model)``. The table is a fixed (non-learned) buffer that is
+    *not* stored in checkpoints, so it is computed here at construction time.
+    """
 
     def __init__(self, d_model: int, max_len: int = 1024):
         super().__init__()
-        self.pos_enc = mx.zeros((max_len, d_model))
+        position = mx.arange(max_len)[:, None].astype(mx.float32)
+        div_term = mx.exp(
+            mx.arange(0, d_model, 2).astype(mx.float32) * (-math.log(10000.0) / d_model)
+        )
+        angles = position * div_term  # (max_len, d_model // 2)
+        # Interleave sin (even indices) and cos (odd indices).
+        pos_enc = mx.stack([mx.sin(angles), mx.cos(angles)], axis=2).reshape(
+            max_len, d_model
+        )
+        self._pos_enc = pos_enc / math.sqrt(d_model)
+        mx.eval(self._pos_enc)
 
     def __call__(self, position_ids: mx.array) -> mx.array:
         """Get position embeddings for the given position IDs."""
-        return self.pos_enc[position_ids]
+        return self._pos_enc[position_ids]
 
 
 class CanaryDecoder(nn.Module):

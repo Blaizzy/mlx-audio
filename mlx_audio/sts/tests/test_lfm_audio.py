@@ -1,4 +1,7 @@
 import unittest
+from types import SimpleNamespace
+
+import numpy as np
 
 DEFAULT_LFM_CONFIG = {
     "model_type": "lfm2",
@@ -198,6 +201,80 @@ class TestGenerationConfig(unittest.TestCase):
         self.assertEqual(config.top_k, 50)
         self.assertEqual(config.audio_temperature, 1.0)
         self.assertEqual(config.audio_top_k, 4)
+
+
+class TestInterleavedGeneration(unittest.TestCase):
+
+    def test_audio_eos_updates_lfm_state_before_resuming_text(self):
+        import mlx.core as mx
+
+        from mlx_audio.sts.models.lfm_audio.model import (
+            AUDIO_EOS_TOKEN,
+            LFM2AudioModel,
+            LFMModality,
+        )
+
+        class LFMStub:
+            def __init__(self):
+                self.calls = []
+                self.embed_tokens = SimpleNamespace(as_linear=self.as_linear)
+
+            def as_linear(self, hidden):
+                state = int(hidden.tolist()[0][0][0])
+                token_by_state = {
+                    1: 10,  # first text token
+                    2: 11,  # stale text token if audio EOS is not embedded
+                    3: 12,  # text token after audio EOS updates state
+                }
+                logits = np.full((1, 1, 140), -100.0, dtype=np.float32)
+                logits[0, 0, token_by_state[state]] = 100.0
+                return mx.array(logits)
+
+            def __call__(self, inputs=None, cache=None, input_embeddings=None):
+                value = int(input_embeddings.tolist()[0][0][0])
+                self.calls.append(value)
+                if value == 99:
+                    return mx.array([[[3.0]]])
+                return mx.array([[[2.0]]])
+
+        model = LFM2AudioModel.__new__(LFM2AudioModel)
+        model.config = SimpleNamespace(
+            interleaved_n_text=1,
+            interleaved_n_audio=1,
+            codebooks=8,
+        )
+        model.lfm = LFMStub()
+        model._prefill = lambda **kwargs: (mx.array([[[1.0]]]), [])
+        model._sample_text_token = lambda logits, temperature, top_k: mx.argmax(
+            logits, axis=-1
+        )
+        model._embed_text = lambda token: token.astype(mx.float32)[..., None]
+        model._sample_audio_frame = lambda *args, **kwargs: (
+            mx.full((1, 8), AUDIO_EOS_TOKEN, dtype=mx.int32),
+            None,
+        )
+        model._embed_audio_out = lambda audio_frame: mx.array([[99.0]])
+
+        outputs = list(
+            model.generate_interleaved(
+                text_tokens=mx.array([[1]]),
+                modalities=mx.array([[LFMModality.TEXT]]),
+                max_new_tokens=3,
+            )
+        )
+
+        self.assertEqual(
+            [(modality, token.tolist()) for token, modality in outputs],
+            [
+                (LFMModality.TEXT, [10]),
+                (
+                    LFMModality.AUDIO_OUT,
+                    [AUDIO_EOS_TOKEN] * 8,
+                ),
+                (LFMModality.TEXT, [12]),
+            ],
+        )
+        self.assertIn(99, model.lfm.calls)
 
 
 if __name__ == "__main__":

@@ -615,6 +615,16 @@ class SineGen:
             sines = mx.cos(i_phase * 2 * mx.pi)
         return sines
 
+    def _match_f0_length(self, sine_waves: mx.array, f0: mx.array) -> mx.array:
+        target_len = f0.shape[1]
+        if sine_waves.shape[1] == target_len:
+            return sine_waves
+        if sine_waves.shape[1] > target_len:
+            return sine_waves[:, :target_len, :]
+        return mx.pad(
+            sine_waves, ((0, 0), (0, target_len - sine_waves.shape[1]), (0, 0))
+        )
+
     def __call__(self, f0: mx.array) -> Tuple[mx.array, mx.array, mx.array]:
         f0_buf = mx.zeros((f0.shape[0], f0.shape[1], self.dim))
 
@@ -623,6 +633,7 @@ class SineGen:
 
         # Generate sine waveforms
         sine_waves = self._f02sine(fn) * self.sine_amp
+        sine_waves = self._match_f0_length(sine_waves, f0)
 
         # Generate UV signal
         uv = self._f02uv(f0)

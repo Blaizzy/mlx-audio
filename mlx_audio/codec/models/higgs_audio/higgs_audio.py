@@ -196,12 +196,15 @@ class HiggsAudioTokenizer(nn.Module):
             "encoder_semantic.",
         )
         keep_exact = ("fc.weight", "fc.bias")
+        drop_exact = ("semantic_model.masked_spec_embed",)
         drop_prefixes = ("decoder_semantic.", "fc1.")
         drop_suffixes = (".embed_avg", ".cluster_size", ".inited")
 
         result = {}
         for k, v in weights.items():
             # Explicit drops first
+            if k in drop_exact:
+                continue
             if any(k.startswith(p) for p in drop_prefixes):
                 continue
             if not (any(k.startswith(p) for p in keep_prefixes) or k in keep_exact):
@@ -245,6 +248,82 @@ class HiggsAudioTokenizer(nn.Module):
 
             result[k] = v
         return result
+
+    @classmethod
+    def from_higgs_tts_checkpoint(
+        cls,
+        model_path: str,
+        *,
+        prefix: str = "tied.embedding.modality_embeddings.0.model.",
+    ) -> "HiggsAudioTokenizer":
+        """Load the Higgs codec bundled inside a Higgs TTS checkpoint.
+
+        Higgs Audio v3 stores codec tensors in the main TTS safetensors shard
+        under ``tied.embedding.modality_embeddings.0.model.*``. This reader
+        opens safetensors by key and only materializes the prefixed codec
+        tensors.
+        """
+        from safetensors import safe_open
+
+        root = Path(model_path)
+        config = HiggsAudioConfig(semantic_model_config={"model_type": "hubert"})
+        inst = cls(config)
+        inst._init_encode_modules()
+
+        index_path = root / "model.safetensors.index.json"
+        shard_to_keys: dict[str, list[str] | None]
+        if index_path.exists():
+            index = json.loads(index_path.read_text())
+            shard_to_keys = {}
+            for key, shard in index.get("weight_map", {}).items():
+                if key.startswith(prefix):
+                    shard_to_keys.setdefault(shard, []).append(key)
+        else:
+            shard_to_keys = {path.name: None for path in root.glob("*.safetensors")}
+
+        if not shard_to_keys:
+            raise FileNotFoundError(
+                f"No safetensors with codec prefix {prefix!r} found in {root}"
+            )
+
+        def _load_shard_codec_tensors(
+            shard_path: Path,
+            keys: list[str] | None,
+            *,
+            framework: str,
+        ) -> dict[str, mx.array]:
+            loaded = {}
+            with safe_open(str(shard_path), framework=framework) as f:
+                if keys is None:
+                    iter_keys = [key for key in f.keys() if key.startswith(prefix)]
+                else:
+                    iter_keys = keys
+                for key in iter_keys:
+                    tensor = f.get_tensor(key)
+                    if framework == "pt":
+                        tensor = tensor.float().cpu().numpy()
+                    loaded[key[len(prefix) :]] = mx.array(tensor)
+            return loaded
+
+        raw: dict[str, mx.array] = {}
+        for shard, keys in shard_to_keys.items():
+            shard_path = root / shard
+            try:
+                raw.update(_load_shard_codec_tensors(shard_path, keys, framework="mlx"))
+            except TypeError as exc:
+                if "bfloat16" not in str(exc):
+                    raise
+                raw.update(_load_shard_codec_tensors(shard_path, keys, framework="pt"))
+
+        if not raw:
+            raise FileNotFoundError(
+                f"No codec tensors found under prefix {prefix!r} in {root}"
+            )
+
+        sanitized = inst.sanitize(raw)
+        inst.load_weights(list(sanitized.items()))
+        mx.eval(inst.parameters())
+        return inst
 
     @classmethod
     def from_pretrained(cls, model_path: str) -> "HiggsAudioTokenizer":

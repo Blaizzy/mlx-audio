@@ -271,6 +271,7 @@ class Mimi(nn.Module):
         model = cls(cfg)
         model_file = hf_hub_download(repo_id, filename)
         model.load_pytorch_weights(model_file, strict=True)
+        mx.eval(model.parameters())
         return model
 
 

@@ -134,6 +134,7 @@ class MingBailingMoe3DRotaryEmbedding(nn.Module):
         self.dim = dim
         self.base = base
         self._inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
+        mx.eval(self._inv_freq)
 
     def __call__(
         self, x: mx.array, position_ids: mx.array

@@ -47,6 +47,7 @@ class Llama3ScaledRoPE(nn.Module):
 
         self._cos_f32 = mx.cos(idx_theta)
         self._sin_f32 = mx.sin(idx_theta)
+        mx.eval(self._cos_f32, self._sin_f32)
 
         self._cos_by_dtype.clear()
         self._sin_by_dtype.clear()

@@ -308,6 +308,7 @@ class ChatterboxTurboTTS(nn.Module):
             if hasattr(model._s3tokenizer, "sanitize"):
                 s3tok_weights = model._s3tokenizer.sanitize(s3tok_weights)
             model._s3tokenizer.load_weights(list(s3tok_weights.items()), strict=False)
+            mx.eval(model._s3tokenizer.parameters())
             logger.info("Loaded S3 speech tokenizer weights")
         except Exception as e:
             logger.warning(f"Could not load S3 speech tokenizer: {e}")
@@ -336,6 +337,8 @@ class ChatterboxTurboTTS(nn.Module):
                         gen_mlx[k.replace("gen.", "")] = v
 
                 model._conds = Conditionals(t3_cond, gen_mlx)
+                cond_arrays = [speaker_emb, cond_tokens, *gen_mlx.values()]
+                mx.eval(*(x for x in cond_arrays if isinstance(x, mx.array)))
                 logger.info("Loaded pre-computed conditionals from safetensors")
 
             except Exception as e:
@@ -526,6 +529,8 @@ class ChatterboxTurboTTS(nn.Module):
                     if k.startswith("gen."):
                         gen_mlx[k.replace("gen.", "")] = v
 
+                cond_arrays = [speaker_emb, cond_tokens, *gen_mlx.values()]
+                mx.eval(*(x for x in cond_arrays if isinstance(x, mx.array)))
                 conds = Conditionals(t3_cond, gen_mlx)
                 logger.info("Loaded pre-computed conditionals from safetensors")
 
@@ -575,6 +580,8 @@ class ChatterboxTurboTTS(nn.Module):
                     elif isinstance(v, (int, float)):
                         gen_mlx[k] = v
 
+                cond_arrays = [speaker_emb, cond_tokens, *gen_mlx.values()]
+                mx.eval(*(x for x in cond_arrays if isinstance(x, mx.array)))
                 conds = Conditionals(t3_cond, gen_mlx)
                 logger.info("Loaded pre-computed conditionals from .pt file")
             except Exception as e:
@@ -762,6 +769,13 @@ class ChatterboxTurboTTS(nn.Module):
         )
 
         self._conds = Conditionals(t3_cond, s3gen_ref_dict)
+        cond_arrays = [
+            ve_embed,
+            t3_cond_prompt_tokens,
+            t3_cond.emotion_adv,
+            *s3gen_ref_dict.values(),
+        ]
+        mx.eval(*(x for x in cond_arrays if isinstance(x, mx.array)))
 
     def generate(
         self,

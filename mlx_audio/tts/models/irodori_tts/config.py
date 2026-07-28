@@ -39,8 +39,9 @@ class IrodoriDiTConfig(BaseModelArgs):
     adaln_rank: int = 192
     norm_eps: float = 1e-5
 
-    # Caption (Voice Design) conditioning — mutually exclusive with speaker
+    # Caption (Voice Design) conditioning — can coexist with speaker (v3 VoiceDesign dual mode)
     use_caption_condition: bool = False
+    use_speaker_condition: Optional[bool] = None
     caption_vocab_size: Optional[int] = None
     caption_tokenizer_repo: Optional[str] = None
     caption_add_bos: Optional[bool] = None
@@ -59,10 +60,14 @@ class IrodoriDiTConfig(BaseModelArgs):
     duration_architecture: str = "token_sum_adarn_zero_no_aux"
     duration_token_init_frames: float = 9.0
     duration_speaker_fusion: str = "adarn_zero"
+    duration_caption_fusion: str = "adarn_zero"
+    duration_caption_pooling: str = "masked_mean"
 
     @property
-    def use_speaker_condition(self) -> bool:
-        return not self.use_caption_condition
+    def use_speaker_condition_resolved(self) -> bool:
+        if self.use_speaker_condition is None:
+            return not self.use_caption_condition
+        return bool(self.use_speaker_condition)
 
     @property
     def caption_vocab_size_resolved(self) -> int:

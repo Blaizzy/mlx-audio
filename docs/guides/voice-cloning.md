@@ -6,7 +6,7 @@ Several MLX Audio models can clone a speaker's voice from a short reference audi
 
 | Model | Method | Reference Audio Required | Notes |
 |-------|--------|--------------------------|-------|
-| **CSM** | `--ref_audio` CLI / `ref_audio` kwarg | Yes (WAV) | Conversational Speech Model from Sesame |
+| **CSM / MisoTTS** | `--ref_audio` CLI / `ref_audio` kwarg | Yes (WAV) | Sesame-style conversational speech models |
 | **Qwen3-TTS Base** | `ref_audio` + `ref_text` kwargs | Yes (WAV) + transcript | Alibaba multilingual TTS |
 | **OmniVoice** | `ref_audio` + `ref_text` kwargs | Yes (WAV) + transcript recommended | 646+ language zero-shot cloning, best with prompt preprocessing |
 | **Spark** | `ref_audio` kwarg | Yes | SparkTTS voice cloning |

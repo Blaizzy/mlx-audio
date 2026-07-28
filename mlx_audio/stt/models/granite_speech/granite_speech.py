@@ -220,6 +220,7 @@ class CTCEncoder(nn.Module):
             mx.clip(relpos_dist, -config.context_size, config.context_size)
             + config.max_pos_emb
         )
+        mx.eval(self._attention_dists)
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.input_linear(x)

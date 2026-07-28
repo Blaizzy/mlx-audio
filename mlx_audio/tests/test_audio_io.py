@@ -63,6 +63,27 @@ class TestAudioIOFormats:
         assert read_samplerate == samplerate
         assert read_data.shape == data.shape
 
+    def test_read_wav_target_sample_rate_and_channels(
+        self, sample_audio_stereo, tmp_path
+    ):
+        """Test decoder-side resampling and mono conversion."""
+        data, samplerate = sample_audio_stereo
+        output_file = tmp_path / "test_resampled_mono.wav"
+        target_samplerate = samplerate // 2
+
+        write(output_file, data, samplerate, format="wav")
+
+        read_data, read_samplerate = read(
+            output_file,
+            dtype="float32",
+            sample_rate=target_samplerate,
+            nchannels=1,
+        )
+        assert read_samplerate == target_samplerate
+        assert read_data.dtype == np.float32
+        assert read_data.ndim == 1
+        assert abs(read_data.shape[0] - target_samplerate) <= 1
+
     @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_mp3(self, sample_audio_mono, tmp_path):
         """Test writing and reading MP3 file."""

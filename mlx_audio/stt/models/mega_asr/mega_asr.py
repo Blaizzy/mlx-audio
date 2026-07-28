@@ -76,6 +76,7 @@ class Model:
         if lora_path.exists():
             model._deltas = load_lora_factors(lora_path)
 
+        mx.eval(model._router.parameters(), model._deltas)
         return model
 
     def _set_lora(self, want: bool) -> None:

@@ -18,6 +18,7 @@ into segment-level speaker embeddings
 High-order statistics are surprisingly effective, TSDP acts similarly as TSTP,
 even though we remove the mean statistic, on Voxceleb.
 """
+
 import mlx.core as mx
 import mlx.nn as nn
 

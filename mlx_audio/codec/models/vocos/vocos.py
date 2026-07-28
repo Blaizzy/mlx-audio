@@ -348,6 +348,7 @@ class Vocos(nn.Module):
 
         # use strict = False to avoid the encodec weights
         model.load_weights(list(new_weights.items()), strict=False)
+        mx.eval(model.parameters())
         model.eval()
 
         return model

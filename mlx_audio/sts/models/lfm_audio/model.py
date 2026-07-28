@@ -865,6 +865,16 @@ class LFM2AudioModel(nn.Module):
                         audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype
                     )
                     yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
+
+                    # Feed audio EOS back into the LFM state before resuming text.
+                    # Otherwise the next text token is sampled from stale pre-EOS state.
+                    next_emb = self._embed_audio_out(audio_frame)[:, None, :]
+                    last_hidden = self.lfm(
+                        inputs=None,
+                        cache=cache,
+                        input_embeddings=next_emb,
+                    )
+
                     generated += 1
                     # If text is done, break after final audio EOS
                     if text_done:

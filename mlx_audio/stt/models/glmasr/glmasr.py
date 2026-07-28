@@ -13,8 +13,7 @@ import mlx.nn as nn
 import numpy as np
 from tqdm import tqdm
 
-from mlx_audio.stt.generate import wired_limit
-from mlx_audio.stt.utils import get_model_path
+from mlx_audio.stt.utils import get_model_path, wired_limit
 
 from ..base import STTOutput
 from .config import LlamaConfig, ModelConfig, WhisperConfig

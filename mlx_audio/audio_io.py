@@ -56,11 +56,15 @@ def _detect_format_from_bytes(data: bytes) -> str:
 
 def _decode_ffmpeg(
     input_data: Union[str, Path, bytes],
+    sample_rate: Optional[int] = None,
+    nchannels: Optional[int] = None,
 ) -> Tuple[np.ndarray, int, int]:
     """Decode audio using ffmpeg (for formats not supported by miniaudio like M4A).
 
     Args:
         input_data: Path to the audio file or raw bytes data.
+        sample_rate: Optional target sample rate. Preserves the input rate when omitted.
+        nchannels: Optional target channel count. Preserves the input channels when omitted.
 
     Returns:
         Tuple of (samples as int16 numpy array, sample_rate, nchannels).
@@ -131,8 +135,8 @@ def _decode_ffmpeg(
         raise RuntimeError("No audio streams found in file")
 
     stream = probe_info["streams"][0]
-    sample_rate = int(stream.get("sample_rate", 44100))
-    nchannels = int(stream.get("channels", 2))
+    output_sample_rate = sample_rate or int(stream.get("sample_rate", 44100))
+    output_nchannels = nchannels or int(stream.get("channels", 2))
 
     # Decode to raw PCM using ffmpeg
     if isinstance(input_data, bytes):
@@ -145,9 +149,9 @@ def _decode_ffmpeg(
             "-acodec",
             "pcm_s16le",
             "-ar",
-            str(sample_rate),
+            str(output_sample_rate),
             "-ac",
-            str(nchannels),
+            str(output_nchannels),
             "pipe:1",
         ]
         decode_result = subprocess.run(
@@ -165,9 +169,9 @@ def _decode_ffmpeg(
             "-acodec",
             "pcm_s16le",
             "-ar",
-            str(sample_rate),
+            str(output_sample_rate),
             "-ac",
-            str(nchannels),
+            str(output_nchannels),
             "pipe:1",
         ]
         decode_result = subprocess.run(decode_cmd, capture_output=True)
@@ -178,13 +182,15 @@ def _decode_ffmpeg(
     # Convert raw PCM bytes to numpy array
     samples = np.frombuffer(decode_result.stdout, dtype=np.int16)
 
-    return samples, sample_rate, nchannels
+    return samples, output_sample_rate, output_nchannels
 
 
 def read(
     file: Union[str, Path, io.BytesIO],
     always_2d: bool = False,
     dtype: str = "float64",
+    sample_rate: Optional[int] = None,
+    nchannels: Optional[int] = None,
 ) -> Tuple[np.ndarray, int]:
     """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM).
 
@@ -192,11 +198,18 @@ def read(
         file: Path to the audio file or a BytesIO object.
         always_2d: If True, always return a 2D array (samples, channels).
         dtype: Data type for the output array. Supports 'float32', 'float64', 'int16'.
+        sample_rate: Optional target sample rate. Preserves the input rate when omitted.
+        nchannels: Optional target channel count. Preserves the input channels when omitted.
 
     Returns:
         Tuple of (audio_data, sample_rate).
         audio_data is a numpy array with shape (samples,) for mono or (samples, channels) for multi-channel.
     """
+    if sample_rate is not None and sample_rate <= 0:
+        raise ValueError(f"sample_rate must be positive, got {sample_rate}")
+    if nchannels is not None and nchannels <= 0:
+        raise ValueError(f"nchannels must be positive, got {nchannels}")
+
     # Check if this is a file that needs ffmpeg
     use_ffmpeg = False
     if isinstance(file, (str, Path)):
@@ -221,7 +234,11 @@ def read(
             input_data = file.read()
         else:
             input_data = file
-        samples, sample_rate, nchannels = _decode_ffmpeg(input_data)
+        samples, sample_rate, nchannels = _decode_ffmpeg(
+            input_data,
+            sample_rate=sample_rate,
+            nchannels=nchannels,
+        )
     else:
         # Use miniaudio for other formats
         import miniaudio
@@ -231,8 +248,8 @@ def read(
             info = miniaudio.get_file_info(str(file))
             decoded = miniaudio.decode_file(
                 str(file),
-                nchannels=info.nchannels,
-                sample_rate=info.sample_rate,
+                nchannels=nchannels or info.nchannels,
+                sample_rate=sample_rate or info.sample_rate,
             )
         elif isinstance(file, io.BytesIO):
             file.seek(0)
@@ -251,8 +268,8 @@ def read(
                 raise ValueError(f"Unsupported format: {fmt}")
             decoded = miniaudio.decode(
                 data,
-                nchannels=info.nchannels,
-                sample_rate=info.sample_rate,
+                nchannels=nchannels or info.nchannels,
+                sample_rate=sample_rate or info.sample_rate,
             )
         else:
             raise TypeError(f"Unsupported file type: {type(file)}")
@@ -270,7 +287,8 @@ def read(
 
     # Convert to requested dtype
     if dtype in ("float32", "float64"):
-        samples = samples.astype(dtype) / 32768.0
+        samples = samples.astype(dtype)
+        samples /= 32768.0
     elif dtype == "int16":
         pass  # Already int16
     else:

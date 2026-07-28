@@ -75,6 +75,7 @@ class ConformerAttention(nn.Module):
         dist = idx[:, None] - idx[None, :]
         dist = mx.clip(dist, -context_size, context_size) + max_pos_emb
         self._dist = dist  # shape [ctx, ctx], int
+        mx.eval(self._dist)
 
     def __call__(self, x: mx.array) -> mx.array:
         B, T, H = x.shape
@@ -162,14 +163,17 @@ class ConformerConvModule(nn.Module):
     ):
         super().__init__()
         inner = hidden_dim * expansion
+        self._pad = kernel_size // 2
         self.norm = nn.LayerNorm(hidden_dim, eps=1e-5)
         # MLX Conv1d uses [B, T, C] inputs. Weights stored as [C_out, K, C_in/groups].
         self.up_conv = nn.Conv1d(hidden_dim, 2 * inner, kernel_size=1, bias=True)
+        # with nonzero padding, conv uses im2col with a gemm instead of the much faster
+        # depthwise_conv_1d. We omit padding here and re-add it in __call__
         self.depth_conv = nn.Conv1d(
             inner,
             inner,
             kernel_size=kernel_size,
-            padding=kernel_size // 2,
+            padding=0,
             groups=inner,
             bias=False,
         )
@@ -183,6 +187,8 @@ class ConformerConvModule(nn.Module):
         # GLU along channel dim: split into (a, gate), output = a * sigmoid(gate)
         a, gate = mx.split(h, 2, axis=-1)
         h = a * mx.sigmoid(gate)  # [B, T, inner]
+        # Apply the depthwise conv's (k//2) zero-padding outside
+        h = mx.pad(h, [(0, 0), (self._pad, self._pad), (0, 0)])
         h = self.depth_conv(h)  # [B, T, inner]
         h = self.bn(h)
         h = nn.silu(h)  # upstream order: silu(batch_norm(x))

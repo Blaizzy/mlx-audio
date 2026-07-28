@@ -10,8 +10,7 @@ from huggingface_hub import hf_hub_download
 from mlx.utils import tree_flatten, tree_unflatten
 from tqdm import tqdm
 
-from mlx_audio.stt.models.parakeet import tokenizer
-from mlx_audio.stt.models.parakeet.alignment import (
+from mlx_audio.stt.models.nemo.alignment import (
     AlignedResult,
     AlignedToken,
     merge_longest_common_subsequence,
@@ -19,6 +18,7 @@ from mlx_audio.stt.models.parakeet.alignment import (
     sentences_to_result,
     tokens_to_sentences,
 )
+from mlx_audio.stt.models.parakeet import tokenizer
 from mlx_audio.stt.models.parakeet.audio import PreprocessArgs, log_mel_spectrogram
 from mlx_audio.stt.models.parakeet.conformer import Conformer, ConformerArgs
 from mlx_audio.stt.models.parakeet.ctc import (

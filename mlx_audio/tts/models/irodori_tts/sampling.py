@@ -115,10 +115,15 @@ def sample_euler_cfg(
         cfg_scale_speaker = float(cfg_scale)
         cfg_scale_caption = float(cfg_scale)
 
-    # Resolve context CFG scale based on conditioning mode
-    cfg_scale_context = (
-        cfg_scale_caption if model.cfg.use_caption_condition else cfg_scale_speaker
-    )
+    use_spk = model.cfg.use_speaker_condition_resolved
+    use_cap = model.cfg.use_caption_condition
+    is_dual = use_spk and use_cap
+
+    # Resolve context CFG scale for single-context models
+    if not is_dual:
+        cfg_scale_context = cfg_scale_caption if use_cap else cfg_scale_speaker
+    else:
+        cfg_scale_context = cfg_scale_speaker  # unused in dual, kept for compat
 
     cfg_guidance_mode = cfg_guidance_mode.strip().lower()
     if cfg_guidance_mode not in {"independent", "joint", "alternating"}:
@@ -129,94 +134,174 @@ def sample_euler_cfg(
 
     batch_size = text_input_ids.shape[0]
     has_text_cfg = cfg_scale_text > 0
-    has_speaker_cfg = cfg_scale_context > 0
+    has_speaker_cfg = cfg_scale_speaker > 0 and use_spk
+    has_caption_cfg = cfg_scale_caption > 0 and use_cap
+    # For single-context backward compat
+    if not is_dual:
+        has_context_cfg = cfg_scale_context > 0
+    else:
+        has_context_cfg = False  # not used in dual path
 
-    # ---- encode conditions once ----
-    text_state_cond, text_mask_cond, speaker_state_cond, speaker_mask_cond = (
-        model.encode_conditions(
-            text_input_ids=text_input_ids,
-            text_mask=text_mask,
-            ref_latent=ref_latent,
-            ref_mask=ref_mask,
-            caption_input_ids=caption_input_ids,
-            caption_mask=caption_mask,
-        )
+    # ---- encode all conditions ----
+    (
+        text_state_cond,
+        text_mask_cond,
+        spk_state_full,
+        spk_mask_full,
+        cap_state_full,
+        cap_mask_full,
+    ) = model.encode_conditions_full(
+        text_input_ids=text_input_ids,
+        text_mask=text_mask,
+        ref_latent=ref_latent,
+        ref_mask=ref_mask,
+        caption_input_ids=caption_input_ids,
+        caption_mask=caption_mask,
     )
-    mx.eval(text_state_cond, speaker_state_cond)
 
-    # unconditioned states: zero arrays of same shape
-    # (TextEncoder/SpeakerEncoder zero-masks any position, so feeding zero mask
-    #  gives zero state; using explicit zeros is equivalent and avoids recomputation)
+    # For single-context models, alias context into "speaker" slot (backward compat)
+    if not is_dual and use_cap:
+        speaker_state_cond = cap_state_full
+        speaker_mask_cond = cap_mask_full
+        caption_state_cond = None
+        caption_mask_cond = None
+    else:
+        speaker_state_cond = spk_state_full
+        speaker_mask_cond = spk_mask_full
+        caption_state_cond = cap_state_full
+        caption_mask_cond = cap_mask_full
+
+    mx.eval(text_state_cond)
+    if speaker_state_cond is not None:
+        mx.eval(speaker_state_cond)
+    if caption_state_cond is not None:
+        mx.eval(caption_state_cond)
+
+    # unconditioned states
     text_state_uncond = mx.zeros_like(text_state_cond)
     text_mask_uncond = mx.zeros_like(text_mask_cond)
-    speaker_state_uncond = mx.zeros_like(speaker_state_cond)
-    speaker_mask_uncond = mx.zeros_like(speaker_mask_cond)
+    speaker_state_uncond = (
+        mx.zeros_like(speaker_state_cond) if speaker_state_cond is not None else None
+    )
+    speaker_mask_uncond = (
+        mx.zeros_like(speaker_mask_cond) if speaker_mask_cond is not None else None
+    )
+    caption_state_uncond = (
+        mx.zeros_like(caption_state_cond) if caption_state_cond is not None else None
+    )
+    caption_mask_uncond = (
+        mx.zeros_like(caption_mask_cond) if caption_mask_cond is not None else None
+    )
 
     # ---- build KV caches ----
     use_kv_cache = context_kv_cache or (speaker_kv_scale is not None)
 
     kv_text_cond: Optional[KVCache] = None
     kv_speaker_cond: Optional[KVCache] = None
+    kv_caption_cond: Optional[KVCache] = None
     kv_text_cfg: Optional[KVCache] = None
     kv_speaker_cfg: Optional[KVCache] = None
+    kv_caption_cfg: Optional[KVCache] = None
     # extra caches for joint/alternating
     kv_text_uncond_joint: Optional[KVCache] = None
     kv_speaker_uncond_joint: Optional[KVCache] = None
+    kv_caption_uncond_joint: Optional[KVCache] = None
     kv_text_uncond_alt: Optional[KVCache] = None
     kv_speaker_uncond_alt: Optional[KVCache] = None
+    kv_caption_uncond_alt: Optional[KVCache] = None
 
     if use_kv_cache:
-        kv_text_cond, kv_speaker_cond = model.build_kv_cache(
-            text_state_cond, speaker_state_cond
+        kv_text_cond, kv_speaker_cond, kv_caption_cond = model.build_kv_cache(
+            text_state_cond, speaker_state_cond, caption_state_cond
         )
-        if speaker_kv_scale is not None:
+        if speaker_kv_scale is not None and kv_speaker_cond is not None:
             kv_speaker_cond = _scale_kv_cache(
                 kv_speaker_cond, speaker_kv_scale, max_layers=speaker_kv_max_layers
             )
 
         if cfg_guidance_mode == "independent":
-            if has_text_cfg and has_speaker_cfg:
-                # batch order: [cond, text-uncond, speaker-uncond]
-                kv_text_cfg = _concat_kv_caches(
-                    kv_text_cond, kv_text_cond, kv_text_cond
-                )
-                kv_speaker_cfg = _concat_kv_caches(
-                    kv_speaker_cond, kv_speaker_cond, kv_speaker_cond
-                )
-            elif has_text_cfg:
-                kv_text_cfg = _concat_kv_caches(kv_text_cond, kv_text_cond)
-                kv_speaker_cfg = _concat_kv_caches(kv_speaker_cond, kv_speaker_cond)
-            elif has_speaker_cfg:
-                kv_text_cfg = _concat_kv_caches(kv_text_cond, kv_text_cond)
-                kv_speaker_cfg = _concat_kv_caches(kv_speaker_cond, kv_speaker_cond)
+            if is_dual:
+                # Dual mode: up to 4x batch [cond, text-uncond, spk-uncond, cap-uncond]
+                active = [True]  # always include cond
+                if has_text_cfg:
+                    active.append("text")
+                if has_speaker_cfg:
+                    active.append("speaker")
+                if has_caption_cfg:
+                    active.append("caption")
+                # Build concatenated caches with per-slot uncond entries
+                n_bundles = 1 + sum([has_text_cfg, has_speaker_cfg, has_caption_cfg])
+                kv_text_parts = [kv_text_cond] * n_bundles
+                kv_spk_parts = [kv_speaker_cond] * n_bundles
+                kv_cap_parts = [kv_caption_cond] * n_bundles
+                if n_bundles > 1:
+                    kv_text_cfg = _concat_kv_caches(*kv_text_parts)
+                    kv_speaker_cfg = _concat_kv_caches(*kv_spk_parts)
+                    kv_caption_cfg = _concat_kv_caches(*kv_cap_parts)
+            else:
+                # Single-context backward compat
+                if has_text_cfg and has_context_cfg:
+                    kv_text_cfg = _concat_kv_caches(
+                        kv_text_cond, kv_text_cond, kv_text_cond
+                    )
+                    if kv_speaker_cond is not None:
+                        kv_speaker_cfg = _concat_kv_caches(
+                            kv_speaker_cond, kv_speaker_cond, kv_speaker_cond
+                        )
+                elif has_text_cfg:
+                    kv_text_cfg = _concat_kv_caches(kv_text_cond, kv_text_cond)
+                    if kv_speaker_cond is not None:
+                        kv_speaker_cfg = _concat_kv_caches(
+                            kv_speaker_cond, kv_speaker_cond
+                        )
+                elif has_context_cfg:
+                    kv_text_cfg = _concat_kv_caches(kv_text_cond, kv_text_cond)
+                    if kv_speaker_cond is not None:
+                        kv_speaker_cfg = _concat_kv_caches(
+                            kv_speaker_cond, kv_speaker_cond
+                        )
 
         elif cfg_guidance_mode == "joint":
-            if has_text_cfg or has_speaker_cfg:
-                kv_text_uncond_joint, kv_speaker_uncond_joint = model.build_kv_cache(
-                    text_state_uncond, speaker_state_uncond
-                )
-
-        elif cfg_guidance_mode == "alternating":
-            if has_text_cfg:
-                kv_text_uncond_alt, _ = model.build_kv_cache(
-                    text_state_uncond, speaker_state_cond
-                )
-                kv_text_uncond_alt = kv_text_uncond_alt
-                _, kv_speaker_uncond_alt_sp = model.build_kv_cache(
-                    text_state_uncond, speaker_state_cond
-                )
-            if has_speaker_cfg:
-                _, kv_speaker_uncond_alt = model.build_kv_cache(
-                    text_state_cond, speaker_state_uncond
-                )
-                if speaker_kv_scale is not None:
-                    kv_speaker_uncond_alt = _scale_kv_cache(
-                        kv_speaker_uncond_alt,
-                        speaker_kv_scale,
-                        max_layers=speaker_kv_max_layers,
+            if is_dual:
+                if has_text_cfg or has_speaker_cfg or has_caption_cfg:
+                    (
+                        kv_text_uncond_joint,
+                        kv_speaker_uncond_joint,
+                        kv_caption_uncond_joint,
+                    ) = model.build_kv_cache(
+                        text_state_uncond, speaker_state_uncond, caption_state_uncond
+                    )
+            else:
+                if has_text_cfg or has_context_cfg:
+                    kv_text_uncond_joint, kv_speaker_uncond_joint, _ = (
+                        model.build_kv_cache(text_state_uncond, speaker_state_uncond)
                     )
 
-        mx.eval(kv_text_cond, kv_speaker_cond)
+        elif cfg_guidance_mode == "alternating":
+            if not is_dual:
+                if has_text_cfg:
+                    kv_text_uncond_alt, _, _ = model.build_kv_cache(
+                        text_state_uncond, speaker_state_cond
+                    )
+                if has_context_cfg:
+                    _, kv_speaker_uncond_alt, _ = model.build_kv_cache(
+                        text_state_cond, speaker_state_uncond
+                    )
+                    if (
+                        speaker_kv_scale is not None
+                        and kv_speaker_uncond_alt is not None
+                    ):
+                        kv_speaker_uncond_alt = _scale_kv_cache(
+                            kv_speaker_uncond_alt,
+                            speaker_kv_scale,
+                            max_layers=speaker_kv_max_layers,
+                        )
+
+        mx.eval(kv_text_cond)
+        if kv_speaker_cond is not None:
+            mx.eval(kv_speaker_cond)
+        if kv_caption_cond is not None:
+            mx.eval(kv_caption_cond)
 
     # ---- initial noise ----
     mx.random.seed(rng_seed)
@@ -249,8 +334,70 @@ def sample_euler_cfg(
 
         if use_cfg:
             if cfg_guidance_mode == "independent":
-                if has_text_cfg and has_speaker_cfg:
-                    # 3x batch: [cond, text-uncond, speaker-uncond]
+                if is_dual:
+                    # Dual mode: build bundle list [cond, text-uncond?, spk-uncond?, cap-uncond?]
+                    bundles_x = [x_t]
+                    bundles_t = [text_state_cond]
+                    bundles_tm = [text_mask_cond]
+                    bundles_s = [speaker_state_cond]
+                    bundles_sm = [speaker_mask_cond]
+                    bundles_c = [caption_state_cond]
+                    bundles_cm = [caption_mask_cond]
+                    if has_text_cfg:
+                        bundles_x.append(x_t)
+                        bundles_t.append(text_state_uncond)
+                        bundles_tm.append(text_mask_uncond)
+                        bundles_s.append(speaker_state_cond)
+                        bundles_sm.append(speaker_mask_cond)
+                        bundles_c.append(caption_state_cond)
+                        bundles_cm.append(caption_mask_cond)
+                    if has_speaker_cfg:
+                        bundles_x.append(x_t)
+                        bundles_t.append(text_state_cond)
+                        bundles_tm.append(text_mask_cond)
+                        bundles_s.append(speaker_state_uncond)
+                        bundles_sm.append(speaker_mask_uncond)
+                        bundles_c.append(caption_state_cond)
+                        bundles_cm.append(caption_mask_cond)
+                    if has_caption_cfg:
+                        bundles_x.append(x_t)
+                        bundles_t.append(text_state_cond)
+                        bundles_tm.append(text_mask_cond)
+                        bundles_s.append(speaker_state_cond)
+                        bundles_sm.append(speaker_mask_cond)
+                        bundles_c.append(caption_state_uncond)
+                        bundles_cm.append(caption_mask_uncond)
+                    n_b = len(bundles_x)
+                    x_cfg = mx.concatenate(bundles_x, axis=0)
+                    t_cfg = mx.full((batch_size * n_b,), t, dtype=mx.float32)
+                    v_out = model.forward_with_conditions(
+                        x_t=x_cfg,
+                        t=t_cfg,
+                        text_state=mx.concatenate(bundles_t, axis=0),
+                        text_mask=mx.concatenate(bundles_tm, axis=0),
+                        speaker_state=mx.concatenate(bundles_s, axis=0),
+                        speaker_mask=mx.concatenate(bundles_sm, axis=0),
+                        kv_text=kv_text_cfg,
+                        kv_speaker=kv_speaker_cfg,
+                        caption_state=mx.concatenate(bundles_c, axis=0),
+                        caption_mask=mx.concatenate(bundles_cm, axis=0),
+                        kv_caption=kv_caption_cfg,
+                    )
+                    splits = mx.split(v_out, n_b, axis=0)
+                    v_cond = splits[0]
+                    v_pred = v_cond
+                    idx = 1
+                    if has_text_cfg:
+                        v_pred = v_pred + cfg_scale_text * (v_cond - splits[idx])
+                        idx += 1
+                    if has_speaker_cfg:
+                        v_pred = v_pred + cfg_scale_speaker * (v_cond - splits[idx])
+                        idx += 1
+                    if has_caption_cfg:
+                        v_pred = v_pred + cfg_scale_caption * (v_cond - splits[idx])
+
+                elif has_text_cfg and has_context_cfg:
+                    # 3x batch: [cond, text-uncond, context-uncond]
                     x_cfg = mx.concatenate([x_t, x_t, x_t], axis=0)
                     t_cfg = mx.full((batch_size * 3,), t, dtype=mx.float32)
                     text_mask_cfg = mx.concatenate(
@@ -311,7 +458,7 @@ def sample_euler_cfg(
                     v_cond, v_uncond_text = mx.split(v_out, 2, axis=0)
                     v_pred = v_cond + cfg_scale_text * (v_cond - v_uncond_text)
 
-                else:  # has_speaker_cfg only
+                else:  # has_context_cfg only
                     x_cfg = mx.concatenate([x_t, x_t], axis=0)
                     t_cfg = mx.full((batch_size * 2,), t, dtype=mx.float32)
                     v_out = model.forward_with_conditions(
@@ -336,7 +483,23 @@ def sample_euler_cfg(
                     v_pred = v_cond + cfg_scale_context * (v_cond - v_uncond_speaker)
 
             elif cfg_guidance_mode == "joint":
-                if has_text_cfg and has_speaker_cfg:
+                has_any_cfg = (
+                    (has_text_cfg or has_speaker_cfg or has_caption_cfg)
+                    if is_dual
+                    else (has_text_cfg or has_context_cfg)
+                )
+                if is_dual:
+                    all_scales = [
+                        s
+                        for s, a in [
+                            (cfg_scale_text, has_text_cfg),
+                            (cfg_scale_speaker, has_speaker_cfg),
+                            (cfg_scale_caption, has_caption_cfg),
+                        ]
+                        if a
+                    ]
+                    joint_scale = all_scales[0] if all_scales else cfg_scale_text
+                elif has_text_cfg and has_context_cfg:
                     if abs(cfg_scale_text - cfg_scale_context) > 1e-6:
                         raise ValueError(
                             "cfg_guidance_mode='joint' requires equal text/speaker scales. "
@@ -355,6 +518,9 @@ def sample_euler_cfg(
                     speaker_mask=speaker_mask_cond,
                     kv_text=kv_text_cond,
                     kv_speaker=kv_speaker_cond,
+                    caption_state=caption_state_cond,
+                    caption_mask=caption_mask_cond,
+                    kv_caption=kv_caption_cond,
                 )
                 v_uncond = model.forward_with_conditions(
                     x_t=x_t,
@@ -365,10 +531,13 @@ def sample_euler_cfg(
                     speaker_mask=speaker_mask_uncond,
                     kv_text=kv_text_uncond_joint,
                     kv_speaker=kv_speaker_uncond_joint,
+                    caption_state=caption_state_uncond,
+                    caption_mask=caption_mask_uncond,
+                    kv_caption=kv_caption_uncond_joint,
                 )
                 v_pred = v_cond + joint_scale * (v_cond - v_uncond)
 
-            else:  # alternating
+            else:  # alternating (single-context only)
                 v_cond = model.forward_with_conditions(
                     x_t=x_t,
                     t=t_arr,
@@ -379,8 +548,8 @@ def sample_euler_cfg(
                     kv_text=kv_text_cond,
                     kv_speaker=kv_speaker_cond,
                 )
-                use_text_uncond = (has_text_cfg and has_speaker_cfg and i % 2 == 0) or (
-                    has_text_cfg and not has_speaker_cfg
+                use_text_uncond = (has_text_cfg and has_context_cfg and i % 2 == 0) or (
+                    has_text_cfg and not has_context_cfg
                 )
                 if use_text_uncond:
                     v_uncond = model.forward_with_conditions(
@@ -418,6 +587,9 @@ def sample_euler_cfg(
                 speaker_mask=speaker_mask_cond,
                 kv_text=kv_text_cond,
                 kv_speaker=kv_speaker_cond,
+                caption_state=caption_state_cond,
+                caption_mask=caption_mask_cond,
+                kv_caption=kv_caption_cond,
             )
 
         # optional temporal score rescaling
@@ -429,15 +601,15 @@ def sample_euler_cfg(
             speaker_kv_active
             and speaker_kv_min_t is not None
             and t_next < speaker_kv_min_t <= t
+            and kv_speaker_cond is not None
         ):
             inv = 1.0 / speaker_kv_scale
             kv_speaker_cond = _scale_kv_cache(
                 kv_speaker_cond, inv, max_layers=speaker_kv_max_layers
             )
             if kv_speaker_cfg is not None:
-                kv_speaker_cfg = _concat_kv_caches(
-                    kv_speaker_cond, kv_speaker_cond, kv_speaker_cond
-                )
+                n_rep = 3 if (not is_dual and has_text_cfg and has_context_cfg) else 2
+                kv_speaker_cfg = _concat_kv_caches(*([kv_speaker_cond] * n_rep))
             if kv_speaker_uncond_alt is not None:
                 kv_speaker_uncond_alt = _scale_kv_cache(
                     kv_speaker_uncond_alt, inv, max_layers=speaker_kv_max_layers

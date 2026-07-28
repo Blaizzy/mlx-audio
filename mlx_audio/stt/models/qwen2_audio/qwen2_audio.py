@@ -112,6 +112,7 @@ class Qwen2AudioEncoder(nn.Module):
         self._embed_positions = sinusoids(
             config.max_source_positions + 1, config.d_model
         )
+        mx.eval(self._embed_positions)
 
     @property
     def embed_positions(self) -> mx.array:
@@ -301,6 +302,7 @@ class Model(nn.Module):
 
         enc = model.audio_tower
         enc._embed_positions = enc._embed_positions.astype(enc.conv1.weight.dtype)
+        mx.eval(enc._embed_positions)
 
         return model
 

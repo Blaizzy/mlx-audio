@@ -466,6 +466,7 @@ class VoxtralTTSAudioTokenizer(nn.Module):
 
         # ALiBi slopes
         self._alibi_slopes = _get_alibi_slopes(args.n_heads)
+        mx.eval(self._alibi_slopes)
 
         # Decoder blocks: alternating conv and transformer
         strides = args.decoder_convs_strides

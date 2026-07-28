@@ -8,7 +8,7 @@ Reference: https://arxiv.org/abs/2211.00895 (SimulMT with AlignAtt)
 """
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Union
 
 import mlx.core as mx
 
@@ -54,7 +54,9 @@ class StreamingResult:
     audio_duration: float = 0.0
 
 
-def get_most_attended_frame(cross_qk: List[mx.array], alignment_heads: mx.array) -> int:
+def get_most_attended_frame(
+    cross_qk: List[mx.array], alignment_heads: Union[mx.array, List[List[int]]]
+) -> int:
     """Extract the most attended audio frame from cross-attention weights.
 
     Uses the same alignment heads as word-level timestamps (timing.py).
@@ -62,14 +64,16 @@ def get_most_attended_frame(cross_qk: List[mx.array], alignment_heads: mx.array)
     Args:
         cross_qk: List of cross-attention weights per layer.
                   Each element shape: [batch, n_heads, seq_len, audio_frames]
-        alignment_heads: Array of [layer, head] pairs to use for alignment.
+        alignment_heads: Array or list of [layer, head] pairs to use for alignment.
 
     Returns:
         Frame index that receives highest average attention for the last token.
     """
-    weights = mx.stack(
-        [cross_qk[layer][0, head, -1, :] for layer, head in alignment_heads.tolist()]
-    )
+    if hasattr(alignment_heads, "tolist"):
+        heads_list = alignment_heads.tolist()
+    else:
+        heads_list = alignment_heads
+    weights = mx.stack([cross_qk[layer][0, head, -1, :] for layer, head in heads_list])
 
     avg_attention = weights.mean(axis=0)
     most_attended = int(mx.argmax(avg_attention).item())
@@ -138,6 +142,14 @@ class StreamingDecoder:
         self._emitted_tokens = []
         self._pending_tokens = []
         self._accumulated_mel = None
+
+        # Cache alignment heads as a Python list to avoid per-token tolist() synchronization stalls
+        self._alignment_heads_list = None
+        if (
+            hasattr(self.model, "alignment_heads")
+            and self.model.alignment_heads is not None
+        ):
+            self._alignment_heads_list = self.model.alignment_heads.tolist()
 
         # Use sot_sequence with notimestamps for text-only output
         self._sot_sequence = self.tokenizer.sot_sequence_including_notimestamps
@@ -236,12 +248,9 @@ class StreamingDecoder:
             tokens = mx.concatenate([tokens, mx.array([[next_token]])], axis=-1)
 
             # Check AlignAtt condition (only if we have alignment heads)
-            if (
-                hasattr(self.model, "alignment_heads")
-                and self.model.alignment_heads is not None
-            ):
+            if self._alignment_heads_list is not None:
                 most_attended = get_most_attended_frame(
-                    cross_qk, self.model.alignment_heads
+                    cross_qk, self._alignment_heads_list
                 )
                 threshold = 4 if is_last else self.config.frame_threshold
                 if should_emit(

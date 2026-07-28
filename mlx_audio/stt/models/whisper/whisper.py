@@ -420,6 +420,7 @@ class AudioEncoder(nn.Module):
         self.conv1 = nn.Conv1d(n_mels, n_state, kernel_size=3, padding=1)
         self.conv2 = nn.Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1)
         self._positional_embedding = sinusoids(n_ctx, n_state).astype(dtype)
+        mx.eval(self._positional_embedding)
 
         self.blocks = [ResidualAttentionBlock(n_state, n_head) for _ in range(n_layer)]
         self.ln_post = nn.LayerNorm(n_state)
@@ -460,6 +461,7 @@ class TextDecoder(nn.Module):
         self._mask = nn.MultiHeadAttention.create_additive_causal_mask(n_ctx).astype(
             dtype
         )
+        mx.eval(self._mask)
 
     def __call__(self, x, xa, kv_cache=None):
         """

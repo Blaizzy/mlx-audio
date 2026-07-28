@@ -283,6 +283,7 @@ class AudioEncoderV2(nn.Module):
         )
 
         self._freqs_cis = precompute_freqs_cis(64, 1024 * 2)
+        mx.eval(*self._freqs_cis)
 
         self.blocks = [ResidualAttentionBlock(n_state, n_head) for _ in range(n_layer)]
 

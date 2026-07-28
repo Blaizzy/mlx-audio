@@ -16,6 +16,7 @@ class MoonshineRotaryEmbedding(nn.Module):
         super().__init__()
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self._inv_freq = inv_freq  # shape: (dim // 2,)
+        mx.eval(self._inv_freq)
         self._dim = dim
         self._max_seq_len = max_position_embeddings
 

@@ -60,6 +60,7 @@ class RotaryEmbedding(nn.Module):
         emb = mx.concatenate([freqs, freqs], axis=-1)
         self._cos = mx.cos(emb)
         self._sin = mx.sin(emb)
+        mx.eval(self._cos, self._sin)
         self._cached_len = seq_len
 
     def __call__(self, seq_len: int):

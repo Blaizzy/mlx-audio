@@ -4,11 +4,10 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 from huggingface_hub import hf_hub_download
 from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.models.llama import LlamaModel
@@ -28,7 +27,9 @@ from .attention import Attention
 try:
     from .watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
 except ImportError:
-    pass
+    CSM_1B_GH_WATERMARK = None
+    load_watermarker = None
+    watermark = None
 
 MIMI_REPO = "kyutai/moshiko-pytorch-bf16"
 TOKENIZER_REPO = "unsloth/Llama-3.2-1B"
@@ -224,6 +225,29 @@ def create_llama_model_args(flavor: str) -> LlamaModelArgs:
                 "rope_type": "llama3",
             },
         )
+    elif flavor == "llama-8B":
+        return LlamaModelArgs(
+            model_type="llama",
+            num_hidden_layers=32,
+            num_attention_heads=32,
+            num_key_value_heads=8,
+            head_dim=128,
+            hidden_size=4096,
+            intermediate_size=14336,
+            rms_norm_eps=1e-5,
+            vocab_size=128_256,
+            max_position_embeddings=2048,
+            attention_bias=False,
+            mlp_bias=False,
+            rope_theta=500_000,
+            rope_scaling={
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+        )
     elif flavor == "llama-100M":
         return LlamaModelArgs(
             model_type="llama",
@@ -233,6 +257,29 @@ def create_llama_model_args(flavor: str) -> LlamaModelArgs:
             head_dim=128,
             hidden_size=1024,
             intermediate_size=8192,
+            rms_norm_eps=1e-5,
+            vocab_size=128_256,
+            max_position_embeddings=2048,
+            attention_bias=False,
+            mlp_bias=False,
+            rope_theta=500_000,
+            rope_scaling={
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+        )
+    elif flavor == "llama-300M":
+        return LlamaModelArgs(
+            model_type="llama",
+            num_hidden_layers=8,
+            num_attention_heads=24,
+            num_key_value_heads=6,
+            head_dim=64,
+            hidden_size=1536,
+            intermediate_size=6912,
             rms_norm_eps=1e-5,
             vocab_size=128_256,
             max_position_embeddings=2048,
@@ -297,11 +344,6 @@ class SesameModel(nn.Module):
         self.caches_enabled = False
 
     def setup_caches(self, max_batch_size: int):
-        try:
-            backbone_args = create_llama_model_args_for_backbone(self.args)
-        except Exception:
-            backbone_args = create_llama_model_args(self.args.backbone_flavor)
-
         self.backbone_cache = make_prompt_cache(self.backbone)
         self.decoder_cache = make_prompt_cache(self.decoder)
         self.caches_enabled = True
@@ -413,6 +455,15 @@ class Model(nn.Module):
         super().__init__()
         self.model = SesameModel(config)
         self.model.setup_caches(1)
+        self._frame_size = self.model.args.audio_num_codebooks + 1
+        self._speaker_prefix_space = bool(config.get("speaker_prefix_space", False))
+        self._watermark_key = config.get(
+            "watermark_key", globals().get("CSM_1B_GH_WATERMARK")
+        )
+        self._use_default_voice_prompt = bool(
+            config.get("use_default_voice_prompt", True)
+        )
+        self._default_voice_match = bool(config.get("voice_match", True))
 
         self.tokenizer_repo = config.get("text_tokenizer")
         if self.tokenizer_repo:
@@ -454,11 +505,17 @@ class Model(nn.Module):
         frame_tokens = []
         frame_masks = []
 
+        prompt_text = text.lstrip() if self._speaker_prefix_space else text
+        speaker_prefix = (
+            f"[{speaker}] " if self._speaker_prefix_space else f"[{speaker}]"
+        )
         text_tokens = self._text_tokenizer.encode(
-            f"[{speaker}]{text}", return_tensors="mlx"
+            f"{speaker_prefix}{prompt_text}", return_tensors="mlx"
         ).squeeze(0)
-        text_frame = mx.zeros((len(text_tokens), 33)).astype(mx.int32)
-        text_frame_mask = mx.zeros((len(text_tokens), 33)).astype(mx.bool_)
+        text_frame = mx.zeros((len(text_tokens), self._frame_size)).astype(mx.int32)
+        text_frame_mask = mx.zeros((len(text_tokens), self._frame_size)).astype(
+            mx.bool_
+        )
         text_frame[:, -1] = text_tokens
         text_frame_mask[:, -1] = True
 
@@ -475,14 +532,24 @@ class Model(nn.Module):
 
         # (K, T)
         audio_tokens = self._audio_tokenizer.encode(audio[None, None, ...])[0]
+        if audio_tokens.shape[0] != self.model.args.audio_num_codebooks:
+            raise ValueError(
+                "Audio tokenizer returned "
+                f"{audio_tokens.shape[0]} codebooks, expected "
+                f"{self.model.args.audio_num_codebooks}"
+            )
 
         # add EOS frame
         if add_eos:
-            eos_frame = mx.zeros((audio_tokens.shape[0], 1))
+            eos_frame = mx.zeros((audio_tokens.shape[0], 1)).astype(audio_tokens.dtype)
             audio_tokens = mx.concat([audio_tokens, eos_frame], axis=1)
 
-        audio_frame = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.int32)
-        audio_frame_mask = mx.zeros((audio_tokens.shape[1], 33)).astype(mx.bool_)
+        audio_frame = mx.zeros((audio_tokens.shape[1], self._frame_size)).astype(
+            mx.int32
+        )
+        audio_frame_mask = mx.zeros((audio_tokens.shape[1], self._frame_size)).astype(
+            mx.bool_
+        )
         audio_frame[:, :-1] = audio_tokens.swapaxes(0, 1)
         audio_frame_mask[:, :-1] = True
 
@@ -514,7 +581,7 @@ class Model(nn.Module):
             if not k.startswith("model."):
                 k = "model." + k
 
-            if "attn" in k and not "self_attn" in k:
+            if "attn" in k and "self_attn" not in k:
                 k = k.replace("attn", "self_attn")
                 k = k.replace("output_proj", "o_proj")
 
@@ -606,12 +673,12 @@ class Model(nn.Module):
         # Watermarking ensures transparency, dissuades misuse, and enables traceability.
         # Please be a responsible AI citizen and keep the watermarking in place.
         # If using CSM 1B in another application, use your own private key and keep it secret.
-        if self._watermarker is not None:
+        if self._watermarker is not None and self._watermark_key is not None:
             audio = watermark(
                 self._watermarker,
                 audio,
                 self._sample_rate,
-                CSM_1B_GH_WATERMARK,
+                self._watermark_key,
             )
             audio = mx.array(audio, dtype=mx.float32)
 
@@ -673,9 +740,12 @@ class Model(nn.Module):
         ref_text: str = None,
         stream: bool = False,
         streaming_interval: float = 0.5,
-        voice_match: bool = True,
+        voice_match: Optional[bool] = None,
         **kwargs,
     ):
+        if voice_match is None:
+            voice_match = self._default_voice_match
+
         # Load reference audio if provided (handles file paths and mx.array)
         if ref_audio is not None:
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
@@ -683,7 +753,7 @@ class Model(nn.Module):
         # if reference audio is provided, use it as the first segment
         if len(context) == 0 and ref_audio is not None and ref_text is not None:
             context = [Segment(speaker=speaker, text=ref_text, audio=ref_audio)]
-        elif ref_audio is None:
+        elif ref_audio is None and len(context) == 0 and self._use_default_voice_prompt:
             # otherwise, use the provided or default voice
             if voice is None:
                 voice = "conversational_a"
@@ -702,7 +772,8 @@ class Model(nn.Module):
             text = re.split(split_pattern, text.strip()) if split_pattern else [text]
 
         for prompt in text:
-            if voice_match:
+            current_context = list(context)
+            if voice_match and current_context:
                 generation_text = (context[0].text + " " + prompt).strip()
                 current_context = [
                     Segment(
@@ -724,7 +795,7 @@ class Model(nn.Module):
                 tokens.append(segment_tokens)
                 tokens_mask.append(segment_tokens_mask)
 
-            if not voice_match:
+            if not voice_match or not current_context:
                 gen_segment_tokens, gen_segment_tokens_mask = (
                     self._tokenize_text_segment(prompt, speaker)
                 )

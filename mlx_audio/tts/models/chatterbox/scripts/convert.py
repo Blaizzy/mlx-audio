@@ -94,6 +94,35 @@ def load_pytorch_safetensors(path: Path) -> Dict[str, np.ndarray]:
     return {k: v.cpu().numpy() for k, v in state_dict.items()}
 
 
+# S3Gen parameters that are generated during model initialization and
+# intentionally kept out of the converted artifact (the runtime regenerates
+# them; see Model.load_weights in chatterbox.py).
+S3GEN_GENERATED_BUFFERS = (
+    "flow.decoder.rand_noise",
+    "flow.encoder.embed.pos_enc.pe",
+    "flow.encoder.up_embed.pos_enc.pe",
+    "mel2wav.stft_window",
+    "trim_fade",
+)
+
+
+def load_s3gen_strict(model, weights: dict) -> None:
+    """Load converted S3Gen weights with strict validation.
+
+    Supplies the init-generated buffers from the freshly initialized model so
+    strict=True only flags genuinely missing or unexpected checkpoint tensors
+    (e.g. weights dropped by a sanitize() naming regression).
+    """
+    from mlx.utils import tree_flatten
+
+    params = dict(tree_flatten(model.parameters()))
+    supplied = dict(weights)
+    for key in S3GEN_GENERATED_BUFFERS:
+        assert key in params, f"expected init-generated S3Gen buffer missing: {key}"
+        supplied[key] = params[key]
+    model.load_weights(list(supplied.items()), strict=True)
+
+
 def load_onnx_weights(path: Path) -> Dict[str, np.ndarray]:
     """Load ONNX weights as numpy arrays using s3tokenizer's onnx2torch."""
     try:
@@ -459,6 +488,11 @@ def convert_all(
     s3gen_weights_mx = numpy_to_mlx(s3gen_weights)
     s3gen = S3Token2Wav()
     s3gen_weights_mx = s3gen.sanitize(s3gen_weights_mx)
+
+    # Validate the converted checkpoint; init-generated buffers stay out of it.
+    load_s3gen_strict(s3gen, s3gen_weights_mx)
+    print(f"  S3Gen strict validation passed ({len(s3gen_weights_mx)} tensors)")
+
     s3gen_weights = mlx_to_numpy(s3gen_weights_mx)
     # Add with prefix
     for k, v in s3gen_weights.items():
@@ -491,7 +525,7 @@ def convert_all(
 
         ve_model.load_weights(list(ve_w.items()), strict=False)
         t3_model.load_weights(list(t3_w.items()), strict=False)
-        s3gen_model.load_weights(list(s3gen_w.items()), strict=False)
+        load_s3gen_strict(s3gen_model, s3gen_w)
 
         mx.eval(ve_model.parameters())
         mx.eval(t3_model.parameters())
@@ -513,6 +547,10 @@ def convert_all(
         for k, v in dict(tree_flatten(t3_model.parameters())).items():
             new_weights[f"t3.{k}"] = v
         for k, v in dict(tree_flatten(s3gen_model.parameters())).items():
+            # Keep init-generated buffers out of the quantized artifact too,
+            # matching the non-quantized path.
+            if k in S3GEN_GENERATED_BUFFERS:
+                continue
             new_weights[f"s3gen.{k}"] = v
 
         new_size = sum(v.nbytes for v in new_weights.values())

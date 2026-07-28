@@ -466,6 +466,7 @@ class Model(nn.Module):
         s3tok_weights = mx.load(str(s3tok_path))
         model._s3_tokenizer = S3TokenizerV2("speech_tokenizer_v2_25hz")
         load_component_weights(model._s3_tokenizer, s3tok_weights, strict=False)
+        mx.eval(model._s3_tokenizer.parameters())
 
         # Initialize text tokenizer (check config for multilingual setting)
         tokenizer_path = ckpt_dir / "tokenizer.json"
@@ -496,6 +497,7 @@ class Model(nn.Module):
             model.tokenizer = None
 
         # Set to eval mode for inference (important for BatchNorm)
+        mx.eval(model.parameters(), model._s3_tokenizer.parameters())
         model.eval()
         print("Model loaded successfully!")
         return model
@@ -558,6 +560,7 @@ class Model(nn.Module):
             if hasattr(model._s3_tokenizer, "sanitize"):
                 s3tok_weights = model._s3_tokenizer.sanitize(s3tok_weights)
             model._s3_tokenizer.load_weights(list(s3tok_weights.items()), strict=False)
+            mx.eval(model._s3_tokenizer.parameters())
             print("Loaded S3Tokenizer weights")
         else:
             print(f"Warning: S3Tokenizer weights not found at {s3tok_path}")
@@ -597,6 +600,8 @@ class Model(nn.Module):
                 gen_dict["prompt_feat_len"] = mx.array([prompt_feat.shape[1]])
 
             model._conds = Conditionals(t3_cond, gen_dict)
+            cond_arrays = [speaker_emb, cond_tokens, emotion_adv, *gen_dict.values()]
+            mx.eval(*(x for x in cond_arrays if isinstance(x, mx.array)))
         else:
             print("Warning: conds.safetensors not found - ref_audio will be required")
             model._conds = None
@@ -690,12 +695,20 @@ class Model(nn.Module):
         ve_embed = self.ve.embeds_from_wavs([ref_wav_16k_full], sample_rate=S3_SR)
         ve_embed = mx.mean(ve_embed, axis=0, keepdims=True)
 
+        emotion_adv = mx.ones((1, 1, 1)) * exaggeration
         t3_cond = T3Cond(
             speaker_emb=ve_embed,
             cond_prompt_speech_tokens=t3_cond_prompt_tokens,
-            emotion_adv=mx.ones((1, 1, 1)) * exaggeration,
+            emotion_adv=emotion_adv,
         )
 
+        cond_arrays = [
+            ve_embed,
+            t3_cond_prompt_tokens,
+            emotion_adv,
+            *s3gen_ref_dict.values(),
+        ]
+        mx.eval(*(x for x in cond_arrays if isinstance(x, mx.array)))
         return Conditionals(t3_cond, s3gen_ref_dict)
 
     @property

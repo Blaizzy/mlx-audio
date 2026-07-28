@@ -40,14 +40,14 @@ class TestEncodec(unittest.TestCase):
         audio = mx.zeros((1, 120_000, 1))
 
         # default bandwidth
-        (codes, scales) = model.encode(audio)
+        codes, scales = model.encode(audio)
         self.assertEqual(codes.shape, (1, 1, 2, 375))
 
         audio_out = model.decode(codes, scales)
         self.assertEqual(audio_out.shape, (1, 120_000, 1))
 
         # 6kbps bandwidth
-        (codes, scales) = model.encode(audio, bandwidth=6)
+        codes, scales = model.encode(audio, bandwidth=6)
         self.assertEqual(codes.shape, (1, 1, 8, 375))
 
         audio_out = model.decode(codes, scales)

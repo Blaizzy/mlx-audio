@@ -197,6 +197,7 @@ class DecoderRotaryEmbedding(nn.Module):
         self.base = base
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self._inv_freq = inv_freq
+        mx.eval(self._inv_freq)
 
     def __call__(
         self, x: mx.array, position_ids: mx.array
@@ -1175,8 +1176,6 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
             audios.append(audio)
 
         del wav_batch, batch_codes, codes_t
-        mx.clear_cache()
-
         return audios, audio_lengths
 
     def streaming_decode(self, audio_codes: mx.array, chunk_tokens: int = 100):
@@ -1214,9 +1213,6 @@ class Qwen3TTSSpeechTokenizer(nn.Module):
             mx.eval(wav_chunk)
 
             yield wav_chunk
-
-            # Clear cache after each chunk
-            mx.clear_cache()
 
             start_index = end_index
 

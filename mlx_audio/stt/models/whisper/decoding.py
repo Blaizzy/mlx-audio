@@ -312,7 +312,7 @@ class GreedyDecoder(TokenDecoder):
         else:
             next_tokens = categorical(logits, self.temperature)
 
-        logprobs = logits - mx.logsumexp(logits, axis=-1)
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
 
         current_logprobs = logprobs[mx.arange(logprobs.shape[0]), next_tokens]
         sum_logprobs += current_logprobs * (tokens[:, -1] != self.eot)
@@ -427,7 +427,7 @@ class ApplyTimestampRules(LogitFilter):
 
         # if sum of probability over timestamps is above any other token, sample timestamp
         mask = mx.array(mask)
-        logprobs = logits - mx.logsumexp(logits, axis=-1)
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
         timestamp_logprob = logprobs[:, self.tokenizer.timestamp_begin :].logsumexp(
             axis=-1, keepdims=True
         )
@@ -659,9 +659,8 @@ class DecodingTask:
             tokens = mx.broadcast_to(
                 tokens, [n_audio, self.n_group, len(self.initial_tokens)]
             )
-            tokens = tokens.reshape(
-                tokens, (n_audio * self.n_group, len(self.initial_tokens))
-            )
+            tokens = tokens.reshape(n_audio * self.n_group, len(self.initial_tokens))
+            audio_features = mx.repeat(audio_features, self.n_group, axis=0)
 
         # call the main sampling loop
         tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)

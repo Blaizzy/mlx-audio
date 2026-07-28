@@ -1,12 +1,14 @@
-# CSM (Conversational Speech Model)
+# CSM / MisoTTS
 
-CSM is Sesame's 1B parameter conversational speech model with voice cloning support. It generates natural-sounding speech and supports multi-turn conversational context, making it well-suited for dialogue applications.
+CSM-family models use the Sesame conversational speech architecture with voice cloning support. They generate natural-sounding speech and support multi-turn conversational context, making them well-suited for dialogue applications.
 
 ## Model Variants
 
 | Model | Format | HuggingFace |
 |-------|--------|-------------|
 | `mlx-community/csm-1b` | -- | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/csm-1b) |
+| `mlx-community/MisoLabs-MisoTTS-bf16` | BF16 safetensors | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-bf16) |
+| `mlx-community/MisoLabs-MisoTTS-8bit` | 8-bit MLX quantized | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/MisoLabs-MisoTTS-8bit) |
 
 ## Usage
 
@@ -21,6 +23,12 @@ CSM is Sesame's 1B parameter conversational speech model with voice cloning supp
         --voice conversational_a
     ```
 
+    ```bash
+    mlx_audio.tts.generate \
+        --model mlx-community/MisoLabs-MisoTTS-bf16 \
+        --text "Hello from Miso."
+    ```
+
 === "Python"
 
     ```python
@@ -33,6 +41,15 @@ CSM is Sesame's 1B parameter conversational speech model with voice cloning supp
         voice="conversational_a",
     ):
         audio = result.audio  # mx.array waveform
+    ```
+
+    ```python
+    from mlx_audio.tts.utils import load_model
+
+    model = load_model("mlx-community/MisoLabs-MisoTTS-bf16")
+
+    for result in model.generate(text="Hello from Miso."):
+        audio = result.audio
     ```
 
 ### Voice Cloning

@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
 from tqdm import tqdm
 
 from mlx_audio.stt.models.base import STTOutput
@@ -138,6 +139,21 @@ def create_additive_causal_mask(N: int, offset: int = 0) -> mx.array:
     return mask * -1e9
 
 
+def _rope_safe(rope, x: mx.array, offset: int) -> mx.array:
+    """Apply RoPE, working around an mx.fast.rope bug.
+
+    For a 4D tensor (B, heads, L, dim) with L == 1 and B > 1, mx.fast.rope
+    (used by nn.RoPE) corrupts every batch row except the first. This only
+    bites batched single-token decode (batch generation); single-sequence
+    decode has B == 1 and is unaffected. Padding the sequence to length 2 and
+    slicing keeps the fast kernel while producing the exact correct result.
+    """
+    if x.ndim == 4 and x.shape[0] > 1 and x.shape[2] == 1:
+        x = mx.concatenate([x, mx.zeros_like(x)], axis=2)
+        return rope(x, offset=offset)[:, :, :1, :]
+    return rope(x, offset=offset)
+
+
 def _floor_div(a: mx.array, b: int) -> mx.array:
     """Floor division matching Python semantics."""
     return mx.floor(a.astype(mx.float32) / b).astype(mx.int32)
@@ -172,6 +188,7 @@ class SinusoidalPositionEmbedding(nn.Module):
         self._positional_embedding = mx.concatenate(
             [mx.sin(scaled_time), mx.cos(scaled_time)], axis=1
         )
+        mx.eval(self._positional_embedding)
 
     def __call__(self, seqlen: int) -> mx.array:
         return self._positional_embedding[:seqlen, :]
@@ -472,6 +489,7 @@ class TextAttention(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
+        mask: Optional[Union[str, mx.array]] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
         B, L, _ = hidden_states.shape
@@ -493,8 +511,8 @@ class TextAttention(nn.Module):
 
         if cache is not None:
             offset = cache.offset
-            queries = self.rope(queries, offset=offset)
-            keys = self.rope(keys, offset=offset)
+            queries = _rope_safe(self.rope, queries, offset)
+            keys = _rope_safe(self.rope, keys, offset)
         else:
             offset = 0
             queries = self.rope(queries)
@@ -504,12 +522,13 @@ class TextAttention(nn.Module):
             keys, values = cache.update_and_fetch(keys, values)
 
         query_len = queries.shape[2]
-        mask = create_additive_causal_mask(query_len, offset=offset).astype(
-            queries.dtype
-        )
-
-        output = mx.fast.scaled_dot_product_attention(
-            queries, keys, values, scale=self.scale, mask=mask
+        output = scaled_dot_product_attention(
+            queries,
+            keys,
+            values,
+            cache=cache,
+            scale=self.scale,
+            mask=mask,
         )
 
         output = output.transpose(0, 2, 1, 3).reshape(B, query_len, -1)
@@ -553,11 +572,12 @@ class TextDecoderLayer(nn.Module):
     def __call__(
         self,
         hidden_states: mx.array,
+        mask: Optional[Union[str, mx.array]] = None,
         cache: Optional[Any] = None,
     ) -> mx.array:
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
-        hidden_states = self.self_attn(hidden_states, cache=cache)
+        hidden_states = self.self_attn(hidden_states, mask=mask, cache=cache)
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -595,9 +615,10 @@ class TextModel(nn.Module):
 
         if cache is None:
             cache = [None] * len(self.layers)
+        mask = create_attention_mask(hidden_states, cache[0])
 
         for i, layer in enumerate(self.layers):
-            hidden_states = layer(hidden_states, cache=cache[i])
+            hidden_states = layer(hidden_states, mask=mask, cache=cache[i])
 
         return self.norm(hidden_states)
 
@@ -750,6 +771,38 @@ class Qwen3ASRModel(nn.Module):
         from mlx_lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
+
+    def _eos_token_ids(self) -> set[int]:
+        """Resolve EOS ids from the loaded tokenizer, with Qwen defaults as fallback."""
+        token_ids: set[int] = set()
+        tokenizer = getattr(self, "_tokenizer", None)
+
+        def add(value):
+            if value is None:
+                return
+            if isinstance(value, (list, tuple, set)):
+                for item in value:
+                    add(item)
+                return
+            try:
+                token_ids.add(int(value))
+            except (TypeError, ValueError):
+                return
+
+        if tokenizer is not None:
+            add(getattr(tokenizer, "eos_token_id", None))
+            add(getattr(tokenizer, "eos_token_ids", None))
+
+            convert = getattr(tokenizer, "convert_tokens_to_ids", None)
+            if convert is not None:
+                for token in ("<|im_end|>", "<|endoftext|>"):
+                    token_id = convert(token)
+                    if token_id != getattr(tokenizer, "unk_token_id", None):
+                        add(token_id)
+
+        if not token_ids:
+            token_ids.update((151645, 151643))
+        return token_ids
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
@@ -917,7 +970,7 @@ class Qwen3ASRModel(nn.Module):
             self._preprocess_audio(audio)
         )
         input_ids = self._build_prompt(num_audio_tokens, language, system_prompt)
-        eos_token_ids = [151645, 151643]
+        eos_token_ids = self._eos_token_ids()
 
         # Step 1: Encode audio features
         with tqdm(
@@ -989,7 +1042,7 @@ class Qwen3ASRModel(nn.Module):
             if gen_pbar is not None:
                 gen_pbar.update(1)
 
-            if token in eos_token_ids:
+            if int(token) in eos_token_ids:
                 break
 
             yield token, logprobs
@@ -1039,11 +1092,146 @@ class Qwen3ASRModel(nn.Module):
         text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
         return text, prompt_tokens, len(generated_tokens)
 
+    def _generate_chunks_batched(
+        self,
+        chunks,
+        *,
+        max_tokens,
+        sampler,
+        logits_processors,
+        language,
+        system_prompt,
+        batch_size,
+        verbose,
+    ):
+        """Transcribe chunks in batches of ``batch_size``.
+
+        Decode is memory-bandwidth bound: a single sequence reads all weights to
+        emit one token. Batching independent chunks amortizes those weight reads
+        across the batch. Chunks within a batch are padded (audio) to equal
+        length so prompts share one length and the plain causal mask stays valid.
+        """
+        from mlx_lm.models.cache import KVCache
+
+        eos_token_ids = self._eos_token_ids()
+        texts = [""] * len(chunks)
+        gen_tokens = [0] * len(chunks)
+        prompt_tokens = [0] * len(chunks)
+        processed = [False] * len(chunks)
+        remaining_tokens = max_tokens
+
+        if remaining_tokens <= 0:
+            return texts, gen_tokens, prompt_tokens, processed
+
+        pbar = tqdm(total=len(chunks), desc="Processing chunks", disable=not verbose)
+        for b0 in range(0, len(chunks), batch_size):
+            if remaining_tokens <= 0:
+                break
+
+            group = chunks[b0 : b0 + batch_size]
+            pad_to = max(len(c[0]) for c in group)
+
+            embeds = []
+            token_histories = [] if logits_processors else None
+            for chunk_audio, _ in group:
+                audio = chunk_audio
+                if len(audio) < pad_to:
+                    audio = np.pad(audio, (0, pad_to - len(audio)))
+                feats, fmask, n_audio = self._preprocess_audio(audio)
+                af = self.get_audio_features(feats, fmask)
+                input_ids = self._build_prompt(n_audio, language, system_prompt)
+                embeds.append(self._build_inputs_embeds(input_ids, af)[0])
+                if token_histories is not None:
+                    token_histories.append(input_ids[0, -1:])
+
+            x = mx.stack(embeds, axis=0)  # (B, L, H), equal L
+            bsz = x.shape[0]
+            for i in range(bsz):
+                prompt_tokens[b0 + i] = x.shape[1]
+
+            cache = [
+                KVCache() for _ in range(self.config.text_config.num_hidden_layers)
+            ]
+            # Prefill: run the transformer over the whole prompt (fills the KV
+            # cache) but project only the last position through the big vocab
+            # head — the other ~L positions are never sampled.
+            hidden = self.model(inputs_embeds=x, cache=cache)[:, -1:, :]
+            logits = (
+                self.lm_head(hidden)
+                if self.lm_head is not None
+                else self.model.embed_tokens.as_linear(hidden)
+            )
+
+            def apply_logits_processors(logits):
+                if token_histories is None:
+                    return logits
+                processed = []
+                for i, tokens in enumerate(token_histories):
+                    sample_logits = logits[i : i + 1]
+                    for processor in logits_processors:
+                        sample_logits = processor(tokens, sample_logits)
+                    processed.append(sample_logits)
+                return mx.concatenate(processed, axis=0)
+
+            y = sampler(apply_logits_processors(logits[:, -1, :]))
+            mx.async_eval(y)
+
+            out_ids = [[] for _ in range(bsz)]
+            done = [False] * bsz
+            group_tokens = 0
+            budget_exhausted = False
+            for _ in range(remaining_tokens):
+                if token_histories is not None:
+                    for i in range(bsz):
+                        if not done[i]:
+                            token_histories[i] = mx.concatenate(
+                                [token_histories[i], y[i : i + 1]]
+                            )
+
+                # Build and kick off the next step before consuming the current
+                # one, so the GPU runs this step while Python walks the tokens
+                # (overlap pattern from mlx_lm.generate_step).
+                next_logits = self._forward_with_embeds(
+                    self.model.embed_tokens(y[:, None]), cache
+                )
+                next_y = sampler(apply_logits_processors(next_logits[:, -1, :]))
+                mx.async_eval(next_y)
+
+                current_tokens = y.tolist()
+                for i, t in enumerate(current_tokens):
+                    if budget_exhausted:
+                        break
+                    if done[i]:
+                        continue
+                    processed[b0 + i] = True
+                    if t in eos_token_ids:
+                        done[i] = True
+                    else:
+                        out_ids[i].append(t)
+                        group_tokens += 1
+                        if group_tokens >= remaining_tokens:
+                            budget_exhausted = True
+                            break
+                if all(done) or budget_exhausted:
+                    break
+                y = next_y
+
+            for i in range(bsz):
+                texts[b0 + i] = self._tokenizer.decode(
+                    out_ids[i], skip_special_tokens=True
+                )
+                gen_tokens[b0 + i] = len(out_ids[i])
+            remaining_tokens -= group_tokens
+            pbar.update(bsz)
+        pbar.close()
+        return texts, gen_tokens, prompt_tokens, processed
+
     def generate(
         self,
         audio: Union[str, mx.array, np.ndarray, List[Union[str, mx.array, np.ndarray]]],
         *,
         max_tokens: int = 8192,
+        batch_size: int = 1,
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 0,
@@ -1095,6 +1283,11 @@ class Qwen3ASRModel(nn.Module):
 
         del kwargs
 
+        if batch_size is None:
+            batch_size = 1
+        elif batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+
         start_time = time.time()
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
@@ -1141,6 +1334,37 @@ class Qwen3ASRModel(nn.Module):
         total_prompt_tokens = 0
         total_generation_tokens = 0
         remaining_tokens = max_tokens
+
+        if max_tokens > 0 and batch_size > 1 and len(chunks) > 1:
+            texts, gen_toks, prompt_toks, processed = self._generate_chunks_batched(
+                chunks,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                language=language,
+                system_prompt=system_prompt,
+                batch_size=batch_size,
+                verbose=verbose,
+            )
+            for (chunk_audio, offset_sec), text, gt, pt, was_processed in zip(
+                chunks, texts, gen_toks, prompt_toks, processed
+            ):
+                if not was_processed:
+                    continue
+                if language is None:
+                    language, text = self.extract_language(text)
+                all_texts.append(text)
+                total_prompt_tokens += pt
+                total_generation_tokens += gt
+                segments.append(
+                    {
+                        "text": text,
+                        "language": language,
+                        "start": offset_sec,
+                        "end": offset_sec + len(chunk_audio) / self.sample_rate,
+                    }
+                )
+            chunks = []  # skip the sequential loop below
 
         chunk_iter = tqdm(
             chunks, desc="Processing chunks", disable=not verbose or len(chunks) == 1

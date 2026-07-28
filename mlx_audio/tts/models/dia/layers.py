@@ -164,6 +164,7 @@ class RotaryEmbedding(nn.Module):
         self._timescale = (
             self.min_timescale * (self.max_timescale / self.min_timescale) ** fraction
         )
+        mx.eval(self._timescale)
 
     def __call__(self, inputs: mx.array, position: mx.array):
         """Applies RoPE."""

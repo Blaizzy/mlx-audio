@@ -5,6 +5,7 @@ Uses periodic Hamming window, zero center-padding, HTK mel scale,
 """
 
 import math
+from functools import lru_cache
 
 import mlx.core as mx
 
@@ -15,12 +16,14 @@ WIN_LENGTH = 400
 N_MELS = 60
 
 
+@lru_cache(maxsize=1)
 def _hamming_window(length: int) -> mx.array:
     return mx.array(
         [0.54 - 0.46 * math.cos(2.0 * math.pi * n / length) for n in range(length)]
     )
 
 
+@lru_cache(maxsize=1)
 def _htk_mel_filterbank(sample_rate: int, n_fft: int, n_mels: int) -> mx.array:
     def hz_to_mel(f: float) -> float:
         return 2595.0 * math.log10(1.0 + f / 700.0)

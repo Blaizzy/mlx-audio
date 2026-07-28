@@ -92,6 +92,7 @@ class ConvTranspose1d(nn.Module):
                 groups = 1
         self._expanded_weight = weight
         self._expanded_groups = groups
+        mx.eval(self._expanded_weight)
 
     def update(self, parameters: dict, strict: bool = True) -> nn.Module:
         super().update(parameters, strict=strict)

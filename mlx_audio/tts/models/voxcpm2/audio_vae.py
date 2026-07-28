@@ -338,6 +338,7 @@ class CausalDecoder(nn.Module):
         # Sample rate conditioning
         if sr_bin_boundaries is not None:
             self._sr_boundaries = mx.array(sr_bin_boundaries, dtype=mx.int32)
+            mx.eval(self._sr_boundaries)
             sr_bin_buckets = len(sr_bin_boundaries) + 1
 
             # Build conditioning layers parallel to decoder blocks

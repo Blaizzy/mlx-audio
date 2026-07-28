@@ -160,6 +160,57 @@ def test_normalize_peak_matches_reference_values():
     )
 
 
+def test_resample_rejects_energy_above_target_nyquist():
+    """A tone just above the new Nyquist must be band-limited away, not aliased
+    back into the signal. The previous Kaiser(5.0) default left a large residual
+    in the top bins here (#24)."""
+    from mlx_audio.utils import resample_audio
+
+    orig, target = 24000, 16000
+    t = np.arange(2 * orig) / orig
+    tone = np.sin(2 * np.pi * 8200.0 * t).astype(np.float32)  # 200 Hz above Nyquist
+    out = np.asarray(resample_audio(tone, orig, target))
+    rms = float(np.sqrt(np.mean(out[400:-400] ** 2)))
+    assert rms < 0.01  # sharp filter -> ~0; the old default left ~0.26
+
+
+def test_resample_preserves_passband():
+    """In-band tones pass with ~unit gain, including near the Nyquist edge where
+    the old filter drooped (full-scale sine RMS == 1/sqrt(2) ~= 0.7071)."""
+    from mlx_audio.utils import resample_audio
+
+    orig, target = 24000, 16000
+    t = np.arange(2 * orig) / orig
+    for freq in (1000.0, 7000.0):
+        tone = np.sin(2 * np.pi * freq * t).astype(np.float32)
+        out = np.asarray(resample_audio(tone, orig, target))
+        rms = float(np.sqrt(np.mean(out[400:-400] ** 2)))
+        assert 0.70 < rms < 0.72
+
+
+def test_resample_length_and_type():
+    """Output length tracks the rate ratio and the return type matches input."""
+    import mlx.core as mx
+
+    from mlx_audio.utils import resample_audio
+
+    x = np.zeros(24000, dtype=np.float32)
+    out = resample_audio(x, 24000, 16000)
+    assert isinstance(out, np.ndarray)
+    assert abs(len(out) - 16000) <= 1
+
+    out_mx = resample_audio(mx.array(x), 24000, 16000)
+    assert isinstance(out_mx, mx.array)
+
+
+def test_resample_noop_when_rates_equal():
+    from mlx_audio.utils import resample_audio
+
+    x = np.linspace(-1.0, 1.0, 100, dtype=np.float32)
+    out = resample_audio(x, 16000, 16000)
+    np.testing.assert_array_equal(np.asarray(out), x)
+
+
 def test_integrated_loudness_validation_matches_previous_behavior():
     """Verify the public helper keeps the old validation semantics."""
     from mlx_audio.dsp import integrated_loudness

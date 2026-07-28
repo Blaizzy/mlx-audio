@@ -1,3 +1,4 @@
+import base64
 import json
 import time
 import warnings
@@ -263,7 +264,115 @@ class Model(nn.Module):
         )
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        """Map NeMo weight names to MLX weight names."""
+        """Map checkpoint weight names to this model's MLX parameter names.
+
+        Three on-disk layouts are supported:
+
+        * **Already-sanitized** – internal MLX parameter names produced after a
+          previous sanitize pass (e.g. a re-saved or convert-script output). Keys
+          start with ``decoder.blocks.``; no remapping needed.
+        * **NeMo-native** – raw NeMo names (``transf_decoder._decoder.layers.*``,
+          ``log_softmax.mlp.layer0.*``) with PyTorch conv layout that needs to be
+          transposed to MLX's ``(out, *kernel, in)`` order.
+        * **MLX-native** – community conversions that already use MLX tensor layouts
+          and flattened names (``transf_decoder.layers.N.first_sub_layer.linear_q``,
+          ``head.classifier``). These must *not* be transposed again.
+        """
+        is_already_sanitized = any(k.startswith("decoder.blocks.") for k in weights)
+        if is_already_sanitized:
+            return dict(weights)
+
+        is_mlx_native = "head.classifier.weight" in weights or any(
+            k.startswith("transf_decoder.layers.") for k in weights
+        )
+        if is_mlx_native:
+            return self._sanitize_mlx_native(weights)
+        return self._sanitize_nemo(weights)
+
+    def _sanitize_mlx_native(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        """Remap an already-MLX-layout Canary checkpoint (no conv transpose)."""
+
+        def map_sublayer(sub: str) -> str:
+            attn = (
+                ("linear_q.", "q_proj."),
+                ("linear_k.", "k_proj."),
+                ("linear_v.", "v_proj."),
+                ("linear_out.", "out_proj."),
+            )
+            if sub.startswith("first_sub_layer."):
+                inner = sub[len("first_sub_layer.") :]
+                for a, b in attn:
+                    if inner.startswith(a):
+                        inner = b + inner[len(a) :]
+                        break
+                return "self_attn." + inner
+            if sub.startswith("second_sub_layer."):
+                inner = sub[len("second_sub_layer.") :]
+                for a, b in attn:
+                    if inner.startswith(a):
+                        inner = b + inner[len(a) :]
+                        break
+                return "cross_attn." + inner
+            if sub.startswith("third_sub_layer."):
+                inner = sub[len("third_sub_layer.") :]
+                if inner.startswith("linear1."):
+                    inner = "ff1." + inner[len("linear1.") :]
+                elif inner.startswith("linear2."):
+                    inner = "ff2." + inner[len("linear2.") :]
+                else:
+                    warnings.warn(
+                        f"Unrecognized third_sub_layer key {inner!r}; passing through unchanged. "
+                        "The resulting weight key may not match any model parameter.",
+                        RuntimeWarning,
+                        stacklevel=4,
+                    )
+                return inner
+            if sub.startswith("layer_norm_1."):
+                return "self_attn_norm." + sub[len("layer_norm_1.") :]
+            if sub.startswith("layer_norm_2."):
+                return "cross_attn_norm." + sub[len("layer_norm_2.") :]
+            if sub.startswith("layer_norm_3."):
+                return "ff_norm." + sub[len("layer_norm_3.") :]
+            warnings.warn(
+                f"Unrecognized sub-layer key {sub!r} in MLX-native checkpoint; "
+                "passing through unchanged. The resulting weight key may not match any model parameter.",
+                RuntimeWarning,
+                stacklevel=4,
+            )
+            return sub
+
+        sanitized = {}
+        for key, value in weights.items():
+            if key.startswith("encoder."):
+                new_key = "encoder.conformer." + key[len("encoder.") :]
+            elif key.startswith("transf_decoder.token_embedding."):
+                new_key = (
+                    "decoder.embedding." + key[len("transf_decoder.token_embedding.") :]
+                )
+            elif key.startswith("transf_decoder.embedding_layer_norm."):
+                new_key = (
+                    "decoder.embedding_layer_norm."
+                    + key[len("transf_decoder.embedding_layer_norm.") :]
+                )
+            elif key.startswith("transf_decoder.final_layer_norm."):
+                new_key = (
+                    "decoder.final_norm."
+                    + key[len("transf_decoder.final_layer_norm.") :]
+                )
+            elif key.startswith("transf_decoder.layers."):
+                rest = key[len("transf_decoder.layers.") :]
+                layer_idx, sub_rest = rest.split(".", 1)
+                new_key = f"decoder.blocks.{layer_idx}.{map_sublayer(sub_rest)}"
+            elif key.startswith("head.classifier."):
+                new_key = "decoder.output_proj." + key[len("head.classifier.") :]
+            else:
+                # Unknown / auxiliary tensors (e.g. encoder_decoder_proj) are dropped.
+                continue
+            sanitized[new_key] = value
+        return sanitized
+
+    def _sanitize_nemo(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
+        """Map raw NeMo weight names to MLX weight names (PyTorch conv layout)."""
         sanitized = {}
 
         for key, value in weights.items():
@@ -387,8 +496,49 @@ class Model(nn.Module):
                         continue
                     model._tokenizer.token2id[token] = idx
                     model._tokenizer.id2token[idx] = token
+        else:
+            # Some conversions embed the SentencePiece model in config.json
+            # (e.g. base64) rather than shipping a separate tokenizer.model file.
+            proto = cls._load_embedded_tokenizer_proto(model_path)
+            if proto is not None:
+                model._tokenizer = CanaryTokenizer(model_proto=proto)
+            else:
+                warnings.warn(
+                    f"No tokenizer found for model at '{model_path}'. "
+                    "Looked for tokenizer.model, tokens.txt, and tokenizer.model_base64 in config.json. "
+                    "Calls to generate() will raise RuntimeError.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
 
         return model
+
+    @staticmethod
+    def _load_embedded_tokenizer_proto(model_path: Path) -> Optional[bytes]:
+        """Return raw SentencePiece bytes embedded in config.json, if present."""
+        config_path = model_path / "config.json"
+        if not config_path.exists():
+            return None
+        with open(config_path, encoding="utf-8") as f:
+            config = json.load(f)
+        tok = config.get("tokenizer")
+        if not isinstance(tok, dict):
+            return None
+        b64 = tok.get("model_base64")
+        if not b64:
+            return None
+        try:
+            return base64.b64decode(b64)
+        except ValueError as exc:
+            import warnings
+
+            warnings.warn(
+                f"Failed to decode tokenizer.model_base64 from {config_path}: {exc}. "
+                "Tokenizer will not be loaded from config.json.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+            return None
 
     @classmethod
     def from_pretrained(cls, path_or_repo: str, *, dtype: mx.Dtype = mx.bfloat16):

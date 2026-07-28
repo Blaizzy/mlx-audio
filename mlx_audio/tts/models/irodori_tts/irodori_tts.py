@@ -238,7 +238,14 @@ class Model(nn.Module):
         if self.config.dit.use_caption_condition:
             cap = caption or ""
             caption_input_ids, caption_mask = self._prepare_caption(cap)
-        else:
+
+        if self.config.dit.use_speaker_condition_resolved:
+            if ref_latent is None:
+                ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
+            if ref_mask is None:
+                ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
+        elif not self.config.dit.use_caption_condition:
+            # legacy speaker-only (use_speaker_condition=None, use_caption_condition=False)
             if ref_latent is None:
                 ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
             if ref_mask is None:
@@ -266,18 +273,29 @@ class Model(nn.Module):
             )
 
             # Encode conditions for duration prediction
-            text_state, text_mask_full, speaker_state, speaker_mask, _, _ = (
-                self.model.encode_conditions_full(
-                    text_input_ids=text_input_ids,
-                    text_mask=text_mask,
-                    ref_latent=ref_latent,
-                    ref_mask=ref_mask,
-                    caption_input_ids=caption_input_ids,
-                    caption_mask=caption_mask,
-                )
+            (
+                text_state,
+                text_mask_full,
+                speaker_state,
+                speaker_mask,
+                caption_state_dur,
+                caption_mask_dur,
+            ) = self.model.encode_conditions_full(
+                text_input_ids=text_input_ids,
+                text_mask=text_mask,
+                ref_latent=ref_latent,
+                ref_mask=ref_mask,
+                caption_input_ids=caption_input_ids,
+                caption_mask=caption_mask,
             )
 
             has_speaker_arr = mx.array([has_speaker], dtype=mx.bool_)
+            has_caption = bool(
+                caption_input_ids is not None
+                and caption_mask is not None
+                and mx.any(caption_mask)
+            )
+            has_caption_arr = mx.array([has_caption], dtype=mx.bool_)
             pred_log_frames = self.model.predict_duration_log_frames(
                 text_state=text_state,
                 text_mask=text_mask_full,
@@ -285,6 +303,9 @@ class Model(nn.Module):
                 speaker_mask=speaker_mask,
                 duration_features=duration_features,
                 has_speaker=has_speaker_arr,
+                caption_state=caption_state_dur,
+                caption_mask=caption_mask_dur,
+                has_caption=has_caption_arr,
             )
             pred_frames = float(mx.expm1(pred_log_frames[0]).item())
             scaled_frames = pred_frames * duration_scale

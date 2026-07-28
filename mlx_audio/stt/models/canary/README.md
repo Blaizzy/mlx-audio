@@ -7,6 +7,9 @@ MLX implementation of NVIDIA's Canary-1B-v2, a multilingual ASR model supporting
 ```python
 from mlx_audio.stt import load
 
+# A local path or a HuggingFace repo id both work, e.g.:
+#   load("qfuxa/canary-mlx")                  # full precision
+#   load("Mediform/canary-1b-v2-mlx-q8")      # 8-bit quantized
 model = load("path/to/canary-1b-v2-mlx")
 
 # Transcribe English audio
@@ -36,3 +39,23 @@ Bulgarian, Croatian, Czech, Danish, Dutch, English, Estonian, Finnish, French, G
 ## Weight Conversion
 
 Weights need to be converted from NVIDIA's `.nemo` format to MLX safetensors. See the [conversion scripts](https://github.com/mm65x/asr-model-conversions) for details.
+
+### Supported checkpoint layouts
+
+The loader auto-detects and supports two on-disk layouts:
+
+- **NeMo-native** – raw NeMo weight names (`transf_decoder._decoder.layers.*`,
+  `log_softmax.mlp.layer0.*`) with PyTorch conv layout. Conv kernels are
+  transposed to MLX's `(out, *kernel, in)` order on load.
+- **MLX-native** – conversions that already store MLX tensor layouts and use
+  flattened names (`transf_decoder.layers.N.first_sub_layer.linear_q`,
+  `head.classifier`, `transf_decoder.token_embedding`). Conv kernels are loaded
+  as-is. Community checkpoints such as
+  [`qfuxa/canary-mlx`](https://huggingface.co/qfuxa/canary-mlx) and
+  [`Mediform/canary-1b-v2-mlx-q8`](https://huggingface.co/Mediform/canary-1b-v2-mlx-q8)
+  use this layout.
+
+The SentencePiece tokenizer is loaded from a `tokenizer.model` file, a
+`tokens.txt` mapping, or — when neither is present — from a base64 blob embedded
+in `config.json` under `tokenizer.model_base64`. 8-bit quantized checkpoints
+(with a `"quantization"` block in `config.json`) are loaded transparently.

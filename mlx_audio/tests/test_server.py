@@ -594,6 +594,40 @@ class _FakeStreamingModel:
         return _FakeStreamingSession()
 
 
+class _CountingStreamingSession:
+    """Streaming session that counts feed()/step() so a test can assert the
+    transcription model is not run while there is no speech."""
+
+    input_sample_rate = 16000
+
+    def __init__(self):
+        self.feed_calls = 0
+        self.step_calls = 0
+        self._closed = False
+
+    def feed(self, samples):
+        self.feed_calls += 1
+
+    def close(self):
+        self._closed = True
+
+    def step(self, max_decode_tokens=4):
+        self.step_calls += 1
+        return []
+
+    @property
+    def done(self):
+        return self._closed
+
+
+class _CountingStreamingModel:
+    def __init__(self, session):
+        self._session = session
+
+    def create_streaming_session(self, *, temperature=0.0, **kwargs):
+        return self._session
+
+
 class _FakeVadModel:
     """Returns a scripted speech probability per consumed 512-sample frame."""
 
@@ -677,6 +711,67 @@ def test_realtime_ws_server_vad_auto_commits(client, mock_model_provider, monkey
     assert events[-1]["transcript"] == "bonjour"
 
 
+def test_realtime_ws_server_vad_idle_during_silence(
+    client, mock_model_provider, monkeypatch
+):
+    """With server_vad, pure silence must not run the transcription model at all:
+    the model is never fed and step() is never called, so the GPU stays idle
+    between turns. (The earlier code fed and decoded every appended chunk, so it
+    was pinned at 100% even on silence.)"""
+    import base64
+
+    from mlx_audio.realtime_vad import VAD_FRAME_SIZE
+
+    session = _CountingStreamingSession()
+    mock_model_provider.load_model = MagicMock(
+        return_value=_CountingStreamingModel(session)
+    )
+    # The VAD never crosses the threshold: this is a silent stream.
+    monkeypatch.setattr(
+        "mlx_audio.server._load_realtime_vad_model",
+        lambda name: _FakeVadModel([0.0] * 400),
+    )
+
+    with client.websocket_connect("/v1/realtime?model=fake-stt") as ws:
+        assert ws.receive_json()["type"] == "session.created"
+        ws.send_json(
+            {
+                "type": "session.update",
+                "session": {
+                    "audio": {
+                        "input": {
+                            "format": {"type": "audio/pcm", "rate": 16000},
+                            "turn_detection": {
+                                "type": "server_vad",
+                                "silence_duration_ms": 160,
+                            },
+                        }
+                    }
+                },
+            }
+        )
+        assert ws.receive_json()["type"] == "session.updated"
+
+        pcm = np.zeros(VAD_FRAME_SIZE * 40, dtype=np.int16).tobytes()
+        for _ in range(5):
+            ws.send_json(
+                {
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(pcm).decode(),
+                }
+            )
+
+        # A no-op session.update echoes back only once the appends above have been
+        # processed (WebSocket messages are ordered) — a barrier without forcing a
+        # commit. It is also proof nothing leaked: any speech_started would arrive
+        # before this echo and fail the assertion.
+        ws.send_json({"type": "session.update", "session": {}})
+        assert ws.receive_json()["type"] == "session.updated"
+
+    assert session.step_calls == 0, "the transcription model decoded silence"
+    assert session.feed_calls == 0, "the transcription model was fed silence"
+
+
 def test_realtime_ws_rejects_semantic_vad(client, mock_model_provider):
     """semantic_vad is not implemented yet → the server replies with an error
     rather than silently ignoring the request."""
@@ -695,3 +790,104 @@ def test_realtime_ws_rejects_semantic_vad(client, mock_model_provider):
         evt = ws.receive_json()
         assert evt["type"] == "error"
         assert "semantic_vad" in evt["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# word_timestamps form field tests
+# ---------------------------------------------------------------------------
+
+
+def test_transcription_request_word_timestamps_defaults():
+    """TranscriptionRequest defaults word_timestamps=False, timestamp_granularities=None."""
+    from mlx_audio.server import TranscriptionRequest
+
+    req = TranscriptionRequest(model="test-model")
+    assert req.word_timestamps is False
+    assert req.timestamp_granularities is None
+
+
+def test_transcription_request_word_timestamps_accepted():
+    """TranscriptionRequest accepts word_timestamps=True."""
+    from mlx_audio.server import TranscriptionRequest
+
+    req = TranscriptionRequest(
+        model="test-model", word_timestamps=True, timestamp_granularities="word"
+    )
+    assert req.word_timestamps is True
+    assert req.timestamp_granularities == "word"
+
+
+def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
+    """word_timestamps=true form field reaches stt_model.generate() as a kwarg.
+
+    The STTExecutionAdapter allowlist (_STT_EXTRA_KWARGS) must pass word_timestamps
+    through even when it isn't declared in the model's generate() signature.
+    """
+    captured_kwargs: dict = {}
+
+    def mock_generate(path, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"text": "hello", "segments": [], "language": "en"}
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = mock_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "verbose_json",
+            "word_timestamps": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs.get("word_timestamps") is True
+
+
+def test_stt_word_timestamps_verbose_json_words_passthrough(
+    client, mock_model_provider
+):
+    """verbose_json response includes words[] from the model when word_timestamps=True."""
+    full_payload = {
+        "text": "Hello world.",
+        "language": "en",
+        "segments": [
+            {
+                "id": 0,
+                "text": "Hello world.",
+                "start": 0.0,
+                "end": 1.0,
+                "words": [
+                    {"word": "Hello", "start": 0.0, "end": 0.5, "probability": 0.99},
+                    {"word": "world.", "start": 0.5, "end": 1.0, "probability": 0.98},
+                ],
+            }
+        ],
+    }
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = MagicMock(return_value=full_payload)
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "verbose_json",
+            "word_timestamps": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["text"] == "Hello world."
+    segments = body.get("segments", [])
+    assert len(segments) == 1
+    words = segments[0].get("words", [])
+    assert len(words) == 2
+    assert words[0]["word"] == "Hello"
+    assert words[1]["word"] == "world."

@@ -599,6 +599,12 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
     parser.add_argument(
+        "--min_p",
+        type=float,
+        default=None,
+        help="Optional model-specific min-p sampling threshold.",
+    )
+    parser.add_argument(
         "--repetition_penalty",
         type=float,
         default=1.1,

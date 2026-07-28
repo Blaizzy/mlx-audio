@@ -81,6 +81,7 @@ class RotaryEmbedding(nn.Module):
         # Compute inverse frequencies
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self._inv_freq = inv_freq
+        mx.eval(self._inv_freq)
 
     def __call__(
         self, x: mx.array, position_ids: mx.array
@@ -132,6 +133,7 @@ class TalkerRotaryEmbedding(nn.Module):
 
         inv_freq = 1.0 / (base ** (mx.arange(0, dim, 2, dtype=mx.float32) / dim))
         self._inv_freq = inv_freq
+        mx.eval(self._inv_freq)
 
     def apply_interleaved_mrope(
         self, freqs: mx.array, mrope_section: List[int]

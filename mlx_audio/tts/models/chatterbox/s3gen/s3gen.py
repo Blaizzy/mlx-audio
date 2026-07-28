@@ -370,6 +370,16 @@ class S3Token2Wav(S3Token2Mel):
             new_key = re.sub(r"\.up_embed\.out\.0\.", r".up_embed.linear.", new_key)
             new_key = re.sub(r"\.up_embed\.out\.1\.", r".up_embed.norm.", new_key)
 
+            # === Conformer encoder block naming ===
+            # PyTorch stores the conformer blocks in nn.ModuleLists, so the block
+            # index is dotted (encoders.0, up_encoders.0). The MLX modules expose
+            # each block as an attribute (encoders_0, up_encoders_0). Without this
+            # rename every conformer weight is dropped by the should_keep filter
+            # below, and the blocks silently keep their random initialization.
+            # (Idempotent: already-converted underscore keys do not match.)
+            new_key = re.sub(r"\.up_encoders\.(\d+)\.", r".up_encoders_\1.", new_key)
+            new_key = re.sub(r"\.encoders\.(\d+)\.", r".encoders_\1.", new_key)
+
             # === HiFi-GAN F0 predictor naming (idempotent) ===
             # PyTorch Sequential indices: 0, 2, 4, 6, 8 -> MLX list indices: 0, 1, 2, 3, 4
             # Only apply if we detect PyTorch-style indices (8 or 6 present in weights)

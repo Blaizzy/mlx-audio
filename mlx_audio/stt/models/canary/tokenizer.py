@@ -9,17 +9,34 @@ class CanaryTokenizer:
     and the special tokens used by the Canary prompt format.
     """
 
-    def __init__(self, model_path: str, tokens_path: Optional[str] = None):
+    def __init__(
+        self,
+        model_path: Optional[str] = None,
+        tokens_path: Optional[str] = None,
+        *,
+        model_proto: Optional[bytes] = None,
+    ):
         """Initialize tokenizer.
 
         Args:
             model_path: Path to sentencepiece .model file
             tokens_path: Optional path to tokens.txt for ID mapping
+            model_proto: Raw serialized SentencePiece model bytes. Used when the
+                tokenizer is embedded in ``config.json`` (e.g. as base64) instead
+                of shipped as a separate file. Takes precedence over ``model_path``.
         """
         import sentencepiece as spm
 
-        self.sp = spm.SentencePieceProcessor()
-        self.sp.load(model_path)
+        if model_proto is not None:
+            self.sp = spm.SentencePieceProcessor(model_proto=model_proto)
+        else:
+            if model_path is None:
+                raise ValueError(
+                    "Either model_path or model_proto must be provided. "
+                    "tokens_path only overrides token ID mapping and requires a SentencePiece model source."
+                )
+            self.sp = spm.SentencePieceProcessor()
+            self.sp.load(model_path)
 
         self.vocab_size = self.sp.get_piece_size()
 
@@ -57,10 +74,20 @@ class CanaryTokenizer:
 
     def encode(self, text: str) -> List[int]:
         """Encode text to token IDs."""
+        if not hasattr(self, "sp"):
+            raise RuntimeError(
+                "encode() requires a SentencePiece model; this tokenizer was "
+                "initialized from tokens.txt only and does not support text encoding."
+            )
         return self.sp.encode(text)
 
     def decode(self, ids: List[int]) -> str:
         """Decode token IDs to text."""
+        if not hasattr(self, "sp"):
+            raise RuntimeError(
+                "decode() requires a SentencePiece model; this tokenizer was "
+                "initialized from tokens.txt only and does not support text decoding."
+            )
         return self.sp.decode(ids)
 
     def get_special_token_id(self, token: str) -> Optional[int]:

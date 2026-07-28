@@ -180,6 +180,7 @@ class LocalSelfAttention(nn.Module):
             10000.0
             ** (mx.arange(0, self.head_dim, 2, dtype=mx.float32) / self.head_dim)
         )
+        mx.eval(self._rope_inv_freq)
         self.freeze(keys=["_rope_inv_freq"])
 
     def _apply_rope(self, x: mx.array, seq_len: int) -> mx.array:

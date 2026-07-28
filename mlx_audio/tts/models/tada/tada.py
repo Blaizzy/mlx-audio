@@ -444,6 +444,7 @@ class Model(nn.Module):
         if decoder_path.exists():
             decoder_weights = _load_codec_weights(decoder_path, component="decoder")
             self.decoder.load_weights(list(decoder_weights.items()), strict=False)
+            mx.eval(self.decoder.parameters())
             self.decoder.eval()
         else:
             print(f"Warning: Decoder path not found: {decoder_path}")
@@ -475,6 +476,7 @@ class Model(nn.Module):
             )
             encoder_weights = _load_codec_weights(encoder_path, component="encoder")
             self._encoder.load_weights(list(encoder_weights.items()), strict=False)
+            mx.eval(self._encoder.parameters())
             self._encoder.eval()
 
         # Load aligner using transformers

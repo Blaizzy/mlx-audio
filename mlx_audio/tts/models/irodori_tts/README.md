@@ -14,7 +14,8 @@ Original: [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS)
 |---|---|---|
 | `mlx-community/Irodori-TTS-500M-v3-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-500M-v3-fp16) | Voice cloning + automatic duration |
 | `mlx-community/Irodori-TTS-500M-v3-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-500M-v3-8bit) | Voice cloning + automatic duration |
-| `mlx-community/Irodori-TTS-500M-v3-4bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-500M-v3-4bit) | Voice cloning + automatic duration |
+| `mlx-community/Irodori-TTS-600M-v3-VoiceDesign-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-600M-v3-VoiceDesign-fp16) | Voice cloning + VoiceDesign (dual conditioning) |
+| `mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-600M-v3-VoiceDesign-8bit) | Voice cloning + VoiceDesign (dual conditioning) |
 
 ### v2
 
@@ -57,7 +58,49 @@ python -m mlx_audio.tts.generate \
 
 ### VoiceDesign
 
-Describe the desired voice in text instead of providing reference audio:
+#### v3 VoiceDesign
+
+Caption only:
+
+```python
+generate_audio(
+    model="mlx-community/Irodori-TTS-600M-v3-VoiceDesign-fp16",
+    text="今日はいい天気ですね。",
+    instruct="落ち着いた女性の声で、近い距離感でやわらかく自然に読み上げてください。",
+    file_prefix="output",
+)
+```
+
+```bash
+python -m mlx_audio.tts.generate \
+  --model mlx-community/Irodori-TTS-600M-v3-VoiceDesign-fp16 \
+  --text "今日はいい天気ですね。" \
+  --instruct "落ち着いた女性の声で、近い距離感でやわらかく自然に読み上げてください。"
+```
+
+Style-controlled voice cloning with reference speech + caption:
+
+```python
+generate_audio(
+    model="mlx-community/Irodori-TTS-600M-v3-VoiceDesign-fp16",
+    text="今日はいい天気ですね。",
+    ref_audio="speaker.wav",
+    instruct="深く傷つき、今にも泣き出しそうな様子。声が震えており、悲痛なトーンで弱々しく話す。",
+    file_prefix="output",
+)
+```
+
+```bash
+python -m mlx_audio.tts.generate \
+  --model mlx-community/Irodori-TTS-600M-v3-VoiceDesign-fp16 \
+  --text "今日はいい天気ですね。" \
+  --ref_audio speaker.wav \
+  --instruct "深く傷つき、今にも泣き出しそうな様子。声が震えており、悲痛なトーンで弱々しく話す。"
+```
+
+#### v2 VoiceDesign
+
+Caption only (reference audio is not supported):
 
 ```python
 generate_audio(

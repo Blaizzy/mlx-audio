@@ -119,6 +119,7 @@ class TimeEmbedding(nn.Module):
         self.inv_freq = mx.exp(
             -math.log(theta) * mx.arange(half).astype(mx.float32) / half
         )
+        mx.eval(self.inv_freq)
 
     def __call__(self, t: mx.array) -> mx.array:
         # t: (B,) or (B, 1)

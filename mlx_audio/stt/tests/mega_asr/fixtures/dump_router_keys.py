@@ -12,6 +12,7 @@ If no path is given, falls back to the HF cache copy of
 Writes `router_state_dict_keys.json` next to this script and prints a summary
 (d_model, num transformer layers, conv layout, classifier head dims).
 """
+
 from __future__ import annotations
 
 import json

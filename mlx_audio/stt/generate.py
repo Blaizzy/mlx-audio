@@ -10,12 +10,12 @@ from typing import List, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx.utils import tree_reduce
 
-from mlx_audio.stt.utils import load_model
+from mlx_audio.stt.models.base import STTOutput
+from mlx_audio.stt.utils import load_model, wired_limit
 
 
-def parse_args():
+def parse_args(argv: Optional[List[str]] = None):
     parser = argparse.ArgumentParser(
         description="Generate transcriptions from audio files"
     )
@@ -44,6 +44,17 @@ def parse_args():
         type=int,
         default=8192,
         help="Maximum number of new tokens to generate",
+    )
+    parser.add_argument(
+        "--max-parallel-segments",
+        dest="batch_size",
+        type=int,
+        default=None,
+        metavar="SEGMENTS",
+        help=(
+            "Maximum number of audio segments to transcribe in parallel for "
+            "models that support segment batching"
+        ),
     )
     parser.add_argument(
         "--language",
@@ -98,7 +109,7 @@ def parse_args():
         default="",
         help="Text to align (for forced alignment models)",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def format_timestamp(seconds: float) -> str:
@@ -229,46 +240,6 @@ def save_as_json(segments, output_path: str):
 generation_stream = mx.new_stream(mx.default_device())
 
 
-@contextlib.contextmanager
-def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
-    """
-    A context manager to temporarily change the wired limit.
-
-    Note, the wired limit should not be changed during an async eval.  If an
-    async eval could be running pass in the streams to synchronize with prior
-    to exiting the context manager.
-    """
-    if not mx.metal.is_available():
-        try:
-            yield
-        finally:
-            pass
-    else:
-        model_bytes = tree_reduce(
-            lambda acc, x: acc + x.nbytes if isinstance(x, mx.array) else acc, model, 0
-        )
-        max_rec_size = mx.metal.device_info()["max_recommended_working_set_size"]
-        if model_bytes > 0.9 * max_rec_size:
-            model_mb = model_bytes // 2**20
-            max_rec_mb = max_rec_size // 2**20
-            print(
-                f"[WARNING] Generating with a model that requires {model_mb} MB "
-                f"which is close to the maximum recommended size of {max_rec_mb} "
-                "MB. This can be slow. See the documentation for possible work-arounds: "
-                "https://github.com/ml-explore/mlx-lm/tree/main#large-models"
-            )
-        old_limit = mx.set_wired_limit(max_rec_size)
-        try:
-            yield
-        finally:
-            if streams is not None:
-                for s in streams:
-                    mx.synchronize(s)
-            else:
-                mx.synchronize()
-            mx.set_wired_limit(old_limit)
-
-
 def generate_transcription(
     model: Optional[Union[str, nn.Module]] = None,
     audio: Union[str, mx.array] = None,
@@ -292,8 +263,6 @@ def generate_transcription(
     Returns:
         segments: The generated transcription segments.
     """
-    from .models.base import STTOutput
-
     if model is None:
         raise ValueError("Model path or model instance must be provided.")
 
@@ -393,7 +362,9 @@ def generate_transcription(
         print(f"\033[94mPeak memory:\033[0m {mx.get_peak_memory() / 1e9:.2f} GB")
 
     # Create output directory if it doesn't exist
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
 
     # Check for segments (Whisper) or sentences (Parakeet)
     has_segments = hasattr(segments, "segments") and segments.segments is not None

@@ -140,9 +140,8 @@ def find_alignment(
     text_token_probs = np.array(text_token_probs)
 
     # heads * tokens * frames
-    weights = mx.stack(
-        [cross_qk[_l][0, _h] for _l, _h in model.alignment_heads.tolist()]
-    )
+    alignment_heads = model.alignment_heads.tolist()
+    weights = mx.stack([cross_qk[_l][0, _h] for _l, _h in alignment_heads])
     weights = weights[:, :, : num_frames // 2]
     weights = mx.softmax(weights * qk_scale, axis=-1, precise=True)
     weights = weights.astype(mx.float32)

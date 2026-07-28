@@ -530,3 +530,461 @@ class MossTTSLocalProcessor(MossTTSDelayProcessor):
             use_delay_pattern=False,
             append_audio_start_for_generation=True,
         )
+
+
+LOCAL_V15_USER_ROLE_PREFIX = "user\n"
+LOCAL_V15_USER_TEMPLATE_REFERENCE_PREFIX = "<user_inst>\n- Reference(s):\n"
+LOCAL_V15_USER_TEMPLATE_AFTER_REFERENCE_SUFFIX = "\n- Text:\n"
+LOCAL_V15_USER_TEMPLATE_SUFFIX = "\n</user_inst>"
+LOCAL_V15_ASSISTANT_TURN_PREFIX = "\n"
+LOCAL_V15_ASSISTANT_ROLE_PREFIX = "assistant\n"
+
+
+def _normalize_template_value(value: Any) -> str:
+    if value is None:
+        return "None"
+    value = str(value).strip()
+    return value or "None"
+
+
+def _render_local_v15_user_prompt_after_reference(
+    *,
+    language_code: object | None = None,
+    prompt_fields: dict[str, Any] | None = None,
+) -> str:
+    fields = dict(prompt_fields or {})
+    return (
+        "\n- Instruction:\n"
+        + _normalize_template_value(fields.get("instruction"))
+        + "\n- Tokens:\n"
+        + _normalize_template_value(fields.get("tokens"))
+        + "\n- Quality:\n"
+        + _normalize_template_value(fields.get("quality"))
+        + "\n- Sound Event:\n"
+        + _normalize_template_value(fields.get("sound_event"))
+        + "\n- Ambient Sound:\n"
+        + _normalize_template_value(fields.get("ambient_sound"))
+        + "\n- Language:\n"
+        + _normalize_template_value(fields.get("language", language_code))
+        + LOCAL_V15_USER_TEMPLATE_AFTER_REFERENCE_SUFFIX
+    )
+
+
+@dataclass
+class LocalV15UserMessage(Message):
+    text: Optional[str] = None
+    reference: Optional[list[Optional[Any]]] = None
+    instruction: Optional[str] = None
+    tokens: Optional[int] = None
+    quality: Optional[str] = None
+    sound_event: Optional[str] = None
+    ambient_sound: Optional[str] = None
+    language: Optional[str] = None
+
+    def __post_init__(self):
+        audio_codes_list = []
+        if self.reference is None:
+            reference = "None"
+        else:
+            reference_items = []
+            for speaker_reference in self.reference:
+                if speaker_reference is None:
+                    continue
+                reference_items.append(AUDIO_PLACEHOLDER)
+                audio_codes_list.append(speaker_reference)
+            reference = "\n".join(reference_items) if reference_items else "None"
+
+        template = (
+            "<user_inst>\n"
+            "- Reference(s):\n{reference}\n"
+            "- Instruction:\n{instruction}\n"
+            "- Tokens:\n{tokens}\n"
+            "- Quality:\n{quality}\n"
+            "- Sound Event:\n{sound_event}\n"
+            "- Ambient Sound:\n{ambient_sound}\n"
+            "- Language:\n{language}\n"
+            "- Text:\n{text}\n"
+            "</user_inst>"
+        )
+        self._content = (
+            template.replace("{reference}", str(reference))
+            .replace("{instruction}", str(self.instruction))
+            .replace("{tokens}", str(self.tokens))
+            .replace("{quality}", str(self.quality))
+            .replace("{sound_event}", str(self.sound_event))
+            .replace("{ambient_sound}", str(self.ambient_sound))
+            .replace("{language}", str(self.language))
+            .replace("{text}", str(self.text))
+        )
+        self._audio_codes_list = audio_codes_list
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "role": "user",
+            "content": self._content,
+            "audio_codes_list": self._audio_codes_list,
+            "text": self.text,
+            "instruction": self.instruction,
+            "tokens": self.tokens,
+            "quality": self.quality,
+            "sound_event": self.sound_event,
+            "ambient_sound": self.ambient_sound,
+            "language": self.language,
+        }
+
+
+class MossTTSLocalV15Processor:
+    def __init__(self, tokenizer, model_config: ModelConfig):
+        self.tokenizer = tokenizer
+        self.model_config = model_config
+        self.audio_user_slot_token = self._id_to_token(
+            model_config.audio_user_slot_token_id
+        )
+        self.audio_assistant_slot_token = self._id_to_token(
+            model_config.audio_assistant_slot_token_id
+        )
+        self.audio_start_token = self._id_to_token(model_config.audio_start_token_id)
+        self.audio_end_token = self._id_to_token(model_config.audio_end_token_id)
+
+    def _id_to_token(self, token_id: int) -> str:
+        token = self.tokenizer.convert_ids_to_tokens(int(token_id))
+        if isinstance(token, list):
+            return token[0] if token else ""
+        return str(token)
+
+    @staticmethod
+    def build_assistant_message(
+        audio_codes_list: list[Any],
+        content: str = AUDIO_PLACEHOLDER,
+    ) -> dict[str, Any]:
+        return AssistantMessage(
+            audio_codes_list=audio_codes_list,
+            content=content,
+        ).to_dict()
+
+    @staticmethod
+    def build_user_message(
+        text: Optional[str] = None,
+        reference: Optional[list[Optional[Any]]] = None,
+        instruction: Optional[str] = None,
+        tokens: Optional[int] = None,
+        quality: Optional[str] = None,
+        sound_event: Optional[str] = None,
+        ambient_sound: Optional[str] = None,
+        language: Optional[str] = None,
+        scene: Optional[str] = None,
+    ) -> dict[str, Any]:
+        del scene
+        if reference is not None and not isinstance(reference, list):
+            reference = [reference]
+        text = normalize_tts_text(text)
+        return LocalV15UserMessage(
+            text=text,
+            reference=reference,
+            instruction=instruction,
+            tokens=tokens,
+            quality=quality,
+            sound_event=sound_event,
+            ambient_sound=ambient_sound,
+            language=language,
+        ).to_dict()
+
+    def _assert_fixed_nq(self, n_vq: int | None) -> int:
+        config_nq = int(self.model_config.n_vq)
+        if n_vq is not None and int(n_vq) != config_nq:
+            raise ValueError(
+                "MOSS-TTS-Local-Transformer-v1.5 uses the RVQ depth stored in "
+                f"the model config. Expected n_vq={config_nq}, got {int(n_vq)}."
+            )
+        return config_nq
+
+    def _encode_text(self, text: str) -> list[int]:
+        try:
+            return [
+                int(token_id)
+                for token_id in self.tokenizer.encode(
+                    str(text), add_special_tokens=False
+                )
+            ]
+        except TypeError:
+            return [int(token_id) for token_id in self.tokenizer.encode(str(text))]
+
+    def _build_text_rows(self, token_ids: list[int]) -> mx.array:
+        rows = mx.full(
+            (len(token_ids), int(self.model_config.n_vq) + 1),
+            int(self.model_config.audio_pad_token_id),
+            dtype=mx.int32,
+        )
+        if token_ids:
+            rows[:, 0] = mx.array(
+                [int(token_id) for token_id in token_ids], dtype=mx.int32
+            )
+        return rows
+
+    def _build_audio_rows(self, audio_tokens: mx.array, slot_token_id: int) -> mx.array:
+        rows = mx.full(
+            (int(audio_tokens.shape[0]), int(self.model_config.n_vq) + 1),
+            int(self.model_config.audio_pad_token_id),
+            dtype=mx.int32,
+        )
+        if rows.shape[0] > 0:
+            rows[:, 0] = int(slot_token_id)
+            rows[:, 1:] = audio_tokens.astype(mx.int32)
+        return rows
+
+    def _user_prompt_prefix_ids(self) -> list[int]:
+        return (
+            [int(self.model_config.im_start_token_id)]
+            + self._encode_text(LOCAL_V15_USER_ROLE_PREFIX)
+            + self._encode_text(LOCAL_V15_USER_TEMPLATE_REFERENCE_PREFIX)
+        )
+
+    def _user_prompt_after_reference_ids(
+        self,
+        language_code: object | None,
+        prompt_fields: dict[str, Any] | None,
+    ) -> list[int]:
+        return self._encode_text(
+            _render_local_v15_user_prompt_after_reference(
+                language_code=language_code,
+                prompt_fields=prompt_fields,
+            )
+        )
+
+    def _assistant_prompt_prefix_ids(self) -> list[int]:
+        return (
+            self._encode_text(LOCAL_V15_USER_TEMPLATE_SUFFIX)
+            + [int(self.model_config.im_end_token_id)]
+            + self._encode_text(LOCAL_V15_ASSISTANT_TURN_PREFIX)
+            + [int(self.model_config.im_start_token_id)]
+            + self._encode_text(LOCAL_V15_ASSISTANT_ROLE_PREFIX)
+        )
+
+    @staticmethod
+    def _prompt_fields_from_user_message(message: dict[str, Any]) -> dict[str, Any]:
+        fields = {}
+        for key in (
+            "instruction",
+            "tokens",
+            "quality",
+            "sound_event",
+            "ambient_sound",
+            "language",
+        ):
+            if key in message and message.get(key) is not None:
+                fields[key] = message.get(key)
+        return fields
+
+    def _normalize_audio_codes_list(
+        self,
+        audio_codes_list: list[Any],
+        n_vq: int,
+    ) -> list[mx.array]:
+        normalized = []
+        for audio_codes in audio_codes_list:
+            if not isinstance(audio_codes, mx.array):
+                audio_codes = mx.array(audio_codes, dtype=mx.int32)
+            if audio_codes.ndim != 2 or int(audio_codes.shape[1]) != n_vq:
+                raise ValueError(
+                    f"audio code tensor must have shape [frames, {n_vq}], "
+                    f"got {audio_codes.shape}"
+                )
+            normalized.append(audio_codes.astype(mx.int32))
+        return normalized
+
+    def _build_generation_or_voice_clone_codes(
+        self,
+        message: dict[str, Any],
+        n_vq: int,
+    ) -> mx.array:
+        if "text" not in message:
+            raise ValueError(
+                "Direct MOSS-TTS-Local-Transformer-v1.5 generation requires "
+                "messages built by build_user_message(...)."
+            )
+        text = "" if message.get("text") is None else str(message.get("text"))
+        prompt_fields = self._prompt_fields_from_user_message(message)
+        language_code = message.get("language")
+        audio_codes_list = self._normalize_audio_codes_list(
+            list(message.get("audio_codes_list", [])),
+            n_vq,
+        )
+        text_token_ids = self._encode_text(text)
+
+        if audio_codes_list:
+            parts = [self._build_text_rows(self._user_prompt_prefix_ids())]
+            for reference_codes in audio_codes_list:
+                parts.append(
+                    self._build_text_rows([int(self.model_config.audio_start_token_id)])
+                )
+                parts.append(
+                    self._build_audio_rows(
+                        reference_codes,
+                        int(self.model_config.audio_user_slot_token_id),
+                    )
+                )
+                parts.append(
+                    self._build_text_rows([int(self.model_config.audio_end_token_id)])
+                )
+            parts.append(
+                self._build_text_rows(
+                    self._user_prompt_after_reference_ids(language_code, prompt_fields)
+                    + text_token_ids
+                    + self._assistant_prompt_prefix_ids()
+                    + [int(self.model_config.audio_start_token_id)]
+                )
+            )
+            return mx.concatenate(parts, axis=0)
+
+        prompt_token_ids = (
+            self._user_prompt_prefix_ids()
+            + self._encode_text("None")
+            + self._user_prompt_after_reference_ids(language_code, prompt_fields)
+            + text_token_ids
+            + self._assistant_prompt_prefix_ids()
+            + [int(self.model_config.audio_start_token_id)]
+        )
+        return self._build_text_rows(prompt_token_ids)
+
+    def _build_continuation_codes(
+        self,
+        conversation: list[dict[str, Any]],
+        n_vq: int,
+    ) -> mx.array:
+        if len(conversation) < 2:
+            raise ValueError(
+                "continuation mode requires a user message followed by an "
+                "assistant audio message."
+            )
+        user_message = conversation[-2]
+        assistant_message = conversation[-1]
+        if (
+            user_message.get("role") != "user"
+            or assistant_message.get("role") != "assistant"
+        ):
+            raise ValueError(
+                "continuation mode requires the last two messages to be user, "
+                "assistant."
+            )
+        if "text" not in user_message:
+            raise ValueError(
+                "Direct MOSS-TTS-Local-Transformer-v1.5 continuation requires "
+                "user messages built by build_user_message(...)."
+            )
+        text = "" if user_message.get("text") is None else str(user_message.get("text"))
+        prompt_fields = self._prompt_fields_from_user_message(user_message)
+        language_code = user_message.get("language")
+        prompt_token_ids = (
+            self._user_prompt_prefix_ids()
+            + self._encode_text("None")
+            + self._user_prompt_after_reference_ids(language_code, prompt_fields)
+            + self._encode_text(text)
+            + self._assistant_prompt_prefix_ids()
+            + [int(self.model_config.audio_start_token_id)]
+        )
+        audio_codes_list = self._normalize_audio_codes_list(
+            list(assistant_message.get("audio_codes_list", [])),
+            n_vq,
+        )
+        if not audio_codes_list:
+            return self._build_text_rows(prompt_token_ids)
+        if len(audio_codes_list) != 1:
+            raise ValueError(
+                "MOSS-TTS-Local-Transformer-v1.5 continuation mode expects one "
+                "prompt audio item."
+            )
+        return mx.concatenate(
+            [
+                self._build_text_rows(prompt_token_ids),
+                self._build_audio_rows(
+                    audio_codes_list[0],
+                    int(self.model_config.audio_assistant_slot_token_id),
+                ),
+            ],
+            axis=0,
+        )
+
+    def _normalize_message(self, message: Message | dict[str, Any]) -> dict[str, Any]:
+        if isinstance(message, Message):
+            return message.to_dict()
+        if not isinstance(message, dict):
+            raise TypeError("Each message must be a Message or dict.")
+        if "content" in message and "audio_codes_list" in message:
+            return message
+        role = message.get("role")
+        if role == "user":
+            return self.build_user_message(
+                **{key: message.get(key) for key in USER_MESSAGE_FIELDS}
+            )
+        if role == "assistant":
+            return self.build_assistant_message(
+                audio_codes_list=message.get("audio_codes_list", []),
+                content=message.get("content", AUDIO_PLACEHOLDER),
+            )
+        raise ValueError(f"Unsupported role: {role}")
+
+    def _pad(self, input_ids_list: list[mx.array]) -> dict[str, mx.array]:
+        max_len = max(int(input_ids.shape[0]) for input_ids in input_ids_list)
+        padded_ids = []
+        masks = []
+        for input_ids in input_ids_list:
+            pad_len = max_len - int(input_ids.shape[0])
+            if pad_len > 0:
+                pad_rows = mx.full(
+                    (pad_len, self.model_config.n_vq + 1),
+                    self.model_config.audio_pad_token_id,
+                    dtype=mx.int32,
+                )
+                pad_rows[:, 0] = self.model_config.pad_token_id
+                input_ids = mx.concatenate([pad_rows, input_ids], axis=0)
+            mask = mx.concatenate(
+                [
+                    mx.zeros((pad_len,), dtype=mx.bool_),
+                    mx.ones((max_len - pad_len,), dtype=mx.bool_),
+                ]
+            )
+            padded_ids.append(input_ids)
+            masks.append(mask)
+        return {
+            "input_ids": mx.stack(padded_ids, axis=0),
+            "attention_mask": mx.stack(masks, axis=0),
+        }
+
+    def __call__(
+        self,
+        conversations,
+        *,
+        mode: str = "generation",
+        apply_chat_template: bool = True,
+        n_vq: int | None = None,
+    ) -> dict[str, mx.array]:
+        del apply_chat_template
+        if mode not in {"generation", "continuation"}:
+            raise ValueError("mode must be generation or continuation")
+        n_vq = self._assert_fixed_nq(n_vq)
+        if isinstance(conversations, (Message, dict)):
+            conversations = [conversations]
+
+        input_ids_list = []
+        for conversation in conversations:
+            if isinstance(conversation, (Message, dict)):
+                conversation = [conversation]
+            conversation = [
+                self._normalize_message(message) for message in conversation
+            ]
+            if (mode == "generation") ^ (conversation[-1]["role"] == "user"):
+                raise ValueError("generation mode must end with a user message.")
+            if mode == "continuation" and conversation[-1]["role"] != "assistant":
+                raise ValueError(
+                    "continuation mode must end with an assistant message."
+                )
+            if mode == "generation":
+                input_ids = self._build_generation_or_voice_clone_codes(
+                    conversation[-1],
+                    n_vq,
+                )
+            else:
+                input_ids = self._build_continuation_codes(conversation, n_vq)
+            input_ids_list.append(input_ids)
+
+        return self._pad(input_ids_list)

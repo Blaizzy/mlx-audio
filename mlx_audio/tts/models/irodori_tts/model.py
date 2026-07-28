@@ -232,9 +232,9 @@ class JointAttention(nn.Module):
     Joint attention over latent self-tokens, text context, and speaker/caption context.
     Uses half-RoPE: RoPE applied to the first half of head dimensions.
 
-    Exactly one of speaker_ctx_dim or caption_ctx_dim must be provided.
-    The corresponding weight keys (wk_speaker/wv_speaker or wk_caption/wv_caption)
-    are created accordingly so that loaded PyTorch weights map directly.
+    speaker_ctx_dim and/or caption_ctx_dim may be provided independently.
+    For dual-mode (v3 VoiceDesign), both are set and keys for both branches
+    (wk_speaker/wv_speaker and wk_caption/wv_caption) are created.
     """
 
     def __init__(
@@ -259,16 +259,18 @@ class JointAttention(nn.Module):
         self.q_norm = RMSNorm((heads, self.head_dim), eps=norm_eps)
         self.k_norm = RMSNorm((heads, self.head_dim), eps=norm_eps)
 
+        self.has_speaker_condition = speaker_ctx_dim is not None
+        self.has_caption_condition = caption_ctx_dim is not None
+        if not self.has_speaker_condition and not self.has_caption_condition:
+            raise ValueError(
+                "At least one of speaker_ctx_dim or caption_ctx_dim must be set"
+            )
         if speaker_ctx_dim is not None:
             self.wk_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
             self.wv_speaker = nn.Linear(speaker_ctx_dim, dim, bias=False)
-            self._context_mode = "speaker"
-        elif caption_ctx_dim is not None:
+        if caption_ctx_dim is not None:
             self.wk_caption = nn.Linear(caption_ctx_dim, dim, bias=False)
             self.wv_caption = nn.Linear(caption_ctx_dim, dim, bias=False)
-            self._context_mode = "caption"
-        else:
-            raise ValueError("Either speaker_ctx_dim or caption_ctx_dim must be set")
 
     def _apply_rotary_half(self, y: mx.array, freqs_cis: RotaryCache) -> mx.array:
         """Apply RoPE to the first half of head dimensions only."""
@@ -309,20 +311,16 @@ class JointAttention(nn.Module):
         k = self.k_norm(k)
         return k, v
 
-    def get_kv_cache_context(self, context_state: mx.array) -> KVCache:
-        """Dispatch to speaker or caption KV cache based on model mode."""
-        if self._context_mode == "caption":
-            return self.get_kv_cache_caption(context_state)
-        return self.get_kv_cache_speaker(context_state)
-
     def __call__(
         self,
         x: mx.array,
         text_mask: mx.array,
-        context_mask: mx.array,
         freqs_cis: RotaryCache,
         kv_cache_text: KVCache,
-        kv_cache_context: KVCache,
+        kv_cache_speaker: Optional[KVCache] = None,
+        speaker_mask: Optional[mx.array] = None,
+        kv_cache_caption: Optional[KVCache] = None,
+        caption_mask: Optional[mx.array] = None,
         start_pos: int = 0,
     ) -> mx.array:
         bsz, seq_len = x.shape[:2]
@@ -340,13 +338,27 @@ class JointAttention(nn.Module):
         k_self = self._apply_rotary_half(k_self, (q_cos, q_sin))
 
         k_text, v_text = kv_cache_text
-        k_ctx, v_ctx = kv_cache_context
-
-        k = mx.concatenate([k_self, k_text, k_ctx], axis=1)
-        v = mx.concatenate([v_self, v_text, v_ctx], axis=1)
-
         self_mask = mx.ones((bsz, seq_len), dtype=mx.bool_)
-        full_mask = mx.concatenate([self_mask, text_mask, context_mask], axis=1)
+
+        k_parts = [k_self, k_text]
+        v_parts = [v_self, v_text]
+        mask_parts = [self_mask, text_mask]
+
+        if kv_cache_speaker is not None:
+            k_spk, v_spk = kv_cache_speaker
+            k_parts.append(k_spk)
+            v_parts.append(v_spk)
+            mask_parts.append(speaker_mask)
+
+        if kv_cache_caption is not None:
+            k_cap, v_cap = kv_cache_caption
+            k_parts.append(k_cap)
+            v_parts.append(v_cap)
+            mask_parts.append(caption_mask)
+
+        k = mx.concatenate(k_parts, axis=1)
+        v = mx.concatenate(v_parts, axis=1)
+        full_mask = mx.concatenate(mask_parts, axis=1)
         full_mask = mx.broadcast_to(
             full_mask[:, None, :], (bsz, seq_len, full_mask.shape[1])
         )
@@ -509,20 +521,24 @@ class DiffusionBlock(nn.Module):
         x: mx.array,
         cond_embed: mx.array,
         text_mask: mx.array,
-        context_mask: mx.array,
         freqs_cis: RotaryCache,
         kv_cache_text: KVCache,
-        kv_cache_context: KVCache,
+        kv_cache_speaker: Optional[KVCache] = None,
+        speaker_mask: Optional[mx.array] = None,
+        kv_cache_caption: Optional[KVCache] = None,
+        caption_mask: Optional[mx.array] = None,
         start_pos: int = 0,
     ) -> mx.array:
         x_norm, attn_gate = self.attention_adaln(x, cond_embed)
         x = x + attn_gate * self.attention(
             x_norm,
             text_mask,
-            context_mask,
             freqs_cis,
             kv_cache_text,
-            kv_cache_context,
+            kv_cache_speaker,
+            speaker_mask,
+            kv_cache_caption,
+            caption_mask,
             start_pos,
         )
         x_norm, mlp_gate = self.mlp_adaln(x, cond_embed)
@@ -536,7 +552,11 @@ class DiffusionBlock(nn.Module):
 
 
 class DurationSwiGLUBlock(nn.Module):
-    """SwiGLU block with optional AdaRN-Zero modulation for duration predictor."""
+    """SwiGLU block with optional AdaRN-Zero modulation for duration predictor.
+
+    Supports dual modulation (speaker + caption) that are added together,
+    matching the token_sum_dual_adarn_zero_no_aux architecture.
+    """
 
     def __init__(
         self,
@@ -544,28 +564,57 @@ class DurationSwiGLUBlock(nn.Module):
         hidden_dim: int,
         norm_eps: float,
         cond_dim: Optional[int] = None,
+        caption_cond_dim: Optional[int] = None,
     ):
         super().__init__()
         self.norm = RMSNorm(dim, eps=norm_eps)
         self.mlp = SwiGLU(dim, hidden_dim)
         self.cond_dim = cond_dim
+        self.caption_cond_dim = caption_cond_dim
         self.modulation = None
+        self.caption_modulation = None
         if cond_dim is not None:
             self.modulation = nn.Linear(cond_dim, dim * 3)
-            # Zero-init for stable training
             self.modulation.weight = self.modulation.weight * 0.0
             self.modulation.bias = self.modulation.bias * 0.0
+        if caption_cond_dim is not None:
+            self.caption_modulation = nn.Linear(caption_cond_dim, dim * 3)
+            self.caption_modulation.weight = self.caption_modulation.weight * 0.0
+            self.caption_modulation.bias = self.caption_modulation.bias * 0.0
 
-    def __call__(self, x: mx.array, cond: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        cond: Optional[mx.array] = None,
+        caption_cond: Optional[mx.array] = None,
+    ) -> mx.array:
         h = self.norm(x)
-        if self.modulation is not None:
-            if cond is None:
-                raise ValueError("cond is required for AdaRN-Zero duration blocks.")
-            shift, scale, gate = mx.split(self.modulation(nn.silu(cond)), 3, axis=-1)
-            if h.ndim == 3 and shift.ndim == 2:
-                shift = shift[:, None, :]
-                scale = scale[:, None, :]
-                gate = gate[:, None, :]
+        if self.modulation is not None or self.caption_modulation is not None:
+            shift = mx.zeros_like(h)
+            scale = mx.zeros_like(h)
+            gate = mx.zeros_like(h)
+            if self.modulation is not None:
+                if cond is None:
+                    raise ValueError("cond is required for AdaRN-Zero duration blocks.")
+                ds, dsc, dg = mx.split(self.modulation(nn.silu(cond)), 3, axis=-1)
+                if h.ndim == 3 and ds.ndim == 2:
+                    ds, dsc, dg = ds[:, None, :], dsc[:, None, :], dg[:, None, :]
+                shift = shift + ds
+                scale = scale + dsc
+                gate = gate + dg
+            if self.caption_modulation is not None:
+                if caption_cond is None:
+                    raise ValueError(
+                        "caption_cond is required for caption AdaRN-Zero blocks."
+                    )
+                cs, csc, cg = mx.split(
+                    self.caption_modulation(nn.silu(caption_cond)), 3, axis=-1
+                )
+                if h.ndim == 3 and cs.ndim == 2:
+                    cs, csc, cg = cs[:, None, :], csc[:, None, :], cg[:, None, :]
+                shift = shift + cs
+                scale = scale + csc
+                gate = gate + cg
             h = h * (1.0 + scale) + shift
             return x + mx.tanh(gate) * self.mlp(h)
         return x + self.mlp(h)
@@ -695,6 +744,9 @@ class DurationPredictor(nn.Module):
         norm_eps: float,
         speaker_dim: Optional[int] = None,
         speaker_fusion: str = "concat",
+        caption_dim: Optional[int] = None,
+        caption_fusion: str = "adarn_zero",
+        caption_pooling: str = "masked_mean",
         attention_heads: int = 8,
         architecture: str = "token_sum_adarn_zero_no_aux",
         token_init_frames: float = 9.0,
@@ -705,11 +757,18 @@ class DurationPredictor(nn.Module):
         self.hidden_dim = hidden_dim
         self.speaker_dim = speaker_dim
         self.speaker_fusion = speaker_fusion
+        self.caption_dim = caption_dim
+        self.caption_fusion = caption_fusion
+        self.caption_pooling = caption_pooling
         self.duration_architecture = architecture
 
         self.null_speaker = None
         if speaker_dim is not None:
             self.null_speaker = mx.zeros((speaker_dim,))
+
+        self.null_caption = None
+        if caption_dim is not None:
+            self.null_caption = mx.zeros((caption_dim,))
 
         # Token-sum architecture (v3 default)
         self.token_input_proj = None
@@ -736,6 +795,27 @@ class DurationPredictor(nn.Module):
                     hidden_dim=hidden_dim,
                     norm_eps=norm_eps,
                     cond_dim=speaker_dim,
+                )
+                for _ in range(layers)
+            ]
+            self.token_out_norm = RMSNorm(hidden_dim, eps=norm_eps)
+            self.token_out_proj = nn.Linear(hidden_dim, 1)
+            self.token_out_proj.weight = self.token_out_proj.weight * 0.0
+            bias_init = math.log(math.expm1(token_init_frames))
+            self.token_out_proj.bias = mx.full(
+                self.token_out_proj.bias.shape, bias_init
+            )
+            return
+
+        if architecture == "token_sum_dual_adarn_zero_no_aux":
+            self.token_input_proj = nn.Linear(text_dim, hidden_dim)
+            self.token_blocks = [
+                DurationSwiGLUBlock(
+                    dim=hidden_dim,
+                    hidden_dim=hidden_dim,
+                    norm_eps=norm_eps,
+                    cond_dim=speaker_dim,
+                    caption_cond_dim=caption_dim,
                 )
                 for _ in range(layers)
             ]
@@ -822,6 +902,30 @@ class DurationPredictor(nn.Module):
         speaker_vec = speaker_state[:, 0].astype(dtype)
         return mx.where(has_speaker[:, None], speaker_vec, null_vec)
 
+    def _caption_vec(
+        self,
+        batch_size: int,
+        dtype,
+        caption_state: Optional[mx.array],
+        caption_mask: Optional[mx.array],
+        has_caption: mx.array,
+    ) -> mx.array:
+        if self.null_caption is None or self.caption_dim is None:
+            raise RuntimeError("Duration caption modules are missing.")
+        null_vec = mx.broadcast_to(
+            self.null_caption.astype(dtype)[None, :], (batch_size, self.caption_dim)
+        )
+        if caption_state is None:
+            return null_vec
+        caption_state = caption_state.astype(dtype)
+        if caption_mask is not None:
+            mask_f = caption_mask[..., None].astype(dtype)
+            denom = mx.maximum(mx.sum(mask_f, axis=1), 1.0)
+            caption_vec = mx.sum(caption_state * mask_f, axis=1) / denom
+        else:
+            caption_vec = caption_state.mean(axis=1)
+        return mx.where(has_caption[:, None], caption_vec, null_vec)
+
     def __call__(
         self,
         text_state: mx.array,
@@ -830,6 +934,9 @@ class DurationPredictor(nn.Module):
         speaker_state: Optional[mx.array] = None,
         speaker_mask: Optional[mx.array] = None,
         has_speaker: Optional[mx.array] = None,
+        caption_state: Optional[mx.array] = None,
+        caption_mask: Optional[mx.array] = None,
+        has_caption: Optional[mx.array] = None,
     ) -> mx.array:
         if text_state.ndim != 3 or text_state.shape[-1] != self.text_dim:
             raise ValueError(
@@ -842,7 +949,7 @@ class DurationPredictor(nn.Module):
         text_state, text_mask = _safe_attention_mask(text_state, text_mask)
         aux_features = aux_features.astype(text_state.dtype)
 
-        # Token-sum architecture
+        # Token-sum architecture (speaker-only)
         if self.duration_architecture == "token_sum_adarn_zero_no_aux":
             if self.speaker_dim is None:
                 raise RuntimeError(
@@ -864,6 +971,45 @@ class DurationPredictor(nn.Module):
                 h = block(h, cond=speaker_vec)
             token_logits = self.token_out_proj(self.token_out_norm(h)).squeeze(-1)
             # NOTE: MLX lacks mx.softplus; equivalent to log(1 + exp(x))
+            token_frames = mx.log(1.0 + mx.exp(token_logits.astype(mx.float32)))
+            total_frames = mx.sum(
+                token_frames * text_mask.astype(token_frames.dtype), axis=1
+            )
+            return mx.log1p(mx.maximum(total_frames, 0.0))
+
+        # Token-sum dual architecture (speaker + caption, v3 VoiceDesign)
+        if self.duration_architecture == "token_sum_dual_adarn_zero_no_aux":
+            if self.speaker_dim is None or self.caption_dim is None:
+                raise RuntimeError(
+                    "Dual token-sum architecture requires both speaker and caption modules."
+                )
+            if has_speaker is None:
+                raise ValueError(
+                    "has_speaker is required for dual duration prediction."
+                )
+            if has_caption is None:
+                raise ValueError(
+                    "has_caption is required for dual duration prediction."
+                )
+            has_speaker = has_speaker.astype(mx.bool_)
+            has_caption = has_caption.astype(mx.bool_)
+            speaker_vec = self._speaker_vec(
+                batch_size=text_state.shape[0],
+                dtype=text_state.dtype,
+                speaker_state=speaker_state,
+                has_speaker=has_speaker,
+            )
+            caption_vec = self._caption_vec(
+                batch_size=text_state.shape[0],
+                dtype=text_state.dtype,
+                caption_state=caption_state,
+                caption_mask=caption_mask,
+                has_caption=has_caption,
+            )
+            h = self.token_input_proj(text_state)
+            for block in self.token_blocks:
+                h = block(h, cond=speaker_vec, caption_cond=caption_vec)
+            token_logits = self.token_out_proj(self.token_out_norm(h)).squeeze(-1)
             token_frames = mx.log(1.0 + mx.exp(token_logits.astype(mx.float32)))
             total_frames = mx.sum(
                 token_frames * text_mask.astype(token_frames.dtype), axis=1
@@ -995,9 +1141,10 @@ class IrodoriDiT(nn.Module):
     """
     Irodori-TTS DiT model (MLX port of TextToLatentRFDiT).
 
-    Supports two conditioning modes (mutually exclusive):
-      - Speaker mode (use_speaker_condition=True): ref audio latent → speaker embedding
-      - Caption mode (use_caption_condition=True): style text → caption embedding
+    Supports three conditioning modes:
+      - Speaker mode (use_speaker_condition_resolved=True, use_caption_condition=False)
+      - Caption mode (use_caption_condition=True, use_speaker_condition_resolved=False)
+      - Dual mode (both True, v3 VoiceDesign): speaker + caption simultaneously
 
     Input x_t : (B, S, latent_dim * latent_patch_size)
     Output v_t : same shape — velocity prediction for Rectified Flow ODE.
@@ -1018,7 +1165,10 @@ class IrodoriDiT(nn.Module):
         )
         self.text_norm = RMSNorm(cfg.text_dim, eps=cfg.norm_eps)
 
-        if cfg.use_speaker_condition:
+        speaker_ctx_dim: Optional[int] = None
+        caption_ctx_dim: Optional[int] = None
+
+        if cfg.use_speaker_condition_resolved:
             self.speaker_encoder = ReferenceLatentEncoder(
                 in_dim=cfg.speaker_patched_latent_dim,
                 dim=cfg.speaker_dim,
@@ -1028,10 +1178,9 @@ class IrodoriDiT(nn.Module):
                 norm_eps=cfg.norm_eps,
             )
             self.speaker_norm = RMSNorm(cfg.speaker_dim, eps=cfg.norm_eps)
-            context_dim = cfg.speaker_dim
-            speaker_ctx_dim: Optional[int] = cfg.speaker_dim
-            caption_ctx_dim: Optional[int] = None
-        else:
+            speaker_ctx_dim = cfg.speaker_dim
+
+        if cfg.use_caption_condition:
             self.caption_encoder = TextEncoder(
                 vocab_size=cfg.caption_vocab_size_resolved,
                 dim=cfg.caption_dim_resolved,
@@ -1041,16 +1190,17 @@ class IrodoriDiT(nn.Module):
                 norm_eps=cfg.norm_eps,
             )
             self.caption_norm = RMSNorm(cfg.caption_dim_resolved, eps=cfg.norm_eps)
-            context_dim = cfg.caption_dim_resolved
-            speaker_ctx_dim = None
             caption_ctx_dim = cfg.caption_dim_resolved
 
         # Duration predictor (v3)
         self.duration_predictor = None
         if cfg.use_duration_predictor:
-            duration_speaker_dim = None
-            if cfg.use_speaker_condition:
-                duration_speaker_dim = cfg.speaker_dim
+            duration_speaker_dim = (
+                cfg.speaker_dim if cfg.use_speaker_condition_resolved else None
+            )
+            duration_caption_dim = (
+                cfg.caption_dim_resolved if cfg.use_caption_condition else None
+            )
             self.duration_predictor = DurationPredictor(
                 text_dim=cfg.text_dim,
                 aux_dim=cfg.duration_aux_dim,
@@ -1059,6 +1209,9 @@ class IrodoriDiT(nn.Module):
                 norm_eps=cfg.norm_eps,
                 speaker_dim=duration_speaker_dim,
                 speaker_fusion=cfg.duration_speaker_fusion,
+                caption_dim=duration_caption_dim,
+                caption_fusion=cfg.duration_caption_fusion,
+                caption_pooling=cfg.duration_caption_pooling,
                 attention_heads=cfg.duration_attention_heads,
                 architecture=cfg.duration_architecture,
                 token_init_frames=cfg.duration_token_init_frames,
@@ -1091,8 +1244,6 @@ class IrodoriDiT(nn.Module):
         self.out_norm = RMSNorm(cfg.model_dim, eps=cfg.norm_eps)
         self.out_proj = nn.Linear(cfg.model_dim, cfg.patched_latent_dim, bias=True)
 
-        self._context_dim = context_dim
-
     # ------------------------------------------------------------------
     # Condition encoding (text + speaker/caption) — cached across steps
     # ------------------------------------------------------------------
@@ -1112,7 +1263,7 @@ class IrodoriDiT(nn.Module):
         """
         text_state = self.text_norm(self.text_encoder(text_input_ids, text_mask))
 
-        if self.cfg.use_speaker_condition:
+        if self.cfg.use_speaker_condition_resolved:
             assert ref_latent is not None and ref_mask is not None
             ref_latent_p, ref_mask_p = patch_sequence_with_mask(
                 ref_latent, ref_mask, self.cfg.speaker_patch_size
@@ -1154,7 +1305,7 @@ class IrodoriDiT(nn.Module):
 
         speaker_state = None
         speaker_mask = None
-        if self.cfg.use_speaker_condition:
+        if self.cfg.use_speaker_condition_resolved:
             if ref_latent is not None and ref_mask is not None:
                 ref_latent_p, ref_mask_p = patch_sequence_with_mask(
                     ref_latent, ref_mask, self.cfg.speaker_patch_size
@@ -1174,37 +1325,47 @@ class IrodoriDiT(nn.Module):
                     dtype=mx.bool_,
                 )
 
-        caption_state = None
-        caption_mask = None
+        out_caption_state = None
+        out_caption_mask = None
         if self.cfg.use_caption_condition:
             if caption_input_ids is not None and caption_mask is not None:
-                caption_state = self.caption_norm(
+                out_caption_state = self.caption_norm(
                     self.caption_encoder(caption_input_ids, caption_mask)
                 )
-                caption_mask = caption_mask
+                out_caption_mask = caption_mask
 
         return (
             text_state,
             text_mask,
             speaker_state,
             speaker_mask,
-            caption_state,
-            caption_mask,
+            out_caption_state,
+            out_caption_mask,
         )
 
     def build_kv_cache(
         self,
         text_state: mx.array,
-        context_state: mx.array,
-    ) -> Tuple[List[KVCache], List[KVCache]]:
-        """Pre-compute per-layer text/context KV projections for fast sampling."""
+        speaker_state: Optional[mx.array] = None,
+        caption_state: Optional[mx.array] = None,
+    ) -> Tuple[List[KVCache], Optional[List[KVCache]], Optional[List[KVCache]]]:
+        """Pre-compute per-layer text/speaker/caption KV projections for fast sampling."""
         kv_text = [
             block.attention.get_kv_cache_text(text_state) for block in self.blocks
         ]
-        kv_context = [
-            block.attention.get_kv_cache_context(context_state) for block in self.blocks
-        ]
-        return kv_text, kv_context
+        kv_speaker = None
+        if speaker_state is not None and self.cfg.use_speaker_condition_resolved:
+            kv_speaker = [
+                block.attention.get_kv_cache_speaker(speaker_state)
+                for block in self.blocks
+            ]
+        kv_caption = None
+        if caption_state is not None and self.cfg.use_caption_condition:
+            kv_caption = [
+                block.attention.get_kv_cache_caption(caption_state)
+                for block in self.blocks
+            ]
+        return kv_text, kv_speaker, kv_caption
 
     @staticmethod
     def masked_mean(state: mx.array, mask: mx.array) -> mx.array:
@@ -1221,6 +1382,9 @@ class IrodoriDiT(nn.Module):
         speaker_mask: Optional[mx.array],
         duration_features: mx.array,
         has_speaker: Optional[mx.array],
+        caption_state: Optional[mx.array] = None,
+        caption_mask: Optional[mx.array] = None,
+        has_caption: Optional[mx.array] = None,
     ) -> mx.array:
         """
         Predict log1p(num_frames) from text state and duration features.
@@ -1244,6 +1408,9 @@ class IrodoriDiT(nn.Module):
             speaker_state=speaker_state,
             speaker_mask=speaker_mask,
             has_speaker=has_speaker,
+            caption_state=caption_state,
+            caption_mask=caption_mask,
+            has_caption=has_caption,
         )
         return pred.astype(mx.float32)
 
@@ -1262,9 +1429,18 @@ class IrodoriDiT(nn.Module):
         kv_text: Optional[List[KVCache]] = None,
         kv_speaker: Optional[List[KVCache]] = None,
         start_pos: int = 0,
+        caption_state: Optional[mx.array] = None,
+        caption_mask: Optional[mx.array] = None,
+        kv_caption: Optional[List[KVCache]] = None,
     ) -> mx.array:
-        # NOTE: speaker_state/speaker_mask/kv_speaker are the generic "context"
-        # (either speaker or caption depending on cfg.use_caption_condition).
+        """
+        Forward pass with pre-encoded conditions.
+
+        For speaker-only models: speaker_state/mask carry the speaker context.
+        For caption-only models: speaker_state/mask carry the caption context
+            (backward-compat; internally routed to caption branch).
+        For dual models (v3 VoiceDesign): speaker_state=speaker, caption_state=caption.
+        """
         t_embed = get_timestep_embedding(t, self.cfg.timestep_embed_dim).astype(
             x_t.dtype
         )
@@ -1273,25 +1449,59 @@ class IrodoriDiT(nn.Module):
         x = self.in_proj(x_t)
         freqs_cis = precompute_freqs_cis(self.head_dim, start_pos + x.shape[1])
 
+        use_spk = self.cfg.use_speaker_condition_resolved
+        use_cap = self.cfg.use_caption_condition
+
+        # For caption-only models: speaker_state arg contains caption context (backward compat)
+        if not use_spk and use_cap:
+            actual_caption_state = (
+                caption_state if caption_state is not None else speaker_state
+            )
+            actual_caption_mask = (
+                caption_mask if caption_mask is not None else speaker_mask
+            )
+            actual_kv_caption = kv_caption if kv_caption is not None else kv_speaker
+            actual_speaker_state = None
+            actual_speaker_mask = None
+            actual_kv_speaker = None
+        else:
+            actual_speaker_state = speaker_state
+            actual_speaker_mask = speaker_mask
+            actual_kv_speaker = kv_speaker
+            actual_caption_state = caption_state
+            actual_caption_mask = caption_mask
+            actual_kv_caption = kv_caption
+
         for i, block in enumerate(self.blocks):
             kv_t = (
                 kv_text[i]
                 if kv_text is not None
                 else block.attention.get_kv_cache_text(text_state)
             )
-            kv_s = (
-                kv_speaker[i]
-                if kv_speaker is not None
-                else block.attention.get_kv_cache_context(speaker_state)
-            )
+            kv_s = None
+            if use_spk and actual_speaker_state is not None:
+                kv_s = (
+                    actual_kv_speaker[i]
+                    if actual_kv_speaker is not None
+                    else block.attention.get_kv_cache_speaker(actual_speaker_state)
+                )
+            kv_c = None
+            if use_cap and actual_caption_state is not None:
+                kv_c = (
+                    actual_kv_caption[i]
+                    if actual_kv_caption is not None
+                    else block.attention.get_kv_cache_caption(actual_caption_state)
+                )
             x = block(
                 x,
                 cond_embed,
                 text_mask,
-                speaker_mask,
                 freqs_cis,
                 kv_t,
                 kv_s,
+                actual_speaker_mask,
+                kv_c,
+                actual_caption_mask,
                 start_pos,
             )
 

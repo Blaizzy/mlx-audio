@@ -14,8 +14,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-""" This implementation is adapted from github repo:
-    https://github.com/lawlict/ECAPA-TDNN.
+"""This implementation is adapted from github repo:
+https://github.com/lawlict/ECAPA-TDNN.
 """
 
 import mlx.core as mx

@@ -3023,6 +3023,37 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             # token_count should be <= 2
             self.assertLessEqual(results[0].token_count, 2)
 
+    def test_generate_icl_streaming_clears_cache_once_at_end(self):
+        """Streaming avoids cache clears in the token and vocoder hot paths."""
+        model = self._make_icl_model()
+        ref_audio = mx.random.normal((24000,))
+
+        model.speech_tokenizer.decoder.streaming_step.side_effect = (
+            lambda codes: mx.ones((1, 1, codes.shape[-1] * 1920))
+        )
+
+        with (
+            patch.object(model, "_sample_token", return_value=mx.array([[5]])),
+            patch(
+                "mlx_audio.tts.models.qwen3_tts.qwen3_tts.mx.clear_cache"
+            ) as mock_clear_cache,
+        ):
+            results = list(
+                model._generate_icl(
+                    text="Hello",
+                    ref_audio=ref_audio,
+                    ref_text="Ref",
+                    max_tokens=51,
+                    repetition_penalty=1.5,
+                    stream=True,
+                    streaming_interval=0.1,
+                )
+            )
+
+        self.assertEqual(len(results), 51)
+        self.assertEqual(model.speech_tokenizer.decoder.streaming_step.call_count, 51)
+        mock_clear_cache.assert_called_once_with()
+
     def test_generate_icl_repetition_penalty_applied(self):
         """Test that repetition penalty is applied during generation."""
         model = self._make_icl_model()
@@ -3280,6 +3311,9 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             ),
             patch.object(model, "_sample_token_batch", side_effect=sample_batch),
             patch.object(model, "_predict_code_tokens", side_effect=predict_codes),
+            patch(
+                "mlx_audio.tts.models.qwen3_tts.qwen3_tts.mx.clear_cache"
+            ) as mock_clear_cache,
         ):
             results = list(
                 model.batch_generate(
@@ -3296,6 +3330,7 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         self.assertEqual(model.speech_tokenizer.decode.call_count, 2)
         decoded_codes = model.speech_tokenizer.decode.call_args_list[0][0][0]
         self.assertEqual(decoded_codes.shape[1], 6)  # ref_time(5) + generated(1)
+        mock_clear_cache.assert_called_once_with()
 
     def test_batch_generate_rejects_mixed_refs(self):
         """Qwen3 batch ICL currently accepts only one shared reference pair."""
@@ -3465,6 +3500,38 @@ class TestQwen3TTSStreamingDecode(unittest.TestCase):
 
         # streaming_interval=0.1 -> 1 token (minimum)
         self.assertEqual(max(1, int(0.1 * 12.5)), 1)
+
+    def test_non_streaming_generation_clears_cache_once_at_end(self):
+        """Standard generation clears the cache only after the final result."""
+        model = self._make_model()
+        hidden_size = model.config.talker_config.hidden_size
+        prepared_inputs = (
+            mx.zeros((1, 1, hidden_size)),
+            mx.zeros((1, 1, hidden_size)),
+            mx.zeros((1, 1, hidden_size)),
+        )
+
+        with (
+            patch.object(
+                model, "_prepare_generation_inputs", return_value=prepared_inputs
+            ),
+            patch.object(model, "_sample_token", return_value=mx.array([[5]])),
+            patch(
+                "mlx_audio.tts.models.qwen3_tts.qwen3_tts.mx.clear_cache"
+            ) as mock_clear_cache,
+        ):
+            results = list(
+                model.generate(
+                    text="Hello",
+                    max_tokens=51,
+                    stream=False,
+                    split_pattern="",
+                )
+            )
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].token_count, 51)
+        mock_clear_cache.assert_called_once_with()
 
 
 @patch("importlib.resources.open_text", patched_open_text)
@@ -4173,9 +4240,10 @@ class TestIrodoriDiTShapes(unittest.TestCase):
         t_state, t_mask, s_state, s_mask = self.model.encode_conditions(
             text_ids, text_mask, ref_latent, ref_mask
         )
-        kv_text, kv_speaker = self.model.build_kv_cache(t_state, s_state)
+        kv_text, kv_speaker, kv_caption = self.model.build_kv_cache(t_state, s_state)
         self.assertEqual(len(kv_text), self.cfg.num_layers)
         self.assertEqual(len(kv_speaker), self.cfg.num_layers)
+        self.assertIsNone(kv_caption)
 
         x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
         t = mx.array([0.3], dtype=mx.float32)
@@ -4731,6 +4799,234 @@ class TestIrodoriSwaySampling(unittest.TestCase):
         self.assertEqual(tuple(out.shape), (1, 4, cfg.patched_latent_dim))
 
 
+# ---------------------------------------------------------------------------
+# Irodori-TTS v3 VoiceDesign helpers (dual speaker + caption)
+# ---------------------------------------------------------------------------
+
+
+def _small_irodori_dit_config_v3_voicedesign(**overrides):
+    from mlx_audio.tts.models.irodori_tts.config import IrodoriDiTConfig
+
+    defaults = dict(
+        latent_dim=8,
+        latent_patch_size=1,
+        model_dim=32,
+        num_layers=2,
+        num_heads=4,
+        mlp_ratio=2.0,
+        text_mlp_ratio=2.0,
+        speaker_mlp_ratio=2.0,
+        text_vocab_size=64,
+        text_dim=32,
+        text_layers=1,
+        text_heads=4,
+        speaker_dim=32,
+        speaker_layers=1,
+        speaker_heads=4,
+        speaker_patch_size=1,
+        timestep_embed_dim=16,
+        adaln_rank=8,
+        norm_eps=1e-5,
+        use_duration_predictor=True,
+        use_caption_condition=True,
+        use_speaker_condition=True,
+        caption_vocab_size=64,
+        caption_dim=32,
+        caption_layers=1,
+        caption_heads=4,
+        caption_mlp_ratio=2.0,
+        duration_aux_dim=14,
+        duration_hidden_dim=16,
+        duration_layers=1,
+        duration_dropout=0.0,
+        duration_attention_heads=4,
+        duration_architecture="token_sum_dual_adarn_zero_no_aux",
+        duration_token_init_frames=9.0,
+        duration_speaker_fusion="adarn_zero",
+        duration_caption_fusion="adarn_zero",
+        duration_caption_pooling="masked_mean",
+    )
+    defaults.update(overrides)
+    return IrodoriDiTConfig(**defaults)
+
+
+def _small_irodori_model_config_v3_voicedesign(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_speaker=1.0,
+        cfg_scale_caption=1.0,
+        sequence_length=4,
+        t_schedule_mode="sway",
+        sway_coeff=-1.0,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_v3_voicedesign(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+class TestIrodoriV3VoiceDesignShapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config_v3_voicedesign()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_both_encoders_present(self):
+        self.assertTrue(hasattr(self.model, "speaker_encoder"))
+        self.assertTrue(hasattr(self.model, "caption_encoder"))
+
+    def test_duration_predictor_present(self):
+        self.assertIsNotNone(self.model.duration_predictor)
+        self.assertEqual(
+            self.model.duration_predictor.duration_architecture,
+            "token_sum_dual_adarn_zero_no_aux",
+        )
+
+    def test_encode_conditions_full_returns_six(self):
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        result = self.model.encode_conditions_full(
+            text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+        )
+        self.assertEqual(len(result), 6)
+        text_state, _, spk_state, _, cap_state, _ = result
+        self.assertIsNotNone(spk_state)
+        self.assertIsNotNone(cap_state)
+        mx.eval(text_state, spk_state, cap_state)
+        self.assertEqual(tuple(text_state.shape), (B, 5, self.cfg.text_dim))
+        self.assertEqual(tuple(spk_state.shape[:2]), (B, 8))
+        self.assertEqual(tuple(cap_state.shape), (B, 5, self.cfg.caption_dim_resolved))
+
+    def test_build_kv_cache_dual(self):
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        _, _, spk_state, _, cap_state, _ = self.model.encode_conditions_full(
+            text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+        )
+        text_state = self.model.text_norm(self.model.text_encoder(text_ids, text_mask))
+        kv_text, kv_spk, kv_cap = self.model.build_kv_cache(
+            text_state, spk_state, cap_state
+        )
+        self.assertEqual(len(kv_text), self.cfg.num_layers)
+        self.assertIsNotNone(kv_spk)
+        self.assertIsNotNone(kv_cap)
+        self.assertEqual(len(kv_spk), self.cfg.num_layers)
+        self.assertEqual(len(kv_cap), self.cfg.num_layers)
+
+    def test_predict_duration_dual(self):
+        from mlx_audio.tts.models.irodori_tts.duration import build_duration_features
+
+        B = 1
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        text_state, text_mask_out, spk_state, spk_mask, cap_state, cap_mask_out = (
+            self.model.encode_conditions_full(
+                text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+            )
+        )
+        dur_feats = build_duration_features(
+            ["テスト"], token_counts=[5], max_text_len=256, has_speaker=[True]
+        )
+        log_frames = self.model.predict_duration_log_frames(
+            text_state=text_state,
+            text_mask=text_mask_out,
+            speaker_state=spk_state,
+            speaker_mask=spk_mask,
+            duration_features=dur_feats,
+            has_speaker=mx.array([True], dtype=mx.bool_),
+            caption_state=cap_state,
+            caption_mask=cap_mask_out,
+            has_caption=mx.array([True], dtype=mx.bool_),
+        )
+        mx.eval(log_frames)
+        self.assertEqual(tuple(log_frames.shape), (B,))
+        self.assertGreaterEqual(float(log_frames[0]), 0.0)
+
+    def test_forward_with_conditions_dual(self):
+        B, S = 1, 4
+        text_ids = mx.zeros((B, 5), dtype=mx.int32)
+        text_mask = mx.ones((B, 5), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 5), dtype=mx.int32)
+        cap_mask = mx.ones((B, 5), dtype=mx.bool_)
+
+        text_state, t_mask, spk_state, spk_mask, cap_state, c_mask = (
+            self.model.encode_conditions_full(
+                text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+            )
+        )
+        x_t = mx.random.normal((B, S, self.cfg.patched_latent_dim))
+        t = mx.array([0.5], dtype=mx.float32)
+        out = self.model.forward_with_conditions(
+            x_t,
+            t,
+            text_state,
+            t_mask,
+            spk_state,
+            spk_mask,
+            caption_state=cap_state,
+            caption_mask=c_mask,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+
+class TestIrodoriV3VoiceDesignGenerate(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v3_voicedesign()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_dual_caption_and_ref(self):
+        model = self._make_model()
+        cfg = model.config
+        ref = mx.zeros((1, cfg.audio_downsample_factor * 4), dtype=mx.float32)
+        results = list(
+            model.generate(
+                "こんにちは", ref_audio=ref, caption="穏やかな声", rng_seed=0
+            )
+        )
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_duration_predictor_used(self):
+        model = self._make_model()
+        results = list(model.generate("テスト", caption="低い声", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+
 class TestKugelAudioModel(unittest.TestCase):
     def _make_model(self):
         from mlx_audio.tts.models.kugelaudio.config import ModelConfig
@@ -5225,6 +5521,117 @@ class TestMossTTSRegistration(unittest.TestCase):
 
             self.assertEqual(model_type, expected_model_type)
             self.assertIs(arch.Model, SharedModel)
+
+
+class TestMisoTTSRegistration(unittest.TestCase):
+
+    def test_miso_llama_flavors(self):
+        from mlx_audio.tts.models.sesame.sesame import create_llama_model_args
+
+        backbone = create_llama_model_args("llama-8B")
+        decoder = create_llama_model_args("llama-300M")
+
+        self.assertEqual(backbone.num_hidden_layers, 32)
+        self.assertEqual(backbone.hidden_size, 4096)
+        self.assertEqual(backbone.intermediate_size, 14336)
+        self.assertEqual(backbone.num_attention_heads, 32)
+        self.assertEqual(backbone.num_key_value_heads, 8)
+        self.assertEqual(decoder.num_hidden_layers, 8)
+        self.assertEqual(decoder.hidden_size, 1536)
+        self.assertEqual(decoder.intermediate_size, 6912)
+        self.assertEqual(decoder.num_attention_heads, 24)
+        self.assertEqual(decoder.num_key_value_heads, 6)
+
+    def test_sesame_rope_materializes_tables_on_init(self):
+        from mlx_audio.tts.models.sesame.attention import Llama3ScaledRoPE
+
+        with patch("mlx_audio.tts.models.sesame.attention.mx.eval") as eval_mock:
+            rope = Llama3ScaledRoPE(dim=8, max_seq_len=4)
+
+        args = eval_mock.call_args.args
+        self.assertEqual(len(args), 2)
+        self.assertIs(args[0], rope._cos_f32)
+        self.assertIs(args[1], rope._sin_f32)
+
+    def test_sesame_uses_configured_frame_size_and_prompt_spacing(self):
+        from mlx_audio.tts.models.sesame import sesame
+
+        encoded_text = []
+
+        class FakeTokenizer:
+            def encode(self, text, return_tensors=None):
+                encoded_text.append(text)
+                return mx.array([[7, 8]])
+
+        class FakeSesameModel:
+            def __init__(self, config):
+                self.args = SimpleNamespace(
+                    audio_num_codebooks=config["audio_num_codebooks"]
+                )
+
+            def setup_caches(self, max_batch_size):
+                self.max_batch_size = max_batch_size
+
+            def reset_caches(self):
+                pass
+
+            def generate_frame(self, tokens, tokens_mask, input_pos, sampler):
+                return mx.zeros((1, self.args.audio_num_codebooks), dtype=mx.int32)
+
+        class FakeMimi:
+            cfg = SimpleNamespace(sample_rate=24000)
+
+            def eval(self):
+                return None
+
+            def encode(self, audio):
+                return mx.array([[[1, 2], [3, 4], [5, 6]]])
+
+        with (
+            patch("mlx_audio.tts.models.sesame.sesame.SesameModel", FakeSesameModel),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.load_llama3_tokenizer",
+                return_value=FakeTokenizer(),
+            ),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.Mimi.from_pretrained",
+                return_value=FakeMimi(),
+            ),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.MimiStreamingDecoder",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "mlx_audio.tts.models.sesame.sesame.load_watermarker",
+                side_effect=RuntimeError,
+                create=True,
+            ),
+        ):
+            model = sesame.Model(
+                {
+                    "audio_num_codebooks": 3,
+                    "speaker_prefix_space": True,
+                    "use_default_voice_prompt": False,
+                    "voice_match": False,
+                }
+            )
+
+        text_tokens, text_mask = model._tokenize_text_segment("  Hello", speaker=2)
+        audio_tokens, audio_mask = model._tokenize_audio(mx.zeros((16,)))
+
+        self.assertFalse(model._use_default_voice_prompt)
+        self.assertFalse(model._default_voice_match)
+        self.assertEqual(encoded_text[-1], "[2] Hello")
+        self.assertEqual(text_tokens.shape, (2, 4))
+        self.assertEqual(text_mask.shape, (2, 4))
+        self.assertEqual(audio_tokens.shape, (3, 4))
+        self.assertEqual(audio_mask.shape, (3, 4))
+
+        model.default_speaker_prompt = MagicMock(
+            side_effect=AssertionError("default prompt should not load")
+        )
+        list(model.generate("Direct text", max_audio_length_ms=80))
+        self.assertEqual(encoded_text[-1], "[0] Direct text")
 
 
 class TestOmniVoiceBackbone(unittest.TestCase):
@@ -7704,6 +8111,59 @@ def moss_local_tiny_config(**overrides):
     return moss_delay_tiny_config(**config)
 
 
+def moss_v15_local_tiny_config(**overrides):
+    config = {
+        "model_type": "moss_tts_local",
+        "n_vq": 2,
+        "audio_vocab_size": 8,
+        "audio_codebook_sizes": [8, 8],
+        "audio_pad_token_id": 8,
+        "audio_pad_code": 8,
+        "pad_token_id": 0,
+        "im_start_token_id": 1,
+        "im_end_token_id": 2,
+        "audio_start_token_id": 3,
+        "audio_end_token_id": 4,
+        "audio_user_slot_token_id": 5,
+        "audio_assistant_slot_token_id": 6,
+        "sampling_rate": 48000,
+        "audio_tokenizer_name_or_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+        "local_transformer_layers": 1,
+        "local_text_head_mode": "binary",
+        "language_config": {
+            "model_type": "qwen3",
+            "vocab_size": 64,
+            "hidden_size": 16,
+            "num_hidden_layers": 1,
+            "intermediate_size": 32,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "head_dim": 4,
+            "rms_norm_eps": 1e-6,
+            "max_position_embeddings": 64,
+            "rope_theta": 10000.0,
+            "tie_word_embeddings": True,
+        },
+        "gpt2_config": {
+            "model_type": "gpt2",
+            "vocab_size": 64,
+            "n_positions": 16,
+            "n_ctx": 16,
+            "n_embd": 16,
+            "n_layer": 1,
+            "n_head": 4,
+            "n_inner": 32,
+            "activation_function": "silu",
+            "layer_norm_epsilon": 1e-6,
+            "scale_attn_weights": True,
+            "position_embedding_type": "rope",
+            "rope_base": 10000.0,
+        },
+    }
+    config.update(overrides)
+    return moss_delay_tiny_config(**config)
+
+
 class TestMossTTSDelayConfig(unittest.TestCase):
     def test_config_parses_v15_delay_checkpoint(self):
         from mlx_audio.tts.models.moss_tts import ModelConfig
@@ -7842,6 +8302,70 @@ class TestMossTTSDelayConfig(unittest.TestCase):
         self.assertEqual(config.model_type, "moss_tts_delay")
         self.assertEqual(config.n_vq, 16)
         self.assertFalse(config.is_local_transformer)
+
+    def test_config_parses_v15_local_transformer_shape(self):
+        from mlx_audio.tts.models.moss_tts import ModelConfig
+
+        config = ModelConfig.from_dict(
+            {
+                "model_type": "moss_tts_local",
+                "architectures": ["MossTTSLocalModel"],
+                "n_vq": 12,
+                "audio_vocab_size": 1024,
+                "audio_codebook_sizes": [1024] * 12,
+                "audio_pad_token_id": 1024,
+                "audio_pad_code": 1024,
+                "audio_start_token_id": 151669,
+                "audio_end_token_id": 151670,
+                "audio_user_slot_token_id": 151654,
+                "audio_assistant_slot_token_id": 151656,
+                "sampling_rate": 48000,
+                "audio_tokenizer_name_or_path": "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+                "local_transformer_layers": 1,
+                "local_text_head_mode": "binary",
+                "language_config": {
+                    "model_type": "qwen3",
+                    "vocab_size": 151936,
+                    "hidden_size": 2560,
+                    "num_hidden_layers": 36,
+                    "intermediate_size": 9728,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "head_dim": 128,
+                    "rms_norm_eps": 1e-6,
+                    "max_position_embeddings": 32768,
+                    "rope_theta": 1000000,
+                    "tie_word_embeddings": True,
+                },
+                "gpt2_config": {
+                    "model_type": "gpt2",
+                    "vocab_size": 151936,
+                    "n_embd": 2560,
+                    "n_head": 32,
+                    "n_inner": 9728,
+                    "n_layer": 1,
+                    "n_positions": 10240,
+                    "n_ctx": 10240,
+                    "activation_function": "silu",
+                    "layer_norm_epsilon": 1e-6,
+                    "position_embedding_type": "rope",
+                    "rope_base": 1000000.0,
+                },
+            }
+        )
+
+        self.assertTrue(config.is_v15_local_transformer)
+        self.assertTrue(config.is_local_transformer)
+        self.assertFalse(config.is_legacy_local_transformer)
+        self.assertEqual(config.n_vq, 12)
+        self.assertEqual(config.sampling_rate, 48000)
+        self.assertEqual(config.audio_start_token_id, 151669)
+        self.assertEqual(config.audio_end_token_id, 151670)
+        self.assertEqual(
+            config.audio_tokenizer_pretrained_name_or_path,
+            "OpenMOSS-Team/MOSS-Audio-Tokenizer-v2",
+        )
+        self.assertEqual(config.local_gpt2_config().n_positions, 13)
 
 
 class TestMossTTSDelayProcessor(unittest.TestCase):
@@ -8002,6 +8526,57 @@ class TestMossTTSDelayProcessor(unittest.TestCase):
             ),
         )
 
+    def test_v15_local_generation_prompt_uses_direct_reference_rows(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSLocalV15Processor
+
+        config = moss_v15_local_tiny_config()
+        processor = MossTTSLocalV15Processor(MossDelayFakeTokenizer(), config)
+        reference_codes = mx.array([[1, 2], [3, 4]], dtype=mx.int32)
+
+        batch = processor(
+            [
+                processor.build_user_message(
+                    text="hello",
+                    reference=[reference_codes],
+                    language="English",
+                    scene="ignored",
+                )
+            ],
+            mode="generation",
+        )
+
+        rows = np.array(batch["input_ids"][0])
+        non_pad_audio_rows = rows[~np.all(rows[:, 1:] == config.audio_pad_code, axis=1)]
+        np.testing.assert_array_equal(
+            non_pad_audio_rows[:, 1:], np.array([[1, 2], [3, 4]])
+        )
+        self.assertTrue(
+            np.all(non_pad_audio_rows[:, 0] == config.audio_user_slot_token_id)
+        )
+        np.testing.assert_array_equal(
+            rows[-1],
+            np.array(
+                [
+                    config.audio_start_token_id,
+                    config.audio_pad_code,
+                    config.audio_pad_code,
+                ]
+            ),
+        )
+
+    def test_v15_local_processor_rejects_wrong_rvq_depth(self):
+        from mlx_audio.tts.models.moss_tts.processor import MossTTSLocalV15Processor
+
+        config = moss_v15_local_tiny_config()
+        processor = MossTTSLocalV15Processor(MossDelayFakeTokenizer(), config)
+
+        with self.assertRaisesRegex(ValueError, "Expected n_vq=2"):
+            processor(
+                [processor.build_user_message(text="hello")],
+                mode="generation",
+                n_vq=1,
+            )
+
 
 class TestMossTTSDelayModel(unittest.TestCase):
     def test_build_inputs_embeds_shape(self):
@@ -8057,6 +8632,118 @@ class TestMossTTSDelayModel(unittest.TestCase):
         self.assertEqual(text_logits.shape, (1, 3, 64))
         self.assertEqual(audio_0_logits.shape, (1, 3, 9))
         self.assertEqual(audio_1_logits.shape, (1, 3, 9))
+
+    def test_v15_local_forward_head_shapes(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [3, 8, 8], [6, 1, 2]]], dtype=mx.int32)
+
+        text_logits, audio_0_logits, audio_1_logits = model(
+            input_ids,
+            head_indices=[0, 1, 2],
+        )
+
+        self.assertEqual(text_logits.shape, (1, 3, 2))
+        self.assertEqual(audio_0_logits.shape, (1, 3, 8))
+        self.assertEqual(audio_1_logits.shape, (1, 3, 8))
+
+    def test_v15_local_generation_respects_fixed_depth_and_stop_token(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        input_ids = mx.array([[[1, 8, 8], [3, 8, 8]]], dtype=mx.int32)
+        calls = {"count": 0}
+
+        def fake_sample_text(*args, **kwargs):
+            del args, kwargs
+            calls["count"] += 1
+            value = (
+                model.config.audio_assistant_slot_token_id
+                if calls["count"] == 1
+                else model.config.audio_end_token_id
+            )
+            return mx.array([value], dtype=mx.int32)
+
+        model._sample_v15_assistant_text_token = fake_sample_text
+
+        outputs = model.generate_v15_local_ids(
+            input_ids,
+            max_new_tokens=4,
+            do_sample=False,
+        )
+
+        start_length, generation_ids = outputs[0]
+        self.assertEqual(start_length, 0)
+        self.assertEqual(generation_ids.shape[0], 2)
+        self.assertEqual(
+            int(generation_ids[-1, 0].item()),
+            model.config.audio_assistant_slot_token_id,
+        )
+        self.assertFalse(
+            np.all(np.array(generation_ids[-1, 1:]) == model.config.audio_pad_code)
+        )
+
+    def test_v15_local_generate_streams_chunks(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_v15_local_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+        calls = {"count": 0}
+        decoded_shapes = []
+
+        class FakeStreamingDecoder:
+            def decode_frames(self, codes):
+                decoded_shapes.append(tuple(codes.shape))
+                return mx.ones((int(codes.shape[0]) * 2, 2), dtype=mx.float32)
+
+        def fake_sample_text(*args, **kwargs):
+            del args, kwargs
+            calls["count"] += 1
+            value = (
+                model.config.audio_assistant_slot_token_id
+                if calls["count"] <= 5
+                else model.config.audio_end_token_id
+            )
+            return mx.array([value], dtype=mx.int32)
+
+        def fake_make_streaming_decoder(**kwargs):
+            del kwargs
+            return FakeStreamingDecoder()
+
+        model._sample_v15_assistant_text_token = fake_sample_text
+        model._make_audio_tokenizer_streaming_decoder = fake_make_streaming_decoder
+
+        chunks = list(
+            model.generate(
+                text="hello",
+                stream=True,
+                max_tokens=8,
+                do_sample=False,
+                streaming_first_chunk_frames=2,
+                streaming_interval=0.24,
+                streaming_context_frames=0,
+            )
+        )
+
+        self.assertEqual(len(chunks), 3)
+        self.assertEqual([chunk.segment_idx for chunk in chunks], [0, 1, 1])
+        self.assertTrue(all(chunk.is_streaming_chunk for chunk in chunks))
+        self.assertFalse(chunks[0].is_final_chunk)
+        self.assertFalse(chunks[1].is_final_chunk)
+        self.assertTrue(chunks[2].is_final_chunk)
+        self.assertEqual([chunk.token_count for chunk in chunks], [2, 3, 0])
+        self.assertEqual([chunk.samples for chunk in chunks], [4, 6, 0])
+        self.assertEqual(decoded_shapes, [(2, 2), (3, 2)])
+
+    def test_non_v15_local_streaming_is_not_supported(self):
+        from mlx_audio.tts.models.moss_tts import Model
+
+        model = Model(moss_local_tiny_config())
+        model.tokenizer = MossDelayFakeTokenizer()
+
+        with self.assertRaisesRegex(NotImplementedError, "v1.5 only"):
+            next(model.generate(text="hello", stream=True, max_tokens=1))
 
     def test_local_sanitize_keeps_model_prefix(self):
         from mlx_audio.tts.models.moss_tts import Model

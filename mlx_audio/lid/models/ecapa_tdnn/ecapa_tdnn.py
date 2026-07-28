@@ -155,7 +155,9 @@ class ECAPA_TDNN(nn.Module):
         mx.eval(probs)
 
         sorted_indices = cast(List[int], mx.argsort(-probs[0]).tolist())
-        indexed = [(idx, float(probs[0, idx].item())) for idx in sorted_indices]
+        top_k_indices = sorted_indices[:top_k]
+        top_k_probs = probs[0][top_k_indices].tolist()
+        indexed = list(zip(top_k_indices, top_k_probs))
 
         id2label = self.id2label or {}
         return [

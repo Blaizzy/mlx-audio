@@ -167,6 +167,8 @@ class MLP(nn.Module):
         x = self.fc_in(x)
         if self.activation_function == "gelu_new":
             x = gelu_new(x)
+        elif self.activation_function == "silu":
+            x = nn.silu(x)
         else:
             x = nn.gelu(x)
         return self.fc_out(x)

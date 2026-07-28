@@ -59,6 +59,7 @@ class FishRotaryEmbedding(nn.Module):
         # Match the reference implementation, which caches RoPE phases in bf16.
         self._cos = mx.cos(angles).astype(mx.bfloat16)
         self._sin = mx.sin(angles).astype(mx.bfloat16)
+        mx.eval(self._cos, self._sin)
 
     def __call__(self, x: mx.array, offset: int = 0) -> mx.array:
         seqlen = x.shape[2]

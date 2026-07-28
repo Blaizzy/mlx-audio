@@ -10,6 +10,7 @@ Architecture: bidirectional Qwen3-0.6B backbone with iterative masked diffusion 
 
 | Repo ID | Description |
 |---------|-------------|
+| `mlx-community/OmniVoice-bfloat16` | MLX-ready weights (bfloat16) — recommended |
 | `k2-fsa/OmniVoice` | Original weights (bfloat16) |
 
 ## Usage
@@ -18,12 +19,13 @@ Architecture: bidirectional Qwen3-0.6B backbone with iterative masked diffusion 
 
 ```python
 from transformers import AutoTokenizer
+from huggingface_hub import snapshot_download
 from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
 from mlx_audio.tts.models.omnivoice.omnivoice import Model, OmniVoiceConfig
 from mlx_audio.audio_io import write as audio_write
 import mlx.core as mx, json, numpy as np
 
-model_path = "path/to/OmniVoice"
+model_path = snapshot_download("mlx-community/OmniVoice-bfloat16")
 
 # Load model
 with open(f"{model_path}/config.json") as f:
@@ -70,7 +72,7 @@ audio_write("output_cloned.wav", np.array(result.audio), result.sample_rate)
 
 ```bash
 python -m mlx_audio.tts.generate \
-  --model path/to/OmniVoice \
+  --model mlx-community/OmniVoice-bfloat16 \
   --text "Hello, this is OmniVoice." \
   --duration_s 5.0 \
   --language en

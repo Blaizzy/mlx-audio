@@ -52,6 +52,7 @@ _WINDOW = mx.concatenate(
     ]
 )
 _MEL_T = dsp.mel_filters(SAMPLING_RATE, N_FFT, N_MELS, precise=True).T
+mx.eval(_WINDOW, _MEL_T)
 
 
 def _compute_features(waveform: mx.array) -> mx.array:
@@ -169,9 +170,12 @@ class Model(nn.Module):
         flat_embeds = mx.concatenate([audio_embeds[0], text_embeds], axis=0)[None]
         position_ids = mx.arange(audio_len + text_len, dtype=mx.int32)
 
-        logits = self.editor(inputs_embeds=flat_embeds, position_ids=position_ids)
-        text_logits = logits[0, audio_len:, :]
-        edited_argmax = mx.argmax(text_logits, axis=-1).astype(mx.int32)
+        logits = self.editor(
+            inputs_embeds=flat_embeds, position_ids=position_ids, logits_start=audio_len
+        )
+        # At this point we ONLY have the logits for the text tail, so we don't need to
+        # do anything else (logits_start=audio_len).
+        edited_argmax = mx.argmax(logits[0], axis=-1).astype(mx.int32)
         return ctc_collapse_decode(edited_argmax, blank_id=blank)
 
     def generate(
