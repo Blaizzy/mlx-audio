@@ -250,7 +250,17 @@ async def _preflight_model_load(model_name: str) -> None:
     response. Warm models are a no-op (``ModelProvider.load_model`` is cached).
     """
     try:
-        await asyncio.to_thread(_load_model_for_inference, model_name)
+        handle = get_inference_broker().submit(
+            endpoint_kind="model-load",
+            model_name=model_name,
+            payload=None,
+        )
+        while True:
+            chunk = await _next_inference_chunk(handle)
+            if chunk.kind == "error":
+                raise chunk.error
+            if chunk.kind == "done":
+                break
     except HTTPException:
         raise
     except RepositoryNotFoundError as exc:
@@ -315,6 +325,12 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+        request.emit_done()
+
+
+class ModelLoadExecutionAdapter(BaseModelExecutionAdapter):
+    def run_serial(self, request: InferenceRequest) -> None:
+        _load_model_for_inference(request.model_name)
         request.emit_done()
 
 
@@ -824,6 +840,7 @@ def get_inference_broker() -> InferenceBroker:
     global INFERENCE_BROKER
     if INFERENCE_BROKER is None:
         broker = InferenceBroker()
+        broker.register_adapter("model-load", ModelLoadExecutionAdapter())
         broker.register_adapter("stt", STTExecutionAdapter())
         broker.register_adapter("tts", TTSExecutionAdapter())
         broker.register_adapter("separation", SeparationExecutionAdapter())

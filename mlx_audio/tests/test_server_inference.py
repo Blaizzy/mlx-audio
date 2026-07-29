@@ -1,6 +1,8 @@
 import threading
 import time
 
+import mlx.core as mx
+
 from mlx_audio.server_inference import (
     BaseModelExecutionAdapter,
     InferenceBroker,
@@ -98,6 +100,13 @@ class ContinuousAdapter(BaseModelExecutionAdapter):
         request.emit_done()
 
 
+class MlxWorkerAdapter(BaseModelExecutionAdapter):
+    def run_serial(self, request: InferenceRequest) -> None:
+        value = int(mx.array([request.payload])[0].item())
+        request.emit_data(value)
+        request.emit_done()
+
+
 def test_inference_broker_serializes_requests():
     broker = InferenceBroker()
     adapter = SerializedAdapter()
@@ -118,6 +127,24 @@ def test_inference_broker_serializes_requests():
         assert _collect(first)[0].payload == "first"
         assert _collect(second)[0].payload == "second"
         assert adapter.max_active == 1
+    finally:
+        broker.stop_and_join()
+
+
+def test_inference_broker_initializes_thread_local_mlx_streams():
+    broker = InferenceBroker()
+    broker.register_adapter("mlx", MlxWorkerAdapter())
+
+    try:
+        handle = broker.submit(
+            endpoint_kind="mlx",
+            model_name="model-a",
+            payload=42,
+        )
+
+        chunks = _collect(handle)
+        assert chunks[0].kind == "data"
+        assert chunks[0].payload == 42
     finally:
         broker.stop_and_join()
 

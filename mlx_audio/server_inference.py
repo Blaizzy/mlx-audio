@@ -8,6 +8,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional, Protocol
 
+import mlx.core as mx
+
 
 @dataclass
 class InferenceResultChunk:
@@ -191,6 +193,13 @@ class InferenceBroker:
         )
 
     def _run(self) -> None:
+        # MLX default streams are thread-local. The inference broker owns all
+        # model execution on this worker, so create its CPU/GPU streams here
+        # rather than inheriting streams from the ASGI or model-load threads.
+        worker_streams = [mx.new_stream(mx.cpu), mx.new_stream(mx.gpu)]
+        for stream in worker_streams:
+            mx.set_default_stream(stream)
+
         pending: list[InferenceRequest] = []
         try:
             while not self._stop.is_set():
