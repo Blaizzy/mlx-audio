@@ -649,6 +649,7 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         generation_stream: bool = False,
         verbose: bool = False,
+        hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> STTOutput:
         """
@@ -657,6 +658,7 @@ class Model(nn.Module):
         Args:
             audio: Audio path (str) or waveform (mx.array/np.array)
             context: Optional context string (hotwords, metadata)
+            hotwords: Optional vocabulary/hotword list, folded into ``context``
             sampling_rate: Sample rate of the input waveform. When *audio*
                 is an array not at 24 kHz, provide its actual sample rate
                 so that it is resampled correctly.
@@ -675,7 +677,11 @@ class Model(nn.Module):
         Returns:
             STTOutput with transcription text and segments
         """
+        from mlx_audio.stt.utils import merge_hotwords
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        # VibeVoice biases toward rare vocabulary via the context string.
+        context = merge_hotwords(context, hotwords)
 
         start_time = time.time()
 

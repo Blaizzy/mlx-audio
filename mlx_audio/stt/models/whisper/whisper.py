@@ -808,6 +808,7 @@ class Model(nn.Module):
         append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
         clip_timestamps: Union[str, List[float]] = "0",
         hallucination_silence_threshold: Optional[float] = None,
+        hotwords: Optional[List[str]] = None,
         **decode_options,
     ):
         """
@@ -875,7 +876,14 @@ class Model(nn.Module):
         -------
         A dictionary containing the resulting text ("text") and segment-level details ("segments"), and
         the spoken language ("language"), which is detected when `decode_options["language"]` is None.
+
+        hotwords: Optional[List[str]]
+            Vocabulary/hotword list, folded into ``initial_prompt`` to bias decoding.
         """
+        # Whisper biases toward rare vocabulary via the initial prompt.
+        from mlx_audio.stt.utils import merge_hotwords
+
+        initial_prompt = merge_hotwords(initial_prompt, hotwords)
 
         if stream:
             return self.generate_streaming(

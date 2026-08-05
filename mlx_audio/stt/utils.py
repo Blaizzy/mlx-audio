@@ -12,6 +12,28 @@ from mlx_audio.utils import base_load_model, get_model_path, load_config
 SAMPLE_RATE = 16000
 
 
+def merge_hotwords(base: Optional[str], hotwords: Optional[List[str]]) -> Optional[str]:
+    """Merge a structured vocabulary/hotword list into a model's native prompt.
+
+    ASR backends bias their transcription toward rare words (names, acronyms,
+    product terms) through a text field that differs per model — ``system_prompt``
+    for Qwen3-ASR, ``initial_prompt`` for Whisper, ``context`` for VibeVoice,
+    ``prompt`` for MOSS, etc. This helper lets each model accept a uniform
+    ``hotwords`` list and fold it into whichever field it already uses, so callers
+    (e.g. the mlx-vlm server) can pass one structured list regardless of backend.
+
+    Returns ``base`` unchanged when ``hotwords`` is empty/None (silent no-op), the
+    joined terms when ``base`` is empty, or ``base`` followed by the terms.
+    """
+    if not hotwords:
+        return base
+    terms = [str(t).strip() for t in hotwords if t is not None and str(t).strip()]
+    if not terms:
+        return base
+    joined = ", ".join(terms)
+    return f"{base}\n{joined}" if base else joined
+
+
 @contextlib.contextmanager
 def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
     """

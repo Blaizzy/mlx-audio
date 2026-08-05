@@ -664,9 +664,14 @@ class Model(nn.Module):
         prefill_step_size: int = 4096,
         verbose: bool = False,
         stream: bool = False,
+        hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
+        from mlx_audio.stt.utils import merge_hotwords
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        # MOSS biases toward rare vocabulary via the prompt.
+        prompt = merge_hotwords(prompt, hotwords)
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
