@@ -1246,6 +1246,7 @@ class Qwen3ASRModel(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[str, None, None]]:
         """Generate transcription from audio.
@@ -1256,7 +1257,13 @@ class Qwen3ASRModel(nn.Module):
             chunk_duration: Maximum chunk duration in seconds (default: 1200 = 20 min).
             min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
             stream: If True, return a generator that yields tokens as they are generated.
+            hotwords: Optional vocabulary/hotword list, folded into ``system_prompt``.
         """
+        from mlx_audio.stt.utils import merge_hotwords
+
+        # Qwen3-ASR biases toward rare vocabulary via the system prompt.
+        system_prompt = merge_hotwords(system_prompt, hotwords)
+
         # If streaming requested, delegate to stream_transcribe
         if stream:
             return self.stream_transcribe(
