@@ -852,7 +852,9 @@ async def _next_inference_chunk(handle: InferenceHandle) -> InferenceResultChunk
     return await asyncio.to_thread(handle.result_queue.get)
 
 
-async def _stream_inference_results(handle: InferenceHandle, request: Request):
+async def _stream_inference_results(
+    handle: InferenceHandle, request: Request, *, ndjson_errors: bool = False
+):
     try:
         while True:
             chunk = await _next_inference_chunk(handle)
@@ -865,6 +867,14 @@ async def _stream_inference_results(handle: InferenceHandle, request: Request):
             if await request.is_disconnected():
                 handle.cancel()
                 break
+    except Exception as exc:
+        if not ndjson_errors:
+            raise
+        # StreamingResponse has already committed its status, so report the
+        # inference failure in-band rather than raising into the response body.
+        yield json.dumps(
+            {"error": {"message": str(exc), "type": type(exc).__name__}}
+        ) + "\n"
     finally:
         handle.cancel()
 
@@ -1118,7 +1128,7 @@ async def stt_transcriptions(
         return JSONResponse(full)
 
     return StreamingResponse(
-        _stream_inference_results(handle, request),
+        _stream_inference_results(handle, request, ndjson_errors=True),
         media_type="application/x-ndjson",
     )
 
