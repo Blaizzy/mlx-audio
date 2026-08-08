@@ -156,23 +156,38 @@ def _discover_detection_hints(domain: str) -> dict:
     Discover detection hints for all models in a domain.
 
     Each model can optionally define:
-    - DETECTION_HINTS: dict with 'config_keys', 'architectures', 'path_patterns'
+    - DETECTION_HINTS: dict with 'model_type_aliases', 'config_keys',
+      'architectures', and 'path_patterns'
     - Or we infer from the ModelConfig class
     """
     hints = {
+        "model_type_aliases": {},  # model_type -> set of config aliases
         "config_keys": {},  # model_type -> set of unique config keys
         "architectures": {},  # model_type -> set of architecture patterns
         "path_patterns": {},  # model_type -> set of path patterns
     }
 
-    for model_type in get_model_types(Domain(domain)):
+    for model_type in sorted(get_model_types(Domain(domain))):
         module_path = f"mlx_audio.{domain}.models.{model_type}"
         try:
             module = importlib.import_module(module_path)
 
+            # Infer defaults from the model module.
+            if hasattr(module, "ModelConfig"):
+                hints["config_keys"][model_type] = _get_config_keys(module.ModelConfig)
+            hints["path_patterns"][model_type] = {
+                model_type,
+                model_type.replace("_", ""),
+                model_type.replace("_", "-"),
+            }
+
             # Check for explicit detection hints
             if hasattr(module, "DETECTION_HINTS"):
                 model_hints = module.DETECTION_HINTS
+                if "model_type_aliases" in model_hints:
+                    hints["model_type_aliases"][model_type] = set(
+                        model_hints["model_type_aliases"]
+                    )
                 if "config_keys" in model_hints:
                     hints["config_keys"][model_type] = set(model_hints["config_keys"])
                 if "architectures" in model_hints:
@@ -183,17 +198,6 @@ def _discover_detection_hints(domain: str) -> dict:
                     hints["path_patterns"][model_type] = set(
                         model_hints["path_patterns"]
                     )
-            else:
-                # Infer from ModelConfig if available
-                if hasattr(module, "ModelConfig"):
-                    config_keys = _get_config_keys(module.ModelConfig)
-                    hints["config_keys"][model_type] = config_keys
-
-                # Use model_type as default path pattern
-                hints["path_patterns"][model_type] = {
-                    model_type,
-                    model_type.replace("_", ""),
-                }
 
         except ImportError:
             continue
@@ -250,14 +254,26 @@ def load_config(model_path: Path) -> dict:
     raise FileNotFoundError(f"Config not found at {model_path}")
 
 
-def _match_by_model_type(model_type: str) -> Optional[Domain]:
-    """Try to match a model_type string to a domain."""
+def _resolve_model_type(model_type: str, domain: Domain) -> Optional[str]:
+    """Resolve a config model type to a model implementation in a domain."""
     if not model_type:
         return None
 
-    # Check each domain's known model types
+    if model_type in get_model_types(domain):
+        return model_type
+
+    aliases = get_detection_hints(domain).get("model_type_aliases", {})
+    for candidate, candidate_aliases in sorted(aliases.items()):
+        if model_type in candidate_aliases:
+            return candidate
+
+    return None
+
+
+def _match_by_model_type(model_type: str) -> Optional[Domain]:
+    """Try to match a model_type string to a domain."""
     for domain in Domain:
-        if model_type in get_model_types(domain):
+        if _resolve_model_type(model_type, domain):
             return domain
 
     return None
@@ -277,7 +293,7 @@ def _match_by_config_keys(config: dict) -> Optional[tuple[Domain, str]]:
 
     for domain in Domain:
         hints = get_detection_hints(domain)
-        for model_type, model_keys in hints.get("config_keys", {}).items():
+        for model_type, model_keys in sorted(hints.get("config_keys", {}).items()):
             # Score by number of matching unique keys
             intersection = config_keys & model_keys
             # Weight by how unique the match is (intersection / total model keys)
@@ -296,7 +312,7 @@ def _match_by_path(model_path: Path) -> Optional[tuple[Domain, str]]:
 
     for domain in Domain:
         hints = get_detection_hints(domain)
-        for model_type, patterns in hints.get("path_patterns", {}).items():
+        for model_type, patterns in sorted(hints.get("path_patterns", {}).items()):
             if any(pattern in path_str for pattern in patterns):
                 return (domain, model_type)
 
@@ -341,8 +357,9 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
 
     # Direct match via config (model_type takes precedence)
     for candidate in [model_type, model_name]:
-        if candidate and candidate in get_model_types(domain):
-            return candidate
+        resolved_model_type = _resolve_model_type(candidate, domain)
+        if resolved_model_type:
+            return resolved_model_type
 
     # Try config key matching within domain
     hints = get_detection_hints(domain)
@@ -351,7 +368,7 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     best_match = None
     best_score = 0
 
-    for mt, model_keys in hints.get("config_keys", {}).items():
+    for mt, model_keys in sorted(hints.get("config_keys", {}).items()):
         if model_keys:
             intersection = config_keys & model_keys
             score = len(intersection) / len(model_keys)
@@ -364,13 +381,13 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
 
     # Try path matching within domain
     path_str = str(model_path).lower()
-    for mt, patterns in hints.get("path_patterns", {}).items():
+    for mt, patterns in sorted(hints.get("path_patterns", {}).items()):
         if any(pattern in path_str for pattern in patterns):
             return mt
 
     # Fallback: return first available model type or "unknown"
     model_types = get_model_types(domain)
-    return next(iter(model_types), "unknown") if model_types else "unknown"
+    return min(model_types) if model_types else "unknown"
 
 
 def get_model_class(model_type: str, domain: Domain):
