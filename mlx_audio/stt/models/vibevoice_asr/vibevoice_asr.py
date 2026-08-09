@@ -55,7 +55,7 @@ class LanguageModel(nn.Module):
             self.model = Qwen2Model(config)
         except ImportError:
             # Fallback to llama if qwen2 not available
-            from mlx_lm.models.llama import LlamaModel
+            from mlx_audio.lm.models.llama import LlamaModel
 
             self.model = LlamaModel(config)
 

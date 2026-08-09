@@ -9,8 +9,8 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import hf_hub_download
-from mlx_lm.models.llama import LlamaModel
-from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
+from mlx_audio.lm.models.llama import LlamaModel
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelArgs
 from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
 from transformers import AutoTokenizer

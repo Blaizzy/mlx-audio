@@ -9,8 +9,8 @@ from typing import List, Optional
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.generate import stream_generate
-from mlx_lm.models.llama import Model as LlamaModel
-from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
+from mlx_audio.lm.models.llama import Model as LlamaModel
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
 from mlx_lm.models.qwen2 import Model as Qwen2Model
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelConfig
 from mlx_lm.models.qwen3 import Model as Qwen3Model

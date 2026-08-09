@@ -356,7 +356,7 @@ class LanguageModel(nn.Module):
         self.config = config
         self.model_type = config.model_type
 
-        from mlx_lm.models.llama import LlamaModel
+        from mlx_audio.lm.models.llama import LlamaModel
 
         self.model = LlamaModel(config)
 

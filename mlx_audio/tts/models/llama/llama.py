@@ -4,8 +4,8 @@ from typing import Generator, List, Optional, Union
 
 import mlx.core as mx
 from mlx_lm.generate import stream_generate
-from mlx_lm.models.llama import Model as LlamaModel
-from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
+from mlx_audio.lm.models.llama import Model as LlamaModel
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
