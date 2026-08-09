@@ -9,9 +9,9 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
 from tqdm import tqdm
 
+from mlx_audio.lm.models.base import create_attention_mask, scaled_dot_product_attention
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig

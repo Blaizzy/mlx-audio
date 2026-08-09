@@ -14,11 +14,11 @@ import numpy as np
 from huggingface_hub import snapshot_download
 from mlx_lm.models.bailing_moe import Model as BailingMoeModel
 from mlx_lm.models.bailing_moe import ModelArgs as BailingMoeModelArgs
-from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 from mlx_lm.models.qwen2 import Qwen2Model
 
+from mlx_audio.lm.models.base import create_attention_mask
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 from mlx_audio.utils import load_audio
 

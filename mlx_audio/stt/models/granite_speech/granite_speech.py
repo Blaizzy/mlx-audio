@@ -7,11 +7,11 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
 from mlx_lm.models.granite import Model as GraniteLM
 from mlx_lm.models.granite import ModelArgs as GraniteModelArgs
 
+from mlx_audio.lm.models.base import create_attention_mask
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import EncoderConfig, ModelConfig, ProjectorConfig

@@ -9,9 +9,9 @@ from typing import Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.base import create_attention_mask
 from mlx_lm.models.cache import KVCache
 
+from mlx_audio.lm.models.base import create_attention_mask
 from mlx_audio.tts.models.base import BatchGenerationResult, GenerationResult
 
 from .config import ModelConfig
