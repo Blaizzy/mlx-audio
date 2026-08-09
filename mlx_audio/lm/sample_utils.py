@@ -1,6 +1,8 @@
 # Copyright © 2023-2024 Apple Inc.
-# Vendored verbatim from mlx-lm v0.31.3
-# (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd), mlx_lm/sample_utils.py. MIT licensed.
+# Vendored from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd),
+# mlx_lm/sample_utils.py. Modified: apply_min_p passes a bool array rather than
+# a Python bool to mx.put_along_axis, which upstream raises a TypeError on
+# whenever min_p > 0 and min_tokens_to_keep > 1. MIT licensed.
 
 import math
 from functools import partial
@@ -196,7 +198,7 @@ def apply_min_p(
         tokens_to_remove = mx.put_along_axis(
             tokens_to_remove,
             top_indices,
-            False,
+            mx.zeros(top_indices.shape, dtype=mx.bool_),
             axis=-1,
         )
 

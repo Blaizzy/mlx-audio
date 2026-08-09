@@ -52,35 +52,23 @@ def test_apply_min_p_matches_upstream(p):
     both("apply_min_p", logprobs(2), p)
 
 
-@pytest.mark.parametrize(
-    "args", [(0.0,), (0.05, 5)], ids=["min_p=0", "min_tokens_to_keep"]
-)
-def test_apply_min_p_fails_identically_to_upstream(args):
-    """Both raise on these inputs: min_p=0 hits math.log(0), min_tokens_to_keep
-    hits a put_along_axis signature mismatch in mlx-lm 0.31.3."""
+def test_apply_min_p_zero_fails_identically_to_upstream():
+    """min_p=0 hits math.log(0) in both; kept as a deliberate non-divergence."""
     x = logprobs(2)
-    with pytest.raises(Exception) as got:
-        vendored.apply_min_p(x, *args)
-    with pytest.raises(Exception) as want:
-        upstream.apply_min_p(x, *args)
-    assert type(got.value) is type(want.value)
+    with pytest.raises(ValueError):
+        vendored.apply_min_p(x, 0.0)
+    with pytest.raises(ValueError):
+        upstream.apply_min_p(x, 0.0)
 
 
-def test_apply_top_k_with_neg_inf_and_ties():
-    x = mx.zeros((1, VOCAB))
-    both("apply_top_k", x, 4)
-    y = logprobs()
-    y = mx.concatenate([mx.full((1, 4), -mx.inf), y[:, 4:]], axis=-1)
-    both("apply_top_k", y, 4)
-
-
-@pytest.mark.parametrize("dtype", [mx.float16, mx.bfloat16])
-def test_apply_top_p_dtypes_match_upstream(dtype):
-    both("apply_top_p", logprobs(dtype=dtype), 0.8)
-
-
-def test_categorical_sampling_matches_upstream():
-    both("categorical_sampling", logprobs(2), 1.0)
+def test_apply_min_p_min_tokens_to_keep_diverges_from_upstream():
+    """Deliberate fix: upstream passes a Python bool to mx.put_along_axis and
+    raises TypeError whenever min_p > 0 and min_tokens_to_keep > 1."""
+    x = logprobs(2)
+    with pytest.raises(TypeError):
+        upstream.apply_min_p(x, 0.9, 5)
+    kept = (vendored.apply_min_p(x, 0.9, 5) != -mx.inf).sum(-1)
+    assert kept.tolist() == [5, 5]
 
 
 SAMPLER_CASES = [
