@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from mlx_lm.models.lfm2 import ModelArgs as LFM2Config
+from mlx_audio.lm.models.lfm2 import ModelArgs as LFM2Config
 
 from mlx_audio.base import BaseModelArgs
 
