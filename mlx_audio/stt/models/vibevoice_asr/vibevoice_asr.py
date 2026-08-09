@@ -677,8 +677,8 @@ class Model(nn.Module):
         Returns:
             STTOutput with transcription text and segments
         """
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import merge_hotwords
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
 
         # VibeVoice biases toward rare vocabulary via the context string.
         context = merge_hotwords(context, hotwords)
@@ -793,7 +793,7 @@ class Model(nn.Module):
         Yields:
             Decoded text chunks as they are generated.
         """
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         # Preprocess audio
         audio_tensor = self._preprocess_audio(audio, sampling_rate=sampling_rate)

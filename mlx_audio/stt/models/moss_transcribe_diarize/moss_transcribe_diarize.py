@@ -667,8 +667,7 @@ class Model(nn.Module):
         hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import merge_hotwords
 
         # MOSS biases toward rare vocabulary via the prompt.

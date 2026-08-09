@@ -12,11 +12,11 @@ import mlx.nn as nn
 from huggingface_hub import snapshot_download
 from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
 from mlx_lm.models.qwen3 import Qwen3Model
-from mlx_lm.sample_utils import make_sampler
 from transformers import AutoTokenizer
 
 from mlx_audio.lm.models.base import create_attention_mask
 from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.sample_utils import make_sampler
 
 from ..base import BaseModelArgs, GenerationResult
 from .decoder import SopranoDecoder

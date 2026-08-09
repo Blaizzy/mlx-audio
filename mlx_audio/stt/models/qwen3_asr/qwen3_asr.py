@@ -1284,8 +1284,7 @@ class Qwen3ASRModel(nn.Module):
                 system_prompt=system_prompt,
             )
 
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         del kwargs
@@ -1468,8 +1467,7 @@ class Qwen3ASRModel(nn.Module):
         Yields:
             StreamingResult objects with text, timing, and status information.
         """
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):

@@ -339,7 +339,8 @@ class Model(nn.Module):
         **kwargs,
     ) -> STTOutput:
         from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         if not hasattr(self, "_tokenizer"):
             raise RuntimeError("Tokenizer not initialized. Call post_load_hook first.")

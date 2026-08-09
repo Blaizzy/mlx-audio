@@ -5,8 +5,9 @@ from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.sample_utils import apply_top_k as _apply_top_k_logprobs
-from mlx_lm.sample_utils import apply_top_p as _apply_top_p_logprobs
+
+from mlx_audio.lm.sample_utils import apply_top_k as _apply_top_k_logprobs
+from mlx_audio.lm.sample_utils import apply_top_p as _apply_top_p_logprobs
 
 STOP_CODE = -1
 

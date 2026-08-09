@@ -585,8 +585,7 @@ class FunASRNano(nn.Module):
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         del verbose, kwargs

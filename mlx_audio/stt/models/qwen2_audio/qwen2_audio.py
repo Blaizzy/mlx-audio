@@ -478,7 +478,8 @@ class Model(nn.Module):
             )
 
         from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         start_time = time.time()
         prompt_ids, inputs_embeds, prompt_tokens = self.get_input_embeddings(
@@ -543,7 +544,8 @@ class Model(nn.Module):
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
         from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         prompt_ids, inputs_embeds, prompt_token_count = self.get_input_embeddings(
             audio, prompt, verbose

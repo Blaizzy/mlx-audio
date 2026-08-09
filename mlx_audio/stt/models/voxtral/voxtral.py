@@ -445,7 +445,7 @@ class Model(nn.Module):
 
         generated = []
 
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_audio.lm.sample_utils import make_sampler
 
         sampler = make_sampler(
             temperature,

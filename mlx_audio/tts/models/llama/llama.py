@@ -6,11 +6,11 @@ import mlx.core as mx
 from mlx_lm.generate import stream_generate
 from mlx_lm.models.llama import Model as LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
-from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from mlx_audio.codec.models.snac import SNAC
+from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult

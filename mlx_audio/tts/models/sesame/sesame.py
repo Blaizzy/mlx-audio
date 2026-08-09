@@ -11,7 +11,6 @@ import mlx.nn as nn
 from huggingface_hub import hf_hub_download
 from mlx_lm.models.llama import LlamaModel
 from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
-from mlx_lm.sample_utils import make_sampler
 from tokenizers.processors import TemplateProcessing
 from tqdm import tqdm
 from transformers import AutoTokenizer
@@ -19,6 +18,7 @@ from transformers import AutoTokenizer
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.codec.models.mimi import Mimi, MimiStreamingDecoder
 from mlx_audio.lm.models.cache import make_prompt_cache
+from mlx_audio.lm.sample_utils import make_sampler
 from mlx_audio.utils import load_audio, resample_audio
 
 from ..base import GenerationResult

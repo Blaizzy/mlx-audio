@@ -662,7 +662,8 @@ class Model(nn.Module):
         start_time = time.time()
 
         from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
@@ -738,7 +739,8 @@ class Model(nn.Module):
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
         from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)

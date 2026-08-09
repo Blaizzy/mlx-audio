@@ -482,7 +482,7 @@ class Model(nn.Module):
         repetition_context_size: int,
         prefill_step_size: int,
     ) -> Generator[int, None, None]:
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(

@@ -754,7 +754,7 @@ class Model(nn.Module):
                 verbose=verbose,
             )
 
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_audio.lm.sample_utils import make_sampler
 
         start_time = time.time()
 
@@ -973,8 +973,7 @@ class Model(nn.Module):
         Yields:
             StreamingResult objects with text, timing, and status information.
         """
-        from mlx_lm.sample_utils import make_sampler
-
+        from mlx_audio.lm.sample_utils import make_sampler
         from mlx_audio.stt.utils import load_audio
 
         # Load audio
