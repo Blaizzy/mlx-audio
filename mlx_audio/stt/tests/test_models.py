@@ -1803,7 +1803,7 @@ class TestQwen3ASRModel(unittest.TestCase):
         self.assertEqual(output.shape, (1, 5, self.text_config.hidden_size))
 
     def test_text_model_cached_chunks_match_full_causal_pass(self):
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         model = self.TextModel(self.text_config)
         input_ids = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)

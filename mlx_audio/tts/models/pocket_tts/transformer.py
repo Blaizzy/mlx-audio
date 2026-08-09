@@ -1,6 +1,7 @@
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import KVCache
+
+from mlx_audio.lm.models.cache import KVCache
 
 from .rope import RotaryEmbedding
 

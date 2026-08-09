@@ -242,7 +242,7 @@ class Model(nn.Module):
         return self.config.sample_rate
 
     def make_cache(self) -> List[Any]:
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
@@ -667,8 +667,9 @@ class Model(nn.Module):
         hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        from mlx_audio.stt.utils import merge_hotwords
         from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+        from mlx_audio.stt.utils import merge_hotwords
 
         # MOSS biases toward rare vocabulary via the prompt.
         prompt = merge_hotwords(prompt, hotwords)

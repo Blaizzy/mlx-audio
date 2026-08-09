@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple
 
 import mlx.core as mx
-from mlx_lm.models.cache import BatchKVCache, KVCache
 
+from mlx_audio.lm.models.cache import BatchKVCache, KVCache
 from mlx_audio.tts.continuous import TTSBatchEvent, TTSBatchItem, TTSBatchOptions
 
 

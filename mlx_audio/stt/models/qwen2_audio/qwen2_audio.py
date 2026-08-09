@@ -7,11 +7,11 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.cache import KVCache
 from mlx_lm.models.qwen2 import Model as Qwen2LM
 from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 
 from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import EncoderConfig, ModelConfig

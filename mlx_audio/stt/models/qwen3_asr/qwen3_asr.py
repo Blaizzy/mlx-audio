@@ -768,7 +768,7 @@ class Qwen3ASRModel(nn.Module):
 
     def make_cache(self) -> List[Any]:
         """Create KV cache for generation."""
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
@@ -1111,7 +1111,7 @@ class Qwen3ASRModel(nn.Module):
         across the batch. Chunks within a batch are padded (audio) to equal
         length so prompts share one length and the plain causal mask stays valid.
         """
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         eos_token_ids = self._eos_token_ids()
         texts = [""] * len(chunks)

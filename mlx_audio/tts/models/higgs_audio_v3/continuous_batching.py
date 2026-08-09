@@ -5,8 +5,8 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import mlx.core as mx
-from mlx_lm.models.cache import BatchKVCache
 
+from mlx_audio.lm.models.cache import BatchKVCache
 from mlx_audio.tts.continuous import TTSBatchEvent, TTSBatchItem, TTSBatchOptions
 
 from .generation import HiggsSamplerState

@@ -592,7 +592,7 @@ class Model(nn.Module):
             intermediate results have ``is_streaming_chunk=True`` and the
             last result additionally has ``is_final_chunk=True``.
         """
-        from mlx_lm.models.cache import make_prompt_cache
+        from mlx_audio.lm.models.cache import make_prompt_cache
 
         if self.tokenizer is None:
             raise RuntimeError(

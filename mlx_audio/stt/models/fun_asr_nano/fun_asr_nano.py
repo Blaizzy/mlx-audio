@@ -364,7 +364,7 @@ class FunASRNano(nn.Module):
         return self.llm.model.layers
 
     def make_cache(self) -> List[Any]:
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 

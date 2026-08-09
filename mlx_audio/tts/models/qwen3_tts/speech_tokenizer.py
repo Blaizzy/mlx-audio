@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.cache import KVCache
 
 from mlx_audio.codec.models.mimi.mimi import _reset_kv_cache
 from mlx_audio.codec.models.mimi.modules import (
@@ -20,7 +19,10 @@ from mlx_audio.codec.models.mimi.modules import (
 from mlx_audio.codec.models.mimi.modules import (
     SplitResidualVectorQuantizer as MimiSplitRVQ,
 )
-from mlx_audio.codec.models.mimi.modules import TransformerConfig
+from mlx_audio.codec.models.mimi.modules import (
+    TransformerConfig,
+)
+from mlx_audio.lm.models.cache import KVCache
 
 from .config import (
     Qwen3TTSTokenizerConfig,

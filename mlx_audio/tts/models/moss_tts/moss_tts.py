@@ -7,9 +7,9 @@ from typing import Generator, Sequence
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import make_prompt_cache
 from mlx_lm.models.qwen3 import Qwen3Model
 
+from mlx_audio.lm.models.cache import make_prompt_cache
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.tts.models.moss_tts_nano.gpt2 import GPT2Model
 

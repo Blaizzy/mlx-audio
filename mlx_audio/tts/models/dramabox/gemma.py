@@ -6,7 +6,8 @@ from typing import Sequence
 
 import mlx.core as mx
 from mlx_lm import load as mlx_lm_load
-from mlx_lm.models.cache import create_causal_mask
+
+from mlx_audio.lm.models.cache import create_causal_mask
 
 
 @dataclass
