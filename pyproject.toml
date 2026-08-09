@@ -71,6 +71,11 @@ all = [
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
 
+# Differential tests against the mlx-lm version mlx_audio/lm was vendored from.
+parity = [
+    "mlx-lm==0.31.3",
+]
+
 # Development dependencies
 dev = [
     "pytest>=7.0.0",
