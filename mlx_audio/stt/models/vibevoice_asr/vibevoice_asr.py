@@ -50,7 +50,7 @@ class LanguageModel(nn.Module):
 
         # Import and use mlx_lm's Qwen2Model
         try:
-            from mlx_lm.models.qwen2 import Qwen2Model
+            from mlx_audio.lm.models.qwen2 import Qwen2Model
 
             self.model = Qwen2Model(config)
         except ImportError:

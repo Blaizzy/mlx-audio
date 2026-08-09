@@ -7,7 +7,7 @@ from typing import Any, Iterator, Optional
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.qwen3 import Qwen3Model
+from mlx_audio.lm.models.qwen3 import Qwen3Model
 
 from mlx_audio.lm.models.cache import BatchKVCache, make_prompt_cache
 

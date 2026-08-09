@@ -7,7 +7,7 @@ from typing import Dict, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from mlx_lm.generate import stream_generate
-from mlx_lm.models.qwen2 import Model as Qwen2Model
+from mlx_audio.lm.models.qwen2 import Model as Qwen2Model
 from tqdm import tqdm
 
 from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler

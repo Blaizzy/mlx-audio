@@ -3668,7 +3668,7 @@ class TestBailingMMModel(unittest.TestCase):
                 )
 
     def test_qwen2_sliding_window_attention_applies_after_window_boundary(self):
-        from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
+        from mlx_audio.lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
 
         from mlx_audio.lm.models.base import create_attention_mask
         from mlx_audio.tts.models.bailingmm.bailingmm import MingQwen2Model

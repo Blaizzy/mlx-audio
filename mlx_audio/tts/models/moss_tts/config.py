@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Any
 
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
+from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
 
 from mlx_audio.tts.models.base import BaseModelArgs
 from mlx_audio.tts.models.moss_tts_nano.config import GPT2Config

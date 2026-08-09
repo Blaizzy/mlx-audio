@@ -6,8 +6,8 @@ from typing import Dict, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3Args
-from mlx_lm.models.qwen3 import Qwen3Model
+from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3Args
+from mlx_audio.lm.models.qwen3 import Qwen3Model
 
 from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.stt.models.base import STTOutput
