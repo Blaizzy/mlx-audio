@@ -7,10 +7,10 @@ from typing import Any, Iterator, Optional, Sequence
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.switch_layers import SwitchGLU
 
 from mlx_audio.lm.models.base import create_attention_mask, scaled_dot_product_attention
 from mlx_audio.lm.models.cache import BatchKVCache, make_prompt_cache
+from mlx_audio.lm.models.switch_layers import SwitchGLU
 
 from ..base import BatchGenerationResult, GenerationResult
 from .config import Zonos2Config
