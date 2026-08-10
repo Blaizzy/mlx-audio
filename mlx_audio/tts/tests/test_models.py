@@ -5276,6 +5276,42 @@ class TestIrodoriV4Shapes(unittest.TestCase):
         self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
 
 
+class TestIrodoriV4Quantization(unittest.TestCase):
+    def test_projector_survives_quantization(self):
+        """A quantized Linear stores packed uint32 weights, so the projector
+        must not coerce its activations to the projection weight's dtype."""
+        import mlx.nn as nn
+
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        cfg = _small_irodori_dit_config_v4()
+        model = IrodoriDiT(cfg)
+        ids = mx.zeros((1, 6), dtype=mx.int32)
+        mask = mx.ones((1, 6), dtype=mx.bool_)
+
+        before = model.text_encoder(model.pretrained_text_backbone, ids, mask)
+        mx.eval(before)
+
+        nn.quantize(
+            model,
+            group_size=64,
+            bits=8,
+            class_predicate=lambda _path, m: (
+                isinstance(m, nn.Linear)
+                and m.weight.shape[-1] >= 64
+                and m.weight.shape[-1] % 64 == 0
+            ),
+        )
+        after = model.text_encoder(model.pretrained_text_backbone, ids, mask)
+        mx.eval(after)
+
+        self.assertTrue(bool(mx.all(mx.isfinite(after))))
+        scale_before = float(mx.mean(mx.abs(before)))
+        scale_after = float(mx.mean(mx.abs(after)))
+        self.assertGreater(scale_before, 0.0)
+        self.assertLess(abs(scale_after - scale_before) / scale_before, 0.15)
+
+
 class TestIrodoriV4Reference(unittest.TestCase):
     def _make_model(self):
         from mlx_audio.tts.models.irodori_tts.irodori_tts import Model

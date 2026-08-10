@@ -499,8 +499,10 @@ class PretrainedConditionProjector(nn.Module):
         input_ids: mx.array,
         mask: Optional[mx.array],
     ) -> mx.array:
+        # No dtype coercion against self.projector.weight here: once quantized
+        # that weight is packed uint32, and casting activations to it would
+        # truncate them to integers.
         state = backbone(input_ids, mask)
-        state = state.astype(self.projector.weight.dtype)
         projected = self.projector(state)
         if self.projector_type == "residual_mlp":
             residual = nn.silu(self.residual_up(self.residual_norm(state)))
