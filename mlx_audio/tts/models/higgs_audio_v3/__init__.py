@@ -9,9 +9,15 @@ from .generation import (
 from .model import Model, ModelConfig
 from .prompt import HiggsAudioV3PromptBuilder, ReferenceCodes
 
+DETECTION_HINTS = {
+    "model_type_aliases": {"higgs_multimodal_qwen3"},
+    "path_patterns": {"higgs_audio_v3", "higgsaudiov3", "higgs-audio-v3"},
+}
+
 __all__ = [
     "Model",
     "ModelConfig",
+    "DETECTION_HINTS",
     "HiggsAudioV3Config",
     "HiggsAudioV3TextConfig",
     "HiggsAudioV3PromptBuilder",

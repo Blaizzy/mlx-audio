@@ -451,7 +451,11 @@ def istft(
         window: Window function name or array (default: "hann")
         center: If True, remove center padding (default: True)
         length: Target output length (default: None)
-        normalized: If True, use window squared (COLA) normalization. If False, use simple window normalization (default: True)
+        normalized: If True, divide the overlap-add by the summed squared
+            window (least-squares inversion, the division torch.istft always
+            performs). If False, divide by the summed window (default: False).
+            Note this is unrelated to torch.istft's `normalized` argument,
+            which selects FFT scaling.
 
     Returns:
         Reconstructed time-domain signal
@@ -666,6 +670,7 @@ class ISTFTCache:
         window: mx.array,
         center: bool = True,
         audio_length: int = None,
+        constrain_value_range: bool = False,
     ) -> mx.array:
         """
         iSTFT with automatic caching and vectorized overlap-add.
@@ -679,6 +684,9 @@ class ISTFTCache:
             window: Window function
             center: If True, remove center padding
             audio_length: Target audio length
+            constrain_value_range: Clamp each inverse-FFT frame to the positive
+                and negative window envelope before applying the synthesis
+                window.
 
         Returns:
             Reconstructed audio (batch, samples)
@@ -691,6 +699,10 @@ class ISTFTCache:
         # Inverse FFT
         stft_complex = real_part + 1j * imag_part
         time_frames = mx.fft.irfft(stft_complex.transpose(0, 2, 1), n=n_fft, axis=-1)
+
+        if constrain_value_range:
+            envelope = window.astype(time_frames.dtype)
+            time_frames = mx.clip(time_frames, -envelope, envelope)
 
         # Apply synthesis window
         windowed_frames = time_frames * window

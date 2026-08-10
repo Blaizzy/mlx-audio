@@ -427,6 +427,9 @@ class Model(nn.Module):
         )
 
         if speaker_embed is not None:
+            # The speaker encoder runs in float32, while the talker may use a
+            # lower-precision dtype. Avoid promoting the prefill and KV cache.
+            speaker_embed = speaker_embed.astype(codec_embed.dtype)
             codec_embed = mx.concatenate(
                 [
                     codec_embed,
@@ -765,6 +768,7 @@ class Model(nn.Module):
         )
 
         if speaker_embed is not None:
+            speaker_embed = speaker_embed.astype(codec_prefix_embed.dtype)
             codec_prefix_embed = mx.concatenate(
                 [
                     codec_prefix_embed,

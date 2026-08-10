@@ -59,6 +59,42 @@ def test_dsp_all_exports():
         assert hasattr(dsp, name), f"Missing export: {name}"
 
 
+def test_istft_cache_can_constrain_inverse_frames_to_window_envelope():
+    import mlx.core as mx
+
+    from mlx_audio.dsp import ISTFTCache, hanning
+
+    rng = np.random.default_rng(0)
+    real = mx.array(rng.normal(size=(2, 9, 8)).astype(np.float32) * 8.0)
+    imag = mx.array(rng.normal(size=(2, 9, 8)).astype(np.float32) * 8.0)
+    window = hanning(16, periodic=True).astype(mx.float32)
+    cache = ISTFTCache()
+
+    unconstrained = cache.istft(
+        real,
+        imag,
+        n_fft=16,
+        hop_length=4,
+        win_length=16,
+        window=window,
+        center=False,
+    )
+    constrained = cache.istft(
+        real,
+        imag,
+        n_fft=16,
+        hop_length=4,
+        win_length=16,
+        window=window,
+        center=False,
+        constrain_value_range=True,
+    )
+    mx.eval(unconstrained, constrained)
+
+    assert float(mx.max(mx.abs(unconstrained - constrained))) > 0.1
+    assert float(mx.max(mx.abs(constrained))) <= 1.0 + 1e-6
+
+
 def test_lfilter_fir_and_iir():
     """Verify the local lfilter recurrence for FIR and IIR filters."""
     from mlx_audio.dsp import lfilter

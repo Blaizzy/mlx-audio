@@ -6,7 +6,7 @@ import json
 import math
 import sys
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
@@ -31,6 +31,16 @@ from .decoding import decode as decode_function
 from .decoding import detect_language as detect_language_function
 from .timing import add_word_timestamps
 from .tokenizer import LANGUAGES, TO_LANGUAGE_CODE
+
+_DECODING_OPTION_NAMES = frozenset(field.name for field in fields(DecodingOptions))
+
+
+def _filter_decode_options(decode_options):
+    return {
+        key: value
+        for key, value in decode_options.items()
+        if key in _DECODING_OPTION_NAMES
+    }
 
 
 class HFTokenizerWrapper:
@@ -897,8 +907,7 @@ class Model(nn.Module):
         if word_timestamps:
             return_timestamps = True
 
-        decode_options.pop("max_tokens", None)
-        decode_options.pop("generation_stream", None)
+        decode_options = _filter_decode_options(decode_options)
         decode_options["without_timestamps"] = not return_timestamps
         # Use shared audio preparation
         mel, content_frames = self._prepare_audio(audio)
