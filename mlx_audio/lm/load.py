@@ -25,7 +25,7 @@ def load_lm(model_id: str):
     model = module.Model(module.ModelArgs.from_dict(config))
     weights = load_weights(Path(model_path))
     apply_quantization(model, config, weights)
-    model.load_weights(list(model.sanitize(weights).items()), strict=False)
+    model.load_weights(list(model.sanitize(weights).items()))
 
     from transformers import AutoTokenizer
 

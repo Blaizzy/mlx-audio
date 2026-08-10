@@ -10,6 +10,8 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten, tree_map, tree_unflatten
 
+MAX_FILE_SIZE_GB = 5
+
 
 def mixed_quant_predicate_builder(recipe: str, model: nn.Module, group_size: int = 64):
     recipes = {
@@ -41,18 +43,14 @@ def mixed_quant_predicate_builder(recipe: str, model: nn.Module, group_size: int
             or index >= 7 * num_layers // 8
             or (index - num_layers // 8) % 3 == 2
         )
-        bits = (
-            high_bits
-            if high_precision
-            and (
-                "v_proj" in path
-                or "v_a_proj" in path
-                or "v_b_proj" in path
-                or "down_proj" in path
-                or "lm_head" in path
-            )
-            else low_bits
+        wide = (
+            "v_proj" in path
+            or "v_a_proj" in path
+            or "v_b_proj" in path
+            or "down_proj" in path
         )
+        # lm_head takes high bits regardless of depth, as upstream does.
+        bits = high_bits if (wide and high_precision) or "lm_head" in path else low_bits
         return {"group_size": group_size, "bits": bits, "mode": "affine"}
 
     return predicate
@@ -128,25 +126,59 @@ def save_config(config: dict, config_path: Union[str, Path]) -> None:
         json.dump(dict(sorted(config.items())), handle, indent=4)
 
 
+def make_shards(weights: dict, max_file_size_gb: int = MAX_FILE_SIZE_GB) -> list:
+    max_file_size_bytes = max_file_size_gb << 30
+    shards = []
+    shard, shard_size = {}, 0
+    for name, weight in weights.items():
+        if shard_size + weight.nbytes > max_file_size_bytes:
+            shards.append(shard)
+            shard, shard_size = {}, 0
+        shard[name] = weight
+        shard_size += weight.nbytes
+    shards.append(shard)
+    return shards
+
+
 def save_model(
     save_path: Union[str, Path], model: nn.Module, *, donate_model: bool = False
 ) -> None:
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
+
     weights = dict(tree_flatten(model.parameters()))
-    mx.save_safetensors(
-        str(save_path / "model.safetensors"), weights, metadata={"format": "mlx"}
+    total_size = sum(value.nbytes for value in weights.values())
+    shards = make_shards(weights)
+    name_format = (
+        "model-{:05d}-of-{:05d}.safetensors" if len(shards) > 1 else "model.safetensors"
     )
+    weight_map = {
+        name: name_format.format(index + 1, len(shards))
+        for index, shard in enumerate(shards)
+        for name in shard
+    }
+
+    # Release the model's references before serializing so each shard can be
+    # freed as it is written, rather than holding every weight twice.
+    if donate_model:
+        model.update(tree_map(lambda _: mx.array([]), model.parameters()))
+    weights.clear()
+
+    for index, shard in enumerate(shards):
+        shards[index] = None
+        mx.save_safetensors(
+            str(save_path / name_format.format(index + 1, len(shards))),
+            shard,
+            metadata={"format": "mlx"},
+        )
+        del shard
+
     with open(save_path / "model.safetensors.index.json", "w") as handle:
         json.dump(
             {
-                "metadata": {
-                    "total_size": sum(value.nbytes for value in weights.values())
-                },
-                "weight_map": {name: "model.safetensors" for name in sorted(weights)},
+                "metadata": {"total_size": total_size},
+                "weight_map": {k: weight_map[k] for k in sorted(weight_map)},
             },
             handle,
             indent=4,
         )
-    if donate_model:
-        model.update(tree_map(lambda _: mx.array([]), model.parameters()))

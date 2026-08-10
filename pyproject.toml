@@ -53,7 +53,11 @@ server = [
 # STS (Speech-to-Speech) dependencies
 sts = [
     "sentencepiece>=0.2.0",
-    
+
+    # The speech-to-speech pipeline's default responder loads an arbitrary chat
+    # model, which is mlx-lm's job; every other use is vendored in mlx_audio/lm.
+    "mlx-lm>=0.31.1",
+
     "webrtcvad>=2.0.10",
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
@@ -62,6 +66,8 @@ sts = [
 all = [
     "mistral-common[audio]",
     "sentencepiece>=0.2.0",
+
+    "mlx-lm>=0.31.1",
 
     "fastapi>=0.95.0",
     "uvicorn[standard]>=0.22.0",

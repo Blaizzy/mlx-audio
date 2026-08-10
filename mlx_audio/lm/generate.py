@@ -5,6 +5,7 @@
 import contextlib
 import inspect
 import time
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Generator, List, Optional, Tuple, Union
 
@@ -30,7 +31,16 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
         model,
         0,
     )
-    old_limit = mx.set_wired_limit(mx.device_info()["max_recommended_working_set_size"])
+    max_rec_size = mx.device_info()["max_recommended_working_set_size"]
+    if model_bytes > 0.9 * max_rec_size:
+        warnings.warn(
+            "Generating with a model that requires "
+            f"{model_bytes / 1 << 30:.2f} GB, close to the maximum recommended "
+            f"size of {max_rec_size / 1 << 30:.2f} GB. This can be slow; see the "
+            "MLX documentation on tuning the wired limit.",
+            stacklevel=2,
+        )
+    old_limit = mx.set_wired_limit(max_rec_size)
     try:
         yield
     finally:
@@ -181,7 +191,7 @@ def generate_step(
 
     mx.async_eval(token, logprobs)
     count = 0
-    while count < max_tokens:
+    while count != max_tokens:
         next_token, next_logprobs = step(token)
         mx.async_eval(next_token, next_logprobs)
         if count == 0:
@@ -210,6 +220,7 @@ def stream_generate(
     last_token = last_logprobs = None
     prompt_tps = 0.0
     index = -1
+    finish_reason = "length"
 
     with wired_limit(model, [generation_stream]):
         started = time.perf_counter()
@@ -219,10 +230,11 @@ def stream_generate(
             if index == 0:
                 prompt_tps = prompt.size / (time.perf_counter() - started)
                 started = time.perf_counter()
+            last_token, last_logprobs = token, logprobs
             if token in eos_ids:
+                finish_reason = "stop"
                 break
             detokenizer.add_token(token)
-            last_token, last_logprobs = token, logprobs
             if index + 1 == max_tokens:
                 break
             yield GenerationResponse(
@@ -237,8 +249,6 @@ def stream_generate(
                 peak_memory=mx.get_peak_memory() / 1e9,
             )
 
-    if last_token is None:
-        return
     detokenizer.finalize()
     yield GenerationResponse(
         text=detokenizer.last_segment,
@@ -250,7 +260,7 @@ def stream_generate(
         generation_tokens=index + 1,
         generation_tps=(index + 1) / (time.perf_counter() - started),
         peak_memory=mx.get_peak_memory() / 1e9,
-        finish_reason="stop" if last_token in eos_ids else "length",
+        finish_reason=finish_reason,
     )
 
 
