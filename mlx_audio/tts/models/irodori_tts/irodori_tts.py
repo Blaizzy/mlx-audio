@@ -163,7 +163,8 @@ class Model(nn.Module):
         if max_length is None:
             max_length = self.config.max_text_length
 
-        text = normalize_text(text)
+        # Upstream tokenizes normalize_text(raw).strip().
+        text = normalize_text(text).strip()
         return encode_text(
             text,
             tokenizer=self._get_tokenizer(),
@@ -311,9 +312,10 @@ class Model(nn.Module):
         caption_mask: Optional[mx.array] = None
 
         if self.config.dit.use_caption_condition:
-            cap = caption or ""
+            # Upstream strips the caption but does not run normalize_text on it.
+            cap = "" if caption is None else str(caption).strip()
             caption_input_ids, caption_mask = self._prepare_caption(cap)
-            if not cap.strip():
+            if not cap:
                 # An empty caption still tokenizes to a BOS token. Leaving it
                 # unmasked would present it as a real caption to the DiT and to
                 # the duration predictor, so mask it out entirely.
@@ -357,7 +359,7 @@ class Model(nn.Module):
             )
         elif self.config.dit.use_duration_predictor:
             # Predict duration using the integrated predictor
-            text_for_features = normalize_text(text)
+            text_for_features = normalize_text(text).strip()
             token_count = int(text_mask.sum())
             has_speaker = bool(ref_mask is not None and mx.any(ref_mask))
 
@@ -477,8 +479,9 @@ class Model(nn.Module):
             )
 
         start_time = time.perf_counter()
-        text_input_ids, _ = self._prepare_text(text)
-        token_count = int(text_input_ids.shape[1])
+        # Report real tokens, not the padded width.
+        _, text_token_mask = self._prepare_text(text)
+        token_count = int(text_token_mask.sum())
 
         # Encode reference audio if provided. A list/tuple encodes each clip
         # separately and concatenates them (v4 multi-clip cloning).

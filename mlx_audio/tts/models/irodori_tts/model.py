@@ -466,8 +466,8 @@ class PretrainedConditionProjector(nn.Module):
     """
     Projects the shared pretrained backbone output into a condition space (v4).
 
-    `linear` is a plain projection; `residual_mlp` adds a zero-initialised
-    gated residual branch on top of it.
+    `linear` is a plain projection; `residual_mlp` adds a SiLU residual branch
+    on top of it. Dropout is training-only and therefore not modelled here.
     """
 
     def __init__(

@@ -4201,23 +4201,83 @@ class TestIrodoriNormalizeText(unittest.TestCase):
 
         self.assertEqual(normalize_text("ー〜ー"), "ーーー")
 
-    def test_trailing_kuten_stripped(self):
+    def test_trailing_kuten_is_kept(self):
+        """Sentence-final punctuation is prosodically meaningful; upstream keeps it."""
         from mlx_audio.tts.models.irodori_tts.text import normalize_text
 
-        result = normalize_text("こんにちは。")
-        self.assertFalse(result.endswith("。"))
-        self.assertEqual(result, "こんにちは")
+        self.assertEqual(normalize_text("こんにちは。"), "こんにちは。")
+        self.assertEqual(normalize_text("元気ですか、"), "元気ですか、")
+
+    def test_ascii_space_is_kept(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("hello world"), "hello world")
+
+    def test_ideographic_space_removed(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("全角　スペース"), "全角スペース")
+
+    def test_dots_become_ellipsis(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("え...まさか"), "え…まさか")
+        self.assertEqual(normalize_text("本当に..そう"), "本当に…そう")
+
+    def test_nfkc_folding(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("㈱とかⅢとか"), "(株)とかIIIとか")
 
     def test_surrounding_brackets_stripped(self):
         from mlx_audio.tts.models.irodori_tts.text import normalize_text
 
         self.assertEqual(normalize_text("「こんにちは」"), "こんにちは")
 
+    def test_nested_enclosing_brackets_stripped_repeatedly(self):
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("（(二重括弧)）"), "二重括弧")
+
+    def test_non_enclosing_brackets_are_kept(self):
+        """「前半」と「後半」 opens and closes twice, so nothing encloses the whole."""
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        self.assertEqual(normalize_text("「前半」と「後半」"), "「前半」と「後半」")
+
     def test_no_change_for_plain_text(self):
         from mlx_audio.tts.models.irodori_tts.text import normalize_text
 
         text = "こんにちは"
         self.assertEqual(normalize_text(text), text)
+
+    def test_matches_upstream_reference(self):
+        """Differential check against Irodori-TTS/irodori_tts/text_normalization.py."""
+        import importlib.util
+        import os
+
+        upstream = os.path.expanduser(
+            "~/ghq/github.com/Aratako/Irodori-TTS/irodori_tts/text_normalization.py"
+        )
+        if not os.path.isfile(upstream):
+            self.skipTest("upstream Irodori-TTS checkout not available")
+
+        from mlx_audio.tts.models.irodori_tts.text import normalize_text
+
+        spec = importlib.util.spec_from_file_location("_up_tn", upstream)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        import random
+
+        alphabet = "あいうテスト。、！？…・「」（）ＡＢ12ｱｲ　 ~〜㈱Ⅲ()[]n\t♥●"
+        random.seed(0)
+        cases = ["", "。", "a", "「あ」「い」", "テスト。。", "hello world"] + [
+            "".join(random.choice(alphabet) for _ in range(random.randint(0, 14)))
+            for _ in range(500)
+        ]
+        for case in cases:
+            self.assertEqual(normalize_text(case), module.normalize_text(case), case)
 
 
 class TestIrodoriEncodeText(unittest.TestCase):
