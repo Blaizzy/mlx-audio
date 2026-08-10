@@ -5276,6 +5276,78 @@ class TestIrodoriV4Shapes(unittest.TestCase):
         self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
 
 
+class TestIrodoriCaptionAndTailTrim(unittest.TestCase):
+    """Behaviour shared by every caption-conditioned checkpoint (v2 VD, v3 VD, v4)."""
+
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v4()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def _captured_caption_mask(self, caption):
+        model = self._make_model()
+        seen = {}
+        original = model.model.encode_conditions_full
+
+        def spy(*args, **kwargs):
+            seen["mask"] = kwargs.get("caption_mask")
+            return original(*args, **kwargs)
+
+        model.model.encode_conditions_full = spy
+        hop = model.config.audio_downsample_factor
+        list(
+            model.generate(
+                "こんにちは",
+                ref_audio=mx.zeros((1, hop * 8), dtype=mx.float32),
+                caption=caption,
+                rng_seed=0,
+            )
+        )
+        return seen["mask"]
+
+    def test_empty_caption_is_fully_masked(self):
+        """An empty caption still tokenizes to BOS; it must not read as a caption."""
+        mask = self._captured_caption_mask(None)
+        self.assertIsNotNone(mask)
+        self.assertFalse(bool(mx.any(mask)))
+
+    def test_blank_caption_is_fully_masked(self):
+        mask = self._captured_caption_mask("   ")
+        self.assertFalse(bool(mx.any(mask)))
+
+    def test_real_caption_is_not_masked(self):
+        mask = self._captured_caption_mask("穏やかな声")
+        self.assertTrue(bool(mx.any(mask)))
+
+    def test_zero_silence_point_does_not_empty_the_output(self):
+        from mlx_audio.tts.models import irodori_tts as irodori_pkg
+
+        model = self._make_model()
+        module = irodori_pkg.irodori_tts
+        original = module._find_silence_point
+        module._find_silence_point = lambda *a, **k: 0
+        try:
+            hop = model.config.audio_downsample_factor
+            result = list(
+                model.generate(
+                    "こんにちは",
+                    ref_audio=mx.zeros((1, hop * 8), dtype=mx.float32),
+                    rng_seed=0,
+                )
+            )[0]
+        finally:
+            module._find_silence_point = original
+        self.assertGreater(result.samples, 0)
+
+
 class TestIrodoriV4Quantization(unittest.TestCase):
     def test_projector_survives_quantization(self):
         """A quantized Linear stores packed uint32 weights, so the projector

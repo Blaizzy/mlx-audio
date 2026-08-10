@@ -313,6 +313,11 @@ class Model(nn.Module):
         if self.config.dit.use_caption_condition:
             cap = caption or ""
             caption_input_ids, caption_mask = self._prepare_caption(cap)
+            if not cap.strip():
+                # An empty caption still tokenizes to a BOS token. Leaving it
+                # unmasked would present it as a real caption to the DiT and to
+                # the duration predictor, so mask it out entirely.
+                caption_mask = mx.zeros_like(caption_mask)
 
         if self.config.dit.use_speaker_condition_resolved:
             if ref_latent is None:
@@ -526,12 +531,16 @@ class Model(nn.Module):
         audio_out = audio_out[:, :, 0]  # (1, L)
         mx.eval(audio_out)
 
-        # Trim trailing silence
-        silence_t = _find_silence_point(latent_out[0])
-        trim_samples = silence_t * self.config.audio_downsample_factor
-        # Also clamp to the predicted/manual duration
+        # Clamp to the predicted/manual duration, then trim trailing silence.
+        # A silence point of 0 means the heuristic flagged the very first
+        # window, which must not collapse the output to nothing.
         target_samples = latent_steps * self.config.audio_downsample_factor
-        trim_samples = min(trim_samples, target_samples)
+        trim_samples = target_samples
+        silence_samples = (
+            _find_silence_point(latent_out[0]) * self.config.audio_downsample_factor
+        )
+        if silence_samples > 0:
+            trim_samples = min(trim_samples, silence_samples)
         audio_out = audio_out[:, :trim_samples]
 
         audio = audio_out[0]  # (L,)
