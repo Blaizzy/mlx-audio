@@ -8,9 +8,9 @@ import mlx.core as mx
 import mlx.nn as nn
 import sentencepiece as spm
 import tqdm
-from mlx_audio.lm.models.gpt2 import ModelArgs as GPT2Args
 
 from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.gpt2 import ModelArgs as GPT2Args
 from mlx_audio.lm.sample_utils import make_sampler
 from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.tts.models.indextts import normalize

@@ -46,7 +46,7 @@ Requirements (for conversion only):
     pip install torch safetensors huggingface_hub onnx s3tokenizer
 
 After conversion, the model only needs:
-    pip install mlx mlx-lm
+    pip install mlx
 """
 
 import argparse

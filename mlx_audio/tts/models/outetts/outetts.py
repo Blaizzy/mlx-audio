@@ -8,6 +8,9 @@ from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
+from tqdm import tqdm
+from transformers import AutoTokenizer
+
 from mlx_audio.lm.generate import stream_generate
 from mlx_audio.lm.models.llama import Model as LlamaModel
 from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
@@ -15,9 +18,6 @@ from mlx_audio.lm.models.qwen2 import Model as Qwen2Model
 from mlx_audio.lm.models.qwen2 import ModelArgs as Qwen2ModelConfig
 from mlx_audio.lm.models.qwen3 import Model as Qwen3Model
 from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
-from tqdm import tqdm
-from transformers import AutoTokenizer
-
 from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
 from ..base import GenerationResult

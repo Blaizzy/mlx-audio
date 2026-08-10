@@ -3,13 +3,13 @@ from dataclasses import dataclass
 from typing import Generator, List, Optional, Union
 
 import mlx.core as mx
-from mlx_audio.lm.generate import stream_generate
-from mlx_audio.lm.models.llama import Model as LlamaModel
-from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
 from tqdm import tqdm
 from transformers import AutoTokenizer
 
 from mlx_audio.codec.models.snac import SNAC
+from mlx_audio.lm.generate import stream_generate
+from mlx_audio.lm.models.llama import Model as LlamaModel
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
 from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 from mlx_audio.utils import load_audio
 

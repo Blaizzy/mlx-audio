@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import mlx.core as mx
+
 from mlx_audio.lm.load import load_lm
 from mlx_audio.lm.models.cache import create_causal_mask
 

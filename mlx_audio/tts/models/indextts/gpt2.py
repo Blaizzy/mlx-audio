@@ -1,8 +1,8 @@
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_audio.lm.models.gpt2 import ModelArgs, TransformerBlock
 
 from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.gpt2 import ModelArgs, TransformerBlock
 
 
 class GPT2Model(nn.Module):

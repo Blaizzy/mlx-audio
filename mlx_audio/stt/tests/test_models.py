@@ -435,9 +435,8 @@ class TestCohereQuantizedModel(unittest.TestCase):
         return _cohere_small_config_dict()
 
     def _build_quantized_checkpoint(self, bits: int) -> Path:
-        from mlx_audio.lm.convert import save_model
-
         from mlx_audio.convert import convert
+        from mlx_audio.lm.convert import save_model
         from mlx_audio.stt.models.cohere_asr.cohere_asr import Model, STTOutput
 
         self.STTOutput = STTOutput

@@ -12,9 +12,9 @@ from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 from huggingface_hub import snapshot_download
-from mlx_audio.lm.models.lfm2 import Lfm2Model
 
 from mlx_audio.lm.models.cache import ArraysCache, KVCache
+from mlx_audio.lm.models.lfm2 import Lfm2Model
 
 from ....base import check_array_shape
 from .config import DepthformerConfig, LFM2AudioConfig

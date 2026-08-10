@@ -573,7 +573,12 @@ def convert(
         q_mode: Quantization mode (affine, mxfp4, nvfp4, mxfp8).
         model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
     """
-    from mlx_audio.lm.convert import dequantize_model, quantize_model, save_config, save_model
+    from mlx_audio.lm.convert import (
+        dequantize_model,
+        quantize_model,
+        save_config,
+        save_model,
+    )
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")

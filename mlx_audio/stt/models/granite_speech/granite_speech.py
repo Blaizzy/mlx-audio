@@ -7,11 +7,11 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_audio.lm.models.granite import Model as GraniteLM
-from mlx_audio.lm.models.granite import ModelArgs as GraniteModelArgs
 
 from mlx_audio.lm.models.base import create_attention_mask
 from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.granite import Model as GraniteLM
+from mlx_audio.lm.models.granite import ModelArgs as GraniteModelArgs
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import EncoderConfig, ModelConfig, ProjectorConfig
@@ -662,7 +662,6 @@ class Model(nn.Module):
         start_time = time.time()
 
         from mlx_audio.lm.generate import generate_step
-
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
@@ -739,7 +738,6 @@ class Model(nn.Module):
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
         from mlx_audio.lm.generate import generate_step
-
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
