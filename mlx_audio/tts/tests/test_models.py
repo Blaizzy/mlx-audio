@@ -4256,11 +4256,25 @@ class TestIrodoriNormalizeText(unittest.TestCase):
         import importlib.util
         import os
 
-        upstream = os.path.expanduser(
-            "~/ghq/github.com/Aratako/Irodori-TTS/irodori_tts/text_normalization.py"
+        root = os.environ.get("IRODORI_TTS_UPSTREAM")
+        candidates = [root] if root else []
+        candidates.append(os.path.expanduser("~/ghq/github.com/Aratako/Irodori-TTS"))
+        upstream = next(
+            (
+                path
+                for path in (
+                    os.path.join(c, "irodori_tts", "text_normalization.py")
+                    for c in candidates
+                )
+                if os.path.isfile(path)
+            ),
+            None,
         )
-        if not os.path.isfile(upstream):
-            self.skipTest("upstream Irodori-TTS checkout not available")
+        if upstream is None:
+            self.skipTest(
+                "upstream Irodori-TTS checkout not available "
+                "(set IRODORI_TTS_UPSTREAM to its root)"
+            )
 
         from mlx_audio.tts.models.irodori_tts.text import normalize_text
 
