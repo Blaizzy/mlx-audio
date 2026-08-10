@@ -180,6 +180,36 @@ generate_audio(
 `max_ref_seconds` overrides the checkpoint's 120s budget; the reference is
 trimmed to it after concatenation.
 
+### Short caption-only prompts over-predict duration
+
+With a caption but no reference audio, v4's duration predictor roughly doubles
+the length of short texts, and the model fills the extra time by reading the
+sentence a second time:
+
+| Text | Tokens | With reference | Caption only |
+|---|---|---|---|
+| こんにちは。 | 3 | 1.63s | 3.42s |
+| 今日はいい天気ですね。 | 5 | 2.70s | 4.98s |
+| MLXへの移植が完了しました。 | 7 | 3.69s | 3.46s |
+
+This is upstream model behaviour, not an MLX artifact — the reference PyTorch
+implementation predicts the same frame counts and repeats the same way. Texts
+of roughly seven tokens or more are unaffected, and passing any reference audio
+fixes it. Otherwise, shorten the window explicitly:
+
+```python
+generate_audio(
+    model="mlx-community/Irodori-TTS-v4-Small-fp16",
+    text="今日はいい天気ですね。",
+    instruct="落ち着いた女性の声で、近い距離感でやわらかく自然に読み上げてください。",
+    duration_scale=0.5,  # or seconds=2.6
+    file_prefix="output",
+)
+```
+
+Note that forcing a duration away from the predicted one costs some audio
+quality, which upstream documents as well.
+
 ## v3 Features
 
 ### Automatic Duration Prediction

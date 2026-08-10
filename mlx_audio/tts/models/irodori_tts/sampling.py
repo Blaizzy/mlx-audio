@@ -135,7 +135,14 @@ def sample_euler_cfg(
     batch_size = text_input_ids.shape[0]
     has_text_cfg = cfg_scale_text > 0
     has_speaker_cfg = cfg_scale_speaker > 0 and use_spk
-    has_caption_cfg = cfg_scale_caption > 0 and use_cap
+    # A fully masked caption makes the caption-uncond bundle identical to the
+    # conditional one, so its guidance term is zero: skip it as upstream does.
+    has_caption_cfg = (
+        cfg_scale_caption > 0
+        and use_cap
+        and caption_mask is not None
+        and bool(mx.any(caption_mask))
+    )
     # For single-context backward compat
     if not is_dual:
         has_context_cfg = cfg_scale_context > 0
@@ -330,7 +337,9 @@ def sample_euler_cfg(
         t = float(t_schedule[i])
         t_next = float(t_schedule[i + 1])
         t_arr = mx.full((batch_size,), t, dtype=mx.float32)
-        use_cfg = (has_text_cfg or has_speaker_cfg) and (cfg_min_t <= t <= cfg_max_t)
+        use_cfg = (has_text_cfg or has_speaker_cfg or has_caption_cfg) and (
+            cfg_min_t <= t <= cfg_max_t
+        )
 
         if use_cfg:
             if cfg_guidance_mode == "independent":
