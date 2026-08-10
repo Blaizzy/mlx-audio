@@ -5287,9 +5287,7 @@ class TestIrodoriV4Shapes(unittest.TestCase):
         self.assertIsNotNone(self.model.pretrained_text_backbone)
 
     def test_projectors_replace_scratch_encoders(self):
-        from mlx_audio.tts.models.irodori_tts.model import (
-            PretrainedConditionProjector,
-        )
+        from mlx_audio.tts.models.irodori_tts.model import PretrainedConditionProjector
 
         self.assertIsInstance(self.model.text_encoder, PretrainedConditionProjector)
         self.assertIsInstance(self.model.caption_encoder, PretrainedConditionProjector)
