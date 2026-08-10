@@ -19,9 +19,7 @@ from mlx_audio.codec.models.mimi.modules import (
 from mlx_audio.codec.models.mimi.modules import (
     SplitResidualVectorQuantizer as MimiSplitRVQ,
 )
-from mlx_audio.codec.models.mimi.modules import (
-    TransformerConfig,
-)
+from mlx_audio.codec.models.mimi.modules import TransformerConfig
 from mlx_audio.lm.models.cache import KVCache
 
 from .config import (

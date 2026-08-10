@@ -93,9 +93,7 @@ class Model(nn.Module):
         from mlx_audio.stt.models.parakeet.audio import (
             PreprocessArgs as PPreprocessArgs,
         )
-        from mlx_audio.stt.models.parakeet.audio import (
-            log_mel_spectrogram,
-        )
+        from mlx_audio.stt.models.parakeet.audio import log_mel_spectrogram
         from mlx_audio.stt.utils import load_audio
 
         pp = self.config.preprocessor
