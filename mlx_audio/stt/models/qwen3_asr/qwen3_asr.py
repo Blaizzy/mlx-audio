@@ -959,7 +959,7 @@ class Qwen3ASRModel(nn.Module):
         system_prompt: str | None = None,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         """Stream generate tokens from audio using mlx_lm generate_step."""
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
             raise RuntimeError(

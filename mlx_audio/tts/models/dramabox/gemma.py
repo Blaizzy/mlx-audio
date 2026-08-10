@@ -5,8 +5,7 @@ from dataclasses import dataclass
 from typing import Sequence
 
 import mlx.core as mx
-from mlx_lm import load as mlx_lm_load
-
+from mlx_audio.lm.load import load_lm
 from mlx_audio.lm.models.cache import create_causal_mask
 
 
@@ -17,7 +16,7 @@ class EncodedPrompt:
 
 
 def load_text_encoder(model_id: str):
-    return mlx_lm_load(model_id)
+    return load_lm(model_id)
 
 
 def _language_core(model):

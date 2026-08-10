@@ -9,7 +9,7 @@ import numpy as np
 import onnx
 from huggingface_hub import hf_hub_download, snapshot_download
 from mlx.utils import tree_flatten
-from mlx_lm.utils import save_config, save_model
+from mlx_audio.lm.convert import save_config, save_model
 from onnx import helper, numpy_helper
 
 from .kitten_tts import Model, ModelConfig

@@ -338,7 +338,7 @@ class Model(nn.Module):
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 

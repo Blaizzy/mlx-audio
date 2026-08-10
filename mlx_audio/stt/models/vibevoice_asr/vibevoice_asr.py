@@ -567,7 +567,7 @@ class Model(nn.Module):
         Yields:
             Tuple of (token, logprobs)
         """
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         # Get input embeddings with speech merged in
         input_embeddings = self._merge_speech_text_embeddings(

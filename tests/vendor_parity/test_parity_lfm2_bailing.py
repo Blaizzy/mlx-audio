@@ -12,8 +12,7 @@ from mlx_audio.lm.models import lfm2 as vendored_lfm2
 
 def parameter_shapes(model):
     return {
-        name: parameter.shape
-        for name, parameter in tree_flatten(model.parameters())
+        name: parameter.shape for name, parameter in tree_flatten(model.parameters())
     }
 
 

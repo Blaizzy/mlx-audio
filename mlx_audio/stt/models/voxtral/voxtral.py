@@ -379,7 +379,7 @@ class Model(nn.Module):
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
 
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         input_embeddings = self._merge_input_embeddings(
             input_ids=input_ids,

@@ -496,7 +496,7 @@ class FunASRNano(nn.Module):
         itn: bool = True,
         prefill_step_size: int = 2048,
     ):
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         hotwords = self._resolve_hotwords(hotwords, context)
         input_ids, inputs_embeds = self._build_inputs_embeds(
@@ -538,7 +538,7 @@ class FunASRNano(nn.Module):
         generated_tokens = []
         eos_token_ids = {151643, 151645}
 
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         for token, _ in generate_step(
             prompt=input_ids[0],

@@ -22,8 +22,7 @@ def make_args(module):
 
 def parameter_shapes(model):
     return {
-        name: parameter.shape
-        for name, parameter in tree_flatten(model.parameters())
+        name: parameter.shape for name, parameter in tree_flatten(model.parameters())
     }
 
 

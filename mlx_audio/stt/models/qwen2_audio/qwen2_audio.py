@@ -477,7 +477,7 @@ class Model(nn.Module):
                 verbose=verbose,
             )
 
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
@@ -543,7 +543,7 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 

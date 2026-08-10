@@ -469,7 +469,7 @@ def build_quant_predicate(
     if not quant_predicate_name:
         return base_requirements
 
-    from mlx_lm.convert import mixed_quant_predicate_builder
+    from mlx_audio.lm.convert import mixed_quant_predicate_builder
 
     mixed_predicate = mixed_quant_predicate_builder(quant_predicate_name, model)
     return lambda p, m: base_requirements(p, m) and mixed_predicate(p, m)
@@ -573,7 +573,7 @@ def convert(
         q_mode: Quantization mode (affine, mxfp4, nvfp4, mxfp8).
         model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
     """
-    from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
+    from mlx_audio.lm.convert import dequantize_model, quantize_model, save_config, save_model
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")

@@ -613,7 +613,7 @@ class Model(nn.Module):
         Yields:
             Tuple of (token, logprobs)
         """
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         input_embeddings = self._merge_audio_text_embeddings(
             input_ids=input_ids,

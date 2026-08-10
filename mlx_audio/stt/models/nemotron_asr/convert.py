@@ -171,7 +171,7 @@ def _quantize(config: dict, weights: dict, q_bits: int, q_group_size: int):
     are left in the base dtype — the standard mlx quantization predicate.
     """
     from mlx.utils import tree_flatten
-    from mlx_lm.utils import quantize_model
+    from mlx_audio.lm.convert import quantize_model
 
     from .nemotron_asr import Model, ModelConfig
 

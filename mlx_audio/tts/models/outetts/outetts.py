@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.generate import stream_generate
+from mlx_audio.lm.generate import stream_generate
 from mlx_audio.lm.models.llama import Model as LlamaModel
 from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
 from mlx_audio.lm.models.qwen2 import Model as Qwen2Model
