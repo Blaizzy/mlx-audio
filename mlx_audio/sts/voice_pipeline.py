@@ -402,7 +402,6 @@ class LocalLLMResponseEngine:
         except ImportError as exc:
             raise ImportError(
                 "The in-process LLM responder needs mlx-lm, please run `pip install -U mlx-lm` first. "
-
             ) from exc
 
         self.llm, self.tokenizer = load_llm(self.model_name)
