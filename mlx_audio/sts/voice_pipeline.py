@@ -401,9 +401,8 @@ class LocalLLMResponseEngine:
             from mlx_lm.utils import load as load_llm
         except ImportError as exc:
             raise ImportError(
-                "The in-process LLM responder needs mlx-lm: pip install 'mlx-audio[llm]'. "
-                "mlx-audio vendors the transformer machinery its speech models use, but "
-                "loading an arbitrary chat model is mlx-lm's job."
+                "The in-process LLM responder needs mlx-lm, please run `pip install -U mlx-lm` first. "
+
             ) from exc
 
         self.llm, self.tokenizer = load_llm(self.model_name)
