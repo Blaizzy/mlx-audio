@@ -5097,6 +5097,242 @@ class TestIrodoriV3VoiceDesignGenerate(unittest.TestCase):
         self.assertGreater(results[0].samples, 0)
 
 
+# ---------------------------------------------------------------------------
+# Irodori-TTS v4: shared pretrained (ModernBERT) text/caption encoder
+# ---------------------------------------------------------------------------
+
+
+def _small_modernbert_config():
+    return dict(
+        model_type="modernbert",
+        vocab_size=64,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=4,
+        num_attention_heads=4,
+        hidden_activation="gelu",
+        norm_eps=1e-5,
+        norm_bias=False,
+        attention_bias=False,
+        mlp_bias=False,
+        global_attn_every_n_layers=3,
+        local_attention=8,
+        global_rope_theta=160000.0,
+        local_rope_theta=10000.0,
+        pad_token_id=3,
+    )
+
+
+def _small_irodori_dit_config_v4(**overrides):
+    defaults = dict(
+        text_encoder_type="pretrained",
+        text_encoder_config=_small_modernbert_config(),
+        pretrained_projector_type="residual_mlp",
+        pretrained_projector_hidden_ratio=2.0,
+        text_vocab_size=64,
+        caption_vocab_size=64,
+        speaker_patch_size=4,
+    )
+    defaults.update(overrides)
+    return _small_irodori_dit_config_v3_voicedesign(**defaults)
+
+
+def _small_irodori_model_config_v4(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(
+        num_steps=1,
+        cfg_scale_text=1.0,
+        cfg_scale_speaker=1.0,
+        cfg_scale_caption=1.0,
+        sequence_length=4,
+    )
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_v4(),
+        sampler=SamplerConfig(**sampler_defaults),
+        ref_max_seconds=120.0,
+    )
+
+
+class TestIrodoriModernBert(unittest.TestCase):
+    def test_layer_types_alternate(self):
+        from mlx_audio.tts.models.irodori_tts.modernbert import ModernBertConfig
+
+        cfg = ModernBertConfig.from_dict(_small_modernbert_config())
+        self.assertEqual(
+            [cfg.is_global_layer(i) for i in range(4)],
+            [True, False, False, True],
+        )
+
+    def test_rope_parameters_nested_form(self):
+        """transformers>=5 nests the per-layer-type RoPE settings."""
+        from mlx_audio.tts.models.irodori_tts.modernbert import ModernBertConfig
+
+        raw = _small_modernbert_config()
+        raw.pop("global_rope_theta")
+        raw.pop("local_rope_theta")
+        raw["rope_parameters"] = {
+            "full_attention": {"rope_type": "default", "rope_theta": 160000.0},
+            "sliding_attention": {"rope_type": "default", "rope_theta": 10000.0},
+        }
+        cfg = ModernBertConfig.from_dict(raw)
+        self.assertEqual(cfg.global_rope_theta, 160000.0)
+        self.assertEqual(cfg.local_rope_theta, 10000.0)
+
+    def test_encoder_output_shape_and_finite(self):
+        from mlx_audio.tts.models.irodori_tts.modernbert import (
+            ModernBertConfig,
+            ModernBertEncoder,
+        )
+
+        cfg = ModernBertConfig.from_dict(_small_modernbert_config())
+        enc = ModernBertEncoder(cfg)
+        # Long padded tail: sliding-window layers see fully masked query rows,
+        # which must not turn into NaNs.
+        ids = mx.zeros((1, 40), dtype=mx.int32)
+        mask = mx.concatenate(
+            [mx.ones((1, 5), dtype=mx.bool_), mx.zeros((1, 35), dtype=mx.bool_)],
+            axis=1,
+        )
+        out = enc(ids, mask)
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (1, 40, cfg.hidden_size))
+        self.assertTrue(bool(mx.all(mx.isfinite(out))))
+
+
+class TestIrodoriV4Shapes(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        self.cfg = _small_irodori_dit_config_v4()
+        self.model = IrodoriDiT(self.cfg)
+
+    def test_shared_backbone_is_built(self):
+        self.assertTrue(self.cfg.use_pretrained_text_encoder)
+        self.assertIsNotNone(self.model.pretrained_text_backbone)
+
+    def test_projectors_replace_scratch_encoders(self):
+        from mlx_audio.tts.models.irodori_tts.model import (
+            PretrainedConditionProjector,
+        )
+
+        self.assertIsInstance(self.model.text_encoder, PretrainedConditionProjector)
+        self.assertIsInstance(self.model.caption_encoder, PretrainedConditionProjector)
+
+    def test_scratch_config_still_uses_text_encoder(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT, TextEncoder
+
+        model = IrodoriDiT(_small_irodori_dit_config_v3_voicedesign())
+        self.assertIsNone(model.pretrained_text_backbone)
+        self.assertIsInstance(model.text_encoder, TextEncoder)
+
+    def test_encode_conditions_full_shapes(self):
+        B = 1
+        text_ids = mx.zeros((B, 6), dtype=mx.int32)
+        text_mask = mx.ones((B, 6), dtype=mx.bool_)
+        ref_latent = mx.random.normal((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 6), dtype=mx.int32)
+        cap_mask = mx.ones((B, 6), dtype=mx.bool_)
+
+        text_state, _, spk_state, spk_mask, cap_state, _ = (
+            self.model.encode_conditions_full(
+                text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+            )
+        )
+        mx.eval(text_state, spk_state, cap_state)
+        self.assertEqual(tuple(text_state.shape), (B, 6, self.cfg.text_dim))
+        self.assertEqual(tuple(cap_state.shape), (B, 6, self.cfg.caption_dim_resolved))
+        # speaker_patch_size=4 collapses 8 reference frames into 2 patches
+        self.assertEqual(tuple(spk_state.shape[:2]), (B, 2))
+        self.assertEqual(tuple(spk_mask.shape), (B, 2))
+
+    def test_forward_with_conditions(self):
+        B, S = 1, 4
+        text_ids = mx.zeros((B, 6), dtype=mx.int32)
+        text_mask = mx.ones((B, 6), dtype=mx.bool_)
+        ref_latent = mx.zeros((B, 8, self.cfg.latent_dim))
+        ref_mask = mx.ones((B, 8), dtype=mx.bool_)
+        cap_ids = mx.zeros((B, 6), dtype=mx.int32)
+        cap_mask = mx.ones((B, 6), dtype=mx.bool_)
+
+        text_state, t_mask, spk_state, spk_mask, cap_state, c_mask = (
+            self.model.encode_conditions_full(
+                text_ids, text_mask, ref_latent, ref_mask, cap_ids, cap_mask
+            )
+        )
+        out = self.model.forward_with_conditions(
+            mx.random.normal((B, S, self.cfg.patched_latent_dim)),
+            mx.array([0.5], dtype=mx.float32),
+            text_state,
+            t_mask,
+            spk_state,
+            spk_mask,
+            caption_state=cap_state,
+            caption_mask=c_mask,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (B, S, self.cfg.patched_latent_dim))
+
+
+class TestIrodoriV4Reference(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v4()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def test_multi_clip_reference_is_concatenated(self):
+        model = self._make_model()
+        hop = model.config.audio_downsample_factor
+        clips = [mx.zeros((1, hop * 8), dtype=mx.float32) for _ in range(3)]
+        latent, mask = model._encode_ref_audios(clips)
+        mx.eval(latent, mask)
+        self.assertEqual(int(latent.shape[1]), 24)
+        self.assertEqual(tuple(mask.shape), (1, 24))
+
+    def test_reference_trimmed_to_max_ref_seconds(self):
+        model = self._make_model()
+        hop = model.config.audio_downsample_factor
+        rate = model.config.sample_rate
+        # 4 seconds of budget => 100 latent frames at 25 Hz
+        clips = [mx.zeros((1, hop * 80), dtype=mx.float32) for _ in range(3)]
+        latent, _ = model._encode_ref_audios(clips, max_ref_seconds=4.0)
+        mx.eval(latent)
+        self.assertEqual(int(latent.shape[1]), int(4.0 * rate / hop))
+
+    def test_reference_aligned_to_speaker_patch_size(self):
+        model = self._make_model()
+        hop = model.config.audio_downsample_factor
+        # 10 frames is not a multiple of speaker_patch_size=4 -> trimmed to 8
+        latent, mask = model._encode_ref_audios(
+            [mx.zeros((1, hop * 10), dtype=mx.float32)]
+        )
+        mx.eval(latent, mask)
+        self.assertEqual(int(latent.shape[1]) % model.config.dit.speaker_patch_size, 0)
+        self.assertEqual(int(latent.shape[1]), 8)
+
+    def test_generate_with_multiple_reference_clips(self):
+        model = self._make_model()
+        hop = model.config.audio_downsample_factor
+        clips = [mx.zeros((1, hop * 8), dtype=mx.float32) for _ in range(2)]
+        results = list(
+            model.generate(
+                "こんにちは", ref_audio=clips, caption="穏やかな声", rng_seed=0
+            )
+        )
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+
 class TestKugelAudioModel(unittest.TestCase):
     def _make_model(self):
         from mlx_audio.tts.models.kugelaudio.config import ModelConfig
