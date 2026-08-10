@@ -30,7 +30,10 @@ def test_no_mlx_lm_imports_in_source():
                 continue
             if any(n == "mlx_lm" or n.startswith("mlx_lm.") for n in names):
                 offenders.append(f"{rel}:{node.lineno}")
-    assert not offenders, f"mlx_lm imported outside {sorted(ALLOWED)}: {offenders}"
+    assert not offenders, (
+        f"mlx_lm imported at {offenders}. mlx-audio vendors this machinery: import "
+        "from mlx_audio.lm instead (see docs/contributing/adding-a-model.md)."
+    )
 
 
 def test_no_dynamic_mlx_lm_imports_in_source():
