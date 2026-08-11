@@ -1,6 +1,5 @@
-# Copyright © 2025 Apple Inc.
-# Vendored verbatim from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd),
-# mlx_lm/models/gemma3_text.py. MIT licensed.
+# Copyright © 2023-2024 Apple Inc.
+# Vendored from mlx-lm.
 
 from dataclasses import dataclass
 from functools import partial

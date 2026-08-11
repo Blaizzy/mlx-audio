@@ -1,8 +1,5 @@
 # Copyright © 2023-2024 Apple Inc.
-# Vendored from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd),
-# mlx_lm/sample_utils.py. Modified: apply_min_p passes a bool array rather than
-# a Python bool to mx.put_along_axis, which upstream raises a TypeError on
-# whenever min_p > 0 and min_tokens_to_keep > 1. MIT licensed.
+# Vendored from mlx-lm.
 
 import math
 from functools import partial

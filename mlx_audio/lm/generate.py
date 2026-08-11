@@ -1,6 +1,5 @@
 # Copyright © 2023-2024 Apple Inc.
-# Derived from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd),
-# mlx_lm/generate.py. Trimmed to mlx-audio's single-stream generation APIs.
+# Vendored from mlx-lm.
 
 import contextlib
 import inspect

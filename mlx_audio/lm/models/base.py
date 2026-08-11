@@ -1,8 +1,5 @@
 # Copyright © 2023-2024 Apple Inc.
-# Vendored from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd),
-# mlx_lm/models/base.py. Modified: dropped quantized_scaled_dot_product_attention
-# and the quantized branch of scaled_dot_product_attention (no cache in mlx-audio
-# exposes .bits). MIT licensed.
+# Vendored from mlx-lm.
 
 import inspect
 from dataclasses import dataclass

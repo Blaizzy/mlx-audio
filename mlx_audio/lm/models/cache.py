@@ -1,10 +1,5 @@
 # Copyright © 2023-2024 Apple Inc.
-# Vendored from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd),
-# mlx_lm/models/cache.py. Modified: kept only the caches mlx-audio uses
-# (KVCache, RotatingKVCache, BatchKVCache, ArraysCache) and dropped
-# QuantizedKVCache, ConcatenateKVCache, ChunkedKVCache, CacheList,
-# BatchRotatingKVCache, the prompt-cache save/load/trim helpers, the prompt
-# trie/LRU cache, and the to_quantized methods. MIT licensed.
+# Vendored from mlx-lm.
 
 from typing import Any, List, Optional
 

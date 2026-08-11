@@ -1,5 +1,5 @@
 # Copyright © 2023-2024 Apple Inc.
-# Derived from mlx-lm v0.31.3 (ed1fca4cef15a824c5f1702c80f70b4cffc8e4dd).
+# Vendored from mlx-lm.
 
 import copy
 import json

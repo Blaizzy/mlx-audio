@@ -1,3 +1,6 @@
+# Copyright © 2023-2024 Apple Inc.
+# Vendored from mlx-lm.
+
 from functools import partial
 
 import mlx.core as mx
