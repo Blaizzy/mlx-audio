@@ -8,15 +8,15 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.sample_utils import (
+from tqdm import tqdm
+
+from mlx_audio.dsp import mel_filters, stft
+from mlx_audio.lm.sample_utils import (
     apply_min_p,
     apply_top_k,
     apply_top_p,
     categorical_sampling,
 )
-from tqdm import tqdm
-
-from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.tts.models.base import BatchGenerationResult, GenerationResult
 from mlx_audio.utils import load_audio

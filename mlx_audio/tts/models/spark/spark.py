@@ -6,11 +6,11 @@ from typing import Dict, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.generate import stream_generate
-from mlx_lm.models.qwen2 import Model as Qwen2Model
-from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
 
+from mlx_audio.lm.generate import stream_generate
+from mlx_audio.lm.models.qwen2 import Model as Qwen2Model
+from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 
 from .audio_tokenizer import BiCodecTokenizer

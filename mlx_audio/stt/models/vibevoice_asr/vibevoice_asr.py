@@ -50,12 +50,12 @@ class LanguageModel(nn.Module):
 
         # Import and use mlx_lm's Qwen2Model
         try:
-            from mlx_lm.models.qwen2 import Qwen2Model
+            from mlx_audio.lm.models.qwen2 import Qwen2Model
 
             self.model = Qwen2Model(config)
         except ImportError:
             # Fallback to llama if qwen2 not available
-            from mlx_lm.models.llama import LlamaModel
+            from mlx_audio.lm.models.llama import LlamaModel
 
             self.model = LlamaModel(config)
 
@@ -567,7 +567,7 @@ class Model(nn.Module):
         Yields:
             Tuple of (token, logprobs)
         """
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         # Get input embeddings with speech merged in
         input_embeddings = self._merge_speech_text_embeddings(
@@ -677,7 +677,11 @@ class Model(nn.Module):
         Returns:
             STTOutput with transcription text and segments
         """
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.stt.utils import merge_hotwords
+
+        # VibeVoice biases toward rare vocabulary via the context string.
+        context = merge_hotwords(context, hotwords)
 
         from mlx_audio.stt.utils import merge_hotwords
 
@@ -794,7 +798,7 @@ class Model(nn.Module):
         Yields:
             Decoded text chunks as they are generated.
         """
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         # Preprocess audio
         audio_tensor = self._preprocess_audio(audio, sampling_rate=sampling_rate)

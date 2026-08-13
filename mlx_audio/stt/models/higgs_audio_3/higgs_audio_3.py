@@ -6,10 +6,10 @@ from typing import Dict, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.cache import KVCache
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3Args
-from mlx_lm.models.qwen3 import Qwen3Model
 
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3Args
+from mlx_audio.lm.models.qwen3 import Qwen3Model
 from mlx_audio.stt.models.base import STTOutput
 
 from .audio import AudioFeatureExtractor
@@ -338,8 +338,8 @@ class Model(nn.Module):
         verbose: bool = False,
         **kwargs,
     ) -> STTOutput:
-        from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.generate import generate_step
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         if not hasattr(self, "_tokenizer"):
             raise RuntimeError("Tokenizer not initialized. Call post_load_hook first.")

@@ -6,8 +6,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_flatten
-from mlx_lm.models.cache import KVCache
 
+from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.stt.models.base import STTOutput
 
 from .audio import CohereAudioFrontend

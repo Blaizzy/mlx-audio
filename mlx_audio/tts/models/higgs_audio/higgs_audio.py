@@ -17,11 +17,12 @@ from typing import Iterator, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.base import create_causal_mask
-from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.models.llama import MLP as LlamaMLP
-from mlx_lm.models.llama import Attention as LlamaAttention
-from mlx_lm.models.llama import ModelArgs as LlamaModelArgs
+
+from mlx_audio.lm.models.base import create_causal_mask
+from mlx_audio.lm.models.cache import make_prompt_cache
+from mlx_audio.lm.models.llama import MLP as LlamaMLP
+from mlx_audio.lm.models.llama import Attention as LlamaAttention
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelArgs
 
 from .config import HiggsAudioConfig
 from .generation import (

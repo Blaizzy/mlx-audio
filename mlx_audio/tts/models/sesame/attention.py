@@ -3,8 +3,9 @@ from typing import Any, Optional
 
 import mlx.core as mx
 from mlx import nn
-from mlx_lm.models.base import scaled_dot_product_attention
-from mlx_lm.models.llama import ModelArgs
+
+from mlx_audio.lm.models.base import scaled_dot_product_attention
+from mlx_audio.lm.models.llama import ModelArgs
 
 
 class Llama3ScaledRoPE(nn.Module):

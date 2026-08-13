@@ -354,7 +354,7 @@ class StreamingEncoder:
     """
 
     def __init__(self, encoder):
-        from mlx_lm.models.cache import RotatingKVCache
+        from mlx_audio.lm.models.cache import RotatingKVCache
 
         self.encoder = encoder
         self._sw = encoder.config.sliding_window
