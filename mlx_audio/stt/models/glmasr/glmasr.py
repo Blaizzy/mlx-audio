@@ -356,7 +356,7 @@ class LanguageModel(nn.Module):
         self.config = config
         self.model_type = config.model_type
 
-        from mlx_lm.models.llama import LlamaModel
+        from mlx_audio.lm.models.llama import LlamaModel
 
         self.model = LlamaModel(config)
 
@@ -613,7 +613,7 @@ class Model(nn.Module):
         Yields:
             Tuple of (token, logprobs)
         """
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         input_embeddings = self._merge_audio_text_embeddings(
             input_ids=input_ids,
@@ -754,7 +754,7 @@ class Model(nn.Module):
                 verbose=verbose,
             )
 
-        from mlx_lm.sample_utils import make_sampler
+        from mlx_audio.lm.sample_utils import make_sampler
 
         start_time = time.time()
 
@@ -973,8 +973,7 @@ class Model(nn.Module):
         Yields:
             StreamingResult objects with text, timing, and status information.
         """
-        from mlx_lm.sample_utils import make_sampler
-
+        from mlx_audio.lm.sample_utils import make_sampler
         from mlx_audio.stt.utils import load_audio
 
         # Load audio

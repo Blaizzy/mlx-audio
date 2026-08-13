@@ -7,11 +7,11 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask
-from mlx_lm.models.cache import KVCache
-from mlx_lm.models.granite import Model as GraniteLM
-from mlx_lm.models.granite import ModelArgs as GraniteModelArgs
 
+from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.granite import Model as GraniteLM
+from mlx_audio.lm.models.granite import ModelArgs as GraniteModelArgs
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import EncoderConfig, ModelConfig, ProjectorConfig
@@ -661,8 +661,8 @@ class Model(nn.Module):
 
         start_time = time.time()
 
-        from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.generate import generate_step
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
@@ -737,8 +737,8 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
-        from mlx_lm.generate import generate_step
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.generate import generate_step
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)

@@ -9,9 +9,9 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
 from tqdm import tqdm
 
+from mlx_audio.lm.models.base import create_attention_mask, scaled_dot_product_attention
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
@@ -768,7 +768,7 @@ class Qwen3ASRModel(nn.Module):
 
     def make_cache(self) -> List[Any]:
         """Create KV cache for generation."""
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
@@ -959,7 +959,7 @@ class Qwen3ASRModel(nn.Module):
         system_prompt: str | None = None,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         """Stream generate tokens from audio using mlx_lm generate_step."""
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
             raise RuntimeError(
@@ -1111,7 +1111,7 @@ class Qwen3ASRModel(nn.Module):
         across the batch. Chunks within a batch are padded (audio) to equal
         length so prompts share one length and the plain causal mask stays valid.
         """
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         eos_token_ids = self._eos_token_ids()
         texts = [""] * len(chunks)
@@ -1246,6 +1246,7 @@ class Qwen3ASRModel(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[str, None, None]]:
         """Generate transcription from audio.
@@ -1256,7 +1257,13 @@ class Qwen3ASRModel(nn.Module):
             chunk_duration: Maximum chunk duration in seconds (default: 1200 = 20 min).
             min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
             stream: If True, return a generator that yields tokens as they are generated.
+            hotwords: Optional vocabulary/hotword list, folded into ``system_prompt``.
         """
+        from mlx_audio.stt.utils import merge_hotwords
+
+        # Qwen3-ASR biases toward rare vocabulary via the system prompt.
+        system_prompt = merge_hotwords(system_prompt, hotwords)
+
         # If streaming requested, delegate to stream_transcribe
         if stream:
             return self.stream_transcribe(
@@ -1277,8 +1284,7 @@ class Qwen3ASRModel(nn.Module):
                 system_prompt=system_prompt,
             )
 
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         del kwargs
@@ -1461,8 +1467,7 @@ class Qwen3ASRModel(nn.Module):
         Yields:
             StreamingResult objects with text, timing, and status information.
         """
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
