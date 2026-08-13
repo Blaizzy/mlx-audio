@@ -35,6 +35,7 @@ def test_classify_speech_to_text():
 
 def test_classify_other_voice_kinds():
     assert classify_model("moshi", "kyutai/moshiko") == "sts"
+    assert classify_model("nemotron_voicechat", "") == "sts"
     assert classify_model("mimi", "kyutai/mimi") == "codec"
 
 
