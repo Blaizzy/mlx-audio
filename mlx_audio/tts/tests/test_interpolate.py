@@ -73,8 +73,15 @@ class TestInterpolate(unittest.TestCase):
 
         # Test upsampling with align_corners=False
         result = interpolate1d(x, size=7, mode="linear", align_corners=False)
-        # Shape should be correct
         self.assertEqual(result.shape, (1, 1, 7))
+
+        # Values from torch.nn.functional.interpolate(..., align_corners=False).
+        # The first element must be 1.0: torch clamps the (negative) source
+        # coordinate of the first output at 0 instead of gathering index -1.
+        expected = mx.array(
+            np.array([[[1.0, 1.7142857, 2.8571429, 4.0, 5.1428576, 6.2857141, 7.0]]])
+        )
+        np.testing.assert_allclose(result.tolist(), expected.tolist(), rtol=1e-5)
 
         # Test edge case: input width = 1
         x_single = mx.array(np.array([[[5.0]]]))  # Shape: (1, 1, 1)

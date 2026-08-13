@@ -2,10 +2,11 @@ from typing import Dict, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.models.llama import Model as LlamaModel
-from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
-from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+from mlx_audio.lm.models.cache import make_prompt_cache
+from mlx_audio.lm.models.llama import Model as LlamaModel
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
+from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
 from ..config import LLAMA_CONFIGS, T3Config
 from .cond_enc import T3Cond, T3CondEnc

@@ -4,6 +4,7 @@ from .models import (
     Encodec,
     Mimi,
     MossAudioTokenizer,
+    NemotronVoiceChatCodec,
     StepAudio2Token2Wav,
     Vocos,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "Encodec",
     "Mimi",
     "MossAudioTokenizer",
+    "NemotronVoiceChatCodec",
     "StepAudio2Token2Wav",
     "Vocos",
 ]

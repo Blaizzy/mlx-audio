@@ -353,6 +353,99 @@ class TestMelSpectrogram(unittest.TestCase):
         )
 
 
+class _DtypeTestEmbedding:
+    def __init__(self, hidden_size: int, dtype):
+        self.hidden_size = hidden_size
+        self.dtype = dtype
+
+    def __call__(self, token_ids):
+        return mx.zeros((*token_ids.shape, self.hidden_size), dtype=self.dtype)
+
+
+class _DtypeTestCodePredictor:
+    def __init__(self, embedding):
+        self.codec_embedding = [embedding]
+
+
+class _DtypeTestTalker:
+    def __init__(self, hidden_size: int = 4, dtype=mx.bfloat16):
+        self.embedding = _DtypeTestEmbedding(hidden_size, dtype)
+        self.code_predictor = _DtypeTestCodePredictor(self.embedding)
+
+    def get_input_embeddings(self):
+        return self.embedding
+
+    def get_text_embeddings(self):
+        return self.embedding
+
+    def text_projection(self, embeddings):
+        return embeddings
+
+
+class _DtypeTestSpeechTokenizer:
+    def encode(self, audio):
+        return mx.zeros((1, 2, 2), dtype=mx.int32)
+
+
+def _make_dtype_test_model():
+    model = Model.__new__(Model)
+    model.config = SimpleNamespace(
+        tts_bos_token_id=1,
+        tts_eos_token_id=2,
+        tts_pad_token_id=3,
+        talker_config=SimpleNamespace(
+            spk_id={},
+            spk_is_dialect={},
+            codec_language_id={},
+            codec_nothink_id=4,
+            codec_think_bos_id=5,
+            codec_think_eos_id=6,
+            codec_think_id=7,
+            codec_pad_id=8,
+            codec_bos_id=9,
+            num_code_groups=2,
+        ),
+    )
+    model.talker = _DtypeTestTalker()
+    model.tokenizer = SimpleNamespace(encode=lambda text: list(range(12)))
+    model.speaker_encoder = object()
+    model.speech_tokenizer = _DtypeTestSpeechTokenizer()
+    model.extract_speaker_embedding = lambda audio: mx.ones((1, 4), dtype=mx.float32)
+    model._icl_cache = {}
+    return model
+
+
+class TestQwen3TTSSpeakerEmbeddingDtype(unittest.TestCase):
+    def test_xvector_prefill_uses_talker_dtype(self):
+        model = _make_dtype_test_model()
+
+        input_embeds, trailing_text_hidden, tts_pad_embed = (
+            model._prepare_generation_inputs(
+                text="dtype regression",
+                ref_audio=mx.zeros((2400,), dtype=mx.float32),
+            )
+        )
+
+        self.assertEqual(input_embeds.dtype, mx.bfloat16)
+        self.assertEqual(trailing_text_hidden.dtype, mx.bfloat16)
+        self.assertEqual(tts_pad_embed.dtype, mx.bfloat16)
+
+    def test_icl_prefill_uses_talker_dtype(self):
+        model = _make_dtype_test_model()
+
+        input_embeds, trailing_text_hidden, tts_pad_embed, _ = (
+            model._prepare_icl_generation_inputs(
+                text="dtype regression",
+                ref_audio=mx.zeros((2400,), dtype=mx.float32),
+                ref_text="reference transcript",
+            )
+        )
+
+        self.assertEqual(input_embeds.dtype, mx.bfloat16)
+        self.assertEqual(trailing_text_hidden.dtype, mx.bfloat16)
+        self.assertEqual(tts_pad_embed.dtype, mx.bfloat16)
+
+
 class _FakeCodePredictor:
     def __init__(self):
         self.codec_embedding = []

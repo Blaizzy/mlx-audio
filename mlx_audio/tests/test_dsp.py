@@ -59,6 +59,42 @@ def test_dsp_all_exports():
         assert hasattr(dsp, name), f"Missing export: {name}"
 
 
+def test_istft_cache_can_constrain_inverse_frames_to_window_envelope():
+    import mlx.core as mx
+
+    from mlx_audio.dsp import ISTFTCache, hanning
+
+    rng = np.random.default_rng(0)
+    real = mx.array(rng.normal(size=(2, 9, 8)).astype(np.float32) * 8.0)
+    imag = mx.array(rng.normal(size=(2, 9, 8)).astype(np.float32) * 8.0)
+    window = hanning(16, periodic=True).astype(mx.float32)
+    cache = ISTFTCache()
+
+    unconstrained = cache.istft(
+        real,
+        imag,
+        n_fft=16,
+        hop_length=4,
+        win_length=16,
+        window=window,
+        center=False,
+    )
+    constrained = cache.istft(
+        real,
+        imag,
+        n_fft=16,
+        hop_length=4,
+        win_length=16,
+        window=window,
+        center=False,
+        constrain_value_range=True,
+    )
+    mx.eval(unconstrained, constrained)
+
+    assert float(mx.max(mx.abs(unconstrained - constrained))) > 0.1
+    assert float(mx.max(mx.abs(constrained))) <= 1.0 + 1e-6
+
+
 def test_lfilter_fir_and_iir():
     """Verify the local lfilter recurrence for FIR and IIR filters."""
     from mlx_audio.dsp import lfilter
@@ -309,6 +345,37 @@ def test_resample_noop_when_rates_equal():
     x = np.linspace(-1.0, 1.0, 100, dtype=np.float32)
     out = resample_audio(x, 16000, 16000)
     np.testing.assert_array_equal(np.asarray(out), x)
+
+
+@pytest.mark.parametrize("orig", [24000, 44100, 48000])
+def test_chunked_resample_matches_whole_buffer(orig):
+    from mlx_audio.resample import resample_audio_chunks
+    from mlx_audio.utils import resample_audio
+
+    target = 16000
+    rng = np.random.default_rng(orig)
+    audio = rng.normal(0.0, 0.1, size=(2 * orig + 137, 2)).astype(np.float32)
+    chunk_sizes = (137, 997, 4096, 53, 1201)
+
+    def chunks():
+        start = 0
+        chunk_index = 0
+        while start < len(audio):
+            end = start + chunk_sizes[chunk_index % len(chunk_sizes)]
+            yield audio[start:end]
+            start = end
+            chunk_index += 1
+
+    expected = resample_audio(audio, orig, target, axis=0)
+    actual = resample_audio_chunks(
+        chunks(),
+        orig,
+        target,
+        len(audio),
+        chunk_duration_seconds=0.025,
+    )
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_integrated_loudness_validation_matches_previous_behavior():

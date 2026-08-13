@@ -28,6 +28,15 @@ class IrodoriDiTConfig(BaseModelArgs):
     text_layers: int = 10
     text_heads: int = 8
 
+    # Pretrained text encoder (v4): a shared ModernBERT backbone feeds separate
+    # text/caption projectors instead of the two scratch-trained encoders.
+    text_encoder_type: str = "scratch"
+    text_encoder_revision: Optional[str] = None
+    text_encoder_config: Optional[dict] = None
+    pretrained_projector_type: str = "linear"
+    pretrained_projector_hidden_ratio: float = 2.0
+    pretrained_projector_dropout: float = 0.0
+
     # Speaker (reference latent) encoder
     speaker_dim: int = 768
     speaker_layers: int = 8
@@ -62,6 +71,10 @@ class IrodoriDiTConfig(BaseModelArgs):
     duration_speaker_fusion: str = "adarn_zero"
     duration_caption_fusion: str = "adarn_zero"
     duration_caption_pooling: str = "masked_mean"
+
+    @property
+    def use_pretrained_text_encoder(self) -> bool:
+        return str(self.text_encoder_type).strip().lower() == "pretrained"
 
     @property
     def use_speaker_condition_resolved(self) -> bool:
@@ -172,6 +185,9 @@ class ModelConfig(BaseModelArgs):
     max_text_length: int = 256
     max_caption_length: int = 512
     max_speaker_latent_length: int = 6400
+    # Recommended cap on total reference audio duration. v4 was trained with
+    # up to 120s of (optionally multi-clip) reference; earlier versions used 30s.
+    ref_max_seconds: float = 30.0
     # DACVAE hop_length = 2*8*10*12 = 1920 (48kHz)
     audio_downsample_factor: int = 1920
 
@@ -189,6 +205,7 @@ class ModelConfig(BaseModelArgs):
             max_text_length=config.get("max_text_length", 256),
             max_caption_length=config.get("max_caption_length", 512),
             max_speaker_latent_length=config.get("max_speaker_latent_length", 6400),
+            ref_max_seconds=config.get("ref_max_seconds", 30.0),
             audio_downsample_factor=config.get("audio_downsample_factor", 1920),
             dacvae_repo=config.get(
                 "dacvae_repo", "Aratako/Semantic-DACVAE-Japanese-32dim"

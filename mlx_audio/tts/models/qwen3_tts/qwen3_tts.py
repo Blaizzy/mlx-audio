@@ -8,15 +8,15 @@ from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.sample_utils import (
+from tqdm import tqdm
+
+from mlx_audio.dsp import mel_filters, stft
+from mlx_audio.lm.sample_utils import (
     apply_min_p,
     apply_top_k,
     apply_top_p,
     categorical_sampling,
 )
-from tqdm import tqdm
-
-from mlx_audio.dsp import mel_filters, stft
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.tts.models.base import BatchGenerationResult, GenerationResult
 from mlx_audio.utils import load_audio
@@ -427,6 +427,9 @@ class Model(nn.Module):
         )
 
         if speaker_embed is not None:
+            # The speaker encoder runs in float32, while the talker may use a
+            # lower-precision dtype. Avoid promoting the prefill and KV cache.
+            speaker_embed = speaker_embed.astype(codec_embed.dtype)
             codec_embed = mx.concatenate(
                 [
                     codec_embed,
@@ -765,6 +768,7 @@ class Model(nn.Module):
         )
 
         if speaker_embed is not None:
+            speaker_embed = speaker_embed.astype(codec_prefix_embed.dtype)
             codec_prefix_embed = mx.concatenate(
                 [
                     codec_prefix_embed,

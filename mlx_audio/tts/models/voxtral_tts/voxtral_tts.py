@@ -231,8 +231,8 @@ class MistralBackbone(nn.Module):
 
     def __init__(self, config: ModelConfig):
         super().__init__()
-        from mlx_lm.models.llama import Model as LlamaFullModel
-        from mlx_lm.models.llama import ModelArgs
+        from mlx_audio.lm.models.llama import Model as LlamaFullModel
+        from mlx_audio.lm.models.llama import ModelArgs
 
         lm_args = ModelArgs(
             model_type="llama",
@@ -592,7 +592,7 @@ class Model(nn.Module):
             intermediate results have ``is_streaming_chunk=True`` and the
             last result additionally has ``is_final_chunk=True``.
         """
-        from mlx_lm.models.cache import make_prompt_cache
+        from mlx_audio.lm.models.cache import make_prompt_cache
 
         if self.tokenizer is None:
             raise RuntimeError(

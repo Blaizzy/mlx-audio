@@ -11,8 +11,9 @@ import mlx.nn as nn
 import numpy as np
 import tqdm
 from mlx.utils import tree_map, tree_unflatten
-from mlx_lm.models.base import create_causal_mask
 from transformers import BertTokenizer
+
+from mlx_audio.lm.models.base import create_causal_mask
 
 from ..base import BaseModelArgs, GenerationResult
 from .pipeline import Pipeline

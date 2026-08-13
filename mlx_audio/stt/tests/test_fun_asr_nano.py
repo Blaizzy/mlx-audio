@@ -108,7 +108,7 @@ def test_stream_context_reaches_fun_asr_prompt(monkeypatch):
         yield 151643, None
 
     model._build_inputs_embeds = MethodType(fake_build_inputs, model)
-    generate_module = importlib.import_module("mlx_lm.generate")
+    generate_module = importlib.import_module("mlx_audio.lm.generate")
     monkeypatch.setattr(generate_module, "generate_step", fake_generate_step)
 
     assert list(model.stream_generate(mx.zeros((1,)), context=" MLX ")) == []

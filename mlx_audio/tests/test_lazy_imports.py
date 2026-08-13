@@ -73,3 +73,18 @@ print("OK")
         text=True,
     )
     assert result.returncode == 0, f"Codec lazy import failed: {result.stderr}"
+
+
+def test_vendored_lm_no_eager_imports():
+    code = """
+import sys
+import mlx_audio.lm.models.llama
+assert "mlx_lm" not in sys.modules, "mlx_lm was eagerly imported"
+assert "transformers" not in sys.modules, "transformers was eagerly imported"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"Vendored LM lazy import failed: {result.stderr}"

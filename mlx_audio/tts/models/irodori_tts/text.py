@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Optional
 
 import mlx.core as mx
@@ -11,77 +12,88 @@ import numpy as np
 # Ported from Irodori-TTS/irodori_tts/text_normalization.py (pure Python).
 # ---------------------------------------------------------------------------
 
-_REPLACE_MAP: dict[str, str] = {
-    r"\t": "",
+_SIMPLE_REPLACE_MAP: dict[str, str] = {
+    "\t": "",
+    "[n]": "",
     r"\[n\]": "",
-    r" ": "",  # narrow no-break space (U+202F) / ideographic space handled below
-    r"　": "",  # ideographic space
-    r"[;▼♀♂《》≪≫①②③④⑤⑥]": "",
-    r"[\u02d7\u2010-\u2015\u2043\u2212\u23af\u23e4\u2500\u2501\u2e3a\u2e3b]": "",
-    r"[\uff5e\u301C]": "ー",
-    r"？": "?",
-    r"！": "!",
-    r"[●◯〇]": "○",
-    r"♥": "♡",
+    "\u3000": "",  # ideographic space
+    "？": "?",
+    "！": "!",
+    "♥": "♡",
+    "●": "○",
+    "◯": "○",
+    "〇": "○",
 }
 
-# Fullwidth A-Z a-z → halfwidth
-_FULLWIDTH_ALPHA_TO_HALFWIDTH = str.maketrans(
-    {
-        chr(full): chr(half)
-        for full, half in zip(
-            list(range(0xFF21, 0xFF3B)) + list(range(0xFF41, 0xFF5B)),
-            list(range(0x41, 0x5B)) + list(range(0x61, 0x7B)),
-        )
-    }
-)
+_REGEX_REPLACE_MAP: dict[re.Pattern[str], str] = {
+    re.compile(r"[;▼♀♂《》≪≫①②③④⑤⑥]"): "",
+    re.compile(
+        r"[\u02d7\u2010-\u2015\u2043\u2212\u23af\u23e4\u2500\u2501\u2e3a\u2e3b]"
+    ): "",
+    re.compile(r"[\uff5e\u301C]"): "ー",
+    re.compile(r"…{3,}"): "……",
+}
 
-# Fullwidth 0-9 → halfwidth
-_FULLWIDTH_DIGITS_TO_HALFWIDTH = str.maketrans(
-    {
-        chr(full): chr(half)
-        for full, half in zip(range(0xFF10, 0xFF1A), range(0x30, 0x3A))
-    }
-)
+_BRACKET_PAIRS = {"「": "」", "『": "』", "（": "）", "【": "】", "(": ")"}
 
-# Halfwidth katakana → fullwidth katakana
-_HW_KANA = "ｦｧｨｩｪｫｬｭｮｯｰｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"
-_FW_KANA = "ヲァィゥェォャュョッーアイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワン"
-_HALFWIDTH_KANA_TO_FULLWIDTH = str.maketrans(_HW_KANA, _FW_KANA)
+
+def strip_outer_brackets(text: str) -> str:
+    """
+    Remove bracket pairs that enclose the whole string, repeatedly.
+
+    Depth tracking matters: in 「前半」と「後半」 the leading 「 closes before the
+    end, so nothing is stripped.
+    """
+    while True:
+        if len(text) < 2:
+            break
+
+        start_char = text[0]
+        end_char = text[-1]
+
+        if start_char in _BRACKET_PAIRS and _BRACKET_PAIRS[start_char] == end_char:
+            depth = 0
+            is_enclosing_all = True
+
+            for i, char in enumerate(text):
+                if char == start_char:
+                    depth += 1
+                elif char == end_char:
+                    depth -= 1
+
+                if depth == 0 and i < len(text) - 1:
+                    is_enclosing_all = False
+                    break
+
+            if is_enclosing_all and depth == 0:
+                text = text[1:-1]
+                continue
+
+        break
+
+    return text
 
 
 def normalize_text(text: str) -> str:
     """
     Normalise Japanese text for TTS input.
-    - Removes noise characters (tabs, special symbols, etc.)
-    - Converts fullwidth alphanumerics and digits to halfwidth
-    - Converts halfwidth katakana to fullwidth
-    - Strips surrounding brackets and trailing punctuation
+
+    Mirrors Irodori-TTS/irodori_tts/text_normalization.py step for step,
+    including the NFKC pass that folds fullwidth alphanumerics, halfwidth
+    kana and characters such as ㈱ or Ⅲ.
     """
-    for pattern, replacement in _REPLACE_MAP.items():
-        text = re.sub(pattern, replacement, text)
+    for old, new in _SIMPLE_REPLACE_MAP.items():
+        text = text.replace(old, new)
 
-    text = text.translate(_FULLWIDTH_ALPHA_TO_HALFWIDTH)
-    text = text.translate(_FULLWIDTH_DIGITS_TO_HALFWIDTH)
-    text = text.translate(_HALFWIDTH_KANA_TO_FULLWIDTH)
+    for pattern, replacement in _REGEX_REPLACE_MAP.items():
+        text = pattern.sub(replacement, text)
 
-    # Collapse runs of 3+ ellipses to double
-    text = re.sub(r"…{3,}", "……", text)
+    text = strip_outer_brackets(text)
 
-    # Strip surrounding bracket pairs
-    for open_br, close_br in [
-        ("「", "」"),
-        ("『", "』"),
-        ("（", "）"),
-        ("【", "】"),
-        ("(", ")"),
-    ]:
-        if text.startswith(open_br) and text.endswith(close_br):
-            text = text[1:-1]
+    text = unicodedata.normalize("NFKC", text)
 
-    # Strip trailing Japanese sentence-ending punctuation
-    if text.endswith(("。", "、")):
-        text = text.rstrip("。、")
+    text = text.replace("...", "…")
+    text = text.replace("..", "…")
 
     return text
 

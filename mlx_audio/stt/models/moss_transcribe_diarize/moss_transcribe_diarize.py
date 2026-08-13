@@ -242,7 +242,7 @@ class Model(nn.Module):
         return self.config.sample_rate
 
     def make_cache(self) -> List[Any]:
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
@@ -592,7 +592,7 @@ class Model(nn.Module):
         prefill_step_size: int = 4096,
         verbose: bool = False,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         prompt_ids, inputs_embeds, _, _ = self._prepare_generation_inputs(audio, prompt)
         eos_token_ids = self._eos_token_ids()
@@ -664,9 +664,14 @@ class Model(nn.Module):
         prefill_step_size: int = 4096,
         verbose: bool = False,
         stream: bool = False,
+        hotwords: Optional[List[str]] = None,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.stt.utils import merge_hotwords
+
+        # MOSS biases toward rare vocabulary via the prompt.
+        prompt = merge_hotwords(prompt, hotwords)
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(
@@ -695,7 +700,7 @@ class Model(nn.Module):
 
         generated_tokens = []
         gen_start = time.time()
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         for token, _ in generate_step(
             prompt=prompt_ids,

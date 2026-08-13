@@ -66,7 +66,7 @@ class TestAudioIOFormats:
     def test_read_wav_target_sample_rate_and_channels(
         self, sample_audio_stereo, tmp_path
     ):
-        """Test decoder-side resampling and mono conversion."""
+        """Test target-rate loading and decoder-side mono conversion."""
         data, samplerate = sample_audio_stereo
         output_file = tmp_path / "test_resampled_mono.wav"
         target_samplerate = samplerate // 2
@@ -83,6 +83,50 @@ class TestAudioIOFormats:
         assert read_data.dtype == np.float32
         assert read_data.ndim == 1
         assert abs(read_data.shape[0] - target_samplerate) <= 1
+
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    def test_miniaudio_downsampling_rejects_alias(self, tmp_path, use_buffer):
+        """Miniaudio inputs use the high-quality FIR when downsampling."""
+        source_rate = 44100
+        target_rate = 16000
+        t = np.arange(2 * source_rate) / source_rate
+        tone = (0.5 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)
+
+        if use_buffer:
+            audio_input = io.BytesIO()
+            write(audio_input, tone, source_rate, format="wav")
+        else:
+            audio_input = tmp_path / "out_of_band.wav"
+            write(audio_input, tone, source_rate, format="wav")
+
+        loaded, loaded_rate = read(
+            audio_input,
+            dtype="float32",
+            sample_rate=target_rate,
+            nchannels=1,
+        )
+        loaded = loaded[len(loaded) // 4 : -len(loaded) // 4]
+        rms = float(np.sqrt(np.mean(loaded.astype(np.float64) ** 2)))
+
+        assert loaded_rate == target_rate
+        assert rms < 0.001
+
+    def test_stt_load_audio_rejects_alias(self, tmp_path):
+        """Protect the public STT loader path reported in issue #870."""
+        from mlx_audio.stt.utils import load_audio
+
+        source_rate = 44100
+        target_rate = 16000
+        t = np.arange(2 * source_rate) / source_rate
+        tone = (0.5 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)
+        audio_path = tmp_path / "stt_out_of_band.wav"
+        write(audio_path, tone, source_rate, format="wav")
+
+        loaded = np.asarray(load_audio(str(audio_path), sr=target_rate))
+        loaded = loaded[len(loaded) // 4 : -len(loaded) // 4]
+        rms = float(np.sqrt(np.mean(loaded.astype(np.float64) ** 2)))
+
+        assert rms < 0.001
 
     @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_mp3(self, sample_audio_mono, tmp_path):
