@@ -45,6 +45,7 @@ class Model(nn.Module):
         self.dacvae: DACVAE | None = None
         self._tokenizer = None
         self._caption_tokenizer = None
+        self._model_path: Path | None = None
 
     # ------------------------------------------------------------------
     # Properties
@@ -94,6 +95,8 @@ class Model(nn.Module):
 
         from mlx_audio.codec.models.dacvae import DACVAEConfig
 
+        model._model_path = Path(model_path)
+
         local_dacvae = Path(model_path) / "dacvae"
         try:
             if local_dacvae.is_dir():
@@ -121,25 +124,32 @@ class Model(nn.Module):
     # Tokenisation
     # ------------------------------------------------------------------
 
+    def _load_tokenizer(self, repo: str):
+        """Prefer a tokenizer bundled with the converted weights (v4 ships one)
+        so inference does not depend on the upstream repo staying available."""
+        from transformers import AutoTokenizer
+
+        if self._model_path is not None:
+            bundled = self._model_path / "tokenizer"
+            if (bundled / "tokenizer_config.json").is_file():
+                return AutoTokenizer.from_pretrained(str(bundled))
+        return AutoTokenizer.from_pretrained(
+            repo, revision=self.config.dit.text_encoder_revision
+        )
+
     def _get_tokenizer(self):
         if self._tokenizer is None:
-            from transformers import AutoTokenizer
-
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                self.config.dit.text_tokenizer_repo
-            )
+            self._tokenizer = self._load_tokenizer(self.config.dit.text_tokenizer_repo)
         return self._tokenizer
 
     def _get_caption_tokenizer(self):
         if self._caption_tokenizer is None:
-            from transformers import AutoTokenizer
-
             repo = self.config.dit.caption_tokenizer_repo_resolved
             # Reuse text tokenizer if repo is the same
             if repo == self.config.dit.text_tokenizer_repo:
                 self._caption_tokenizer = self._get_tokenizer()
             else:
-                self._caption_tokenizer = AutoTokenizer.from_pretrained(repo)
+                self._caption_tokenizer = self._load_tokenizer(repo)
         return self._caption_tokenizer
 
     def _prepare_text(
@@ -153,7 +163,8 @@ class Model(nn.Module):
         if max_length is None:
             max_length = self.config.max_text_length
 
-        text = normalize_text(text)
+        # Upstream tokenizes normalize_text(raw).strip().
+        text = normalize_text(text).strip()
         return encode_text(
             text,
             tokenizer=self._get_tokenizer(),
@@ -177,37 +188,102 @@ class Model(nn.Module):
     # Reference audio encoding
     # ------------------------------------------------------------------
 
-    def _encode_ref_audio(self, audio: mx.array) -> tuple[mx.array, mx.array]:
+    def _load_ref_waveform(self, ref: str | mx.array) -> mx.array:
+        """Load a reference clip as mono (1, samples) at the model sample rate."""
+        audio = (
+            load_audio_any(ref, sample_rate=self.sample_rate)
+            if isinstance(ref, str)
+            else ref
+        )
+        if audio.ndim == 1:
+            audio = audio[None, :]
+        elif audio.ndim == 2 and audio.shape[0] > 1:
+            audio = mx.mean(audio, axis=0, keepdims=True)
+        return audio
+
+    def _max_ref_latent_steps(self, max_ref_seconds: Optional[float] = None) -> int:
+        """Latent-step budget for the reference, from ref_max_seconds and the
+        hard max_speaker_latent_length cap."""
+        seconds = (
+            self.config.ref_max_seconds
+            if max_ref_seconds is None
+            else float(max_ref_seconds)
+        )
+        limit = self.config.max_speaker_latent_length
+        if seconds > 0:
+            steps = int(
+                seconds * self.config.sample_rate / self.config.audio_downsample_factor
+            )
+            limit = min(limit, max(1, steps))
+        return limit
+
+    def _encode_ref_audio(
+        self,
+        audio: mx.array,
+        max_ref_seconds: Optional[float] = None,
+    ) -> tuple[mx.array, mx.array]:
         """
-        Encode reference waveform with DACVAE.
+        Encode a single reference waveform with DACVAE.
         audio: (1, samples) at config.sample_rate
-        Returns (latent, mask): latent (1, T, 128), mask (1, T) bool
+        Returns (latent, mask): latent (1, T, latent_dim), mask (1, T) bool
         """
         assert self.dacvae is not None, "DACVAE not loaded"
 
-        max_samples = (
-            self.config.max_speaker_latent_length * self.config.audio_downsample_factor
-        )
-        audio = audio[:, :max_samples]
+        max_steps = self._max_ref_latent_steps(max_ref_seconds)
+        audio = audio[:, : max_steps * self.config.audio_downsample_factor]
 
         # DACVAE encode expects (B, L, 1)
         audio_in = audio[:, :, None]  # (1, L, 1)
-        latent = self.dacvae.encode(audio_in)  # (1, 128, T) channels-first
-        latent = mx.transpose(latent, (0, 2, 1))  # (1, T, 128) sequence-first
+        latent = self.dacvae.encode(audio_in)  # (1, latent_dim, T) channels-first
+        latent = mx.transpose(latent, (0, 2, 1))  # (1, T, latent_dim) sequence-first
 
         actual_t = int(audio.shape[1]) // self.config.audio_downsample_factor
         actual_t = min(actual_t, latent.shape[1])
         latent = latent[:, :actual_t]
-        mask = mx.ones((1, actual_t), dtype=mx.bool_)
 
-        # Align to speaker_patch_size
+        return latent, mx.ones((1, actual_t), dtype=mx.bool_)
+
+    def _encode_ref_audios(
+        self,
+        audios: list[mx.array],
+        max_ref_seconds: Optional[float] = None,
+    ) -> tuple[mx.array, mx.array]:
+        """
+        Encode reference clips independently and concatenate them in input order,
+        then trim to the reference budget. v4 was trained on multiple shorter
+        clips from the same speaker rather than one long recording.
+        """
+        max_steps = self._max_ref_latent_steps(max_ref_seconds)
+
+        pieces: list[mx.array] = []
+        total = 0
+        for audio in audios:
+            latent, _ = self._encode_ref_audio(audio, max_ref_seconds=max_ref_seconds)
+            if latent.shape[1] == 0:
+                continue
+            pieces.append(latent)
+            total += int(latent.shape[1])
+            if total >= max_steps:
+                break
+        if not pieces:
+            raise ValueError("Reference audio produced an empty latent.")
+
+        latent = mx.concatenate(pieces, axis=1)[:, :max_steps]
+        steps = int(latent.shape[1])
+
+        # Align to speaker_patch_size so no partial patch is dropped silently
         p = self.config.dit.speaker_patch_size
-        if p > 1 and actual_t % p != 0:
-            trim = (actual_t // p) * p
-            latent = latent[:, :trim]
-            mask = mask[:, :trim]
+        if p > 1 and steps % p != 0:
+            steps = (steps // p) * p
+            latent = latent[:, :steps]
+        if steps == 0:
+            raise ValueError(
+                f"Reference audio is too short: at least {p} latent frames "
+                f"({p * self.config.audio_downsample_factor / self.config.sample_rate:.2f}s) "
+                "are required."
+            )
 
-        return latent, mask
+        return latent, mx.ones((1, steps), dtype=mx.bool_)
 
     # ------------------------------------------------------------------
     # Latent generation (sampling)
@@ -236,18 +312,40 @@ class Model(nn.Module):
         caption_mask: Optional[mx.array] = None
 
         if self.config.dit.use_caption_condition:
-            cap = caption or ""
+            # Upstream strips the caption but does not run normalize_text on it.
+            cap = "" if caption is None else str(caption).strip()
             caption_input_ids, caption_mask = self._prepare_caption(cap)
+            if not cap:
+                # An empty caption still tokenizes to a BOS token. Leaving it
+                # unmasked would present it as a real caption to the DiT and to
+                # the duration predictor, so mask it out entirely.
+                caption_mask = mx.zeros_like(caption_mask)
 
         if self.config.dit.use_speaker_condition_resolved:
             if ref_latent is None:
-                ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
+                ref_latent = mx.zeros(
+                    # At least one full speaker patch, otherwise patching
+                    # yields an empty sequence (v4 uses speaker_patch_size=4).
+                    (
+                        1,
+                        self.config.dit.speaker_patch_size,
+                        self.config.dit.latent_dim,
+                    )
+                )
             if ref_mask is None:
                 ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
         elif not self.config.dit.use_caption_condition:
             # legacy speaker-only (use_speaker_condition=None, use_caption_condition=False)
             if ref_latent is None:
-                ref_latent = mx.zeros((1, 1, self.config.dit.latent_dim))
+                ref_latent = mx.zeros(
+                    # At least one full speaker patch, otherwise patching
+                    # yields an empty sequence (v4 uses speaker_patch_size=4).
+                    (
+                        1,
+                        self.config.dit.speaker_patch_size,
+                        self.config.dit.latent_dim,
+                    )
+                )
             if ref_mask is None:
                 ref_mask = mx.zeros((1, ref_latent.shape[1]), dtype=mx.bool_)
 
@@ -261,7 +359,7 @@ class Model(nn.Module):
             )
         elif self.config.dit.use_duration_predictor:
             # Predict duration using the integrated predictor
-            text_for_features = normalize_text(text)
+            text_for_features = normalize_text(text).strip()
             token_count = int(text_mask.sum())
             has_speaker = bool(ref_mask is not None and mx.any(ref_mask))
 
@@ -364,7 +462,7 @@ class Model(nn.Module):
         self,
         text: str,
         voice: str | None = None,
-        ref_audio: str | mx.array | None = None,
+        ref_audio: str | mx.array | list[str | mx.array] | None = None,
         caption: str | None = None,
         stream: bool = False,
         **kwargs,
@@ -381,23 +479,20 @@ class Model(nn.Module):
             )
 
         start_time = time.perf_counter()
-        text_input_ids, _ = self._prepare_text(text)
-        token_count = int(text_input_ids.shape[1])
+        # Report real tokens, not the padded width.
+        _, text_token_mask = self._prepare_text(text)
+        token_count = int(text_token_mask.sum())
 
-        # Encode reference audio if provided
+        # Encode reference audio if provided. A list/tuple encodes each clip
+        # separately and concatenates them (v4 multi-clip cloning).
         ref_latent = None
         ref_mask = None
         if ref_audio is not None:
-            audio = (
-                load_audio_any(ref_audio, sample_rate=self.sample_rate)
-                if isinstance(ref_audio, str)
-                else ref_audio
+            refs = ref_audio if isinstance(ref_audio, (list, tuple)) else [ref_audio]
+            audios = [self._load_ref_waveform(r) for r in refs]
+            ref_latent, ref_mask = self._encode_ref_audios(
+                audios, max_ref_seconds=kwargs.get("max_ref_seconds")
             )
-            if audio.ndim == 1:
-                audio = audio[None, :]
-            elif audio.ndim == 2 and audio.shape[0] > 1:
-                audio = mx.mean(audio, axis=0, keepdims=True)
-            ref_latent, ref_mask = self._encode_ref_audio(audio)
 
         # Run diffusion sampler
         latent_out, latent_steps = self.generate_latents(
@@ -424,6 +519,7 @@ class Model(nn.Module):
                     "duration_scale",
                     "min_seconds",
                     "max_seconds",
+                    "max_ref_seconds",
                 )
             },
         )
@@ -438,12 +534,16 @@ class Model(nn.Module):
         audio_out = audio_out[:, :, 0]  # (1, L)
         mx.eval(audio_out)
 
-        # Trim trailing silence
-        silence_t = _find_silence_point(latent_out[0])
-        trim_samples = silence_t * self.config.audio_downsample_factor
-        # Also clamp to the predicted/manual duration
+        # Clamp to the predicted/manual duration, then trim trailing silence.
+        # A silence point of 0 means the heuristic flagged the very first
+        # window, which must not collapse the output to nothing.
         target_samples = latent_steps * self.config.audio_downsample_factor
-        trim_samples = min(trim_samples, target_samples)
+        trim_samples = target_samples
+        silence_samples = (
+            _find_silence_point(latent_out[0]) * self.config.audio_downsample_factor
+        )
+        if silence_samples > 0:
+            trim_samples = min(trim_samples, silence_samples)
         audio_out = audio_out[:, :trim_samples]
 
         audio = audio_out[0]  # (L,)

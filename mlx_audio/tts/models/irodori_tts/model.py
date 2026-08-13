@@ -7,6 +7,7 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from .config import IrodoriDiTConfig
+from .modernbert import ModernBertConfig, ModernBertEncoder
 
 RotaryCache = Tuple[mx.array, mx.array]
 KVCache = Tuple[mx.array, mx.array]
@@ -440,6 +441,75 @@ class TextEncoder(nn.Module):
             for block in self.blocks:
                 x = block(x, mask=None, freqs_cis=freqs_cis)
             return x
+
+
+class PretrainedTextBackbone(nn.Module):
+    """
+    Thin wrapper around the pretrained encoder shared by the text and caption
+    projectors (v4). Keeps the checkpoint's `pretrained_text_backbone.backbone.*`
+    key layout.
+    """
+
+    def __init__(self, config: ModernBertConfig):
+        super().__init__()
+        self.backbone = ModernBertEncoder(config)
+        self.hidden_size = config.hidden_size
+
+    def __call__(self, input_ids: mx.array, mask: Optional[mx.array]) -> mx.array:
+        state = self.backbone(input_ids, mask)
+        if mask is None:
+            return state
+        return state * mask[..., None].astype(state.dtype)
+
+
+class PretrainedConditionProjector(nn.Module):
+    """
+    Projects the shared pretrained backbone output into a condition space (v4).
+
+    `linear` is a plain projection; `residual_mlp` adds a SiLU residual branch
+    on top of it. Dropout is training-only and therefore not modelled here.
+    """
+
+    def __init__(
+        self,
+        backbone_dim: int,
+        output_dim: int,
+        projector_type: str = "linear",
+        hidden_ratio: float = 2.0,
+        norm_eps: float = 1e-5,
+    ):
+        super().__init__()
+        projector_type = str(projector_type).strip().lower()
+        if projector_type not in {"linear", "residual_mlp"}:
+            raise ValueError(
+                "pretrained projector type must be 'linear' or 'residual_mlp', "
+                f"got {projector_type!r}"
+            )
+        self.projector_type = projector_type
+        self.projector = nn.Linear(backbone_dim, output_dim, bias=True)
+        if projector_type == "residual_mlp":
+            hidden_dim = max(1, int(round(output_dim * float(hidden_ratio))))
+            self.residual_norm = RMSNorm(backbone_dim, eps=norm_eps)
+            self.residual_up = nn.Linear(backbone_dim, hidden_dim, bias=True)
+            self.residual_down = nn.Linear(hidden_dim, output_dim, bias=True)
+
+    def __call__(
+        self,
+        backbone: PretrainedTextBackbone,
+        input_ids: mx.array,
+        mask: Optional[mx.array],
+    ) -> mx.array:
+        # No dtype coercion against self.projector.weight here: once quantized
+        # that weight is packed uint32, and casting activations to it would
+        # truncate them to integers.
+        state = backbone(input_ids, mask)
+        projected = self.projector(state)
+        if self.projector_type == "residual_mlp":
+            residual = nn.silu(self.residual_up(self.residual_norm(state)))
+            projected = projected + self.residual_down(residual)
+        if mask is None:
+            return projected
+        return projected * mask[..., None].astype(projected.dtype)
 
 
 class ReferenceLatentEncoder(nn.Module):
@@ -1155,14 +1225,32 @@ class IrodoriDiT(nn.Module):
         self.cfg = cfg
         self.head_dim = cfg.model_dim // cfg.num_heads
 
-        self.text_encoder = TextEncoder(
-            vocab_size=cfg.text_vocab_size,
-            dim=cfg.text_dim,
-            heads=cfg.text_heads,
-            num_layers=cfg.text_layers,
-            mlp_ratio=cfg.text_mlp_ratio_resolved,
-            norm_eps=cfg.norm_eps,
-        )
+        self.pretrained_text_backbone = None
+        if cfg.use_pretrained_text_encoder:
+            if not cfg.text_encoder_config:
+                raise ValueError(
+                    "text_encoder_type='pretrained' requires text_encoder_config "
+                    "in the model config."
+                )
+            self.pretrained_text_backbone = PretrainedTextBackbone(
+                ModernBertConfig.from_dict(cfg.text_encoder_config)
+            )
+            self.text_encoder = PretrainedConditionProjector(
+                self.pretrained_text_backbone.hidden_size,
+                cfg.text_dim,
+                projector_type=cfg.pretrained_projector_type,
+                hidden_ratio=cfg.pretrained_projector_hidden_ratio,
+                norm_eps=cfg.norm_eps,
+            )
+        else:
+            self.text_encoder = TextEncoder(
+                vocab_size=cfg.text_vocab_size,
+                dim=cfg.text_dim,
+                heads=cfg.text_heads,
+                num_layers=cfg.text_layers,
+                mlp_ratio=cfg.text_mlp_ratio_resolved,
+                norm_eps=cfg.norm_eps,
+            )
         self.text_norm = RMSNorm(cfg.text_dim, eps=cfg.norm_eps)
 
         speaker_ctx_dim: Optional[int] = None
@@ -1181,14 +1269,30 @@ class IrodoriDiT(nn.Module):
             speaker_ctx_dim = cfg.speaker_dim
 
         if cfg.use_caption_condition:
-            self.caption_encoder = TextEncoder(
-                vocab_size=cfg.caption_vocab_size_resolved,
-                dim=cfg.caption_dim_resolved,
-                heads=cfg.caption_heads_resolved,
-                num_layers=cfg.caption_layers_resolved,
-                mlp_ratio=cfg.caption_mlp_ratio_resolved,
-                norm_eps=cfg.norm_eps,
-            )
+            if cfg.use_pretrained_text_encoder:
+                if cfg.caption_tokenizer_repo_resolved != cfg.text_tokenizer_repo:
+                    raise ValueError(
+                        "A shared pretrained text/caption encoder requires identical "
+                        "tokenizer repositories: "
+                        f"text={cfg.text_tokenizer_repo!r}, "
+                        f"caption={cfg.caption_tokenizer_repo_resolved!r}."
+                    )
+                self.caption_encoder = PretrainedConditionProjector(
+                    self.pretrained_text_backbone.hidden_size,
+                    cfg.caption_dim_resolved,
+                    projector_type=cfg.pretrained_projector_type,
+                    hidden_ratio=cfg.pretrained_projector_hidden_ratio,
+                    norm_eps=cfg.norm_eps,
+                )
+            else:
+                self.caption_encoder = TextEncoder(
+                    vocab_size=cfg.caption_vocab_size_resolved,
+                    dim=cfg.caption_dim_resolved,
+                    heads=cfg.caption_heads_resolved,
+                    num_layers=cfg.caption_layers_resolved,
+                    mlp_ratio=cfg.caption_mlp_ratio_resolved,
+                    norm_eps=cfg.norm_eps,
+                )
             self.caption_norm = RMSNorm(cfg.caption_dim_resolved, eps=cfg.norm_eps)
             caption_ctx_dim = cfg.caption_dim_resolved
 
@@ -1248,6 +1352,16 @@ class IrodoriDiT(nn.Module):
     # Condition encoding (text + speaker/caption) — cached across steps
     # ------------------------------------------------------------------
 
+    def _encode_text(self, input_ids: mx.array, mask: mx.array) -> mx.array:
+        if self.pretrained_text_backbone is None:
+            return self.text_encoder(input_ids, mask)
+        return self.text_encoder(self.pretrained_text_backbone, input_ids, mask)
+
+    def _encode_caption(self, input_ids: mx.array, mask: mx.array) -> mx.array:
+        if self.pretrained_text_backbone is None:
+            return self.caption_encoder(input_ids, mask)
+        return self.caption_encoder(self.pretrained_text_backbone, input_ids, mask)
+
     def encode_conditions(
         self,
         text_input_ids: mx.array,
@@ -1261,7 +1375,7 @@ class IrodoriDiT(nn.Module):
         Encode text and context (speaker latent or caption) into conditioning states.
         Returns (text_state, text_mask, context_state, context_mask).
         """
-        text_state = self.text_norm(self.text_encoder(text_input_ids, text_mask))
+        text_state = self.text_norm(self._encode_text(text_input_ids, text_mask))
 
         if self.cfg.use_speaker_condition_resolved:
             assert ref_latent is not None and ref_mask is not None
@@ -1275,7 +1389,7 @@ class IrodoriDiT(nn.Module):
         else:
             assert caption_input_ids is not None and caption_mask is not None
             context_state = self.caption_norm(
-                self.caption_encoder(caption_input_ids, caption_mask)
+                self._encode_caption(caption_input_ids, caption_mask)
             )
             context_mask = caption_mask
 
@@ -1301,7 +1415,7 @@ class IrodoriDiT(nn.Module):
         Encode all conditions including both speaker and caption states.
         Returns (text_state, text_mask, speaker_state, speaker_mask, caption_state, caption_mask).
         """
-        text_state = self.text_norm(self.text_encoder(text_input_ids, text_mask))
+        text_state = self.text_norm(self._encode_text(text_input_ids, text_mask))
 
         speaker_state = None
         speaker_mask = None
@@ -1330,7 +1444,7 @@ class IrodoriDiT(nn.Module):
         if self.cfg.use_caption_condition:
             if caption_input_ids is not None and caption_mask is not None:
                 out_caption_state = self.caption_norm(
-                    self.caption_encoder(caption_input_ids, caption_mask)
+                    self._encode_caption(caption_input_ids, caption_mask)
                 )
                 out_caption_mask = caption_mask
 
