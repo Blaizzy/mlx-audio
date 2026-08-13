@@ -35,7 +35,24 @@ def mini_config():
         "data": {
             "source_sample_rate": 16_000,
             "target_sample_rate": 22_050,
-            "frame_length": 0.08,
+            "frame_length": 0.001,
+        },
+        "_rnnt_merge_info": {
+            "decoder_config": {
+                "vocab_size": 8,
+                "blank_as_pad": True,
+                "prednet": {"pred_hidden": 8, "pred_rnn_layers": 1},
+            },
+            "joint_config": {
+                "num_classes": 8,
+                "vocabulary": ["a", "b", "c", "d", "e", "f", "g", "h"],
+                "jointnet": {
+                    "joint_hidden": 8,
+                    "activation": "relu",
+                    "encoder_hidden": 8,
+                    "pred_hidden": 8,
+                },
+            },
         },
         "mlx_audio": {"llm_config": llm, "char_vocab_size": 4},
         "model": {
@@ -66,6 +83,10 @@ def mini_config():
                 }
             },
             "speech_generation": {
+                "data": {
+                    "audio_prompt_duration": 0.002,
+                    "frame_length": 0.001,
+                },
                 "model": {
                     "codec_config": {
                         "base_hidden_size": 8,
@@ -99,7 +120,7 @@ def mini_config():
                             "low_rank": 2,
                         },
                     },
-                }
+                },
             },
         },
     }
@@ -108,6 +129,15 @@ def mini_config():
 class MiniTokenizer:
     bos_token_id = 5
     eos_token_id = 6
+    pad_token_id = 12
+
+    def encode(self, text, add_special_tokens=False):
+        del text, add_special_tokens
+        return [0]
+
+    def decode(self, tokens, skip_special_tokens=False):
+        del skip_special_tokens
+        return "".join(chr(ord("a") + int(token) % 26) for token in tokens)
 
     def get_vocab(self):
         return {
@@ -118,7 +148,8 @@ class MiniTokenizer:
             "ab": 4,
             "<s>": 5,
             "</s>": 6,
-            "<SPECIAL_12>": 7,
+            "<SPECIAL_11>": 11,
+            "<SPECIAL_12>": 12,
         }
 
 
@@ -171,35 +202,31 @@ def test_official_config_is_detected():
     )
 
 
-def test_stt_and_tts_incremental_steps():
+def test_streaming_session_yields_aligned_outputs():
     model = Model(ModelConfig.from_dict(mini_config()))
-    model.tts_model.set_tokenizer(MiniTokenizer())
+    model.tokenizer = MiniTokenizer()
+    stream = model.create_duplex_session(
+        system_prompt="",
+        use_perception_cache=True,
+    )
+    stream._rnnt.step = lambda _encoded: ("hello", "hello")
+    events = stream.push_audio(
+        mx.zeros((stream.frame_samples,), dtype=mx.float32),
+        sample_rate=16_000,
+    )
+    audio_event = next(event for event in events if event.kind == "audio")
+    mx.eval(audio_event.samples)
 
-    state = model.stt_model.initialize(
-        mx.zeros((320,), dtype=mx.float32), None, pad_id=7
+    assert audio_event.audio_codes.shape == (2,)
+    assert audio_event.samples.shape == (4,)
+    assert audio_event.sample_rate == 22_050
+    assert any(
+        event.kind == "user_transcript_delta" and event.delta == "hello"
+        for event in events
     )
-    text_token = model.stt_model.step(
-        0,
-        state,
-        temperature=0.0,
-        top_p=1.0,
-        repetition_penalty=1.0,
-        presence_penalty=0.0,
-    )
-    previous_codes, cache = model.tts_model.initialize(batch_size=1, pad_id=7, eos_id=6)
-    codes, cache = model.tts_model.tts_model.generate_step(
-        text_token,
-        previous_codes,
-        cache,
-        text_eos_id=6,
-        silence_codes=model.tts_model.codec_silence_tokens[None, None],
-        guidance_enabled=True,
-    )
-    mx.eval(text_token, codes)
-
-    assert text_token.shape == (1, 1)
-    assert codes.shape == (1, 1, 2)
-    assert len(cache) == 2
+    assert len(stream._text_tokens) == 1
+    assert len(stream._function_tokens) == 1
+    assert stream.flush()[-1].kind == "done"
     assert (
         model.tts_model.tts_model.embed_subword.subword_flag_emb.is_continuation[
             4
@@ -214,6 +241,25 @@ def test_stt_and_tts_incremental_steps():
     )
 
 
+def test_streaming_session_buffers_partial_frames_and_cancels():
+    model = Model(ModelConfig.from_dict(mini_config()))
+    model.tokenizer = MiniTokenizer()
+    stream = model.create_duplex_session(
+        system_prompt="",
+        use_perception_cache=False,
+    )
+    half = stream.frame_samples // 2
+
+    assert stream.push_audio(mx.zeros((half,)), sample_rate=16_000) == []
+    events = stream.push_audio(
+        mx.zeros((stream.frame_samples - half,)), sample_rate=16_000
+    )
+
+    assert any(event.kind == "audio" for event in events)
+    assert stream.cancel()[-1].kind == "cancelled"
+    assert stream.closed
+
+
 def test_sanitize_convolution_layouts():
     model = Model(ModelConfig.from_dict(mini_config()))
     weights = {
@@ -222,6 +268,14 @@ def test_sanitize_convolution_layouts():
         "tts_model.tts_model.rvq_embs": mx.zeros((2, 8, 4)),
         "tts_model.tts_model.audio_prompt_projection_W": mx.zeros((8, 8)),
         "stt_model.rnnt_decoder.prediction.embed.weight": mx.zeros((8, 4)),
+        "stt_model.rnnt_decoder.prediction.dec_rnn.lstm.weight_ih_l0": mx.zeros(
+            (32, 8)
+        ),
+        "stt_model.rnnt_decoder.prediction.dec_rnn.lstm.weight_hh_l0": mx.zeros(
+            (32, 8)
+        ),
+        "stt_model.rnnt_decoder.prediction.dec_rnn.lstm.bias_ih_l0": mx.ones((32,)),
+        "stt_model.rnnt_decoder.prediction.dec_rnn.lstm.bias_hh_l0": mx.ones((32,)),
     }
     converted = model.sanitize(weights)
 
@@ -234,7 +288,11 @@ def test_sanitize_convolution_layouts():
     assert converted["stt_model.llm.layers.0.mixer.conv1d.weight"].shape == (12, 4, 1)
     assert converted["tts_model.tts_model.rvq_embs"].shape == (2, 8, 4)
     assert "tts_model.tts_model.audio_prompt_projection_W" not in converted
-    assert not any(key.startswith("stt_model.rnnt_") for key in converted)
+    assert "stt_model.rnnt_decoder.prediction.embed.weight" in converted
+    assert (
+        converted["stt_model.rnnt_decoder.prediction.dec_rnn.lstm.0.bias"].tolist()
+        == [2.0] * 32
+    )
 
 
 def test_quantize_only_supported_linear_weights():

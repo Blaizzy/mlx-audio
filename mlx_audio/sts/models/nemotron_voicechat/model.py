@@ -8,11 +8,10 @@ import mlx.core as mx
 import mlx.nn as nn
 
 from mlx_audio.codec.models.nemotron_voicechat import NemotronVoiceChatCodec
+from mlx_audio.lm.models.cache import ArraysCache, KVCache
 from mlx_audio.lm.models.nemotron_h import NemotronHModel
-from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
-from mlx_audio.stt.models.nemotron_asr.audio import log_mel_spectrogram
 from mlx_audio.stt.models.nemotron_asr.conformer import Conformer
-from mlx_audio.utils import load_audio
+from mlx_audio.stt.models.nemotron_asr.rnnt import JointNetwork, PredictNetwork
 
 from .config import ModelConfig, NemotronVoiceChatConfig
 from .tts import EARTTSModel
@@ -27,27 +26,37 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 @dataclass
-class VoiceChatOutput:
-    text: str
-    audio: mx.array
-    text_tokens: mx.array
-    audio_tokens: mx.array
-    sample_rate: int
+class VoiceChatModelOutput:
+    hidden_states: mx.array
+    text_logits: mx.array
+    function_logits: mx.array
+    cache: object | None = None
 
 
 def sanitize_weights(
     weights: Mapping[str, mx.array], codec: NemotronVoiceChatCodec
 ) -> dict[str, mx.array]:
     converted: dict[str, mx.array] = {}
+    lstm_biases: dict[str, list[mx.array]] = {}
     codec_prefix = "tts_model.audio_codec."
     for key, value in weights.items():
-        if key in {
-            "tts_model._control_codes",
-            "tts_model.tts_model.audio_prompt_projection_W",
-        }:
+        if key == "tts_model._control_codes":
+            converted["tts_model.control_codes"] = value
             continue
-        # NVIDIA's shipped offline configuration disables the RNNT branch.
-        if key.startswith("stt_model.rnnt_"):
+        if key == "tts_model.tts_model.audio_prompt_projection_W":
+            continue
+        if key.startswith("stt_model.rnnt_decoder.") and ".dec_rnn.lstm." in key:
+            base, suffix = key.rsplit(".dec_rnn.lstm.", 1)
+            stem = f"{base}.dec_rnn.lstm"
+            if suffix.startswith("weight_ih_l"):
+                layer = suffix[len("weight_ih_l") :]
+                converted[f"{stem}.{layer}.Wx"] = value
+            elif suffix.startswith("weight_hh_l"):
+                layer = suffix[len("weight_hh_l") :]
+                converted[f"{stem}.{layer}.Wh"] = value
+            elif suffix.startswith(("bias_ih_l", "bias_hh_l")):
+                layer = suffix.rsplit("_l", 1)[1]
+                lstm_biases.setdefault(f"{stem}.{layer}.bias", []).append(value)
             continue
         if key.startswith(codec_prefix):
             continue
@@ -63,6 +72,9 @@ def sanitize_weights(
         ):
             value = value.transpose(0, 2, 1)
         converted[key] = value
+
+    for key, values in lstm_biases.items():
+        converted[key] = sum(values)
 
     converted.update(
         {
@@ -96,12 +108,15 @@ class AudioPerception(nn.Module):
         self.encoder = Conformer(config.encoder)
         self.proj = nn.Linear(config.encoder.d_model, config.output_dim)
 
-    def __call__(self, waveform: mx.array) -> tuple[mx.array, mx.array]:
-        mel = log_mel_spectrogram(waveform, self.config.preprocessor)
+    def __call__(
+        self, mel: mx.array, lengths: mx.array | None = None
+    ) -> tuple[mx.array, mx.array, mx.array]:
         encoded, lengths = self.encoder(
-            mel, att_context_size=self.config.encoder.att_context_size[0]
+            mel,
+            lengths=lengths,
+            att_context_size=self.config.encoder.att_context_size[0],
         )
-        return self.proj(encoded), lengths
+        return self.proj(encoded), lengths, encoded
 
 
 class VoiceChatSTT(nn.Module):
@@ -119,88 +134,32 @@ class VoiceChatSTT(nn.Module):
             self.function_head = nn.Linear(
                 config.llm.hidden_size, config.llm.vocab_size, bias=False
             )
+        self.rnnt_decoder = PredictNetwork(config.decoder)
+        self.rnnt_joint = JointNetwork(config.joint)
 
-    def initialize(
-        self,
-        waveform: mx.array,
-        prompt_tokens: mx.array | None,
-        *,
-        pad_id: int,
-    ) -> dict:
-        audio_embeddings, audio_lengths = self.perception(waveform)
-        audio_length = int(audio_lengths[0])
-        audio_embeddings = audio_embeddings[:, :audio_length]
-        prompt_length = 0
-        if prompt_tokens is not None and prompt_tokens.shape[-1] > 0:
-            prompt_embeddings = self.embed_tokens(prompt_tokens)
-            prompt_length = prompt_tokens.shape[-1]
-            audio_embeddings = mx.concatenate(
-                [prompt_embeddings, audio_embeddings], axis=1
-            )
-
-        total_length = audio_embeddings.shape[1]
-        return {
-            "audio_embeddings": audio_embeddings,
-            "text_tokens": mx.full(
-                (audio_embeddings.shape[0], total_length), pad_id, dtype=mx.int32
-            ),
-            "function_tokens": mx.full(
-                (audio_embeddings.shape[0], total_length), pad_id, dtype=mx.int32
-            ),
-            "fused_embeddings": mx.zeros_like(audio_embeddings),
-            "prompt_length": prompt_length,
-        }
-
-    def step(
-        self,
-        index: int,
-        state: dict,
-        *,
-        temperature: float,
-        top_p: float,
-        repetition_penalty: float | None,
-        presence_penalty: float | None,
-    ) -> mx.array:
-        previous_text = state["text_tokens"][:, max(index - 1, 0)]
-        previous_function = (
-            state["function_tokens"][:, max(index - 1, 0)]
+    def __call__(self, inputs_embeds: mx.array, *, cache=None) -> VoiceChatModelOutput:
+        hidden = self.llm(input_embeddings=inputs_embeds, cache=cache)
+        text_logits = self.lm_head(hidden)
+        function_logits = (
+            self.function_head(hidden)
             if self.config.use_function_head
-            else None
+            else mx.zeros_like(text_logits)
+        )
+        return VoiceChatModelOutput(
+            hidden_states=hidden,
+            text_logits=text_logits,
+            function_logits=function_logits,
+            cache=cache,
         )
 
-        fused = (
-            self.config.audio_channel_weight
-            * state["audio_embeddings"][:, index : index + 1]
-            + self.config.text_channel_weight
-            * self.embed_tokens(previous_text)[:, None]
-        )
-        if previous_function is not None:
-            fused = (
-                fused
-                + self.config.function_channel_weight
-                * self.embed_tokens(previous_function)[:, None]
-            )
-
-        state["fused_embeddings"][:, index : index + 1] = fused
-        if index < state["prompt_length"]:
-            return state["text_tokens"][:, index : index + 1]
-
-        hidden = self.llm(input_embeddings=state["fused_embeddings"][:, : index + 1])
-        logits = self.lm_head(hidden)[:, -1]
-        history = state["text_tokens"][:, :index]
-        processors = make_logits_processors(
-            repetition_penalty=repetition_penalty,
-            presence_penalty=presence_penalty,
-        )
-        for processor in processors:
-            logits = processor(history, logits)
-        sampler = make_sampler(temp=temperature, top_p=top_p)
-        state["text_tokens"][:, index] = sampler(logits)
-        if self.config.use_function_head:
-            state["function_tokens"][:, index] = mx.argmax(
-                self.function_head(hidden)[:, -1], axis=-1
-            )
-        return state["text_tokens"][:, index : index + 1]
+    def make_cache(self):
+        caches = []
+        for layer in self.llm.layers:
+            if layer.block_type == "M":
+                caches.append(ArraysCache(size=2))
+            elif layer.block_type == "*":
+                caches.append(KVCache())
+        return caches
 
 
 class VoiceChatTTS(nn.Module):
@@ -210,6 +169,7 @@ class VoiceChatTTS(nn.Module):
         self.codec_silence_tokens = mx.zeros(
             (config.codec.num_quantizers,), dtype=mx.int64
         )
+        self.control_codes = mx.zeros((3,), dtype=mx.int32)
         self.audio_prompt_latents = {
             config.speaker_name: mx.zeros(
                 (1, config.audio_prompt_frames, config.tts.hidden_size),
@@ -258,6 +218,7 @@ class Model(nn.Module):
         if isinstance(config, ModelConfig):
             config = config.config
         self.config = config
+        self.model_type = config.model_type
         self.stt_model = VoiceChatSTT(config)
         self.tts_model = VoiceChatTTS(config)
         self.tokenizer = None
@@ -279,103 +240,48 @@ class Model(nn.Module):
             raise RuntimeError("VoiceChat tokenizer has not been initialized")
         return self.tokenizer
 
-    def _prompt_tokens(self, system_prompt: str | None) -> mx.array | None:
-        if not system_prompt:
-            return None
-        tokenizer = self._require_tokenizer()
-        token_ids = [tokenizer.bos_token_id]
-        token_ids.extend(tokenizer.encode(system_prompt, add_special_tokens=False))
-        token_ids.append(tokenizer.eos_token_id)
-        return mx.array([token_ids], dtype=mx.int32)
+    def __call__(self, inputs_embeds: mx.array, cache=None, **kwargs):
+        return self.stt_model(inputs_embeds, cache=cache)
+
+    def create_session(self):
+        from .session import VoiceChatSession
+
+        return VoiceChatSession(self, self._require_tokenizer())
+
+    def create_duplex_session(self, **kwargs):
+        return self.create_session().create_streaming_session(**kwargs)
 
     def generate(
         self,
         audio: str | Path | mx.array,
         *,
         system_prompt: str | None = DEFAULT_SYSTEM_PROMPT,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        repetition_penalty: float | None = 1.0,
-        presence_penalty: float | None = 0.0,
         verbose: bool = False,
         **kwargs,
-    ) -> VoiceChatOutput:
-        tokenizer = self._require_tokenizer()
-        if isinstance(audio, Path):
-            audio = str(audio)
-        waveform = load_audio(audio, sample_rate=self.config.source_sample_rate)
-        if waveform.ndim != 1:
-            waveform = waveform.squeeze()
-        prompt_tokens = self._prompt_tokens(system_prompt)
-        state = self.stt_model.initialize(
-            waveform,
-            prompt_tokens,
-            pad_id=tokenizer.pad_token_id,
+    ):
+        result = self.create_session().generate(
+            audio,
+            system_prompt=system_prompt,
+            **kwargs,
         )
-        total_length = state["text_tokens"].shape[1]
-        generated_codes = mx.zeros(
-            (1, total_length, self.config.codec.num_quantizers),
-            dtype=mx.int32,
-        )
-        previous_codes, tts_cache = self.tts_model.initialize(
-            batch_size=1,
-            pad_id=tokenizer.pad_token_id,
-            eos_id=tokenizer.eos_token_id,
-        )
-
-        for index in range(total_length):
-            current_text = self.stt_model.step(
-                index,
-                state,
-                temperature=temperature,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                presence_penalty=presence_penalty,
-            )
-            if index > 0:
-                previous_codes, tts_cache = self.tts_model.tts_model.generate_step(
-                    current_text,
-                    previous_codes,
-                    tts_cache,
-                    text_eos_id=tokenizer.eos_token_id,
-                    silence_codes=self.tts_model.codec_silence_tokens[None, None],
-                    guidance_enabled=True,
-                )
-                generated_codes[:, index] = previous_codes[:, 0]
-            mx.eval(current_text, previous_codes)
-
-        prompt_length = state["prompt_length"]
-        text_tokens = state["text_tokens"][:, prompt_length:]
-        audio_tokens = generated_codes[:, prompt_length:]
-        special_ids = {
-            tokenizer.pad_token_id,
-            tokenizer.bos_token_id,
-            tokenizer.eos_token_id,
-        }
-        silence_id = tokenizer.convert_tokens_to_ids("<SPECIAL_11>")
-        if silence_id is not None:
-            special_ids.add(silence_id)
-        decoded_ids = [
-            int(token)
-            for token in text_tokens[0].tolist()
-            if int(token) not in special_ids
-        ]
-        text = tokenizer.decode(decoded_ids, skip_special_tokens=False).strip()
-        decoded_audio = self.tts_model.audio_codec.decode(
-            audio_tokens.transpose(0, 2, 1)
-        )[0, 0]
-        mx.eval(decoded_audio)
         if verbose:
-            print(text)
-        return VoiceChatOutput(
-            text=text,
-            audio=decoded_audio,
-            text_tokens=text_tokens,
-            audio_tokens=audio_tokens,
-            sample_rate=self.config.target_sample_rate,
-        )
+            print(result.text)
+        return result
+
+    @property
+    def layers(self):
+        return self.stt_model.llm.layers
 
     def sanitize(self, weights: Mapping[str, mx.array]) -> dict[str, mx.array]:
         if self.config.prepared_weights:
             return dict(weights)
         return sanitize_weights(weights, self.tts_model.audio_codec)
+
+    @property
+    def cast_predicate(self):
+        def predicate(key: str) -> bool:
+            return "A_log" not in key and not key.endswith(
+                ("special_flags", "is_continuation", "pad_tensor")
+            )
+
+        return predicate

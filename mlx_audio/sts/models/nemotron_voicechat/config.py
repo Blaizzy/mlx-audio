@@ -7,6 +7,8 @@ from mlx_audio.codec.models.nemotron_voicechat import NemotronVoiceChatCodecConf
 from mlx_audio.lm.models.nemotron_h import ModelArgs as NemotronHArgs
 from mlx_audio.stt.models.nemotron_asr.config import (
     ConformerArgs,
+    JointArgs,
+    PredictArgs,
     PreprocessArgs,
 )
 
@@ -42,11 +44,15 @@ class NemotronVoiceChatConfig:
     llm: NemotronHArgs
     preprocessor: PreprocessArgs
     encoder: ConformerArgs
+    decoder: PredictArgs
+    joint: JointArgs
     codec: NemotronVoiceChatCodecConfig
     tts: VoiceChatTTSConfig
     pretrained_llm: str
+    rnnt_vocabulary: list[str]
     source_sample_rate: int = 16_000
     target_sample_rate: int = 22_050
+    frame_duration: float = 0.08
     audio_prompt_frames: int = 37
     output_dim: int = 4_480
     text_channel_weight: float = 1.0
@@ -54,6 +60,13 @@ class NemotronVoiceChatConfig:
     function_channel_weight: float = 2.0
     use_function_head: bool = True
     speaker_name: str = "Aria"
+    bos_token_id: int = 1
+    eos_token_id: int = 2
+    pad_token_id: int = 12
+    silence_token_id: int = 11
+    rnnt_blank_id: int = 1024
+    rnnt_max_symbols: int = 10
+    default_system_prompt: str = ""
     prepared_weights: bool = False
     model_type: str = "nemotron_voicechat"
 
@@ -99,6 +112,11 @@ class ModelConfig:
         perception = stt.get("perception", {})
         pre = perception.get("preprocessor", {})
         enc = perception.get("encoder", {})
+        rnnt = config.get("_rnnt_merge_info", {})
+        decoder_config = rnnt.get("decoder_config", {})
+        decoder = decoder_config.get("prednet", {})
+        joint_config = rnnt.get("joint_config", {})
+        joint = joint_config.get("jointnet", {})
 
         speech_root = root.get("speech_generation", {})
         speech = speech_root.get("model", speech_root)
@@ -154,6 +172,19 @@ class ModelConfig:
                 use_bias=enc.get("use_bias", False),
                 xscaling=enc.get("xscaling", False),
             ),
+            decoder=PredictArgs(
+                pred_hidden=decoder.get("pred_hidden", 640),
+                pred_rnn_layers=decoder.get("pred_rnn_layers", 2),
+                vocab_size=decoder_config.get("vocab_size", 1024),
+                blank_as_pad=decoder_config.get("blank_as_pad", True),
+            ),
+            joint=JointArgs(
+                joint_hidden=joint.get("joint_hidden", 640),
+                activation=joint.get("activation", "relu"),
+                encoder_hidden=joint.get("encoder_hidden", enc.get("d_model", 1024)),
+                pred_hidden=joint.get("pred_hidden", 640),
+                num_classes=joint_config.get("num_classes", 1024),
+            ),
             codec=_codec_config(codec_raw),
             tts=VoiceChatTTSConfig(
                 hidden_size=backbone.get("hidden_size", 1152),
@@ -180,8 +211,10 @@ class ModelConfig:
                 mog_min_log_std=mog.get("min_log_std", -4.0),
             ),
             pretrained_llm=pretrained_llm,
+            rnnt_vocabulary=joint_config.get("vocabulary", []),
             source_sample_rate=source_sample_rate,
             target_sample_rate=target_sample_rate,
+            frame_duration=data.get("frame_length", 0.08),
             audio_prompt_frames=int(
                 speech_data.get("audio_prompt_duration", 3.0)
                 / speech_data.get("frame_length", 0.08)
@@ -192,6 +225,10 @@ class ModelConfig:
             function_channel_weight=stt.get("duplex_function_channel_weight", 2.0),
             use_function_head=stt.get("use_function_head", True),
             speaker_name=root.get("inference_speaker_name", "Aria"),
+            rnnt_blank_id=joint_config.get(
+                "blank_id", joint_config.get("num_classes", 1024)
+            ),
+            rnnt_max_symbols=stt.get("max_symbols", 10),
             prepared_weights=config.get("mlx_audio", {}).get("prepared_weights", False),
             model_type=config.get("model_type", "nemotron_voicechat"),
         )

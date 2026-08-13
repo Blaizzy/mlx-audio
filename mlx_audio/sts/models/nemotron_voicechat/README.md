@@ -31,5 +31,22 @@ print(output.text)
 output.audio
 ```
 
-The default system prompt and the checkpoint's pre-baked `Aria` speaker latent
-match NVIDIA's reference offline inference path.
+For full-duplex inference, keep one streaming session alive and feed mono 16 kHz
+PCM as it arrives:
+
+```python
+session = model.create_duplex_session()
+
+for chunk in microphone_chunks:
+    for event in session.push_audio(chunk, sample_rate=16_000):
+        if event.kind == "assistant_text_delta":
+            print(event.delta, end="", flush=True)
+        elif event.kind == "audio":
+            play(event.samples, event.sample_rate)
+
+session.flush()
+```
+
+The session buffers arbitrary chunk sizes and emits aligned user transcripts,
+assistant text, function tokens, and 22.05 kHz speech on the model's 80 ms
+timeline.
