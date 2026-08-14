@@ -94,9 +94,9 @@ def _llm_config(config: dict[str, Any], model_name: str) -> dict[str, Any]:
     if explicit is not None:
         return explicit
 
-    from transformers import AutoConfig
+    from transformers import PretrainedConfig
 
-    return AutoConfig.from_pretrained(model_name).to_dict()
+    return PretrainedConfig.get_config_dict(model_name)[0]
 
 
 class ModelConfig:

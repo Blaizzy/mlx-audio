@@ -4,6 +4,7 @@ from mlx_audio.lm.models import gemma3_text
 from mlx_audio.lm.models.base import create_attention_mask
 from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.sts.models.nemotron_voicechat import Model, ModelConfig
+from mlx_audio.sts.models.nemotron_voicechat.config import _llm_config
 from mlx_audio.sts.models.nemotron_voicechat.convert import _quantize
 from mlx_audio.sts.utils import infer_model_type_from_config
 
@@ -200,6 +201,17 @@ def test_official_config_is_detected():
         infer_model_type_from_config({"model": {"stt": {}, "speech_generation": {}}})
         == "nemotron_voicechat"
     )
+
+
+def test_llm_config_does_not_execute_remote_code(monkeypatch):
+    expected = {"model_type": "nemotron_h", "hidden_size": 8}
+
+    monkeypatch.setattr(
+        "transformers.PretrainedConfig.get_config_dict",
+        lambda model_name: (expected, {"model_name": model_name}),
+    )
+
+    assert _llm_config({}, "nvidia/test-model") == expected
 
 
 def test_streaming_session_yields_aligned_outputs():
