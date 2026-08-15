@@ -116,6 +116,7 @@ for result in model.generate(
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
+| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [official](https://huggingface.co/MiniMaxAI/MiniMax-Music3), [MLX conversion guide](mlx_audio/tts/models/minimax_music3/README.md) |
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16), [8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit), [6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit), [4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit) |
 | **KittenTTS** | Compact KittenTTS 0.8 models for edge-friendly TTS | EN | [nano](https://huggingface.co/mlx-community/kitten-tts-nano-0.8), [micro](https://huggingface.co/mlx-community/kitten-tts-micro-0.8), [mini](https://huggingface.co/mlx-community/kitten-tts-mini-0.8), [collection](https://huggingface.co/collections/mlx-community/kittentts) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |

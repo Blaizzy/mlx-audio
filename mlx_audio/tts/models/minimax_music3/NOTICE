@@ -1,0 +1,18 @@
+minimax-music3-mlx
+Copyright 2026 mikolaj92
+
+This repository is an independent Apple MLX inference port. It is not affiliated
+with MiniMax.
+
+MiniMax-Music3 model weights, tokenizer, and official inference contract are
+Copyright (c) 2026 MiniMax and are licensed under the MiniMax-Music3 Community
+License: https://huggingface.co/MiniMaxAI/MiniMax-Music3
+MiniMax-Music3 was fine-tuned from Qwen3-8B (Apache License 2.0).
+The flow-matching DiT is adapted from Stable Audio tools (MIT).
+The vocoder is adapted from Descript Audio Codec (MIT).
+
+mlx-audio integration
+
+This integration adapts and modifies minimax-music3-mlx for mlx-audio's model
+registry, converter, quantization, generation-result, CLI, packaging, and
+documentation APIs. See LICENSE in this directory for the Apache License 2.0.

@@ -213,7 +213,22 @@ def get_detection_hints(domain: Domain) -> dict:
     return _detection_hints_cache[domain_str]
 
 
-def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
+def get_model_download_patterns(path_or_hf_repo: str) -> Optional[list[str]]:
+    """Return a model-specific Hub download manifest when one is registered."""
+    match = _match_by_path(Path(path_or_hf_repo))
+    if match is None:
+        return None
+    domain, model_type = match
+    model_class = get_model_class(model_type, domain)
+    patterns = getattr(model_class, "DOWNLOAD_ALLOW_PATTERNS", None)
+    return list(patterns) if patterns else None
+
+
+def get_model_path(
+    path_or_hf_repo: str,
+    revision: Optional[str] = None,
+    allow_patterns: Optional[list[str]] = None,
+) -> Path:
     """
     Ensures the model is available locally.
 
@@ -222,23 +237,24 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
     model_path = Path(path_or_hf_repo)
 
     if not model_path.exists():
+        allow_patterns = allow_patterns or [
+            "*.json",
+            "*.safetensors",
+            "*.py",
+            "*.model",
+            "*.tiktoken",
+            "*.txt",
+            "*.jinja",
+            "*.jsonl",
+            "*.yaml",
+            "*.wav",
+            "*.pth",
+        ]
         model_path = Path(
             snapshot_download(
                 path_or_hf_repo,
                 revision=revision,
-                allow_patterns=[
-                    "*.json",
-                    "*.safetensors",
-                    "*.py",
-                    "*.model",
-                    "*.tiktoken",
-                    "*.txt",
-                    "*.jinja",
-                    "*.jsonl",
-                    "*.yaml",
-                    "*.wav",
-                    "*.pth",
-                ],
+                allow_patterns=allow_patterns,
             )
         )
 
@@ -247,10 +263,11 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
 
 def load_config(model_path: Path) -> dict:
     """Load model configuration from a path."""
-    config_path = model_path / "config.json"
-    if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    for name in ("config.json", "modular_model_index.json"):
+        config_path = model_path / name
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
     raise FileNotFoundError(f"Config not found at {model_path}")
 
 
@@ -281,7 +298,11 @@ def _match_by_model_type(model_type: str) -> Optional[Domain]:
 
 def _get_model_identifier(config: dict) -> str:
     """Get model identifier from config, checking model_type and name fields."""
-    return config.get("model_type", "").lower() or config.get("name", "").lower()
+    return (
+        config.get("model_type", "").lower()
+        or config.get("name", "").lower()
+        or config.get("_class_name", "").lower()
+    )
 
 
 def _match_by_config_keys(config: dict) -> Optional[tuple[Domain, str]]:
@@ -354,9 +375,10 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     # Check both model_type and name fields
     model_type = config.get("model_type", "").lower()
     model_name = config.get("name", "").lower()
+    class_name = config.get("_class_name", "").lower()
 
     # Direct match via config (model_type takes precedence)
-    for candidate in [model_type, model_name]:
+    for candidate in [model_type, model_name, class_name]:
         resolved_model_type = _resolve_model_type(candidate, domain)
         if resolved_model_type:
             return resolved_model_type
@@ -601,7 +623,15 @@ def convert(
         raise ValueError("Choose either quantize or dequantize, not both.")
 
     print(f"[INFO] Loading model from {hf_path}")
-    model_path = get_model_path(hf_path, revision=revision)
+    download_patterns = get_model_download_patterns(hf_path)
+    if download_patterns:
+        model_path = get_model_path(
+            hf_path,
+            revision=revision,
+            allow_patterns=download_patterns,
+        )
+    else:
+        model_path = get_model_path(hf_path, revision=revision)
     config = load_config(model_path)
 
     # Detect domain and model type
@@ -615,6 +645,9 @@ def convert(
 
     # Get model class and instantiate
     model_class = get_model_class(model_type, domain)
+    prepare_config = getattr(model_class, "prepare_config", None)
+    if prepare_config is not None:
+        config = prepare_config(config, model_path)
 
     model_config = (
         model_class.ModelConfig.from_dict(config)
@@ -627,7 +660,8 @@ def convert(
         model_config.model_path = model_path
 
     # Load and process weights
-    weights = load_weights(model_path)
+    source_weight_loader = getattr(model_class, "load_source_weights", load_weights)
+    weights = source_weight_loader(model_path)
     model = model_class.Model(model_config)
 
     if hasattr(model, "sanitize"):
@@ -664,7 +698,10 @@ def convert(
     # Create output directory and copy files
     mlx_path = Path(mlx_path)
     mlx_path.mkdir(parents=True, exist_ok=True)
-    copy_model_files(model_path, mlx_path)
+    supporting_file_copier = getattr(
+        model_class, "copy_supporting_files", copy_model_files
+    )
+    supporting_file_copier(model_path, mlx_path)
 
     # Save model weights and config
     save_model(mlx_path, model, donate_model=True)

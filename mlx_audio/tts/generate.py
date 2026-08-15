@@ -470,6 +470,12 @@ def parse_args():
         help="Text to generate (leave blank to input via stdin)",
     )
     parser.add_argument(
+        "--lyrics",
+        type=str,
+        default=None,
+        help="Optional model-specific lyrics, including section tags for music models.",
+    )
+    parser.add_argument(
         "--voice",
         type=str,
         default=None,
@@ -524,6 +530,12 @@ def parse_args():
         type=int,
         default=None,
         help="Optional model-specific generation step count.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Optional model-specific random seed.",
     )
     parser.add_argument(
         "--stg_scale",

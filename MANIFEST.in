@@ -6,6 +6,8 @@ recursive-include mlx_audio/tts *.tsx
 recursive-include mlx_audio/tts *.mjs
 recursive-include mlx_audio/tts *.css
 recursive-include mlx_audio/tts *.md
+include mlx_audio/tts/models/minimax_music3/NOTICE
+include mlx_audio/tts/models/minimax_music3/LICENSE
 
 # Exclude large directories
 prune mlx_audio/ui/node_modules

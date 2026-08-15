@@ -6,6 +6,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 
 | Model | Size | Languages | Voice Cloning | Streaming | Key Features |
 |-------|------|-----------|:---:|:---:|--------------|
+| [**MiniMax Music 3**](minimax-music3.md) | Qwen3-8B + DiT-2B | Multilingual lyrics | -- | -- | Song generation, lyrics and structural tags, 44.1 kHz stereo, MXFP4/MXFP8 conversion |
 | [**Kokoro**](kokoro.md) | 82M | EN, JA, ZH, FR, ES, IT, PT, HI | -- | -- | Fast, 54 voice presets, speed control |
 | [**KittenTTS**](https://huggingface.co/collections/mlx-community/kittentts) | 14.6M / 35.5M / 73.8M | EN | -- | -- | KittenTTS 0.8 nano/micro/mini, compact edge-friendly TTS, speed control |
 | [**Qwen3-TTS**](qwen3-tts.md) | 0.6B / 1.7B | ZH, EN, JA, KO, + more | Yes | Yes | Voice cloning, emotion control, voice design, batch generation |
