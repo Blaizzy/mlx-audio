@@ -11,10 +11,7 @@ Original: [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS)
 ### v4.1 (recommended)
 
 v4.1-Small is a single unified model: voice cloning, VoiceDesign and automatic
-duration prediction in one checkpoint. It differs from v4 only in the duration
-predictor, which upstream retrained separately with every other parameter
-frozen, so predicted output length is the sole behavioural difference. Upstream
-reports lower CER and fewer errors caused by overestimated lengths.
+duration prediction in one checkpoint.
 
 | Model | HuggingFace | Conditioning |
 |---|---|---|
@@ -190,38 +187,6 @@ generate_audio(
 `max_ref_seconds` overrides the checkpoint's 120s budget; the reference is
 trimmed to it after concatenation.
 
-### Short caption-only prompts over-predict duration
-
-With a caption but no reference audio, the duration predictor overestimates the
-length of short texts, and the model fills the extra time by reading the
-sentence a second time. v4.1 improves on v4 but does not remove the effect:
-
-| Text | Tokens | v4 caption only | v4.1 caption only |
-|---|---|---|---|
-| こんにちは。 | 3 | 3.64s | 2.88s |
-| おはようございます。 | 4 | 3.72s | 3.36s |
-| 今日はいい天気ですね。 | 5 | 5.60s | 4.72s |
-| MLXへの移植が完了しました。 | 7 | 4.08s | 3.84s |
-
-This is upstream model behaviour, not an MLX artifact. For the third row the
-reference PyTorch implementation predicts 117.41 frames against MLX's 117.56 —
-both round to the same 118 frames — and its sampler produces the same repeat.
-Texts of roughly seven tokens or more are unaffected. Otherwise, shorten the
-window explicitly:
-
-```python
-generate_audio(
-    model="mlx-community/Irodori-TTS-v4.1-Small-fp16",
-    text="今日はいい天気ですね。",
-    instruct="落ち着いた女性の声で、近い距離感でやわらかく自然に読み上げてください。",
-    duration_scale=0.5,  # or seconds=2.6
-    file_prefix="output",
-)
-```
-
-Note that forcing a duration away from the predicted one costs some audio
-quality, which upstream documents as well.
-
 ## v3 Features
 
 ### Automatic Duration Prediction
@@ -285,11 +250,8 @@ With `cfg_guidance_mode="independent"` (default), multiply memory by ~3.
 
 ## Notes
 
-- v4.1 is v4 with a separately retrained duration predictor; the other 683 of
-  714 tensors are bit-identical, so the two share a configuration and differ
-  only in predicted output length.
-- v4 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
-  and bundles a ModernBERT-ja-310m text encoder, so its weights are roughly
+- v4 and v4.1 use [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
+  and bundle a ModernBERT-ja-310m text encoder, so their weights are roughly
   1 GB larger than v3 at the same precision.
 - v3 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
   and includes an integrated duration predictor for automatic output length estimation.
