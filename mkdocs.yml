@@ -77,6 +77,9 @@ nav:
     - "Quick Start: Python": getting-started/quickstart-python.md
   - Models:
     - models/index.md
+    - Music Generation:
+      - models/music/index.md
+      - MiniMax Music 3: models/music/minimax-music3.md
     - Text-to-Speech:
       - models/tts/index.md
       - Kokoro: models/tts/kokoro.md
@@ -106,6 +109,7 @@ nav:
     - Web UI & API Server: guides/web-ui-api-server.md
   - API Reference:
     - api-reference/index.md
+    - Music Generation: api-reference/music.md
     - TTS: api-reference/tts.md
     - STT: api-reference/stt.md
     - Audio I/O: api-reference/audio-io.md
