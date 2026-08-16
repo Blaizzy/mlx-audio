@@ -264,7 +264,10 @@ def codebook_to_audio(
         precomp=(t_idx_BxTxC, indices_BTCx3),
         T=seq_length,
     )
-    reverted_codebook = reverted_codebook[:, :-30, :]
+    # Only the delay-flush region is not audio, so that is all that is discarded. Matches
+    # the reference implementation (nari-labs/dia, dia/model.py:507).
+    max_delay_pattern = max(delay_pattern)
+    reverted_codebook = reverted_codebook[:, :-max_delay_pattern, :]
 
     codebook = mx.transpose(reverted_codebook, (0, 2, 1))
 
