@@ -133,9 +133,9 @@ mlx_audio = [
     "tts/*.css",
     "tts/**/*.json",
     "tts/static/**/*",
-    "tts/models/minimax_music3/NOTICE",
-    "tts/models/minimax_music3/LICENSE",
-    "tts/models/minimax_music3/README.md",
+    "tts/**/*.md",
+    "**/LICENSE*",
+    "**/NOTICE*",
 ]
 
 [tool.black]
