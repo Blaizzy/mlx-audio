@@ -12,6 +12,61 @@ from mlx.utils import tree_flatten, tree_map, tree_unflatten
 
 MAX_FILE_SIZE_GB = 5
 
+QUANTIZATION_SPECS = {
+    "affine": {
+        "group_sizes": (32, 64, 128),
+        "bits": (2, 3, 4, 5, 6, 8),
+        "default_group_size": 64,
+        "default_bits": 4,
+    },
+    "mxfp4": {
+        "group_sizes": (32,),
+        "bits": (4,),
+        "default_group_size": 32,
+        "default_bits": 4,
+    },
+    "mxfp8": {
+        "group_sizes": (32,),
+        "bits": (8,),
+        "default_group_size": 32,
+        "default_bits": 8,
+    },
+    "nvfp4": {
+        "group_sizes": (16,),
+        "bits": (4,),
+        "default_group_size": 16,
+        "default_bits": 4,
+    },
+}
+
+
+def resolve_quantization_params(
+    mode: str,
+    group_size: Optional[int] = None,
+    bits: Optional[int] = None,
+) -> tuple[int, int]:
+    """Resolve and validate a quantization mode against MLX's public contract."""
+    if mode not in QUANTIZATION_SPECS:
+        supported = ", ".join(QUANTIZATION_SPECS)
+        raise ValueError(
+            f"Unsupported quantization mode {mode!r}; choose one of: {supported}."
+        )
+
+    spec = QUANTIZATION_SPECS[mode]
+    group_size = spec["default_group_size"] if group_size is None else group_size
+    bits = spec["default_bits"] if bits is None else bits
+    if group_size not in spec["group_sizes"]:
+        raise ValueError(
+            f"Unsupported quantization group size {group_size} for {mode}; "
+            f"choose one of {spec['group_sizes']}."
+        )
+    if bits not in spec["bits"]:
+        raise ValueError(
+            f"Unsupported quantization bit width {bits} for {mode}; "
+            f"choose one of {spec['bits']}."
+        )
+    return group_size, bits
+
 
 def mixed_quant_predicate_builder(recipe: str, model: nn.Module, group_size: int = 64):
     recipes = {
@@ -64,8 +119,7 @@ def quantize_model(
     mode: str = "affine",
     quant_predicate: Optional[Callable] = None,
 ):
-    defaults = {"affine": (64, 4), "mxfp4": (32, 4), "nvfp4": (16, 4), "mxfp8": (32, 8)}
-    group_size, bits = group_size or defaults[mode][0], bits or defaults[mode][1]
+    group_size, bits = resolve_quantization_params(mode, group_size, bits)
     config = copy.deepcopy(config)
     quant_predicate = quant_predicate or getattr(model, "quant_predicate", None)
     params = {"group_size": group_size, "bits": bits, "mode": mode}

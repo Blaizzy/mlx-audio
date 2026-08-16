@@ -25,12 +25,17 @@ The trade-off is a potential reduction in audio quality, especially at very low 
 
 MLX Audio supports several quantization modes:
 
-| Mode | Description |
-|------|-------------|
-| `affine` | Standard affine quantization (default) |
-| `mxfp4` | Microscaling FP4 format |
-| `mxfp8` | Microscaling FP8 format |
-| `nvfp4` | NVIDIA FP4 format |
+| Mode | Group sizes | Bit widths | Defaults | Description |
+|------|-------------|------------|----------|-------------|
+| `affine` | 32, 64, 128 | 2, 3, 4, 5, 6, 8 | 64 / 4-bit | Standard affine quantization |
+| `mxfp4` | 32 | 4 | 32 / 4-bit | OCP microscaling E2M1 weights with E8M0 scales |
+| `mxfp8` | 32 | 8 | 32 / 8-bit | OCP microscaling E4M3 weights with E8M0 scales |
+| `nvfp4` | 16 | 4 | 16 / 4-bit | E2M1 weights with E4M3 scales |
+
+The converter validates these combinations before mutating the model. A model may
+still protect quantization-sensitive layers through its `model_quant_predicate`;
+the mode table describes the storage formats supported by MLX, not a promise that
+every layer of every audio model should be quantized.
 
 ## Converting and Quantizing Models
 

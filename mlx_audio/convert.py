@@ -17,10 +17,12 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 
+from mlx_audio.lm.convert import QUANTIZATION_SPECS, resolve_quantization_params
+
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
-QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
+QUANT_MODES = list(QUANTIZATION_SPECS)
 
 
 class Domain(str, Enum):
@@ -492,7 +494,9 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: Domain):
 
 
 def build_quant_predicate(
-    model, quant_predicate_name: Optional[str] = None
+    model,
+    quant_predicate_name: Optional[str] = None,
+    group_size: int = 64,
 ) -> Callable[[str, any], bool]:
     """Build the quantization predicate function."""
     model_quant_predicate = getattr(model, "model_quant_predicate", lambda p, m: True)
@@ -500,7 +504,7 @@ def build_quant_predicate(
     def base_requirements(path: str, module) -> bool:
         return (
             hasattr(module, "weight")
-            and module.weight.shape[-1] % 64 == 0
+            and module.weight.shape[-1] % group_size == 0
             and hasattr(module, "to_quantized")
             and model_quant_predicate(path, module)
         )
@@ -679,13 +683,20 @@ def convert(
 
     # Handle quantization/dequantization
     if quantize:
-        final_predicate = build_quant_predicate(model, quant_predicate)
+        effective_group_size, effective_bits = resolve_quantization_params(
+            q_mode, q_group_size, q_bits
+        )
+        final_predicate = build_quant_predicate(
+            model,
+            quant_predicate,
+            group_size=effective_group_size,
+        )
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
             model,
             config,
-            q_group_size,
-            q_bits,
+            effective_group_size,
+            effective_bits,
             mode=q_mode,
             quant_predicate=final_predicate,
         )

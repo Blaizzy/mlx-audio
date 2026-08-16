@@ -3,6 +3,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mlx_audio.convert import (
     Domain,
     _discover_detection_hints,
@@ -279,6 +281,49 @@ class TestConvert(unittest.TestCase):
             dequantize=False,
             model_domain=None,
         )
+
+
+@pytest.mark.parametrize(
+    ("mode", "group_size", "bits"),
+    [
+        ("affine", 32, 2),
+        ("affine", 64, 3),
+        ("affine", 128, 8),
+        ("mxfp4", 32, 4),
+        ("mxfp8", 32, 8),
+        ("nvfp4", 16, 4),
+    ],
+)
+def test_resolve_quantization_params_accepts_every_mlx_spec(
+    mode: str, group_size: int, bits: int
+) -> None:
+    from mlx_audio.lm.convert import resolve_quantization_params
+
+    assert resolve_quantization_params(mode, group_size, bits) == (
+        group_size,
+        bits,
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "group_size", "bits"),
+    [
+        ("affine", 16, 4),
+        ("affine", 64, 7),
+        ("mxfp4", 64, 4),
+        ("mxfp4", 32, 8),
+        ("mxfp8", 32, 4),
+        ("nvfp4", 32, 4),
+        ("unknown", 64, 4),
+    ],
+)
+def test_resolve_quantization_params_rejects_invalid_mlx_specs(
+    mode: str, group_size: int, bits: int
+) -> None:
+    from mlx_audio.lm.convert import resolve_quantization_params
+
+    with pytest.raises(ValueError, match="quantization"):
+        resolve_quantization_params(mode, group_size, bits)
 
 
 if __name__ == "__main__":

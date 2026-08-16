@@ -159,34 +159,58 @@ def test_quantization_policy_targets_only_large_generation_linears() -> None:
     assert not model.model_quant_predicate("vocoder.conv_in", large_linear)
 
 
-def test_mxfp_modes_rebuild_the_same_quantized_topology() -> None:
+@pytest.mark.parametrize(
+    ("mode", "group_size", "bits"),
+    [
+        ("affine", 64, 4),
+        ("mxfp4", 32, 4),
+        ("mxfp8", 32, 8),
+        ("nvfp4", 16, 4),
+    ],
+)
+def test_all_mlx_quantization_modes_rebuild_the_same_quantized_topology(
+    mode: str, group_size: int, bits: int
+) -> None:
     from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
     from mlx_audio.utils import apply_quantization
 
-    for mode, bits in (("mxfp4", 4), ("mxfp8", 8)):
-        model = Model(ModelConfig.tiny())
-        config = {"quantization": {"group_size": 32, "bits": bits, "mode": mode}}
-        selected = {
-            f"{path}.scales": mx.ones((1,))
-            for path, module in model.named_modules()
-            if isinstance(module, nn.Linear)
-            and model.model_quant_predicate(path, module)
-        }
+    model = Model(ModelConfig.tiny())
+    config = {"quantization": {"group_size": group_size, "bits": bits, "mode": mode}}
+    selected = {
+        f"{path}.scales": mx.ones((1,))
+        for path, module in model.named_modules()
+        if isinstance(module, nn.Linear)
+        and module.weight.shape[-1] % group_size == 0
+        and model.model_quant_predicate(path, module)
+    }
 
-        apply_quantization(
-            model,
-            config,
-            selected,
-            model.model_quant_predicate,
-        )
+    apply_quantization(
+        model,
+        config,
+        selected,
+        model.model_quant_predicate,
+    )
 
-        assert isinstance(
-            model.language_model.model.layers[0].self_attn.q_proj,
-            nn.QuantizedLinear,
-        )
-        assert model.language_model.model.layers[0].self_attn.q_proj.mode == mode
-        assert isinstance(model.language_model.lm_head, nn.Linear)
-        assert isinstance(model.vocoder.conv_in, nn.Conv1d)
+    assert isinstance(
+        model.language_model.model.layers[0].self_attn.q_proj,
+        nn.QuantizedLinear,
+    )
+    assert model.language_model.model.layers[0].self_attn.q_proj.mode == mode
+    assert isinstance(model.language_model.lm_head, nn.Linear)
+    assert isinstance(model.vocoder.conv_in, nn.Conv1d)
+
+
+def test_quantization_predicate_uses_the_selected_mode_group_size() -> None:
+    from mlx_audio.convert import build_quant_predicate
+    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
+
+    model = Model(ModelConfig.tiny())
+    predicate = build_quant_predicate(model, group_size=32)
+    valid_mxfp_linear = nn.Linear(96, 64, bias=False)
+
+    assert predicate(
+        "language_model.model.layers.0.self_attn.q_proj", valid_mxfp_linear
+    )
 
 
 def _component_configs(config) -> dict[str, dict]:
@@ -295,8 +319,17 @@ def _write_official_tiny_tree(source: Path) -> None:
         )
 
 
-def test_official_tree_converts_and_loads_in_both_mxfp_modes(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("mode", "group_size", "bits"),
+    [
+        ("affine", 64, 4),
+        ("mxfp4", 32, 4),
+        ("mxfp8", 32, 8),
+        ("nvfp4", 16, 4),
+    ],
+)
+def test_official_tree_converts_and_loads_in_every_mlx_quantization_mode(
+    tmp_path: Path, mode: str, group_size: int, bits: int
 ) -> None:
     from mlx_audio.convert import convert
     from mlx_audio.tts.utils import load_model
@@ -304,34 +337,33 @@ def test_official_tree_converts_and_loads_in_both_mxfp_modes(
     source = tmp_path / "MiniMax-Music3"
     _write_official_tiny_tree(source)
 
-    for mode, bits in (("mxfp4", 4), ("mxfp8", 8)):
-        destination = tmp_path / mode
-        convert(
-            str(source),
-            str(destination),
-            quantize=True,
-            q_mode=mode,
-        )
+    destination = tmp_path / mode
+    convert(
+        str(source),
+        str(destination),
+        quantize=True,
+        q_mode=mode,
+    )
 
-        saved_config = json.loads((destination / "config.json").read_text())
-        assert saved_config["model_type"] == "minimax_music3"
-        assert saved_config["quantization"]["mode"] == mode
-        assert saved_config["quantization"]["group_size"] == 32
-        assert saved_config["quantization"]["bits"] == bits
-        assert not (destination / "modular_model_index.json").exists()
+    saved_config = json.loads((destination / "config.json").read_text())
+    assert saved_config["model_type"] == "minimax_music3"
+    assert saved_config["quantization"]["mode"] == mode
+    assert saved_config["quantization"]["group_size"] == group_size
+    assert saved_config["quantization"]["bits"] == bits
+    assert not (destination / "modular_model_index.json").exists()
 
-        loaded = load_model(destination)
-        projection = loaded.language_model.model.layers[0].self_attn.q_proj
-        assert isinstance(projection, nn.QuantizedLinear)
-        assert projection.mode == mode
-        result = next(
-            loaded.generate(
-                text="Warm acoustic pop",
-                lyrics="[verse]\nMorning light",
-                duration=0.04,
-                steps=1,
-                seed=3,
-            )
+    loaded = load_model(destination)
+    projection = loaded.language_model.model.layers[0].self_attn.q_proj
+    assert isinstance(projection, nn.QuantizedLinear)
+    assert projection.mode == mode
+    result = next(
+        loaded.generate(
+            text="Warm acoustic pop",
+            lyrics="[verse]\nMorning light",
+            duration=0.04,
+            steps=1,
+            seed=3,
         )
-        assert result.audio.shape[1] == 2
-        assert np.isfinite(np.asarray(result.audio)).all()
+    )
+    assert result.audio.shape[1] == 2
+    assert np.isfinite(np.asarray(result.audio)).all()
