@@ -106,6 +106,7 @@ docs = [
 "mlx_audio.convert" = "mlx_audio.convert:main"
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
+"mlx_audio.music.generate" = "mlx_audio.music.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
 "mlx_audio.sts.generate" = "mlx_audio.sts.generate:main"
 
@@ -133,9 +134,6 @@ mlx_audio = [
     "tts/*.css",
     "tts/**/*.json",
     "tts/static/**/*",
-    "tts/**/*.md",
-    "**/LICENSE*",
-    "**/NOTICE*",
 ]
 
 [tool.black]

@@ -1,9 +1,4 @@
-"""Native MLX MiniMax Music 3 pipeline.
-
-The model implementation is adapted and modified from
-mikolaj92/minimax-music3-mlx (Apache-2.0) and integrated with mlx-audio's model,
-quantization, and result APIs. See LICENSE and NOTICE.
-"""
+"""Native MLX MiniMax Music 3 pipeline."""
 
 from __future__ import annotations
 

@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/Blaizzy/mlx-audio.svg?style=social)](https://github.com/Blaizzy/mlx-audio)
 
-The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
+The best audio processing library built on Apple's MLX framework, providing fast and efficient music generation, text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ The best audio processing library built on Apple's MLX framework, providing fast
 ## Features
 
 - Fast inference optimized for Apple Silicon (M series chips)
-- Multiple model architectures for TTS, STT, and STS
+- Multiple model architectures for music generation, TTS, STT, and STS
 - Multilingual support across models
 - Voice customization and cloning capabilities
 - Adjustable speech speed control
@@ -112,11 +112,16 @@ for result in model.generate(
 
 ## Supported Models
 
+### Music Generation
+
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [guide](mlx_audio/music/models/minimax_music3/README.md) |
+
 ### Text-to-Speech (TTS)
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
-| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [official](https://huggingface.co/MiniMaxAI/MiniMax-Music3), [MLX conversion guide](mlx_audio/tts/models/minimax_music3/README.md) |
 | **Kokoro** | Fast, high-quality multilingual TTS | EN, JA, ZH, FR, ES, IT, PT, HI | [bf16](https://huggingface.co/mlx-community/Kokoro-82M-bf16), [8bit](https://huggingface.co/mlx-community/Kokoro-82M-8bit), [6bit](https://huggingface.co/mlx-community/Kokoro-82M-6bit), [4bit](https://huggingface.co/mlx-community/Kokoro-82M-4bit) |
 | **KittenTTS** | Compact KittenTTS 0.8 models for edge-friendly TTS | EN | [nano](https://huggingface.co/mlx-community/kitten-tts-nano-0.8), [micro](https://huggingface.co/mlx-community/kitten-tts-micro-0.8), [mini](https://huggingface.co/mlx-community/kitten-tts-mini-0.8), [collection](https://huggingface.co/collections/mlx-community/kittentts) |
 | **Qwen3-TTS** | Alibaba's multilingual TTS with voice design | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |

@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -14,27 +12,17 @@ import pytest
 from mlx.utils import tree_flatten
 
 
-def test_minimax_music3_is_registered_as_tts() -> None:
-    from mlx_audio.tts.utils import MODEL_REMAPPING
+def test_minimax_music3_is_registered_as_music() -> None:
+    from mlx_audio.music.utils import MODEL_REMAPPING
+    from mlx_audio.registry import classify_model
 
     assert MODEL_REMAPPING["minimax_music3"] == "minimax_music3"
-
-
-def test_official_download_contract_excludes_legacy_duplicate_weights() -> None:
-    from mlx_audio.convert import get_model_download_patterns
-
-    patterns = get_model_download_patterns("MiniMaxAI/MiniMax-Music3")
-
-    assert "language_model/*.safetensors" in patterns
-    assert "transformer/*.safetensors" in patterns
-    assert "tokenizer/*" in patterns
-    assert not any("qwen_7B" in pattern for pattern in patterns)
-    assert not any(pattern.endswith(".pth") for pattern in patterns)
+    assert classify_model("minimax_music3", "MiniMax-Music3") == "music"
 
 
 def test_tiny_generation_returns_finite_stereo_audio() -> None:
+    from mlx_audio.music.models.minimax_music3.minimax_music3 import Model, ModelConfig
     from mlx_audio.tts.models.base import GenerationResult
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
 
     model = Model(ModelConfig.tiny())
     result = next(
@@ -71,14 +59,14 @@ def test_tiny_generation_returns_finite_stereo_audio() -> None:
 def test_chunk_starts_match_the_official_200_by_100_windows(
     num_frames: int, expected: list[int]
 ) -> None:
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import _chunk_starts
+    from mlx_audio.music.models.minimax_music3.minimax_music3 import _chunk_starts
 
     assert _chunk_starts(num_frames) == expected
 
 
 def test_waveform_crops_match_the_official_chunk_stitching() -> None:
-    from mlx_audio.tts.models.minimax_music3.config import LATENT_HOP_LENGTH
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import _crop_waveform
+    from mlx_audio.music.models.minimax_music3.config import LATENT_HOP_LENGTH
+    from mlx_audio.music.models.minimax_music3.minimax_music3 import _crop_waveform
 
     samples = 500 * LATENT_HOP_LENGTH
     waveform = mx.arange(samples, dtype=mx.float32).reshape(1, 1, -1)
@@ -95,7 +83,7 @@ def test_waveform_crops_match_the_official_chunk_stitching() -> None:
 
 
 def test_flow_schedule_runs_from_noise_to_data() -> None:
-    from mlx_audio.tts.models.minimax_music3.euler import make_sigma_schedule
+    from mlx_audio.music.models.minimax_music3.euler import make_sigma_schedule
 
     np.testing.assert_allclose(
         make_sigma_schedule(4),
@@ -103,41 +91,8 @@ def test_flow_schedule_runs_from_noise_to_data() -> None:
     )
 
 
-def test_music_generation_accepts_the_shared_cli_controls() -> None:
-    from mlx_audio.tts.generate import parse_args
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model
-
-    parameters = inspect.signature(Model.generate).parameters
-    assert "gen_duration" in parameters
-
-    with patch(
-        "sys.argv",
-        [
-            "generate.py",
-            "--model",
-            "local-music3",
-            "--text",
-            "Warm acoustic pop",
-            "--lyrics",
-            "[verse]\nMorning light",
-            "--gen_duration",
-            "8",
-            "--steps",
-            "20",
-            "--seed",
-            "7",
-        ],
-    ):
-        args = parse_args()
-
-    assert args.lyrics == "[verse]\nMorning light"
-    assert args.gen_duration == 8
-    assert args.steps == 20
-    assert args.seed == 7
-
-
 def test_quantization_policy_targets_only_large_generation_linears() -> None:
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
+    from mlx_audio.music.models.minimax_music3.minimax_music3 import Model, ModelConfig
 
     model = Model(ModelConfig.tiny())
     large_linear = nn.Linear(64, 64, bias=False)
@@ -171,7 +126,7 @@ def test_quantization_policy_targets_only_large_generation_linears() -> None:
 def test_all_mlx_quantization_modes_rebuild_the_same_quantized_topology(
     mode: str, group_size: int, bits: int
 ) -> None:
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
+    from mlx_audio.music.models.minimax_music3.minimax_music3 import Model, ModelConfig
     from mlx_audio.utils import apply_quantization
 
     model = Model(ModelConfig.tiny())
@@ -198,19 +153,6 @@ def test_all_mlx_quantization_modes_rebuild_the_same_quantized_topology(
     assert model.language_model.model.layers[0].self_attn.q_proj.mode == mode
     assert isinstance(model.language_model.lm_head, nn.Linear)
     assert isinstance(model.vocoder.conv_in, nn.Conv1d)
-
-
-def test_quantization_predicate_uses_the_selected_mode_group_size() -> None:
-    from mlx_audio.convert import build_quant_predicate
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
-
-    model = Model(ModelConfig.tiny())
-    predicate = build_quant_predicate(model, group_size=32)
-    valid_mxfp_linear = nn.Linear(96, 64, bias=False)
-
-    assert predicate(
-        "language_model.model.layers.0.self_attn.q_proj", valid_mxfp_linear
-    )
 
 
 def _component_configs(config) -> dict[str, dict]:
@@ -274,7 +216,7 @@ def _to_official_tensor(key: str, value: mx.array) -> mx.array:
 
 
 def _write_official_tiny_tree(source: Path) -> None:
-    from mlx_audio.tts.models.minimax_music3.minimax_music3 import Model, ModelConfig
+    from mlx_audio.music.models.minimax_music3.minimax_music3 import Model, ModelConfig
 
     config = ModelConfig.tiny()
     model = Model(config)
@@ -332,7 +274,7 @@ def test_official_tree_converts_and_loads_in_every_mlx_quantization_mode(
     tmp_path: Path, mode: str, group_size: int, bits: int
 ) -> None:
     from mlx_audio.convert import convert
-    from mlx_audio.tts.utils import load_model
+    from mlx_audio.music.utils import load_model
 
     source = tmp_path / "MiniMax-Music3"
     _write_official_tiny_tree(source)

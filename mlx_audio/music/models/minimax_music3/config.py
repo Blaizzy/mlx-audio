@@ -1,8 +1,4 @@
-"""Checkpoint contract and architecture sizes for MiniMax Music 3.
-
-Adapted and modified from mikolaj92/minimax-music3-mlx under Apache-2.0.
-See LICENSE and NOTICE.
-"""
+"""Checkpoint contract and architecture sizes for MiniMax Music 3."""
 
 from __future__ import annotations
 

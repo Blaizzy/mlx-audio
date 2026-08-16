@@ -1,8 +1,4 @@
-"""Convert the official modular Diffusers checkpoint into MLX tensors.
-
-Adapted and modified from mikolaj92/minimax-music3-mlx under Apache-2.0.
-See LICENSE and NOTICE.
-"""
+"""Convert the official modular Diffusers checkpoint into MLX tensors."""
 
 from __future__ import annotations
 

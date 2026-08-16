@@ -17,12 +17,10 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 
-from mlx_audio.lm.convert import QUANTIZATION_SPECS, resolve_quantization_params
-
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
-QUANT_MODES = list(QUANTIZATION_SPECS)
+QUANT_MODES = ["affine", "mxfp4", "nvfp4", "mxfp8"]
 
 
 class Domain(str, Enum):
@@ -32,6 +30,7 @@ class Domain(str, Enum):
     STT = "stt"
     STS = "sts"
     LID = "lid"
+    MUSIC = "music"
 
 
 @dataclass
@@ -113,6 +112,23 @@ DOMAIN_CONFIGS = {
         results = model.predict(audio, top_k=5)
         for lang, prob in results:
             print(f"{lang}: {prob:.1%}")
+        """,
+    ),
+    Domain.MUSIC: DomainConfig(
+        name="Music",
+        tags=["text-to-audio", "music-generation", "music", "audio"],
+        cli_example=(
+            "python -m mlx_audio.music.generate --model {repo} "
+            '--caption "Warm acoustic pop" --lyrics "[verse]\\nMorning light"'
+        ),
+        python_example="""
+        from mlx_audio.music import load
+
+        model = load("{repo}")
+        result = next(model.generate(
+            text="Warm acoustic pop",
+            lyrics="[verse]\\nMorning light",
+        ))
         """,
     ),
 }
@@ -215,22 +231,7 @@ def get_detection_hints(domain: Domain) -> dict:
     return _detection_hints_cache[domain_str]
 
 
-def get_model_download_patterns(path_or_hf_repo: str) -> Optional[list[str]]:
-    """Return a model-specific Hub download manifest when one is registered."""
-    match = _match_by_path(Path(path_or_hf_repo))
-    if match is None:
-        return None
-    domain, model_type = match
-    model_class = get_model_class(model_type, domain)
-    patterns = getattr(model_class, "DOWNLOAD_ALLOW_PATTERNS", None)
-    return list(patterns) if patterns else None
-
-
-def get_model_path(
-    path_or_hf_repo: str,
-    revision: Optional[str] = None,
-    allow_patterns: Optional[list[str]] = None,
-) -> Path:
+def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path:
     """
     Ensures the model is available locally.
 
@@ -239,24 +240,23 @@ def get_model_path(
     model_path = Path(path_or_hf_repo)
 
     if not model_path.exists():
-        allow_patterns = allow_patterns or [
-            "*.json",
-            "*.safetensors",
-            "*.py",
-            "*.model",
-            "*.tiktoken",
-            "*.txt",
-            "*.jinja",
-            "*.jsonl",
-            "*.yaml",
-            "*.wav",
-            "*.pth",
-        ]
         model_path = Path(
             snapshot_download(
                 path_or_hf_repo,
                 revision=revision,
-                allow_patterns=allow_patterns,
+                allow_patterns=[
+                    "*.json",
+                    "*.safetensors",
+                    "*.py",
+                    "*.model",
+                    "*.tiktoken",
+                    "*.txt",
+                    "*.jinja",
+                    "*.jsonl",
+                    "*.yaml",
+                    "*.wav",
+                    "*.pth",
+                ],
             )
         )
 
@@ -344,7 +344,7 @@ def _match_by_path(model_path: Path) -> Optional[tuple[Domain, str]]:
 
 def detect_model_domain(config: dict, model_path: Path) -> Domain:
     """
-    Detect whether a model is TTS, STT, or STS based on its configuration.
+    Detect the model domain from its configuration and repository path.
 
     Uses multiple heuristics in order of reliability:
     1. model_type or name field in config
@@ -494,9 +494,7 @@ def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: Domain):
 
 
 def build_quant_predicate(
-    model,
-    quant_predicate_name: Optional[str] = None,
-    group_size: int = 64,
+    model, quant_predicate_name: Optional[str] = None
 ) -> Callable[[str, any], bool]:
     """Build the quantization predicate function."""
     model_quant_predicate = getattr(model, "model_quant_predicate", lambda p, m: True)
@@ -504,7 +502,7 @@ def build_quant_predicate(
     def base_requirements(path: str, module) -> bool:
         return (
             hasattr(module, "weight")
-            and module.weight.shape[-1] % group_size == 0
+            and module.weight.shape[-1] % 64 == 0
             and hasattr(module, "to_quantized")
             and model_quant_predicate(path, module)
         )
@@ -599,8 +597,7 @@ def convert(
     """
     Convert a model from HuggingFace to MLX format.
 
-    Automatically detects whether the model is TTS, STT, or STS and handles
-    conversion appropriately.
+    Automatically detects the model domain and handles conversion appropriately.
 
     Args:
         hf_path: Path to the Hugging Face model or repo ID.
@@ -614,7 +611,7 @@ def convert(
         dequantize: Whether to dequantize a quantized model.
         quant_predicate: Mixed-bit quantization recipe.
         q_mode: Quantization mode (affine, mxfp4, nvfp4, mxfp8).
-        model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
+        model_domain: Force model domain. Auto-detected if None.
     """
     from mlx_audio.lm.convert import (
         dequantize_model,
@@ -627,15 +624,7 @@ def convert(
         raise ValueError("Choose either quantize or dequantize, not both.")
 
     print(f"[INFO] Loading model from {hf_path}")
-    download_patterns = get_model_download_patterns(hf_path)
-    if download_patterns:
-        model_path = get_model_path(
-            hf_path,
-            revision=revision,
-            allow_patterns=download_patterns,
-        )
-    else:
-        model_path = get_model_path(hf_path, revision=revision)
+    model_path = get_model_path(hf_path, revision=revision)
     config = load_config(model_path)
 
     # Detect domain and model type
@@ -683,20 +672,13 @@ def convert(
 
     # Handle quantization/dequantization
     if quantize:
-        effective_group_size, effective_bits = resolve_quantization_params(
-            q_mode, q_group_size, q_bits
-        )
-        final_predicate = build_quant_predicate(
-            model,
-            quant_predicate,
-            group_size=effective_group_size,
-        )
+        final_predicate = build_quant_predicate(model, quant_predicate)
         model.load_weights(list(weights.items()))
         weights, config = quantize_model(
             model,
             config,
-            effective_group_size,
-            effective_bits,
+            q_group_size,
+            q_bits,
             mode=q_mode,
             quant_predicate=final_predicate,
         )
@@ -728,7 +710,7 @@ def convert(
 def configure_parser() -> argparse.ArgumentParser:
     """Configure and return the argument parser."""
     parser = argparse.ArgumentParser(
-        description="Convert HuggingFace model (TTS, STT, or STS) to MLX format"
+        description="Convert a Hugging Face audio model to MLX format"
     )
 
     parser.add_argument(
@@ -802,7 +784,7 @@ def configure_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-domain",
         type=str,
-        choices=["tts", "stt", "sts", "lid"],
+        choices=[domain.value for domain in Domain],
         default=None,
         help="Force model domain (auto-detected if not specified).",
     )

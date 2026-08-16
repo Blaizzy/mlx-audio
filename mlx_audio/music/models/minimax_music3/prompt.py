@@ -1,8 +1,4 @@
-"""Assemble the MiniMax Music 3 caption-and-lyrics prompt.
-
-Adapted and modified from mikolaj92/minimax-music3-mlx under Apache-2.0.
-See LICENSE and NOTICE.
-"""
+"""Assemble the MiniMax Music 3 caption-and-lyrics prompt."""
 
 from __future__ import annotations
 
