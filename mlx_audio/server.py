@@ -16,6 +16,7 @@ import subprocess
 import time
 import uuid
 import webbrowser
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
@@ -89,21 +90,54 @@ def sanitize_for_json(obj: Any) -> Any:
         return obj
 
 
+DEFAULT_MAX_LOADED_MODELS = 2
+
+
 class ModelProvider:
+    """Caches loaded models, keeping at most ``max_models`` of them resident.
+
+    Every distinct model path used to stay in memory for the lifetime of the
+    process, so a server handling several voices grew without bound. The cache
+    is now an LRU bounded by ``MLX_AUDIO_MAX_LOADED_MODELS`` (default
+    ``DEFAULT_MAX_LOADED_MODELS``, which keeps a TTS and an STT model resident
+    at the same time).
+    """
+
     def __init__(self):
-        self.models: Dict[str, Dict[str, Any]] = {}
+        self.models: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        raw_max_models = os.getenv("MLX_AUDIO_MAX_LOADED_MODELS", str(DEFAULT_MAX_LOADED_MODELS))
+        try:
+            self.max_models = max(1, int(raw_max_models))
+        except ValueError:
+            self.max_models = DEFAULT_MAX_LOADED_MODELS
         self.lock = asyncio.Lock()
 
     def load_model(self, model_name: str):
-        if model_name not in self.models:
-            self.models[model_name] = load_model(model_name)
+        if model_name in self.models:
+            self.models.move_to_end(model_name)
+            return self.models[model_name]
 
-        return self.models[model_name]
+        model = load_model(model_name)
+        self.models[model_name] = model
+        self._evict_until_within_limit()
+
+        return model
+
+    def _evict_until_within_limit(self) -> None:
+        """Drop least recently used models until the cache fits the limit."""
+        evicted = False
+        while len(self.models) > self.max_models:
+            self.models.popitem(last=False)
+            evicted = True
+
+        if evicted:
+            mx.clear_cache()
 
     async def remove_model(self, model_name: str) -> bool:
         async with self.lock:
             if model_name in self.models:
                 del self.models[model_name]
+                mx.clear_cache()
                 return True
             return False
 

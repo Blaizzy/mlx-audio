@@ -891,3 +891,87 @@ def test_stt_word_timestamps_verbose_json_words_passthrough(
     assert len(words) == 2
     assert words[0]["word"] == "Hello"
     assert words[1]["word"] == "world."
+
+
+def _provider(monkeypatch, max_models=None):
+    """Build a ModelProvider whose load_model returns a cheap sentinel."""
+    from mlx_audio import server as server_module
+
+    if max_models is None:
+        monkeypatch.delenv("MLX_AUDIO_MAX_LOADED_MODELS", raising=False)
+    else:
+        monkeypatch.setenv("MLX_AUDIO_MAX_LOADED_MODELS", str(max_models))
+
+    loaded = []
+
+    def fake_load_model(name):
+        loaded.append(name)
+        return {"name": name}
+
+    monkeypatch.setattr(server_module, "load_model", fake_load_model)
+    return server_module.ModelProvider(), loaded
+
+
+def test_model_provider_caches_without_reloading(monkeypatch):
+    provider, loaded = _provider(monkeypatch, max_models=2)
+
+    first = provider.load_model("a")
+    again = provider.load_model("a")
+
+    assert first is again
+    assert loaded == ["a"]
+
+
+def test_model_provider_evicts_least_recently_used(monkeypatch):
+    provider, _ = _provider(monkeypatch, max_models=2)
+
+    provider.load_model("a")
+    provider.load_model("b")
+    provider.load_model("c")
+
+    # "a" is the least recently used, so it is the one that goes.
+    assert list(provider.models.keys()) == ["b", "c"]
+
+
+def test_model_provider_use_refreshes_recency(monkeypatch):
+    provider, _ = _provider(monkeypatch, max_models=2)
+
+    provider.load_model("a")
+    provider.load_model("b")
+    provider.load_model("a")  # "a" becomes most recently used
+    provider.load_model("c")
+
+    assert list(provider.models.keys()) == ["a", "c"]
+
+
+def test_model_provider_respects_env_limit(monkeypatch):
+    provider, loaded = _provider(monkeypatch, max_models=1)
+
+    provider.load_model("a")
+    provider.load_model("b")
+
+    assert list(provider.models.keys()) == ["b"]
+    assert provider.max_models == 1
+
+    # "a" was evicted, so asking for it again reloads it.
+    provider.load_model("a")
+    assert loaded == ["a", "b", "a"]
+
+
+def test_model_provider_invalid_env_falls_back_to_default(monkeypatch):
+    from mlx_audio.server import DEFAULT_MAX_LOADED_MODELS
+
+    provider, _ = _provider(monkeypatch, max_models="not-a-number")
+
+    assert provider.max_models == DEFAULT_MAX_LOADED_MODELS
+
+
+def test_model_provider_default_limit_is_bounded(monkeypatch):
+    from mlx_audio.server import DEFAULT_MAX_LOADED_MODELS
+
+    provider, _ = _provider(monkeypatch)
+
+    for i in range(DEFAULT_MAX_LOADED_MODELS + 3):
+        provider.load_model(f"model-{i}")
+
+    assert len(provider.models) == DEFAULT_MAX_LOADED_MODELS
