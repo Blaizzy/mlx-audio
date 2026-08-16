@@ -116,7 +116,7 @@ for result in model.generate(
 
 | Model | Description | Languages | Repo |
 |-------|-------------|-----------|------|
-| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [guide](mlx_audio/music/models/minimax_music3/README.md) |
+| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [8-bit](https://huggingface.co/mlx-community/MiniMax-Music3-8bit), [6-bit](https://huggingface.co/mlx-community/MiniMax-Music3-6bit), [4-bit](https://huggingface.co/mlx-community/MiniMax-Music3-4bit), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [NVFP4](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4), [guide](mlx_audio/music/models/minimax_music3/README.md) |
 
 ### Text-to-Speech (TTS)
 

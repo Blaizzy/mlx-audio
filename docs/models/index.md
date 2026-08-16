@@ -14,7 +14,7 @@ Generate complete songs from a musical caption and structured lyrics.
 
 | Model | Description | Repo |
 |-------|-------------|------|
-| **MiniMax Music 3** | Multilingual song generation with structural tags and 44.1 kHz stereo output | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4) |
+| **MiniMax Music 3** | Multilingual song generation with structural tags and 44.1 kHz stereo output | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [8-bit](https://huggingface.co/mlx-community/MiniMax-Music3-8bit), [6-bit](https://huggingface.co/mlx-community/MiniMax-Music3-6bit), [4-bit](https://huggingface.co/mlx-community/MiniMax-Music3-4bit), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [NVFP4](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4) |
 
 [:octicons-arrow-right-24: Browse Music Models](music/index.md)
 

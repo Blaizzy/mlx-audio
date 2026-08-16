@@ -10,8 +10,12 @@ a stereo 44.1 kHz vocoder. The original checkpoint is
 | Model | Recommendation |
 |---|---|
 | [`mlx-community/MiniMax-Music3-bf16`](https://huggingface.co/mlx-community/MiniMax-Music3-bf16) | Dense reference conversion |
+| [`mlx-community/MiniMax-Music3-8bit`](https://huggingface.co/mlx-community/MiniMax-Music3-8bit) | Affine 8-bit conversion |
+| [`mlx-community/MiniMax-Music3-6bit`](https://huggingface.co/mlx-community/MiniMax-Music3-6bit) | Affine 6-bit conversion |
+| [`mlx-community/MiniMax-Music3-4bit`](https://huggingface.co/mlx-community/MiniMax-Music3-4bit) | Affine 4-bit conversion |
 | [`mlx-community/MiniMax-Music3-mxfp8`](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8) | Recommended balance of memory and lyric fidelity |
 | [`mlx-community/MiniMax-Music3-mxfp4`](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4) | Experimental lower-memory conversion |
+| [`mlx-community/MiniMax-Music3-nvfp4`](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4) | Experimental NVFP4 conversion |
 
 !!! warning "Choose MXFP8 when lyric fidelity matters"
     MXFP4 uses less memory, but may alter or omit more requested words than

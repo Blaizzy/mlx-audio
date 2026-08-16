@@ -117,6 +117,8 @@ def test_quantization_policy_targets_only_large_generation_linears() -> None:
 @pytest.mark.parametrize(
     ("mode", "group_size", "bits"),
     [
+        ("affine", 64, 8),
+        ("affine", 64, 6),
         ("affine", 64, 4),
         ("mxfp4", 32, 4),
         ("mxfp8", 32, 8),
@@ -264,6 +266,8 @@ def _write_official_tiny_tree(source: Path) -> None:
 @pytest.mark.parametrize(
     ("mode", "group_size", "bits"),
     [
+        ("affine", 64, 8),
+        ("affine", 64, 6),
         ("affine", 64, 4),
         ("mxfp4", 32, 4),
         ("mxfp8", 32, 8),
@@ -285,6 +289,7 @@ def test_official_tree_converts_and_loads_in_every_mlx_quantization_mode(
         str(destination),
         quantize=True,
         q_mode=mode,
+        q_bits=bits,
     )
 
     saved_config = json.loads((destination / "config.json").read_text())
