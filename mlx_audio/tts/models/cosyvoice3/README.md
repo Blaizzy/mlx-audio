@@ -19,18 +19,11 @@ from mlx_audio.tts import load
 model = load("mlx-community/CosyVoice3-0.5B")  # or a local checkpoint dir
 
 result = next(model.generate(
-    text="收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。",
-    ref_audio="examples/cosyvoice3/zero_shot_prompt.wav",
-    ref_text="You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。",
-))
-audio_write("output.wav", result.audio, result.sample_rate)
-
-# English zero-shot
-result = next(model.generate(
     text="Hello, this is a cloned voice speaking English text.",
     ref_audio="examples/voice_prompts/en_woman.wav",
     ref_text="You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut.",
 ))
+audio_write("output.wav", result.audio, result.sample_rate)
 ```
 
 CLI:
@@ -39,19 +32,10 @@ CLI:
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
   --no-strict \
-  --text "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。" \
-  --ref_audio examples/cosyvoice3/zero_shot_prompt.wav \
-  --ref_text "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。" \
-  --file_prefix zero_shot
-
-# English zero-shot
-python -m mlx_audio.tts.generate \
-  --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --text "Hello, this is a cloned voice speaking English text." \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
-  --file_prefix zero_shot_en
+  --file_prefix zero_shot
 ```
 
 `ref_audio` (a zero-shot voice-cloning prompt) is required — CosyVoice3 has no
@@ -59,6 +43,12 @@ built-in preset speakers in this port. `ref_text` is optional; when omitted,
 `generate.py` transcribes `ref_audio` automatically before calling the model
 (the transcription is NOT auto-wrapped with `<|endofprompt|>`, so add it
 yourself first if you need it — see below).
+
+This repo ships shared English sample voices in
+[`examples/voice_prompts/`](../../../../examples/voice_prompts/) (`en_woman`,
+`en_man`, `en_man_deep`, each with a matching `.txt` transcript). For a voice
+in another language, provide your own reference clip and set `ref_text` to its
+transcript.
 
 The concatenation of `prompt_text` (`ref_text`) and `text` fed to the LLM
 must contain the `<|endofprompt|>` token (id 151646) — `CosyVoice3LM`
@@ -79,12 +69,12 @@ is not sent to the LLM at all), matching the reference's
 `inference_cross_lingual` usage:
 
 ```bash
-# Chinese reference, English target
+# Chinese reference, English target (supply your own Chinese reference clip)
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
   --no-strict \
   --text "You are a helpful assistant.<|endofprompt|>Hello, this is a cloned voice." \
-  --ref_audio examples/cosyvoice3/cross_lingual_prompt.wav \
+  --ref_audio path/to/your/chinese_reference.wav \
   --cross_lingual \
   --file_prefix cross_lingual_zh2en
 
@@ -113,7 +103,7 @@ Must contain ``<|endofprompt|>`` in the instruction text (or in
 # Chinese instruct2
 result = next(model.generate(
     text="收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。",
-    ref_audio="examples/cosyvoice3/zero_shot_prompt.wav",
+    ref_audio="examples/voice_prompts/en_woman.wav",
     instruct="You are a helpful assistant. 用四川话说这句话<|endofprompt|>",
 ))
 
@@ -131,7 +121,7 @@ python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
   --no-strict \
   --text "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。" \
-  --ref_audio examples/cosyvoice3/zero_shot_prompt.wav \
+  --ref_audio examples/voice_prompts/en_woman.wav \
   --instruct "You are a helpful assistant. 用四川话说这句话<|endofprompt|>" \
   --file_prefix instruct2
 
@@ -183,13 +173,13 @@ model = load("mlx-community/CosyVoice3-0.5B")
 
 # cache one or more speakers
 model.add_zero_shot_spk(
-    "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。",
-    "examples/cosyvoice3/zero_shot_prompt.wav",
+    "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut.",
+    "examples/voice_prompts/en_woman.wav",
     "alice",
 )
 model.add_zero_shot_spk(
-    "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。",
-    "examples/cosyvoice3/zero_shot_prompt.wav",
+    "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut.",
+    "examples/voice_prompts/en_woman.wav",
     "bob",
 )
 
@@ -213,12 +203,12 @@ the in-memory ``spk2info`` dict.
 ```python
 # ---- session 1: create and save ----
 model.add_zero_shot_spk(
-    "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。",
-    "examples/cosyvoice3/zero_shot_prompt.wav", "alice",
+    "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut.",
+    "examples/voice_prompts/en_woman.wav", "alice",
 )
 model.add_zero_shot_spk(
-    "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。",
-    "examples/cosyvoice3/zero_shot_prompt.wav", "bob",
+    "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut.",
+    "examples/voice_prompts/en_woman.wav", "bob",
 )
 model.add_zero_shot_spk(
     "The radio quietly played a familiar song. Outside, rain tapped against "
@@ -248,8 +238,8 @@ number of speakers.
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
   --no-strict \
-  --ref_audio examples/cosyvoice3/zero_shot_prompt.wav \
-  --ref_text "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。" \
+  --ref_audio examples/voice_prompts/en_woman.wav \
+  --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
   --add_spk alice \
   --save_spkinfo my_speakers.safetensors \
   --file_prefix cached_alice
@@ -267,8 +257,8 @@ python -m mlx_audio.tts.generate \
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
   --no-strict \
-  --ref_audio examples/cosyvoice3/zero_shot_prompt.wav \
-  --ref_text "You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。" \
+  --ref_audio examples/voice_prompts/en_woman.wav \
+  --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
   --add_spk bob \
   --save_spkinfo my_speakers.safetensors \
   --text "你好世界" \
@@ -302,8 +292,8 @@ contains SSML-style control tokens).
 # skip text_normalize for pre-tokenized / control-token text
 result = next(model.generate(
     text="[breath]因为他们那一辈人[breath]在乡里面住的要习惯一点",
-    ref_audio="examples/cosyvoice3/zero_shot_prompt.wav",
-    ref_text="You are a helpful assistant.<|endofprompt|>希望你以后能够做的比我还好呦。",
+    ref_audio="examples/voice_prompts/en_woman.wav",
+    ref_text="You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut.",
     text_frontend=False,
 ))
 ```
