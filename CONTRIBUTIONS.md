@@ -2,6 +2,13 @@
 
 This file acknowledges the original authors and contributors of models ported to mlx-audio.
 
+## MiniMax Music 3 (Song Generation)
+
+- **Original**: [MiniMaxAI/MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3)
+- **Copyright**: MiniMax
+- **License**: [MiniMax-Music3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE)
+- **MLX Port**: Adapted from [mikolaj92/minimax-music3-mlx](https://github.com/mikolaj92/minimax-music3-mlx) (Apache-2.0)
+
 ## MossFormer2 SE (Speech Enhancement)
 
 - **Original**: [ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio)
