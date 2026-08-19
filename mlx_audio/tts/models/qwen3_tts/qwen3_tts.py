@@ -811,7 +811,6 @@ class Model(nn.Module):
         repetition_penalty: float = 1.05,
         generated_tokens: Optional[List[int]] = None,
         suppress_tokens: Optional[List[int]] = None,
-        eos_token_id: Optional[int] = None,
         min_p: float = 0.0,
     ) -> mx.array:
 
@@ -852,18 +851,10 @@ class Model(nn.Module):
         if temperature != 1.0:
             logits = logits / temperature
 
-        eos_logit = None
-        if eos_token_id is not None and eos_token_id < logits.shape[-1]:
-            eos_logit = logits[:, eos_token_id : eos_token_id + 1]
-
         if top_k > 0 and top_k < logits.shape[-1]:
             logits = apply_top_k(logits, top_k)
 
         logits = _apply_probability_filters(logits, top_p, min_p)
-
-        if eos_logit is not None:
-            eos_idx = mx.array([[eos_token_id]], dtype=mx.int32)
-            logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
         token = categorical_sampling(logits, 1.0)
         return token[:, None]
@@ -877,7 +868,6 @@ class Model(nn.Module):
         repetition_penalty: float = 1.05,
         generated_tokens_per_seq: Optional[List[List[int]]] = None,
         suppress_tokens: Optional[List[int]] = None,
-        eos_token_id: Optional[int] = None,
         min_p: float = 0.0,
     ) -> mx.array:
         """Batched sampling from [batch, seq_len, vocab] logits. Returns [batch, 1]."""
@@ -926,20 +916,10 @@ class Model(nn.Module):
         if temperature != 1.0:
             logits = logits / temperature
 
-        # Preserve EOS logit before filtering
-        eos_logit = None
-        if eos_token_id is not None and eos_token_id < logits.shape[-1]:
-            eos_logit = logits[:, eos_token_id : eos_token_id + 1]  # [batch, 1]
-
         if top_k > 0 and top_k < logits.shape[-1]:
             logits = apply_top_k(logits, top_k)
 
         logits = _apply_probability_filters(logits, top_p, min_p)
-
-        # Restore EOS logit
-        if eos_logit is not None:
-            eos_idx = mx.full((logits.shape[0], 1), eos_token_id, dtype=mx.int32)
-            logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
         tokens = categorical_sampling(logits, 1.0)  # [batch]
         return tokens[:, None]  # [batch, 1]
@@ -1342,7 +1322,6 @@ class Model(nn.Module):
                         generated_token_ids if generated_token_ids else None
                     ),
                     suppress_tokens=suppress_tokens,
-                    eos_token_id=eos_token_id,
                 )
 
                 # Lazy EOS check — defer sync to batch with input_embeds eval
@@ -1880,7 +1859,6 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 generated_tokens_per_seq=generated_token_ids,
                 suppress_tokens=suppress_tokens,
-                eos_token_id=eos_token_id,
             )  # [batch, 1]
 
             # Mask finished sequences to EOS (vectorized, no sync)
@@ -2287,7 +2265,6 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 generated_tokens=(generated_token_ids if generated_token_ids else None),
                 suppress_tokens=suppress_tokens,
-                eos_token_id=eos_token_id,
             )
 
             # Lazy EOS check — defer sync to batch with input_embeds eval
@@ -2595,7 +2572,6 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 generated_tokens=(generated_token_ids if generated_token_ids else None),
                 suppress_tokens=suppress_tokens,
-                eos_token_id=eos_token_id,
             )
 
             # Lazy EOS check — defer sync to batch with input_embeds eval
