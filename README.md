@@ -69,26 +69,28 @@ pip install -e ".[dev, server]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello, world!' --voice Chelsie
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello, world!' --voice Vivian
 
 # With a different voice and language hint
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Welcome to MLX-Audio!' --voice Ethan --lang_code English
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Welcome to MLX-Audio!' --voice Ryan --lang_code English
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --play
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --play
 
 # Save to a specific directory
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --output_path ./my_audio
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --output_path ./my_audio
 
 # Stream audio during generation
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --stream
 
 # Stream audio during generation and save it to disk
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream --save
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --stream --save
 
 # Join multiple generated segments into one file
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text $'Hello!\nHow are you?' --voice Chelsie --join_audio
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text $'Hello!\nHow are you?' --voice Vivian --join_audio
 ```
+
+Note: `--voice` picks a preset speaker and only works with **CustomVoice** models — the Qwen3-TTS **Base** models have no preset voices; clone a voice with them instead by passing `ref_audio` + `ref_text` (see the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md)).
 
 By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
@@ -98,12 +100,12 @@ By default, when generation yields multiple segments, mlx-audio saves numbered f
 from mlx_audio.tts.utils import load_model
 
 # Load model
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
 # Generate speech
 for result in model.generate(
     "Hello from MLX-Audio!",
-    voice="Chelsie",
+    voice="Vivian",
     lang_code="English",
 ):
     print(f"Generated {result.audio.shape[0]} samples")
@@ -194,10 +196,10 @@ Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control,
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
-results = list(model.generate(
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16")
+results = list(model.generate_custom_voice(
     text="Hello, welcome to MLX-Audio!",
-    voice="Chelsie",
+    speaker="Vivian",
     language="English",
 ))
 

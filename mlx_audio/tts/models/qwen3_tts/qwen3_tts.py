@@ -1165,11 +1165,13 @@ class Model(nn.Module):
         Automatically routes to the appropriate generation method based on model type:
         - voice_design: Uses generate_voice_design() with instruct as voice description
         - custom_voice: Uses generate_custom_voice() with voice as speaker and optional instruct
-        - base: Uses standard generation with voice as speaker
+        - base: Uses ref_audio + ref_text for voice cloning; has no preset voices
 
         Args:
             text: Input text to synthesize
-            voice: Speaker name (for multi-speaker models, e.g., 'Chelsie', 'Ethan')
+            voice: Speaker name (CustomVoice models only, e.g. 'Vivian', 'Ryan';
+                see model.get_supported_speakers()). Base models have no preset
+                voices — use ref_audio + ref_text to clone a voice instead.
             instruct: Instruction for emotion/style (CustomVoice) or voice description (VoiceDesign)
             temperature: Sampling temperature
             speed: Speech speed factor (not directly supported yet)
@@ -1220,7 +1222,7 @@ class Model(nn.Module):
             if not voice:
                 raise ValueError(
                     "CustomVoice model requires 'voice' (speaker name) "
-                    "(e.g., 'Chelsie', 'Ethan', 'Vivian')"
+                    f"(e.g., {self.supported_speakers})"
                 )
             yield from self.generate_custom_voice(
                 text=text,
@@ -1268,6 +1270,20 @@ class Model(nn.Module):
                 streaming_interval=streaming_interval,
             )
             return
+
+        if voice is not None and voice.lower() not in [
+            s.lower() for s in self.supported_speakers
+        ]:
+            raise ValueError(
+                f"Voice '{voice}' is not supported by this Base model. "
+                "Base models have no built-in preset voices — clone a voice by "
+                "passing ref_audio and ref_text instead."
+                + (
+                    f" Available preset voices: {self.supported_speakers}"
+                    if self.supported_speakers
+                    else ""
+                )
+            )
 
         # Split text into segments
         if split_pattern:

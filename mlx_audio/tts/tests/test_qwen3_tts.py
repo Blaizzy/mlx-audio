@@ -496,7 +496,7 @@ def _make_generation_test_model(text_token_count: int = 10):
     model.talker = _FakeTalker(hidden_size=hidden_size, vocab_size=vocab_size)
     model.speech_tokenizer = _FakeSpeechTokenizer()
     model.tokenizer = SimpleNamespace(encode=lambda text: list(range(text_token_count)))
-    model._prepare_generation_inputs = lambda **kwargs: (
+    model._prepare_generation_inputs = lambda *args, **kwargs: (
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
@@ -635,6 +635,36 @@ class TestQwen3TTSMaxTokens(unittest.TestCase):
         )
 
         self.assertEqual(results[-1].token_count, 120)
+
+
+class TestQwen3TTSBaseVoiceValidation(unittest.TestCase):
+    """Regression tests for mlx-audio#892: passing an unsupported `voice` to a
+    Base model (which has no preset speakers) used to silently no-op instead
+    of erroring, producing unconditioned/random-sounding audio on every call.
+    """
+
+    def test_generate_rejects_unsupported_voice_on_base_model(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = []
+
+        with self.assertRaises(ValueError):
+            next(model.generate(text="Hello", voice="Chelsie"))
+
+    def test_generate_allows_no_voice_on_base_model(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = []
+
+        results = list(model.generate(text="Hello", voice=None, max_tokens=1))
+
+        self.assertTrue(results)
+
+    def test_generate_allows_supported_voice_case_insensitively(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = ["Vivian"]
+
+        results = list(model.generate(text="Hello", voice="vivian", max_tokens=1))
+
+        self.assertTrue(results)
 
 
 if __name__ == "__main__":

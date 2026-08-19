@@ -5,7 +5,10 @@ mlx-audio provides command-line tools for both text-to-speech generation and spe
 ## Text-to-Speech
 
 !!! note
-    These TTS quickstart examples use `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
+    These TTS quickstart examples use `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit`,
+    which supports preset voices via `--voice`. The Qwen3-TTS **Base** models (e.g.
+    `Qwen3-TTS-12Hz-1.7B-Base-8bit`) have no preset voices — see
+    [Voice Cloning](#voice-cloning-csm) below for how to use them with a reference audio clip instead.
 
 ### Basic Generation
 
@@ -13,9 +16,9 @@ Generate speech from text with a single command:
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
+    --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit \
     --text "Hello, world!" \
-    --voice Chelsie \
+    --voice Vivian \
     --lang_code English
 ```
 
@@ -25,9 +28,9 @@ Add `--play` to hear the result without saving:
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
+    --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit \
     --text "Hello, world!" \
-    --voice Chelsie \
+    --voice Vivian \
     --lang_code English \
     --play
 ```
@@ -38,9 +41,9 @@ Choose a voice preset and provide a language hint:
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
+    --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit \
     --text "Welcome to MLX-Audio!" \
-    --voice Ethan \
+    --voice Ryan \
     --lang_code English
 ```
 
@@ -48,9 +51,9 @@ mlx_audio.tts.generate \
 
 ```bash
 mlx_audio.tts.generate \
-    --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit \
+    --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit \
     --text "Hello!" \
-    --voice Chelsie \
+    --voice Vivian \
     --lang_code English \
     --output_path ./my_audio
 ```
@@ -123,7 +126,7 @@ python -m mlx_audio.stt.generate \
 | `--model` | Hugging Face model ID or local path |
 | `--text` | Input text for TTS generation |
 | `--audio` | Input audio file for STT transcription |
-| `--voice` | Voice preset name (e.g., `Chelsie`, `Ethan`, `casual_male`) |
+| `--voice` | Voice preset name (e.g., `Vivian`, `Ryan`, `casual_male`); CustomVoice models only |
 | `--speed` | Speech speed multiplier (default: `1.0`) |
 | `--lang_code` | Language hint (e.g., `English`, `Chinese`, or `auto`) |
 | `--play` | Play audio immediately after generation |

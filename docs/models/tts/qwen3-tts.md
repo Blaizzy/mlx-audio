@@ -6,8 +6,8 @@ Alibaba's state-of-the-art multilingual TTS with three model variants covering v
 
 | Model | Method | Description | HuggingFace |
 |-------|--------|-------------|-------------|
-| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast, predefined voices | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16) |
-| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher quality | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16) |
+| `mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16` | `generate()` | Fast voice cloning (ref_audio + ref_text); no preset voices | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16) |
+| `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16` | `generate()` | Higher-quality voice cloning; no preset voices | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16) |
 | `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` | `generate_custom_voice()` | Voices + emotion | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16) |
 | `mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16` | `generate_custom_voice()` | Better emotion control | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16) |
 | `mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16` | `generate_voice_design()` | Create any voice from description | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Qwen3-TTS-12Hz-1.7B-VoiceDesign-bf16) |
@@ -20,9 +20,9 @@ Alibaba's state-of-the-art multilingual TTS with three model variants covering v
 
     ```bash
     mlx_audio.tts.generate \
-        --model mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16 \
+        --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16 \
         --text "Hello, welcome to MLX-Audio!" \
-        --voice Chelsie
+        --voice Vivian
     ```
 
 === "Python"
@@ -30,15 +30,20 @@ Alibaba's state-of-the-art multilingual TTS with three model variants covering v
     ```python
     from mlx_audio.tts.utils import load_model
 
-    model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
-    results = list(model.generate(
+    model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16")
+    results = list(model.generate_custom_voice(
         text="Hello, welcome to MLX-Audio!",
-        voice="Chelsie",
+        speaker="Vivian",
         language="English",
     ))
 
     audio = results[0].audio  # mx.array
     ```
+
+!!! note
+    `--voice`/`speaker` picks a preset voice and only works with **CustomVoice** models.
+    **Base** models have no preset voices — see [Voice Cloning](#voice-cloning) below to
+    use them with `ref_audio` + `ref_text`.
 
 ### Voice Cloning
 
