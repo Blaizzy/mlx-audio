@@ -473,7 +473,7 @@ def parse_args():
         "--voice",
         type=str,
         default=None,
-        help="Voice/speaker name (e.g., Chelsie, Ethan, Vivian for Qwen3-TTS)",
+        help="Voice/speaker name (e.g., Vivian, Ryan for Qwen3-TTS CustomVoice models)",
     )
     parser.add_argument(
         "--prompt",
