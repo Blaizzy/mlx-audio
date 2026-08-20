@@ -90,7 +90,6 @@ mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bi
 mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text $'Hello!\nHow are you?' --voice Vivian --join_audio
 ```
 
-Note: `--voice` picks a preset speaker and only works with **CustomVoice** models — the Qwen3-TTS **Base** models have no preset voices; clone a voice with them instead by passing `ref_audio` + `ref_text` (see the [Qwen3-TTS README](mlx_audio/tts/models/qwen3_tts/README.md)).
 
 By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
