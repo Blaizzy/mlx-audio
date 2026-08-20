@@ -233,7 +233,6 @@ class Qwen3TTSBatchSession:
             repetition_penalty=self.options.repetition_penalty,
             generated_tokens_per_seq=generated_tokens_per_seq,
             suppress_tokens=self.suppress_tokens,
-            eos_token_id=self.eos_token_id,
         )
 
         code_tokens, all_codes = self.model._predict_code_tokens(
