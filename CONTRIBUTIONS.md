@@ -29,3 +29,12 @@ This file acknowledges the original authors and contributors of models ported to
 - **Copyright**: NVIDIA Corporation
 - **License**: [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)
 - **MLX Port**: [@ARahim3](https://github.com/ARahim3)
+
+## Streaming audio encoder
+
+- **Original**: [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI)
+- **Copyright**: remsky
+- **License**: Apache License 2.0
+- **MLX Port**: `mlx_audio/streaming_encoder.py` adapts the incremental
+  container-encoding approach from `api/src/services/streaming_audio_writer.py`,
+  including its ordering fix for Ogg muxers (Kokoro-FastAPI #497).
