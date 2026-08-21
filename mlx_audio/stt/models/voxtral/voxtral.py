@@ -15,9 +15,17 @@ from mlx_audio.stt.utils import get_model_path, wired_limit
 from ..base import STTOutput
 from .config import AudioConfig, ModelConfig
 
-# Voxtral's three EOS-equivalent token ids. Used as the default when a
-# loaded tokenizer has no `eos_token_ids` populated.
-_VOXTRAL_EOS_TOKEN_IDS = [2, 4, 32000]
+# Voxtral's three EOS-equivalent token ids: </s>, [/INST] and <pad>. Used as
+# the default when a loaded tokenizer has no `eos_token_ids` populated, which
+# is the normal case for a `transformers` tokenizer (it carries the singular
+# `eos_token_id`).
+#
+# <pad> is id 11. It is emphatically NOT 32000: Voxtral's Tekken vocabulary has
+# 131072 entries of which only the first 1000 are control tokens, and 32000 is
+# the ordinary text token " Capital". Stopping on it truncates any transcript
+# containing that word -- silently, because what comes back is clean prose that
+# merely ends early, so nothing downstream can tell it from a short utterance.
+_VOXTRAL_EOS_TOKEN_IDS = [2, 4, 11]
 
 
 def _ensure_eos_token_ids_list(tokenizer, default=_VOXTRAL_EOS_TOKEN_IDS):
