@@ -22,8 +22,6 @@ MODEL_REMAPPING = {
     "mossformer2": "mossformer2_se",
     "mossformer2_se": "mossformer2_se",
     "nemotron_voicechat": "nemotron_voicechat",
-    "nemotronlabs_voicechat": "nemotron_voicechat",
-    "nemotronlabs_voicechat_11b": "nemotron_voicechat",
     "sam_audio": "sam_audio",
     "samaudio": "sam_audio",
 }

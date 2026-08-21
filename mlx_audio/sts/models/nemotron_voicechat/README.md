@@ -3,8 +3,28 @@
 MLX support for `nvidia/NVIDIA-NemotronLabs-VoiceChat-11B`, a full-duplex
 speech-to-speech model with a 16 kHz input and 22.05 kHz output.
 
-The original checkpoint is a 44 GB NeMo export. Prepare an MLX artifact before
-loading it:
+Pre-converted checkpoints are available on Hugging Face:
+
+- [mlx-community/NemotronLabs-VoiceChat-11B-4bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-4bit)
+- [mlx-community/NemotronLabs-VoiceChat-11B-8bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-8bit)
+- [mlx-community/NemotronLabs-VoiceChat-11B-bf16](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-bf16)
+
+Run offline inference:
+
+```python
+from mlx_audio.sts import load
+
+model = load("mlx-community/NemotronLabs-VoiceChat-11B-4bit")
+output = model.generate("input.wav")
+print(output.text)
+output.audio
+```
+
+## Converting from source
+
+The original checkpoint is a 44 GB NeMo export. To produce a custom
+quantization instead of using a pre-converted checkpoint above, prepare an
+MLX artifact yourself:
 
 ```bash
 hf download nvidia/NVIDIA-NemotronLabs-VoiceChat-11B \
@@ -18,18 +38,8 @@ python -m mlx_audio.sts.models.nemotron_voicechat.convert \
 ```
 
 The 4-bit conversion targets the Nemotron language path while keeping speech
-perception, TTS, and codec weights at full precision.
-
-Run offline inference:
-
-```python
-from mlx_audio.sts import load
-
-model = load("./nemotron-voicechat-4bit")
-output = model.generate("input.wav")
-print(output.text)
-output.audio
-```
+perception, TTS, and codec weights at full precision. `load()` accepts this
+local output directory the same way it accepts a Hugging Face model id.
 
 For full-duplex inference, keep one streaming session alive and feed mono 16 kHz
 PCM as it arrives:
