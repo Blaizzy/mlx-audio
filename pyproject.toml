@@ -48,6 +48,7 @@ server = [
     "python-multipart>=0.0.22",
     "webrtcvad>=2.0.10",
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
+    "av>=12.0.0", # incremental encoder for streamed /v1/audio/speech responses
 ]
 
 # STS (Speech-to-Speech) dependencies
