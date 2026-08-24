@@ -1992,7 +1992,24 @@ class Model(nn.Module):
         # Emit remaining streaming chunks
         if stream:
             for b in range(batch_size):
-                if generated_codes[b] and len(generated_codes[b]) > decoded_tokens[b]:
+                if not generated_codes[b]:
+                    # Yield silent audio instead of silently dropping the item
+                    silent_audio = mx.zeros((self.sample_rate // 2,))
+                    yield BatchGenerationResult(
+                        audio=silent_audio,
+                        sequence_idx=b,
+                        samples=silent_audio.shape[0],
+                        sample_rate=self.sample_rate,
+                        token_count=0,
+                        audio_duration=format_duration(
+                            silent_audio.shape[0] / self.sample_rate
+                        ),
+                        processing_time_seconds=time.time() - start_time,
+                        peak_memory_usage=mx.get_peak_memory() / 1e9,
+                        is_streaming_chunk=True,
+                        is_final_chunk=True,
+                    )
+                elif generated_codes[b] and len(generated_codes[b]) > decoded_tokens[b]:
                     remaining_tokens = len(generated_codes[b]) - decoded_tokens[b]
                     context_tokens = min(streaming_context_size, decoded_tokens[b])
                     start_idx = decoded_tokens[b] - context_tokens
@@ -2034,6 +2051,20 @@ class Model(nn.Module):
         del tts_pad_embed, trailing_indices, finished, eos_fill
         for b in range(batch_size):
             if not generated_codes[b]:
+                # Yield silence instead of silently dropping the generation result
+                silent_audio = mx.zeros((self.sample_rate // 2,))
+                yield BatchGenerationResult(
+                    audio=silent_audio,
+                    sequence_idx=b,
+                    samples=silent_audio.shape[0],
+                    sample_rate=self.sample_rate,
+                    token_count=0,
+                    audio_duration=format_duration(
+                        silent_audio.shape[0] / self.sample_rate
+                    ),
+                    processing_time_seconds=elapsed_time,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                )
                 continue
             if use_icl:
                 audio = self._decode_icl_generated_codes(
