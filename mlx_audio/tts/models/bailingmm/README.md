@@ -564,3 +564,21 @@ output = OUT / "en_11_speech_sound_000.wav"
 audio_write(str(output), np.array(result.audio, dtype=np.float32), result.sample_rate, format="wav")
 print(output)
 ```
+
+## Speaker embedding (voice identity)
+
+Voice cloning now mirrors the official `use_spk_emb=True` path: a 192-d
+CampPlus speaker embedding is extracted from `--ref_audio` and injected
+into the input sequence (`  speaker_1:<spk>…</spk>`), which anchors the
+speaker identity the same way the reference implementation does.
+
+Requirements (optional — cloning falls back to prompt-latent-only
+behaviour when unavailable):
+
+- `campplus.onnx` in the model directory. It ships with the original
+  [inclusionAI/Ming-omni-tts-16.8B-A3B](https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B)
+  repo; download it next to the MLX weights.
+- `pip install onnxruntime kaldi-native-fbank` (lazy imports).
+
+`--use_zero_spk_emb` (voice design / IP-character style) is honored and
+injects a zeroed identity vector, matching the official cookbook.
