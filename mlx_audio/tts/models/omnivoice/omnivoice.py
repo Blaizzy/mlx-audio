@@ -671,14 +671,11 @@ class Model(nn.Module):
             warnings.warn(f"Could not load text tokenizer: {e}")
             model.text_tokenizer = None
 
-        try:
-            from mlx_audio.codec.models.higgs_audio.higgs_audio import (
-                HiggsAudioTokenizer,
-            )
+        # Not caught like the text tokenizer above: generate() treats a
+        # missing audio_tokenizer as "emit silence", so swallowing a real
+        # load failure here used to surface as a silent all-zero WAV.
+        from mlx_audio.codec.models.higgs_audio.higgs_audio import HiggsAudioTokenizer
 
-            model.audio_tokenizer = HiggsAudioTokenizer.from_pretrained(str(model_path))
-        except Exception as e:
-            warnings.warn(f"Could not load audio tokenizer: {e}")
-            model.audio_tokenizer = None
+        model.audio_tokenizer = HiggsAudioTokenizer.from_pretrained(str(model_path))
 
         return model
