@@ -1031,6 +1031,8 @@ class Model(nn.Module):
             mx.eval(audio)
             samples = audio.shape[0]
             elapsed = time.perf_counter() - started
+            tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
+            samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
             return GenerationResult(
                 audio=audio,
                 samples=samples,
@@ -1039,8 +1041,14 @@ class Model(nn.Module):
                 token_count=token_count,
                 audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
                 real_time_factor=elapsed / max(samples / self.sample_rate, 1e-6),
-                prompt={"tokens": cond.shape[1]},
-                audio_samples={"samples": samples},
+                prompt={
+                    "tokens": token_count,
+                    "tokens-per-sec": tokens_per_sec,
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": samples_per_sec,
+                },
                 processing_time_seconds=elapsed,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
                 is_streaming_chunk=True,
@@ -1103,16 +1111,21 @@ class Model(nn.Module):
                 self.audio_tokenizer.decoder.reset_streaming_state()
             mx.eval(empty_audio)
             elapsed = time.perf_counter() - started
+            samples = empty_audio.shape[0]
+            samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
             yield GenerationResult(
                 audio=empty_audio,
-                samples=empty_audio.shape[0],
+                samples=samples,
                 sample_rate=self.sample_rate,
                 segment_idx=0,
                 token_count=0,
-                audio_duration=f"00:00:{empty_audio.shape[0] / self.sample_rate:06.3f}",
+                audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
                 real_time_factor=0.0,
-                prompt={"tokens": cond.shape[1]},
-                audio_samples={"samples": empty_audio.shape[0]},
+                prompt={"tokens": 0, "tokens-per-sec": 0.0},
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": samples_per_sec,
+                },
                 processing_time_seconds=elapsed,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
                 is_streaming_chunk=stream,
@@ -1137,16 +1150,25 @@ class Model(nn.Module):
         samples = audio.shape[0]
         mx.eval(audio)
         elapsed = time.perf_counter() - started
+        token_count = len(frames)
+        tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
+        samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
         yield GenerationResult(
             audio=audio,
             samples=samples,
             sample_rate=self.sample_rate,
             segment_idx=0,
-            token_count=len(frames),
+            token_count=token_count,
             audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
             real_time_factor=elapsed / max(samples / self.sample_rate, 1e-6),
-            prompt={"tokens": cond.shape[1]},
-            audio_samples={"samples": samples},
+            prompt={
+                "tokens": token_count,
+                "tokens-per-sec": tokens_per_sec,
+            },
+            audio_samples={
+                "samples": samples,
+                "samples-per-sec": samples_per_sec,
+            },
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
             is_final_chunk=True,

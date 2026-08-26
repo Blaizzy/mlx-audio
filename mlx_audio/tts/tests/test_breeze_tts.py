@@ -292,7 +292,7 @@ def test_stream_flushes_at_exact_interval_and_resets_state(monkeypatch):
         def __call__(self, _hidden):
             self.calls += 1
             logits = mx.full((1, 9), -100.0)
-            logits[..., 1 if self.calls <= 2 else 8] = 100.0
+            logits[..., 1 if self.calls <= 3 else 8] = 100.0
             return logits
 
     model.audio_tokenizer = AudioTokenizer()
@@ -311,8 +311,14 @@ def test_stream_flushes_at_exact_interval_and_resets_state(monkeypatch):
     )
     assert len(chunks) == 2
     assert chunks[0].token_count == 2
+    assert chunks[0].prompt["tokens"] == 2
+    assert chunks[0].prompt["tokens-per-sec"] >= 0
+    assert chunks[0].audio_samples["samples-per-sec"] >= 0
     assert not chunks[0].is_final_chunk
     assert chunks[1].token_count == 1
+    assert chunks[1].prompt["tokens"] == 1
+    assert chunks[1].prompt["tokens-per-sec"] >= 0
+    assert chunks[1].audio_samples["samples-per-sec"] >= 0
     assert chunks[1].is_final_chunk
     assert model.audio_tokenizer.decoder.reset_calls == 2
 
@@ -365,6 +371,9 @@ def test_early_eos_yields_silent_result_instead_of_raising(monkeypatch):
     assert results[0].is_final_chunk
     assert results[0].token_count == 0
     assert results[0].samples == 4
+    assert results[0].prompt == {"tokens": 0, "tokens-per-sec": 0.0}
+    assert results[0].audio_samples["samples"] == 4
+    assert results[0].audio_samples["samples-per-sec"] >= 0
     assert results[0].audio.tolist() == [0.0, 0.0, 0.0, 0.0]
 
 
