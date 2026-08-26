@@ -11,13 +11,15 @@ including its bundled Qwen3-TTS audio codec, and emits 24 kHz mono audio.
 pip install -U mlx-audio
 ```
 
-The model is registered under `breeze`, `breeze-tts`, and `breeze_tts`; the
-publisher's `BreezeBlue/breeze-tts-2` repository resolves automatically:
+The publisher's checkpoint ships PyTorch safetensors that MLX cannot load
+directly, so the examples use an [unofficial MLX conversion quantized to
+4-bit](https://huggingface.co/LunaFox/Breeze-TTS-2-mlx-4bit). The model is
+registered under `breeze`, `breeze-tts`, and `breeze_tts`:
 
 ```python
 from mlx_audio.tts import load
 
-model = load("BreezeBlue/breeze-tts-2")
+model = load("LunaFox/Breeze-TTS-2-mlx-4bit")
 ```
 
 ## Voice design
@@ -28,7 +30,7 @@ the established MLX spellings `--instruct` and `--cfg_scale` are equivalent.
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --text "(sigh) Welcome aboard. Your journey begins now." \
   --instruction "A warm, thoughtful young woman with a clear voice and a calm, reflective delivery." \
   --cfg-scale 4 \
@@ -44,7 +46,7 @@ reference aliases `--ref-audio` and `--ref-text` are equivalent to
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --ref-audio reference_en.wav \
   --ref-text "This is the exact transcript of the English reference audio." \
   --text "(sigh) It is good to hear your voice again after all this time." \
@@ -63,7 +65,7 @@ while directing tone, emotion, pace, or delivery:
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --ref_audio reference.wav \
   --ref_text "This is the exact transcript of the reference audio." \
   --text "(clears throat) We need to discuss what happened last night." \
@@ -85,7 +87,7 @@ Chinese, such as `[笑]`, `[咳嗽]`, `[清嗓子]`, and `[叹气]`:
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --text "[笑] 欢迎来到今晚的故事时间，让我们一起开始吧。" \
   --instruction "一位温柔自信的年轻女性，声音清晰，语气亲切，表达轻快而富有感染力。" \
   --cfg-scale 4 \
@@ -101,7 +103,7 @@ the chunk cadence:
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(sigh) This response is streamed as it is generated." \
@@ -117,7 +119,7 @@ The Python API yields `GenerationResult` objects for the same flow:
 ```python
 from mlx_audio.tts import load
 
-model = load("BreezeBlue/breeze-tts-2")
+model = load("LunaFox/Breeze-TTS-2-mlx-4bit")
 for result in model.generate(
     text="(laugh) Hello from MLX-Audio.",
     instruct="A bright, friendly voice.",

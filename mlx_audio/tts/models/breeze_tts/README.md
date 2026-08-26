@@ -3,7 +3,9 @@
 MLX implementation of [BreezeBlue/Breeze-TTS-2](https://huggingface.co/BreezeBlue/breeze-tts-2).
 The original checkpoint bundles the text encoder and Qwen3-TTS codec used by
 this implementation, so loading it does not require the upstream PyTorch
-runtime.
+runtime. Its PyTorch safetensors do not load in MLX directly; the examples
+use an [unofficial MLX 4-bit
+conversion](https://huggingface.co/LunaFox/Breeze-TTS-2-mlx-4bit).
 
 ## Voice design
 
@@ -12,7 +14,7 @@ model repository:
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --text "Welcome aboard. Your journey begins now." \
   --instruction "A warm, thoughtful young woman with a clear voice." \
   --cfg-scale 4
@@ -28,7 +30,7 @@ such as `(sigh)` are kept in the generated text.
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(sigh) It is good to hear your voice again." \
@@ -47,7 +49,7 @@ while directing tone, emotion, pace, or delivery:
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(clears throat) We need to discuss what happened." \
@@ -67,7 +69,7 @@ English events use parentheses, for example `(laugh)`, `(cough)`, and
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --text "[笑] 欢迎来到今晚的故事时间，让我们一起开始吧。" \
   --instruction "一位温柔自信的年轻女性，声音清晰，语气亲切。" \
   --cfg-scale 4
@@ -79,7 +81,7 @@ cadence:
 
 ```bash
 mlx_audio.tts.generate \
-  --model BreezeBlue/breeze-tts-2 \
+  --model LunaFox/Breeze-TTS-2-mlx-4bit \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(sigh) This response is streamed as it is generated." \
@@ -96,7 +98,7 @@ mono waveforms:
 ```python
 from mlx_audio.tts import load
 
-model = load("BreezeBlue/breeze-tts-2")
+model = load("LunaFox/Breeze-TTS-2-mlx-4bit")
 for chunk in model.generate(
     text="(laugh) Hello from MLX-Audio.",
     instruct="A bright, friendly voice.",
