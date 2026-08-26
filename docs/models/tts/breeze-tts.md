@@ -1,9 +1,18 @@
 # Breeze TTS 2
 
-[Breeze TTS 2](https://huggingface.co/BreezeBlue/breeze-tts-2) is an
+[Breeze TTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2) is an
 English/Chinese text-to-speech model for voice design, voice cloning, and voice
 direction. The MLX implementation loads the publisher's original checkpoint,
 including its bundled Qwen3-TTS audio codec, and emits 24 kHz mono audio.
+
+## Model Variants
+
+| Model | Format | Size | HuggingFace |
+|-------|--------|------|-------------|
+| `mlx-community/Breeze-TTS-2-mlx` | MLX bfloat16 | ~7.6 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx) |
+| `mlx-community/Breeze-TTS-2-mlx-8bit` | MLX 8-bit | ~4.6 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-8bit) |
+| `mlx-community/Breeze-TTS-2-mlx-4bit` | MLX 4-bit | ~3.0 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
+| `BreezeBlue/Breeze-TTS-2` | PyTorch (original) | ~7.7 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/BreezeBlue/Breeze-TTS-2) |
 
 ## Install and load
 
@@ -12,14 +21,14 @@ pip install -U mlx-audio
 ```
 
 The publisher's checkpoint ships PyTorch safetensors that MLX cannot load
-directly, so the examples use an [unofficial MLX conversion quantized to
-4-bit](https://huggingface.co/LunaFox/Breeze-TTS-2-mlx-4bit). The model is
+directly, so the examples use the
+[mlx-community MLX conversion](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx). The model is
 registered under `breeze`, `breeze-tts`, and `breeze_tts`:
 
 ```python
 from mlx_audio.tts import load
 
-model = load("LunaFox/Breeze-TTS-2-mlx-4bit")
+model = load("mlx-community/Breeze-TTS-2-mlx")
 ```
 
 ## Voice design
@@ -30,7 +39,7 @@ the established MLX spellings `--instruct` and `--cfg_scale` are equivalent.
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --text "(sigh) Welcome aboard. Your journey begins now." \
   --instruction "A warm, thoughtful young woman with a clear voice and a calm, reflective delivery." \
   --cfg-scale 4 \
@@ -46,7 +55,7 @@ reference aliases `--ref-audio` and `--ref-text` are equivalent to
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --ref-audio reference_en.wav \
   --ref-text "This is the exact transcript of the English reference audio." \
   --text "(sigh) It is good to hear your voice again after all this time." \
@@ -65,7 +74,7 @@ while directing tone, emotion, pace, or delivery:
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --ref_audio reference.wav \
   --ref_text "This is the exact transcript of the reference audio." \
   --text "(clears throat) We need to discuss what happened last night." \
@@ -87,7 +96,7 @@ Chinese, such as `[笑]`, `[咳嗽]`, `[清嗓子]`, and `[叹气]`:
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --text "[笑] 欢迎来到今晚的故事时间，让我们一起开始吧。" \
   --instruction "一位温柔自信的年轻女性，声音清晰，语气亲切，表达轻快而富有感染力。" \
   --cfg-scale 4 \
@@ -103,7 +112,7 @@ the chunk cadence:
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(sigh) This response is streamed as it is generated." \
@@ -119,7 +128,7 @@ The Python API yields `GenerationResult` objects for the same flow:
 ```python
 from mlx_audio.tts import load
 
-model = load("LunaFox/Breeze-TTS-2-mlx-4bit")
+model = load("mlx-community/Breeze-TTS-2-mlx")
 for result in model.generate(
     text="(laugh) Hello from MLX-Audio.",
     instruct="A bright, friendly voice.",
@@ -133,7 +142,17 @@ for result in model.generate(
 
 ## License
 
-The Breeze source code is Apache-2.0, but the model weights, derivatives, and
+The Breeze source code used as a reference is Apache-2.0, but the model weights, derivatives, and
 self-hosted output are governed by BreezeBlue's Research and Non-Commercial
-License. Review the [original model card](https://huggingface.co/BreezeBlue/breeze-tts-2)
+[License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/raw/main/LICENSE).
+Review the [original model card](https://huggingface.co/BreezeBlue/Breeze-TTS-2)
 before use.
+
+Commercial use requires written authorization from RESONIA, INC. Hosted
+BreezeBlue services are governed by their applicable service terms. For
+commercial licensing, contact contact@breeze.blue.
+
+You are responsible for complying with applicable laws and obtaining all
+necessary rights and consents for inputs, reference audio, voices, and outputs.
+Unauthorized voice cloning, impersonation, fraud, and other unlawful or harmful
+uses are prohibited.
