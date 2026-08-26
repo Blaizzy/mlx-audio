@@ -7,9 +7,10 @@ no PyTorch or upstream Breeze runtime is required at inference time.
 """
 
 import json
+import math
 import time
 from pathlib import Path
-from typing import Dict, Generator, Optional, Union
+from typing import Any, Dict, Generator, Optional, Union
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -816,17 +817,51 @@ class Model(nn.Module):
         top_k: int,
         allow_eos: bool = False,
     ) -> int:
+        if temperature < 0:
+            raise ValueError("temperature must be non-negative")
+        if not 0 <= top_p <= 1:
+            raise ValueError("top_p must be between 0 and 1")
+        if not isinstance(top_k, int) or top_k < 0:
+            raise ValueError("top_k must be a non-negative integer")
+
         valid = self.vocab_size + 1 if allow_eos else self.vocab_size
-        logits = logits[..., :valid]
-        # Reserve all ids after the codec vocabulary (padding/control ids) from
-        # regular codebook sampling.  The boundary belongs to the codec config,
-        # not to a particular 2048-entry checkpoint.
-        logits = logits.at[
-            ..., self.config.codec_vocab_size : self.vocab_size
-        ].add(-mx.inf)
-        sampler = make_sampler(temp=temperature, top_p=top_p, top_k=top_k)
+        if logits.shape[-1] < valid:
+            raise ValueError(
+                "Breeze logits do not contain the expected codebook vocabulary: "
+                f"{logits.shape[-1]} < {valid}."
+            )
+
+        # Keep EOS as the one extra class used by the backbone while reserving
+        # padding/control ids in every regular codebook distribution.  Clamp
+        # top-k to this distribution: tiny deterministic fixtures often use a
+        # vocab smaller than the user-facing default of 50.
+        logits = self._mask_reserved_codec_logits(logits)[..., :valid]
+        effective_top_k = min(top_k, valid) if top_k else 0
+        if effective_top_k == valid:
+            effective_top_k = 0
+        sampler = make_sampler(
+            temp=temperature, top_p=top_p, top_k=effective_top_k
+        )
         token = sampler(nn.log_softmax(logits, axis=-1))
         return int(token.item())
+
+    def _mask_reserved_codec_logits(self, logits: mx.array) -> mx.array:
+        """Mask ids outside the codec codebook in a logits tensor.
+
+        Breeze's wrapper vocabulary contains codec entries followed by
+        padding/control ids (and one separate backbone EOS class).  The same
+        mask is used for the first codebook and for every depth-decoder step;
+        callers may still retain the EOS column by slicing after this helper.
+        """
+        if logits.shape[-1] < self.vocab_size:
+            raise ValueError(
+                "Breeze logits do not contain the wrapper vocabulary: "
+                f"{logits.shape[-1]} < {self.vocab_size}."
+            )
+        start = self.config.codec_vocab_size
+        if start >= self.vocab_size:
+            return logits
+        return logits.at[..., start : self.vocab_size].add(-mx.inf)
 
     @staticmethod
     def _apply_repetition_penalty(
@@ -867,10 +902,59 @@ class Model(nn.Module):
                 logits = unconditional_logits + cfg_scale * (
                     logits - unconditional_logits
                 )
+            # Apply the reserved-id mask before handing logits to the sampler.
+            # Keeping it here (as well as in ``_sample``) means custom samplers
+            # and deterministic test doubles observe the same official flow.
+            logits = self._mask_reserved_codec_logits(logits)
             tokens.append(
                 self._sample(logits, temperature=temperature, top_p=top_p, top_k=top_k)
             )
         return tokens[1:]
+
+    @staticmethod
+    def _audio_vector(audio: Any) -> mx.array:
+        """Normalize codec output to the one-dimensional public waveform."""
+        if hasattr(audio, "audio_values"):
+            audio = audio.audio_values
+        while isinstance(audio, (list, tuple)):
+            audio = audio[0]
+        audio = mx.array(audio)
+        while audio.ndim > 1:
+            audio = audio[0]
+        return audio
+
+    def _decode_codes(self, codes: mx.array) -> mx.array:
+        """Decode one sequence and honor the tokenizer's valid length."""
+        decoded = self.audio_tokenizer.decode(codes)
+        lengths = None
+        if isinstance(decoded, (list, tuple)):
+            if not decoded:
+                return mx.zeros((0,), dtype=mx.float32)
+            audio_data = decoded[0]
+            if len(decoded) > 1:
+                lengths = decoded[1]
+        else:
+            audio_data = decoded
+        audio = self._audio_vector(audio_data)
+        if lengths is not None:
+            lengths = mx.array(lengths).reshape(-1)
+            if lengths.shape[0]:
+                valid_samples = max(0, int(lengths[0].item()))
+                audio = audio[:valid_samples]
+        return audio
+
+    def _empty_audio(self) -> mx.array:
+        """Return the official silent fallback when EOS precedes all frames."""
+        # The upstream implementation decodes a one-frame dummy code rather
+        # than raising.  Keep that behavior when a codec is available, while
+        # retaining a zero-length CPU-safe fallback for light test doubles.
+        try:
+            dummy = mx.ones(
+                (1, 1, self.num_codebooks), dtype=mx.int32
+            )
+            return self._decode_codes(dummy)
+        except Exception:  # pragma: no cover - only used by partial fakes
+            return mx.zeros((0,), dtype=mx.float32)
 
     def generate(
         self,
@@ -897,8 +981,14 @@ class Model(nn.Module):
             raise ValueError("max_tokens must be positive.")
         if top_k < 0:
             raise ValueError("top_k must be non-negative.")
+        if temperature < 0:
+            raise ValueError("temperature must be non-negative.")
+        if not 0 <= top_p <= 1:
+            raise ValueError("top_p must be between 0 and 1.")
         if repetition_penalty <= 0:
             raise ValueError("repetition_penalty must be positive.")
+        if cfg_scale is not None and not math.isfinite(cfg_scale):
+            raise ValueError("cfg_scale must be finite.")
         if streaming_interval <= 0:
             raise ValueError("streaming_interval must be positive.")
 
@@ -906,7 +996,7 @@ class Model(nn.Module):
         cond = self._prompt_embeddings(
             text, voice=voice, instruct=instruct, ref_audio=ref_audio, ref_text=ref_text
         )
-        use_cfg = instruct is not None and cfg_scale not in (None, 1.0)
+        use_cfg = bool(instruct) and cfg_scale not in (None, 1.0)
         scale = 1.0 if cfg_scale is None else cfg_scale
         if use_cfg:
             uncond = self._prompt_embeddings(
@@ -925,13 +1015,14 @@ class Model(nn.Module):
 
         frames: list[list[int]] = []
         pending_frames: list[list[int]] = []
+        decode_rate = getattr(self.audio_tokenizer, "decode_upsample_rate", None)
+        if decode_rate is None:
+            decoder = getattr(self.audio_tokenizer, "decoder", None)
+            decode_rate = getattr(decoder, "decode_upsample_rate", None)
+        if decode_rate is None or decode_rate <= 0:
+            raise ValueError("Breeze audio tokenizer has no valid decode rate")
         chunk_frames = max(
-            1,
-            round(
-                streaming_interval
-                * self.sample_rate
-                / self.audio_tokenizer.decode_upsample_rate
-            ),
+            1, int(streaming_interval * self.sample_rate / decode_rate)
         )
         if stream:
             self.audio_tokenizer.decoder.reset_streaming_state()
@@ -966,6 +1057,7 @@ class Model(nn.Module):
             logits = self._apply_repetition_penalty(
                 logits, [frame[0] for frame in frames], repetition_penalty
             )
+            logits = self._mask_reserved_codec_logits(logits)
             first = self._sample(
                 logits,
                 temperature=temperature,
@@ -992,8 +1084,10 @@ class Model(nn.Module):
                 pending_codes = mx.array(chunk, dtype=mx.int32)[None, :, :]
                 stream_audio = self.audio_tokenizer.decoder.streaming_step(
                     mx.transpose(pending_codes, (0, 2, 1))
-                )[0, 0]
-                yield stream_result(stream_audio, len(frames), final=False)
+                )
+                yield stream_result(
+                    self._audio_vector(stream_audio), len(chunk), final=False
+                )
             codebooks = mx.array(frame, dtype=mx.int32)[None, None, :]
             cond_hidden = self.backbone_model(input_ids=codebooks, cache=cond_cache)[
                 :, -1, :
@@ -1004,22 +1098,43 @@ class Model(nn.Module):
                 )[:, -1, :]
 
         if not frames:
-            raise RuntimeError("Breeze generated no audio codebooks before EOS.")
+            empty_audio = self._empty_audio()
+            if stream:
+                self.audio_tokenizer.decoder.reset_streaming_state()
+            mx.eval(empty_audio)
+            elapsed = time.perf_counter() - started
+            yield GenerationResult(
+                audio=empty_audio,
+                samples=empty_audio.shape[0],
+                sample_rate=self.sample_rate,
+                segment_idx=0,
+                token_count=0,
+                audio_duration=f"00:00:{empty_audio.shape[0] / self.sample_rate:06.3f}",
+                real_time_factor=0.0,
+                prompt={"tokens": cond.shape[1]},
+                audio_samples={"samples": empty_audio.shape[0]},
+                processing_time_seconds=elapsed,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+                is_streaming_chunk=stream,
+                is_final_chunk=True,
+            )
+            return
         if stream:
             if pending_frames:
                 pending_codes = mx.array(pending_frames, dtype=mx.int32)[None, :, :]
                 stream_audio = self.audio_tokenizer.decoder.streaming_step(
                     mx.transpose(pending_codes, (0, 2, 1))
-                )[0, 0]
+                )
                 self.audio_tokenizer.decoder.reset_streaming_state()
-                yield stream_result(stream_audio, len(frames), final=True)
+                yield stream_result(
+                    self._audio_vector(stream_audio), len(pending_frames), final=True
+                )
             else:
                 self.audio_tokenizer.decoder.reset_streaming_state()
             return
         codes = mx.array(frames, dtype=mx.int32)[None, :, :]
-        audio, lengths = self.audio_tokenizer.decode(codes)
-        samples = int(lengths[0].item())
-        audio = audio[0, :samples]
+        audio = self._decode_codes(codes)
+        samples = audio.shape[0]
         mx.eval(audio)
         elapsed = time.perf_counter() - started
         yield GenerationResult(
