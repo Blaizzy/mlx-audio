@@ -198,9 +198,7 @@ def test_sanitize_materializes_checkpoint_tied_embedding_and_drops_codec():
     sanitized = Model.sanitize(
         {
             "depth_decoder.model.embed_tokens.weight": depth,
-            "backbone_model.embed_tokens.embed_audio_tokens.weight": mx.ones(
-                (24, 8)
-            ),
+            "backbone_model.embed_tokens.embed_audio_tokens.weight": mx.ones((24, 8)),
             "codec_model.decoder.weight": mx.zeros((1,)),
             "text_encoder.rotary_emb.inv_freq": mx.zeros((1,)),
         }

@@ -64,9 +64,10 @@ class _AudioEmbedding(nn.Module):
                 "Breeze audio codebooks must have shape "
                 f"[batch, time, {self.num_codebooks}], got {codebooks.shape}."
             )
-        offsets = mx.arange(self.num_codebooks, dtype=codebooks.dtype)[
-            None, None, :
-        ] * self.vocab_size
+        offsets = (
+            mx.arange(self.num_codebooks, dtype=codebooks.dtype)[None, None, :]
+            * self.vocab_size
+        )
         hidden = self.embed_audio_tokens(codebooks + offsets)
         if self.audio_embeds_projector is not None:
             hidden = self.audio_embeds_projector(hidden)
@@ -97,9 +98,7 @@ class _Backbone(nn.Module):
                 "num_key_value_heads", config.num_key_value_heads
             ),
             head_dim=config.backbone_value("head_dim", config.head_dim),
-            rms_norm_eps=config.backbone_value(
-                "rms_norm_eps", config.rms_norm_eps
-            ),
+            rms_norm_eps=config.backbone_value("rms_norm_eps", config.rms_norm_eps),
             # This is metadata for the Qwen args.  The actual embedding below
             # deliberately uses the wrapper audio vocabulary.
             vocab_size=config.backbone_value("vocab_size", wrapper_vocab_size),
@@ -108,9 +107,7 @@ class _Backbone(nn.Module):
             ),
             rope_theta=config.backbone_value("rope_theta", config.rope_theta),
             rope_scaling=config.backbone_value("rope_scaling", config.rope_scaling),
-            tie_word_embeddings=config.backbone_value(
-                "tie_word_embeddings", False
-            ),
+            tie_word_embeddings=config.backbone_value("tie_word_embeddings", False),
         )
         self.args = args
         self.embed_tokens = _AudioEmbedding(
@@ -390,9 +387,7 @@ class _TextEncoder(nn.Module):
                     "T5Gemma2 sliding_window_pattern must be a positive integer"
                 )
             config["layer_types"] = [
-                "sliding_attention"
-                if (idx + 1) % pattern
-                else "full_attention"
+                "sliding_attention" if (idx + 1) % pattern else "full_attention"
                 for idx in range(config["num_hidden_layers"])
             ]
         # Keep the upstream defaults for the two attention-specific RoPE
@@ -839,9 +834,7 @@ class Model(nn.Module):
         effective_top_k = min(top_k, valid) if top_k else 0
         if effective_top_k == valid:
             effective_top_k = 0
-        sampler = make_sampler(
-            temp=temperature, top_p=top_p, top_k=effective_top_k
-        )
+        sampler = make_sampler(temp=temperature, top_p=top_p, top_k=effective_top_k)
         token = sampler(nn.log_softmax(logits, axis=-1))
         return int(token.item())
 
@@ -949,9 +942,7 @@ class Model(nn.Module):
         # than raising.  Keep that behavior when a codec is available, while
         # retaining a zero-length CPU-safe fallback for light test doubles.
         try:
-            dummy = mx.ones(
-                (1, 1, self.num_codebooks), dtype=mx.int32
-            )
+            dummy = mx.ones((1, 1, self.num_codebooks), dtype=mx.int32)
             return self._decode_codes(dummy)
         except Exception:  # pragma: no cover - only used by partial fakes
             return mx.zeros((0,), dtype=mx.float32)
@@ -1021,9 +1012,7 @@ class Model(nn.Module):
             decode_rate = getattr(decoder, "decode_upsample_rate", None)
         if decode_rate is None or decode_rate <= 0:
             raise ValueError("Breeze audio tokenizer has no valid decode rate")
-        chunk_frames = max(
-            1, int(streaming_interval * self.sample_rate / decode_rate)
-        )
+        chunk_frames = max(1, int(streaming_interval * self.sample_rate / decode_rate))
         if stream:
             self.audio_tokenizer.decoder.reset_streaming_state()
 

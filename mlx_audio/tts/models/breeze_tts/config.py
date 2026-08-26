@@ -91,9 +91,7 @@ class ModelConfig(BaseModelArgs):
             **values,
             sample_rate=codec.get(
                 "sampling_rate",
-                codec.get(
-                    "output_sample_rate", params.get("sample_rate", 24000)
-                ),
+                codec.get("output_sample_rate", params.get("sample_rate", 24000)),
             ),
         )
 
@@ -117,8 +115,7 @@ class ModelConfig(BaseModelArgs):
         return {
             name: getattr(value, name)
             for name in dir(value)
-            if not name.startswith("_")
-            and not callable(getattr(value, name, None))
+            if not name.startswith("_") and not callable(getattr(value, name, None))
         }
 
     def backbone_value(self, name: str, default: Any = None) -> Any:
