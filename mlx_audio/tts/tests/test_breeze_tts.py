@@ -5,10 +5,7 @@ try:
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - no Metal host
     pytest.skip(f"MLX device unavailable: {exc}", allow_module_level=True)
 
-from mlx_audio.tts.models.breeze_tts.breeze_tts import (
-    Model,
-    _t5gemma2_attention_mask,
-)
+from mlx_audio.tts.models.breeze_tts.breeze_tts import Model, _t5gemma2_attention_mask
 from mlx_audio.tts.models.breeze_tts.config import ModelConfig
 from mlx_audio.tts.utils import get_model_and_args
 from mlx_audio.utils import get_model_name_parts
