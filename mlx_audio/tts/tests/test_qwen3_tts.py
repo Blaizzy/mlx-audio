@@ -496,7 +496,7 @@ def _make_generation_test_model(text_token_count: int = 10):
     model.talker = _FakeTalker(hidden_size=hidden_size, vocab_size=vocab_size)
     model.speech_tokenizer = _FakeSpeechTokenizer()
     model.tokenizer = SimpleNamespace(encode=lambda text: list(range(text_token_count)))
-    model._prepare_generation_inputs = lambda **kwargs: (
+    model._prepare_generation_inputs = lambda *args, **kwargs: (
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
@@ -593,6 +593,72 @@ class TestQwen3TTSSamplingFilters(unittest.TestCase):
         self.assertEqual(captured["temperature"], 1.0)
 
 
+class TestQwen3TTSNoEosFilterBypass(unittest.TestCase):
+    """Regression tests for mlx-audio#882.
+
+    _sample_token/_sample_token_batch used to splice a token's pre-filter
+    logit back in after top_k/top_p filtering when it matched eos_token_id,
+    giving it nonzero sampling probability even when top_k/top_p had ranked
+    it out of the surviving candidate set. That let EOS fire before the
+    model's true completion point, truncating audio mid-utterance. Every
+    token, including EOS, must now be filtered identically.
+    """
+
+    def test_low_ranked_token_never_sampled_under_top_k(self):
+        model = Model.__new__(Model)
+        # Last token sits far below the top-2 cutoff; a correct top_k filter
+        # must exclude it from every draw.
+        logits = mx.array([[[10.0, 9.0, 8.0, 7.0, -100.0]]], dtype=mx.float32)
+
+        sampled = set()
+        for _ in range(200):
+            token = Model._sample_token(
+                model,
+                logits,
+                temperature=1.0,
+                top_k=2,
+                top_p=1.0,
+                repetition_penalty=1.0,
+            )
+            sampled.add(int(token[0, 0]))
+
+        self.assertNotIn(4, sampled)
+
+    def test_low_ranked_token_never_sampled_under_top_k_batched(self):
+        model = Model.__new__(Model)
+        logits = mx.array(
+            [
+                [[10.0, 9.0, 8.0, 7.0, -100.0]],
+                [[7.0, 8.0, 9.0, 10.0, -100.0]],
+            ],
+            dtype=mx.float32,
+        )
+
+        sampled = set()
+        for _ in range(200):
+            tokens = Model._sample_token_batch(
+                model,
+                logits,
+                temperature=1.0,
+                top_k=2,
+                top_p=1.0,
+                repetition_penalty=1.0,
+            )
+            sampled.update(int(t) for t in tokens[:, 0].tolist())
+
+        self.assertNotIn(4, sampled)
+
+    def test_sample_token_no_longer_accepts_eos_token_id(self):
+        model = Model.__new__(Model)
+        logits = mx.array([[[1.0, 0.0]]], dtype=mx.float32)
+
+        with self.assertRaises(TypeError):
+            Model._sample_token(model, logits, eos_token_id=1)
+
+        with self.assertRaises(TypeError):
+            Model._sample_token_batch(model, logits, eos_token_id=1)
+
+
 class TestQwen3TTSMaxTokens(unittest.TestCase):
     def test_generate_with_instruct_honors_explicit_max_tokens(self):
         model = _make_generation_test_model(text_token_count=10)
@@ -635,6 +701,36 @@ class TestQwen3TTSMaxTokens(unittest.TestCase):
         )
 
         self.assertEqual(results[-1].token_count, 120)
+
+
+class TestQwen3TTSBaseVoiceValidation(unittest.TestCase):
+    """Regression tests for mlx-audio#892: passing an unsupported `voice` to a
+    Base model (which has no preset speakers) used to silently no-op instead
+    of erroring, producing unconditioned/random-sounding audio on every call.
+    """
+
+    def test_generate_rejects_unsupported_voice_on_base_model(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = []
+
+        with self.assertRaises(ValueError):
+            next(model.generate(text="Hello", voice="Chelsie"))
+
+    def test_generate_allows_no_voice_on_base_model(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = []
+
+        results = list(model.generate(text="Hello", voice=None, max_tokens=1))
+
+        self.assertTrue(results)
+
+    def test_generate_allows_supported_voice_case_insensitively(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = ["Vivian"]
+
+        results = list(model.generate(text="Hello", voice="vivian", max_tokens=1))
+
+        self.assertTrue(results)
 
 
 if __name__ == "__main__":

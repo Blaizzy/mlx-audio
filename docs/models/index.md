@@ -1,12 +1,24 @@
 # Models
 
-MLX Audio supports a wide range of audio models across four categories, all optimized for Apple Silicon.
+MLX Audio supports a wide range of audio models across several categories, all optimized for Apple Silicon.
 
 Many hosted MLX checkpoints referenced in these docs live under
 [mlx-community](https://huggingface.co/mlx-community) on Hugging Face, the shared org
 for ready-to-use MLX model weights across projects like `mlx-lm`, `mlx-vlm`, and
 `mlx-audio`. If you are adding a new model, prefer publishing it there when possible
 so users can find MLX models in one consistent place.
+
+## Music Generation
+
+Generate complete songs from a musical caption and structured lyrics.
+
+| Model | Description | Repo |
+|-------|-------------|------|
+| **MiniMax Music 3** | Multilingual song generation with structural tags and 44.1 kHz stereo output | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [8-bit](https://huggingface.co/mlx-community/MiniMax-Music3-8bit), [6-bit](https://huggingface.co/mlx-community/MiniMax-Music3-6bit), [4-bit](https://huggingface.co/mlx-community/MiniMax-Music3-4bit), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [NVFP4](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4) |
+
+[:octicons-arrow-right-24: Browse Music Models](music/index.md)
+
+---
 
 ## Text-to-Speech (TTS)
 

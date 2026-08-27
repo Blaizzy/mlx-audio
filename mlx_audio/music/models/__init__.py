@@ -1,0 +1,1 @@
+"""Music model implementations."""

@@ -10,6 +10,7 @@ def test_kinds_discovered_with_voice_first():
     discovered = kinds()
     assert {"tts", "stt", "sts"} <= set(discovered)
     assert discovered[:3] == ("tts", "stt", "sts")
+    assert "music" in discovered
 
 
 def test_supported_types_are_populated():
@@ -17,6 +18,7 @@ def test_supported_types_are_populated():
     assert len(SUPPORTED_MODEL_TYPES["stt"]) > 10
     assert "kokoro" in SUPPORTED_MODEL_TYPES["tts"]
     assert "whisper" in SUPPORTED_MODEL_TYPES["stt"]
+    assert "minimax_music3" in SUPPORTED_MODEL_TYPES["music"]
 
 
 def test_classify_text_to_speech():
@@ -37,6 +39,13 @@ def test_classify_other_voice_kinds():
     assert classify_model("moshi", "kyutai/moshiko") == "sts"
     assert classify_model("nemotron_voicechat", "") == "sts"
     assert classify_model("mimi", "kyutai/mimi") == "codec"
+
+
+def test_classify_music_model():
+    assert (
+        classify_model("minimax_music3", "mlx-community/MiniMax-Music3-mxfp8")
+        == "music"
+    )
 
 
 def test_repo_name_recovers_generic_model_type():
