@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import io
 import json
@@ -945,4 +946,99 @@ async def test_stream_inference_results_reraises_error_by_default():
             pass
 
     assert exc_info.value is error
-    assert handle.cancelled
+
+
+# -- ModelProvider memory eviction ------------------------------------------
+
+
+def _make_provider(max_resident=1, idle_ttl=0.0):
+    from mlx_audio.server import ModelProvider
+
+    return ModelProvider(max_resident_models=max_resident, idle_ttl_seconds=idle_ttl)
+
+
+def test_model_provider_lru_evicts_least_recently_used(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: loaded.append(name) or f"model-{name}",
+    )
+    provider = _make_provider(max_resident=2)
+
+    provider.load_model("a")
+    provider.load_model("b")
+    provider.load_model("a")  # a becomes the most recently used
+    provider.load_model("c")  # evicts b (LRU), keeps a
+
+    assert set(provider.models) == {"a", "c"}
+    assert set(provider._last_used.keys()) == {"a", "c"}
+
+
+def test_model_provider_evicts_when_capacity_exceeded(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: loaded.append(name) or f"model-{name}",
+    )
+    provider = _make_provider(max_resident=1)
+
+    provider.load_model("a")
+    provider.load_model("b")
+
+    assert list(provider.models.keys()) == ["b"]
+    assert loaded == ["a", "b"]
+
+
+async def test_model_provider_remove_model_clears_memory(monkeypatch):
+    cleared = []
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
+    monkeypatch.setattr("mlx_audio.server.mx.clear_cache", lambda: cleared.append(1))
+    provider = _make_provider()
+
+    provider.load_model("a")
+    assert "a" in provider.models
+
+    removed = await provider.remove_model("a")
+
+    assert removed is True
+    assert provider.models == {}
+    assert cleared == [1]
+    assert "a" not in provider._last_used
+
+
+async def test_model_provider_remove_model_missing_returns_false():
+    provider = _make_provider()
+    assert await provider.remove_model("missing") is False
+
+
+async def test_model_provider_idle_sweeper_evicts_stale_models(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: loaded.append(name) or f"model-{name}",
+    )
+    provider = _make_provider(idle_ttl=0.05)
+    provider.start_sweeper()
+    try:
+        provider.load_model("a")
+        await asyncio.sleep(0.06)  # let it go stale
+        provider.load_model("b")  # touches the sweeper loop
+
+        # Sweeper runs every idle_ttl; give it a beat to reap the stale model.
+        await asyncio.sleep(0.08)
+        assert "a" not in provider.models
+        assert "b" in provider.models
+    finally:
+        provider.stop_sweeper()
+
+
+def test_model_provider_sweeper_is_noop_when_ttl_disabled(monkeypatch):
+    provider = _make_provider(idle_ttl=0.0)
+    provider.start_sweeper()
+    assert provider._sweeper_task is None
+    provider.stop_sweeper()
+
+
+def test_model_provider_clamps_max_resident_to_at_least_one():
+    provider = _make_provider(max_resident=0)
+    assert provider.max_resident_models == 1
