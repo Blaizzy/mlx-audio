@@ -206,7 +206,7 @@ class CausalConvTranspose1d(nn.Module):
         output = contributions[:, :, :emit_samples]
         cache[self._cache_key] = contributions[:, :, emit_samples:]
 
-        if self.convtr.bias is not None:
+        if "bias" in self.convtr:
             output = output + self.convtr.bias[None, :, None]
         return output
 

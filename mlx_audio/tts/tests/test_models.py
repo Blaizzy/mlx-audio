@@ -1538,6 +1538,32 @@ class TestVibeVoiceModel(unittest.TestCase):
 
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
+    def test_streaming_causal_conv_transpose_without_bias_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            CausalConvTranspose1d,
+        )
+
+        layer = CausalConvTranspose1d(2, 3, kernel_size=4, stride=2, bias=False)
+        layer.convtr.weight = (
+            mx.arange(layer.convtr.weight.size, dtype=mx.float32).reshape(
+                layer.convtr.weight.shape
+            )
+            / 20.0
+        )
+        inputs = mx.arange(10, dtype=mx.float32).reshape(1, 2, 5) / 10.0
+
+        expected = layer(inputs)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                layer(inputs[:, :, :2], cache=cache),
+                layer(inputs[:, :, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
     def test_streaming_acoustic_tokenizer_matches_full_decode(self):
         from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
             AcousticTokenizer,
