@@ -1,0 +1,158 @@
+# Breeze TTS 2
+
+[Breeze TTS 2](https://huggingface.co/BreezeBlue/Breeze-TTS-2) is an
+English/Chinese text-to-speech model for voice design, voice cloning, and voice
+direction. The MLX implementation loads the publisher's original checkpoint,
+including its bundled Qwen3-TTS audio codec, and emits 24 kHz mono audio.
+
+## Model Variants
+
+| Model | Format | Size | HuggingFace |
+|-------|--------|------|-------------|
+| `mlx-community/Breeze-TTS-2-mlx` | MLX bfloat16 | ~7.6 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx) |
+| `mlx-community/Breeze-TTS-2-mlx-8bit` | MLX 8-bit | ~4.6 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-8bit) |
+| `mlx-community/Breeze-TTS-2-mlx-4bit` | MLX 4-bit | ~3.0 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx-4bit) |
+| `BreezeBlue/Breeze-TTS-2` | PyTorch (original) | ~7.7 GB | [:octicons-link-external-16: Model Card](https://huggingface.co/BreezeBlue/Breeze-TTS-2) |
+
+## Install and load
+
+```bash
+pip install -U mlx-audio
+```
+
+The publisher's checkpoint ships PyTorch safetensors that MLX cannot load
+directly, so the examples use the
+[mlx-community MLX conversion](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx). The model is
+registered under `breeze`, `breeze-tts`, and `breeze_tts`:
+
+```python
+from mlx_audio.tts import load
+
+model = load("mlx-community/Breeze-TTS-2-mlx")
+```
+
+## Voice design
+
+Create a voice from a natural-language description without reference audio.
+The upstream example flags `--instruction` and `--cfg-scale` are accepted;
+the established MLX spellings `--instruct` and `--cfg_scale` are equivalent.
+
+```bash
+mlx_audio.tts.generate \
+  --model mlx-community/Breeze-TTS-2-mlx \
+  --text "(sigh) Welcome aboard. Your journey begins now." \
+  --instruction "A warm, thoughtful young woman with a clear voice and a calm, reflective delivery." \
+  --cfg-scale 4 \
+  --output_path outputs \
+  --file_prefix breeze_design
+```
+
+## Voice clone
+
+Clone one speaker from a clean reference clip and its exact transcript. The
+reference aliases `--ref-audio` and `--ref-text` are equivalent to
+`--ref_audio` and `--ref_text`.
+
+```bash
+mlx_audio.tts.generate \
+  --model mlx-community/Breeze-TTS-2-mlx \
+  --ref-audio reference_en.wav \
+  --ref-text "This is the exact transcript of the English reference audio." \
+  --text "(sigh) It is good to hear your voice again after all this time." \
+  --voice S0 \
+  --output_path outputs \
+  --file_prefix breeze_clone
+```
+
+Exactly one reference audio/transcript pair is supported per generation. The
+transcript should match the clip; incomplete pairs are rejected.
+
+## Voice direction
+
+Combine a reference pair with an instruction to preserve speaker identity
+while directing tone, emotion, pace, or delivery:
+
+```bash
+mlx_audio.tts.generate \
+  --model mlx-community/Breeze-TTS-2-mlx \
+  --ref_audio reference.wav \
+  --ref_text "This is the exact transcript of the reference audio." \
+  --text "(clears throat) We need to discuss what happened last night." \
+  --instruct "Speak slowly with a restrained, serious tone." \
+  --cfg_scale 4 \
+  --voice S0 \
+  --output_path outputs \
+  --file_prefix breeze_direction
+```
+
+`S0` is Breeze's default speaker tag; pass `--voice S0` explicitly when you
+want the generated prompt to show it.
+
+## Inline vocal events
+
+Events remain inline in `--text`. Use parentheses for English, such as
+`(laugh)`, `(cough)`, `(clears throat)`, and `(sigh)`. Use square brackets for
+Chinese, such as `[笑]`, `[咳嗽]`, `[清嗓子]`, and `[叹气]`:
+
+```bash
+mlx_audio.tts.generate \
+  --model mlx-community/Breeze-TTS-2-mlx \
+  --text "[笑] 欢迎来到今晚的故事时间，让我们一起开始吧。" \
+  --instruction "一位温柔自信的年轻女性，声音清晰，语气亲切，表达轻快而富有感染力。" \
+  --cfg-scale 4 \
+  --output_path outputs \
+  --file_prefix breeze_events
+```
+
+## Streaming
+
+Pass `--stream` to play incremental codec-decoded chunks. Add `--save` to
+join them into a WAV file, and set `--streaming_interval` in seconds to choose
+the chunk cadence:
+
+```bash
+mlx_audio.tts.generate \
+  --model mlx-community/Breeze-TTS-2-mlx \
+  --ref-audio reference.wav \
+  --ref-text "This is the exact transcript of the reference audio." \
+  --text "(sigh) This response is streamed as it is generated." \
+  --stream \
+  --streaming_interval 1.0 \
+  --save \
+  --output_path outputs \
+  --file_prefix breeze_stream
+```
+
+The Python API yields `GenerationResult` objects for the same flow:
+
+```python
+from mlx_audio.tts import load
+
+model = load("mlx-community/Breeze-TTS-2-mlx")
+for result in model.generate(
+    text="(laugh) Hello from MLX-Audio.",
+    instruct="A bright, friendly voice.",
+    cfg_scale=4,
+    stream=True,
+    streaming_interval=1.0,
+):
+    assert result.sample_rate == 24_000
+    assert result.audio.ndim == 1
+```
+
+## License
+
+The Breeze source code used as a reference is Apache-2.0, but the model weights, derivatives, and
+self-hosted output are governed by BreezeBlue's Research and Non-Commercial
+[License](https://huggingface.co/BreezeBlue/Breeze-TTS-2/raw/main/LICENSE).
+Review the [original model card](https://huggingface.co/BreezeBlue/Breeze-TTS-2)
+before use.
+
+Commercial use requires written authorization from RESONIA, INC. Hosted
+BreezeBlue services are governed by their applicable service terms. For
+commercial licensing, contact contact@breeze.blue.
+
+You are responsible for complying with applicable laws and obtaining all
+necessary rights and consents for inputs, reference audio, voices, and outputs.
+Unauthorized voice cloning, impersonation, fraud, and other unlawful or harmful
+uses are prohibited.

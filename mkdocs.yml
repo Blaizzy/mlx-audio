@@ -84,6 +84,7 @@ nav:
       - models/tts/index.md
       - Kokoro: models/tts/kokoro.md
       - Qwen3-TTS: models/tts/qwen3-tts.md
+      - Breeze TTS 2: models/tts/breeze-tts.md
       - Higgs Audio v3: models/tts/higgs_audio_v3.md
       - MOSS-TTS: models/tts/moss-tts.md
       - Voxtral TTS: models/tts/voxtral-tts.md
