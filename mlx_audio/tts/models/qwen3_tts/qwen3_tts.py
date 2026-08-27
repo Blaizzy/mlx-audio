@@ -809,6 +809,7 @@ class Model(nn.Module):
         top_k: int = 50,
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
+        repetition_context_size: int = 64,
         generated_tokens: Optional[List[int]] = None,
         suppress_tokens: Optional[List[int]] = None,
         min_p: float = 0.0,
@@ -826,9 +827,10 @@ class Model(nn.Module):
                 axis=-1,
             )
 
-        # Apply repetition penalty
+
         if generated_tokens and repetition_penalty != 1.0:
-            unique_tokens = list(set(generated_tokens))
+            recent_tokens = generated_tokens[-repetition_context_size:]
+            unique_tokens = list(set(recent_tokens))
             valid_tokens = [t for t in unique_tokens if t < logits.shape[-1]]
             if valid_tokens:
                 token_ids = mx.array(valid_tokens, dtype=mx.int32)
@@ -866,6 +868,7 @@ class Model(nn.Module):
         top_k: int = 50,
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
+        repetition_context_size: int = 64,
         generated_tokens_per_seq: Optional[List[List[int]]] = None,
         suppress_tokens: Optional[List[int]] = None,
         min_p: float = 0.0,
@@ -887,12 +890,14 @@ class Model(nn.Module):
                 axis=-1,
             )
 
-        # Apply repetition penalty per sequence (builds lazy graph, no sync)
+        # Apply repetition penalty per sequence over a bounded recent window
+        # (builds lazy graph, no sync). See _sample_token for why the full
+        # accumulated history is not used.
         if generated_tokens_per_seq and repetition_penalty != 1.0:
             for b, gen_tokens in enumerate(generated_tokens_per_seq):
                 if not gen_tokens:
                     continue
-                unique_tokens = list(set(gen_tokens))
+                unique_tokens = list(set(gen_tokens[-repetition_context_size:]))
                 valid_tokens = [t for t in unique_tokens if t < logits.shape[-1]]
                 if not valid_tokens:
                     continue
