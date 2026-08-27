@@ -827,12 +827,7 @@ class Model(nn.Module):
                 axis=-1,
             )
 
-        # Apply repetition penalty over a bounded recent window. Penalizing the
-        # full accumulated history keeps a slow reference voice's recurring
-        # tokens (pauses, elongations) suppressed for the entire utterance, which
-        # ratchets the speaking pace up over long generations; a sliding window
-        # keeps the penalty pressure stationary while still catching the
-        # short-range code degeneration the ICL penalty floor guards against.
+
         if generated_tokens and repetition_penalty != 1.0:
             recent_tokens = generated_tokens[-repetition_context_size:]
             unique_tokens = list(set(recent_tokens))
