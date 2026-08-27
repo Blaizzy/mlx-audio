@@ -1403,6 +1403,172 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(config.decoder_config.hidden_size, 896)
         self.assertEqual(config.decoder_config.num_hidden_layers, 24)
 
+    def test_stream_true_emits_audio_before_generation_finishes(self):
+        """VibeVoice must decode and yield speech latents incrementally."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        hidden_size = 4
+
+        class FakeLanguageModel:
+            def embed_tokens(self, token_ids):
+                return mx.zeros(
+                    (token_ids.shape[0], token_ids.shape[1], hidden_size),
+                    dtype=mx.float32,
+                )
+
+            def __call__(self, inputs_embeds, cache=None):
+                return inputs_embeds, cache
+
+        class FakeAcousticTokenizer:
+            def decode(self, latents, **kwargs):
+                samples = latents.shape[1] * 4
+                return mx.arange(samples, dtype=mx.float32).reshape(1, 1, samples)
+
+        model = Model.__new__(Model)
+        model.config = SimpleNamespace(
+            sample_rate=8,
+            decoder_config=SimpleNamespace(hidden_size=hidden_size),
+            acoustic_tokenizer_config=SimpleNamespace(
+                decoder_ratios=[2],
+                encoder_ratios=[2],
+            ),
+        )
+        model.tokenizer = SimpleNamespace(
+            encode=lambda text, add_special_tokens=False: [1]
+        )
+        model.language_model = FakeLanguageModel()
+        model.tts_language_model = FakeLanguageModel()
+        model.tts_input_types = lambda token_types: mx.zeros(
+            (token_types.shape[0], token_types.shape[1], hidden_size),
+            dtype=mx.float32,
+        )
+        model.sample_speech_tokens = lambda *args, **kwargs: mx.ones(
+            (1, 2), dtype=mx.float32
+        )
+        model.acoustic_connector = lambda speech_latent: mx.zeros(
+            (1, 1, hidden_size), dtype=mx.float32
+        )
+        model.tts_eos_classifier = lambda hidden: mx.array([-100.0])
+        model.acoustic_tokenizer = FakeAcousticTokenizer()
+        model.speech_scaling_factor = mx.array(1.0)
+        model.speech_bias_factor = mx.array(0.0)
+
+        results = list(
+            model.generate(
+                "hello",
+                max_tokens=3,
+                stream=True,
+                streaming_interval=0.0,
+            )
+        )
+
+        audio_results = [result for result in results if result.samples > 0]
+        self.assertEqual(len(audio_results), 3)
+        self.assertTrue(all(result.is_streaming_chunk for result in results))
+        self.assertTrue(results[-1].is_final_chunk)
+
+        interval_results = list(
+            model.generate(
+                "hello",
+                max_tokens=3,
+                stream=True,
+                streaming_interval=0.5,
+            )
+        )
+        self.assertEqual(
+            [result.samples for result in interval_results if result.samples > 0],
+            [8, 4],
+        )
+        self.assertTrue(interval_results[-1].is_final_chunk)
+
+        non_streaming_results = list(model.generate("hello", max_tokens=3))
+        self.assertEqual(len(non_streaming_results), 1)
+        self.assertEqual(non_streaming_results[0].samples, 12)
+        self.assertFalse(non_streaming_results[0].is_streaming_chunk)
+
+    def test_streaming_causal_conv_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import CausalConv1d
+
+        layer = CausalConv1d(2, 3, kernel_size=3, bias=True)
+        layer.conv.weight = (
+            mx.arange(layer.conv.weight.size, dtype=mx.float32).reshape(
+                layer.conv.weight.shape
+            )
+            / 20.0
+        )
+        layer.conv.bias = mx.array([0.1, -0.2, 0.3], dtype=mx.float32)
+        inputs = mx.arange(12, dtype=mx.float32).reshape(1, 2, 6) / 10.0
+
+        expected = layer(inputs)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                layer(inputs[:, :, :2], cache=cache),
+                layer(inputs[:, :, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    def test_streaming_causal_conv_transpose_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            CausalConvTranspose1d,
+        )
+
+        layer = CausalConvTranspose1d(2, 3, kernel_size=4, stride=2, bias=True)
+        layer.convtr.weight = (
+            mx.arange(layer.convtr.weight.size, dtype=mx.float32).reshape(
+                layer.convtr.weight.shape
+            )
+            / 20.0
+        )
+        layer.convtr.bias = mx.array([0.1, -0.2, 0.3], dtype=mx.float32)
+        inputs = mx.arange(10, dtype=mx.float32).reshape(1, 2, 5) / 10.0
+
+        expected = layer(inputs)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                layer(inputs[:, :, :2], cache=cache),
+                layer(inputs[:, :, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    def test_streaming_acoustic_tokenizer_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            AcousticTokenizer,
+        )
+        from mlx_audio.tts.models.vibevoice.config import AcousticTokenizerConfig
+
+        config = AcousticTokenizerConfig(
+            vae_dim=2,
+            channels=1,
+            encoder_n_filters=2,
+            decoder_n_filters=2,
+            encoder_ratios=[2],
+            decoder_ratios=[2],
+            encoder_depths="1-1",
+            decoder_depths="1-1",
+        )
+        tokenizer = AcousticTokenizer(config)
+        latents = mx.arange(10, dtype=mx.float32).reshape(1, 5, 2) / 10.0
+
+        expected = tokenizer.decode(latents)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                tokenizer.decode(latents[:, :2], cache=cache),
+                tokenizer.decode(latents[:, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-6)
+
 
 class TestChatterboxConfig(unittest.TestCase):
     def test_t3_config_defaults(self):

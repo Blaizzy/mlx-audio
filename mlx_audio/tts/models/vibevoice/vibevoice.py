@@ -1,5 +1,6 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+import math
 import os
 import time
 from pathlib import Path
@@ -411,6 +412,8 @@ class Model(nn.Module):
         ddpm_steps: Optional[int] = None,
         voice: Optional[Union[str, Path, List[Tuple[str, str]]]] = None,
         verbose: bool = False,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech from text.
@@ -444,6 +447,8 @@ class Model(nn.Module):
                 cfg_scale=cfg_scale,
                 ddpm_steps=ddpm_steps,
                 verbose=verbose,
+                stream=stream,
+                streaming_interval=streaming_interval,
                 **kwargs,
             )
             return
@@ -462,6 +467,8 @@ class Model(nn.Module):
             cfg_scale=cfg_scale,
             ddpm_steps=ddpm_steps,
             verbose=verbose,
+            stream=stream,
+            streaming_interval=streaming_interval,
             **kwargs,
         )
 
@@ -472,6 +479,8 @@ class Model(nn.Module):
         cfg_scale: float = 1.5,
         ddpm_steps: Optional[int] = None,
         verbose: bool = False,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech from multiple speakers.
@@ -506,10 +515,19 @@ class Model(nn.Module):
                 cfg_scale=cfg_scale,
                 ddpm_steps=ddpm_steps,
                 verbose=verbose,
+                stream=stream,
+                streaming_interval=streaming_interval,
                 **kwargs,
             ):
+                if stream:
+                    result.segment_idx = segment_idx
+                    yield result
+                    continue
                 all_audio_segments.append(result.audio)
                 total_tokens += result.token_count
+
+        if stream:
+            return
 
         # Combine all audio segments
         if all_audio_segments:
@@ -563,6 +581,8 @@ class Model(nn.Module):
         cfg_scale: float = 1.5,
         ddpm_steps: Optional[int] = None,
         verbose: bool = False,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         **kwargs,
     ) -> Generator[GenerationResult, None, None]:
         """Generate speech for a single speaker segment (internal method).
@@ -571,6 +591,61 @@ class Model(nn.Module):
         _generate_multi_speaker().
         """
         start_time = time.perf_counter()
+
+        def decode_latents(latents, cache=None):
+            latent_seq = mx.concatenate(latents, axis=1)
+            scaled_latents = (
+                latent_seq / self.speech_scaling_factor - self.speech_bias_factor
+            )
+            audio = self.acoustic_tokenizer.decode(scaled_latents, cache=cache)
+            audio = audio.squeeze(1).squeeze(0)
+            mx.eval(audio)
+            return audio
+
+        def make_result(
+            audio,
+            token_count,
+            segment_idx,
+            chunk_start,
+            *,
+            is_streaming_chunk=False,
+            is_final_chunk=False,
+        ):
+            elapsed = time.perf_counter() - chunk_start
+            samples = audio.shape[0] if audio.size > 0 else 0
+            duration_seconds = samples / self.sample_rate if samples > 0 else 0
+            duration_mins = int(duration_seconds // 60)
+            duration_secs = int(duration_seconds % 60)
+            duration_ms = int((duration_seconds % 1) * 1000)
+            duration = (
+                f"{int(duration_seconds // 3600):02d}:{duration_mins:02d}:"
+                f"{duration_secs:02d}.{duration_ms:03d}"
+            )
+            return GenerationResult(
+                audio=audio,
+                samples=samples,
+                sample_rate=self.sample_rate,
+                segment_idx=segment_idx,
+                token_count=token_count,
+                audio_duration=duration,
+                real_time_factor=(duration_seconds / elapsed if elapsed > 0 else 0),
+                prompt={
+                    "tokens": token_count,
+                    "tokens-per-sec": (
+                        round(token_count / elapsed, 2) if elapsed > 0 else 0
+                    ),
+                },
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": (
+                        round(samples / elapsed, 2) if elapsed > 0 else 0
+                    ),
+                },
+                processing_time_seconds=elapsed,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+                is_streaming_chunk=is_streaming_chunk,
+                is_final_chunk=is_final_chunk,
+            )
 
         # Tokenize input
         text_token_ids = self.tokenizer.encode(
@@ -600,6 +675,25 @@ class Model(nn.Module):
             neg_cache = None
 
         speech_latents = []
+        stream_latents = []
+        stream_cache = {} if stream else None
+        stream_chunk_idx = 0
+        stream_chunk_start = start_time
+        if stream:
+            if streaming_interval <= 0:
+                stream_latents_per_chunk = 1
+            else:
+                acoustic_config = self.config.acoustic_tokenizer_config
+                ratios = (
+                    acoustic_config.decoder_ratios
+                    if acoustic_config.decoder_ratios
+                    else acoustic_config.encoder_ratios
+                )
+                samples_per_latent = math.prod(ratios)
+                stream_latents_per_chunk = max(
+                    1,
+                    int(streaming_interval * self.sample_rate / samples_per_latent),
+                )
         finished = False
         step = 0
         text_pos = 0
@@ -660,7 +754,22 @@ class Model(nn.Module):
                 )
                 speech_latent = mx.expand_dims(speech_latent, 1)
 
-                speech_latents.append(speech_latent)
+                if stream:
+                    stream_latents.append(speech_latent)
+                    if len(stream_latents) >= stream_latents_per_chunk:
+                        audio_chunk = decode_latents(stream_latents, cache=stream_cache)
+                        yield make_result(
+                            audio_chunk,
+                            len(stream_latents),
+                            stream_chunk_idx,
+                            stream_chunk_start,
+                            is_streaming_chunk=True,
+                        )
+                        stream_latents.clear()
+                        stream_chunk_idx += 1
+                        stream_chunk_start = time.perf_counter()
+                else:
+                    speech_latents.append(speech_latent)
 
                 acoustic_embed = self.acoustic_connector(speech_latent)
 
@@ -695,13 +804,30 @@ class Model(nn.Module):
                     finished = True
                     break
 
+        if stream:
+            if stream_latents:
+                final_audio = decode_latents(stream_latents, cache=stream_cache)
+                yield make_result(
+                    final_audio,
+                    len(stream_latents),
+                    stream_chunk_idx,
+                    stream_chunk_start,
+                    is_streaming_chunk=True,
+                    is_final_chunk=True,
+                )
+            else:
+                yield make_result(
+                    mx.array([]),
+                    0,
+                    stream_chunk_idx,
+                    stream_chunk_start,
+                    is_streaming_chunk=True,
+                    is_final_chunk=True,
+                )
+            return
+
         if speech_latents:
-            speech_latent_seq = mx.concatenate(speech_latents, axis=1)
-            scaled_latents = (
-                speech_latent_seq / self.speech_scaling_factor - self.speech_bias_factor
-            )
-            audio = self.acoustic_tokenizer.decode(scaled_latents)
-            final_audio = audio.squeeze(1).squeeze(0)
+            final_audio = decode_latents(speech_latents)
         else:
             final_audio = mx.array([])
 

@@ -1,6 +1,7 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
+from typing import MutableMapping, Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -58,6 +59,7 @@ class CausalConv1d(nn.Module):
         self.stride = stride
         self.dilation = dilation
         self.groups = groups
+        self._cache_key = f"causal_conv:{id(self)}"
 
         # Calculate padding for causal convolution
         self.padding = (kernel_size - 1) * dilation
@@ -75,7 +77,29 @@ class CausalConv1d(nn.Module):
             bias=bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        if cache is not None:
+            if self.stride != 1:
+                raise ValueError("Streaming CausalConv1d requires stride=1")
+
+            previous = cache.get(self._cache_key)
+            if previous is None and self.padding > 0:
+                previous = mx.zeros(
+                    (x.shape[0], self.in_channels, self.padding), dtype=x.dtype
+                )
+            if previous is not None and previous.shape[2] > 0:
+                x = mx.concatenate([previous, x], axis=2)
+
+            if self.padding > 0:
+                cache[self._cache_key] = x[:, :, -self.padding :]
+
+            x = self.conv(mx.transpose(x, (0, 2, 1)))
+            return mx.transpose(x, (0, 2, 1))
+
         # x: (B, C, T) - input in PyTorch format
         # Transpose to MLX format: (B, C, T) -> (B, T, C)
         x = mx.transpose(x, (0, 2, 1))
@@ -115,6 +139,7 @@ class CausalConvTranspose1d(nn.Module):
         self.kernel_size = kernel_size
         self.stride = stride
         self.trim_right_ratio = trim_right_ratio
+        self._cache_key = f"causal_conv_transpose:{id(self)}"
 
         # Calculate padding
         self.padding_total = kernel_size - stride
@@ -129,7 +154,14 @@ class CausalConvTranspose1d(nn.Module):
             bias=bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        if cache is not None:
+            return self._stream(x, cache)
+
         # x: (B, C, T) - input in PyTorch format
         # Transpose to MLX format: (B, C, T) -> (B, T, C)
         x = mx.transpose(x, (0, 2, 1))
@@ -150,6 +182,33 @@ class CausalConvTranspose1d(nn.Module):
             x = x[:, :, :-padding_right]
 
         return x
+
+    def _stream(self, x: mx.array, cache: MutableMapping[str, mx.array]) -> mx.array:
+        contributions = mx.conv_transpose1d(
+            mx.transpose(x, (0, 2, 1)),
+            self.convtr.weight,
+            stride=self.stride,
+        )
+        contributions = mx.transpose(contributions, (0, 2, 1))
+
+        pending = cache.get(self._cache_key)
+        if pending is not None and pending.shape[2] > 0:
+            overlap = min(pending.shape[2], contributions.shape[2])
+            contributions = mx.concatenate(
+                [
+                    contributions[:, :, :overlap] + pending[:, :, :overlap],
+                    contributions[:, :, overlap:],
+                ],
+                axis=2,
+            )
+
+        emit_samples = x.shape[2] * self.stride
+        output = contributions[:, :, :emit_samples]
+        cache[self._cache_key] = contributions[:, :, emit_samples:]
+
+        if self.convtr.bias is not None:
+            output = output + self.convtr.bias[None, :, None]
+        return output
 
 
 class DepthwiseConv(nn.Module):
@@ -176,8 +235,12 @@ class DepthwiseConv(nn.Module):
             bias=bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.conv(x)
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        return self.conv(x, cache=cache)
 
 
 class Mixer(nn.Module):
@@ -189,8 +252,12 @@ class Mixer(nn.Module):
         super().__init__()
         self.conv = DepthwiseConv(dim, kernel_size, causal, bias)
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.conv(x)
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        return self.conv(x, cache=cache)
 
 
 class FeedForward(nn.Module):
@@ -246,13 +313,17 @@ class Block1D(nn.Module):
             self.gamma = None
             self.ffn_gamma = None
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
         # x: (B, C, T)
 
         # Mixer path
         residual = x
         x = self.norm(x)
-        x = self.mixer(x)
+        x = self.mixer(x, cache=cache)
         if self.gamma is not None:
             x = x * mx.expand_dims(self.gamma, axis=(0, 2))
         x = residual + x
@@ -290,8 +361,12 @@ class StemConv(nn.Module):
             bias=bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.conv(x)
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        return self.conv(x, cache=cache)
 
 
 class UpsampleLayer(nn.Module):
@@ -314,8 +389,12 @@ class UpsampleLayer(nn.Module):
             bias=bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.convtr(x)
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        return self.convtr(x, cache=cache)
 
 
 class HeadConv(nn.Module):
@@ -336,8 +415,12 @@ class HeadConv(nn.Module):
             bias=bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
-        return self.conv(x)
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
+        return self.conv(x, cache=cache)
 
 
 class TokenizerDecoder(nn.Module):
@@ -446,7 +529,11 @@ class TokenizerDecoder(nn.Module):
             bias=config.conv_bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(
+        self,
+        x: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
         """
         Args:
             x: Latent tensor of shape (B, T, D) or (B, D, T)
@@ -459,20 +546,20 @@ class TokenizerDecoder(nn.Module):
             x = mx.transpose(x, (0, 2, 1))
 
         # Apply stem (first upsample layer)
-        x = self.upsample_layers[0][0](x)
+        x = self.upsample_layers[0][0](x, cache=cache)
 
         # Process through stages and upsampling
         for i in range(self.n_stages):
             # Apply stage blocks
             for block in self.stages[i]:
-                x = block(x)
+                x = block(x, cache=cache)
 
             # Apply upsampling (skip first upsample which was stem)
             if i + 1 < len(self.upsample_layers):
-                x = self.upsample_layers[i + 1][0](x)
+                x = self.upsample_layers[i + 1][0](x, cache=cache)
 
         # Output head
-        x = self.head(x)
+        x = self.head(x, cache=cache)
 
         return x
 
@@ -488,7 +575,11 @@ class AcousticTokenizer(nn.Module):
 
         self.decoder = TokenizerDecoder(config)
 
-    def decode(self, latents: mx.array) -> mx.array:
+    def decode(
+        self,
+        latents: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
         """Convert latent representations to audio.
 
         Args:
@@ -497,8 +588,19 @@ class AcousticTokenizer(nn.Module):
         Returns:
             Audio tensor of shape (B, 1, T')
         """
-        return self.decoder(latents)
+        if latents.ndim != 3 or latents.shape[-1] != self.decoder.dimension:
+            raise ValueError(
+                "AcousticTokenizer.decode expects latents with shape (B, T, D) "
+                f"where D={self.decoder.dimension}; received {latents.shape}"
+            )
 
-    def __call__(self, latents: mx.array) -> mx.array:
+        latents = mx.transpose(latents, (0, 2, 1))
+        return self.decoder(latents, cache=cache)
+
+    def __call__(
+        self,
+        latents: mx.array,
+        cache: Optional[MutableMapping[str, mx.array]] = None,
+    ) -> mx.array:
         """Alias for decode."""
-        return self.decode(latents)
+        return self.decode(latents, cache=cache)
