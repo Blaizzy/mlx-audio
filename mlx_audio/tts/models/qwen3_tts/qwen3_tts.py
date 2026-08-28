@@ -809,9 +809,9 @@ class Model(nn.Module):
         top_k: int = 50,
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
+        repetition_context_size: int = 64,
         generated_tokens: Optional[List[int]] = None,
         suppress_tokens: Optional[List[int]] = None,
-        eos_token_id: Optional[int] = None,
         min_p: float = 0.0,
     ) -> mx.array:
 
@@ -827,9 +827,10 @@ class Model(nn.Module):
                 axis=-1,
             )
 
-        # Apply repetition penalty
+
         if generated_tokens and repetition_penalty != 1.0:
-            unique_tokens = list(set(generated_tokens))
+            recent_tokens = generated_tokens[-repetition_context_size:]
+            unique_tokens = list(set(recent_tokens))
             valid_tokens = [t for t in unique_tokens if t < logits.shape[-1]]
             if valid_tokens:
                 token_ids = mx.array(valid_tokens, dtype=mx.int32)
@@ -852,18 +853,10 @@ class Model(nn.Module):
         if temperature != 1.0:
             logits = logits / temperature
 
-        eos_logit = None
-        if eos_token_id is not None and eos_token_id < logits.shape[-1]:
-            eos_logit = logits[:, eos_token_id : eos_token_id + 1]
-
         if top_k > 0 and top_k < logits.shape[-1]:
             logits = apply_top_k(logits, top_k)
 
         logits = _apply_probability_filters(logits, top_p, min_p)
-
-        if eos_logit is not None:
-            eos_idx = mx.array([[eos_token_id]], dtype=mx.int32)
-            logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
         token = categorical_sampling(logits, 1.0)
         return token[:, None]
@@ -875,9 +868,9 @@ class Model(nn.Module):
         top_k: int = 50,
         top_p: float = 1.0,
         repetition_penalty: float = 1.05,
+        repetition_context_size: int = 64,
         generated_tokens_per_seq: Optional[List[List[int]]] = None,
         suppress_tokens: Optional[List[int]] = None,
-        eos_token_id: Optional[int] = None,
         min_p: float = 0.0,
     ) -> mx.array:
         """Batched sampling from [batch, seq_len, vocab] logits. Returns [batch, 1]."""
@@ -897,12 +890,14 @@ class Model(nn.Module):
                 axis=-1,
             )
 
-        # Apply repetition penalty per sequence (builds lazy graph, no sync)
+        # Apply repetition penalty per sequence over a bounded recent window
+        # (builds lazy graph, no sync). See _sample_token for why the full
+        # accumulated history is not used.
         if generated_tokens_per_seq and repetition_penalty != 1.0:
             for b, gen_tokens in enumerate(generated_tokens_per_seq):
                 if not gen_tokens:
                     continue
-                unique_tokens = list(set(gen_tokens))
+                unique_tokens = list(set(gen_tokens[-repetition_context_size:]))
                 valid_tokens = [t for t in unique_tokens if t < logits.shape[-1]]
                 if not valid_tokens:
                     continue
@@ -926,20 +921,10 @@ class Model(nn.Module):
         if temperature != 1.0:
             logits = logits / temperature
 
-        # Preserve EOS logit before filtering
-        eos_logit = None
-        if eos_token_id is not None and eos_token_id < logits.shape[-1]:
-            eos_logit = logits[:, eos_token_id : eos_token_id + 1]  # [batch, 1]
-
         if top_k > 0 and top_k < logits.shape[-1]:
             logits = apply_top_k(logits, top_k)
 
         logits = _apply_probability_filters(logits, top_p, min_p)
-
-        # Restore EOS logit
-        if eos_logit is not None:
-            eos_idx = mx.full((logits.shape[0], 1), eos_token_id, dtype=mx.int32)
-            logits = mx.put_along_axis(logits, eos_idx, eos_logit, axis=-1)
 
         tokens = categorical_sampling(logits, 1.0)  # [batch]
         return tokens[:, None]  # [batch, 1]
@@ -1165,11 +1150,13 @@ class Model(nn.Module):
         Automatically routes to the appropriate generation method based on model type:
         - voice_design: Uses generate_voice_design() with instruct as voice description
         - custom_voice: Uses generate_custom_voice() with voice as speaker and optional instruct
-        - base: Uses standard generation with voice as speaker
+        - base: Uses ref_audio + ref_text for voice cloning; has no preset voices
 
         Args:
             text: Input text to synthesize
-            voice: Speaker name (for multi-speaker models, e.g., 'Chelsie', 'Ethan')
+            voice: Speaker name (CustomVoice models only, e.g. 'Vivian', 'Ryan';
+                see model.get_supported_speakers()). Base models have no preset
+                voices — use ref_audio + ref_text to clone a voice instead.
             instruct: Instruction for emotion/style (CustomVoice) or voice description (VoiceDesign)
             temperature: Sampling temperature
             speed: Speech speed factor (not directly supported yet)
@@ -1220,7 +1207,7 @@ class Model(nn.Module):
             if not voice:
                 raise ValueError(
                     "CustomVoice model requires 'voice' (speaker name) "
-                    "(e.g., 'Chelsie', 'Ethan', 'Vivian')"
+                    f"(e.g., {self.supported_speakers})"
                 )
             yield from self.generate_custom_voice(
                 text=text,
@@ -1268,6 +1255,20 @@ class Model(nn.Module):
                 streaming_interval=streaming_interval,
             )
             return
+
+        if voice is not None and voice.lower() not in [
+            s.lower() for s in self.supported_speakers
+        ]:
+            raise ValueError(
+                f"Voice '{voice}' is not supported by this Base model. "
+                "Base models have no built-in preset voices — clone a voice by "
+                "passing ref_audio and ref_text instead."
+                + (
+                    f" Available preset voices: {self.supported_speakers}"
+                    if self.supported_speakers
+                    else ""
+                )
+            )
 
         # Split text into segments
         if split_pattern:
@@ -1342,7 +1343,6 @@ class Model(nn.Module):
                         generated_token_ids if generated_token_ids else None
                     ),
                     suppress_tokens=suppress_tokens,
-                    eos_token_id=eos_token_id,
                 )
 
                 # Lazy EOS check — defer sync to batch with input_embeds eval
@@ -1880,7 +1880,6 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 generated_tokens_per_seq=generated_token_ids,
                 suppress_tokens=suppress_tokens,
-                eos_token_id=eos_token_id,
             )  # [batch, 1]
 
             # Mask finished sequences to EOS (vectorized, no sync)
@@ -2287,7 +2286,6 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 generated_tokens=(generated_token_ids if generated_token_ids else None),
                 suppress_tokens=suppress_tokens,
-                eos_token_id=eos_token_id,
             )
 
             # Lazy EOS check — defer sync to batch with input_embeds eval
@@ -2595,7 +2593,6 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 generated_tokens=(generated_token_ids if generated_token_ids else None),
                 suppress_tokens=suppress_tokens,
-                eos_token_id=eos_token_id,
             )
 
             # Lazy EOS check — defer sync to batch with input_embeds eval

@@ -3175,8 +3175,8 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         cb0_count = [0]
 
         def controlled_sample(*args, **kwargs):
-            # CB0 calls have eos_token_id set
-            if kwargs.get("eos_token_id") is not None:
+            # CB0 calls pass suppress_tokens; code predictor calls don't
+            if kwargs.get("suppress_tokens") is not None:
                 cb0_count[0] += 1
                 if cb0_count[0] <= 2:
                     return mx.array([[5]])  # non-EOS token

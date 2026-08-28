@@ -315,6 +315,7 @@ class TestEcapaTdnnModel(unittest.TestCase):
 
     def test_forward_output_shape(self):
         model = self.Model(self.config)
+        model.eval()
         mel = mx.random.normal((1, 100, 60))
         log_probs = model(mel)
         mx.eval(log_probs)
@@ -323,6 +324,7 @@ class TestEcapaTdnnModel(unittest.TestCase):
 
     def test_forward_log_probs_sum(self):
         model = self.Model(self.config)
+        model.eval()
         mel = mx.random.normal((1, 100, 60))
         log_probs = model(mel)
         probs = mx.exp(log_probs)
@@ -361,6 +363,7 @@ class TestEcapaTdnnModel(unittest.TestCase):
 
     def test_predict_returns_sorted(self):
         model = self.Model(self.config)
+        model.eval()
         labels = {str(i): f"lang_{i}" for i in range(10)}
         model.config.id2label = labels
         model.id2label = {int(k): v for k, v in labels.items()}
@@ -374,6 +377,7 @@ class TestEcapaTdnnModel(unittest.TestCase):
 
     def test_predict_without_id2label(self):
         model = self.Model(self.config)
+        model.eval()
         model.id2label = {}
         audio = mx.random.normal((16000,))
         results = model.predict(audio, top_k=2)

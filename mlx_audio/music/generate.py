@@ -105,9 +105,9 @@ def configure_parser() -> argparse.ArgumentParser:
         help="Output audio path",
     )
     parser.add_argument(
-        "--quiet",
+        "--verbose",
         action="store_true",
-        help="Suppress generation progress output",
+        help="Show generation progress output",
     )
     return parser
 
@@ -128,7 +128,7 @@ def main() -> None:
         steps=args.steps,
         seed=args.seed,
         output_path=args.output,
-        verbose=not args.quiet,
+        verbose=args.verbose,
     )
 
 

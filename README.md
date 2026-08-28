@@ -8,7 +8,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![GitHub stars](https://img.shields.io/github/stars/Blaizzy/mlx-audio.svg?style=social)](https://github.com/Blaizzy/mlx-audio)
 
-The best audio processing library built on Apple's MLX framework, providing fast and efficient music generation, text-to-speech (TTS), speech-to-text (STT), and speech-to-speech (STS) on Apple Silicon.
+The best audio processing library built on Apple's MLX framework, providing fast and efficient text-to-speech (TTS), speech-to-text (STT), speech-to-speech (STS), music generation, and more on Apple Silicon.
 
 ## Table of Contents
 
@@ -28,7 +28,7 @@ The best audio processing library built on Apple's MLX framework, providing fast
 ## Features
 
 - Fast inference optimized for Apple Silicon (M series chips)
-- Multiple model architectures for music generation, TTS, STT, and STS
+- Multiple model architectures for TTS, STT, STS, and music generation
 - Multilingual support across models
 - Voice customization and cloning capabilities
 - Adjustable speech speed control
@@ -69,26 +69,27 @@ pip install -e ".[dev, server]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello, world!' --voice Chelsie
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello, world!' --voice Vivian
 
 # With a different voice and language hint
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Welcome to MLX-Audio!' --voice Ethan --lang_code English
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Welcome to MLX-Audio!' --voice Ryan --lang_code English
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --play
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --play
 
 # Save to a specific directory
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --output_path ./my_audio
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --output_path ./my_audio
 
 # Stream audio during generation
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --stream
 
 # Stream audio during generation and save it to disk
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream --save
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --stream --save
 
 # Join multiple generated segments into one file
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text $'Hello!\nHow are you?' --voice Chelsie --join_audio
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text $'Hello!\nHow are you?' --voice Vivian --join_audio
 ```
+
 
 By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
@@ -98,12 +99,12 @@ By default, when generation yields multiple segments, mlx-audio saves numbered f
 from mlx_audio.tts.utils import load_model
 
 # Load model
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
 # Generate speech
 for result in model.generate(
     "Hello from MLX-Audio!",
-    voice="Chelsie",
+    voice="Vivian",
     lang_code="English",
 ):
     print(f"Generated {result.audio.shape[0]} samples")
@@ -111,12 +112,6 @@ for result in model.generate(
 ```
 
 ## Supported Models
-
-### Music Generation
-
-| Model | Description | Languages | Repo |
-|-------|-------------|-----------|------|
-| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [8-bit](https://huggingface.co/mlx-community/MiniMax-Music3-8bit), [6-bit](https://huggingface.co/mlx-community/MiniMax-Music3-6bit), [4-bit](https://huggingface.co/mlx-community/MiniMax-Music3-4bit), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [NVFP4](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4), [guide](mlx_audio/music/models/minimax_music3/README.md) |
 
 ### Text-to-Speech (TTS)
 
@@ -185,6 +180,12 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
 
+### Music Generation
+
+| Model | Description | Languages | Repo |
+|-------|-------------|-----------|------|
+| **MiniMax Music 3** | Hierarchical AR + flow-matching song generation with lyrics and 44.1 kHz stereo output | Multilingual lyrics | [BF16](https://huggingface.co/mlx-community/MiniMax-Music3-bf16), [8-bit](https://huggingface.co/mlx-community/MiniMax-Music3-8bit), [6-bit](https://huggingface.co/mlx-community/MiniMax-Music3-6bit), [4-bit](https://huggingface.co/mlx-community/MiniMax-Music3-4bit), [MXFP8](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp8), [MXFP4](https://huggingface.co/mlx-community/MiniMax-Music3-mxfp4), [NVFP4](https://huggingface.co/mlx-community/MiniMax-Music3-nvfp4), [guide](mlx_audio/music/models/minimax_music3/README.md) |
+
 ## Model Examples
 
 ### Qwen3-TTS
@@ -194,10 +195,10 @@ Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control,
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
-results = list(model.generate(
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16")
+results = list(model.generate_custom_voice(
     text="Hello, welcome to MLX-Audio!",
-    voice="Chelsie",
+    speaker="Vivian",
     language="English",
 ))
 

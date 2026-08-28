@@ -1,5 +1,7 @@
 import functools
 import io
+import json
+import queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -16,7 +18,8 @@ pytest.importorskip("multipart", reason="python-multipart is required for server
 
 from fastapi.testclient import TestClient
 
-from mlx_audio.server import app
+from mlx_audio.server import _stream_inference_results, app
+from mlx_audio.server_inference import InferenceResultChunk
 
 
 @pytest.fixture
@@ -891,3 +894,55 @@ def test_stt_word_timestamps_verbose_json_words_passthrough(
     assert len(words) == 2
     assert words[0]["word"] == "Hello"
     assert words[1]["word"] == "world."
+
+
+class _FakeInferenceHandle:
+    def __init__(self, chunks):
+        self.result_queue = queue.Queue()
+        for chunk in chunks:
+            self.result_queue.put(chunk)
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class _ConnectedRequest:
+    async def is_disconnected(self):
+        return False
+
+
+async def test_stream_inference_results_reports_ndjson_error():
+    handle = _FakeInferenceHandle(
+        [
+            InferenceResultChunk(kind="data", payload='{"text": "hello"}\n'),
+            InferenceResultChunk(kind="error", error=ValueError("processor missing")),
+        ]
+    )
+
+    payloads = [
+        payload
+        async for payload in _stream_inference_results(
+            handle, _ConnectedRequest(), ndjson_errors=True
+        )
+    ]
+
+    assert payloads[0] == '{"text": "hello"}\n'
+    assert json.loads(payloads[1]) == {
+        "error": {"message": "processor missing", "type": "ValueError"}
+    }
+    assert handle.cancelled
+
+
+async def test_stream_inference_results_reraises_error_by_default():
+    error = ValueError("processor missing")
+    handle = _FakeInferenceHandle([InferenceResultChunk(kind="error", error=error)])
+
+    with pytest.raises(ValueError, match="processor missing") as exc_info:
+        async for _ in _stream_inference_results(
+            handle, _ConnectedRequest(), ndjson_errors=False
+        ):
+            pass
+
+    assert exc_info.value is error
+    assert handle.cancelled
