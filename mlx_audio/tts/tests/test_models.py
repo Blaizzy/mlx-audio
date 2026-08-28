@@ -1479,12 +1479,74 @@ class TestVibeVoiceModel(unittest.TestCase):
             [result.samples for result in interval_results if result.samples > 0],
             [8, 4],
         )
+        self.assertEqual(
+            [result.token_count for result in interval_results],
+            [2, 1],
+        )
+        self.assertTrue(
+            all(result.prompt["tokens"] == 1 for result in interval_results)
+        )
         self.assertTrue(interval_results[-1].is_final_chunk)
 
         non_streaming_results = list(model.generate("hello", max_tokens=3))
         self.assertEqual(len(non_streaming_results), 1)
         self.assertEqual(non_streaming_results[0].samples, 12)
+        self.assertEqual(non_streaming_results[0].token_count, 3)
+        self.assertEqual(non_streaming_results[0].prompt["tokens"], 1)
         self.assertFalse(non_streaming_results[0].is_streaming_chunk)
+
+    def test_multi_speaker_streaming_has_one_final_chunk(self):
+        from mlx_audio.tts.models.base import GenerationResult
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        model = Model.__new__(Model)
+        model.tokenizer = object()
+        model.config = SimpleNamespace(sample_rate=24000)
+        model.load_voice = lambda voice: None
+
+        def fake_single_speaker(*, text, **kwargs):
+            yield GenerationResult(
+                audio=mx.array([len(text)], dtype=mx.float32),
+                samples=1,
+                sample_rate=24000,
+                segment_idx=0,
+                token_count=1,
+                audio_duration="00:00:00.000",
+                real_time_factor=1.0,
+                prompt={"tokens": len(text), "tokens-per-sec": 1.0},
+                audio_samples={"samples": 1, "samples-per-sec": 1.0},
+                processing_time_seconds=1.0,
+                peak_memory_usage=0.0,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
+
+        model._generate_single_speaker = fake_single_speaker
+
+        results = list(
+            model.generate(
+                ["one", "second"],
+                voice=["speaker-a", "speaker-b"],
+                stream=True,
+            )
+        )
+
+        self.assertEqual([result.segment_idx for result in results], [0, 1])
+        self.assertEqual([result.samples for result in results], [1, 1])
+        self.assertEqual(
+            [result.is_final_chunk for result in results],
+            [False, True],
+        )
+
+        combined = list(
+            model.generate(
+                ["one", "second"],
+                voice=["speaker-a", "speaker-b"],
+            )
+        )
+        self.assertEqual(len(combined), 1)
+        self.assertEqual(combined[0].token_count, 2)
+        self.assertEqual(combined[0].prompt["tokens"], 9)
 
     def test_streaming_causal_conv_matches_full_decode(self):
         from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import CausalConv1d
@@ -1565,9 +1627,7 @@ class TestVibeVoiceModel(unittest.TestCase):
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
     def test_streaming_acoustic_tokenizer_matches_full_decode(self):
-        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
-            AcousticTokenizer,
-        )
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import AcousticTokenizer
         from mlx_audio.tts.models.vibevoice.config import AcousticTokenizerConfig
 
         config = AcousticTokenizerConfig(

@@ -498,6 +498,7 @@ class Model(nn.Module):
         start_time = time.perf_counter()
         all_audio_segments = []
         total_tokens = 0
+        total_prompt_tokens = 0
 
         for segment_idx, (voice_name, segment_text) in enumerate(dialogue):
             if verbose:
@@ -521,10 +522,14 @@ class Model(nn.Module):
             ):
                 if stream:
                     result.segment_idx = segment_idx
+                    result.is_final_chunk = (
+                        result.is_final_chunk and segment_idx == len(dialogue) - 1
+                    )
                     yield result
                     continue
                 all_audio_segments.append(result.audio)
                 total_tokens += result.token_count
+                total_prompt_tokens += result.prompt["tokens"]
 
         if stream:
             return
@@ -559,9 +564,11 @@ class Model(nn.Module):
             audio_duration=duration_str,
             real_time_factor=rtf,
             prompt={
-                "tokens": total_tokens,
+                "tokens": total_prompt_tokens,
                 "tokens-per-sec": (
-                    round(total_tokens / elapsed_time, 2) if elapsed_time > 0 else 0
+                    round(total_prompt_tokens / elapsed_time, 2)
+                    if elapsed_time > 0
+                    else 0
                 ),
             },
             audio_samples={
@@ -630,9 +637,9 @@ class Model(nn.Module):
                 audio_duration=duration,
                 real_time_factor=(duration_seconds / elapsed if elapsed > 0 else 0),
                 prompt={
-                    "tokens": token_count,
+                    "tokens": prompt_token_count,
                     "tokens-per-sec": (
-                        round(token_count / elapsed, 2) if elapsed > 0 else 0
+                        round(prompt_token_count / elapsed, 2) if elapsed > 0 else 0
                     ),
                 },
                 audio_samples={
@@ -652,6 +659,7 @@ class Model(nn.Module):
             text.strip() + "\n", add_special_tokens=False
         )
         input_ids = mx.array([text_token_ids], dtype=mx.int32)
+        prompt_token_count = len(text_token_ids)
 
         batch_size = 1
         seq_len = input_ids.shape[1]
@@ -849,13 +857,13 @@ class Model(nn.Module):
             samples=samples,
             sample_rate=self.sample_rate,
             segment_idx=0,
-            token_count=len(input_ids[0]),
+            token_count=len(speech_latents),
             audio_duration=duration_str,
             real_time_factor=rtf,
             prompt={
-                "tokens": len(input_ids[0]),
+                "tokens": prompt_token_count,
                 "tokens-per-sec": (
-                    round(len(input_ids[0]) / elapsed_time, 2)
+                    round(prompt_token_count / elapsed_time, 2)
                     if elapsed_time > 0
                     else 0
                 ),
