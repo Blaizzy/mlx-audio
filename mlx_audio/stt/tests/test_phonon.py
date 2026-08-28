@@ -14,10 +14,7 @@ from mlx_audio.stt.models.phonon.packed import (
     packed_bytes_per_row,
     unpack_base5_codes,
 )
-from mlx_audio.stt.models.phonon.phonon import (
-    PhononASRModel,
-    configure_packed_modules,
-)
+from mlx_audio.stt.models.phonon.phonon import PhononASRModel, configure_packed_modules
 from mlx_audio.stt.models.phonon.transport import (
     _extract_archive,
     _join_byte_planes,

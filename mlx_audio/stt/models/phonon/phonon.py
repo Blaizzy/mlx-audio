@@ -16,10 +16,8 @@ from typing import Any, Callable, Dict, Generator, List, Optional
 import mlx.core as mx
 import mlx.nn as nn
 
-from mlx_audio.stt.models.qwen3_asr.qwen3_asr import (
-    Qwen3ASRModel,
-    Model as Qwen3Model,
-)
+from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Model as Qwen3Model
+from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel
 
 from .config import ModelConfig
 from .packed import PackedTritLinear

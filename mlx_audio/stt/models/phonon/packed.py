@@ -1,5 +1,4 @@
-"""Packed five-value linear layers used by the Phonon-1 decoder.
-"""
+"""Packed five-value linear layers used by the Phonon-1 decoder."""
 
 # Portions copyright 2026 Fermion Research, licensed under Apache-2.0.
 
