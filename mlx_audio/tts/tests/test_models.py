@@ -1605,6 +1605,22 @@ class TestVibeVoiceModel(unittest.TestCase):
 
         np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
+    def test_streaming_causal_conv_transpose_rejects_nondefault_trim_ratio(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            CausalConvTranspose1d,
+        )
+
+        layer = CausalConvTranspose1d(
+            2,
+            3,
+            kernel_size=4,
+            stride=2,
+            trim_right_ratio=0.5,
+        )
+
+        with self.assertRaisesRegex(ValueError, "trim_right_ratio=1.0"):
+            layer(mx.ones((1, 2, 2)), cache={})
+
     def test_streaming_causal_conv_transpose_without_bias_matches_full_decode(self):
         from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
             CausalConvTranspose1d,

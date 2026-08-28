@@ -184,6 +184,11 @@ class CausalConvTranspose1d(nn.Module):
         return x
 
     def _stream(self, x: mx.array, cache: MutableMapping[str, mx.array]) -> mx.array:
+        if self.trim_right_ratio != 1.0:
+            raise ValueError(
+                "Streaming CausalConvTranspose1d requires trim_right_ratio=1.0"
+            )
+
         contributions = mx.conv_transpose1d(
             mx.transpose(x, (0, 2, 1)),
             self.convtr.weight,
