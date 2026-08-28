@@ -685,7 +685,6 @@ class Model(nn.Module):
         speech_latents = []
         stream_latents = []
         stream_cache = {} if stream else None
-        stream_chunk_idx = 0
         stream_chunk_start = start_time
         if stream:
             if streaming_interval <= 0:
@@ -769,12 +768,11 @@ class Model(nn.Module):
                         yield make_result(
                             audio_chunk,
                             len(stream_latents),
-                            stream_chunk_idx,
+                            0,
                             stream_chunk_start,
                             is_streaming_chunk=True,
                         )
                         stream_latents.clear()
-                        stream_chunk_idx += 1
                         stream_chunk_start = time.perf_counter()
                 else:
                     speech_latents.append(speech_latent)
@@ -818,7 +816,7 @@ class Model(nn.Module):
                 yield make_result(
                     final_audio,
                     len(stream_latents),
-                    stream_chunk_idx,
+                    0,
                     stream_chunk_start,
                     is_streaming_chunk=True,
                     is_final_chunk=True,
@@ -827,7 +825,7 @@ class Model(nn.Module):
                 yield make_result(
                     mx.array([]),
                     0,
-                    stream_chunk_idx,
+                    0,
                     stream_chunk_start,
                     is_streaming_chunk=True,
                     is_final_chunk=True,

@@ -1464,6 +1464,7 @@ class TestVibeVoiceModel(unittest.TestCase):
 
         audio_results = [result for result in results if result.samples > 0]
         self.assertEqual(len(audio_results), 3)
+        self.assertEqual([result.segment_idx for result in results], [0, 0, 0, 0])
         self.assertTrue(all(result.is_streaming_chunk for result in results))
         self.assertTrue(results[-1].is_final_chunk)
 
@@ -1482,6 +1483,10 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(
             [result.token_count for result in interval_results],
             [2, 1],
+        )
+        self.assertEqual(
+            [result.segment_idx for result in interval_results],
+            [0, 0],
         )
         self.assertTrue(
             all(result.prompt["tokens"] == 1 for result in interval_results)
