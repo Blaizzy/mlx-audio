@@ -827,7 +827,6 @@ class Model(nn.Module):
                 axis=-1,
             )
 
-
         if generated_tokens and repetition_penalty != 1.0:
             recent_tokens = generated_tokens[-repetition_context_size:]
             unique_tokens = list(set(recent_tokens))
