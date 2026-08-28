@@ -1,6 +1,9 @@
 name: Tests and Checks
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     branches:
       - main
@@ -21,7 +24,7 @@ jobs:
       - name: Run pre-commit
         run: |
           python -m pip install pre-commit
-          pre-commit run --all
+          pre-commit run --all-files
           if ! git diff --quiet; then
             echo 'Style checks failed. Run: pre-commit run --all-files'
             exit 1
