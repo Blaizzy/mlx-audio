@@ -1,0 +1,209 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_as:
+        description: "Optional exact version for the next release PR (for example, 0.6.0 or 0.6.0-rc1)"
+        required: false
+        type: string
+
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release_gate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      should_run: ${{ steps.gate.outputs.should_run }}
+      release_as: ${{ steps.gate.outputs.release_as }}
+    steps:
+      - name: Check for explicit release intent
+        id: gate
+        uses: actions/github-script@v7
+        env:
+          MANUAL_RELEASE_AS: ${{ inputs.release_as }}
+        with:
+          script: |
+            const defaultBranch = context.payload.repository.default_branch;
+            const manualRun = context.eventName === "workflow_dispatch";
+            if (manualRun && context.ref !== `refs/heads/${defaultBranch}`) {
+              throw new Error(`Run this workflow from ${defaultBranch}, not ${context.ref}.`);
+            }
+
+            const commits = context.payload.commits ?? [];
+            let footerVersion = "";
+            for (const commit of [...commits].reverse()) {
+              const matches = [
+                ...(commit.message ?? "").matchAll(
+                  /^Release-As:[ \t]+(\S+)[ \t]*$/gim
+                ),
+              ];
+              if (matches.length > 0) {
+                footerVersion = matches[matches.length - 1][1];
+                break;
+              }
+            }
+            const manualVersion = (process.env.MANUAL_RELEASE_AS ?? "").trim();
+            const requestedVersion = manualVersion || footerVersion;
+            const releaseIntent = footerVersion !== "";
+            const releaseManifestUpdated = commits.some((commit) =>
+              (commit.modified ?? []).includes(".release-please-manifest.json")
+            );
+
+            if (requestedVersion) {
+              core.setOutput("release_as", requestedVersion);
+            }
+
+            let releasePullRequestOpen = false;
+            if (!manualRun && !releaseIntent && !releaseManifestUpdated) {
+              const openPullRequests = await github.paginate(
+                github.rest.pulls.list,
+                {
+                  ...context.repo,
+                  state: "open",
+                  base: context.payload.repository.default_branch,
+                  per_page: 100,
+                }
+              );
+              releasePullRequestOpen = openPullRequests.some((pullRequest) =>
+                pullRequest.labels.some(
+                  (label) => label.name === "autorelease: pending"
+                )
+              );
+            }
+            const shouldRun =
+              manualRun ||
+              releaseIntent ||
+              releaseManifestUpdated ||
+              releasePullRequestOpen;
+
+            if (manualRun) {
+              core.notice("Release Please was started manually.");
+            } else if (releaseIntent) {
+              core.notice("A Release-As footer requested a release PR.");
+            } else if (releaseManifestUpdated) {
+              core.notice("The merged release PR is ready to be published.");
+            } else if (releasePullRequestOpen) {
+              core.notice("The open release PR will be synchronized.");
+            } else {
+              core.notice("No explicit release intent; Release Please will stay idle.");
+            }
+            core.setOutput("should_run", shouldRun ? "true" : "false");
+
+      - name: Check out version policy
+        if: steps.gate.outputs.release_as != ''
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate requested version
+        if: steps.gate.outputs.release_as != ''
+        env:
+          REQUESTED_VERSION: ${{ steps.gate.outputs.release_as }}
+        run: |
+          current_version="$(jq -r '.["."]' .release-please-manifest.json)"
+          python3 .github/scripts/validate_release_version.py \
+            "$current_version" "$REQUESTED_VERSION"
+
+  release_please:
+    if: needs.release_gate.outputs.should_run == 'true'
+    needs: release_gate
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      # A GitHub App token lets the release PR run the repository's normal CI.
+      - name: Create release bot token
+        id: release-bot-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Create or update release PR
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.release-bot-token.outputs.token }}
+          release-as: ${{ needs.release_gate.outputs.release_as }}
+
+  build:
+    if: needs.release_please.outputs.release_created == 'true'
+    needs: release_please
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      PACKAGE_NAME: mlx-audio
+      RELEASE_TAG: ${{ needs.release_please.outputs.tag_name }}
+      RELEASE_VERSION: ${{ needs.release_please.outputs.version }}
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Build release distributions
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+
+      - name: Verify release distributions
+        run: |
+          python -m twine check dist/*
+          python -m pip install --no-deps --force-reinstall dist/*.whl
+          python -c 'import os; from importlib.metadata import version; from packaging.version import Version; actual = version(os.environ["PACKAGE_NAME"]); expected = os.environ["RELEASE_VERSION"]; assert Version(actual) == Version(expected), f"built {actual}, expected {expected}"'
+
+      - name: Store release distributions
+        uses: actions/upload-artifact@v5
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+      - name: Attach distributions to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" dist/* --clobber
+
+  publish:
+    if: needs.release_please.outputs.release_created == 'true'
+    needs: [release_please, build]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mlx-audio
+    permissions:
+      id-token: write
+    steps:
+      - name: Download release distributions
+        uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.13.0
+        with:
+          packages-dir: dist/
