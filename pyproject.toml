@@ -33,6 +33,7 @@ dependencies = [
 # STT dependencies
 stt = [
     "sentencepiece>=0.2.0",
+    "zstandard>=0.23.0",
 ]
 
 # TTS dependencies
@@ -66,6 +67,7 @@ sts = [
 all = [
     "mistral-common[audio]",
     "sentencepiece>=0.2.0",
+    "zstandard>=0.23.0",
 
     "mlx-lm>=0.31.1",
 

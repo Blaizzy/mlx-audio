@@ -96,6 +96,7 @@ nav:
       - models/stt/index.md
       - Whisper: models/stt/whisper.md
       - Parakeet: models/stt/parakeet.md
+      - Phonon-1: models/stt/phonon.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md

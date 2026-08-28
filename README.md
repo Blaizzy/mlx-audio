@@ -337,6 +337,22 @@ for item in result:
 
 See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
 
+### Phonon-1
+
+Fermion Research's compact English Qwen3-ASR derivatives load directly from
+their public transport repositories:
+
+```python
+from mlx_audio.stt import load
+
+model = load("FermionResearch/Phonon-1")
+result = model.generate("audio.wav", language="English")
+print(result.text)
+```
+
+Available builds are `Phonon-1-Micro` (285 MB), `Phonon-1` (415 MB), and
+`Phonon-1-Big` (581 MB). See the [Phonon-1 README](mlx_audio/stt/models/phonon/README.md).
+
 ### VibeVoice-ASR
 
 Microsoft's 9B parameter speech-to-text model with speaker diarization and timestamps. Supports long-form audio (up to 60 minutes) and outputs structured JSON.
