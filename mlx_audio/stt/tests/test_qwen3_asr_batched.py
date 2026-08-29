@@ -6,7 +6,11 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
-from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel, _rope_safe
+from mlx_audio.stt.models.qwen3_asr.qwen3_asr import (
+    Qwen3ASRModel,
+    _rope_safe,
+    split_audio_into_chunks,
+)
 
 
 class _FakeTokenizer:
@@ -172,6 +176,66 @@ class TestBatchedGeneration(unittest.TestCase):
         model._generate_chunks_batched.assert_called_once()
         self.assertIsNone(
             model._generate_chunks_batched.call_args.kwargs["logits_processors"]
+        )
+
+    def test_short_audio_segment_uses_unpadded_duration(self):
+        model = self.make_minimal_model()
+        model._generate_single_chunk = Mock(return_value=("text", 5, 1))
+
+        out = model.generate(
+            np.zeros(4000, dtype=np.float32),
+            min_chunk_duration=1.0,
+            language="English",
+        )
+
+        self.assertEqual(len(out.segments), 1)
+        self.assertEqual(out.segments[0]["start"], 0.0)
+        self.assertEqual(out.segments[0]["end"], 0.25)
+
+
+class TestAudioInputValidation(unittest.TestCase):
+    def test_empty_audio_is_rejected_before_padding(self):
+        with self.assertRaisesRegex(ValueError, "at least one sample"):
+            split_audio_into_chunks(np.array([], dtype=np.float32), 16000)
+
+    def test_non_finite_audio_is_rejected(self):
+        for value in (np.nan, np.inf, -np.inf):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, "finite"):
+                    split_audio_into_chunks(
+                        np.array([0.0, value], dtype=np.float32), 16000
+                    )
+
+    def test_direct_preprocessing_rejects_empty_audio(self):
+        model = Qwen3ASRModel.__new__(Qwen3ASRModel)
+        model._feature_extractor = Mock()
+
+        with self.assertRaisesRegex(ValueError, "at least one sample"):
+            model._preprocess_audio(np.array([], dtype=np.float32))
+
+        model._feature_extractor.assert_not_called()
+
+
+class TestLanguageParsing(unittest.TestCase):
+    def setUp(self):
+        self.model = Qwen3ASRModel.__new__(Qwen3ASRModel)
+
+    def test_language_none_with_empty_text_is_no_speech(self):
+        self.assertEqual(
+            self.model.extract_language("language None<asr_text>"),
+            ("", ""),
+        )
+
+    def test_language_none_preserves_returned_text(self):
+        self.assertEqual(
+            self.model.extract_language("language None<asr_text>quiet speech"),
+            ("", "quiet speech"),
+        )
+
+    def test_named_language_is_unchanged(self):
+        self.assertEqual(
+            self.model.extract_language("language English<asr_text>Hello"),
+            ("English", "Hello"),
         )
 
 
