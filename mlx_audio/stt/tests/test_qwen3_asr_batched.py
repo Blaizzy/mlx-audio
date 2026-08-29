@@ -6,6 +6,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.stt.models.base import STTOutput
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel, _rope_safe
 
 
@@ -173,6 +174,83 @@ class TestBatchedGeneration(unittest.TestCase):
         self.assertIsNone(
             model._generate_chunks_batched.call_args.kwargs["logits_processors"]
         )
+
+
+class TestListInputGeneration(unittest.TestCase):
+    def make_model(self):
+        model = Qwen3ASRModel.__new__(Qwen3ASRModel)
+        model._generate_one = Mock(
+            side_effect=lambda audio, **kwargs: STTOutput(text=audio)
+        )
+        return model
+
+    def test_list_input_processes_every_item_in_order(self):
+        model = self.make_model()
+
+        outputs = model.generate(
+            ["first.wav", "second.wav"],
+            language=["English", "French"],
+            max_tokens=17,
+            custom_option=True,
+        )
+
+        self.assertEqual(
+            [output.text for output in outputs], ["first.wav", "second.wav"]
+        )
+        self.assertEqual(model._generate_one.call_count, 2)
+        first, second = model._generate_one.call_args_list
+        self.assertEqual(first.args, ("first.wav",))
+        self.assertEqual(first.kwargs["language"], "English")
+        self.assertEqual(second.args, ("second.wav",))
+        self.assertEqual(second.kwargs["language"], "French")
+        self.assertEqual(first.kwargs["max_tokens"], 17)
+        self.assertTrue(first.kwargs["custom_option"])
+        self.assertEqual(second.kwargs["max_tokens"], 17)
+
+    def test_scalar_language_is_broadcast(self):
+        model = self.make_model()
+
+        model.generate(["first.wav", "second.wav"], language="English")
+
+        self.assertEqual(
+            [call.kwargs["language"] for call in model._generate_one.call_args_list],
+            ["English", "English"],
+        )
+
+    def test_single_input_still_returns_one_output(self):
+        model = self.make_model()
+
+        output = model.generate("single.wav", language=["English"])
+
+        self.assertIsInstance(output, STTOutput)
+        self.assertEqual(output.text, "single.wav")
+        model._generate_one.assert_called_once()
+
+    def test_language_count_must_match_audio_count(self):
+        model = self.make_model()
+
+        with self.assertRaisesRegex(ValueError, "same number"):
+            model.generate(["first.wav", "second.wav"], language=["English"])
+
+    def test_list_input_rejects_streaming(self):
+        model = self.make_model()
+
+        with self.assertRaisesRegex(ValueError, "Streaming"):
+            model.generate(["first.wav", "second.wav"], stream=True)
+
+        model._generate_one.assert_not_called()
+
+    def test_preprocessing_rejects_list_input(self):
+        model = self.make_model()
+
+        with self.assertRaisesRegex(ValueError, "one input"):
+            model._preprocess_audio(["first.wav", "second.wav"])
+
+    def test_empty_list_returns_empty_list(self):
+        model = self.make_model()
+
+        self.assertEqual(model.generate([]), [])
+        model._generate_one.assert_not_called()
 
 
 if __name__ == "__main__":
