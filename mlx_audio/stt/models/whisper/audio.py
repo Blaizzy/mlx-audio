@@ -69,7 +69,7 @@ def log_mel_spectrogram(
 
     if padding > 0:
         audio = mx.pad(audio, (0, padding))
-    window = hanning(N_FFT)
+    window = hanning(N_FFT, periodic=True)
     freqs = stft(audio, window=window, n_fft=N_FFT, hop_length=HOP_LENGTH)
     magnitudes = freqs[:-1, :].abs().square()
 
