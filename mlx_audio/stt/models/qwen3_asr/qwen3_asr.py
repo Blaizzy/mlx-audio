@@ -76,8 +76,6 @@ def split_audio_into_chunks(
     Returns:
         List of (chunk_waveform, offset_seconds) tuples.
     """
-    _validate_audio(wav)
-
     # Ensure mono
     if wav.ndim > 1:
         wav = wav.mean(axis=-1) if wav.shape[-1] <= 2 else wav.mean(axis=0)
@@ -925,12 +923,16 @@ class Qwen3ASRModel(nn.Module):
         text: str,
     ) -> Tuple[str, str]:
         """Extract language from text."""
-        if "<asr_text>" in text and text.startswith("language "):
-            language, transcript = text.split("<asr_text>", 1)
-            language = language[len("language ") :].strip()
-            if language.lower() == "none":
-                return "", transcript.strip()
-            return language, transcript
+        stripped_text = text.strip()
+        if "<asr_text>" in stripped_text:
+            metadata, transcript = stripped_text.split("<asr_text>", 1)
+            for line in metadata.splitlines():
+                line = line.strip()
+                if line.lower().startswith("language "):
+                    language = line[len("language ") :].strip()
+                    if language.lower() == "none":
+                        return "", transcript.strip()
+                    return language, transcript.strip()
         return "English", text
 
     def _build_prompt(
@@ -1377,15 +1379,16 @@ class Qwen3ASRModel(nn.Module):
             ):
                 if not was_processed:
                     continue
+                chunk_language = language
                 if language is None:
-                    language, text = self.extract_language(text)
+                    chunk_language, text = self.extract_language(text)
                 all_texts.append(text)
                 total_prompt_tokens += pt
                 total_generation_tokens += gt
                 segments.append(
                     {
                         "text": text,
-                        "language": language,
+                        "language": chunk_language,
                         "start": offset_sec,
                         "end": offset_sec
                         + min(
@@ -1421,8 +1424,9 @@ class Qwen3ASRModel(nn.Module):
                 system_prompt=system_prompt,
             )
 
+            chunk_language = language
             if language is None:
-                language, text = self.extract_language(text)
+                chunk_language, text = self.extract_language(text)
 
             all_texts.append(text)
             total_prompt_tokens += prompt_toks
@@ -1433,7 +1437,7 @@ class Qwen3ASRModel(nn.Module):
             segments.append(
                 {
                     "text": text,
-                    "language": language,
+                    "language": chunk_language,
                     "start": offset_sec,
                     "end": offset_sec + actual_chunk_duration,
                 }
@@ -1445,7 +1449,7 @@ class Qwen3ASRModel(nn.Module):
         end_time = time.time()
 
         # Combine transcriptions
-        full_text = " ".join(all_texts)
+        full_text = " ".join(text for text in all_texts if text).strip()
 
         return STTOutput(
             text=full_text,
@@ -1543,8 +1547,6 @@ class Qwen3ASRModel(nn.Module):
         total_generation_tokens = 0
         remaining_tokens = max_tokens
 
-        language_accumulator = ""
-
         # Process each chunk and stream tokens
         chunk_iter = tqdm(
             enumerate(chunks),
@@ -1559,6 +1561,8 @@ class Qwen3ASRModel(nn.Module):
             )
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
+            chunk_language = language
+            language_accumulator = ""
 
             # Get prompt tokens for this chunk
             _, _, num_audio_tokens = self._preprocess_audio(chunk_audio)
@@ -1583,7 +1587,7 @@ class Qwen3ASRModel(nn.Module):
                 if language is None and i <= 2:
                     language_accumulator += text
                     if "<asr_text>" in language_accumulator:
-                        language, _ = self.extract_language(language_accumulator)
+                        chunk_language, _ = self.extract_language(language_accumulator)
                     continue
 
                 # Estimate timing based on token position within chunk
@@ -1600,7 +1604,7 @@ class Qwen3ASRModel(nn.Module):
                     is_final=False,
                     start_time=estimated_start,
                     end_time=estimated_end,
-                    language=language,
+                    language=chunk_language,
                 )
 
             # Update token counts
@@ -1613,7 +1617,7 @@ class Qwen3ASRModel(nn.Module):
                 is_final=is_last_chunk or remaining_tokens <= 0,
                 start_time=offset_sec,
                 end_time=offset_sec + actual_chunk_duration,
-                language=language,
+                language=chunk_language,
                 prompt_tokens=total_prompt_tokens,
                 generation_tokens=total_generation_tokens,
             )
