@@ -212,6 +212,21 @@ class TestStreamingTimestamps(unittest.TestCase):
             self.assertEqual(results[2].end_time, 1.0)
             self.assertEqual(results[2].generation_tokens, 2)
 
+    def test_short_audio_boundary_uses_unpadded_duration(self):
+        model = self.make_minimal_model()
+
+        results = list(
+            model.stream_transcribe(
+                np.zeros(3200, dtype=np.float32),
+                max_tokens=64,
+                min_chunk_duration=1.0,
+                language="English",
+            )
+        )
+
+        self.assertEqual(results[-1].start_time, 0.0)
+        self.assertEqual(results[-1].end_time, 0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

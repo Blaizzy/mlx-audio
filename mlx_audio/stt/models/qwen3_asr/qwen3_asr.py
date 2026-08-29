@@ -19,13 +19,13 @@ from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
 @dataclass
 class StreamingResult:
-    """Result object for streaming transcription.
+    """Text-delta or chunk-boundary event from streaming transcription.
 
     Attributes:
         text: Decoded text for this emission.
         is_final: True if this is a final (committed) result, False if partial.
-        start_time: Start timestamp in seconds, or None for untimed text.
-        end_time: End timestamp in seconds, or None for untimed text.
+        start_time: Chunk start in seconds, or None for a text delta.
+        end_time: Chunk end in seconds, or None for a text delta.
         language: Language of the transcription.
         prompt_tokens: Total prompt tokens (only set on final result).
         generation_tokens: Total generation tokens (only set on final result).
@@ -38,6 +38,13 @@ class StreamingResult:
     language: str = "en"
     prompt_tokens: int = 0
     generation_tokens: int = 0
+
+
+def _audio_duration(wav: np.ndarray, sr: int) -> float:
+    """Return the duration before model-only padding is applied."""
+    if wav.ndim > 1 and wav.shape[-1] > 2:
+        return wav.shape[-1] / sr
+    return len(wav) / sr
 
 
 def split_audio_into_chunks(
@@ -1483,8 +1490,8 @@ class Qwen3ASRModel(nn.Module):
             np.array(audio_input) if isinstance(audio_input, mx.array) else audio_input
         )
 
-        # Calculate total audio duration
-        total_duration = len(audio_np) / self.sample_rate
+        # Calculate duration before model-only padding.
+        total_duration = _audio_duration(audio_np, self.sample_rate)
 
         # Split into chunks if needed
         chunks = split_audio_into_chunks(
@@ -1526,7 +1533,10 @@ class Qwen3ASRModel(nn.Module):
             disable=not verbose or len(chunks) == 1,
         )
         for chunk_idx, (chunk_audio, offset_sec) in chunk_iter:
-            actual_chunk_duration = len(chunk_audio) / self.sample_rate
+            actual_chunk_duration = min(
+                len(chunk_audio) / self.sample_rate,
+                max(total_duration - offset_sec, 0.0),
+            )
             is_last_chunk = chunk_idx == len(chunks) - 1
             token_count = 0
 

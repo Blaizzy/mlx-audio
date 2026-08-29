@@ -63,9 +63,13 @@ from mlx_audio.stt import load
 
 model = load("mlx-community/Qwen3-ASR-0.6B-8bit")
 
-# Stream tokens as they're generated
-for text in model.stream_transcribe("audio.wav", language="English"):
-    print(text, end="", flush=True)
+# Text deltas do not have timestamps. Empty-text events carry coarse audio
+# chunk extents; use the forced aligner below for text-level timestamps.
+for event in model.stream_transcribe("audio.wav", language="English"):
+    if event.text:
+        print(event.text, end="", flush=True)
+    elif event.start_time is not None:
+        print(f"\nchunk: {event.start_time:.2f}s - {event.end_time:.2f}s")
 ```
 
 ### Forced Alignment

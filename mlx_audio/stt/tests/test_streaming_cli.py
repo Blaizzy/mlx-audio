@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from mlx_audio.stt.generate import generate_transcription
 from mlx_audio.stt.models.qwen3_asr.qwen3_asr import StreamingResult
 
@@ -36,6 +38,18 @@ class _StreamingModel:
             language="English",
             prompt_tokens=5,
             generation_tokens=2,
+        )
+
+
+class _UntimedFinalModel:
+    def generate(self, audio, *, stream=False, verbose=False):
+        assert stream
+        yield StreamingResult(
+            text="Hello",
+            is_final=True,
+            start_time=None,
+            end_time=None,
+            language="English",
         )
 
 
@@ -84,3 +98,41 @@ def test_streaming_cli_groups_untimed_text_at_timed_boundary(tmp_path):
             "duration": 1.0,
         },
     ]
+
+
+def test_streaming_cli_preserves_untimed_final_text_in_json(tmp_path):
+    output_path = tmp_path / "transcript"
+
+    result = generate_transcription(
+        model=_UntimedFinalModel(),
+        audio="ignored.wav",
+        output_path=str(output_path),
+        format="json",
+        stream=True,
+    )
+
+    assert result.text == "Hello"
+    assert result.segments == [
+        {
+            "text": "Hello",
+            "start": None,
+            "end": None,
+            "is_final": True,
+        }
+    ]
+    saved = json.loads(output_path.with_suffix(".json").read_text())
+    assert saved["segments"] == [
+        {"text": "Hello", "start": None, "end": None, "duration": None}
+    ]
+
+
+@pytest.mark.parametrize("output_format", ["srt", "vtt"])
+def test_streaming_cli_rejects_untimed_subtitles(tmp_path, output_format):
+    with pytest.raises(ValueError, match="untimed streaming text"):
+        generate_transcription(
+            model=_UntimedFinalModel(),
+            audio="ignored.wav",
+            output_path=str(tmp_path / "transcript"),
+            format=output_format,
+            stream=True,
+        )
