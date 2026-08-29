@@ -8,6 +8,7 @@ from . import (
     moss_music,
     moss_transcribe_diarize,
     parakeet,
+    phonon,
     qwen3_asr,
     sensevoice,
     voxtral,
