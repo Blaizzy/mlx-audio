@@ -1292,11 +1292,14 @@ class Qwen3ASRModel(nn.Module):
             raise ValueError("Streaming does not support a list of audio inputs")
 
         if isinstance(language, list):
-            if len(language) != len(audio):
+            if len(language) == 1:
+                languages = language * len(audio)
+            elif len(language) != len(audio):
                 raise ValueError(
                     "language and audio must contain the same number of items"
                 )
-            languages = language
+            else:
+                languages = language
         else:
             languages = [language] * len(audio)
 

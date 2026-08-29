@@ -38,6 +38,23 @@ class _FakeTextModel:
         return inputs_embeds
 
 
+def _make_minimal_model():
+    model = Qwen3ASRModel.__new__(Qwen3ASRModel)
+    model.config = SimpleNamespace(
+        text_config=SimpleNamespace(num_hidden_layers=0),
+    )
+    model._tokenizer = _FakeTokenizer()
+    model._feature_extractor = object()
+    model.model = _FakeTextModel()
+    model.lm_head = None
+    model.get_audio_features = Mock(return_value=mx.zeros((1, 1)))
+    model._preprocess_audio = Mock(return_value=(mx.zeros((1, 1)), None, 1))
+    model._build_prompt = Mock(return_value=mx.array([[0]]))
+    model._build_inputs_embeds = Mock(return_value=mx.zeros((1, 1, 1)))
+    model._forward_with_embeds = Mock(return_value=mx.zeros((2, 1, 128)))
+    return model
+
+
 class TestRopeSafe(unittest.TestCase):
     """Regression test for the mx.fast.rope batched single-token bug.
 
@@ -68,20 +85,7 @@ class TestRopeSafe(unittest.TestCase):
 
 class TestBatchedGeneration(unittest.TestCase):
     def make_minimal_model(self):
-        model = Qwen3ASRModel.__new__(Qwen3ASRModel)
-        model.config = SimpleNamespace(
-            text_config=SimpleNamespace(num_hidden_layers=0),
-        )
-        model._tokenizer = _FakeTokenizer()
-        model._feature_extractor = object()
-        model.model = _FakeTextModel()
-        model.lm_head = None
-        model.get_audio_features = Mock(return_value=mx.zeros((1, 1)))
-        model._preprocess_audio = Mock(return_value=(mx.zeros((1, 1)), None, 1))
-        model._build_prompt = Mock(return_value=mx.array([[0]]))
-        model._build_inputs_embeds = Mock(return_value=mx.zeros((1, 1, 1)))
-        model._forward_with_embeds = Mock(return_value=mx.zeros((2, 1, 128)))
-        return model
+        return _make_minimal_model()
 
     def test_batched_generation_respects_global_token_budget(self):
         model = self.make_minimal_model()
@@ -226,11 +230,46 @@ class TestListInputGeneration(unittest.TestCase):
         self.assertEqual(output.text, "single.wav")
         model._generate_one.assert_called_once()
 
+    def test_singleton_language_list_is_broadcast(self):
+        model = self.make_model()
+
+        model.generate(["first.wav", "second.wav"], language=["English"])
+
+        self.assertEqual(
+            [call.kwargs["language"] for call in model._generate_one.call_args_list],
+            ["English", "English"],
+        )
+
     def test_language_count_must_match_audio_count(self):
         model = self.make_model()
 
         with self.assertRaisesRegex(ValueError, "same number"):
-            model.generate(["first.wav", "second.wav"], language=["English"])
+            model.generate(
+                ["first.wav", "second.wav"],
+                language=["English", "French", "German"],
+            )
+
+    def test_numpy_list_uses_scalar_generation_path(self):
+        model = _make_minimal_model()
+        model._generate_single_chunk = Mock(
+            side_effect=[("first", 5, 1), ("second", 5, 1)]
+        )
+        first_audio = np.ones(16000, dtype=np.float32)
+        second_audio = np.full(16000, 2, dtype=np.float32)
+
+        outputs = model.generate(
+            [first_audio, second_audio],
+            language=["English"],
+        )
+
+        self.assertEqual([output.text for output in outputs], ["first", "second"])
+        calls = model._generate_single_chunk.call_args_list
+        np.testing.assert_array_equal(calls[0].args[0], first_audio)
+        np.testing.assert_array_equal(calls[1].args[0], second_audio)
+        self.assertEqual(
+            [call.kwargs["language"] for call in calls],
+            ["English", "English"],
+        )
 
     def test_list_input_rejects_streaming(self):
         model = self.make_model()

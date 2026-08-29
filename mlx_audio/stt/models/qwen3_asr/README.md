@@ -56,7 +56,7 @@ for segment in result.segments:
     print(f"[{segment['start']:.2f}s - {segment['end']:.2f}s] {segment['text']}")
 ```
 
-### Batch Transcription
+### Multiple-input Transcription
 
 ```python
 from mlx_audio.stt import load
@@ -72,8 +72,9 @@ for result in results:
     print(result.text)
 ```
 
-A single language is applied to every input. Streaming accepts only one audio
-input at a time.
+Inputs are processed independently and serially. ``batch_size`` only batches
+chunks within one input. A single language is applied to every input. Streaming
+accepts only one audio input at a time.
 
 ### Streaming Transcription
 
