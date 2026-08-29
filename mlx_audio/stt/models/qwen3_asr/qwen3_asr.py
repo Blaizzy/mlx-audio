@@ -24,8 +24,8 @@ class StreamingResult:
     Attributes:
         text: Decoded text for this emission.
         is_final: True if this is a final (committed) result, False if partial.
-        start_time: Start timestamp in seconds.
-        end_time: End timestamp in seconds.
+        start_time: Start timestamp in seconds, or None for untimed text.
+        end_time: End timestamp in seconds, or None for untimed text.
         language: Language of the transcription.
         prompt_tokens: Total prompt tokens (only set on final result).
         generation_tokens: Total generation tokens (only set on final result).
@@ -33,8 +33,8 @@ class StreamingResult:
 
     text: str
     is_final: bool
-    start_time: float
-    end_time: float
+    start_time: Optional[float]
+    end_time: Optional[float]
     language: str = "en"
     prompt_tokens: int = 0
     generation_tokens: int = 0
@@ -1556,20 +1556,13 @@ class Qwen3ASRModel(nn.Module):
                         language, _ = self.extract_language(language_accumulator)
                     continue
 
-                # Estimate timing based on token position within chunk
-                # This is approximate since we don't have word-level alignment
-                prev_progress = token_count / max(remaining_tokens, 1)
                 token_count += 1
-                curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
-
-                estimated_start = offset_sec + (actual_chunk_duration * prev_progress)
-                estimated_end = offset_sec + (actual_chunk_duration * curr_progress)
 
                 yield StreamingResult(
                     text=text,
                     is_final=False,
-                    start_time=estimated_start,
-                    end_time=estimated_end,
+                    start_time=None,
+                    end_time=None,
                     language=language,
                 )
 

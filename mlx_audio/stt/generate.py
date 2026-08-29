@@ -293,21 +293,30 @@ def generate_transcription(
     if kwargs.get("stream", False):
         all_segments = []
         accumulated_text = ""
+        pending_text = ""
         language = "en"
         prompt_tokens = 0
         generation_tokens = 0
         for result in model.generate(audio, verbose=verbose, **kwargs):
-            segment_dict = {
-                "text": result.text,
-                "start": result.start_time,
-                "end": result.end_time,
-                "is_final": result.is_final,
-            }
-
-            all_segments.append(segment_dict)
             # Accumulate text (handles both incremental and cumulative streaming)
             accumulated_text += result.text
+            pending_text += result.text
             language = result.language
+
+            # Untimed text is committed when the model emits a timed boundary.
+            # Qwen3-ASR exposes coarse chunk boundaries because generated tokens
+            # do not carry real audio alignment.
+            if result.start_time is not None and result.end_time is not None:
+                if pending_text or result.is_final:
+                    all_segments.append(
+                        {
+                            "text": pending_text,
+                            "start": result.start_time,
+                            "end": result.end_time,
+                            "is_final": result.is_final,
+                        }
+                    )
+                pending_text = ""
 
             # Extract token counts from results (final result has cumulative totals)
             if hasattr(result, "prompt_tokens") and result.prompt_tokens > 0:

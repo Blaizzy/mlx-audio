@@ -175,5 +175,43 @@ class TestBatchedGeneration(unittest.TestCase):
         )
 
 
+class TestStreamingTimestamps(unittest.TestCase):
+    def make_minimal_model(self):
+        model = Qwen3ASRModel.__new__(Qwen3ASRModel)
+        model._tokenizer = _FakeTokenizer()
+        model._feature_extractor = object()
+        model._preprocess_audio = Mock(return_value=(mx.zeros((1, 1)), None, 1))
+        model._build_prompt = Mock(return_value=mx.array([[0]]))
+
+        def stream_generate(*args, **kwargs):
+            yield mx.array(10), mx.zeros((1,))
+            yield mx.array(11), mx.zeros((1,))
+
+        model.stream_generate = stream_generate
+        return model
+
+    def test_partial_tokens_are_untimed_for_any_generation_budget(self):
+        model = self.make_minimal_model()
+        audio = np.zeros(16000, dtype=np.float32)
+
+        for max_tokens in (64, 8192):
+            results = list(
+                model.stream_transcribe(
+                    audio,
+                    max_tokens=max_tokens,
+                    language="English",
+                )
+            )
+
+            self.assertEqual([result.text for result in results], ["10", "11", ""])
+            self.assertIsNone(results[0].start_time)
+            self.assertIsNone(results[0].end_time)
+            self.assertIsNone(results[1].start_time)
+            self.assertIsNone(results[1].end_time)
+            self.assertEqual(results[2].start_time, 0.0)
+            self.assertEqual(results[2].end_time, 1.0)
+            self.assertEqual(results[2].generation_tokens, 2)
+
+
 if __name__ == "__main__":
     unittest.main()
