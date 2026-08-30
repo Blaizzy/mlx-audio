@@ -15,6 +15,7 @@ from huggingface_hub import snapshot_download
 
 from mlx_audio.lm.models.cache import ArraysCache, KVCache
 from mlx_audio.lm.models.lfm2 import Lfm2Model
+from mlx_audio.model_metadata import ModelLimits, ModelMetadata
 
 from ....base import check_array_shape
 from .config import DepthformerConfig, LFM2AudioConfig
@@ -216,6 +217,15 @@ class AudioHead(nn.Module):
 
 
 class LFM2AudioModel(nn.Module):
+
+    def get_metadata(self) -> ModelMetadata:
+        # Context window is the LFM2 backbone's positional embedding limit.
+        lfm_config = getattr(self.config, "lfm", None)
+        return ModelMetadata(
+            limits=ModelLimits(
+                context_window=getattr(lfm_config, "max_position_embeddings", None)
+            )
+        )
 
     def __init__(self, config: LFM2AudioConfig):
         super().__init__()

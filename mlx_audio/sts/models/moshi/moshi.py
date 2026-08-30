@@ -8,6 +8,7 @@ import sentencepiece
 from huggingface_hub import snapshot_download
 
 from mlx_audio.codec.models.mimi.mimi import Mimi, mimi_202407
+from mlx_audio.model_metadata import ModelLimits, ModelMetadata
 
 from . import generate as moshi_models
 from . import lm as moshi_lm
@@ -26,6 +27,15 @@ class MoshiConfig:
 
 
 class MoshiSTSModel:
+    def get_metadata(self) -> ModelMetadata:
+        # Context window is the LM transformer's max sequence length.
+        transformer = getattr(getattr(self, "lm_config", None), "transformer", None)
+        return ModelMetadata(
+            limits=ModelLimits(
+                context_window=getattr(transformer, "max_seq_len", None)
+            )
+        )
+
     def __init__(self, config: MoshiConfig):
         self.config = config
         self.lm_config = moshi_lm.config_v0_1()

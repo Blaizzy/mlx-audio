@@ -17,6 +17,7 @@ from mlx_audio.lm.sample_utils import (
     apply_top_p,
     categorical_sampling,
 )
+from mlx_audio.model_metadata import ModelCapabilities, ModelLimits, ModelMetadata
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.tts.models.base import BatchGenerationResult, GenerationResult
 from mlx_audio.utils import load_audio
@@ -30,6 +31,34 @@ from .config import (
 from .speaker_encoder import Qwen3TTSSpeakerEncoder
 from .speech_tokenizer import Qwen3TTSSpeechTokenizer
 from .talker import Qwen3TTSTalkerForConditionalGeneration
+
+
+def _parameter_annotations(config) -> Optional[Dict[str, dict]]:
+    """Property annotations for the parameters schema: valid ``voice`` /
+    ``lang_code`` values as ``enum`` fragments.
+
+    ``voice`` comes from the talker config's preset speakers (omitted when the
+    variant has no preset voices -- base clones from reference audio instead);
+    ``lang_code`` lists the supported codes, "auto" first, excluding dialect
+    entries (e.g. "English-dialect"), matching the model.
+    """
+    talker = getattr(config, "talker_config", None)
+    spk_id = getattr(talker, "spk_id", None) if talker is not None else None
+    voices = list(spk_id.keys()) if spk_id else None
+
+    codec_lang = (
+        getattr(talker, "codec_language_id", None) if talker is not None else None
+    )
+    languages = ["auto"]
+    if codec_lang:
+        languages.extend(lang for lang in codec_lang if "dialect" not in lang)
+
+    annotations = {}
+    if voices:
+        annotations["voice"] = {"enum": voices}
+    if languages:
+        annotations["lang_code"] = {"enum": languages}
+    return annotations or None
 
 
 @dataclass
@@ -211,6 +240,41 @@ class Model(nn.Module):
     @property
     def model_type(self) -> str:
         return "qwen3_tts"
+
+    def get_metadata(self) -> ModelMetadata:
+        """Declare what this model supports for the metadata endpoint.
+
+        Grounded in the implementation: ``generate()`` streams on all three
+        model variants (base / custom_voice / voice_design); only base models
+        accept reference audio for voice cloning (CustomVoice and VoiceDesign
+        generate from text + instructions and ignore ``ref_audio``); the
+        context window is the talker's max position embeddings. Parameters are
+        introspected from ``generate()``'s signature, not declared here.
+        """
+        talker = getattr(self.config, "talker_config", None)
+        return ModelMetadata(
+            id=self.model_type,
+            capabilities=ModelCapabilities(
+                tools=False,
+                streaming=True,
+                vision=False,
+                # Base models clone voices from reference audio; VoiceDesign and
+                # CustomVoice variants generate from text + instructions only.
+                audio_input=getattr(self.config, "tts_model_type", "base") == "base",
+                audio_output=True,
+                structured_output=False,
+            ),
+            limits=ModelLimits(
+                context_window=getattr(talker, "max_position_embeddings", None),
+                max_output_tokens=4096,
+            ),
+            # Annotate valid ``voice`` / ``lang_code`` values directly on the
+            # parameters schema; the server merges these into the introspected
+            # ``generate()`` schema as ``enum`` constraints, so clients never
+            # have to guess a ``voice`` (CustomVoice rejects unknown or missing
+            # speaker names with a ValueError).
+            parameters=_parameter_annotations(self.config),
+        )
 
     def supports_tts_batch(
         self,

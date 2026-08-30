@@ -44,6 +44,7 @@ from pydantic import BaseModel
 
 from mlx_audio.audio_io import read as audio_read
 from mlx_audio.audio_io import write as audio_write
+from mlx_audio.model_metadata import ModelMetadata, metadata_for_model
 from mlx_audio.realtime_vad import (
     VAD_SAMPLE_RATE,
     ServerVadConfig,
@@ -110,6 +111,20 @@ class ModelProvider:
     async def get_available_models(self):
         async with self.lock:
             return list(self.models.keys())
+
+    async def get_metadata(self, model_name: str) -> Optional[ModelMetadata]:
+        """Return machine-readable metadata for a loaded model.
+
+        Audio capabilities are inferred from the model's kind and
+        ``generate()`` signature; a model may correct or extend that baseline
+        through its ``get_metadata()`` hook. Returns ``None`` when the model
+        is not currently loaded.
+        """
+        async with self.lock:
+            model = self.models.get(model_name)
+        if model is None:
+            return None
+        return metadata_for_model(model, model_id=model_name)
 
 
 app = FastAPI()
@@ -917,6 +932,29 @@ async def list_models():
             }
         )
     return {"object": "list", "data": models_data}
+
+
+@app.get("/v1/models/{model_id:path}/metadata")
+async def get_model_metadata(model_id: str):
+    """Return machine-readable metadata for a loaded model.
+
+    The response describes what the loaded model/runtime actually supports: a
+    grounded baseline inferred from the model's kind and ``generate()``
+    signature, corrected or extended by the model's ``get_metadata()`` hook.
+    Nothing is hardcoded by this endpoint. The ``:path`` converter accepts
+    HuggingFace repo ids such as ``mlx-community/whisper-large-v3``. Models
+    must be loaded first (``POST /v1/models``).
+    """
+    metadata = await model_provider.get_metadata(model_id)
+    if metadata is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Model '{model_id}' is not loaded. Load it with "
+                f"POST /v1/models?model_name={model_id}"
+            ),
+        )
+    return metadata.to_dict()
 
 
 @app.post("/v1/models")

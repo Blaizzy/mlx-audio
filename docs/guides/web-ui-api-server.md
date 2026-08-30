@@ -158,6 +158,15 @@ curl -X POST "http://localhost:8000/v1/models?model_name=mlx-community/Kokoro-82
 
 # Unload a model
 curl -X DELETE "http://localhost:8000/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
+
+# Inspect machine-readable metadata (capabilities/limits/parameters/runtime)
+# for a loaded model; unknown capabilities are reported as null, never guessed.
+curl http://localhost:8000/v1/models/mlx-community/Kokoro-82M-bf16/metadata
+
+# Models with preset voices/languages annotate them on the parameters schema
+# as `enum` constraints, so clients never have to guess a valid `voice` (e.g.
+# CustomVoice rejects unknown speaker names).
+curl http://localhost:8000/v1/models/mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit/metadata
 ```
 
 ### Real-Time WebSocket Transcription
