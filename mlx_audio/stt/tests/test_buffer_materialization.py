@@ -7,15 +7,13 @@ from mlx_audio.stt.models.canary.decoder import FixedPositionalEncoding
 from mlx_audio.stt.models.cohere_asr.audio import CohereAudioFrontend
 from mlx_audio.stt.models.cohere_asr.cohere_asr import RelPositionalEncoding
 from mlx_audio.stt.models.cohere_asr.config import PreprocessorConfig
-from mlx_audio.stt.models.granite_speech.config import EncoderConfig as GraniteConfig
-from mlx_audio.stt.models.granite_speech.granite_speech import CTCEncoder
 from mlx_audio.stt.models.granite_speech5 import granite_speech5
-from mlx_audio.stt.models.granite_speech5.config import (
-    EncoderConfig as Granite5Config,
-)
+from mlx_audio.stt.models.granite_speech5.config import EncoderConfig as Granite5Config
 from mlx_audio.stt.models.granite_speech5.granite_speech5 import (
     Encoder as Granite5Encoder,
 )
+from mlx_audio.stt.models.granite_speech.config import EncoderConfig as GraniteConfig
+from mlx_audio.stt.models.granite_speech.granite_speech import CTCEncoder
 from mlx_audio.stt.models.granite_speech_nar import granite_speech_nar
 from mlx_audio.stt.models.granite_speech_nar.encoder import ConformerAttention
 from mlx_audio.stt.models.moonshine.moonshine import MoonshineRotaryEmbedding

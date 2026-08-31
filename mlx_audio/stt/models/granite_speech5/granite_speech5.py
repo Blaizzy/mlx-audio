@@ -58,9 +58,7 @@ class EvalBatchNorm(nn.Module):
         var = self.running_var.astype(mx.float32)
         weight = self.weight.astype(mx.float32)
         bias = self.bias.astype(mx.float32)
-        return (((x - mean) * mx.rsqrt(var + self.eps)) * weight + bias).astype(
-            dtype
-        )
+        return (((x - mean) * mx.rsqrt(var + self.eps)) * weight + bias).astype(dtype)
 
 
 class EncoderFeedForward(nn.Module):
@@ -157,9 +155,7 @@ class EncoderAttention(nn.Module):
                 mask_value,
             )
 
-        logits = (
-            query @ key.transpose(0, 1, 2, 4, 3)
-        ) * self.scale + position_bias
+        logits = (query @ key.transpose(0, 1, 2, 4, 3)) * self.scale + position_bias
         probs = mx.softmax(logits.astype(mx.float32), axis=-1).astype(query.dtype)
         output = probs @ value
         output = output.transpose(0, 1, 3, 2, 4).reshape(
@@ -235,9 +231,7 @@ class EncoderBlock(nn.Module):
         attention_mask: Optional[mx.array] = None,
     ) -> mx.array:
         residual = hidden_states
-        hidden_states = self.feed_forward1(
-            self.norm_feed_forward1(hidden_states)
-        )
+        hidden_states = self.feed_forward1(self.norm_feed_forward1(hidden_states))
         hidden_states = residual + 0.5 * hidden_states
 
         attention_output = self.self_attn(
@@ -259,9 +253,7 @@ class EncoderBlock(nn.Module):
                 2,
                 hidden_states.shape[2],
             )
-            hidden_states = residual.mean(axis=2) + convolution_output[
-                :, :half_length
-            ]
+            hidden_states = residual.mean(axis=2) + convolution_output[:, :half_length]
         else:
             hidden_states = hidden_states + convolution_output
 
@@ -273,11 +265,15 @@ class EncoderBlock(nn.Module):
 
 def _downsample_attention_mask(attention_mask: mx.array) -> mx.array:
     half_length = attention_mask.shape[1] // 2
-    return attention_mask[:, : 2 * half_length].reshape(
-        attention_mask.shape[0],
-        half_length,
-        2,
-    ).all(axis=2)
+    return (
+        attention_mask[:, : 2 * half_length]
+        .reshape(
+            attention_mask.shape[0],
+            half_length,
+            2,
+        )
+        .all(axis=2)
+    )
 
 
 class Encoder(nn.Module):

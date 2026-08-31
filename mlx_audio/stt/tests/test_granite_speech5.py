@@ -1,10 +1,7 @@
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.stt.models.granite_speech5.config import (
-    EncoderConfig,
-    ModelConfig,
-)
+from mlx_audio.stt.models.granite_speech5.config import EncoderConfig, ModelConfig
 from mlx_audio.stt.models.granite_speech5.granite_speech5 import (
     Model,
     compute_deltas,
