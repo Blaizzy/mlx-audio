@@ -56,6 +56,26 @@ for segment in result.segments:
     print(f"[{segment['start']:.2f}s - {segment['end']:.2f}s] {segment['text']}")
 ```
 
+### Multiple-input Transcription
+
+```python
+from mlx_audio.stt import load
+
+model = load("mlx-community/Qwen3-ASR-0.6B-8bit")
+
+results = model.generate(
+    ["audio1.wav", "audio2.wav"],
+    language=["English", "French"],
+)
+
+for result in results:
+    print(result.text)
+```
+
+Inputs are processed independently and serially. ``batch_size`` only batches
+chunks within one input. A single language is applied to every input. Streaming
+accepts only one audio input at a time.
+
 ### Streaming Transcription
 
 ```python
