@@ -9,6 +9,13 @@ from mlx_audio.stt.models.cohere_asr.cohere_asr import RelPositionalEncoding
 from mlx_audio.stt.models.cohere_asr.config import PreprocessorConfig
 from mlx_audio.stt.models.granite_speech.config import EncoderConfig as GraniteConfig
 from mlx_audio.stt.models.granite_speech.granite_speech import CTCEncoder
+from mlx_audio.stt.models.granite_speech5 import granite_speech5
+from mlx_audio.stt.models.granite_speech5.config import (
+    EncoderConfig as Granite5Config,
+)
+from mlx_audio.stt.models.granite_speech5.granite_speech5 import (
+    Encoder as Granite5Encoder,
+)
 from mlx_audio.stt.models.granite_speech_nar import granite_speech_nar
 from mlx_audio.stt.models.granite_speech_nar.encoder import ConformerAttention
 from mlx_audio.stt.models.moonshine.moonshine import MoonshineRotaryEmbedding
@@ -109,6 +116,24 @@ def _granite_nar_buffers():
     return [attention._dist]
 
 
+def _granite5_buffers():
+    encoder = Granite5Encoder(
+        Granite5Config(
+            vocab_size=4,
+            hidden_size=8,
+            intermediate_size=16,
+            num_hidden_layers=0,
+            num_attention_heads=2,
+            num_key_value_heads=2,
+            num_mel_bins=4,
+            head_dim=4,
+            max_position_embeddings=16,
+            context_size=8,
+        )
+    )
+    return [encoder._attention_dists]
+
+
 @pytest.mark.parametrize(
     "factory",
     [
@@ -121,6 +146,7 @@ def _granite_nar_buffers():
         _cohere_buffers,
         _granite_buffers,
         _granite_nar_buffers,
+        _granite5_buffers,
     ],
 )
 def test_fixed_buffers_can_cross_threads(factory):
@@ -133,6 +159,14 @@ def test_fixed_buffers_can_cross_threads(factory):
 def test_granite_nar_module_buffers_can_cross_threads():
     def evaluate():
         mx.eval(granite_speech_nar._WINDOW + 0, granite_speech_nar._MEL_T + 0)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.submit(evaluate).result()
+
+
+def test_granite5_module_buffers_can_cross_threads():
+    def evaluate():
+        mx.eval(granite_speech5._WINDOW + 0, granite_speech5._MEL_FILTERS_T + 0)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         executor.submit(evaluate).result()
