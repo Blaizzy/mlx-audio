@@ -149,6 +149,31 @@ def test_generate_routes_before_delegating():
     assert routed and routed[0] is audio
 
 
+def test_generate_routes_list_items_independently():
+    model, _, _, calls = _build()
+    first_audio = mx.zeros((8000,))
+    second_audio = mx.ones((8000,))
+    routed = []
+    routes = iter([False, True])
+
+    def fake_route(wav):
+        routed.append(wav)
+        return {"use_lora": next(routes)}
+
+    setattr(model._router, "route", fake_route)
+
+    outputs = model.generate(
+        [first_audio, second_audio],
+        language=["English"],
+    )
+
+    assert outputs == [SENTINEL, SENTINEL]
+    assert routed == [first_audio, second_audio]
+    assert [call[0] for call in calls] == [first_audio, second_audio]
+    assert [call[1]["language"] for call in calls] == ["English", "English"]
+    assert model._lora_active is True
+
+
 def test_stream_transcribe_routes_and_delegates():
     model, base, delta, _ = _build()
     _set_route(model, True)
