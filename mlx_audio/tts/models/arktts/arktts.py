@@ -15,7 +15,7 @@ Two checkpoints share this ``model_type`` and are told apart by ``slow_backbone`
 
 ``falcon_h1`` (Audio8-TTS-Preview-0.1b)
     Falcon-H1 hybrid slow stack — every layer carries Mamba-2 + attention + MLP —
-    consumed from ``mlx_lm.models.falcon_h1``. Adds a dedicated
+    consumed from the vendored ``mlx_audio.lm.models.falcon_h1``. Adds a dedicated
     ``semantic_output`` head emitting COMPACT logits of width
     ``codebook_size + 1``: index ``i`` means semantic token
     ``semantic_begin_id + i`` and index ``codebook_size`` means EOS. The fast AR,
@@ -37,11 +37,12 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask, create_ssm_mask
-from mlx_lm.models.cache import ArraysCache, CacheList, KVCache
-from mlx_lm.models.falcon_h1 import FalconH1DecoderLayer
-from mlx_lm.models.falcon_h1 import ModelArgs as FalconH1Args
-from mlx_lm.models.falcon_h1 import compute_mup_vector
+
+from mlx_audio.lm.models.base import create_attention_mask, create_ssm_mask
+from mlx_audio.lm.models.cache import ArraysCache, CacheList, KVCache
+from mlx_audio.lm.models.falcon_h1 import FalconH1DecoderLayer
+from mlx_audio.lm.models.falcon_h1 import ModelArgs as FalconH1Args
+from mlx_audio.lm.models.falcon_h1 import compute_mup_vector
 
 from ..base import BaseModelArgs, GenerationResult
 from .codec import ArkttsCodec
@@ -211,7 +212,7 @@ def _falcon_args(config: ModelConfig) -> FalconH1Args:
 class FalconSlowStack(nn.Module):
     """The 0.1b slow backbone: Falcon-H1 decoder layers driven by an INJECTED embedding.
 
-    ``mlx_lm.models.falcon_h1.FalconH1Model`` embeds its own token ids and offers no
+    ``mlx_audio.lm.models.falcon_h1.FalconH1Model`` embeds its own token ids and offers no
     ``inputs_embeds`` seam, which arktts needs — its slow input is
 
         (text_embed + sum_of_ten_codebook_embeds) * embedding_multiplier
@@ -227,8 +228,40 @@ class FalconSlowStack(nn.Module):
     ``Model.sanitize`` below, which deliberately omits the embedding fold.
     """
 
+    #: muP multipliers that the upstream FalconH1 folds into weights during `sanitize`.
+    #: This port does not fold them (see `Model.sanitize`), so it only supports checkpoints
+    #: that carry them at unity — which every published arktts checkpoint does.
+    _MUST_BE_UNITY = (
+        "attention_in_multiplier",
+        "attention_out_multiplier",
+        "key_multiplier",
+        "ssm_in_multiplier",
+        "ssm_out_multiplier",
+    )
+    _MUST_BE_UNITY_SEQUENCES = ("mlp_multipliers", "ssm_multipliers")
+
     def __init__(self, config: ModelConfig):
         super().__init__()
+        # Fail loudly rather than load silently-unscaled weights. `embedding_multiplier` is
+        # deliberately absent from this check: it is applied at runtime to the COMPOSITE
+        # embedding (see this class's docstring), and `lm_head_multiplier` is unused because
+        # arktts brings its own semantic head.
+        offenders = [
+            name for name in self._MUST_BE_UNITY if float(getattr(config, name)) != 1.0
+        ]
+        offenders += [
+            name
+            for name in self._MUST_BE_UNITY_SEQUENCES
+            if set(float(v) for v in getattr(config, name)) != {1.0}
+        ]
+        if offenders:
+            raise ValueError(
+                "arktts's falcon_h1 backbone supports unity muP multipliers only, but this "
+                f"config sets {', '.join(offenders)} away from 1.0. Folding them belongs in "
+                "sanitize(), which is contractually self-contained here and cannot read the "
+                "config — so this checkpoint needs that seam reworked rather than silently "
+                "loading unscaled weights."
+            )
         args = _falcon_args(config)
         self.args = args
         self.embedding_multiplier = config.embedding_multiplier
@@ -1093,36 +1126,25 @@ class Model(nn.Module):
         for base, pair in pending.items():
             out[base] = fold_weight_norm(pair["g"], pair["v"])
 
-        falcon = self.config.uses_falcon_slow
-        args = _falcon_args(self.config) if falcon else None
-        mup = self.model.slow._mup_vector if falcon else None
-
+        # SANITIZE IS SELF-CONTAINED, by contract: the test suite calls it on a
+        # `Model.__new__(Model)` with no __init__, so it must not read instance state.
+        # The falcon variant is therefore detected from the KEYS, and the only work its
+        # weights need here is a layout transpose, which is decidable from shapes.
+        #
+        # The muP multipliers the upstream FalconH1 sanitize folds are NOT folded here.
+        # Every published arktts checkpoint carries them at unity, and `FalconSlowStack`
+        # ASSERTS that at construction — a loud failure on a future checkpoint that
+        # changes them, rather than dead code here that has to read a config it cannot see.
         remapped = {}
         for key, value in out.items():
-            if falcon and key.startswith("model.slow."):
-                # Falcon-H1 muP folding, mirroring mlx_lm's FalconH1 sanitize with ONE
-                # deliberate omission: embed_tokens is NOT scaled by embedding_multiplier.
-                # arktts applies that multiplier to the composite (text + codebooks)
-                # embedding instead — folding it here would scale the text half and leave
-                # the codebook half at 1.0. Measured cost of getting this wrong: 77% relative
-                # error on the embedding, 38% on the final hidden state, and audio that still
-                # sounds plausible. See FalconSlowStack's docstring.
-                if key.endswith(("q_proj.weight", "k_proj.weight", "v_proj.weight")):
-                    value = value * args.attention_in_multiplier
-                elif key.endswith("o_proj.weight"):
-                    value = value * args.attention_out_multiplier
-                elif key.endswith("out_proj.weight"):
-                    value = value * args.ssm_out_multiplier
-                elif key.endswith("gate_proj.weight"):
-                    value = value * args.mlp_multipliers[0]
-                elif key.endswith("down_proj.weight"):
-                    value = value * args.mlp_multipliers[1]
-                elif key.endswith("in_proj.weight"):
-                    value = value * (
-                        args.ssm_in_multiplier * mup.astype(value.dtype)[:, None]
-                    )
-                elif key.endswith("conv1d.weight"):
-                    # torch (C, 1, K) -> mlx (C, K, 1)
+            if key.startswith("model.slow."):
+                # torch Conv1d (C, 1, K) -> mlx (C, K, 1). `shape[1] == 1` identifies the
+                # torch layout (the kernel width is 4, never 1), so this cannot double-apply.
+                if (
+                    key.endswith("conv1d.weight")
+                    and value.ndim == 3
+                    and value.shape[1] == 1
+                ):
                     value = value.transpose(0, 2, 1)
                 remapped[key] = value
                 continue
