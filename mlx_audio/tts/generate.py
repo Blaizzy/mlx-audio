@@ -384,7 +384,7 @@ def generate_audio(
                     f"Samples/sec:           {result.audio_samples['samples-per-sec']:.1f}"
                 )
                 print(
-                    f"Prompt:                {result.token_count} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
+                    f"Prompt:                {result.prompt['tokens']} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
                 )
                 print(
                     f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"
