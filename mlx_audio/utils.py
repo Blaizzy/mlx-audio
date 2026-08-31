@@ -289,7 +289,7 @@ def get_model_class(
             if item.is_dir() and not item.name.startswith("__"):
                 available_models.append(item.name)
 
-    if model_name is not None and model_type_mapped is None:
+    if model_name is not None and model_type_mapped != model_type:
         for part in model_name:
             if part in available_models:
                 model_type = part

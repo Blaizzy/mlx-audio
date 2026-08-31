@@ -7,9 +7,11 @@ from mlx_audio.stt.models.canary.decoder import FixedPositionalEncoding
 from mlx_audio.stt.models.cohere_asr.audio import CohereAudioFrontend
 from mlx_audio.stt.models.cohere_asr.cohere_asr import RelPositionalEncoding
 from mlx_audio.stt.models.cohere_asr.config import PreprocessorConfig
-from mlx_audio.stt.models.granite_speech5 import granite_speech5
-from mlx_audio.stt.models.granite_speech5.config import EncoderConfig as Granite5Config
-from mlx_audio.stt.models.granite_speech5.granite_speech5 import (
+from mlx_audio.stt.models.granite_speech5_ctc import granite_speech5
+from mlx_audio.stt.models.granite_speech5_ctc.config import (
+    EncoderConfig as Granite5Config,
+)
+from mlx_audio.stt.models.granite_speech5_ctc.granite_speech5 import (
     Encoder as Granite5Encoder,
 )
 from mlx_audio.stt.models.granite_speech.config import EncoderConfig as GraniteConfig

@@ -1,8 +1,8 @@
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.stt.models.granite_speech5.config import EncoderConfig, ModelConfig
-from mlx_audio.stt.models.granite_speech5.granite_speech5 import (
+from mlx_audio.stt.models.granite_speech5_ctc.config import EncoderConfig, ModelConfig
+from mlx_audio.stt.models.granite_speech5_ctc.granite_speech5 import (
     Model,
     compute_deltas,
     compute_features,
@@ -57,7 +57,9 @@ def test_config_parses_native_hf_schema():
     assert config.encoder_config.subsample_layers == [0]
 
 
-def test_exact_model_type_mapping_beats_older_granite_name_match():
+def test_model_type_resolves_to_matching_package_name():
+    assert MODEL_REMAPPING["granite_speech5_ctc"] == "granite_speech5_ctc"
+
     module, resolved_type = get_model_class(
         model_type="granite_speech5_ctc",
         model_name=get_model_name_parts("granite-speech-5.0-470m-turboctc"),
@@ -65,7 +67,7 @@ def test_exact_model_type_mapping_beats_older_granite_name_match():
         model_remapping=MODEL_REMAPPING,
     )
 
-    assert resolved_type == "granite_speech5"
+    assert resolved_type == "granite_speech5_ctc"
     assert module.Model is Model
 
 
