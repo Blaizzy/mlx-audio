@@ -292,10 +292,15 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
                 exclude={"model"}, exclude_none=True
             )
             signature = inspect.signature(stt_model.generate)
+            accepts_extra_kwargs = any(
+                parameter.kind == inspect.Parameter.VAR_KEYWORD
+                for parameter in signature.parameters.values()
+            )
             gen_kwargs = {
                 key: value
                 for key, value in gen_kwargs.items()
-                if key in signature.parameters or key in _STT_EXTRA_KWARGS
+                if key in signature.parameters
+                or (accepts_extra_kwargs and key in _STT_EXTRA_KWARGS)
             }
 
             result = stt_model.generate(tmp_path, **gen_kwargs)
