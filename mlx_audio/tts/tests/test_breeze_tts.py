@@ -380,3 +380,57 @@ def test_breeze_registry_loads_model_module():
     )
     assert model_type == "breeze_tts"
     assert module.Model is Model
+
+
+def test_breeze_generate_splits_segments(monkeypatch):
+    model = Model(tiny_config())
+
+    class Decoder:
+        decode_upsample_rate = 24000
+
+        def reset_streaming_state(self):
+            pass
+
+    class AudioTokenizer:
+        decode_upsample_rate = 24000
+        decoder = Decoder()
+
+        def decode(self, codes):
+            return mx.zeros((1, 4)), mx.array([4], dtype=mx.int32)
+
+    class Backbone:
+        def make_cache(self):
+            return []
+
+        def __call__(self, input_embeddings=None, input_ids=None, cache=None):
+            del cache
+            length = (
+                input_embeddings.shape[1]
+                if input_embeddings is not None
+                else input_ids.shape[1]
+            )
+            return mx.zeros((1, length, 16))
+
+    class Head:
+        def __call__(self, _hidden):
+            logits = mx.full((1, 9), -100.0)
+            logits[..., 8] = 100.0
+            return logits
+
+    model.audio_tokenizer = AudioTokenizer()
+    model.backbone_model = Backbone()
+    model.lm_head = Head()
+    prompt_calls = []
+    monkeypatch.setattr(
+        model,
+        "_prompt_embeddings",
+        lambda text, *args, **kwargs: prompt_calls.append(text) or mx.zeros((1, 1, 16)),
+    )
+
+    results = list(model.generate("Segment 1\n\nSegment 2", temperature=0, top_k=0))
+    assert len(results) == 2
+    assert prompt_calls == ["Segment 1", "Segment 2"]
+    assert results[0].segment_idx == 0
+    assert not results[0].is_final_chunk
+    assert results[1].segment_idx == 1
+    assert results[1].is_final_chunk
