@@ -28,6 +28,50 @@ from mlx_audio.utils import load_audio
 from .config import ModelConfig
 
 
+def _split_long_segment(text: str, max_chars: int = 600) -> list[str]:
+    """Split text into non-empty chunks no longer than ``max_chars``."""
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive.")
+    if len(text) <= max_chars:
+        return [text]
+
+    # Keep sentence-ending punctuation attached to the preceding sentence.
+    # Full-width terminators cover Chinese and Japanese text, where sentence
+    # boundaries are commonly not followed by whitespace.
+    sentences = [s for s in re.split(r"(?<=[.!?。！？])", text) if s]
+    chunks: list[str] = []
+    current = ""
+
+    for sentence in sentences:
+        while sentence:
+            if current and len(current) + len(sentence) > max_chars:
+                chunks.append(current.strip())
+                current = ""
+                sentence = sentence.lstrip()
+                continue
+
+            available = max_chars - len(current)
+            if len(sentence) <= available:
+                current += sentence
+                break
+
+            # A sentence can itself exceed the limit. Prefer a nearby word
+            # boundary, then fall back to a hard split for unspaced/CJK text.
+            split_at = available
+            whitespace = list(re.finditer(r"\s+", sentence[: available + 1]))
+            if whitespace and whitespace[-1].start() >= available // 2:
+                split_at = whitespace[-1].start()
+            chunk = (current + sentence[:split_at]).strip()
+            if chunk:
+                chunks.append(chunk)
+            current = ""
+            sentence = sentence[split_at:].lstrip()
+
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks
+
+
 class _AudioEmbedding(nn.Module):
     """Sum wrapper-level audio codebook embeddings.
 
@@ -956,7 +1000,6 @@ class Model(nn.Module):
         ref_audio: Optional[Union[str, Path, mx.array]] = None,
         ref_text: Optional[str] = None,
         cfg_scale: Optional[float] = None,
-        split_pattern: Optional[str] = "\n",
         max_tokens: int = 750,
         temperature: float = 0.9,
         top_p: float = 1.0,
@@ -965,6 +1008,7 @@ class Model(nn.Module):
         seed: Optional[int] = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        split_pattern: Optional[str] = "\n",
         **_: object,
     ) -> Generator[GenerationResult, None, None]:
         """Generate Breeze audio for voice design, cloning, or direction."""
@@ -996,15 +1040,7 @@ class Model(nn.Module):
                 ]
             segments: list[str] = []
             for segment in raw_segments:
-                if len(segment) > 600:
-                    sentences = [
-                        s.strip()
-                        for s in re.split(r"(?<=[.!?])\s+", segment)
-                        if s.strip()
-                    ]
-                    segments.extend(sentences if sentences else [segment])
-                else:
-                    segments.append(segment)
+                segments.extend(_split_long_segment(segment))
         else:
             segments = [text.strip()] if text.strip() else []
         if not segments:
@@ -1041,9 +1077,9 @@ class Model(nn.Module):
                 )
 
             cond_cache = self.backbone_model.make_cache()
-            cond_hidden = self.backbone_model(
-                input_embeddings=cond, cache=cond_cache
-            )[:, -1, :]
+            cond_hidden = self.backbone_model(input_embeddings=cond, cache=cond_cache)[
+                :, -1, :
+            ]
             if use_cfg:
                 uncond_cache = self.backbone_model.make_cache()
                 uncond_hidden = self.backbone_model(
@@ -1170,7 +1206,9 @@ class Model(nn.Module):
                     )
                     self.audio_tokenizer.decoder.reset_streaming_state()
                     yield stream_result(
-                        self._audio_vector(stream_audio), len(pending_frames), final=True
+                        self._audio_vector(stream_audio),
+                        len(pending_frames),
+                        final=True,
                     )
                 else:
                     self.audio_tokenizer.decoder.reset_streaming_state()
