@@ -6981,6 +6981,74 @@ class TestOmniVoiceGenerateWithTokenizer(unittest.TestCase):
         self.assertEqual(result.audio.size, expected_samples)
 
 
+class TestOmniVoicePostLoadHook(unittest.TestCase):
+    """A real audio_tokenizer load failure must not be swallowed: generate()
+    treats a missing audio_tokenizer as "emit silence", so post_load_hook is
+    the only place left that can turn it into an actionable error."""
+
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_audio_tokenizer_load_failure_propagates(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        model = self._make_model()
+        with (
+            patch(
+                "transformers.AutoTokenizer.from_pretrained",
+                side_effect=OSError("no text tokenizer here"),
+            ),
+            patch(
+                "mlx_audio.codec.models.higgs_audio.higgs_audio.HiggsAudioTokenizer.from_pretrained",
+                side_effect=RuntimeError("Missing 225 parameters"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                Model.post_load_hook(model, Path("/nonexistent/checkpoint"))
+
+    def test_text_tokenizer_failure_alone_is_still_caught(self):
+        """Unaffected by this change: a text_tokenizer load failure still
+        just warns and sets None, same as before."""
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        model = self._make_model()
+        with (
+            patch(
+                "transformers.AutoTokenizer.from_pretrained",
+                side_effect=OSError("no text tokenizer here"),
+            ),
+            patch(
+                "mlx_audio.codec.models.higgs_audio.higgs_audio.HiggsAudioTokenizer.from_pretrained",
+                return_value=object(),
+            ),
+        ):
+            result = Model.post_load_hook(model, Path("/nonexistent/checkpoint"))
+        self.assertIsNone(result.text_tokenizer)
+        self.assertIsNotNone(result.audio_tokenizer)
+
+
 class TestHiggsAudioDAC(unittest.TestCase):
     def test_residual_unit_shape(self):
         from mlx_audio.codec.models.higgs_audio.dac import ResidualUnit
