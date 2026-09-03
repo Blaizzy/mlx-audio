@@ -99,6 +99,7 @@ nav:
       - Parakeet: models/stt/parakeet.md
       - Phonon-1: models/stt/phonon.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
+      - VibeVoice ASR: models/stt/vibevoice-asr.md
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md
     - Speech-to-Speech: models/sts/index.md
