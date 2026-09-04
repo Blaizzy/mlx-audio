@@ -7,9 +7,9 @@ from mlx_audio.utils import (
     load_weights,
 )
 
-from .models import gemma3
+from .models import gemma3, nemotron_h
 
-_MODELS = {"gemma3": gemma3}
+_MODELS = {"gemma3": gemma3, "nemotron_h": nemotron_h}
 
 
 def load_lm(model_id: str):
