@@ -13,6 +13,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 import webbrowser
@@ -87,6 +88,14 @@ def sanitize_for_json(obj: Any) -> Any:
         return float(obj)
     else:
         return obj
+
+
+try:
+    from mlx_audio.streaming_encoder import SUPPORTED as STREAMING_FORMATS
+    from mlx_audio.streaming_encoder import StreamingEncoder
+except ImportError:  # PyAV not installed
+    StreamingEncoder = None
+    STREAMING_FORMATS = frozenset()
 
 
 class ModelProvider:
@@ -392,6 +401,7 @@ class _TTSAdapterContinuousSession:
 
             if event.error is not None:
                 request.emit_error(event.error)
+                self.adapter._finalize_stream(request)
                 request.emit_done()
                 self._requests.pop(event.sequence_id, None)
                 self._emitted_audio.discard(event.sequence_id)
@@ -420,6 +430,7 @@ class _TTSAdapterContinuousSession:
                     request.emit_error(
                         HTTPException(status_code=400, detail="No audio generated")
                     )
+                self.adapter._finalize_stream(request)
                 request.emit_done()
                 self._requests.pop(event.sequence_id, None)
                 self._emitted_audio.discard(event.sequence_id)
@@ -427,6 +438,7 @@ class _TTSAdapterContinuousSession:
     def fail(self, error: BaseException) -> None:
         for request in list(self._requests.values()):
             request.emit_error(error)
+            self.adapter._finalize_stream(request)
             request.emit_done()
         self._requests.clear()
         self._emitted_audio.clear()
@@ -436,6 +448,7 @@ class _TTSAdapterContinuousSession:
             if not request.cancel_event.is_set():
                 continue
             self.model_session.cancel(sequence_id)
+            self.adapter._finalize_stream(request)
             request.emit_done()
             self._requests.pop(sequence_id, None)
             self._emitted_audio.discard(sequence_id)
@@ -450,6 +463,10 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             self.max_batch_size = max(1, int(raw_max_batch_size))
         except ValueError:
             self.max_batch_size = 8
+        # One open encoder per in-flight streaming response, keyed by
+        # request id. Worker threads touch this concurrently.
+        self._stream_encoders: dict[str, "StreamingEncoder"] = {}
+        self._stream_encoders_lock = threading.Lock()
 
     def _get_model_for_request(self, request: InferenceRequest):
         model = getattr(request, self._REQUEST_MODEL_ATTR, None)
@@ -604,6 +621,27 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         audio,
         sample_rate: int,
     ) -> None:
+        fmt = (speech_request.response_format or "mp3").lower()
+
+        # Streaming + a container format -> keep one encoder open for the whole
+        # response so the client receives a single container instead of one
+        # standalone file per chunk (each of which carries its own header,
+        # encoder delay and end padding -> audible gap at every seam).
+        if speech_request.stream and fmt not in ("raw", "pcm"):
+            if StreamingEncoder is not None and fmt in STREAMING_FORMATS:
+                with self._stream_encoders_lock:
+                    enc = self._stream_encoders.get(request.request_id)
+                    if enc is None:
+                        enc = StreamingEncoder(fmt, sample_rate, 1)
+                        self._stream_encoders[request.request_id] = enc
+                arr = audio
+                if not isinstance(arr, np.ndarray):
+                    arr = np.asarray(arr.tolist() if hasattr(arr, "tolist") else arr)
+                data = enc.encode(np.asarray(arr).reshape(-1))
+                if data:
+                    request.emit_data(data)
+                return
+
         buffer = io.BytesIO()
         audio_write(
             buffer,
@@ -613,7 +651,42 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         )
         request.emit_data(buffer.getvalue())
 
+    def _discard_stream(self, request_id: str) -> None:
+        """Close and drop an encoder without emitting its tail.
+
+        Safety net for abnormal exits; a normal end goes through
+        ``_finalize_stream`` first, which pops the entry and emits the flush.
+        """
+        with self._stream_encoders_lock:
+            enc = self._stream_encoders.pop(request_id, None)
+        if enc is not None:
+            try:
+                enc.finalize()
+            except Exception:
+                pass
+
+    def _finalize_stream(self, request: InferenceRequest) -> None:
+        """Flush and close this request's encoder, if it has one."""
+        with self._stream_encoders_lock:
+            enc = self._stream_encoders.pop(request.request_id, None)
+        if enc is None:
+            return
+        try:
+            tail = enc.finalize()
+        except Exception:
+            tail = b""
+        if tail:
+            request.emit_data(tail)
+
     def run_serial(self, request: InferenceRequest) -> None:
+        try:
+            self._run_serial(request)
+        finally:
+            # Any exit — including an exception raised into the broker — must
+            # close this request's encoder, or the open container leaks.
+            self._discard_stream(request.request_id)
+
+    def _run_serial(self, request: InferenceRequest) -> None:
         payload: SpeechTaskPayload = request.payload
         speech_request = payload.request
         model = self._get_model_for_request(request)
@@ -659,6 +732,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
         for result in model.generate(speech_request.input, **generate_kwargs):
             if request.cancel_event.is_set():
                 mx.clear_cache()
+                self._finalize_stream(request)
                 request.emit_done()
                 return
 
@@ -675,6 +749,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
                     sample_rate = result.sample_rate
 
         if speech_request.stream:
+            self._finalize_stream(request)
             request.emit_done()
             return
 
@@ -771,6 +846,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
                 audio,
                 sample_rate,
             )
+            self._finalize_stream(request)
             request.emit_done()
 
 
