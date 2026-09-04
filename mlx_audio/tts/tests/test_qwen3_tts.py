@@ -593,6 +593,74 @@ class TestQwen3TTSSamplingFilters(unittest.TestCase):
         self.assertEqual(captured["temperature"], 1.0)
 
 
+class TestQwen3TTSRepetitionPenaltyWindow(unittest.TestCase):
+    """Regression tests for mlx-audio#910.
+
+    The ICL voice-cloning path forces repetition_penalty to a 1.5 floor and used
+    to penalize the *set of all* previously generated codec tokens. A slow
+    reference voice's recurring tokens therefore stayed suppressed for the whole
+    utterance, progressively accelerating the speaking pace. The penalty now
+    only considers a bounded recent window (repetition_context_size).
+    """
+
+    # idx 5 is the top logit, idx 7 a close runner-up. Penalizing idx 5 (÷1.5)
+    # drops it below idx 7 and flips the greedy argmax from 5 -> 7.
+    _LOGITS = mx.array([[[1.0, 1.0, 1.0, 1.0, 1.0, 10.0, 1.0, 9.0]]], dtype=mx.float32)
+
+    def _greedy(self, generated_tokens, repetition_context_size):
+        token = Model._sample_token(
+            Model.__new__(Model),
+            self._LOGITS,
+            temperature=0.0,  # greedy -> deterministic argmax
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.5,
+            repetition_context_size=repetition_context_size,
+            generated_tokens=generated_tokens,
+        )
+        return int(np.array(token).reshape(-1)[0])
+
+    def test_old_token_outside_window_is_not_penalized(self):
+        # idx 5 appears once at the very start, then 100 unrelated tokens.
+        generated = [5] + [0] * 100
+        # Default bounded window: idx 5 has fallen out -> not penalized -> stays.
+        self.assertEqual(self._greedy(generated, repetition_context_size=64), 5)
+        # Full-history behavior (the bug): idx 5 still penalized -> flips to 7.
+        self.assertEqual(self._greedy(generated, repetition_context_size=200), 7)
+
+    def test_token_repeating_within_window_is_still_penalized(self):
+        # idx 5 recurs constantly inside the window: it should still be penalized,
+        # so the window does not silently disable the repetition penalty.
+        generated = [5] * 100
+        self.assertEqual(self._greedy(generated, repetition_context_size=64), 7)
+
+    def test_batch_old_token_outside_window_is_not_penalized(self):
+        generated = [[5] + [0] * 100]
+        token = Model._sample_token_batch(
+            Model.__new__(Model),
+            self._LOGITS,
+            temperature=0.0,
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.5,
+            repetition_context_size=64,
+            generated_tokens_per_seq=generated,
+        )
+        self.assertEqual(int(np.array(token).reshape(-1)[0]), 5)
+
+        token_full = Model._sample_token_batch(
+            Model.__new__(Model),
+            self._LOGITS,
+            temperature=0.0,
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.5,
+            repetition_context_size=200,
+            generated_tokens_per_seq=generated,
+        )
+        self.assertEqual(int(np.array(token_full).reshape(-1)[0]), 7)
+
+
 class TestQwen3TTSNoEosFilterBypass(unittest.TestCase):
     """Regression tests for mlx-audio#882.
 

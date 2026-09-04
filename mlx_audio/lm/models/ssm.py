@@ -1,4 +1,5 @@
-# Vendored from mlx-lm.
+# Copyright © 2025 Apple Inc.
+# Vendored from mlx-lm 0.31.3.
 
 from typing import Optional, Tuple
 
