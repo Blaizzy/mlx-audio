@@ -17,6 +17,8 @@ from pathlib import Path
 REPO_HINTS = {
     "deepfilter": "deepfilternet",
     "mossformer": "mossformer2",
+    "nemotronlabs-voicechat": "nemotron_voicechat",
+    "nemotron_voicechat": "nemotron_voicechat",
 }
 
 
@@ -58,6 +60,12 @@ def parse_args():
         "--verbose",
         action="store_true",
         help="Print detailed processing information",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        type=str,
+        default=None,
+        help="Optional system prompt for conversational speech models",
     )
 
     # DeepFilterNet-specific options
@@ -131,6 +139,21 @@ def main():
         model = MossFormer2SEModel.from_pretrained(args.model)
         enhanced = model.enhance(str(in_path))
         audio_io.write(str(out_path), enhanced, model.config.sample_rate)
+        mode = "offline"
+
+    elif model_type == "nemotron_voicechat":
+        from mlx_audio import audio_io
+        from mlx_audio.sts import load
+
+        model = load(args.model)
+        generate_kwargs = {}
+        if args.system_prompt is not None:
+            generate_kwargs["system_prompt"] = args.system_prompt
+        result = model.generate(str(in_path), **generate_kwargs)
+        audio_io.write(str(out_path), result.audio, result.sample_rate)
+        text_path = out_path.with_suffix(".txt")
+        text_path.write_text(result.text + "\n", encoding="utf-8")
+        print(result.text)
         mode = "offline"
 
     elapsed = time.time() - start
