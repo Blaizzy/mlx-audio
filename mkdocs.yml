@@ -88,6 +88,7 @@ nav:
       - Higgs Audio v3: models/tts/higgs_audio_v3.md
       - MOSS-TTS: models/tts/moss-tts.md
       - Voxtral TTS: models/tts/voxtral-tts.md
+      - VoxCPM2: models/tts/voxcpm2.md
       - Svara TTS: models/tts/svara.md
       - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
