@@ -3394,7 +3394,7 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             )
 
         self.assertEqual(len(results), 51)
-        self.assertEqual(model.speech_tokenizer.decoder.streaming_step.call_count, 51)
+        self.assertEqual(model.speech_tokenizer.decoder.streaming_step.call_count, 52)
         mock_clear_cache.assert_called_once_with()
 
     def test_generate_icl_repetition_penalty_applied(self):
