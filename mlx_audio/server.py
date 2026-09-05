@@ -59,6 +59,7 @@ from mlx_audio.server_inference import (
     InferenceRequest,
     InferenceResultChunk,
 )
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.utils import load_model
 
@@ -1502,7 +1503,9 @@ def _default_transcription_delay_ms() -> Optional[int]:
         return None
 
 
-def _open_streaming_session(model, *, temperature: float, delay_ms: Optional[int]):
+def _open_streaming_session(
+    model, *, temperature: float, delay_ms: Optional[int]
+) -> StreamingSession:
     """Open a streaming session, forwarding ``transcription_delay_ms`` only to
     models that declare the parameter.
     """

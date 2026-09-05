@@ -1,6 +1,7 @@
 # Nemotron live input
 
-Nemotron exposes the existing realtime STT session protocol. Sessions use greedy
+Nemotron implements the shared [`StreamingSession`](streaming-stt.md) protocol,
+also used by Voxtral Realtime. Sessions use greedy
 decoding (`temperature=0`), mono float32 PCM at `session.input_sample_rate`, and
 independent frontend, encoder and RNNT state.
 

@@ -49,10 +49,10 @@ class NemotronStreamingSession:
         self._has_text = False
 
     @property
-    def done(self):
+    def done(self) -> bool:
         return self._done
 
-    def feed(self, samples):
+    def feed(self, samples: np.ndarray) -> None:
         samples = np.asarray(samples, dtype=np.float32)
         if samples.ndim != 1 or not np.isfinite(samples).all():
             raise ValueError("expected finite mono PCM samples")
@@ -65,7 +65,7 @@ class NemotronStreamingSession:
                 self._audio.append(samples.copy())
                 self._queued += samples.size
 
-    def close(self):
+    def close(self) -> None:
         """Signal end-of-input; step drains and flushes it exactly once."""
         with self._lock:
             self._closed = True
@@ -105,7 +105,7 @@ class NemotronStreamingSession:
             self._encoded.append(prompted)
         self._flushed = final
 
-    def step(self, *, max_decode_tokens=4):
+    def step(self, *, max_decode_tokens: int = 4) -> list[str]:
         if max_decode_tokens <= 0:
             raise ValueError("max_decode_tokens must be positive")
         if self.done:
