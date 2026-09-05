@@ -886,6 +886,20 @@ class Qwen3TTSSpeechTokenizerDecoder(nn.Module):
             if hasattr(m, "reset_state"):
                 m.reset_state()
 
+    def prime_streaming_state(self, context_codes: mx.array) -> None:
+        """Start a stream that continues ``context_codes`` without emitting their audio.
+
+        Only the last ``sliding_window`` codes are decoded. That is the span the
+        pre-transformer attends over, and the conv buffers need far less, so a
+        longer context only adds latency before the first emitted chunk.
+
+        Args:
+            context_codes: [batch, num_quantizers, time] codes the stream continues
+        """
+        self.reset_streaming_state()
+        window = self.config.sliding_window
+        mx.eval(self.streaming_step(context_codes[:, :, -window:]))
+
     def streaming_step(self, codes: mx.array) -> mx.array:
         """Incrementally decode new codes using conv buffers and transformer KV cache.
 

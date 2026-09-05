@@ -7,10 +7,14 @@ from unittest.mock import patch
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTokenizerDecoderConfig
 from mlx_audio.tts.models.qwen3_tts.qwen3_tts import Model, mel_spectrogram
 from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
+)
+from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+    Qwen3TTSSpeechTokenizerDecoder,
 )
 
 
@@ -521,6 +525,10 @@ class _ContextStreamingDecoder:
     def reset_streaming_state(self):
         self.previous = mx.array([[[-10]]], dtype=mx.int32)
 
+    def prime_streaming_state(self, context_codes):
+        self.reset_streaming_state()
+        self.streaming_step(context_codes)
+
     def streaming_step(self, codes):
         previous = mx.concatenate([self.previous, codes[:, :, :-1]], axis=2)
         self.previous = codes[:, :, -1:]
@@ -556,6 +564,36 @@ class TestQwen3TTSICLStreamingContext(unittest.TestCase):
                 self.assertEqual([result.token_count for result in results], [2, 1])
                 self.assertEqual([result.samples for result in results], [2, 1])
                 self.assertTrue(results[-1].is_final_chunk)
+
+
+class TestQwen3TTSDecoderPriming(unittest.TestCase):
+    def test_prime_decodes_only_the_sliding_window(self):
+        config = Qwen3TTSTokenizerDecoderConfig(
+            latent_dim=8,
+            codebook_dim=8,
+            codebook_size=4,
+            decoder_dim=64,
+            hidden_size=8,
+            intermediate_size=8,
+            head_dim=8,
+            num_attention_heads=1,
+            num_key_value_heads=1,
+            num_hidden_layers=1,
+            num_quantizers=2,
+            num_semantic_quantizers=1,
+            semantic_codebook_size=4,
+            sliding_window=3,
+            upsample_rates=[2, 2, 2, 2],
+        )
+        decoder = Qwen3TTSSpeechTokenizerDecoder(config)
+        codes = mx.zeros((1, config.num_quantizers, 10), dtype=mx.int32)
+
+        for _ in range(2):
+            decoder.prime_streaming_state(codes)
+            self.assertEqual(decoder._transformer_cache[0].offset, 3)
+
+        decoder.prime_streaming_state(codes[:, :, :2])
+        self.assertEqual(decoder._transformer_cache[0].offset, 2)
 
 
 class TestQwen3TTSSamplingFilters(unittest.TestCase):

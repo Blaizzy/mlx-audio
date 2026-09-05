@@ -2270,10 +2270,9 @@ class Model(nn.Module):
             streaming_chunk_size = max(1, int(streaming_interval * 12.5))
             decoded_tokens = 0
             chunk_start_time = time.time()
-            self.speech_tokenizer.decoder.reset_streaming_state()
-            # Prime the decoder's conv buffers and KV cache with the reference so
-            # generated codes continue the reference utterance. Its audio is discarded.
-            mx.eval(self.speech_tokenizer.decoder.streaming_step(ref_codes))
+            # Generated codes continue the reference utterance, so the decoder
+            # starts with the reference's context rather than empty state.
+            self.speech_tokenizer.decoder.prime_streaming_state(ref_codes)
 
         for step in range(effective_max_tokens):
             # Forward pass through talker
