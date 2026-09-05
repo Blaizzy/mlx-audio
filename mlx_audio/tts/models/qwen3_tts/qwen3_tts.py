@@ -2271,7 +2271,8 @@ class Model(nn.Module):
             decoded_tokens = 0
             chunk_start_time = time.time()
             self.speech_tokenizer.decoder.reset_streaming_state()
-            # Match non-streaming decode's reference context without emitting its audio.
+            # Prime the decoder's conv buffers and KV cache with the reference so
+            # generated codes continue the reference utterance. Its audio is discarded.
             mx.eval(self.speech_tokenizer.decoder.streaming_step(ref_codes))
 
         for step in range(effective_max_tokens):

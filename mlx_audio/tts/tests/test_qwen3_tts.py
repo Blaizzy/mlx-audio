@@ -512,7 +512,11 @@ def _make_generation_test_model(text_token_count: int = 10):
 
 
 class _ContextStreamingDecoder:
-    """Decode each code with its predecessor to expose missing reference context."""
+    """Decode each code as ``code + previous code`` to expose missing reference context.
+
+    After a reset, ``previous`` is -10, a value no real code can produce, so the
+    first output is -9 if the reference was never fed through the decoder.
+    """
 
     def reset_streaming_state(self):
         self.previous = mx.array([[[-10]]], dtype=mx.int32)
@@ -529,6 +533,10 @@ class TestQwen3TTSICLStreamingContext(unittest.TestCase):
         model.speech_tokenizer.has_encoder = True
         model.speech_tokenizer.decoder = _ContextStreamingDecoder()
 
+        # The fake ICL inputs carry reference code 0 and the fake sampler returns
+        # code 1 every step, so primed decoding gives [1 + 0, 1 + 1, 1 + 1].
+        # Unprimed, the first sample would be 1 + (-10) = -9.
+        # streaming_interval=0.16 is int(0.16 * 12.5) = 2 codes per chunk.
         # Repeat on the same model to exercise reset between utterances.
         for _ in range(2):
             with self.subTest():
