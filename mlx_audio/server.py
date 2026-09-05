@@ -13,6 +13,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 import time
 import uuid
 import webbrowser
@@ -90,26 +91,75 @@ def sanitize_for_json(obj: Any) -> Any:
 
 
 class ModelProvider:
-    def __init__(self):
+    def __init__(
+        self,
+        max_resident_models: int = 1,
+        idle_ttl_seconds: float = 0.0,
+    ):
         self.models: Dict[str, Dict[str, Any]] = {}
-        self.lock = asyncio.Lock()
+        self._last_used: Dict[str, float] = {}
+        self.max_resident_models = max(1, max_resident_models)
+        self.idle_ttl_seconds = idle_ttl_seconds
+        self._lock = threading.Lock()
+        self._sweeper_task: Optional[asyncio.Task] = None
 
     def load_model(self, model_name: str):
-        if model_name not in self.models:
-            self.models[model_name] = load_model(model_name)
+        with self._lock:
+            if model_name not in self.models:
+                if len(self.models) >= self.max_resident_models:
+                    self._evict_least_recently_used()
+                self.models[model_name] = load_model(model_name)
 
-        return self.models[model_name]
+            self._last_used[model_name] = time.monotonic()
+            return self.models[model_name]
 
     async def remove_model(self, model_name: str) -> bool:
-        async with self.lock:
+        with self._lock:
             if model_name in self.models:
-                del self.models[model_name]
+                self._evict(model_name)
                 return True
             return False
 
     async def get_available_models(self):
-        async with self.lock:
+        with self._lock:
             return list(self.models.keys())
+
+    def _evict(self, model_name: str) -> None:
+        """Drop a loaded model and release its MLX memory (call with the lock held)."""
+        self.models.pop(model_name, None)
+        self._last_used.pop(model_name, None)
+        mx.clear_cache()
+
+    def _evict_least_recently_used(self) -> Optional[str]:
+        """Evict the model unused for the longest time, returning its name."""
+        if not self._last_used:
+            return None
+        victim = min(self._last_used, key=self._last_used.get)
+        self._evict(victim)
+        return victim
+
+    def start_sweeper(self) -> None:
+        """Start the background idle-TTL sweeper (no-op when TTL is disabled)."""
+        if self.idle_ttl_seconds > 0 and self._sweeper_task is None:
+            self._sweeper_task = asyncio.create_task(self._idle_sweeper())
+
+    def stop_sweeper(self) -> None:
+        if self._sweeper_task is not None:
+            self._sweeper_task.cancel()
+            self._sweeper_task = None
+
+    async def _idle_sweeper(self) -> None:
+        while True:
+            await asyncio.sleep(self.idle_ttl_seconds)
+            now = time.monotonic()
+            with self._lock:
+                stale = [
+                    name
+                    for name, last_used in self._last_used.items()
+                    if now - last_used >= self.idle_ttl_seconds
+                ]
+                for name in stale:
+                    self._evict(name)
 
 
 app = FastAPI()
@@ -151,9 +201,11 @@ setup_cors(app, default_origins)
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     del app
+    model_provider.start_sweeper()
     try:
         yield
     finally:
+        model_provider.stop_sweeper()
         global INFERENCE_BROKER
         if INFERENCE_BROKER is not None:
             INFERENCE_BROKER.stop_and_join()
@@ -207,8 +259,26 @@ class SeparationResponse(BaseModel):
     sample_rate: int
 
 
-# Initialize the ModelProvider
-model_provider = ModelProvider()
+# Initialize the ModelProvider. Memory bounds are configurable so multi-voice
+# / multi-model servers can bound resident model memory without restarting.
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+model_provider = ModelProvider(
+    max_resident_models=_env_int("MLX_AUDIO_MAX_RESIDENT_MODELS", 1),
+    idle_ttl_seconds=_env_float("MLX_AUDIO_MODEL_IDLE_TTL_SECONDS", 0.0),
+)
 REALTIME_INFERENCE_LOCK = asyncio.Lock()
 INFERENCE_BROKER: Optional[InferenceBroker] = None
 
@@ -2120,6 +2190,26 @@ def main():
             "Overrides $MLX_AUDIO_TTS_MAX_BATCH_SIZE."
         ),
     )
+    parser.add_argument(
+        "--max-resident-models",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of models kept loaded in memory at once; loading "
+            "another evicts the least-recently-used one (LRU). "
+            "Overrides $MLX_AUDIO_MAX_RESIDENT_MODELS (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--model-idle-ttl-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Unload models unused for this many seconds via a background sweeper "
+            "(0 disables the idle sweeper). "
+            "Overrides $MLX_AUDIO_MODEL_IDLE_TTL_SECONDS (default: 0)."
+        ),
+    )
 
     args = parser.parse_args()
     if args.realtime_model:
@@ -2132,6 +2222,21 @@ def main():
         os.environ["MLX_AUDIO_VAD_MODEL"] = args.vad_model
     if args.tts_max_batch_size is not None:
         os.environ["MLX_AUDIO_TTS_MAX_BATCH_SIZE"] = str(args.tts_max_batch_size)
+    # The provider is constructed at import time, so apply the memory bounds
+    # directly (CLI flags take precedence over the environment).
+    model_provider.max_resident_models = max(
+        1,
+        (
+            args.max_resident_models
+            if args.max_resident_models is not None
+            else _env_int("MLX_AUDIO_MAX_RESIDENT_MODELS", 1)
+        ),
+    )
+    model_provider.idle_ttl_seconds = (
+        args.model_idle_ttl_seconds
+        if args.model_idle_ttl_seconds is not None
+        else _env_float("MLX_AUDIO_MODEL_IDLE_TTL_SECONDS", 0.0)
+    )
 
     setup_cors(app, args.allowed_origins)
 
