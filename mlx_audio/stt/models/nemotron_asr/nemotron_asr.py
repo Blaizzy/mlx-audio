@@ -20,6 +20,7 @@ from mlx_audio.stt.models.nemo.alignment import (
     sentences_to_result,
     tokens_to_sentences,
 )
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.stt.utils import load_audio
 from mlx_audio.utils import from_dict
 
@@ -90,6 +91,16 @@ class Model(nn.Module):
         ]
         self.decoder = PredictNetwork(config.decoder)
         self.joint = JointNetwork(config.joint)
+
+    def create_streaming_session(
+        self, *, temperature=0.0, language=None
+    ) -> StreamingSession:
+        """Create an independent live-input greedy transcription session."""
+        from .session import NemotronStreamingSession
+
+        return NemotronStreamingSession(
+            self, temperature=temperature, language=language
+        )
 
     def _prepare_audio(
         self, audio: Union[str, Path, mx.array], dtype: mx.Dtype
