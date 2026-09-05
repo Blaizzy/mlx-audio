@@ -91,6 +91,14 @@ class Model(nn.Module):
         self.decoder = PredictNetwork(config.decoder)
         self.joint = JointNetwork(config.joint)
 
+    def create_streaming_session(self, *, temperature=0.0, language=None):
+        """Create an independent live-input greedy transcription session."""
+        from .session import NemotronStreamingSession
+
+        return NemotronStreamingSession(
+            self, temperature=temperature, language=language
+        )
+
     def _prepare_audio(
         self, audio: Union[str, Path, mx.array], dtype: mx.Dtype
     ) -> mx.array:
