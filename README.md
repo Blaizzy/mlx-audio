@@ -69,26 +69,27 @@ pip install -e ".[dev, server]"
 
 ```bash
 # Basic TTS generation
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello, world!' --voice Chelsie
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello, world!' --voice Vivian
 
 # With a different voice and language hint
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Welcome to MLX-Audio!' --voice Ethan --lang_code English
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Welcome to MLX-Audio!' --voice Ryan --lang_code English
 
 # Play audio immediately
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --play
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --play
 
 # Save to a specific directory
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --output_path ./my_audio
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --output_path ./my_audio
 
 # Stream audio during generation
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --stream
 
 # Stream audio during generation and save it to disk
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text 'Hello!' --voice Chelsie --stream --save
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text 'Hello!' --voice Vivian --stream --save
 
 # Join multiple generated segments into one file
-mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit --text $'Hello!\nHow are you?' --voice Chelsie --join_audio
+mlx_audio.tts.generate --model mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit --text $'Hello!\nHow are you?' --voice Vivian --join_audio
 ```
+
 
 By default, when generation yields multiple segments, mlx-audio saves numbered files such as `audio_000.wav` and `audio_001.wav`. Use `--join_audio` to save one combined file instead. When using `--stream`, add `--save` to write the streamed audio to disk.
 
@@ -98,12 +99,12 @@ By default, when generation yields multiple segments, mlx-audio saves numbered f
 from mlx_audio.tts.utils import load_model
 
 # Load model
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
 # Generate speech
 for result in model.generate(
     "Hello from MLX-Audio!",
-    voice="Chelsie",
+    voice="Vivian",
     lang_code="English",
 ):
     print(f"Generated {result.audio.shape[0]} samples")
@@ -131,6 +132,7 @@ for result in model.generate(
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
 | **KugelAudio** | SOTA 7B AR+Diffusion TTS for European languages | EN, DE, FR, ES, IT, PT, NL, PL, RU, UK, + 14 more | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
+| **VoxCPM2** | 2B tokenizer-free TTS with 48kHz output, voice design, voice cloning, and continuation | 30 languages | [bf16](https://huggingface.co/mlx-community/VoxCPM2-bf16), [8bit](https://huggingface.co/mlx-community/VoxCPM2-8bit), [4bit](https://huggingface.co/mlx-community/VoxCPM2-4bit) |
 | **LongCat-AudioDiT** | SOTA diffusion TTS in waveform latent space with voice cloning | ZH, EN | [mlx-community/LongCat-AudioDiT-1B-bf16](https://huggingface.co/mlx-community/LongCat-AudioDiT-1B-bf16) |
 | **MeloTTS** | Lightweight VITS2-based TTS with streaming | EN (more coming) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
 | **MOSS-TTS** | 8B delay-pattern and local-transformer multilingual TTS with voice cloning | 31 languages | [OpenMOSS-Team/MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5), [OpenMOSS-Team/MOSS-TTS](https://huggingface.co/OpenMOSS-Team/MOSS-TTS), [OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5), [OpenMOSS-Team/MOSS-TTS-Local-Transformer](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer) |
@@ -151,11 +153,12 @@ for result in model.generate(
 | **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
-| **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
+| **VibeVoice-ASR** | Microsoft's 3B/9B ASR with diarization, timestamps, hotwords, and native chunk streaming | 10 streaming / 50+ long-form | [Streaming 1.5B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-1.5B) · [Streaming 7B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-7B) · [Long-form](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) · [README](mlx_audio/stt/models/vibevoice_asr/README.md) |
 | **Canary** | NVIDIA's multilingual ASR with translation | 25 EU + RU, UK | [README](mlx_audio/stt/models/canary/README.md) |
 | **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
 | **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+| **Granite Speech 5.0 TurboCTC** | IBM's fast encoder-only CTC ASR | EN | [README](mlx_audio/stt/models/granite_speech5_ctc/README.md) |
 | **Qwen2-Audio** | Alibaba's multimodal audio understanding (ASR, captioning, emotion, translation) | Multiple | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
 | **MOSS-Music** | OpenMOSS music understanding and lyrics ASR | EN, ZH | [README](mlx_audio/stt/models/moss_music/README.md) |
 
@@ -178,6 +181,7 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 | **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
+| **NemotronLabs VoiceChat** | Full-duplex speech-to-speech with streaming transcription and function calling | Real-time voice conversation | [mlx-community/NemotronLabs-VoiceChat-11B-4bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-4bit) |
 
 ### Music Generation
 
@@ -194,10 +198,10 @@ Alibaba's state-of-the-art multilingual TTS with voice cloning, emotion control,
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-Base-bf16")
-results = list(model.generate(
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16")
+results = list(model.generate_custom_voice(
     text="Hello, welcome to MLX-Audio!",
-    voice="Chelsie",
+    speaker="Vivian",
     language="English",
 ))
 
@@ -336,6 +340,22 @@ for item in result:
 ```
 
 See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
+
+### Phonon-1
+
+Fermion Research's compact English Qwen3-ASR derivatives load directly from
+their public transport repositories:
+
+```python
+from mlx_audio.stt import load
+
+model = load("FermionResearch/Phonon-1")
+result = model.generate("audio.wav", language="English")
+print(result.text)
+```
+
+Available builds are `Phonon-1-Micro` (285 MB), `Phonon-1` (415 MB), and
+`Phonon-1-Big` (581 MB). See the [Phonon-1 README](mlx_audio/stt/models/phonon/README.md).
 
 ### VibeVoice-ASR
 

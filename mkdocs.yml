@@ -84,9 +84,11 @@ nav:
       - models/tts/index.md
       - Kokoro: models/tts/kokoro.md
       - Qwen3-TTS: models/tts/qwen3-tts.md
+      - Breeze TTS 2: models/tts/breeze-tts.md
       - Higgs Audio v3: models/tts/higgs_audio_v3.md
       - MOSS-TTS: models/tts/moss-tts.md
       - Voxtral TTS: models/tts/voxtral-tts.md
+      - VoxCPM2: models/tts/voxcpm2.md
       - Svara TTS: models/tts/svara.md
       - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
@@ -96,7 +98,9 @@ nav:
       - models/stt/index.md
       - Whisper: models/stt/whisper.md
       - Parakeet: models/stt/parakeet.md
+      - Phonon-1: models/stt/phonon.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
+      - VibeVoice ASR: models/stt/vibevoice-asr.md
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md
     - Speech-to-Speech: models/sts/index.md

@@ -436,7 +436,7 @@ def generate_audio(
                     f"Samples/sec:           {result.audio_samples['samples-per-sec']:.1f}"
                 )
                 print(
-                    f"Prompt:                {result.token_count} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
+                    f"Prompt:                {result.prompt['tokens']} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
                 )
                 print(
                     f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"
@@ -536,7 +536,7 @@ def parse_args():
         "--voice",
         type=str,
         default=None,
-        help="Voice/speaker name (e.g., Chelsie, Ethan, Vivian for Qwen3-TTS)",
+        help="Voice/speaker name (e.g., Vivian, Ryan for Qwen3-TTS CustomVoice models)",
     )
     parser.add_argument(
         "--prompt",

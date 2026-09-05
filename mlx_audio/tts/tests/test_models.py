@@ -1403,6 +1403,279 @@ class TestVibeVoiceModel(unittest.TestCase):
         self.assertEqual(config.decoder_config.hidden_size, 896)
         self.assertEqual(config.decoder_config.num_hidden_layers, 24)
 
+    def test_stream_true_emits_audio_before_generation_finishes(self):
+        """VibeVoice must decode and yield speech latents incrementally."""
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        hidden_size = 4
+
+        class FakeLanguageModel:
+            def embed_tokens(self, token_ids):
+                return mx.zeros(
+                    (token_ids.shape[0], token_ids.shape[1], hidden_size),
+                    dtype=mx.float32,
+                )
+
+            def __call__(self, inputs_embeds, cache=None):
+                return inputs_embeds, cache
+
+        class FakeAcousticTokenizer:
+            def decode(self, latents, **kwargs):
+                samples = latents.shape[1] * 4
+                return mx.arange(samples, dtype=mx.float32).reshape(1, 1, samples)
+
+        model = Model.__new__(Model)
+        model.config = SimpleNamespace(
+            sample_rate=8,
+            decoder_config=SimpleNamespace(hidden_size=hidden_size),
+            acoustic_tokenizer_config=SimpleNamespace(
+                decoder_ratios=[2],
+                encoder_ratios=[2],
+            ),
+        )
+        model.tokenizer = SimpleNamespace(
+            encode=lambda text, add_special_tokens=False: [1]
+        )
+        model.language_model = FakeLanguageModel()
+        model.tts_language_model = FakeLanguageModel()
+        model.tts_input_types = lambda token_types: mx.zeros(
+            (token_types.shape[0], token_types.shape[1], hidden_size),
+            dtype=mx.float32,
+        )
+        model.sample_speech_tokens = lambda *args, **kwargs: mx.ones(
+            (1, 2), dtype=mx.float32
+        )
+        model.acoustic_connector = lambda speech_latent: mx.zeros(
+            (1, 1, hidden_size), dtype=mx.float32
+        )
+        model.tts_eos_classifier = lambda hidden: mx.array([-100.0])
+        model.acoustic_tokenizer = FakeAcousticTokenizer()
+        model.speech_scaling_factor = mx.array(1.0)
+        model.speech_bias_factor = mx.array(0.0)
+
+        results = list(
+            model.generate(
+                "hello",
+                max_tokens=3,
+                stream=True,
+                streaming_interval=0.0,
+            )
+        )
+
+        audio_results = [result for result in results if result.samples > 0]
+        self.assertEqual(len(audio_results), 3)
+        self.assertEqual([result.segment_idx for result in results], [0, 0, 0, 0])
+        self.assertTrue(all(result.is_streaming_chunk for result in results))
+        self.assertTrue(results[-1].is_final_chunk)
+
+        interval_results = list(
+            model.generate(
+                "hello",
+                max_tokens=3,
+                stream=True,
+                streaming_interval=0.5,
+            )
+        )
+        self.assertEqual(
+            [result.samples for result in interval_results if result.samples > 0],
+            [8, 4],
+        )
+        self.assertEqual(
+            [result.token_count for result in interval_results],
+            [2, 1],
+        )
+        self.assertEqual(
+            [result.segment_idx for result in interval_results],
+            [0, 0],
+        )
+        self.assertTrue(
+            all(result.prompt["tokens"] == 1 for result in interval_results)
+        )
+        self.assertTrue(interval_results[-1].is_final_chunk)
+
+        non_streaming_results = list(model.generate("hello", max_tokens=3))
+        self.assertEqual(len(non_streaming_results), 1)
+        self.assertEqual(non_streaming_results[0].samples, 12)
+        self.assertEqual(non_streaming_results[0].token_count, 3)
+        self.assertEqual(non_streaming_results[0].prompt["tokens"], 1)
+        self.assertFalse(non_streaming_results[0].is_streaming_chunk)
+
+    def test_multi_speaker_streaming_has_one_final_chunk(self):
+        from mlx_audio.tts.models.base import GenerationResult
+        from mlx_audio.tts.models.vibevoice.vibevoice import Model
+
+        model = Model.__new__(Model)
+        model.tokenizer = object()
+        model.config = SimpleNamespace(sample_rate=24000)
+        model.load_voice = lambda voice: None
+
+        def fake_single_speaker(*, text, **kwargs):
+            yield GenerationResult(
+                audio=mx.array([len(text)], dtype=mx.float32),
+                samples=1,
+                sample_rate=24000,
+                segment_idx=0,
+                token_count=1,
+                audio_duration="00:00:00.000",
+                real_time_factor=1.0,
+                prompt={"tokens": len(text), "tokens-per-sec": 1.0},
+                audio_samples={"samples": 1, "samples-per-sec": 1.0},
+                processing_time_seconds=1.0,
+                peak_memory_usage=0.0,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
+
+        model._generate_single_speaker = fake_single_speaker
+
+        results = list(
+            model.generate(
+                ["one", "second"],
+                voice=["speaker-a", "speaker-b"],
+                stream=True,
+            )
+        )
+
+        self.assertEqual([result.segment_idx for result in results], [0, 1])
+        self.assertEqual([result.samples for result in results], [1, 1])
+        self.assertEqual(
+            [result.is_final_chunk for result in results],
+            [False, True],
+        )
+
+        combined = list(
+            model.generate(
+                ["one", "second"],
+                voice=["speaker-a", "speaker-b"],
+            )
+        )
+        self.assertEqual(len(combined), 1)
+        self.assertEqual(combined[0].token_count, 2)
+        self.assertEqual(combined[0].prompt["tokens"], 9)
+
+    def test_streaming_causal_conv_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import CausalConv1d
+
+        layer = CausalConv1d(2, 3, kernel_size=3, bias=True)
+        layer.conv.weight = (
+            mx.arange(layer.conv.weight.size, dtype=mx.float32).reshape(
+                layer.conv.weight.shape
+            )
+            / 20.0
+        )
+        layer.conv.bias = mx.array([0.1, -0.2, 0.3], dtype=mx.float32)
+        inputs = mx.arange(12, dtype=mx.float32).reshape(1, 2, 6) / 10.0
+
+        expected = layer(inputs)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                layer(inputs[:, :, :2], cache=cache),
+                layer(inputs[:, :, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    def test_streaming_causal_conv_transpose_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            CausalConvTranspose1d,
+        )
+
+        layer = CausalConvTranspose1d(2, 3, kernel_size=4, stride=2, bias=True)
+        layer.convtr.weight = (
+            mx.arange(layer.convtr.weight.size, dtype=mx.float32).reshape(
+                layer.convtr.weight.shape
+            )
+            / 20.0
+        )
+        layer.convtr.bias = mx.array([0.1, -0.2, 0.3], dtype=mx.float32)
+        inputs = mx.arange(10, dtype=mx.float32).reshape(1, 2, 5) / 10.0
+
+        expected = layer(inputs)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                layer(inputs[:, :, :2], cache=cache),
+                layer(inputs[:, :, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    def test_streaming_causal_conv_transpose_rejects_nondefault_trim_ratio(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            CausalConvTranspose1d,
+        )
+
+        layer = CausalConvTranspose1d(
+            2,
+            3,
+            kernel_size=4,
+            stride=2,
+            trim_right_ratio=0.5,
+        )
+
+        with self.assertRaisesRegex(ValueError, "trim_right_ratio=1.0"):
+            layer(mx.ones((1, 2, 2)), cache={})
+
+    def test_streaming_causal_conv_transpose_without_bias_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import (
+            CausalConvTranspose1d,
+        )
+
+        layer = CausalConvTranspose1d(2, 3, kernel_size=4, stride=2, bias=False)
+        layer.convtr.weight = (
+            mx.arange(layer.convtr.weight.size, dtype=mx.float32).reshape(
+                layer.convtr.weight.shape
+            )
+            / 20.0
+        )
+        inputs = mx.arange(10, dtype=mx.float32).reshape(1, 2, 5) / 10.0
+
+        expected = layer(inputs)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                layer(inputs[:, :, :2], cache=cache),
+                layer(inputs[:, :, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+    def test_streaming_acoustic_tokenizer_matches_full_decode(self):
+        from mlx_audio.tts.models.vibevoice.acoustic_tokenizer import AcousticTokenizer
+        from mlx_audio.tts.models.vibevoice.config import AcousticTokenizerConfig
+
+        config = AcousticTokenizerConfig(
+            vae_dim=2,
+            channels=1,
+            encoder_n_filters=2,
+            decoder_n_filters=2,
+            encoder_ratios=[2],
+            decoder_ratios=[2],
+            encoder_depths="1-1",
+            decoder_depths="1-1",
+        )
+        tokenizer = AcousticTokenizer(config)
+        latents = mx.arange(10, dtype=mx.float32).reshape(1, 5, 2) / 10.0
+
+        expected = tokenizer.decode(latents)
+        cache = {}
+        actual = mx.concatenate(
+            [
+                tokenizer.decode(latents[:, :2], cache=cache),
+                tokenizer.decode(latents[:, 2:], cache=cache),
+            ],
+            axis=2,
+        )
+
+        np.testing.assert_allclose(actual, expected, rtol=1e-4, atol=1e-6)
+
 
 class TestChatterboxConfig(unittest.TestCase):
     def test_t3_config_defaults(self):
@@ -3175,8 +3448,8 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
         cb0_count = [0]
 
         def controlled_sample(*args, **kwargs):
-            # CB0 calls have eos_token_id set
-            if kwargs.get("eos_token_id") is not None:
+            # CB0 calls pass suppress_tokens; code predictor calls don't
+            if kwargs.get("suppress_tokens") is not None:
                 cb0_count[0] += 1
                 if cb0_count[0] <= 2:
                     return mx.array([[5]])  # non-EOS token
@@ -6706,6 +6979,74 @@ class TestOmniVoiceGenerateWithTokenizer(unittest.TestCase):
         )
         expected_samples = result.token_count * 960
         self.assertEqual(result.audio.size, expected_samples)
+
+
+class TestOmniVoicePostLoadHook(unittest.TestCase):
+    """A real audio_tokenizer load failure must not be swallowed: generate()
+    treats a missing audio_tokenizer as "emit silence", so post_load_hook is
+    the only place left that can turn it into an actionable error."""
+
+    def _make_model(self):
+        from mlx_audio.tts.models.omnivoice.config import OmniVoiceConfig
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        cfg = OmniVoiceConfig.from_dict(
+            {
+                "model_type": "omnivoice",
+                "audio_vocab_size": 1025,
+                "audio_mask_id": 1024,
+                "num_audio_codebook": 8,
+                "sample_rate": 24000,
+                "llm_config": {
+                    "hidden_size": 64,
+                    "num_hidden_layers": 2,
+                    "num_attention_heads": 4,
+                    "num_key_value_heads": 2,
+                    "intermediate_size": 128,
+                    "vocab_size": 200,
+                    "head_dim": 16,
+                    "rms_norm_eps": 1e-6,
+                },
+            }
+        )
+        return Model(cfg)
+
+    def test_audio_tokenizer_load_failure_propagates(self):
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        model = self._make_model()
+        with (
+            patch(
+                "transformers.AutoTokenizer.from_pretrained",
+                side_effect=OSError("no text tokenizer here"),
+            ),
+            patch(
+                "mlx_audio.codec.models.higgs_audio.higgs_audio.HiggsAudioTokenizer.from_pretrained",
+                side_effect=RuntimeError("Missing 225 parameters"),
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                Model.post_load_hook(model, Path("/nonexistent/checkpoint"))
+
+    def test_text_tokenizer_failure_alone_is_still_caught(self):
+        """Unaffected by this change: a text_tokenizer load failure still
+        just warns and sets None, same as before."""
+        from mlx_audio.tts.models.omnivoice.omnivoice import Model
+
+        model = self._make_model()
+        with (
+            patch(
+                "transformers.AutoTokenizer.from_pretrained",
+                side_effect=OSError("no text tokenizer here"),
+            ),
+            patch(
+                "mlx_audio.codec.models.higgs_audio.higgs_audio.HiggsAudioTokenizer.from_pretrained",
+                return_value=object(),
+            ),
+        ):
+            result = Model.post_load_hook(model, Path("/nonexistent/checkpoint"))
+        self.assertIsNone(result.text_tokenizer)
+        self.assertIsNotNone(result.audio_tokenizer)
 
 
 class TestHiggsAudioDAC(unittest.TestCase):

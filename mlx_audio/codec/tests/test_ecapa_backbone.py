@@ -157,6 +157,7 @@ class TestEcapaTdnnBackbone(unittest.TestCase):
 
         config = EcapaTdnnConfig()
         model = EcapaTdnnBackbone(config)
+        model.eval()
         x = mx.zeros((1, 100, 60))
         out = model(x)
         mx.eval(out)
@@ -169,6 +170,7 @@ class TestEcapaTdnnBackbone(unittest.TestCase):
             input_size=80, channels=512, embed_dim=192, global_context=True
         )
         model = EcapaTdnnBackbone(config)
+        model.eval()
         x = mx.zeros((1, 200, 80))
         out = model(x)
         mx.eval(out)
@@ -190,6 +192,7 @@ class TestEcapaTdnnBackbone(unittest.TestCase):
 
         config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
         model = EcapaTdnnBackbone(config)
+        model.eval()
         x = mx.zeros((4, 50, 60))
         out = model(x)
         mx.eval(out)
@@ -215,6 +218,7 @@ class TestBackboneRegressionNumerics(unittest.TestCase):
 
         config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
         model = EcapaTdnnBackbone(config)
+        model.eval()
         x = mx.random.normal((1, 100, 60))
         out = model(x)
         mx.eval(out)
@@ -225,6 +229,7 @@ class TestBackboneRegressionNumerics(unittest.TestCase):
 
         config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
         model = EcapaTdnnBackbone(config)
+        model.eval()
         x = mx.random.normal((2, 100, 60))
         out = model(x)
         mx.eval(out)
@@ -235,6 +240,7 @@ class TestBackboneRegressionNumerics(unittest.TestCase):
 
         config = EcapaTdnnConfig(input_size=60, channels=512, embed_dim=128)
         model = EcapaTdnnBackbone(config)
+        model.eval()
         x1 = mx.random.normal((2, 100, 60))
         x2 = mx.random.normal((2, 100, 60))
         out1 = model(x1)
@@ -259,6 +265,7 @@ class TestLidBackboneIntegration(unittest.TestCase):
 
         config = ModelConfig(id2label={str(i): f"{i}: lang_{i}" for i in range(10)})
         model = ECAPA_TDNN(config)
+        model.eval()
         mel = mx.zeros((1, 100, 60))
         out = model(mel)
         mx.eval(out)
@@ -270,6 +277,7 @@ class TestLidBackboneIntegration(unittest.TestCase):
 
         config = ModelConfig(id2label={str(i): f"{i}: lang_{i}" for i in range(10)})
         model = ECAPA_TDNN(config)
+        model.eval()
         audio = mx.random.normal((16000,))
         result = model.predict(audio, top_k=3)
         self.assertEqual(len(result), 3)

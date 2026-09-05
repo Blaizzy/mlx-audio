@@ -18,6 +18,7 @@ def test_supported_types_are_populated():
     assert len(SUPPORTED_MODEL_TYPES["stt"]) > 10
     assert "kokoro" in SUPPORTED_MODEL_TYPES["tts"]
     assert "whisper" in SUPPORTED_MODEL_TYPES["stt"]
+    assert "phonon" in SUPPORTED_MODEL_TYPES["stt"]
     assert "minimax_music3" in SUPPORTED_MODEL_TYPES["music"]
 
 
@@ -33,10 +34,19 @@ def test_classify_speech_to_text():
     assert classify_model("whisper", "openai/whisper-base") == "stt"
     assert classify_model("moonshine", "UsefulSensors/moonshine-base") == "stt"
     assert classify_model("qwen3_asr", "Qwen/Qwen3-ASR") == "stt"
+    assert (
+        classify_model(
+            "granite_speech5_ctc",
+            "ibm-granite/granite-speech-5.0-470m-turboctc",
+        )
+        == "stt"
+    )
+    assert classify_model("", "FermionResearch/Phonon-1") == "stt"
 
 
 def test_classify_other_voice_kinds():
     assert classify_model("moshi", "kyutai/moshiko") == "sts"
+    assert classify_model("nemotron_voicechat", "") == "sts"
     assert classify_model("mimi", "kyutai/mimi") == "codec"
 
 
