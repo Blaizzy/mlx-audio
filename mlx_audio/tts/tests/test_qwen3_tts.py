@@ -511,6 +511,45 @@ def _make_generation_test_model(text_token_count: int = 10):
     return model
 
 
+class _ContextStreamingDecoder:
+    """Decode each code with its predecessor to expose missing reference context."""
+
+    def reset_streaming_state(self):
+        self.previous = mx.array([[[-10]]], dtype=mx.int32)
+
+    def streaming_step(self, codes):
+        previous = mx.concatenate([self.previous, codes[:, :, :-1]], axis=2)
+        self.previous = codes[:, :, -1:]
+        return (codes + previous).astype(mx.float32)
+
+
+class TestQwen3TTSICLStreamingContext(unittest.TestCase):
+    def test_reference_conditions_audio_without_being_emitted(self):
+        model = _make_generation_test_model()
+        model.speech_tokenizer.has_encoder = True
+        model.speech_tokenizer.decoder = _ContextStreamingDecoder()
+
+        # Repeat on the same model to exercise reset between utterances.
+        for _ in range(2):
+            with self.subTest():
+                results = list(
+                    model.generate(
+                        text="Hello",
+                        ref_audio=mx.zeros((2400,), dtype=mx.float32),
+                        ref_text="Reference",
+                        stream=True,
+                        streaming_interval=0.16,
+                        max_tokens=3,
+                    )
+                )
+
+                audio = np.concatenate([np.array(result.audio) for result in results])
+                np.testing.assert_array_equal(audio, [1.0, 2.0, 2.0])
+                self.assertEqual([result.token_count for result in results], [2, 1])
+                self.assertEqual([result.samples for result in results], [2, 1])
+                self.assertTrue(results[-1].is_final_chunk)
+
+
 class TestQwen3TTSSamplingFilters(unittest.TestCase):
     def test_sample_token_scales_before_top_p_filtering(self):
         logits = mx.array([[[3.0, 2.0, 1.0, 0.0]]], dtype=mx.float32)
