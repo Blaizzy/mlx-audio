@@ -88,6 +88,28 @@ class Model:
             self._lora_active = False
 
     def generate(self, audio, **kwargs):
+        if isinstance(audio, list):
+            if kwargs.get("stream"):
+                raise ValueError("Streaming does not support a list of audio inputs")
+
+            language = kwargs.pop("language", None)
+            if isinstance(language, list):
+                if len(language) == 1:
+                    languages = language * len(audio)
+                elif len(language) != len(audio):
+                    raise ValueError(
+                        "language and audio must contain the same number of items"
+                    )
+                else:
+                    languages = language
+            else:
+                languages = [language] * len(audio)
+
+            return [
+                self.generate(audio_input, language=input_language, **kwargs)
+                for audio_input, input_language in zip(audio, languages)
+            ]
+
         route = self._router.route(audio)
         self._set_lora(bool(route["use_lora"]))
         return self._asr.generate(audio, **kwargs)

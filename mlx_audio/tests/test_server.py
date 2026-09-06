@@ -824,7 +824,7 @@ def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
     """word_timestamps=true form field reaches stt_model.generate() as a kwarg.
 
     The STTExecutionAdapter allowlist (_STT_EXTRA_KWARGS) must pass word_timestamps
-    through even when it isn't declared in the model's generate() signature.
+    through when the model's generate() signature accepts arbitrary keyword arguments.
     """
     captured_kwargs: dict = {}
 
@@ -848,6 +848,31 @@ def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
 
     assert response.status_code == 200
     assert captured_kwargs.get("word_timestamps") is True
+
+
+def test_stt_default_word_timestamps_omitted_for_strict_generate(
+    client, mock_model_provider
+):
+    """Default timestamp options do not reach models with strict signatures."""
+
+    def mock_generate(path, *, verbose=False):
+        return {"text": "hello", "segments": [], "language": "en"}
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = mock_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "json",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "hello"}
 
 
 def test_stt_word_timestamps_verbose_json_words_passthrough(

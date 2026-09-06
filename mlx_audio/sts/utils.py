@@ -21,6 +21,7 @@ MODEL_REMAPPING = {
     "moshiko": "moshi",
     "mossformer2": "mossformer2_se",
     "mossformer2_se": "mossformer2_se",
+    "nemotron_voicechat": "nemotron_voicechat",
     "sam_audio": "sam_audio",
     "samaudio": "sam_audio",
 }
@@ -46,6 +47,10 @@ def infer_model_type_from_config(config: dict) -> Optional[str]:
         "transformer",
     }.issubset(config):
         return "sam_audio"
+
+    model = config.get("model", {})
+    if {"stt", "speech_generation"}.issubset(model):
+        return "nemotron_voicechat"
 
     if {
         "win_len",
@@ -137,6 +142,7 @@ def load_model(
         "mossformer2_se",
         "deepfilternet",
         "sam_audio",
+        "nemotron_voicechat",
     }:
         resolved_model_path = model_path
         if model_type == "deepfilternet":

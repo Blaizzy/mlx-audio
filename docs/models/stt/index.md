@@ -19,7 +19,7 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | **MOSS-Transcribe-Diarize** | OpenMOSS | ~0.6B text backbone + Whisper encoder | Multiple major languages | -- | Segment + speaker | https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize |
 | **Qwen3-ASR** | Alibaba | 0.6B / 1.7B | ZH, EN, JA, KO + more | Yes | Segment | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
 | **Qwen3-ForcedAligner** | Alibaba | 0.6B | ZH, EN, JA, KO + more | -- | Word-level | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
-| **VibeVoice-ASR** | Microsoft | 9B | Multiple | Yes | Segment | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
+| [**VibeVoice-ASR**](vibevoice-asr.md) | Microsoft | 3B / 9B | 10 streaming / 50+ long-form | Yes | Speaker + segment | [Streaming 1.5B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-1.5B) · [Streaming 7B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-7B) · [Long-form](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
 | **Voxtral** | Mistral | 3B | Multiple | -- | -- | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **Cohere Transcribe** | Cohere | 2B | 14 languages | -- | Segment | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) |
 | [**Qwen2-Audio**](qwen2-audio.md) | Alibaba | 7B | Multiple | -- | -- | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |

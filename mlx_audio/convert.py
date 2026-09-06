@@ -330,16 +330,20 @@ def _match_by_config_keys(config: dict) -> Optional[tuple[Domain, str]]:
 
 
 def _match_by_path(model_path: Path) -> Optional[tuple[Domain, str]]:
-    """Try to match path patterns to a domain and model type."""
+    """Match the most specific path pattern to a domain and model type."""
     path_str = str(model_path).lower()
+    best_match = None
+    best_pattern_length = -1
 
     for domain in Domain:
         hints = get_detection_hints(domain)
         for model_type, patterns in sorted(hints.get("path_patterns", {}).items()):
-            if any(pattern in path_str for pattern in patterns):
-                return (domain, model_type)
+            for pattern in patterns:
+                if pattern in path_str and len(pattern) > best_pattern_length:
+                    best_match = (domain, model_type)
+                    best_pattern_length = len(pattern)
 
-    return None
+    return best_match
 
 
 def detect_model_domain(config: dict, model_path: Path) -> Domain:

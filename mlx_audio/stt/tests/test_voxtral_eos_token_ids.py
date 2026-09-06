@@ -58,15 +58,36 @@ class TestBaselineMagic(unittest.TestCase):
         tok = _make_tokenizer()
         # The default list is NEVER returned, regardless of magic on
         # `_ids`-suffixed attribute access:
-        result = getattr(tok, "eos_token_ids", [2, 4, 32000])
+        result = getattr(tok, "eos_token_ids", [2, 4, 11])
         self.assertIsInstance(result, int)
         self.assertEqual(result, tok.eos_token_id)
-        self.assertNotEqual(result, [2, 4, 32000])
+        self.assertNotEqual(result, [2, 4, 11])
 
     def test_setattr_rejects_non_string_eos_token_ids(self):
         tok = _make_tokenizer()
         with self.assertRaises(ValueError):
-            tok.eos_token_ids = [2, 4, 32000]
+            tok.eos_token_ids = [2, 4, 11]
+
+
+class TestDefaultEosTokenIds(unittest.TestCase):
+    """Pins the constant itself.
+
+    Voxtral's Tekken vocabulary has 131072 entries of which only the first
+    1000 are control tokens: `</s>` is 2, `[/INST]` is 4 and `<pad>` is 11.
+    32000 is outside that range entirely -- it is the ordinary text token
+    `" Capital"`, and stopping on it truncates any transcript containing that
+    word. The truncation is silent, because what comes back is clean prose
+    that merely ends early.
+    """
+
+    def test_pins_the_default(self):
+        self.assertEqual(_VOXTRAL_EOS_TOKEN_IDS, [2, 4, 11])
+
+    def test_does_not_stop_on_a_text_token(self):
+        # 32000 decodes to " Capital" in Voxtral's vocabulary.
+        self.assertNotIn(32000, _VOXTRAL_EOS_TOKEN_IDS)
+        # Nothing in the set may fall outside the control-token range.
+        self.assertTrue(all(i < 1000 for i in _VOXTRAL_EOS_TOKEN_IDS))
 
 
 class TestEnsureEosTokenIdsList(unittest.TestCase):

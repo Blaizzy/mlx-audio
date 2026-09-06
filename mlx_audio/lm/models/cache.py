@@ -718,3 +718,92 @@ class BatchKVCache(_BaseCache):
         if self.keys is None:
             return 0
         return self.keys.nbytes + self.values.nbytes
+
+
+class CacheList(_BaseCache):
+    def __init__(self, *caches):
+        self.caches = caches
+
+    def __getitem__(self, idx):
+        return self.caches[idx]
+
+    def is_trimmable(self):
+        return all(c.is_trimmable() for c in self.caches)
+
+    def trim(self, n):
+        for c in self.caches:
+            m = c.trim(n)
+        return m
+
+    @property
+    def state(self):
+        return [c.state for c in self.caches]
+
+    @state.setter
+    def state(self, v):
+        for c, s in zip(self.caches, v):
+            c.state = s
+
+    @property
+    def meta_state(self):
+        return (
+            [type(c).__name__ for c in self.caches],
+            [c.meta_state for c in self.caches],
+        )
+
+    @meta_state.setter
+    def meta_state(self, v):
+        for c, m in zip(self.caches, v[1]):
+            c.meta_state = m
+
+    def filter(self, batch_indices):
+        """
+        In-place filter to keep just the given indices in the cache.
+        """
+        for c in self.caches:
+            c.filter(batch_indices)
+
+    def extend(self, other):
+        """
+        In-place extend this cache with the other cache.
+        """
+        for c, o in zip(self.caches, other.caches):
+            c.extend(o)
+
+    @classmethod
+    def merge(cls, caches):
+        cache = cls()
+        cache.caches = tuple(
+            caches[0].caches[i].merge([c.caches[i] for c in caches])
+            for i in range(len(caches[0].caches))
+        )
+        return cache
+
+    def extract(self, idx):
+        return CacheList(*(c.extract(idx) for c in self.caches))
+
+    def prepare(self, **kwargs):
+        for c in self.caches:
+            c.prepare(**kwargs)
+
+    def finalize(self):
+        for c in self.caches:
+            c.finalize()
+
+    def size(self):
+        return max(c.size() for c in self.caches)
+
+    def empty(self):
+        return self.caches[0].empty()
+
+    @property
+    def nbytes(self):
+        return sum(c.nbytes for c in self.caches)
+
+    @classmethod
+    def from_state(cls, state, meta_state):
+        obj = cls.__new__(cls)
+        obj.caches = [
+            globals()[c].from_state(s, m) for s, c, m in zip(state, *meta_state)
+        ]
+        return obj

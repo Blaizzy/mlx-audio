@@ -1,5 +1,7 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
+import json
+import math
 import re
 import time
 import warnings
@@ -104,6 +106,12 @@ class Model(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
+        self.sample_rate = config.sample_rate
+        self.speech_tok_compress_ratio = config.speech_tok_compress_ratio
+        self.normalize_audio = config.normalize_audio
+        self.chunk_frames = config.chunk_frames
+        self.lookahead_frames = config.lookahead_frames
+        self._text_chunk_end_id = None
 
         # Audio tokenizer encoders
         self.acoustic_tokenizer = AcousticTokenizerEncoder(
@@ -426,6 +434,41 @@ class Model(nn.Module):
         model._speech_end_id = tokenizer.convert_tokens_to_ids("<|object_ref_end|>")
         model._speech_pad_id = tokenizer.convert_tokens_to_ids("<|box_start|>")
 
+        # Streaming metadata intentionally lives beside config.json upstream.
+        # It defines the chunk geometry the checkpoint was trained with and
+        # whether waveform normalization is allowed.
+        preprocessor_path = model_path / "preprocessor_config.json"
+        if preprocessor_path.exists():
+            with preprocessor_path.open("r", encoding="utf-8") as f:
+                preprocessor_config = json.load(f)
+            model.sample_rate = preprocessor_config.get(
+                "target_sample_rate", model.sample_rate
+            )
+            model.speech_tok_compress_ratio = preprocessor_config.get(
+                "speech_tok_compress_ratio", model.speech_tok_compress_ratio
+            )
+            model.normalize_audio = preprocessor_config.get(
+                "normalize_audio", model.normalize_audio
+            )
+            model.chunk_frames = preprocessor_config.get(
+                "chunk_frames", model.chunk_frames
+            )
+            model.lookahead_frames = preprocessor_config.get(
+                "lookahead_frames", model.lookahead_frames
+            )
+
+        text_chunk_end_id = tokenizer.convert_tokens_to_ids("<|text_chunk_end|>")
+        unk_token_id = getattr(tokenizer, "unk_token_id", None)
+        if text_chunk_end_id is not None and text_chunk_end_id != unk_token_id:
+            model._text_chunk_end_id = text_chunk_end_id
+
+        if model.chunk_frames is not None and model._text_chunk_end_id is None:
+            raise ValueError(
+                "This VibeVoice streaming checkpoint is missing the "
+                "<|text_chunk_end|> tokenizer token. Keep added_tokens.json and "
+                "tokenizer_config.json when converting the model."
+            )
+
         return model
 
     @classmethod
@@ -493,11 +536,11 @@ class Model(nn.Module):
         """
         from mlx_audio.stt.utils import load_audio, resample_audio
 
-        SAMPLE_RATE = 24000
         MAX_DURATION_SECONDS = 59 * 60  # 59 minutes max
 
         if isinstance(audio, str):
-            audio = load_audio(audio, sr=SAMPLE_RATE)
+            audio = load_audio(audio, sr=self.sample_rate)
+            audio_np = np.array(audio, copy=False)
         else:
             # Convert to numpy for resampling / normalization
             if isinstance(audio, mx.array):
@@ -510,13 +553,20 @@ class Model(nn.Module):
                 audio_np = audio_np.squeeze()
 
             # Resample to 24 kHz when the caller specifies a different rate
-            if sampling_rate is not None and sampling_rate != SAMPLE_RATE:
-                audio_np = resample_audio(audio_np, sampling_rate, SAMPLE_RATE)
+            if sampling_rate is not None and sampling_rate != self.sample_rate:
+                audio_np = resample_audio(audio_np, sampling_rate, self.sample_rate)
 
-            # Normalize loudness to -25 dB FS (matches official pipeline)
+        if audio_np.ndim > 1:
+            audio_np = audio_np.squeeze()
+        if audio_np.ndim != 1:
+            raise ValueError("VibeVoice expects a mono audio waveform.")
+        if audio_np.size == 0:
+            raise ValueError("VibeVoice cannot transcribe empty audio.")
+
+        if self.normalize_audio:
             audio_np = self._normalize_audio(audio_np)
 
-            audio = mx.array(audio_np)
+        audio = mx.array(audio_np, dtype=mx.float32)
 
         # Ensure 1D or 2D
         if audio.ndim == 3:
@@ -525,9 +575,9 @@ class Model(nn.Module):
             audio = audio[None, :]  # Add batch dim
 
         # Check duration and trim if necessary
-        max_samples = MAX_DURATION_SECONDS * SAMPLE_RATE
+        max_samples = MAX_DURATION_SECONDS * self.sample_rate
         if audio.shape[-1] > max_samples:
-            duration_minutes = audio.shape[-1] / SAMPLE_RATE / 60
+            duration_minutes = audio.shape[-1] / self.sample_rate / 60
             print(
                 f"\033[93m[WARNING]\033[0m Audio duration ({duration_minutes:.1f} min) exceeds "
                 f"maximum supported duration (59 min). Trimming to 59 minutes. "
@@ -536,6 +586,321 @@ class Model(nn.Module):
             audio = audio[..., :max_samples]
 
         return audio
+
+    @property
+    def is_streaming_model(self) -> bool:
+        """Whether the loaded checkpoint has the streaming protocol metadata."""
+        return (
+            self._text_chunk_end_id is not None
+            and self.chunk_frames is not None
+            and self.lookahead_frames is not None
+        )
+
+    @property
+    def streaming_window_samples(self) -> int:
+        """Number of samples required for one chunk including lookahead."""
+        self._require_streaming_checkpoint()
+        return (self.chunk_frames + self.lookahead_frames) * (
+            self.speech_tok_compress_ratio
+        )
+
+    @property
+    def streaming_chunk_samples(self) -> int:
+        """Number of new samples consumed after each streaming step."""
+        self._require_streaming_checkpoint()
+        return self.chunk_frames * self.speech_tok_compress_ratio
+
+    def _require_streaming_checkpoint(self):
+        if not self.is_streaming_model:
+            raise ValueError(
+                "The loaded checkpoint is not VibeVoice-ASR-Streaming: it must "
+                "provide chunk_frames, lookahead_frames, and <|text_chunk_end|>."
+            )
+
+    def _streaming_geometry(
+        self,
+        chunk_duration: Optional[float] = None,
+        text_audio_delay: Optional[float] = None,
+    ) -> Tuple[int, int]:
+        """Resolve chunk/lookahead durations onto tokenizer frame boundaries."""
+        self._require_streaming_checkpoint()
+        frame_samples = self.speech_tok_compress_ratio
+        frame_duration = frame_samples / self.sample_rate
+
+        if chunk_duration is None:
+            chunk_samples = self.chunk_frames * frame_samples
+        else:
+            if chunk_duration <= 0:
+                raise ValueError("chunk_duration must be positive.")
+            chunk_samples = max(1, int(round(chunk_duration * self.sample_rate)))
+
+        if text_audio_delay is None:
+            lookahead_frames = self.lookahead_frames
+        else:
+            if text_audio_delay < 0:
+                raise ValueError("text_audio_delay cannot be negative.")
+            lookahead_frames = round(text_audio_delay / frame_duration)
+
+        return chunk_samples, lookahead_frames * frame_samples
+
+    def _iter_streaming_audio_chunks(
+        self,
+        audio_tensor: mx.array,
+        *,
+        chunk_duration: Optional[float] = None,
+        text_audio_delay: Optional[float] = None,
+        pad_last_chunk: bool = True,
+    ):
+        """Yield overlapping audio windows using the checkpoint's lookahead."""
+        chunk_samples, lookahead_samples = self._streaming_geometry(
+            chunk_duration, text_audio_delay
+        )
+        window_samples = chunk_samples + lookahead_samples
+        total_samples = audio_tensor.shape[-1]
+        total_chunks = math.ceil(total_samples / chunk_samples)
+
+        for chunk_index, start in enumerate(range(0, total_samples, chunk_samples)):
+            end = min(start + window_samples, total_samples)
+            chunk = audio_tensor[:, start:end]
+            if pad_last_chunk and chunk.shape[-1] < window_samples:
+                chunk = mx.pad(
+                    chunk,
+                    [(0, 0), (0, window_samples - chunk.shape[-1])],
+                )
+            yield chunk_index, total_chunks, chunk
+
+    @staticmethod
+    def _streaming_prompt(context_info: Optional[str] = None) -> str:
+        keys = "speaker, content"
+        prompt = (
+            "You are a helpful assistant that transcribes audio input into text "
+            "output. Please transcribe the following audios streamingly with "
+            f"these keys: {keys}"
+        )
+        if context_info:
+            prompt += f" and extra info: {context_info}"
+        return prompt + "\n"
+
+    @staticmethod
+    def _eval_with_cache(output: mx.array, cache: List[Any]):
+        states = [
+            layer_cache.state
+            for layer_cache in cache
+            if not hasattr(layer_cache, "empty") or not layer_cache.empty()
+        ]
+        if states:
+            mx.eval(output, states)
+        else:
+            mx.eval(output)
+
+    def init_streaming_state(
+        self,
+        context_info: Optional[str] = None,
+        *,
+        prompt_text: Optional[str] = None,
+        max_kv_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Prefill the persistent language-model cache for live ASR."""
+        from mlx_audio.lm.models.cache import make_prompt_cache
+
+        self._require_streaming_checkpoint()
+        prompt_text = prompt_text or self._streaming_prompt(context_info)
+        prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
+        prompt_tokens = mx.array([prompt_ids], dtype=mx.int32)
+        embed_tokens = self.get_input_embeddings()
+        prompt_embeds = embed_tokens(prompt_tokens)
+        cache = make_prompt_cache(self.language_model, max_kv_size=max_kv_size)
+
+        logits = self.language_model(
+            inputs=None,
+            cache=cache,
+            input_embeddings=prompt_embeds,
+        )
+        self._eval_with_cache(logits, cache)
+
+        speech_start = embed_tokens(mx.array([[self._speech_start_id]], dtype=mx.int32))
+        speech_end = embed_tokens(mx.array([[self._speech_end_id]], dtype=mx.int32))
+        mx.eval(speech_start, speech_end)
+
+        return {
+            "cache": cache,
+            "speech_start_embed": speech_start,
+            "speech_end_embed": speech_end,
+            "text_chunk_end_id": self._text_chunk_end_id,
+            "eos_id": getattr(self.tokenizer, "eos_token_id", None),
+            "prompt_tokens": len(prompt_ids),
+            "generation_tokens": 0,
+        }
+
+    def streaming_generate_step(
+        self,
+        audio_features: mx.array,
+        streaming_state: Dict[str, Any],
+        *,
+        max_new_tokens: int = 256,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = 1.0,
+        repetition_context_size: int = 100,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Advance a live stream by one encoded audio window."""
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+
+        self._require_streaming_checkpoint()
+        if max_new_tokens <= 0:
+            raise ValueError("max_new_tokens must be positive.")
+        if audio_features.ndim == 2:
+            audio_features = audio_features[None, ...]
+        if audio_features.ndim != 3 or audio_features.shape[0] != 1:
+            raise ValueError("audio_features must have shape [1, frames, hidden_size].")
+
+        cache = streaming_state["cache"]
+        audio_embeds = mx.concatenate(
+            [
+                streaming_state["speech_start_embed"],
+                audio_features,
+                streaming_state["speech_end_embed"],
+            ],
+            axis=1,
+        )
+        next_logits = self.language_model(
+            inputs=None,
+            cache=cache,
+            input_embeddings=audio_embeds,
+        )[:, -1, :]
+        self._eval_with_cache(next_logits, cache)
+
+        sampler = make_sampler(
+            temperature,
+            top_p,
+            min_p,
+            min_tokens_to_keep=min_tokens_to_keep,
+            top_k=top_k,
+        )
+        logits_processors = make_logits_processors(
+            repetition_penalty=repetition_penalty,
+            repetition_context_size=repetition_context_size,
+        )
+
+        chunk_tokens = []
+        stop_ids = {
+            token_id
+            for token_id in (
+                streaming_state["text_chunk_end_id"],
+                streaming_state["eos_id"],
+            )
+            if token_id is not None
+        }
+
+        for _ in range(max_new_tokens):
+            logprobs = next_logits - mx.logsumexp(next_logits, axis=-1, keepdims=True)
+            if chunk_tokens:
+                previous = mx.array(chunk_tokens, dtype=mx.int32)
+                for processor in logits_processors:
+                    logprobs = processor(previous, logprobs)
+
+            token = sampler(logprobs)
+            mx.eval(token)
+            token_id = token.item()
+            if token_id in stop_ids:
+                break
+
+            chunk_tokens.append(token_id)
+            next_embed = self.get_input_embeddings()(
+                mx.array([[token_id]], dtype=mx.int32)
+            )
+            next_logits = self.language_model(
+                inputs=None,
+                cache=cache,
+                input_embeddings=next_embed,
+            )[:, -1, :]
+            self._eval_with_cache(next_logits, cache)
+
+        # The chunk delimiter is part of the next-step context even when the
+        # model emitted EOS or exhausted the token budget.
+        delimiter_embed = self.get_input_embeddings()(
+            mx.array([[streaming_state["text_chunk_end_id"]]], dtype=mx.int32)
+        )
+        delimiter_logits = self.language_model(
+            inputs=None,
+            cache=cache,
+            input_embeddings=delimiter_embed,
+        )
+        self._eval_with_cache(delimiter_logits, cache)
+
+        streaming_state["generation_tokens"] += len(chunk_tokens)
+        chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+        for special_token in (
+            "<|text_chunk_end|>",
+            "<|object_ref_start|>",
+            "<|object_ref_end|>",
+            "<|box_start|>",
+            "<|speech_start|>",
+            "<|speech_end|>",
+            "<|speech_pad|>",
+        ):
+            chunk_text = chunk_text.replace(special_token, "")
+        return chunk_text, streaming_state
+
+    def streaming_generate(
+        self,
+        audio,
+        *,
+        context_info: Optional[str] = None,
+        sampling_rate: Optional[int] = None,
+        prompt_text: Optional[str] = None,
+        chunk_duration: Optional[float] = None,
+        text_audio_delay: Optional[float] = None,
+        max_new_tokens_per_chunk: int = 256,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = 1.0,
+        repetition_context_size: int = 100,
+        pad_last_chunk: bool = True,
+        verbose: bool = False,
+        _state_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Generator[Tuple[int, int, str], None, None]:
+        """Transcribe a waveform with the checkpoint's streaming protocol."""
+        audio_tensor = self._preprocess_audio(audio, sampling_rate=sampling_rate)
+        state = self.init_streaming_state(
+            context_info=context_info,
+            prompt_text=prompt_text,
+        )
+        state["audio_samples"] = audio_tensor.shape[-1]
+        if _state_callback is not None:
+            _state_callback(state)
+        chunks = self._iter_streaming_audio_chunks(
+            audio_tensor,
+            chunk_duration=chunk_duration,
+            text_audio_delay=text_audio_delay,
+            pad_last_chunk=pad_last_chunk,
+        )
+        for chunk_index, total_chunks, audio_chunk in chunks:
+            features = self.encode_speech(audio_chunk, verbose=False)
+            chunk_text, state = self.streaming_generate_step(
+                features,
+                state,
+                max_new_tokens=max_new_tokens_per_chunk,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+            )
+            if _state_callback is not None:
+                _state_callback(state)
+            if verbose:
+                print(f"[{chunk_index + 1}/{total_chunks}] {chunk_text}", flush=True)
+            mx.clear_cache()
+            yield chunk_index, total_chunks, chunk_text
 
     def stream_generate(
         self,
@@ -650,6 +1015,10 @@ class Model(nn.Module):
         generation_stream: bool = False,
         verbose: bool = False,
         hotwords: Optional[List[str]] = None,
+        max_tokens_per_chunk: Optional[int] = None,
+        streaming_chunk_duration: Optional[float] = None,
+        text_audio_delay: Optional[float] = None,
+        pad_last_chunk: bool = True,
         **kwargs,
     ) -> STTOutput:
         """
@@ -673,6 +1042,12 @@ class Model(nn.Module):
             prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             generation_stream: Enable streaming
             verbose: Print progress
+            max_tokens_per_chunk: Token budget for each streaming checkpoint chunk.
+            streaming_chunk_duration: Optional streaming chunk-size override in
+                seconds. By default, use the checkpoint's trained chunk size.
+            text_audio_delay: Optional lookahead override in seconds. By default,
+                use the checkpoint's trained lookahead.
+            pad_last_chunk: Zero-pad the last streaming window.
 
         Returns:
             STTOutput with transcription text and segments
@@ -683,12 +1058,70 @@ class Model(nn.Module):
         # VibeVoice biases toward rare vocabulary via the context string.
         context = merge_hotwords(context, hotwords)
 
-        from mlx_audio.stt.utils import merge_hotwords
-
-        # VibeVoice biases toward rare vocabulary via the context string.
-        context = merge_hotwords(context, hotwords)
-
         start_time = time.time()
+
+        if self.is_streaming_model:
+            per_chunk_limit = (
+                min(max_tokens, 256)
+                if max_tokens_per_chunk is None
+                else max_tokens_per_chunk
+            )
+            chunks = []
+            segments = []
+            streaming_stats = {}
+
+            def capture_streaming_stats(state):
+                streaming_stats["prompt_tokens"] = state["prompt_tokens"]
+                streaming_stats["generation_tokens"] = state["generation_tokens"]
+                streaming_stats["audio_samples"] = state["audio_samples"]
+
+            chunk_samples, _ = self._streaming_geometry(
+                streaming_chunk_duration, text_audio_delay
+            )
+            for chunk_index, _, chunk_text in self.streaming_generate(
+                audio,
+                context_info=context,
+                sampling_rate=sampling_rate,
+                chunk_duration=streaming_chunk_duration,
+                text_audio_delay=text_audio_delay,
+                max_new_tokens_per_chunk=per_chunk_limit,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+                pad_last_chunk=pad_last_chunk,
+                verbose=verbose,
+                _state_callback=capture_streaming_stats,
+            ):
+                chunks.append(chunk_text)
+                segments.append(
+                    {
+                        "text": chunk_text,
+                        "start": chunk_index * chunk_samples / self.sample_rate,
+                        "end": min(
+                            (chunk_index + 1) * chunk_samples / self.sample_rate,
+                            streaming_stats["audio_samples"] / self.sample_rate,
+                        ),
+                    }
+                )
+
+            end_time = time.time()
+            prompt_tokens = streaming_stats["prompt_tokens"]
+            generation_tokens = streaming_stats["generation_tokens"]
+            elapsed = end_time - start_time
+            return STTOutput(
+                text="".join(chunks).strip(),
+                segments=segments,
+                prompt_tokens=prompt_tokens,
+                generation_tokens=generation_tokens,
+                total_tokens=prompt_tokens + generation_tokens,
+                total_time=elapsed,
+                prompt_tps=prompt_tokens / elapsed if elapsed > 0 else 0.0,
+                generation_tps=(generation_tokens / elapsed if elapsed > 0 else 0.0),
+            )
 
         # Preprocess audio
         audio_tensor = self._preprocess_audio(audio, sampling_rate=sampling_rate)
@@ -774,6 +1207,11 @@ class Model(nn.Module):
         repetition_context_size: int = 100,
         prefill_step_size: int = 2048,
         verbose: bool = False,
+        hotwords: Optional[List[str]] = None,
+        max_tokens_per_chunk: Optional[int] = None,
+        chunk_duration: Optional[float] = None,
+        text_audio_delay: Optional[float] = None,
+        pad_last_chunk: bool = True,
     ) -> Generator[str, None, None]:
         """
         Stream transcription token-by-token from audio.
@@ -794,10 +1232,41 @@ class Model(nn.Module):
             repetition_context_size: Number of recent tokens to check for repetition
             prefill_step_size: Chunk size for prompt prefill (reduces peak memory)
             verbose: Print progress
+            hotwords: Optional vocabulary list, folded into ``context``.
 
         Yields:
             Decoded text chunks as they are generated.
         """
+        from mlx_audio.stt.utils import merge_hotwords
+
+        context = merge_hotwords(context, hotwords)
+
+        if self.is_streaming_model:
+            per_chunk_limit = (
+                min(max_tokens, 256)
+                if max_tokens_per_chunk is None
+                else max_tokens_per_chunk
+            )
+            for _, _, chunk_text in self.streaming_generate(
+                audio,
+                context_info=context,
+                sampling_rate=sampling_rate,
+                chunk_duration=chunk_duration,
+                text_audio_delay=text_audio_delay,
+                max_new_tokens_per_chunk=per_chunk_limit,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+                pad_last_chunk=pad_last_chunk,
+                verbose=verbose,
+            ):
+                yield chunk_text
+            return
+
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         # Preprocess audio

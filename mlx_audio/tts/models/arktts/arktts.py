@@ -1,4 +1,4 @@
-"""MLX port of Audio8-TTS-Preview-0.6b (model_type: arktts).
+"""MLX port of the Audio8 TTS preview models (model_type: arktts).
 
 Mirrors the reference modeling_arktts.py structure: a DualAR transformer — a
 slow AR stack predicting one semantic token per audio frame, and a fast AR
@@ -6,6 +6,23 @@ stack predicting the frame's residual codec codebooks — plus the bundled
 44.1 kHz codec (codec.py). Sampling reproduces the reference exactly:
 semantic-range logit filtering, the legacy top-k/top-p order (filter before
 temperature), exponential-race sampling, and RAS repetition rescue.
+
+Two checkpoints share this ``model_type`` and are told apart by ``slow_backbone``:
+
+``arktts`` (default, Audio8-TTS-Preview-0.6b)
+    Pure-attention slow stack, full-vocabulary semantic logits tied to the input
+    embedding, EOS at ``eos_token_id``.
+
+``falcon_h1`` (Audio8-TTS-Preview-0.1b)
+    Falcon-H1 hybrid slow stack — every layer carries Mamba-2 + attention + MLP —
+    consumed from the vendored ``mlx_audio.lm.models.falcon_h1``. Adds a dedicated
+    ``semantic_output`` head emitting COMPACT logits of width
+    ``codebook_size + 1``: index ``i`` means semantic token
+    ``semantic_begin_id + i`` and index ``codebook_size`` means EOS. The fast AR,
+    the prompt layout, and the codec are identical across both.
+
+Both share the codec byte-for-byte (same upstream ``codec.pth`` checksum), so a
+conversion of either can reuse the other's converted codec tensors.
 """
 
 from __future__ import annotations
@@ -20,6 +37,12 @@ from typing import Optional
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+
+from mlx_audio.lm.models.base import create_attention_mask, create_ssm_mask
+from mlx_audio.lm.models.cache import ArraysCache, CacheList, KVCache
+from mlx_audio.lm.models.falcon_h1 import FalconH1DecoderLayer
+from mlx_audio.lm.models.falcon_h1 import ModelArgs as FalconH1Args
+from mlx_audio.lm.models.falcon_h1 import compute_mup_vector
 
 from ..base import BaseModelArgs, GenerationResult
 from .codec import ArkttsCodec
@@ -70,6 +93,48 @@ class ModelConfig(BaseModelArgs):
     pad_token_id: int = 151643
     sample_rate: int = 44100
 
+    # -- slow-backbone selection --------------------------------------------
+    # "arktts" = the 0.6b pure-attention stack (fields above). "falcon_h1" = the
+    # 0.1b hybrid stack (fields below). Defaults keep 0.6b checkpoints, which
+    # carry none of these keys, loading exactly as before.
+    slow_backbone: str = "arktts"
+
+    # Falcon-H1 slow backbone. Names mirror the reference config verbatim so
+    # _falcon_args() is a rename-free pass-through; do not "tidy" them.
+    hidden_act: str = "silu"
+    attention_bias: bool = False
+    attention_dropout: float = 0.0
+    attention_in_multiplier: float = 1.0
+    attention_out_multiplier: float = 1.0
+    key_multiplier: float = 1.0
+    embedding_multiplier: float = 1.0
+    lm_head_multiplier: float = 1.0
+    expansion_factor: float = 2.0
+    mlp_bias: bool = False
+    mlp_multipliers: tuple = (1.0, 1.0)
+    projectors_bias: bool = False
+    ssm_in_multiplier: float = 1.0
+    ssm_multipliers: tuple = (1.0, 1.0, 1.0, 1.0, 1.0)
+    ssm_out_multiplier: float = 1.0
+    mamba_chunk_size: int = 128
+    mamba_conv_bias: bool = True
+    mamba_d_conv: int = 4
+    mamba_d_head: int = 32
+    mamba_d_ssm: int = 768
+    mamba_d_state: int = 64
+    mamba_expand: int = 2
+    mamba_n_groups: int = 1
+    mamba_n_heads: int = 24
+    mamba_norm_before_gate: bool = False
+    mamba_proj_bias: bool = False
+    mamba_rms_norm: bool = False
+    mamba_use_mlp: bool = True
+    initializer_range: float = 0.02
+
+    @property
+    def uses_falcon_slow(self) -> bool:
+        return self.slow_backbone == "falcon_h1"
+
 
 def _precompute_rope(length: int, head_dim: int, base: float) -> mx.array:
     frequencies = 1.0 / (
@@ -99,6 +164,132 @@ def _apply_rope(x: mx.array, rope: mx.array) -> mx.array:
         axis=-1,
     )
     return output.flatten(3).astype(x.dtype)
+
+
+def _falcon_args(config: ModelConfig) -> FalconH1Args:
+    """Mirror of ArkttsModel._build_falcon_config in the reference remote code."""
+    return FalconH1Args(
+        model_type="falcon_h1",
+        vocab_size=config.vocab_size,
+        hidden_size=config.dim,
+        intermediate_size=config.intermediate_size,
+        num_hidden_layers=config.n_layer,
+        num_attention_heads=config.n_head,
+        num_key_value_heads=config.n_local_heads,
+        head_dim=config.head_dim,
+        rms_norm_eps=config.norm_eps,
+        rope_theta=config.rope_base,
+        max_position_embeddings=config.max_seq_len,
+        attention_bias=config.attention_bias,
+        attention_in_multiplier=config.attention_in_multiplier,
+        attention_out_multiplier=config.attention_out_multiplier,
+        key_multiplier=config.key_multiplier,
+        embedding_multiplier=config.embedding_multiplier,
+        lm_head_multiplier=config.lm_head_multiplier,
+        mlp_bias=config.mlp_bias,
+        mlp_multipliers=list(config.mlp_multipliers),
+        mamba_chunk_size=config.mamba_chunk_size,
+        mamba_conv_bias=config.mamba_conv_bias,
+        mamba_d_conv=config.mamba_d_conv,
+        mamba_d_head=config.mamba_d_head,
+        mamba_d_ssm=config.mamba_d_ssm,
+        mamba_d_state=config.mamba_d_state,
+        mamba_expand=config.mamba_expand,
+        mamba_n_groups=config.mamba_n_groups,
+        mamba_n_heads=config.mamba_n_heads,
+        mamba_norm_before_gate=config.mamba_norm_before_gate,
+        mamba_proj_bias=config.mamba_proj_bias,
+        mamba_rms_norm=config.mamba_rms_norm,
+        mamba_use_mlp=config.mamba_use_mlp,
+        projectors_bias=config.projectors_bias,
+        ssm_in_multiplier=config.ssm_in_multiplier,
+        ssm_multipliers=list(config.ssm_multipliers),
+        ssm_out_multiplier=config.ssm_out_multiplier,
+        tie_word_embeddings=config.tie_word_embeddings,
+    )
+
+
+class FalconSlowStack(nn.Module):
+    """The 0.1b slow backbone: Falcon-H1 decoder layers driven by an INJECTED embedding.
+
+    ``mlx_audio.lm.models.falcon_h1.FalconH1Model`` embeds its own token ids and offers no
+    ``inputs_embeds`` seam, which arktts needs — its slow input is
+
+        (text_embed + sum_of_ten_codebook_embeds) * embedding_multiplier
+
+    So this holds the same submodules under the same names (weights map straight
+    across) and reimplements only the ten-line forward, entering at the embedding.
+
+    THE MULTIPLIER IS APPLIED HERE, to the composite, and must NOT be folded into
+    ``embed_tokens.weight`` the way ``FalconH1Model.sanitize`` does — folding scales
+    the text half and silently leaves the codebook half at 1.0. Measured against the
+    PyTorch oracle that is a 77% relative error on the embedding and 38% on the final
+    hidden state, while still producing plausible audio of the right length. See
+    ``Model.sanitize`` below, which deliberately omits the embedding fold.
+    """
+
+    #: muP multipliers that the upstream FalconH1 folds into weights during `sanitize`.
+    #: This port does not fold them (see `Model.sanitize`), so it only supports checkpoints
+    #: that carry them at unity — which every published arktts checkpoint does.
+    _MUST_BE_UNITY = (
+        "attention_in_multiplier",
+        "attention_out_multiplier",
+        "key_multiplier",
+        "ssm_in_multiplier",
+        "ssm_out_multiplier",
+    )
+    _MUST_BE_UNITY_SEQUENCES = ("mlp_multipliers", "ssm_multipliers")
+
+    def __init__(self, config: ModelConfig):
+        super().__init__()
+        # Fail loudly rather than load silently-unscaled weights. `embedding_multiplier` is
+        # deliberately absent from this check: it is applied at runtime to the COMPOSITE
+        # embedding (see this class's docstring), and `lm_head_multiplier` is unused because
+        # arktts brings its own semantic head.
+        offenders = [
+            name for name in self._MUST_BE_UNITY if float(getattr(config, name)) != 1.0
+        ]
+        offenders += [
+            name
+            for name in self._MUST_BE_UNITY_SEQUENCES
+            if set(float(v) for v in getattr(config, name)) != {1.0}
+        ]
+        if offenders:
+            raise ValueError(
+                "arktts's falcon_h1 backbone supports unity muP multipliers only, but this "
+                f"config sets {', '.join(offenders)} away from 1.0. Folding them belongs in "
+                "sanitize(), which is contractually self-contained here and cannot read the "
+                "config — so this checkpoint needs that seam reworked rather than silently "
+                "loading unscaled weights."
+            )
+        args = _falcon_args(config)
+        self.args = args
+        self.embedding_multiplier = config.embedding_multiplier
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.dim)
+        self.layers = [
+            FalconH1DecoderLayer(args) for _ in range(args.num_hidden_layers)
+        ]
+        self.final_layernorm = nn.RMSNorm(config.dim, eps=args.rms_norm_eps)
+        self._mup_vector = compute_mup_vector(args)
+        mx.eval(self._mup_vector)
+
+    def make_cache(self):
+        return [
+            CacheList(ArraysCache(size=2), KVCache())
+            for _ in range(self.args.num_hidden_layers)
+        ]
+
+    def __call__(self, hidden: mx.array, cache=None) -> mx.array:
+        """`hidden` is the UNSCALED composite embedding; the multiplier is applied here."""
+        hidden = hidden * self.embedding_multiplier
+        cache = cache if cache is not None else [(None, None)] * len(self.layers)
+        mamba_mask = create_ssm_mask(hidden, cache[0][0])
+        attn_mask = create_attention_mask(hidden, cache[0][1])
+        for layer, layer_cache in zip(self.layers, cache):
+            hidden = layer(
+                hidden, cache=layer_cache, attn_mask=attn_mask, mamba_mask=mamba_mask
+            )
+        return self.final_layernorm(hidden)
 
 
 class ArkttsRMSNorm(nn.Module):
@@ -239,25 +430,34 @@ class ArkttsModel(nn.Module):
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
-        self.embeddings = nn.Embedding(config.vocab_size, config.dim)
         self.codebook_embeddings = nn.Embedding(
             config.codebook_size * config.num_codebooks, config.dim
         )
-        self.layers = [
-            ArkttsTransformerBlock(
-                config.dim,
-                config.intermediate_size,
-                config.n_head,
-                config.n_local_heads,
-                config.head_dim,
-                config.attention_qkv_bias,
-                config.attention_o_bias,
-                config.attention_qk_norm,
-                config.norm_eps,
+        if config.uses_falcon_slow:
+            # 0.1b: hybrid Mamba+attention slow stack with its own text embedding,
+            # plus a dedicated compact semantic head (codebook_size + 1 wide).
+            self.slow = FalconSlowStack(config)
+            self.semantic_output = nn.Linear(
+                config.dim, config.codebook_size + 1, bias=False
             )
-            for _ in range(config.n_layer)
-        ]
-        self.norm = ArkttsRMSNorm(config.dim, config.norm_eps)
+        else:
+            # 0.6b: pure-attention slow stack, semantic logits tied to the embedding.
+            self.embeddings = nn.Embedding(config.vocab_size, config.dim)
+            self.layers = [
+                ArkttsTransformerBlock(
+                    config.dim,
+                    config.intermediate_size,
+                    config.n_head,
+                    config.n_local_heads,
+                    config.head_dim,
+                    config.attention_qkv_bias,
+                    config.attention_o_bias,
+                    config.attention_qk_norm,
+                    config.norm_eps,
+                )
+                for _ in range(config.n_layer)
+            ]
+            self.norm = ArkttsRMSNorm(config.dim, config.norm_eps)
         self.fast_project_in = (
             nn.Linear(config.dim, config.fast_dim)
             if config.fast_dim != config.dim
@@ -280,8 +480,12 @@ class ArkttsModel(nn.Module):
         ]
         self.fast_norm = ArkttsRMSNorm(config.fast_dim, config.norm_eps)
         self.fast_output = nn.Linear(config.fast_dim, config.codebook_size, bias=False)
-        self._freqs_cis = _precompute_rope(
-            config.max_seq_len, config.head_dim, config.rope_base
+        # The Falcon slow stack builds its own rope internally, so the slow table is
+        # only needed by the pure-attention path. The fast table is shared.
+        self._freqs_cis = (
+            None
+            if config.uses_falcon_slow
+            else _precompute_rope(config.max_seq_len, config.head_dim, config.rope_base)
         )
         self._fast_freqs_cis = _precompute_rope(
             config.num_codebooks, config.fast_head_dim, config.rope_base
@@ -290,9 +494,21 @@ class ArkttsModel(nn.Module):
         # parameters, so nothing else forces them; left lazy, their graph would first be
         # evaluated inside whichever stream/thread happens to run the first forward, which
         # crashes when the model is moved across streams.
-        mx.eval((self._freqs_cis, self._fast_freqs_cis))
+        mx.eval(
+            (self._fast_freqs_cis,)
+            if self._freqs_cis is None
+            else (self._freqs_cis, self._fast_freqs_cis)
+        )
+        self._slow_cache = None
 
     # -- embedding -----------------------------------------------------------
+    @property
+    def text_embeddings(self) -> nn.Embedding:
+        """The text-token embedding table, wherever this variant keeps it."""
+        return (
+            self.slow.embed_tokens if self.config.uses_falcon_slow else self.embeddings
+        )
+
     def _embed(self, input_ids: mx.array) -> mx.array:
         config = self.config
         codebook_embeds = []
@@ -308,7 +524,9 @@ class ArkttsModel(nn.Module):
             input_ids[:, 0] <= config.semantic_end_id,
         )
         codebook_sum = mx.where(semantic[..., None], codebook_sum, 0.0)
-        return self.embeddings(input_ids[:, 0]) + codebook_sum
+        # Returned UNSCALED. On the falcon path FalconSlowStack applies
+        # embedding_multiplier to this composite; see its docstring.
+        return self.text_embeddings(input_ids[:, 0]) + codebook_sum
 
     @staticmethod
     def _causal_mask(
@@ -335,12 +553,15 @@ class ArkttsModel(nn.Module):
         batch, _, length = input_ids.shape
         if attention_mask is None:
             attention_mask = mx.ones((batch, length), dtype=mx.int64)
+        hidden = self._embed(input_ids)
+        if config.uses_falcon_slow:
+            normalized = self.slow(hidden)
+            return self.semantic_output(normalized), normalized
         position_ids = mx.maximum(
             mx.cumsum(attention_mask.astype(mx.int64), axis=-1) - 1, 0
         )
         rope = self._freqs_cis[position_ids]
         mask = self._causal_mask(attention_mask, mx.arange(length), length)
-        hidden = self._embed(input_ids)
         for layer in self.layers:
             hidden = layer(hidden, rope, mask)
         normalized = self.norm(hidden)
@@ -350,14 +571,21 @@ class ArkttsModel(nn.Module):
     # -- cached decode steps -------------------------------------------------
     def _setup_generation_caches(self, batch_size: int, dtype):
         config = self.config
-        for layer in self.layers:
-            layer.attention.kv_cache = ArkttsKVCache(
-                batch_size,
-                config.max_seq_len,
-                config.n_local_heads,
-                config.head_dim,
-                dtype,
-            )
+        if config.uses_falcon_slow:
+            # Hybrid cache: per layer an ArraysCache(2) for the Mamba conv+ssm state
+            # and a KVCache for the attention half. Unlike the pure-attention path's
+            # static full-buffer cache, this one tracks its own offset, so the slow
+            # step feeds only the new column and passes no explicit mask.
+            self._slow_cache = self.slow.make_cache()
+        else:
+            for layer in self.layers:
+                layer.attention.kv_cache = ArkttsKVCache(
+                    batch_size,
+                    config.max_seq_len,
+                    config.n_local_heads,
+                    config.head_dim,
+                    dtype,
+                )
         for layer in self.fast_layers:
             layer.attention.kv_cache = ArkttsKVCache(
                 batch_size,
@@ -368,7 +596,9 @@ class ArkttsModel(nn.Module):
             )
 
     def _clear_generation_caches(self):
-        for layer in list(self.layers) + list(self.fast_layers):
+        self._slow_cache = None
+        slow_layers = [] if self.config.uses_falcon_slow else list(self.layers)
+        for layer in slow_layers + list(self.fast_layers):
             layer.attention.kv_cache = None
 
     def _slow_step(
@@ -381,6 +611,13 @@ class ArkttsModel(nn.Module):
     ):
         config = self.config
         hidden = self._embed(input_ids)
+        if config.uses_falcon_slow:
+            # The hybrid cache carries its own offset and mask construction, so the
+            # explicit position/mask arguments are unused here. The reference returns
+            # the normalized hidden for BOTH the logits and the fast-AR input
+            # (norm_fastlayer_input is not consulted on this path).
+            normalized = self.slow(hidden, cache=self._slow_cache)[:, -1:]
+            return self.semantic_output(normalized)[:, -1], normalized
         rope = self._freqs_cis[position_ids]
         mask = self._causal_mask(attention_mask, cache_positions, config.max_seq_len)
         for layer in self.layers:
@@ -415,6 +652,12 @@ class ArkttsModel(nn.Module):
 
     def _semantic_filter(self, scores: mx.array) -> mx.array:
         config = self.config
+        if config.uses_falcon_slow:
+            # Compact head: the reference builds this filter with
+            # (begin, end, eos) = (0, codebook_size - 1, codebook_size), which spans
+            # all codebook_size + 1 columns. Provably a no-op, so skip the full-width
+            # scatter rather than pay for it every frame.
+            return scores
         filtered = mx.full(scores.shape, -mx.inf, dtype=scores.dtype)
         filtered[:, config.semantic_begin_id : config.semantic_end_id + 1] = scores[
             :, config.semantic_begin_id : config.semantic_end_id + 1
@@ -450,9 +693,13 @@ class ArkttsModel(nn.Module):
         if previous is None:
             return normal
         repeated = mx.any(previous == normal[:, None], axis=1)
-        semantic = mx.logical_and(
-            normal >= config.semantic_begin_id, normal <= config.semantic_end_id
-        )
+        if config.uses_falcon_slow:
+            # Compact space: semantic ids are 0..codebook_size-1, EOS is codebook_size.
+            semantic = normal < config.codebook_size
+        else:
+            semantic = mx.logical_and(
+                normal >= config.semantic_begin_id, normal <= config.semantic_end_id
+            )
         return mx.where(mx.logical_and(repeated, semantic), high, normal)
 
     def _generate_codebooks(
@@ -461,9 +708,12 @@ class ArkttsModel(nn.Module):
         config = self.config
         hidden = self.fast_project_in(slow_hidden)
         self._fast_step(hidden, 0)
-        current = mx.clip(
-            semantic - config.semantic_begin_id, 0, config.codebook_size - 1
+        # Codebook 0 IS the semantic token, expressed in codebook space. The compact
+        # head already emits that space; the full-vocab head needs the offset removed.
+        raw = (
+            semantic if config.uses_falcon_slow else semantic - config.semantic_begin_id
         )
+        current = mx.clip(raw, 0, config.codebook_size - 1)
         codebooks = [current]
         hidden = self.fast_embeddings(current)[:, None]
         for position in range(1, config.num_codebooks):
@@ -549,7 +799,12 @@ class ArkttsModel(nn.Module):
                 f"Prompt length {prompt_width} must be smaller than {config.max_seq_len}"
             )
         max_new_tokens = min(max_new_tokens, config.max_seq_len - prompt_width)
-        dtype = self.embeddings.weight.dtype
+        dtype = self.text_embeddings.weight.dtype
+        # In the compact semantic space EOS is the last column of the head, not the
+        # tokenizer's eos_token_id.
+        eos_index = (
+            config.codebook_size if config.uses_falcon_slow else config.eos_token_id
+        )
         self._setup_generation_caches(batch_size, dtype)
         rng_key = mx.random.key(
             seed if seed is not None else int(time.time_ns() % (2**63))
@@ -582,7 +837,7 @@ class ArkttsModel(nn.Module):
             codebooks = self._generate_codebooks(
                 slow_hidden, semantic, top_k, top_p, temperature, do_sample, keys[2]
             )
-            emitted = mx.logical_and(active_before, semantic != config.eos_token_id)
+            emitted = mx.logical_and(active_before, semantic != eos_index)
             frame = mx.where(emitted[:, None], codebooks, -1)
             generated_frames.append(frame)
             code_lengths = code_lengths + emitted.astype(mx.int64)
@@ -593,12 +848,22 @@ class ArkttsModel(nn.Module):
                 )
             else:
                 previous = mx.concatenate((previous[:, 1:], semantic[:, None]), axis=1)
-            finished = mx.logical_or(finished, semantic == config.eos_token_id)
+            finished = mx.logical_or(finished, semantic == eos_index)
             mx.eval(finished, frame, code_lengths)
             if bool(mx.all(finished)):
                 break
 
-            next_column = mx.concatenate((semantic[:, None], codebooks), axis=1)[
+            # The slow stack is always fed FULL-vocabulary ids, even when the head
+            # emits the compact space, because the prompt rows are full-vocabulary.
+            if config.uses_falcon_slow:
+                semantic_in = mx.where(
+                    semantic == eos_index,
+                    mx.full(semantic.shape, config.eos_token_id, dtype=semantic.dtype),
+                    semantic + config.semantic_begin_id,
+                )
+            else:
+                semantic_in = semantic
+            next_column = mx.concatenate((semantic_in[:, None], codebooks), axis=1)[
                 ..., None
             ]
             new_valid = active_before.astype(mx.int64)[:, None]
@@ -861,8 +1126,28 @@ class Model(nn.Module):
         for base, pair in pending.items():
             out[base] = fold_weight_norm(pair["g"], pair["v"])
 
+        # SANITIZE IS SELF-CONTAINED, by contract: the test suite calls it on a
+        # `Model.__new__(Model)` with no __init__, so it must not read instance state.
+        # The falcon variant is therefore detected from the KEYS, and the only work its
+        # weights need here is a layout transpose, which is decidable from shapes.
+        #
+        # The muP multipliers the upstream FalconH1 sanitize folds are NOT folded here.
+        # Every published arktts checkpoint carries them at unity, and `FalconSlowStack`
+        # ASSERTS that at construction — a loud failure on a future checkpoint that
+        # changes them, rather than dead code here that has to read a config it cannot see.
         remapped = {}
         for key, value in out.items():
+            if key.startswith("model.slow."):
+                # torch Conv1d (C, 1, K) -> mlx (C, K, 1). `shape[1] == 1` identifies the
+                # torch layout (the kernel width is 4, never 1), so this cannot double-apply.
+                if (
+                    key.endswith("conv1d.weight")
+                    and value.ndim == 3
+                    and value.shape[1] == 1
+                ):
+                    value = value.transpose(0, 2, 1)
+                remapped[key] = value
+                continue
             if key.startswith("codec."):
                 if key.endswith("alpha"):
                     # Snake (1, C, 1) -> (1, 1, C)
