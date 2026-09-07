@@ -56,7 +56,9 @@ def fold_weight_norm(g: mx.array, v: mx.array) -> mx.array:
     """w = g * v / ||v|| computed over all dims except output channel (dim 0)."""
     axes = tuple(range(1, v.ndim))
     norm = mx.sqrt(mx.sum(v.astype(mx.float32) ** 2, axis=axes, keepdims=True))
-    return (g.astype(mx.float32) * v.astype(mx.float32) / (norm + 1e-12)).astype(v.dtype)
+    return (g.astype(mx.float32) * v.astype(mx.float32) / (norm + 1e-12)).astype(
+        v.dtype
+    )
 
 
 def _merge_weight_norm(state: Dict[str, mx.array]) -> Dict[str, mx.array]:
@@ -222,7 +224,11 @@ def convert_cosyvoice3_assets(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     weights: Dict[str, mx.array] = {}
-    for prefix, filename in (("llm", "llm.pt"), ("flow", "flow.pt"), ("hift", "hift.pt")):
+    for prefix, filename in (
+        ("llm", "llm.pt"),
+        ("flow", "flow.pt"),
+        ("hift", "hift.pt"),
+    ):
         state = load_torch_state(input_dir / filename)
         for k, v in state.items():
             weights[f"{prefix}.{k}"] = v

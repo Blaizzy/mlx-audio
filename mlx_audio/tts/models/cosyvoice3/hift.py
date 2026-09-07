@@ -78,7 +78,9 @@ class CausalConv1d(nn.Module):
 class CausalConv1dDownSample(nn.Module):
     """Strided convolution with left-context padding."""
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int):
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_size: int, stride: int
+    ):
         super().__init__()
         scale = math.sqrt(1 / (in_channels * kernel_size))
         self.weight = mx.random.uniform(
@@ -97,7 +99,9 @@ class CausalConv1dDownSample(nn.Module):
 class CausalConv1dUpsample(nn.Module):
     """Nearest-neighbor upsampling followed by causal convolution."""
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, stride: int):
+    def __init__(
+        self, in_channels: int, out_channels: int, kernel_size: int, stride: int
+    ):
         super().__init__()
         scale = math.sqrt(1 / (in_channels * kernel_size))
         self.weight = mx.random.uniform(
@@ -121,11 +125,15 @@ class ResBlock(nn.Module):
     def __init__(self, channels: int, kernel_size: int, dilations: List[int]):
         super().__init__()
         self.convs1 = [
-            CausalConv1d(channels, channels, kernel_size, dilation=d, causal_type="left")
+            CausalConv1d(
+                channels, channels, kernel_size, dilation=d, causal_type="left"
+            )
             for d in dilations
         ]
         self.convs2 = [
-            CausalConv1d(channels, channels, kernel_size, dilation=1, causal_type="left")
+            CausalConv1d(
+                channels, channels, kernel_size, dilation=1, causal_type="left"
+            )
             for _ in dilations
         ]
         self.activations1 = [Snake(channels, alpha_logscale=False) for _ in dilations]
@@ -153,14 +161,26 @@ class CausalConvRNNF0Predictor(nn.Module):
     (kernel 3) — matches ``cosyvoice...CausalConvRNNF0Predictor``.
     """
 
-    def __init__(self, num_class: int = 1, in_channels: int = 80, cond_channels: int = 512):
+    def __init__(
+        self, num_class: int = 1, in_channels: int = 80, cond_channels: int = 512
+    ):
         super().__init__()
         self.condnet = [
-            CausalConv1d(in_channels, cond_channels, kernel_size=4, causal_type="right"),
-            CausalConv1d(cond_channels, cond_channels, kernel_size=3, causal_type="left"),
-            CausalConv1d(cond_channels, cond_channels, kernel_size=3, causal_type="left"),
-            CausalConv1d(cond_channels, cond_channels, kernel_size=3, causal_type="left"),
-            CausalConv1d(cond_channels, cond_channels, kernel_size=3, causal_type="left"),
+            CausalConv1d(
+                in_channels, cond_channels, kernel_size=4, causal_type="right"
+            ),
+            CausalConv1d(
+                cond_channels, cond_channels, kernel_size=3, causal_type="left"
+            ),
+            CausalConv1d(
+                cond_channels, cond_channels, kernel_size=3, causal_type="left"
+            ),
+            CausalConv1d(
+                cond_channels, cond_channels, kernel_size=3, causal_type="left"
+            ),
+            CausalConv1d(
+                cond_channels, cond_channels, kernel_size=3, causal_type="left"
+            ),
         ]
         self.classifier = nn.Linear(cond_channels, num_class)
 
@@ -218,8 +238,12 @@ class CausalSineGen(nn.Module):
         rad_down = mx.swapaxes(rad_down_t, 1, 2)  # (B, T_down, H+1)
 
         phase_down = mx.cumsum(rad_down, axis=1) * 2 * math.pi  # (B, T_down, H+1)
-        phase_down_t = mx.swapaxes(phase_down, 1, 2) * self.upsample_scale  # (B, H+1, T_down)
-        phase_t = mx.repeat(phase_down_t, self.upsample_scale, axis=-1)  # nearest upsample
+        phase_down_t = (
+            mx.swapaxes(phase_down, 1, 2) * self.upsample_scale
+        )  # (B, H+1, T_down)
+        phase_t = mx.repeat(
+            phase_down_t, self.upsample_scale, axis=-1
+        )  # nearest upsample
 
         diff = T - phase_t.shape[-1]
         if diff > 0:
@@ -254,7 +278,12 @@ class CausalSourceModuleHnNSF(nn.Module):
         self.sine_amp = sine_amp
         self.noise_std = add_noise_std
         self.l_sin_gen = CausalSineGen(
-            sampling_rate, upsample_scale, harmonic_num, sine_amp, add_noise_std, voiced_threshod
+            sampling_rate,
+            upsample_scale,
+            harmonic_num,
+            sine_amp,
+            add_noise_std,
+            voiced_threshod,
         )
         self.l_linear = nn.Linear(harmonic_num + 1, 1)
 
@@ -285,7 +314,9 @@ class CausalHiFTGenerator(nn.Module):
         self.num_kernels = len(config.resblock_kernel_sizes)
         self.num_upsamples = len(config.upsample_rates)
 
-        upsample_scale = math.prod(config.upsample_rates) * config.istft_params["hop_len"]
+        upsample_scale = (
+            math.prod(config.upsample_rates) * config.istft_params["hop_len"]
+        )
         self.f0_upsample_scale = upsample_scale
 
         self.m_source = CausalSourceModuleHnNSF(
@@ -308,7 +339,10 @@ class CausalHiFTGenerator(nn.Module):
 
         self.ups = [
             CausalConv1dUpsample(
-                config.base_channels // (2**i), config.base_channels // (2 ** (i + 1)), k, u
+                config.base_channels // (2**i),
+                config.base_channels // (2 ** (i + 1)),
+                k,
+                u,
             )
             for i, (u, k) in enumerate(
                 zip(config.upsample_rates, config.upsample_kernel_sizes)
@@ -335,24 +369,36 @@ class CausalHiFTGenerator(nn.Module):
             if u == 1:
                 self.source_downs.append(
                     CausalConv1d(
-                        config.istft_params["n_fft"] + 2, ch, 1, dilation=1, causal_type="left"
+                        config.istft_params["n_fft"] + 2,
+                        ch,
+                        1,
+                        dilation=1,
+                        causal_type="left",
                     )
                 )
             else:
                 self.source_downs.append(
-                    CausalConv1dDownSample(config.istft_params["n_fft"] + 2, ch, u * 2, u)
+                    CausalConv1dDownSample(
+                        config.istft_params["n_fft"] + 2, ch, u * 2, u
+                    )
                 )
             self.source_resblocks.append(ResBlock(ch, k, d))
 
         self.resblocks = []
         for i in range(len(self.ups)):
             ch = config.base_channels // (2 ** (i + 1))
-            for k, d in zip(config.resblock_kernel_sizes, config.resblock_dilation_sizes):
+            for k, d in zip(
+                config.resblock_kernel_sizes, config.resblock_dilation_sizes
+            ):
                 self.resblocks.append(ResBlock(ch, k, d))
 
         final_ch = config.base_channels // (2 ** len(self.ups))
         self.conv_post = CausalConv1d(
-            final_ch, config.istft_params["n_fft"] + 2, 7, dilation=1, causal_type="left"
+            final_ch,
+            config.istft_params["n_fft"] + 2,
+            7,
+            dilation=1,
+            causal_type="left",
         )
 
         self.stft_window = hann_window_periodic(config.istft_params["n_fft"])
@@ -365,11 +411,20 @@ class CausalHiFTGenerator(nn.Module):
         return mx.repeat(f0, self.f0_upsample_scale, axis=2)
 
     def _stft(self, x: mx.array) -> tuple:
-        return stft(x, self.istft_params["n_fft"], self.istft_params["hop_len"], self.stft_window)
+        return stft(
+            x,
+            self.istft_params["n_fft"],
+            self.istft_params["hop_len"],
+            self.stft_window,
+        )
 
     def _istft(self, magnitude: mx.array, phase: mx.array) -> mx.array:
         return istft(
-            magnitude, phase, self.istft_params["n_fft"], self.istft_params["hop_len"], self.stft_window
+            magnitude,
+            phase,
+            self.istft_params["n_fft"],
+            self.istft_params["hop_len"],
+            self.stft_window,
         )
 
     def decode(self, x: mx.array, s: mx.array) -> mx.array:
@@ -399,7 +454,8 @@ class CausalHiFTGenerator(nn.Module):
             start_idx = i * self.num_kernels
             x = mx.mean(
                 mx.stack(
-                    [self.resblocks[start_idx + j](x) for j in range(self.num_kernels)], axis=0
+                    [self.resblocks[start_idx + j](x) for j in range(self.num_kernels)],
+                    axis=0,
                 ),
                 axis=0,
             )

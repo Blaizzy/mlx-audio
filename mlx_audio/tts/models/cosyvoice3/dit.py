@@ -295,7 +295,9 @@ class InputEmbedding(nn.Module):
         # all inputs channels-last: (B, N, D)
         to_cat = [x, cond, mu]
         if self.spk_dim > 0 and spks is not None:
-            spks = mx.broadcast_to(spks[:, None, :], (x.shape[0], x.shape[1], spks.shape[-1]))
+            spks = mx.broadcast_to(
+                spks[:, None, :], (x.shape[0], x.shape[1], spks.shape[-1])
+            )
             to_cat.append(spks)
         x = self.proj(mx.concatenate(to_cat, axis=-1))
         x = self.conv_pos_embed(x) + x

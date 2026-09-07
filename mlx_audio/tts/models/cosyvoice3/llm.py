@@ -45,7 +45,10 @@ class CosyVoice3LM(nn.Module):
         self.fill_token = config.speech_token_size + 3
         # any id >= speech_token_size terminates decoding
         self.stop_token_ids = list(
-            range(config.speech_token_size, config.speech_token_size + config.speech_vocab_extra)
+            range(
+                config.speech_token_size,
+                config.speech_token_size + config.speech_vocab_extra,
+            )
         )
 
         # Qwen2 backbone (mlx_lm), built eagerly: the mlx-audio loader calls
@@ -135,7 +138,9 @@ class CosyVoice3LM(nn.Module):
         if prompt_speech_token is not None and prompt_speech_token.shape[1] > 0:
             prompt_speech_emb = self.speech_embedding(prompt_speech_token)
         else:
-            prompt_speech_emb = mx.zeros((1, 0, self.llm_input_size), dtype=text_emb.dtype)
+            prompt_speech_emb = mx.zeros(
+                (1, 0, self.llm_input_size), dtype=text_emb.dtype
+            )
         lm_input = mx.concatenate(
             [sos_emb, text_emb, task_id_emb, prompt_speech_emb], axis=1
         )
@@ -164,8 +169,13 @@ class CosyVoice3LM(nn.Module):
                 mask = mask.at[idx].add(mx.array(float("-inf")))
                 logits = logits + mask
             top_id = ras_sampling(
-                logits, out_tokens, sampling, top_p=top_p, top_k=top_k,
-                win_size=win_size, tau_r=tau_r,
+                logits,
+                out_tokens,
+                sampling,
+                top_p=top_p,
+                top_k=top_k,
+                win_size=win_size,
+                tau_r=tau_r,
             )
             if top_id in self.stop_token_ids:
                 break
@@ -177,4 +187,6 @@ class CosyVoice3LM(nn.Module):
         """Map checkpoint keys to this module's tree."""
         from .convert import convert_llm_weights
 
-        return convert_llm_weights(weights, tie_word_embeddings=self.config.tie_word_embeddings)
+        return convert_llm_weights(
+            weights, tie_word_embeddings=self.config.tie_word_embeddings
+        )

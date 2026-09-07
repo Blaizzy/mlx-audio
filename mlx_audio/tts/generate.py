@@ -351,6 +351,7 @@ def generate_audio(
         _display_lang = lang_code
         if _display_lang in ("en", "auto"):
             from .models.cosyvoice3.frontend_utils import contains_chinese
+
             _display_lang = "zh" if contains_chinese(text) else "en"
 
         _lines = [

@@ -140,9 +140,7 @@ class CosyVoice3(nn.Module):
         if rms_db.item() <= rms_db_threshold:
             return audio
 
-        window = mx.array(
-            [0.5 * (1 - math.cos(2 * math.pi * i / n)) for i in range(n)]
-        )
+        window = mx.array([0.5 * (1 - math.cos(2 * math.pi * i / n)) for i in range(n)])
         spectrum = mx.abs(mx.fft.rfft(seg * window)) ** 2
         freqs = mx.fft.rfftfreq(n, 1 / self.config.sample_rate)
         hf_ratio = mx.sum(spectrum * (freqs > hf_cutoff_hz)) / (
@@ -164,9 +162,7 @@ class CosyVoice3(nn.Module):
 
     # ---- spk2info convenience methods (delegate to frontend) ----
 
-    def add_zero_shot_spk(
-        self, prompt_text: str, prompt_wav, spk_id: str
-    ) -> bool:
+    def add_zero_shot_spk(self, prompt_text: str, prompt_wav, spk_id: str) -> bool:
         """Cache the acoustic prompt for *spk_id* so it can be reused."""
         if self.frontend is None:
             raise RuntimeError("frontend not initialized")
@@ -240,9 +236,7 @@ class CosyVoice3(nn.Module):
                 "(or use --spk_id with a previously cached speaker)"
             )
         if instruct is not None and cross_lingual:
-            raise ValueError(
-                "instruct and cross_lingual are mutually exclusive"
-            )
+            raise ValueError("instruct and cross_lingual are mutually exclusive")
 
         # Normalize synthesis inputs before constructing frontend features.
         _norm = lambda t: self.frontend.text_normalize(

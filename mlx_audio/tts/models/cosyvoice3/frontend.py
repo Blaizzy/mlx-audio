@@ -46,8 +46,8 @@ class CosyVoice3FrontEnd:
 
         # Use wetext when available, otherwise leave the text unchanged.
         try:
-            from wetext import Normalizer as ZhNormalizer  # noqa: F811
-            from wetext import Normalizer as EnNormalizer
+            from wetext import Normalizer as EnNormalizer  # noqa: F811
+            from wetext import Normalizer as ZhNormalizer
 
             self.zh_tn_model = ZhNormalizer(remove_erhua=False)
             self.en_tn_model = EnNormalizer()
@@ -80,20 +80,66 @@ class CosyVoice3FrontEnd:
         tok = AutoTokenizer.from_pretrained(str(model_path))
         # Register model control tokens so they encode as atomic tokens.
         _vocal_events = [
-            "[breath]", "<strong>", "</strong>", "[noise]",
-            "[laughter]", "[cough]", "[clucking]", "[accent]",
-            "[quick_breath]", "<laughter>", "</laughter>",
-            "[hissing]", "[sigh]", "[vocalized-noise]",
-            "[lipsmack]", "[mn]",
+            "[breath]",
+            "<strong>",
+            "</strong>",
+            "[noise]",
+            "[laughter]",
+            "[cough]",
+            "[clucking]",
+            "[accent]",
+            "[quick_breath]",
+            "<laughter>",
+            "</laughter>",
+            "[hissing]",
+            "[sigh]",
+            "[vocalized-noise]",
+            "[lipsmack]",
+            "[mn]",
         ]
         # ARPABET phonemes (English pronunciation hotfix)
         _arpabet_consonants = [
-            "B", "CH", "D", "DH", "F", "G", "HH", "JH", "K", "L", "M", "N",
-            "NG", "P", "R", "S", "SH", "T", "TH", "V", "W", "Y", "Z", "ZH",
+            "B",
+            "CH",
+            "D",
+            "DH",
+            "F",
+            "G",
+            "HH",
+            "JH",
+            "K",
+            "L",
+            "M",
+            "N",
+            "NG",
+            "P",
+            "R",
+            "S",
+            "SH",
+            "T",
+            "TH",
+            "V",
+            "W",
+            "Y",
+            "Z",
+            "ZH",
         ]
         _arpabet_vowels = [
-            "AA", "AE", "AH", "AO", "AW", "AY", "EH", "ER", "EY",
-            "IH", "IY", "OW", "OY", "UH", "UW",
+            "AA",
+            "AE",
+            "AH",
+            "AO",
+            "AW",
+            "AY",
+            "EH",
+            "ER",
+            "EY",
+            "IH",
+            "IY",
+            "OW",
+            "OY",
+            "UH",
+            "UW",
         ]
         _arpabet = []
         for _ph in _arpabet_consonants + _arpabet_vowels:
@@ -103,47 +149,131 @@ class CosyVoice3FrontEnd:
                 _arpabet.append(f"[{_ph}{_stress}]")
         # Pinyin initials + finals (Chinese pronunciation hotfix)
         _pinyin_initials = [
-            "b", "c", "ch", "d", "f", "g", "h", "j", "k", "l", "m", "n",
-            "p", "q", "r", "s", "sh", "t", "w", "x", "y", "z", "zh",
+            "b",
+            "c",
+            "ch",
+            "d",
+            "f",
+            "g",
+            "h",
+            "j",
+            "k",
+            "l",
+            "m",
+            "n",
+            "p",
+            "q",
+            "r",
+            "s",
+            "sh",
+            "t",
+            "w",
+            "x",
+            "y",
+            "z",
+            "zh",
         ]
         _pinyin_finals_tone = [
             # tone 4 (à)
-            "a", "ai", "an", "ang", "ao",
-            "e", "ei", "en", "eng", "er",
-            "i", "in", "ing", "iu",
-            "o", "ong", "ou",
-            "u", "uang", "ue", "un", "uo",
+            "a",
+            "ai",
+            "an",
+            "ang",
+            "ao",
+            "e",
+            "ei",
+            "en",
+            "eng",
+            "er",
+            "i",
+            "in",
+            "ing",
+            "iu",
+            "o",
+            "ong",
+            "ou",
+            "u",
+            "uang",
+            "ue",
+            "un",
+            "uo",
         ]
         _pinyin_finals_tone2 = [  # tone 2 (á)
-            "a", "ai", "an", "ang", "ao",
-            "e", "ei", "en", "eng", "er",
-            "i", "in", "ing",
-            "o", "ong", "ou",
-            "u", "uai", "uan", "uang",
+            "a",
+            "ai",
+            "an",
+            "ang",
+            "ao",
+            "e",
+            "ei",
+            "en",
+            "eng",
+            "er",
+            "i",
+            "in",
+            "ing",
+            "o",
+            "ong",
+            "ou",
+            "u",
+            "uai",
+            "uan",
+            "uang",
             "v",
         ]
         _pinyin_finals_tone3 = [  # tone 3 (ǎ)
-            "a", "ai", "an", "ang", "ao",
-            "e", "ei", "en", "eng", "er",
-            "i", "in", "ing",
-            "o", "ong", "ou",
-            "u", "uai", "uan", "uang",
+            "a",
+            "ai",
+            "an",
+            "ang",
+            "ao",
+            "e",
+            "ei",
+            "en",
+            "eng",
+            "er",
+            "i",
+            "in",
+            "ing",
+            "o",
+            "ong",
+            "ou",
+            "u",
+            "uai",
+            "uan",
+            "uang",
             "v",
         ]
         _pinyin_finals_tone1 = [  # tone 1 (ā)
-            "a", "ai", "an", "ang", "ao",
-            "e", "ei", "en", "eng",
-            "i", "in", "ing",
-            "o", "ong", "ou",
-            "u", "uai", "uan", "uang", "ue", "un", "uo",
+            "a",
+            "ai",
+            "an",
+            "ang",
+            "ao",
+            "e",
+            "ei",
+            "en",
+            "eng",
+            "i",
+            "in",
+            "ing",
+            "o",
+            "ong",
+            "ou",
+            "u",
+            "uai",
+            "uan",
+            "uang",
+            "ue",
+            "un",
+            "uo",
         ]
         _pinyin = []
         for _py in _pinyin_initials:
             _pinyin.append(f"[{_py}]")
-        for _py in (
-            "a ai an ang ao e ei en eng i ian in ing iu o ong ou u uang ue un uo"
-            .split()
-        ):
+        for (
+            _py
+        ) in "a ai an ang ao e ei en eng i ian in ing iu o ong ou u uang ue un uo".split():
             _pinyin.append(f"[{_py}]")
         # Toned pinyin finals.
         _toned = (
@@ -428,9 +558,7 @@ class CosyVoice3FrontEnd:
         """Return the list of cached zero-shot speaker ids."""
         return list(self.spk2info.keys())
 
-    def add_zero_shot_spk(
-        self, prompt_text: str, prompt_wav, spk_id: str
-    ) -> bool:
+    def add_zero_shot_spk(self, prompt_text: str, prompt_wav, spk_id: str) -> bool:
         """Extract and cache prompt features under a speaker identifier."""
         if not spk_id:
             raise ValueError("spk_id must not be empty")

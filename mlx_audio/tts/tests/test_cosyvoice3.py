@@ -44,10 +44,7 @@ from mlx_audio.tts.models.cosyvoice3.flow_matching import CausalConditionalCFM
 from mlx_audio.tts.models.cosyvoice3.frontend import _first_existing_optional
 from mlx_audio.tts.models.cosyvoice3.hift import CausalHiFTGenerator
 from mlx_audio.tts.models.cosyvoice3.llm import CosyVoice3LM
-from mlx_audio.tts.models.cosyvoice3.sampling import (
-    nucleus_sampling,
-    ras_sampling,
-)
+from mlx_audio.tts.models.cosyvoice3.sampling import nucleus_sampling, ras_sampling
 
 
 def _tiny_llm_config() -> LLMConfig:
@@ -178,8 +175,14 @@ class TestFlow(unittest.TestCase):
         embedding = mx.random.normal((1, 192))
 
         mel = flow.inference(
-            token, token_len, prompt_token, prompt_token_len, prompt_feat, None,
-            embedding, n_timesteps=3,
+            token,
+            token_len,
+            prompt_token,
+            prompt_token_len,
+            prompt_feat,
+            None,
+            embedding,
+            n_timesteps=3,
         )
         mx.eval(mel)
         expected_target_frames = (5 + 6) * config.token_mel_ratio - 10
@@ -276,8 +279,11 @@ class TestLLM(unittest.TestCase):
         prompt_speech = mx.array([[10, 11]], dtype=mx.int32)
 
         tokens = lm.inference(
-            text, prompt_text, prompt_speech,
-            min_token_text_ratio=0.5, max_token_text_ratio=5.0,
+            text,
+            prompt_text,
+            prompt_speech,
+            min_token_text_ratio=0.5,
+            max_token_text_ratio=5.0,
         )
         self.assertIsInstance(tokens, list)
         self.assertLessEqual(len(tokens), int(4 * 5.0))
@@ -331,8 +337,13 @@ class TestSampling(unittest.TestCase):
         logits = mx.array([100.0, 0.0, 0.0])
         decoded = [0] * 10  # window full of the dominant candidate
         result = ras_sampling(
-            logits, decoded, sampling=25, top_p=0.8, top_k=25,
-            win_size=10, tau_r=0.1,
+            logits,
+            decoded,
+            sampling=25,
+            top_p=0.8,
+            top_k=25,
+            win_size=10,
+            tau_r=0.1,
         )
         self.assertNotEqual(result, 0)
 
@@ -387,15 +398,27 @@ class TestConvert(unittest.TestCase):
 
         torch_state = {
             # FeedForward.ff = Sequential(Sequential(Linear, GELU), Dropout, Linear)
-            "decoder.estimator.transformer_blocks.0.ff.ff.0.0.weight": mx.zeros((2048, 1024)),
+            "decoder.estimator.transformer_blocks.0.ff.ff.0.0.weight": mx.zeros(
+                (2048, 1024)
+            ),
             "decoder.estimator.transformer_blocks.0.ff.ff.0.0.bias": mx.zeros((2048,)),
-            "decoder.estimator.transformer_blocks.0.ff.ff.2.weight": mx.zeros((1024, 2048)),
+            "decoder.estimator.transformer_blocks.0.ff.ff.2.weight": mx.zeros(
+                (1024, 2048)
+            ),
             "decoder.estimator.transformer_blocks.0.ff.ff.2.bias": mx.zeros((1024,)),
             # CausalConvPositionEmbedding.conv{1,2} = Sequential(Conv1d, Mish)
-            "decoder.estimator.input_embed.conv_pos_embed.conv1.0.weight": mx.zeros((1024, 64, 31)),
-            "decoder.estimator.input_embed.conv_pos_embed.conv1.0.bias": mx.zeros((1024,)),
-            "decoder.estimator.input_embed.conv_pos_embed.conv2.0.weight": mx.zeros((1024, 64, 31)),
-            "decoder.estimator.input_embed.conv_pos_embed.conv2.0.bias": mx.zeros((1024,)),
+            "decoder.estimator.input_embed.conv_pos_embed.conv1.0.weight": mx.zeros(
+                (1024, 64, 31)
+            ),
+            "decoder.estimator.input_embed.conv_pos_embed.conv1.0.bias": mx.zeros(
+                (1024,)
+            ),
+            "decoder.estimator.input_embed.conv_pos_embed.conv2.0.weight": mx.zeros(
+                (1024, 64, 31)
+            ),
+            "decoder.estimator.input_embed.conv_pos_embed.conv2.0.bias": mx.zeros(
+                (1024,)
+            ),
             # TimestepEmbedding.time_mlp = Sequential(Linear, SiLU, Linear)
             "decoder.estimator.time_embed.time_mlp.0.weight": mx.zeros((1024, 256)),
             "decoder.estimator.time_embed.time_mlp.0.bias": mx.zeros((1024,)),
@@ -406,8 +429,12 @@ class TestConvert(unittest.TestCase):
         }
         converted = convert_flow_weights(torch_state)
 
-        self.assertIn("decoder.estimator.transformer_blocks.0.ff.ff.0.weight", converted)
-        self.assertIn("decoder.estimator.transformer_blocks.0.ff.ff.1.weight", converted)
+        self.assertIn(
+            "decoder.estimator.transformer_blocks.0.ff.ff.0.weight", converted
+        )
+        self.assertIn(
+            "decoder.estimator.transformer_blocks.0.ff.ff.1.weight", converted
+        )
         self.assertNotIn(
             "decoder.estimator.transformer_blocks.0.ff.ff.0.0.weight", converted
         )
@@ -419,7 +446,9 @@ class TestConvert(unittest.TestCase):
 
         # conv weights land in MLX's (out, k, in) layout, not raw PyTorch (out, in, k)
         self.assertEqual(
-            converted["decoder.estimator.input_embed.conv_pos_embed.conv1.weight"].shape,
+            converted[
+                "decoder.estimator.input_embed.conv_pos_embed.conv1.weight"
+            ].shape,
             (1024, 31, 64),
         )
 
@@ -427,7 +456,11 @@ class TestConvert(unittest.TestCase):
         flow = CausalMaskedDiffWithDiT(_tiny_flow_config())
         real_keys = set(dict(tree_flatten(flow.parameters())).keys())
         for k in converted:
-            self.assertIn(k, real_keys, f"{k} has no matching parameter in CausalMaskedDiffWithDiT")
+            self.assertIn(
+                k,
+                real_keys,
+                f"{k} has no matching parameter in CausalMaskedDiffWithDiT",
+            )
 
     def test_convert_llm_weights_matches_real_checkpoint_key_layout(self):
         """Regression test pinned to the real llm.pt state_dict layout
@@ -464,7 +497,9 @@ class TestConvert(unittest.TestCase):
         m = CosyVoice3LM(cfg)
         real_keys = set(dict(tree_flatten(m.parameters())).keys())
         for k in tied:
-            self.assertIn(k, real_keys, f"{k} has no matching parameter in CosyVoice3LM")
+            self.assertIn(
+                k, real_keys, f"{k} has no matching parameter in CosyVoice3LM"
+            )
 
     def test_convert_hift_weights_matches_real_checkpoint_key_layout(self):
         """Regression test pinned to the real hift.pt state_dict layout
@@ -488,11 +523,21 @@ class TestConvert(unittest.TestCase):
             "ups.0.parametrizations.weight.original0": mx.ones((256, 1, 1)),
             "ups.0.parametrizations.weight.original1": mx.ones((256, 512, 16)) * 0.1,
             "ups.0.bias": mx.zeros((256,)),
-            "f0_predictor.condnet.0.parametrizations.weight.original0": mx.ones((512, 1, 1)),
-            "f0_predictor.condnet.0.parametrizations.weight.original1": mx.ones((512, 80, 4)) * 0.1,
+            "f0_predictor.condnet.0.parametrizations.weight.original0": mx.ones(
+                (512, 1, 1)
+            ),
+            "f0_predictor.condnet.0.parametrizations.weight.original1": mx.ones(
+                (512, 80, 4)
+            )
+            * 0.1,
             "f0_predictor.condnet.0.bias": mx.zeros((512,)),
-            "f0_predictor.condnet.2.parametrizations.weight.original0": mx.ones((512, 1, 1)),
-            "f0_predictor.condnet.2.parametrizations.weight.original1": mx.ones((512, 512, 3)) * 0.1,
+            "f0_predictor.condnet.2.parametrizations.weight.original0": mx.ones(
+                (512, 1, 1)
+            ),
+            "f0_predictor.condnet.2.parametrizations.weight.original1": mx.ones(
+                (512, 512, 3)
+            )
+            * 0.1,
             "f0_predictor.condnet.2.bias": mx.zeros((512,)),
         }
         converted = convert_hift_weights(torch_state)
@@ -507,7 +552,9 @@ class TestConvert(unittest.TestCase):
         hift = CausalHiFTGenerator(HiFTConfig())
         real = dict(tree_flatten(hift.parameters()))
         for k, v in converted.items():
-            self.assertIn(k, real, f"{k} has no matching parameter in CausalHiFTGenerator")
+            self.assertIn(
+                k, real, f"{k} has no matching parameter in CausalHiFTGenerator"
+            )
             self.assertEqual(v.shape, real[k].shape, f"{k} shape mismatch")
 
 
@@ -517,7 +564,8 @@ class TestModelIntegration(unittest.TestCase):
         each sub-module's own sanitize (which may drop unknown keys — see
         e.g. CausalHiFTGenerator.sanitize, which only keeps keys matching its
         real parameter tree)."""
-        from mlx_audio.tts.models.cosyvoice3 import Model, ModelConfig as MC
+        from mlx_audio.tts.models.cosyvoice3 import Model
+        from mlx_audio.tts.models.cosyvoice3 import ModelConfig as MC
 
         model = Model(MC())
         weights = {
@@ -578,14 +626,19 @@ class TestModelIntegration(unittest.TestCase):
                 }
 
             def frontend_instruct2(self, tts_text, instruct, prompt_wav):
-                return self.frontend_zero_shot(tts_text, prompt_text="", prompt_wav=prompt_wav)
+                return self.frontend_zero_shot(
+                    tts_text, prompt_text="", prompt_wav=prompt_wav
+                )
 
         model.frontend = MockFrontEnd()
 
         results = list(
             model.generate(
-                text="hello", ref_audio="dummy.wav", ref_text="ref",
-                n_timesteps=2, sampling=5,
+                text="hello",
+                ref_audio="dummy.wav",
+                ref_text="ref",
+                n_timesteps=2,
+                sampling=5,
             )
         )
         self.assertEqual(len(results), 1)

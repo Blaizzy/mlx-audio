@@ -104,9 +104,7 @@ class HiFTConfig(BaseModelArgs):
     resblock_dilation_sizes: List[List[int]] = field(
         default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
     )
-    source_resblock_kernel_sizes: List[int] = field(
-        default_factory=lambda: [7, 7, 11]
-    )
+    source_resblock_kernel_sizes: List[int] = field(default_factory=lambda: [7, 7, 11])
     source_resblock_dilation_sizes: List[List[int]] = field(
         default_factory=lambda: [[1, 3, 5], [1, 3, 5], [1, 3, 5]]
     )
@@ -140,7 +138,11 @@ class ModelConfig(BaseModelArgs):
     @classmethod
     def from_dict(cls, params: dict) -> "ModelConfig":
         params = dict(params)
-        for key, sub in (("llm", LLMConfig), ("flow", FlowConfig), ("hift", HiFTConfig)):
+        for key, sub in (
+            ("llm", LLMConfig),
+            ("flow", FlowConfig),
+            ("hift", HiFTConfig),
+        ):
             if isinstance(params.get(key), dict):
                 params[key] = sub.from_dict(params[key])
         return super().from_dict(params)

@@ -128,7 +128,7 @@ def split_paragraph(
     for i, c in enumerate(text):
         if c in pounc:
             if len(text[st:i]) > 0:
-                utts.append(text[st : i] + c)
+                utts.append(text[st:i] + c)
             if i + 1 < len(text) and text[i + 1] in ['"', "”"]:
                 tmp = utts.pop(-1)
                 utts.append(tmp + text[i + 1])
@@ -139,7 +139,10 @@ def split_paragraph(
     final_utts = []
     cur_utt = ""
     for utt in utts:
-        if _calc_utt_length(cur_utt + utt) > token_max_n and _calc_utt_length(cur_utt) > token_min_n:
+        if (
+            _calc_utt_length(cur_utt + utt) > token_max_n
+            and _calc_utt_length(cur_utt) > token_min_n
+        ):
             final_utts.append(cur_utt)
             cur_utt = ""
         cur_utt = cur_utt + utt

@@ -96,6 +96,4 @@ class CausalConditionalCFM(nn.Module):
         t_span = mx.linspace(0, 1, n_timesteps + 1, dtype=mu.dtype)
         if self.t_scheduler == "cosine":
             t_span = 1 - mx.cos(t_span * 0.5 * math.pi)
-        return self.solve_euler(
-            z, t_span, mu, mask, spks, cond, streaming=streaming
-        )
+        return self.solve_euler(z, t_span, mu, mask, spks, cond, streaming=streaming)
