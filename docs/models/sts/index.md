@@ -9,6 +9,7 @@ MLX Audio provides speech-to-speech models for audio source separation, speech e
 | Model | Provider | Use Case | Repo |
 |-------|----------|----------|------|
 | [**SAM-Audio**](#sam-audio) | Meta | Text-guided source separation | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| [**DialogueSidon**](dialogue-sidon.md) | SaruLab | Two-speaker dialogue separation and restoration | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
 | [**Liquid2.5-Audio**](#liquid25-audio) | LiquidAI | Speech-to-Speech, TTS, ASR | [mlx-community/LFM2.5-Audio-1.5B-4bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-4bit) |
 | [**Moshi**](#moshi) | Kyutai Labs | Full-duplex voice conversation | [kyutai/moshiko-mlx-q4](https://huggingface.co/kyutai/moshiko-mlx-q4) |
 | [**MossFormer2 SE**](#mossformer2-se) | Alibaba | Speech enhancement / noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |

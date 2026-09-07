@@ -104,6 +104,7 @@ nav:
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md
     - Speech-to-Speech: models/sts/index.md
+    - DialogueSidon: models/sts/dialogue-sidon.md
     - Voice Activity Detection: models/vad/index.md
   - Guides:
     - guides/index.md

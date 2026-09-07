@@ -10,11 +10,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
 # Repo ID substrings to model type mapping
 REPO_HINTS = {
+    "dialoguesidon": "dialogue_sidon",
+    "dialogue_sidon": "dialogue_sidon",
     "deepfilter": "deepfilternet",
     "mossformer": "mossformer2",
     "nemotronlabs-voicechat": "nemotron_voicechat",
@@ -24,6 +27,11 @@ REPO_HINTS = {
 
 def _detect_model_type(model_name: str) -> str:
     """Detect model type from repo ID or path name."""
+    config_path = Path(model_name).expanduser() / "config.json"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text())
+        if config.get("model_type") == "dialogue_sidon":
+            return "dialogue_sidon"
     lower = model_name.lower()
     for hint, model_type in REPO_HINTS.items():
         if hint in lower:
@@ -89,6 +97,12 @@ def parse_args():
         help="Use streaming enhancement mode (DeepFilterNet v2/v3 only)",
     )
 
+    sidon = parser.add_argument_group("DialogueSidon separation options")
+    sidon.add_argument("--num-steps", type=int, default=30)
+    sidon.add_argument("--seed", type=int, default=None)
+    sidon.add_argument("--chunk-seconds", type=float, default=20.0)
+    sidon.add_argument("--overlap-seconds", type=float, default=5.0)
+
     return parser.parse_args()
 
 
@@ -99,12 +113,13 @@ def main():
     if not in_path.exists():
         raise FileNotFoundError(f"Input audio file not found: {in_path}")
 
+    model_type = _detect_model_type(args.model)
     if args.output_path:
         out_path = Path(args.output_path).expanduser().resolve()
     else:
-        out_path = in_path.with_stem(in_path.stem + "_enhanced")
-
-    model_type = _detect_model_type(args.model)
+        suffix = "_separated" if model_type == "dialogue_sidon" else "_enhanced"
+        out_path = in_path.with_stem(in_path.stem + suffix)
+    output_paths = [out_path]
 
     if args.verbose:
         print(f"Model:  {args.model}")
@@ -131,6 +146,26 @@ def main():
         else:
             model.enhance_file(str(in_path), str(out_path))
             mode = "offline"
+
+    elif model_type == "dialogue_sidon":
+        from mlx_audio import audio_io
+        from mlx_audio.sts import load
+
+        model = load(args.model, strict=True)
+        result = model.separate(
+            str(in_path),
+            num_steps=args.num_steps,
+            seed=args.seed,
+            chunk_seconds=args.chunk_seconds,
+            overlap_seconds=args.overlap_seconds,
+        )
+        output_paths = [
+            out_path.with_name(f"{out_path.stem}_speaker_{i}.wav") for i in (1, 2)
+        ]
+        for path, speaker in zip(output_paths, result.speakers):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            audio_io.write(str(path), speaker, result.sample_rate)
+        mode = "offline separation"
 
     elif model_type == "mossformer2":
         from mlx_audio import audio_io
@@ -162,7 +197,8 @@ def main():
         print(f"Mode:   {mode}")
         print(f"Time:   {elapsed:.2f}s")
 
-    print(f"Saved:  {out_path}")
+    for path in output_paths:
+        print(f"Saved:  {path}")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "dialogue_sidon": "dialogue_sidon",
     "deepfilter": "deepfilternet",
     "deepfilternet": "deepfilternet",
     "deepfilternet3": "deepfilternet",
@@ -138,6 +139,7 @@ def load_model(
         )
 
     if model_type in {
+        "dialogue_sidon",
         "lfm_audio",
         "mossformer2_se",
         "deepfilternet",
