@@ -43,6 +43,11 @@ jobs:
       - name: Install all deps
         run: pip install -e ".[all,dev]"
 
+      - name: Install ffmpeg for server audio tests
+        run: |
+          brew install ffmpeg
+          ffmpeg -version
+
       - name: Test DSP imports without TTS/STT
         run: |
           python -c "from mlx_audio.dsp import stft, mel_filters; print('DSP OK')"
