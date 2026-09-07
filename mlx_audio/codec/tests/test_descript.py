@@ -38,7 +38,8 @@ class TestDescript(unittest.TestCase):
         self.assertEqual(latents.shape, (1, 96, 250))
 
         y = model.decode(z).squeeze(-1)
-        self.assertEqual(y.shape, (1, 80_043))
+        # The odd stride (5) removes one frame before the final 4x2 upsampling.
+        self.assertEqual(y.shape, (1, 79_992))
 
     def test_descript_24khz(self):
         audio = mx.zeros((1, 1, 120_000))
@@ -70,7 +71,7 @@ class TestDescript(unittest.TestCase):
         self.assertEqual(latents.shape, (1, 256, 375))
 
         y = model.decode(z).squeeze(-1)
-        self.assertEqual(y.shape, (1, 120_043))
+        self.assertEqual(y.shape, (1, 119_992))
 
     def test_descript_44khz(self):
         audio = mx.zeros((1, 1, 220_000))
@@ -102,7 +103,7 @@ class TestDescript(unittest.TestCase):
         self.assertEqual(latents.shape, (1, 72, 430))
 
         y = model.decode(z).squeeze(-1)
-        self.assertEqual(y.shape, (1, 220_235))
+        self.assertEqual(y.shape, (1, 220_160))
 
 
 if __name__ == "__main__":

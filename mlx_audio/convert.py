@@ -17,6 +17,8 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 
+from mlx_audio.registry import model_type_from_config
+
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
@@ -355,6 +357,8 @@ def detect_model_domain(config: dict, model_path: Path) -> Domain:
     2. Config key matching
     3. Path pattern matching
     """
+    if model_type_from_config(config) == "mimo_audio":
+        return Domain.STS
     model_identifier = _get_model_identifier(config)
 
     # 1. Path pattern matching
@@ -379,7 +383,7 @@ def detect_model_domain(config: dict, model_path: Path) -> Domain:
 def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     """Determine the specific model type within a domain."""
     # Check both model_type and name fields
-    model_type = config.get("model_type", "").lower()
+    model_type = (model_type_from_config(config) or "").lower()
     model_name = config.get("name", "").lower()
     class_name = config.get("_class_name", "").lower()
 
@@ -467,24 +471,27 @@ def generate_readme_content(
     return tags, content
 
 
-def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: Domain):
+def upload_to_hub(
+    path: Path, upload_repo: str, hf_path: str, domain: Domain, model_card_path=None
+):
     """Upload converted model to HuggingFace Hub."""
     from huggingface_hub import HfApi, ModelCard
 
     print(f"[INFO] Uploading to {upload_repo}")
 
-    tags, readme_content = generate_readme_content(upload_repo, hf_path, domain)
-
-    try:
-        card = ModelCard.load(hf_path)
-        card.data.tags = tags if card.data.tags is None else card.data.tags + tags
-        card.data.library_name = "mlx-audio"
-    except Exception:
-        card = ModelCard("")
-        card.data.tags = tags
-        card.data.library_name = "mlx-audio"
-
-    card.text = readme_content
+    if model_card_path is not None:
+        card = ModelCard.load(str(model_card_path))
+    else:
+        tags, readme_content = generate_readme_content(upload_repo, hf_path, domain)
+        try:
+            card = ModelCard.load(hf_path)
+            card.data.tags = tags if card.data.tags is None else card.data.tags + tags
+            card.data.library_name = "mlx-audio"
+        except Exception:
+            card = ModelCard("")
+            card.data.tags = tags
+            card.data.library_name = "mlx-audio"
+        card.text = readme_content
     card.save(path / "README.md")
 
     api = HfApi()
@@ -673,6 +680,7 @@ def convert(
         print(f"[INFO] Converting to {target_dtype}")
         mx_dtype = getattr(mx, target_dtype)
         weights = {k: v.astype(mx_dtype) for k, v in weights.items()}
+        model.load_weights(list(weights.items()))
 
     # Handle quantization/dequantization
     if quantize:
@@ -704,11 +712,20 @@ def convert(
     save_model(mlx_path, model, donate_model=True)
     config["model_type"] = model_type
     save_config(config, config_path=mlx_path / "config.json")
+    write_model_card = getattr(model_class, "write_model_card", None)
+    if write_model_card is not None:
+        write_model_card(mlx_path, hf_path, upload_repo or str(mlx_path), config)
 
     print(f"[INFO] Conversion complete! Model saved to {mlx_path}")
 
     if upload_repo:
-        upload_to_hub(mlx_path, upload_repo, hf_path, domain)
+        upload_to_hub(
+            mlx_path,
+            upload_repo,
+            hf_path,
+            domain,
+            model_card_path=mlx_path / "README.md" if write_model_card else None,
+        )
 
 
 def configure_parser() -> argparse.ArgumentParser:

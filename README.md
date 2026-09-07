@@ -178,7 +178,9 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| [**DialogueSidon**](mlx_audio/sts/models/dialogue_sidon/README.md) | Two-speaker separation and restoration | Separate dialogue into speaker tracks | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
 | **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
+| **MiMo-Audio** | English/Chinese TTS, ASR, audio understanding and dialogue; Base few-shot speech tasks | Speech interactions and audio completion | [Instruct](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct), [Base](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Base), [audio tokenizer](https://huggingface.co/XiaomiMiMo/MiMo-Audio-Tokenizer), [guide](mlx_audio/sts/models/mimo_audio/README.md) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
 | **NemotronLabs VoiceChat** | Full-duplex speech-to-speech with streaming transcription and function calling | Real-time voice conversation | [mlx-community/NemotronLabs-VoiceChat-11B-4bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-4bit) |
