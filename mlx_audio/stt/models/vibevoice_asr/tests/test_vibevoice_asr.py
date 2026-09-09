@@ -662,7 +662,9 @@ class TestModel(unittest.TestCase):
         hidden = self.config.decoder_config.hidden_size
         self.model.set_dtype(mx.bfloat16)
         input_ids = mx.ones((1, 6), dtype=mx.int32)
-        speech_features = mx.random.normal((1, 2, hidden))  # float32, as encode_speech yields
+        speech_features = mx.random.normal(
+            (1, 2, hidden)
+        )  # float32, as encode_speech yields
         mask = mx.array([[False, True, True, False, False, False]])
 
         embeddings = self.model._merge_speech_text_embeddings(
