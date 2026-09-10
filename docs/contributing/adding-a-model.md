@@ -66,6 +66,15 @@ If your model needs a backbone that is not vendored yet, copy it from mlx-lm
 into `mlx_audio/lm/models/` verbatim and add the provenance header used by the
 other files there (upstream path, version, commit).
 
+!!! warning "Size KV caches for prefill *plus* generation"
+    When your generation loop writes into a fixed-size KV cache, allocate it
+    for the prompt/prefill tokens **and** the generated tokens combined --
+    not just `max_tokens`. If an audio (or text) prompt is prefilled first,
+    those slots are consumed before decoding starts, and undersized caches
+    fail with an index/assertion error mid-generation. A regression test that
+    runs one generation step past the prefill length catches this class of
+    bug; see `mlx_audio/tts/tests/test_dia.py`.
+
 ### Model Configuration
 
 Create a dataclass for your model's config that extends `BaseModelArgs`:
@@ -195,6 +204,37 @@ python -m mlx_audio.convert \
     --dtype bfloat16
 ```
 
+### Prevent Broken Conversions: `model_quant_predicate`
+
+The converter quantizes every `nn.Linear` (and similar) layer whose last
+dimension is a multiple of 64. That blanket policy is wrong for some
+architectures and produces checkpoints that load fine but generate garbage.
+Define a `model_quant_predicate` classmethod on your model when any of the
+following apply:
+
+- An `nn.Embedding` doubles as the tied output/logit head (quantizing it
+  degrades generation logits).
+- A sensitive head or projection drives discrete codebook sampling
+  (e.g. residual/RVQ heads).
+- Any other path where 4-bit weights are known to be lossy for this
+  architecture.
+
+```python
+class Model(nn.Module):
+    @classmethod
+    def model_quant_predicate(cls, path: str, module) -> bool:
+        # Keep embeddings and the fast residual path in full precision.
+        return (
+            not isinstance(module, nn.Embedding)
+            and "fast_" not in path
+        )
+```
+
+The predicate receives `(path, module)` and returns whether quantization is
+allowed; it is combined with the converter's base requirements, so returning
+`True` never forces quantization of an unsuitable tensor. See
+`qwen3_tts`, `fish_qwen3_omni`, or `spark` for examples.
+
 ### Publish to Hugging Face
 
 If you plan to share the converted model, prefer publishing it on the
@@ -209,17 +249,27 @@ the `mlx-community` org when possible.
 
 ### Test
 
-Write a basic test:
+Prefer offline unit tests that build a tiny randomly-initialized model over
+tests that download weights -- they run in seconds, work in CI without
+network, and still exercise real generation code paths:
 
 ```python
-from mlx_audio.tts.utils import load_model
-
 def test_my_model():
-    model = load_model("path/to/my-model-bf16")
+    model = MyModel(tiny_config())  # small dims, random init, no downloads
     results = list(model.generate("Hello, world!"))
     assert len(results) > 0
     assert results[0].audio.shape[0] > 0
 ```
+
+Stub out any component your model downloads at construction time (codec,
+tokenizer) with a fake that returns correctly-shaped arrays; see
+`mlx_audio/tts/tests/test_dia.py` or `test_qwen3_tts.py` for patterns, and
+`mlx_audio/music/tests/test_minimax_music3.py` for a tiny end-to-end config.
+
+If the model supports batch generation, also verify the result contract:
+**exactly one result per input item**, even when an item produces no audio
+(yield silence rather than skipping it) so streaming consumers never see a
+sequence terminate without a final chunk.
 
 Run it:
 
@@ -241,8 +291,10 @@ pytest mlx_audio/tts/tests/test_my_model.py
 - [ ] `__init__.py` exports `Model` and `ModelConfig`
 - [ ] `generate()` method yields `GenerationResult` objects
 - [ ] Model type registered in `MODEL_REMAPPING` (if needed)
-- [ ] Weights converted to MLX `.safetensors` format
+- [ ] KV caches sized for prefill + generation (if the model manages caches manually)
+- [ ] `model_quant_predicate` defined if blanket quantization would corrupt the model
+- [ ] Weights converted to MLX `.safetensors` format and verified after conversion
 - [ ] Hugging Face repo chosen and linked in docs (`mlx-community/...` preferred)
-- [ ] Basic test written and passing
+- [ ] Offline unit test written and passing
 - [ ] Documentation page added
 - [ ] PR submitted with a clear description
