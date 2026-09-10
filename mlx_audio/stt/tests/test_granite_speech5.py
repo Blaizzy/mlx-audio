@@ -1,3 +1,5 @@
+import inspect
+
 import mlx.core as mx
 import numpy as np
 
@@ -69,6 +71,15 @@ def test_model_type_resolves_to_matching_package_name():
 
     assert resolved_type == "granite_speech5_ctc"
     assert module.Model is Model
+
+
+def test_generate_accepts_compatibility_kwargs():
+    signature = inspect.signature(Model.generate)
+
+    assert any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
 
 
 def test_forward_applies_two_subsampling_blocks():

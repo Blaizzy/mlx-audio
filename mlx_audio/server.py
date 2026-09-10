@@ -59,6 +59,7 @@ from mlx_audio.server_inference import (
     InferenceRequest,
     InferenceResultChunk,
 )
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.utils import load_model
 
@@ -292,15 +293,10 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
                 exclude={"model"}, exclude_none=True
             )
             signature = inspect.signature(stt_model.generate)
-            accepts_extra_kwargs = any(
-                parameter.kind == inspect.Parameter.VAR_KEYWORD
-                for parameter in signature.parameters.values()
-            )
             gen_kwargs = {
                 key: value
                 for key, value in gen_kwargs.items()
-                if key in signature.parameters
-                or (accepts_extra_kwargs and key in _STT_EXTRA_KWARGS)
+                if key in signature.parameters or key in _STT_EXTRA_KWARGS
             }
 
             result = stt_model.generate(tmp_path, **gen_kwargs)
@@ -1502,7 +1498,9 @@ def _default_transcription_delay_ms() -> Optional[int]:
         return None
 
 
-def _open_streaming_session(model, *, temperature: float, delay_ms: Optional[int]):
+def _open_streaming_session(
+    model, *, temperature: float, delay_ms: Optional[int]
+) -> StreamingSession:
     """Open a streaming session, forwarding ``transcription_delay_ms`` only to
     models that declare the parameter.
     """
