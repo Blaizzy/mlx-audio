@@ -15,6 +15,7 @@ Reference implementation: https://huggingface.co/rumik-ai/rumik-oss-1
 
 import re
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
@@ -87,6 +88,10 @@ class Model(Cohere2Model):
         self._tokenizer = None
         self._mimi: Optional[Mimi] = None
         self._streaming_decoder: Optional[MimiStreamingDecoder] = None
+        # Audio-only output head (see ``audio_head``); built lazily.
+        self._use_audio_head = False
+        self._audio_head_params = None
+        self._audio_rows: Optional[List[int]] = None
 
     # ------------------------------------------------------------------ forward
 
@@ -95,8 +100,92 @@ class Model(Cohere2Model):
         # The stop predictor reads the last position's normed hidden state, the
         # same tensor the logits are computed from.
         self._last_hidden = hidden[:, -1, :]
-        logits = self.model.embed_tokens.as_linear(hidden)
+        if self._use_audio_head:
+            logits = self._audio_logits(hidden)
+        else:
+            logits = self.model.embed_tokens.as_linear(hidden)
         return logits * self.args.logit_scale
+
+    # -------------------------------------------------------------- audio head
+    #
+    # Inside an <audio> span the model may only emit the 16,384 unit tokens plus
+    # </audio>, yet the tied output head spans the whole 277k text+audio vocab.
+    # Reading that matrix dominates per-step memory traffic (0.57B of the 3.35B
+    # parameters) and the following softmax/top-k run over 277k columns. Slicing
+    # the head to the audio rows gives identical logits for every legal token
+    # (verified bit-exact against ``as_linear`` for both float and quantized
+    # embeddings) while skipping the rest.
+
+    @property
+    def audio_rows(self) -> List[int]:
+        """Vocabulary ids covered by the audio head: units then ``</audio>`` last."""
+        if self._audio_rows is None:
+            c = self.config
+            self._audio_rows = list(range(int(c.first_unit_id), int(c.last_unit_id) + 1))
+            self._audio_rows.append(self.audio_end_id)
+        return self._audio_rows
+
+    def _build_audio_head(self):
+        emb = self.model.embed_tokens
+        rows = mx.array(self.audio_rows)
+        if isinstance(emb, nn.QuantizedEmbedding):
+            self._audio_head_params = dict(
+                weight=emb["weight"][rows],
+                scales=emb["scales"][rows],
+                biases=None if emb.get("biases") is None else emb["biases"][rows],
+                group_size=emb.group_size,
+                bits=emb.bits,
+                mode=emb.mode,
+            )
+        else:
+            self._audio_head_params = dict(weight=emb.weight[rows])
+        mx.eval(*[v for v in self._audio_head_params.values() if isinstance(v, mx.array)])
+
+    def _audio_logits(self, hidden: mx.array) -> mx.array:
+        if self._audio_head_params is None:
+            self._build_audio_head()
+        p = self._audio_head_params
+        if "scales" in p:
+            return mx.quantized_matmul(
+                hidden,
+                p["weight"],
+                scales=p["scales"],
+                biases=p["biases"],
+                transpose=True,
+                group_size=p["group_size"],
+                bits=p["bits"],
+                mode=p["mode"],
+            )
+        return hidden @ p["weight"].T
+
+    def make_sliced_sampler(self, sampler):
+        """Wrap a sampler over sliced logits so it returns vocabulary ids.
+
+        ``generate_step`` feeds each sampled token back into the model and
+        yields it to the caller, so the sampler must emit real token ids, not
+        columns of the sliced head.
+        """
+        rows = mx.array(self.audio_rows, dtype=mx.int32)
+
+        def sliced_sampler(logprobs: mx.array) -> mx.array:
+            return rows[sampler(logprobs)]
+
+        return sliced_sampler
+
+    @contextmanager
+    def audio_head(self, enabled: bool = True):
+        """Route ``__call__`` through the audio-only head while active.
+
+        Logits then index ``audio_rows`` (column ``i`` is token ``audio_rows[i]``)
+        rather than the full vocabulary. Pair with ``make_sliced_sampler`` so
+        sampled tokens are mapped back to vocabulary ids.
+        """
+        previous = self._use_audio_head
+        self._use_audio_head = bool(enabled)
+        try:
+            yield
+        finally:
+            self._use_audio_head = previous
 
     def stop_probability(self, hidden: mx.array) -> mx.array:
         """P(utterance is over) for hidden states of shape ``(..., hidden_size)``."""
@@ -273,6 +362,29 @@ class Model(Cohere2Model):
 
         return processor
 
+    def make_sliced_logits_processor(self, min_tokens: int):
+        """``make_audio_logits_processor`` for logits produced by ``audio_head``.
+
+        Every column is already a legal audio token, so only the ``</audio>``
+        column (the last one) needs the min-tokens gate and the stop forcing.
+        """
+        n = len(self.audio_rows)
+        end_col = n - 1
+        cols = mx.arange(n)
+        not_end = cols != end_col
+        forced_end = mx.where(not_end, -mx.inf, 0.0)
+        state = {"step": 0}
+
+        def processor(tokens: mx.array, logits: mx.array) -> mx.array:
+            step = state["step"]
+            state["step"] += 1
+            if step < min_tokens:
+                return mx.where(not_end, logits, -mx.inf)
+            stop = self.stop_probability(self._last_hidden) > 0.5  # (B, 1)
+            return mx.where(stop, forced_end.astype(logits.dtype), logits)
+
+        return processor
+
     def _decode_frames_streaming(self, frames: List[List[int]]) -> mx.array:
         codes = self._frames_to_codes(frames)
         return self.streaming_decoder.decode_frames(codes).reshape(-1)
@@ -336,6 +448,7 @@ class Model(Cohere2Model):
         stream: bool = False,
         streaming_interval: float = 0.5,
         verbose: bool = False,
+        slice_head: bool = True,
         **kwargs,
     ):
         """Synthesize ``text`` and yield :class:`GenerationResult` objects.
@@ -352,6 +465,9 @@ class Model(Cohere2Model):
                 mlx-audio CLI spelling; ``description`` wins if both are given.
             stream: Yield audio as it is generated instead of once at the end.
             streaming_interval: Seconds of audio per streamed chunk.
+            slice_head: Compute logits only over the audio vocabulary (see
+                ``audio_head``). Same outputs, fewer bytes per step; disable
+                only for benchmarking against the full head.
         """
         description = description or instruct
         prompt = self.build_prompt(text, voice, description)
@@ -363,27 +479,42 @@ class Model(Cohere2Model):
             top_p=top_p if 0.0 < top_p < 1.0 else 0.0,
             top_k=int(top_k) if top_k and top_k > 0 else 0,
         )
-        processors = [self.make_audio_logits_processor(int(min_tokens))]
+        if slice_head:
+            processors = [self.make_sliced_logits_processor(int(min_tokens))]
+            sampler = self.make_sliced_sampler(sampler)
+        else:
+            processors = [self.make_audio_logits_processor(int(min_tokens))]
 
         frame_rate = float(self.config.frame_rate_hz)
         frames_per_chunk = max(1, int(round(streaming_interval * frame_rate)))
 
         frames: List[List[int]] = []
         frame: List[int] = []
-        decoded = 0
-        token_count = 0
         start = time.perf_counter()
 
         if stream:
             self.streaming_decoder.reset()
 
-        for token, _ in generate_step(
-            prompt_ids,
-            self,
-            max_tokens=int(max_tokens),
-            sampler=sampler,
-            logits_processors=processors,
-        ):
+        with self.audio_head(slice_head):
+            steps = generate_step(
+                prompt_ids,
+                self,
+                max_tokens=int(max_tokens),
+                sampler=sampler,
+                logits_processors=processors,
+            )
+            yield from self._consume(
+                steps, frames, frame, frames_per_chunk, stream, start,
+                prompt_tokens, frame_rate, verbose,
+            )
+
+    def _consume(
+        self, steps, frames, frame, frames_per_chunk, stream, start,
+        prompt_tokens, frame_rate, verbose,
+    ):
+        decoded = 0
+        token_count = 0
+        for token, _ in steps:
             token_count += 1
             if token == self.audio_end_id:
                 break

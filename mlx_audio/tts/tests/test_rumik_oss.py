@@ -183,3 +183,83 @@ def test_prompt_format_and_voice_resolution():
     # An inline description in the text is kept as-is.
     p2 = model.build_prompt('<description="sad"> hi', None, "happy")
     assert p2 == '<text>Ira: <description="sad"> hi<audio>'
+
+
+def test_audio_head_matches_full_head_rows():
+    model = Model(tiny_config())
+    x = mx.array([[1, 2, 3]])
+    full = model(x)
+    with model.audio_head():
+        sliced = model(x)
+    rows = mx.array(model.audio_rows)
+    assert sliced.shape == (1, 3, NUM_Q * CODEBOOK + 1)
+    assert model.audio_rows[-1] == AUDIO_END
+    assert mx.allclose(sliced, full[:, :, rows], atol=1e-5).item()
+    # Context manager restores the full head.
+    assert model(x).shape[-1] == VOCAB
+
+
+def test_audio_head_matches_full_head_rows_when_quantized():
+    import mlx.nn as nn
+
+    # Quantization needs a hidden size divisible by a supported group size.
+    model = Model(tiny_config(hidden_size=64, head_dim=32, intermediate_size=64))
+    nn.quantize(
+        model,
+        group_size=32,
+        bits=8,
+        class_predicate=lambda p, m: hasattr(m, "to_quantized")
+        and model.model_quant_predicate(p, m),
+    )
+    assert isinstance(model.model.embed_tokens, nn.QuantizedEmbedding)
+    assert isinstance(model.stop_predictor.layers[1], nn.Linear)  # excluded
+    x = mx.array([[4, 5]])
+    full = model(x)
+    with model.audio_head():
+        sliced = model(x)
+    rows = mx.array(model.audio_rows)
+    assert mx.allclose(sliced, full[:, :, rows], atol=1e-5).item()
+
+
+def test_sliced_logits_processor_gates_and_forces_end():
+    model = Model(tiny_config())
+    model._last_hidden = mx.zeros((1, 16))
+    n = len(model.audio_rows)
+    logits = mx.zeros((1, n))
+    proc = model.make_sliced_logits_processor(min_tokens=1)
+    out = proc(mx.array([0]), logits)
+    assert out[0, -1].item() == -float("inf")  # </audio> gated before min_tokens
+    assert mx.isfinite(out[0, 0]).item()
+    out = proc(mx.array([0]), logits)  # untrained head does not fire: unchanged
+    assert mx.isfinite(out[0, -1]).item()
+
+    final = model.stop_predictor.layers[3]
+    final.weight = mx.zeros_like(final.weight)
+    final.bias = mx.array([10.0])
+    out = proc(mx.array([0]), logits)
+    assert mx.argmax(out, axis=-1).item() == n - 1
+    assert model.audio_rows[mx.argmax(out, axis=-1).item()] == AUDIO_END
+
+
+def test_sliced_sampler_returns_vocabulary_ids_and_feeds_back_through_generate_step():
+    from mlx_audio.lm.generate import generate_step
+
+    model = Model(tiny_config())
+    n = len(model.audio_rows)
+    sampler = model.make_sliced_sampler(lambda lp: mx.argmax(lp, axis=-1))
+    lp = mx.zeros((1, n)).at[0, 5].add(1.0)
+    assert sampler(lp).item() == model.audio_rows[5] == unit_id(1, 1)
+    lp = mx.zeros((1, n)).at[0, n - 1].add(1.0)
+    assert sampler(lp).item() == AUDIO_END
+
+    # Every token generate_step yields (and feeds back) must be a real audio id.
+    proc = model.make_sliced_logits_processor(min_tokens=100)
+    with model.audio_head():
+        toks = [
+            t
+            for t, _ in generate_step(
+                mx.array([1, 2, 3]), model, max_tokens=12, sampler=sampler, logits_processors=[proc]
+            )
+        ]
+    assert len(toks) == 12
+    assert all(FIRST_UNIT <= t <= LAST_UNIT for t in toks), toks
