@@ -330,7 +330,7 @@ class TestAudioIOEdgeCases:
         """Test that values outside [-1, 1] are clipped."""
         samplerate = 16000
         # Create data with values outside [-1, 1]
-        data = np.array([1.5, -1.5, 0.5, -0.5], dtype=np.float32)
+        data = np.tile([1.5, -1.5, 0.5, -0.5], 1024).astype(np.float32)
 
         output_file = tmp_path / "test_clipped.ogg"
         write(output_file, data, samplerate, format="ogg")
