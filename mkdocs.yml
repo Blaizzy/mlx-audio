@@ -90,6 +90,7 @@ nav:
       - Voxtral TTS: models/tts/voxtral-tts.md
       - VoxCPM2: models/tts/voxcpm2.md
       - Svara TTS: models/tts/svara.md
+      - rumik-oss 1: models/tts/rumik-oss.md
       - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
       - Dia: models/tts/dia.md
