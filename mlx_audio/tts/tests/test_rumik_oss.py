@@ -179,7 +179,10 @@ def test_prompt_format_and_voice_resolution():
     with pytest.raises(ValueError):
         model.resolve_voice("Bob")
     p = model.build_prompt("नमस्ते", "Aisha", "happy, Hindi accent, steady pace")
-    assert p == '<text>Aisha: <description="happy, Hindi accent, steady pace"> नमस्ते<audio>'
+    assert (
+        p
+        == '<text>Aisha: <description="happy, Hindi accent, steady pace"> नमस्ते<audio>'
+    )
     # An inline description in the text is kept as-is.
     p2 = model.build_prompt('<description="sad"> hi', None, "happy")
     assert p2 == '<text>Ira: <description="sad"> hi<audio>'
@@ -258,7 +261,11 @@ def test_sliced_sampler_returns_vocabulary_ids_and_feeds_back_through_generate_s
         toks = [
             t
             for t, _ in generate_step(
-                mx.array([1, 2, 3]), model, max_tokens=12, sampler=sampler, logits_processors=[proc]
+                mx.array([1, 2, 3]),
+                model,
+                max_tokens=12,
+                sampler=sampler,
+                logits_processors=[proc],
             )
         ]
     assert len(toks) == 12

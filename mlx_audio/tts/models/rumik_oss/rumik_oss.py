@@ -121,7 +121,9 @@ class Model(Cohere2Model):
         """Vocabulary ids covered by the audio head: units then ``</audio>`` last."""
         if self._audio_rows is None:
             c = self.config
-            self._audio_rows = list(range(int(c.first_unit_id), int(c.last_unit_id) + 1))
+            self._audio_rows = list(
+                range(int(c.first_unit_id), int(c.last_unit_id) + 1)
+            )
             self._audio_rows.append(self.audio_end_id)
         return self._audio_rows
 
@@ -139,7 +141,9 @@ class Model(Cohere2Model):
             )
         else:
             self._audio_head_params = dict(weight=emb.weight[rows])
-        mx.eval(*[v for v in self._audio_head_params.values() if isinstance(v, mx.array)])
+        mx.eval(
+            *[v for v in self._audio_head_params.values() if isinstance(v, mx.array)]
+        )
 
     def _audio_logits(self, hidden: mx.array) -> mx.array:
         if self._audio_head_params is None:
@@ -343,7 +347,11 @@ class Model(Cohere2Model):
         """
         c = self.config
         vocab = int(c.vocab_size)
-        first, last, end_id = int(c.first_unit_id), int(c.last_unit_id), self.audio_end_id
+        first, last, end_id = (
+            int(c.first_unit_id),
+            int(c.last_unit_id),
+            self.audio_end_id,
+        )
 
         ids = mx.arange(vocab)
         units = (ids >= first) & (ids <= last)
@@ -504,13 +512,28 @@ class Model(Cohere2Model):
                 logits_processors=processors,
             )
             yield from self._consume(
-                steps, frames, frame, frames_per_chunk, stream, start,
-                prompt_tokens, frame_rate, verbose,
+                steps,
+                frames,
+                frame,
+                frames_per_chunk,
+                stream,
+                start,
+                prompt_tokens,
+                frame_rate,
+                verbose,
             )
 
     def _consume(
-        self, steps, frames, frame, frames_per_chunk, stream, start,
-        prompt_tokens, frame_rate, verbose,
+        self,
+        steps,
+        frames,
+        frame,
+        frames_per_chunk,
+        stream,
+        start,
+        prompt_tokens,
+        frame_rate,
+        verbose,
     ):
         decoded = 0
         token_count = 0
