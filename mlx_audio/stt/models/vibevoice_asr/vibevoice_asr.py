@@ -214,6 +214,12 @@ class Model(nn.Module):
         if speech_features is None or (cache is not None and cache[0].offset > 0):
             return text_embeds
 
+        # The speech encoder yields float32 features. Merging them as-is promotes
+        # the whole prompt to float32, so the KV cache is float32 and every later
+        # decode step runs the language model in float32 instead of its own
+        # dtype (4-5x slower on bf16 checkpoints). Match the text embeddings.
+        speech_features = speech_features.astype(text_embeds.dtype)
+
         # Insert speech features at masked positions
         if acoustic_input_mask is not None:
             # acoustic_input_mask is [B, L] boolean
