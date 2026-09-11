@@ -47,6 +47,7 @@ MODEL_REMAPPING = {
     "moss_tts_delay": "moss_tts",
     "moss_tts_local": "moss_tts",
     "higgs_multimodal_qwen3": "higgs_audio_v3",
+    "cosyvoice3": "cosyvoice3",
 }
 MAX_FILE_SIZE_GB = 5
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
