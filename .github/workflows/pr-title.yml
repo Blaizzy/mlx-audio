@@ -1,0 +1,23 @@
+name: PR Title
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require a Conventional Commit title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ "$PR_TITLE" =~ ^(build|chore|ci|deps|docs|feat|fix|perf|refactor|revert|style|test)(\([A-Za-z0-9._/-]+\))?(!)?:[[:space:]].+ ]]; then
+            exit 0
+          fi
+
+          echo "::error title=Invalid PR title::Use 'type: summary' or 'type(scope): summary' (for example, 'fix(tts): handle empty prompts')."
+          exit 1
