@@ -214,11 +214,16 @@ def save_as_json(segments, output_path: str):
             "segments": [],
         }
         for s in segments.segments:
+            duration = (
+                s["end"] - s["start"]
+                if s["start"] is not None and s["end"] is not None
+                else None
+            )
             seg = {
                 "text": s["text"],
                 "start": s["start"],
                 "end": s["end"],
-                "duration": s["end"] - s["start"],
+                "duration": duration,
             }
             # Add word-level timestamps if available
             if "words" in s and s["words"]:
@@ -293,27 +298,51 @@ def generate_transcription(
     if kwargs.get("stream", False):
         all_segments = []
         accumulated_text = ""
+        pending_text = ""
+        pending_is_final = False
         language = "en"
         prompt_tokens = 0
         generation_tokens = 0
         for result in model.generate(audio, verbose=verbose, **kwargs):
-            segment_dict = {
-                "text": result.text,
-                "start": result.start_time,
-                "end": result.end_time,
-                "is_final": result.is_final,
-            }
-
-            all_segments.append(segment_dict)
             # Accumulate text (handles both incremental and cumulative streaming)
             accumulated_text += result.text
+            pending_text += result.text
+            pending_is_final = pending_is_final or result.is_final
             language = result.language
+
+            # Untimed text is committed when the model emits a timed boundary.
+            # Qwen3-ASR exposes coarse chunk boundaries because generated tokens
+            # do not carry real audio alignment.
+            if result.start_time is not None and result.end_time is not None:
+                if pending_text or result.is_final:
+                    all_segments.append(
+                        {
+                            "text": pending_text,
+                            "start": result.start_time,
+                            "end": result.end_time,
+                            "is_final": result.is_final,
+                        }
+                    )
+                pending_text = ""
+                pending_is_final = False
 
             # Extract token counts from results (final result has cumulative totals)
             if hasattr(result, "prompt_tokens") and result.prompt_tokens > 0:
                 prompt_tokens = result.prompt_tokens
             if hasattr(result, "generation_tokens") and result.generation_tokens > 0:
                 generation_tokens = result.generation_tokens
+
+        if pending_text:
+            if format in {"srt", "vtt"}:
+                raise ValueError("Cannot write untimed streaming text as SRT or VTT")
+            all_segments.append(
+                {
+                    "text": pending_text,
+                    "start": None,
+                    "end": None,
+                    "is_final": pending_is_final,
+                }
+            )
 
         stream_end_time = time.time()
         stream_duration = stream_end_time - start_time
