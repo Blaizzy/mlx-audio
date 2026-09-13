@@ -1064,6 +1064,14 @@ def test_model_provider_sweeper_is_noop_when_ttl_disabled(monkeypatch):
     provider.stop_sweeper()
 
 
-def test_model_provider_clamps_max_resident_to_at_least_one():
+def test_model_provider_zero_max_resident_is_unbounded(monkeypatch):
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model", lambda name: f"model-{name}"
+    )
     provider = _make_provider(max_resident=0)
-    assert provider.max_resident_models == 1
+    assert provider.max_resident_models == 0
+
+    for i in range(5):
+        provider.load_model(f"m{i}")
+
+    assert len(provider.models) == 5
