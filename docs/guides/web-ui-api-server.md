@@ -34,7 +34,7 @@ The API will be available at `http://localhost:8000` and the Studio UI at `http:
 | `--realtime-transcription-delay-ms` | `null` | Transcription latency/quality knob for models that support it (e.g. `voxtral_realtime`) |
 | `--vad-model` | `mlx-community/silero-vad` | Streaming VAD model used for server-side turn detection (`server_vad`) on `/v1/realtime` |
 | `--tts-max-batch-size` | `8` | Maximum compatible TTS speech requests per continuous batch session |
-| `--max-resident-models` | `1` | Max models kept loaded at once; loading another evicts the least-recently-used (LRU) |
+| `--max-resident-models` | `0` | Max models kept loaded at once; loading another evicts the least-recently-used (LRU). `0` disables the bound (unbounded) |
 | `--model-idle-ttl-seconds` | `0` | Unload models unused for this many seconds (0 disables the idle sweeper) |
 
 The two realtime flags also read from `MLX_AUDIO_REALTIME_MODEL` and `MLX_AUDIO_REALTIME_TRANSCRIPTION_DELAY_MS` if present; the CLI flags take precedence. `--vad-model` likewise reads from `MLX_AUDIO_VAD_MODEL`.
@@ -163,10 +163,13 @@ curl -X POST "http://localhost:8000/v1/models?model_name=mlx-community/Kokoro-82
 curl -X DELETE "http://localhost:8000/v1/models?model_name=mlx-community/Kokoro-82M-bf16"
 ```
 
-Loaded models are evicted automatically: loading more than `--max-resident-models`
-(1 by default) evicts the least-recently-used model, and `--model-idle-ttl-seconds`
-unloads models unused for that long. Set either to suit multi-voice / multi-model
-workloads so memory stays bounded without manual `DELETE` calls.
+Loaded models are evicted automatically when `--max-resident-models` is set: once
+the bound is reached, loading another model evicts the least-recently-used one
+(`0`, the default, leaves the resident set unbounded — recommended when one server
+mixes STT and TTS, which would otherwise evict each other's model), and
+`--model-idle-ttl-seconds` unloads models unused for that long. Set either to suit
+multi-voice / multi-model workloads so memory stays bounded without manual
+`DELETE` calls.
 
 ### Real-Time WebSocket Transcription
 

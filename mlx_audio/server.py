@@ -95,12 +95,14 @@ def sanitize_for_json(obj: Any) -> Any:
 class ModelProvider:
     def __init__(
         self,
-        max_resident_models: int = 1,
+        max_resident_models: int = 0,
         idle_ttl_seconds: float = 0.0,
     ):
         self.models: Dict[str, Dict[str, Any]] = {}
         self._last_used: Dict[str, float] = {}
-        self.max_resident_models = max(1, max_resident_models)
+        # 0 = unbounded (never evict); >= 1 bounds the resident set and evicts
+        # least-recently-used when a new model would exceed it.
+        self.max_resident_models = max(0, max_resident_models)
         self.idle_ttl_seconds = idle_ttl_seconds
         self._lock = threading.Lock()
         self._sweeper_task: Optional[asyncio.Task] = None
@@ -108,7 +110,10 @@ class ModelProvider:
     def load_model(self, model_name: str):
         with self._lock:
             if model_name not in self.models:
-                if len(self.models) >= self.max_resident_models:
+                if (
+                    self.max_resident_models > 0
+                    and len(self.models) >= self.max_resident_models
+                ):
                     self._evict_least_recently_used()
                 self.models[model_name] = load_model(model_name)
 
@@ -288,7 +293,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 model_provider = ModelProvider(
-    max_resident_models=_env_int("MLX_AUDIO_MAX_RESIDENT_MODELS", 1),
+    max_resident_models=_env_int("MLX_AUDIO_MAX_RESIDENT_MODELS", 0),
     idle_ttl_seconds=_env_float("MLX_AUDIO_MODEL_IDLE_TTL_SECONDS", 0.0),
 )
 REALTIME_INFERENCE_LOCK = asyncio.Lock()
@@ -2205,8 +2210,9 @@ def main():
         default=None,
         help=(
             "Maximum number of models kept loaded in memory at once; loading "
-            "another evicts the least-recently-used one (LRU). "
-            "Overrides $MLX_AUDIO_MAX_RESIDENT_MODELS (default: 1)."
+            "another evicts the least-recently-used one (LRU). 0 disables the "
+            "LRU bound (unbounded). "
+            "Overrides $MLX_AUDIO_MAX_RESIDENT_MODELS (default: 0)."
         ),
     )
     parser.add_argument(
@@ -2234,11 +2240,11 @@ def main():
     # The provider is constructed at import time, so apply the memory bounds
     # directly (CLI flags take precedence over the environment).
     model_provider.max_resident_models = max(
-        1,
+        0,
         (
             args.max_resident_models
             if args.max_resident_models is not None
-            else _env_int("MLX_AUDIO_MAX_RESIDENT_MODELS", 1)
+            else _env_int("MLX_AUDIO_MAX_RESIDENT_MODELS", 0)
         ),
     )
     model_provider.idle_ttl_seconds = (
