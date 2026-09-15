@@ -358,3 +358,25 @@ class TestGenerateAudio(unittest.TestCase):
         self.assertEqual(len(call_kwargs["ref_audio"]), 2)
         self.assertEqual(call_kwargs["ref_text"], ["speaker one", "speaker two"])
         mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    def test_generate_audio_passes_model_specific_kwargs(
+        self, mock_audio_write, _mock_print
+    ):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [self._result([0.1, 0.2])]
+
+        generate_audio(
+            text="hello",
+            model=model,
+            cross_lingual=True,
+            spk_id="speaker-a",
+            verbose=False,
+        )
+
+        call_kwargs = model.generate.call_args.kwargs
+        self.assertTrue(call_kwargs["cross_lingual"])
+        self.assertEqual(call_kwargs["spk_id"], "speaker-a")
+        mock_audio_write.assert_called_once()
