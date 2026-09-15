@@ -1008,10 +1008,10 @@ async def test_model_provider_remove_model_clears_memory(monkeypatch):
 
 def test_model_provider_evict_collects_garbage_before_clearing_cache(monkeypatch):
     order = []
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
     monkeypatch.setattr(
-        "mlx_audio.server.load_model", lambda name: f"model-{name}"
+        "mlx_audio.server.gc.collect", lambda: order.append("gc.collect")
     )
-    monkeypatch.setattr("mlx_audio.server.gc.collect", lambda: order.append("gc.collect"))
     monkeypatch.setattr(
         "mlx_audio.server.mx.clear_cache", lambda: order.append("mx.clear_cache")
     )
@@ -1065,9 +1065,7 @@ def test_model_provider_sweeper_is_noop_when_ttl_disabled(monkeypatch):
 
 
 def test_model_provider_zero_max_resident_is_unbounded(monkeypatch):
-    monkeypatch.setattr(
-        "mlx_audio.server.load_model", lambda name: f"model-{name}"
-    )
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
     provider = _make_provider(max_resident=0)
     assert provider.max_resident_models == 0
 
