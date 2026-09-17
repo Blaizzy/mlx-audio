@@ -22,6 +22,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.stt.streaming import StreamingSession
+
 from ..base import STTOutput
 from .audio import compute_mel_filters, compute_mel_spectrogram
 from .config import (
@@ -335,7 +337,7 @@ class Model(nn.Module):
         max_tokens: int = 4096,
         temperature: float = 0.0,
         transcription_delay_ms: Optional[int] = None,
-    ):
+    ) -> StreamingSession:
         """Create a stateful streaming session for this model.
 
         Returns a ``VoxtralStreamingSession`` whose ``feed()`` is a cheap

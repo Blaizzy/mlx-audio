@@ -26,6 +26,25 @@ _PREFERRED_ORDER = ("tts", "stt", "sts")
 _AMBIGUOUS_FAMILIES = frozenset({"llama", "qwen3", "dense"})
 
 
+def model_type_from_config(config: dict) -> Optional[str]:
+    """Resolve audio architectures whose upstream config names a generic LLM."""
+    model_type = config.get("model_type") or config.get("architecture")
+    if model_type in {None, "qwen2", "mimo_audio"} and (
+        "MiMoAudioModel" in (config.get("architectures") or ())
+        or {
+            "speech_vocab_size",
+            "speech_zeroemb_idx",
+            "input_local_layers",
+            "local_layers",
+            "group_size",
+            "audio_channels",
+            "delay_pattern",
+        }.issubset(config)
+    ):
+        return "mimo_audio"
+    return model_type
+
+
 @lru_cache(maxsize=None)
 def kinds() -> Tuple[str, ...]:
     """All model kinds that ship a ``models/`` directory, voice kinds first."""

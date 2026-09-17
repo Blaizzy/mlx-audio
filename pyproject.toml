@@ -72,6 +72,7 @@ all = [
     "mlx-lm>=0.31.1",
 
     "fastapi>=0.95.0",
+    "python-multipart>=0.0.22",
     "uvicorn[standard]>=0.22.0",
 
     "webrtcvad>=2.0.10",

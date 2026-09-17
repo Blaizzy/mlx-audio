@@ -78,6 +78,29 @@ python -m mlx_audio.convert \
     --upload-repo username/Kokoro-82M-4bit
 ```
 
+## MiMo-Audio
+
+Base and Instruct can load the original checkpoints directly. To reduce memory, convert either checkpoint with the standard converter:
+
+```bash
+python -m mlx_audio.convert \
+    --hf-path XiaomiMiMo/MiMo-Audio-7B-Instruct \
+    --mlx-path ./MiMo-Audio-7B-Instruct-4bit \
+    -q --q-bits 4 --q-group-size 64
+```
+
+MiMo's quantization policy covers the global Qwen2 backbone and text head. Acoustic patch transformers, speech embeddings and speech heads retain their floating-point precision. The separate audio tokenizer is not quantized. Consequently, total memory use is larger than a uniformly quantized 7B text model. Both source and converted weights use the same [offline APIs](../models/sts/mimo-audio.md).
+
+To save the standalone tokenizer in MLX convolution layouts:
+
+```bash
+python -m mlx_audio.codec.models.mimo_audio_tokenizer.convert \
+    --hf-path XiaomiMiMo/MiMo-Audio-Tokenizer \
+    --mlx-path ./MiMo-Audio-Tokenizer-mlx
+```
+
+Its converter preserves stored precision by default and accepts `--dtype` and `--revision`. The resulting directory contains weights, config, and a model card. The language-model converter records the separate codec dependency and its pinned revision in `config.json`; use `audio_tokenizer_path` or the CLI's `--audio-tokenizer-path` to choose a local codec. No upload is required for local inference.
+
 ## Conversion Options Reference
 
 | Flag | Description |

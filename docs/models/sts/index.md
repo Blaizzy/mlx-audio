@@ -9,7 +9,9 @@ MLX Audio provides speech-to-speech models for audio source separation, speech e
 | Model | Provider | Use Case | Repo |
 |-------|----------|----------|------|
 | [**SAM-Audio**](#sam-audio) | Meta | Text-guided source separation | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| [**DialogueSidon**](dialogue-sidon.md) | SaruLab | Two-speaker dialogue separation and restoration | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
 | [**Liquid2.5-Audio**](#liquid25-audio) | LiquidAI | Speech-to-Speech, TTS, ASR | [mlx-community/LFM2.5-Audio-1.5B-4bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-4bit) |
+| [**MiMo-Audio**](mimo-audio.md) | Xiaomi | Offline TTS, ASR, voice dialogue, Base few-shot tasks | [Instruct](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct), [Base](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Base) |
 | [**Moshi**](#moshi) | Kyutai Labs | Full-duplex voice conversation | [kyutai/moshiko-mlx-q4](https://huggingface.co/kyutai/moshiko-mlx-q4) |
 | [**MossFormer2 SE**](#mossformer2-se) | Alibaba | Speech enhancement / noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | [**DeepFilterNet**](#deepfilternet) | -- | Speech enhancement / noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
@@ -175,7 +177,9 @@ audio_codes = []
 for token, modality in model.generate_sequential(
     **dict(chat),
     max_new_tokens=2048,
-    temperature=0.8,
+    # Upstream TTS recipe: greedy text, sampled audio
+    audio_temperature=0.8,
+    audio_top_k=64,
 ):
     mx.eval(token)
     if modality == LFMModality.AUDIO_OUT:
@@ -205,13 +209,15 @@ audio, sr = audio_read("input.wav")
 audio = mx.array(audio.astype(np.float32))
 
 chat = ChatState(processor)
+chat.new_turn("system")
+chat.add_text("Perform ASR.")
+chat.end_turn()
 chat.new_turn("user")
 chat.add_audio(audio, sample_rate=sr)
-chat.add_text("Transcribe the audio.")
 chat.end_turn()
 chat.new_turn("assistant")
 
-for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=512):
+for token, modality in model.generate_sequential(**dict(chat), max_new_tokens=512):
     mx.eval(token)
     if modality == LFMModality.TEXT:
         print(processor.decode_text(token[None]), end="", flush=True)
@@ -226,6 +232,7 @@ from mlx_audio.audio_io import read as audio_read, write as audio_write
 from mlx_audio.sts.models.lfm_audio import (
     LFM2AudioModel, LFM2AudioProcessor, ChatState, LFMModality,
 )
+from mlx_audio.sts.models.lfm_audio.model import AUDIO_EOS_TOKEN
 
 model = LFM2AudioModel.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
 processor = LFM2AudioProcessor.from_pretrained("mlx-community/LFM2.5-Audio-1.5B-4bit")
@@ -243,17 +250,19 @@ chat.end_turn()
 chat.new_turn("assistant")
 
 text_out, audio_out = [], []
-for token, modality in model.generate_interleaved(**dict(chat), max_new_tokens=2048):
+for token, modality in model.generate_interleaved(
+    **dict(chat), max_new_tokens=2048, audio_temperature=1.0, audio_top_k=4
+):
     mx.eval(token)
     if modality == LFMModality.TEXT:
         text_out.append(token)
         print(processor.decode_text(token[None]), end="", flush=True)
-    else:
+    elif token[0].item() != AUDIO_EOS_TOKEN:  # skip end-of-audio frames
         audio_out.append(token)
 
 if audio_out:
-    audio_codes = mx.stack(audio_out[:-1], axis=1)[None, :]
-    waveform = processor.decode_with_detokenizer(audio_codes)
+    audio_codes = mx.stack(audio_out, axis=1)[None, :]  # (1, 8, T)
+    waveform = processor.decode_audio(audio_codes, codec="detokenizer")
     audio_write("response.wav", waveform[0].tolist(), 24000)
 ```
 
@@ -264,13 +273,16 @@ from mlx_audio.sts.models.lfm_audio import GenerationConfig
 
 config = GenerationConfig(
     max_new_tokens=2048,
-    temperature=0.9,        # Text sampling temperature
-    top_k=50,               # Text top-k sampling
-    top_p=1.0,              # Text nucleus sampling
-    audio_temperature=0.7,  # Audio sampling temperature
-    audio_top_k=30,         # Audio top-k sampling
+    temperature=None,       # Text sampling temperature (None = greedy)
+    top_k=None,             # Text top-k sampling (None = no filtering)
+    audio_temperature=1.0,  # Audio sampling temperature (None = greedy)
+    audio_top_k=4,          # Audio top-k sampling (None = no filtering)
 )
 ```
+
+Every knob defaults to `None`, i.e. greedy decoding, matching `liquid-audio`. The
+upstream recipes are greedy text throughout, with `audio_temperature=1.0`/`audio_top_k=4`
+for interleaved chat and `audio_temperature=0.8`/`audio_top_k=64` for TTS.
 
 ---
 

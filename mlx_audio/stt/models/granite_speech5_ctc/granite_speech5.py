@@ -497,6 +497,7 @@ class Model(nn.Module):
         *,
         verbose: bool = False,
         generation_stream=None,
+        **kwargs,
     ) -> STTOutput:
         if self._tokenizer is None:
             raise RuntimeError("Tokenizer not loaded; load the model with stt.load().")

@@ -19,7 +19,7 @@ from mlx_audio.lm.models.lfm2 import Lfm2Model
 from ....base import check_array_shape
 from .config import DepthformerConfig, LFM2AudioConfig
 from .conformer import MLP, ConformerEncoder
-from .transformer import Depthformer
+from .transformer import Depthformer, causal_mask
 
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
@@ -44,35 +44,21 @@ AUDIO_EOS_TOKEN = 2048  # End-of-sequence for audio codebooks
 
 @dataclass
 class GenerationConfig:
+    """Sampling settings for LFM2.5-Audio.
+
+    ``None`` means greedy decoding, matching the ``liquid-audio`` reference where
+    every sampling knob defaults to ``None``. The upstream recipes are:
+
+    - interleaved chat: greedy text, ``audio_temperature=1.0``, ``audio_top_k=4``
+    - TTS (sequential): greedy text, ``audio_temperature=0.8``, ``audio_top_k=64``
+    - ASR (sequential): fully greedy
+    """
+
     max_new_tokens: int = 512
-    temperature: float = 1.0
-    top_k: int = 50
-    top_p: float = 1.0
-    audio_temperature: float = 1.0
-    audio_top_k: int = 4
-
-
-class AudioEmbeddingWithNorm(nn.Module):
-
-    def __init__(self, vocab_size: int, dim: int):
-        super().__init__()
-        self.vocab_size = vocab_size
-        self.dim = dim
-        self.embedding = nn.Embedding(vocab_size, dim)
-        self.embedding_norm = nn.RMSNorm(dim)
-        self.to_logits = nn.Linear(dim, vocab_size, bias=False)
-
-    def embed(self, x: mx.array) -> mx.array:
-        """Embed tokens with normalization."""
-        return self.embedding_norm(self.embedding(x))
-
-    def embed_raw(self, x: mx.array) -> mx.array:
-        """Embed tokens WITHOUT normalization (used for conditioning)."""
-        return self.embedding(x)
-
-    def logits(self, x: mx.array) -> mx.array:
-        """Project to vocabulary logits."""
-        return self.to_logits(x)
+    temperature: Optional[float] = None
+    top_k: Optional[int] = None
+    audio_temperature: Optional[float] = None
+    audio_top_k: Optional[int] = None
 
 
 class AudioEmbedding(nn.Module):
@@ -118,10 +104,11 @@ class AudioEmbedding(nn.Module):
         Returns:
             Summed embeddings (B, dim) or (dim,)
         """
-        if codes.ndim == 1:
+        squeeze_batch = codes.ndim == 1
+        if squeeze_batch:
             codes = codes[None, :]
 
-        B, K = codes.shape
+        K = codes.shape[1]
 
         # Apply codebook offsets: each codebook's tokens are offset to use separate region
         # codes[:, i] + i * vocab_size
@@ -130,13 +117,18 @@ class AudioEmbedding(nn.Module):
         # (B, K) -> (B, K, dim) -> sum over K -> (B, dim)
         embedded = self.embedding(offset_codes).sum(axis=1)
 
-        if codes.ndim == 1:
+        if squeeze_batch:
             return embedded.squeeze(0)
 
         return embedded
 
 
 class AudioEmbeddingWithNorm(nn.Module):
+    """Per-codebook embedding + output projection (reference ``SharedEmbedding``).
+
+    ``embedding_norm`` belongs on the *output* path only: the reference embeds
+    tokens raw and normalizes the hidden state right before ``to_logits``.
+    """
 
     def __init__(self, vocab_size: int, dim: int):
         super().__init__()
@@ -147,33 +139,22 @@ class AudioEmbeddingWithNorm(nn.Module):
         self.to_logits = nn.Linear(dim, vocab_size, bias=False)
 
     def embed(self, x: mx.array) -> mx.array:
-        """Embed tokens with normalization."""
-        return self.embedding_norm(self.embedding(x))
-
-    def embed_raw(self, x: mx.array) -> mx.array:
-        """Embed tokens WITHOUT normalization (used for conditioning)."""
+        """Embed tokens (no normalization), matching ``SharedEmbedding.embed``."""
         return self.embedding(x)
 
-    def logits(self, x: mx.array) -> mx.array:
-        """Project to vocabulary logits."""
-        return self.to_logits(x)
+    def get_logits(self, x: mx.array) -> mx.array:
+        return self.to_logits(self.embedding_norm(x))
 
 
 class AudioHead(nn.Module):
 
     def __init__(
         self,
-        input_dim: int,
         depthformer_config: DepthformerConfig,
         num_codebooks: int = 8,
-        vocab_size: int = 2049,
-        codebook_weight: str = "log",
     ):
         super().__init__()
-        self.input_dim = input_dim
         self.num_codebooks = num_codebooks
-        self.vocab_size = vocab_size
-        self.codebook_weight = codebook_weight
         self.depthformer_dim = depthformer_config.dim
 
         self.depthformer = Depthformer(
@@ -181,38 +162,34 @@ class AudioHead(nn.Module):
             dim=depthformer_config.dim,
             num_heads=depthformer_config.num_heads,
             num_kv_heads=depthformer_config.num_kv_heads,
+            rope_theta=depthformer_config.rope_theta,
             tie=depthformer_config.tie,
         )
 
-    def __call__(
-        self,
-        x: mx.array,
-        cache: Optional[List[Any]] = None,
-        use_cache: bool = False,
-    ) -> Tuple[mx.array, Optional[List[Any]]]:
+    def __call__(self, x: mx.array) -> mx.array:
         """
-        Predict audio hidden states.
+        Predict audio hidden states for a whole sequence at once.
+
+        The depthformer attends over the *codebook* axis (a sequence of length
+        ``num_codebooks``), with the LFM time steps folded into the batch.
+        Frame-by-frame decoding drives ``self.depthformer`` directly instead, so
+        this path is uncached and always sees all ``num_codebooks`` positions.
 
         Args:
-            x: Hidden states from LFM (B, L, D)
-            cache: Optional cache for streaming
-            use_cache: Whether to return cache
+            x: Projected hidden states from ``depth_linear`` (B, L, num_codebooks * dim)
 
         Returns:
-            Hidden states per codebook (B, L, num_codebooks, dim), optional cache
+            Hidden states per codebook (B, L, num_codebooks, dim)
         """
-        B, L, D = x.shape
+        B, L, _ = x.shape
 
-        x = x.reshape(B, L, self.num_codebooks, self.depthformer_dim)  # (B, L, 8, 1024)
-        x = x.transpose(0, 2, 1, 3)  # (B, 8, L, 1024)
-        x = x.reshape(B * self.num_codebooks, L, self.depthformer_dim)  # (B*8, L, 1024)
+        # (B, L, 8*1024) -> (B*L, 8, 1024): codebooks are the sequence dimension
+        x = x.reshape(B * L, self.num_codebooks, self.depthformer_dim)
 
-        x, new_cache = self.depthformer(x, cache, use_cache)  # (B*8, L, 1024)
+        mask = causal_mask(self.num_codebooks, x.dtype)
+        x, _ = self.depthformer(x, mask=mask)
 
-        x = x.reshape(B, self.num_codebooks, L, self.depthformer_dim)  # (B, 8, L, 1024)
-        x = x.transpose(0, 2, 1, 3)  # (B, L, 8, 1024)
-
-        return x, new_cache
+        return x.reshape(B, L, self.num_codebooks, self.depthformer_dim)
 
 
 class LFM2AudioModel(nn.Module):
@@ -249,13 +226,7 @@ class LFM2AudioModel(nn.Module):
             config.lfm.hidden_size, config.codebooks * config.depthformer.dim
         )
 
-        self.audio_head = AudioHead(
-            config.lfm.hidden_size,
-            config.depthformer,
-            config.codebooks,
-            config.audio_vocab_size,
-            config.codebook_weight,
-        )
+        self.audio_head = AudioHead(config.depthformer, config.codebooks)
 
     @classmethod
     def from_pretrained(
@@ -657,27 +628,34 @@ class LFM2AudioModel(nn.Module):
 
         return embeddings
 
+    @staticmethod
+    def _is_greedy(temperature: Optional[float], top_k: Optional[int]) -> bool:
+        """Greedy whenever sampling is disabled, matching the reference."""
+        return temperature is None or temperature <= 0 or top_k == 1
+
+    @staticmethod
+    def _apply_top_k(logits: mx.array, top_k: Optional[int]) -> mx.array:
+        """Mask everything below the k-th largest logit."""
+        if top_k is None or top_k <= 0 or top_k >= logits.shape[-1]:
+            return logits
+
+        sorted_indices = mx.argsort(-logits, axis=-1)
+        kth_indices = sorted_indices[..., top_k - 1 : top_k]
+        kth_values = mx.take_along_axis(logits, kth_indices, axis=-1)
+        return mx.where(logits >= kth_values, logits, float("-inf"))
+
     def _sample_text_token(
         self,
         logits: mx.array,
-        temperature: float = 1.0,
-        top_k: int = 50,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
     ) -> mx.array:
-        """Sample a text token from logits."""
-        if temperature == 0:
+        """Sample a text token from logits (greedy when temperature is unset)."""
+        if self._is_greedy(temperature, top_k):
             return mx.argmax(logits, axis=-1)
 
-        logits = logits / temperature
-
-        # Top-k filtering using argsort
-        if top_k > 0 and top_k < logits.shape[-1]:
-            # Get indices that would sort the logits (descending)
-            sorted_indices = mx.argsort(-logits, axis=-1)
-            # Get the k-th largest value as threshold
-            kth_indices = sorted_indices[..., top_k - 1 : top_k]
-            kth_values = mx.take_along_axis(logits, kth_indices, axis=-1)
-            # Mask out values below threshold
-            logits = mx.where(logits >= kth_values, logits, float("-inf"))
+        logits = logits.astype(mx.float32) / temperature
+        logits = self._apply_top_k(logits, top_k)
 
         # mx.random.categorical expects logits (it applies softmax internally)
         return mx.random.categorical(logits)
@@ -686,8 +664,8 @@ class LFM2AudioModel(nn.Module):
         self,
         hidden_state: mx.array,
         audio_cache: Optional[List[Any]] = None,
-        temperature: float = 1.0,
-        top_k: int = 4,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
     ) -> Tuple[mx.array, List[Any]]:
         """
         Sample audio tokens for all codebooks with sequential conditioning.
@@ -722,7 +700,7 @@ class LFM2AudioModel(nn.Module):
             audio_cache = [None] * self.audio_head.depthformer.layers_count
 
         codes = []
-        greedy = temperature is None or temperature <= 0 or top_k == 1
+        greedy = self._is_greedy(temperature, top_k)
 
         for i in range(self.config.codebooks):
             # Get input for this codebook and add previous token embedding
@@ -734,33 +712,24 @@ class LFM2AudioModel(nn.Module):
                 cur_input, cache=audio_cache, use_cache=True
             )
 
-            # Get logits for this codebook
-            logits = self.depth_embeddings[i].logits(
+            logits = self.depth_embeddings[i].get_logits(
                 depthformer_out[:, -1, :]
             )  # (B, vocab)
 
             # Sample token
             if greedy:
-                code = mx.argmax(logits, axis=-1, keepdims=True)
+                code = mx.argmax(logits, axis=-1)
             else:
-                logits = logits / temperature
-
-                # Top-k filtering
-                if top_k > 0 and top_k < logits.shape[-1]:
-                    sorted_indices = mx.argsort(-logits, axis=-1)
-                    kth_indices = sorted_indices[:, top_k - 1 : top_k]
-                    kth_values = mx.take_along_axis(logits, kth_indices, axis=-1)
-                    logits = mx.where(logits >= kth_values, logits, float("-inf"))
-
+                logits = self._apply_top_k(
+                    logits.astype(mx.float32) / temperature, top_k
+                )
                 # mx.random.categorical expects logits (it applies softmax internally)
-                code = mx.random.categorical(logits)[:, None]
+                code = mx.random.categorical(logits)
 
-            codes.append(code.squeeze(-1))
+            codes.append(code)
 
-            # Get raw embedding for next codebook conditioning (no norm - matches PyTorch)
-            depthformer_token = self.depth_embeddings[i].embed_raw(
-                code.squeeze(-1)
-            )  # (B, 1024)
+            # Raw embedding conditions the next codebook (reference: no norm here)
+            depthformer_token = self.depth_embeddings[i].embed(code)  # (B, 1024)
 
         return mx.stack(codes, axis=-1), audio_cache
 
@@ -771,32 +740,34 @@ class LFM2AudioModel(nn.Module):
         audio_codes: Optional[mx.array] = None,
         modalities: Optional[mx.array] = None,
         max_new_tokens: int = 512,
-        temperature: float = 1.0,
-        top_k: int = 50,
-        audio_temperature: float = 1.0,
-        audio_top_k: int = 4,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        audio_temperature: Optional[float] = None,
+        audio_top_k: Optional[int] = None,
         interleaved_n_text: Optional[int] = None,
         interleaved_n_audio: Optional[int] = None,
-    ) -> Generator[mx.array, None, None]:
+    ) -> Generator[Tuple[mx.array, LFMModality], None, None]:
         """
         Generate tokens in interleaved text/audio mode.
 
         Alternates between generating text and audio tokens in fixed patterns.
+        Upstream recipe for chat: greedy text, ``audio_temperature=1.0``,
+        ``audio_top_k=4``.
 
         Args:
             text_tokens: Input text tokens
             audio_features: Input audio mel features
             audio_codes: Previous audio codes (for continuation)
             max_new_tokens: Maximum tokens to generate
-            temperature: Text sampling temperature
-            top_k: Text top-k sampling
-            audio_temperature: Audio sampling temperature
-            audio_top_k: Audio top-k sampling
+            temperature: Text sampling temperature (None = greedy)
+            top_k: Text top-k sampling (None = no filtering)
+            audio_temperature: Audio sampling temperature (None = greedy)
+            audio_top_k: Audio top-k sampling (None = no filtering)
             interleaved_n_text: Number of text tokens per group
             interleaved_n_audio: Number of audio frames per group
 
         Yields:
-            Generated tokens (single element for text, 8 elements for audio)
+            Tuples of (token, modality); text tokens are (1,), audio frames are (8,)
         """
         n_text = interleaved_n_text or self.config.interleaved_n_text
         n_audio = interleaved_n_audio or self.config.interleaved_n_audio
@@ -812,12 +783,13 @@ class LFM2AudioModel(nn.Module):
         # Get last hidden state
         last_hidden = hidden_states[:, -1:, :]
 
-        generated = 0
         modality_left = n_text  # Start with n_text tokens to generate
         text_done = False
         current_modality = LFMModality.TEXT
 
-        while generated < max_new_tokens:
+        for _ in range(max_new_tokens):
+            modality_left -= 1
+
             if current_modality == LFMModality.TEXT:
                 # Generate text token
                 text_logits = self.lfm.embed_tokens.as_linear(last_hidden)[:, -1, :]
@@ -834,6 +806,10 @@ class LFM2AudioModel(nn.Module):
                 if token_id == TEXT_END_TOKEN:
                     text_done = True
 
+                if modality_left <= 0 or text_done:
+                    modality_left = n_audio
+                    current_modality = LFMModality.AUDIO_OUT
+
                 # Embed and continue
                 next_emb = self._embed_text(text_token[:, None])
                 last_hidden = self.lfm(
@@ -841,14 +817,6 @@ class LFM2AudioModel(nn.Module):
                     cache=cache,
                     input_embeddings=next_emb,
                 )
-
-                modality_left -= 1
-                generated += 1
-
-                # Switch to audio after n_text tokens
-                if modality_left <= 0 or text_done:
-                    modality_left = n_audio
-                    current_modality = LFMModality.AUDIO_OUT
 
             else:  # AUDIO_OUT mode
                 # Generate audio frame with sequential codebook conditioning
@@ -859,49 +827,28 @@ class LFM2AudioModel(nn.Module):
                     top_k=audio_top_k,
                 )
 
-                # Check for audio EOS
+                if modality_left <= 0 and not text_done:
+                    modality_left = n_text
+                    current_modality = LFMModality.TEXT
+
+                # Audio EOS on codebook 0 ends the audio span early
                 if audio_frame[0, 0].item() == AUDIO_EOS_TOKEN:
                     # Set all codebooks to EOS
                     audio_frame = mx.full(
                         audio_frame.shape, AUDIO_EOS_TOKEN, dtype=audio_frame.dtype
                     )
-                    yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
-
-                    # Feed audio EOS back into the LFM state before resuming text.
-                    # Otherwise the next text token is sampled from stale pre-EOS state.
-                    next_emb = self._embed_audio_out(audio_frame)[:, None, :]
-                    last_hidden = self.lfm(
-                        inputs=None,
-                        cache=cache,
-                        input_embeddings=next_emb,
-                    )
-
-                    generated += 1
-                    # If text is done, break after final audio EOS
-                    if text_done:
-                        break
-                    # Otherwise switch back to text mode
-                    modality_left = n_text
                     current_modality = LFMModality.TEXT
-                    continue
 
                 yield audio_frame.squeeze(0), LFMModality.AUDIO_OUT
 
-                # Embed and continue
+                # Embed and continue. Feeding the frame back (including an EOS
+                # frame) is what advances the LFM state before text resumes.
                 next_emb = self._embed_audio_out(audio_frame)[:, None, :]
                 last_hidden = self.lfm(
                     inputs=None,
                     cache=cache,
                     input_embeddings=next_emb,
                 )
-
-                modality_left -= 1
-                generated += 1
-
-                # Switch back to text after n_audio tokens only if text not done
-                if modality_left <= 0 and not text_done:
-                    modality_left = n_text
-                    current_modality = LFMModality.TEXT
 
     def generate_sequential(
         self,
@@ -910,28 +857,31 @@ class LFM2AudioModel(nn.Module):
         audio_codes: Optional[mx.array] = None,
         modalities: Optional[mx.array] = None,
         max_new_tokens: int = 512,
-        temperature: float = 1.0,
-        top_k: int = 50,
-        audio_temperature: float = 1.0,
-        audio_top_k: int = 4,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        audio_temperature: Optional[float] = None,
+        audio_top_k: Optional[int] = None,
     ) -> Generator[Tuple[mx.array, LFMModality], None, None]:
         """
         Generate tokens in sequential mode.
 
-        The model autonomously decides when to switch between text and audio.
+        The model autonomously decides when to switch between text and audio:
+        it emits ``<|audio_start|>`` to open an audio span and an all-EOS frame
+        to close it. Upstream recipes: fully greedy for ASR, and greedy text
+        with ``audio_temperature=0.8``/``audio_top_k=64`` for TTS.
 
         Args:
             text_tokens: Input text tokens
             audio_features: Input audio mel features
             audio_codes: Previous audio codes
             max_new_tokens: Maximum tokens to generate
-            temperature: Text sampling temperature
-            top_k: Text top-k sampling
-            audio_temperature: Audio sampling temperature
-            audio_top_k: Audio top-k sampling
+            temperature: Text sampling temperature (None = greedy)
+            top_k: Text top-k sampling (None = no filtering)
+            audio_temperature: Audio sampling temperature (None = greedy)
+            audio_top_k: Audio top-k sampling (None = no filtering)
 
         Yields:
-            Tuples of (token, modality)
+            Tuples of (token, modality); text tokens are (1,), audio frames are (8,)
         """
         # Prefill with modality-aware embedding
         hidden_states, cache = self._prefill(
@@ -942,40 +892,23 @@ class LFM2AudioModel(nn.Module):
         )
 
         last_hidden = hidden_states[:, -1:, :]
+        current_modality = LFMModality.TEXT
 
-        # Detect initial modality from input - if last token was AUDIO_START, start in audio mode
-        if text_tokens is not None and text_tokens[0, -1].item() == AUDIO_START_TOKEN:
-            current_modality = LFMModality.AUDIO_OUT
-        else:
-            current_modality = LFMModality.TEXT
-
-        generated = 0
-
-        while generated < max_new_tokens:
+        for _ in range(max_new_tokens):
             if current_modality == LFMModality.TEXT:
                 # Generate text token
                 text_logits = self.lfm.embed_tokens.as_linear(last_hidden)[:, -1, :]
                 text_token = self._sample_text_token(text_logits, temperature, top_k)
                 token_id = text_token.item()
 
-                # Check for end of turn
-                if token_id == IM_END_TOKEN:
-                    yield text_token, LFMModality.TEXT
-                    break
+                yield text_token, LFMModality.TEXT
 
-                # Check for audio start - switch to audio mode
+                # <|audio_start|> opens an audio span
                 if token_id == AUDIO_START_TOKEN:
                     current_modality = LFMModality.AUDIO_OUT
-                    # Embed audio_start token and continue
-                    next_emb = self._embed_text(text_token[:, None])
-                    last_hidden = self.lfm(
-                        inputs=None,
-                        cache=cache,
-                        input_embeddings=next_emb,
-                    )
-                    continue
 
-                yield text_token, LFMModality.TEXT
+                if token_id == IM_END_TOKEN:
+                    break
 
                 # Embed and continue
                 next_emb = self._embed_text(text_token[:, None])
@@ -1012,8 +945,6 @@ class LFM2AudioModel(nn.Module):
                     input_embeddings=next_emb,
                 )
 
-            generated += 1
-
     def __call__(
         self,
         text_tokens: Optional[mx.array] = None,
@@ -1030,6 +961,11 @@ class LFM2AudioModel(nn.Module):
 
         Returns:
             Text logits and list of audio logits per codebook
+
+        Note:
+            Unlike the reference training step, the audio logits here are not
+            teacher-forced on the previous codebook's target token, so they are
+            only usable for inspection, not for computing a training loss.
         """
         hidden_states, _ = self._prefill(
             text_tokens=text_tokens,
@@ -1042,11 +978,11 @@ class LFM2AudioModel(nn.Module):
         hidden_states = self.depth_linear(hidden_states)
 
         # Audio head - get hidden states per codebook
-        audio_hidden, _ = self.audio_head(hidden_states)  # (B, L, 8, 1024)
+        audio_hidden = self.audio_head(hidden_states)  # (B, L, 8, 1024)
 
         # Apply logits projection for each codebook using depth_embeddings
         audio_logits = [
-            self.depth_embeddings[i].logits(audio_hidden[:, :, i, :])
+            self.depth_embeddings[i].get_logits(audio_hidden[:, :, i, :])
             for i in range(self.config.codebooks)
         ]
 
@@ -1057,10 +993,10 @@ class LFM2AudioModel(nn.Module):
         chat_state: Any,  # ChatState from processor
         mode: str = "interleaved",
         max_new_tokens: int = 512,
-        temperature: float = 0.7,
-        top_k: int = 50,
-        audio_temperature: float = 0.8,
-        audio_top_k: int = 4,
+        temperature: Optional[float] = None,
+        top_k: Optional[int] = None,
+        audio_temperature: Optional[float] = None,
+        audio_top_k: Optional[int] = None,
     ) -> Generator[Tuple[mx.array, LFMModality], None, None]:
         """
         Generate from a ChatState with proper modality handling.
@@ -1069,10 +1005,10 @@ class LFM2AudioModel(nn.Module):
             chat_state: ChatState object from processor
             mode: "interleaved" or "sequential"
             max_new_tokens: Maximum tokens to generate
-            temperature: Text sampling temperature
-            top_k: Text top-k sampling
-            audio_temperature: Audio sampling temperature
-            audio_top_k: Audio top-k sampling
+            temperature: Text sampling temperature (None = greedy)
+            top_k: Text top-k sampling (None = no filtering)
+            audio_temperature: Audio sampling temperature (None = greedy)
+            audio_top_k: Audio top-k sampling (None = no filtering)
 
         Yields:
             Tuples of (token, modality)

@@ -73,6 +73,7 @@ class DepthformerConfig(BaseModelArgs):
     dim: int = 1024
     num_heads: int = 32  # Q attention heads
     num_kv_heads: int = 8  # K/V attention heads (GQA)
+    rope_theta: float = 1000000.0  # reference MHA default; not stored in config.json
     tie: bool = True
 
 
