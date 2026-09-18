@@ -358,3 +358,25 @@ class TestGenerateAudio(unittest.TestCase):
         self.assertEqual(len(call_kwargs["ref_audio"]), 2)
         self.assertEqual(call_kwargs["ref_text"], ["speaker one", "speaker two"])
         mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    def test_voice_is_omitted_when_none(self, mock_audio_write, _mock_print):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [self._result([0.1, 0.2])]
+
+        generate_audio(text="hello", model=model, voice=None, verbose=False)
+
+        self.assertNotIn("voice", model.generate.call_args.kwargs)
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    def test_voice_is_forwarded_when_set(self, mock_audio_write, _mock_print):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [self._result([0.1, 0.2])]
+
+        generate_audio(text="hello", model=model, voice="af_heart", verbose=False)
+
+        self.assertEqual(model.generate.call_args.kwargs["voice"], "af_heart")

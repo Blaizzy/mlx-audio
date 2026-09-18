@@ -11,12 +11,14 @@ Original: [Aratako/Irodori-TTS](https://github.com/Aratako/Irodori-TTS)
 ### v4.1 (recommended)
 
 v4.1-Small is a single unified model: voice cloning, VoiceDesign and automatic
-duration prediction in one checkpoint.
+duration prediction in one checkpoint. A MeanFlow-distilled variant (`-MF`) is
+also available for 4-step inference instead of the usual 40 steps.
 
 | Model | HuggingFace | Conditioning |
 |---|---|---|
 | `mlx-community/Irodori-TTS-v4.1-Small-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-fp16) | Voice cloning + VoiceDesign + automatic duration |
 | `mlx-community/Irodori-TTS-v4.1-Small-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-8bit) | Voice cloning + VoiceDesign + automatic duration |
+| `mlx-community/Irodori-TTS-v4.1-Small-MF-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4.1-Small-MF-fp16) | Voice cloning + VoiceDesign + automatic duration (4-step, MeanFlow) |
 
 ### v4
 
@@ -187,6 +189,26 @@ generate_audio(
 `max_ref_seconds` overrides the checkpoint's 120s budget; the reference is
 trimmed to it after concatenation.
 
+### MeanFlow (4-step inference)
+
+A MeanFlow-distilled checkpoint (`flow_parameterization="meanflow"` in its
+config, e.g. `Irodori-TTS-v4.1-Small-MF`) is detected automatically — no
+extra arguments are needed. It runs 4 Euler steps by default instead of 40,
+and bakes classifier-free guidance into distillation, so the RF-only
+sampling controls (`cfg_scale_*`, `cfg_guidance_mode`, `t_schedule_mode`,
+`sway_coeff`, ...) are ignored for these checkpoints:
+
+```python
+generate_audio(
+    model="mlx-community/Irodori-TTS-v4.1-Small-MF-fp16",
+    text="今日はいい天気ですね。",
+    ref_audio="speaker.wav",
+    file_prefix="output",
+)
+```
+
+`num_steps` can still be overridden to trade quality for speed.
+
 ## v3 Features
 
 ### Automatic Duration Prediction
@@ -257,7 +279,16 @@ With `cfg_guidance_mode="independent"` (default), multiply memory by ~3.
   and includes an integrated duration predictor for automatic output length estimation.
 - v2 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
   and is bundled in the converted model weights.
-- v1 uses `facebook/dacvae-watermarked`, downloaded automatically on first use.
+- v1 uses `facebook/dacvae-watermarked`.
+
+  Every published checkpoint bundles its DACVAE codec locally under
+  `dacvae/` inside the converted model directory; `Model.post_load_hook`
+  falls back to downloading `model.config.dacvae_repo` from HuggingFace only
+  when that local directory is missing, and that fallback currently only
+  works for a codec repo that itself ships `model.safetensors` +
+  `config.json` in MLX layout — the upstream `facebook/dacvae-watermarked`
+  and `Aratako/Semantic-DACVAE-Japanese-32dim` repos ship a raw PyTorch
+  `weights.pth` instead, so in practice the codec must be bundled.
 
 ## License
 

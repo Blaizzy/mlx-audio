@@ -319,7 +319,6 @@ def generate_audio(
 
         gen_kwargs = dict(
             text=text,
-            voice=voice,
             speed=speed,
             lang_code=lang_code,
             ref_audio=ref_audio,
@@ -332,6 +331,8 @@ def generate_audio(
             use_zero_spk_emb=use_zero_spk_emb,
             **extra_kwargs,
         )
+        if voice is not None:
+            gen_kwargs["voice"] = voice
         if max_tokens is not None:
             gen_kwargs["max_tokens"] = max_tokens
         if cfg_scale is not None:

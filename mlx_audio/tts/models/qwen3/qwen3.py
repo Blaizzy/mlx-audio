@@ -291,7 +291,7 @@ class Model(Qwen3Model):
     def generate(
         self,
         text,
-        voice: str,
+        voice: Optional[str] = None,
         temperature: float = 0.6,
         top_p: float = 0.8,
         split_pattern: str = "\n",

@@ -5785,6 +5785,262 @@ class TestIrodoriV4Reference(unittest.TestCase):
         self.assertGreater(results[0].samples, 0)
 
 
+def _small_irodori_dit_config_meanflow(**overrides):
+    defaults = dict(flow_parameterization="meanflow")
+    defaults.update(overrides)
+    return _small_irodori_dit_config(**defaults)
+
+
+def _small_irodori_model_config_meanflow(**sampler_overrides):
+    from mlx_audio.tts.models.irodori_tts.config import ModelConfig, SamplerConfig
+
+    sampler_defaults = dict(num_steps=2, sequence_length=4)
+    sampler_defaults.update(sampler_overrides)
+    return ModelConfig(
+        dit=_small_irodori_dit_config_meanflow(),
+        sampler=SamplerConfig(**sampler_defaults),
+    )
+
+
+class TestIrodoriMeanFlowConfig(unittest.TestCase):
+    def test_use_meanflow_true(self):
+        cfg = _small_irodori_dit_config_meanflow()
+        self.assertTrue(cfg.use_meanflow)
+
+    def test_use_meanflow_false_by_default(self):
+        cfg = _small_irodori_dit_config()
+        self.assertFalse(cfg.use_meanflow)
+
+    def test_use_meanflow_case_insensitive(self):
+        cfg = _small_irodori_dit_config(flow_parameterization="MeanFlow")
+        self.assertTrue(cfg.use_meanflow)
+
+
+class TestIrodoriMeanFlowDiTShapes(unittest.TestCase):
+    def test_delta_cond_module_built_for_meanflow(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        model = IrodoriDiT(_small_irodori_dit_config_meanflow())
+        self.assertIsNotNone(model.delta_cond_module)
+
+    def test_delta_cond_module_absent_for_rf_velocity(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        model = IrodoriDiT(_small_irodori_dit_config())
+        self.assertIsNone(model.delta_cond_module)
+
+    def test_invalid_flow_parameterization_raises(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        with self.assertRaises(ValueError):
+            IrodoriDiT(_small_irodori_dit_config(flow_parameterization="bogus"))
+
+    def test_delta_cond_module_last_layer_is_zero_initialized(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        model = IrodoriDiT(_small_irodori_dit_config_meanflow())
+        last_weight = model.delta_cond_module.layers[-1].weight
+        mx.eval(last_weight)
+        self.assertTrue(bool(mx.all(last_weight == 0)))
+
+    def test_forward_requires_delta_t_for_meanflow(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        cfg = _small_irodori_dit_config_meanflow()
+        model = IrodoriDiT(cfg)
+        batch, seq, text_len = 1, 4, 3
+        x_t = mx.zeros((batch, seq, cfg.patched_latent_dim), dtype=mx.float32)
+        t = mx.zeros((batch,), dtype=mx.float32)
+        text_state = mx.zeros((batch, text_len, cfg.text_dim), dtype=mx.float32)
+        text_mask = mx.ones((batch, text_len), dtype=mx.bool_)
+        speaker_state = mx.zeros((batch, 1, cfg.speaker_dim), dtype=mx.float32)
+        speaker_mask = mx.ones((batch, 1), dtype=mx.bool_)
+        with self.assertRaises(ValueError):
+            model.forward_with_conditions(
+                x_t, t, text_state, text_mask, speaker_state, speaker_mask
+            )
+
+    def test_forward_rejects_delta_t_for_rf_velocity(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        cfg = _small_irodori_dit_config()
+        model = IrodoriDiT(cfg)
+        batch, seq, text_len = 1, 4, 3
+        x_t = mx.zeros((batch, seq, cfg.patched_latent_dim), dtype=mx.float32)
+        t = mx.zeros((batch,), dtype=mx.float32)
+        text_state = mx.zeros((batch, text_len, cfg.text_dim), dtype=mx.float32)
+        text_mask = mx.ones((batch, text_len), dtype=mx.bool_)
+        speaker_state = mx.zeros((batch, 1, cfg.speaker_dim), dtype=mx.float32)
+        speaker_mask = mx.ones((batch, 1), dtype=mx.bool_)
+        with self.assertRaises(ValueError):
+            model.forward_with_conditions(
+                x_t,
+                t,
+                text_state,
+                text_mask,
+                speaker_state,
+                speaker_mask,
+                delta_t=mx.zeros((batch,), dtype=mx.float32),
+            )
+
+    def test_forward_output_shape_with_delta_t(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        cfg = _small_irodori_dit_config_meanflow()
+        model = IrodoriDiT(cfg)
+        batch, seq, text_len = 2, 4, 3
+        x_t = mx.random.normal((batch, seq, cfg.patched_latent_dim))
+        t = mx.full((batch,), 0.5, dtype=mx.float32)
+        delta_t = mx.full((batch,), 0.25, dtype=mx.float32)
+        text_state = mx.random.normal((batch, text_len, cfg.text_dim))
+        text_mask = mx.ones((batch, text_len), dtype=mx.bool_)
+        speaker_state = mx.random.normal((batch, 1, cfg.speaker_dim))
+        speaker_mask = mx.ones((batch, 1), dtype=mx.bool_)
+        out = model.forward_with_conditions(
+            x_t,
+            t,
+            text_state,
+            text_mask,
+            speaker_state,
+            speaker_mask,
+            delta_t=delta_t,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (batch, seq, cfg.patched_latent_dim))
+        self.assertTrue(bool(mx.all(mx.isfinite(out))))
+
+
+class TestIrodoriMeanFlowSanitize(unittest.TestCase):
+    def setUp(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        self.model = Model(_small_irodori_model_config_meanflow())
+
+    def test_delta_cond_module_key_remapped(self):
+        weights = {"delta_cond_module.0.weight": mx.zeros((1, 1), dtype=mx.float32)}
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("model.delta_cond_module.layers.0.weight", sanitized)
+        self.assertNotIn("delta_cond_module.0.weight", sanitized)
+
+    def test_cond_module_key_still_remapped(self):
+        """Generalizing the Sequential-prefix loop must not regress cond_module."""
+        weights = {"cond_module.4.weight": mx.zeros((1, 1), dtype=mx.float32)}
+        sanitized = self.model.sanitize(weights)
+        self.assertIn("model.cond_module.layers.4.weight", sanitized)
+
+
+class TestIrodoriMeanFlowSampling(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+
+        return IrodoriDiT(_small_irodori_dit_config_meanflow())
+
+    def test_rejects_non_meanflow_model(self):
+        from mlx_audio.tts.models.irodori_tts.model import IrodoriDiT
+        from mlx_audio.tts.models.irodori_tts.sampling import sample_euler_meanflow
+
+        cfg = _small_irodori_dit_config()
+        model = IrodoriDiT(cfg)
+        text_ids = mx.zeros((1, 3), dtype=mx.int32)
+        text_mask = mx.ones((1, 3), dtype=mx.bool_)
+        with self.assertRaises(ValueError):
+            sample_euler_meanflow(
+                model=model,
+                text_input_ids=text_ids,
+                text_mask=text_mask,
+                ref_latent=None,
+                ref_mask=None,
+                latent_dim=cfg.patched_latent_dim,
+                sequence_length=4,
+                num_steps=2,
+            )
+
+    def test_output_shape_and_finite(self):
+        from mlx_audio.tts.models.irodori_tts.sampling import sample_euler_meanflow
+
+        cfg = _small_irodori_dit_config_meanflow()
+        model = self._make_model()
+        text_ids = mx.zeros((1, 3), dtype=mx.int32)
+        text_mask = mx.ones((1, 3), dtype=mx.bool_)
+        ref_latent = mx.zeros(
+            (1, cfg.speaker_patch_size, cfg.latent_dim), dtype=mx.float32
+        )
+        ref_mask = mx.zeros((1, cfg.speaker_patch_size), dtype=mx.bool_)
+        out = sample_euler_meanflow(
+            model=model,
+            text_input_ids=text_ids,
+            text_mask=text_mask,
+            ref_latent=ref_latent,
+            ref_mask=ref_mask,
+            latent_dim=cfg.patched_latent_dim,
+            sequence_length=4,
+            num_steps=2,
+            rng_seed=0,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (1, 4, cfg.patched_latent_dim))
+        self.assertTrue(bool(mx.all(mx.isfinite(out))))
+
+    def test_ignores_rf_only_cfg_kwargs(self):
+        """sample_euler_meanflow must accept (and ignore) the RF-sampler kwargs
+        that irodori_tts.py forwards unfiltered from SamplerConfig."""
+        from mlx_audio.tts.models.irodori_tts.sampling import sample_euler_meanflow
+
+        cfg = _small_irodori_dit_config_meanflow()
+        model = self._make_model()
+        text_ids = mx.zeros((1, 3), dtype=mx.int32)
+        text_mask = mx.ones((1, 3), dtype=mx.bool_)
+        out = sample_euler_meanflow(
+            model=model,
+            text_input_ids=text_ids,
+            text_mask=text_mask,
+            ref_latent=None,
+            ref_mask=None,
+            latent_dim=cfg.patched_latent_dim,
+            sequence_length=4,
+            num_steps=2,
+            rng_seed=0,
+            cfg_scale_text=3.0,
+            cfg_scale_speaker=5.0,
+            cfg_guidance_mode="independent",
+            t_schedule_mode="sway",
+            sway_coeff=-1.0,
+            duration_scale=1.0,
+            min_seconds=0.5,
+            max_seconds=30.0,
+        )
+        mx.eval(out)
+        self.assertEqual(tuple(out.shape), (1, 4, cfg.patched_latent_dim))
+
+
+class TestIrodoriMeanFlowGenerateSmoke(unittest.TestCase):
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_meanflow()
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        return model
+
+    def test_generate_uses_meanflow_sampler(self):
+        model = self._make_model()
+        results = list(model.generate("こんにちは", rng_seed=0))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+    def test_generate_with_ref_audio(self):
+        model = self._make_model()
+        hop = model.config.audio_downsample_factor
+        ref = mx.zeros((1, hop * 4), dtype=mx.float32)
+        results = list(model.generate("テスト", ref_audio=ref, rng_seed=1))
+        self.assertEqual(len(results), 1)
+        self.assertGreater(results[0].samples, 0)
+
+
 class TestKugelAudioModel(unittest.TestCase):
     def _make_model(self):
         from mlx_audio.tts.models.kugelaudio.config import ModelConfig
