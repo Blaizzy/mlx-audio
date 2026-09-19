@@ -636,7 +636,7 @@ class Model(nn.Module):
 
         ref_codes = None
         ref_text_ids = None
-        ref_audio_fingerprint = (ref_audio.size, float(ref_audio.sum()))
+        ref_audio_fingerprint = (ref_audio.size, ref_audio.sum().item())
         cache_key = (ref_text, ref_audio_fingerprint)
         if cache_key in self._icl_cache:
             ref_codes, ref_text_ids = self._icl_cache[cache_key]
