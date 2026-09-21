@@ -97,10 +97,14 @@ def _supports_input_embeddings(model: nn.Module) -> bool:
 
 
 def _eos_ids(tokenizer) -> set[int]:
-    if hasattr(tokenizer, "eos_token_ids"):
-        return set(tokenizer.eos_token_ids)
-    eos_token_id = getattr(tokenizer, "eos_token_id", None)
-    return set() if eos_token_id is None else {eos_token_id}
+    ids = getattr(tokenizer, "eos_token_ids", None)
+    if ids is None:
+        ids = getattr(tokenizer, "eos_token_id", None)
+    if ids is None:
+        return set()
+    if isinstance(ids, int):
+        return {ids}
+    return {int(i) for i in ids}
 
 
 def _encode(tokenizer, prompt: Union[str, mx.array, List[int]]) -> mx.array:
