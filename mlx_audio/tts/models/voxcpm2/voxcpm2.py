@@ -401,6 +401,18 @@ class Model(nn.Module):
             model.tokenizer = AutoTokenizer.from_pretrained(str(model_path))
         return model
 
+    def _decode(self, pred_feat_seq: list[mx.array]) -> mx.array:
+        """Decode feature patches shaped (B, 1, P, D) to a mono waveform."""
+        # Decode
+        all_feats = mx.concatenate(pred_feat_seq, axis=1)  # (B, Total, P, D)
+        B = all_feats.shape[0]
+        all_feats_flat = all_feats.reshape(B, -1, self.feat_dim)  # (B, Total*P, D)
+
+        audio = self.audio_vae.decode(all_feats_flat)
+        audio = audio.flatten()
+
+        return audio
+
     def generate(
         self,
         text: str,
@@ -412,6 +424,8 @@ class Model(nn.Module):
         prompt_audio=None,
         inference_timesteps: int = 10,
         cfg_value: float = 2.0,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
         streaming_prefix_len: int = 4,
         warmup_patches: int = 0,
         # CLI compatibility aliases
@@ -433,6 +447,13 @@ class Model(nn.Module):
             raise ValueError("Tokenizer not loaded")
         if not isinstance(text, str):
             raise TypeError(f"Expected string for text, got {type(text)}")
+
+        if streaming_prefix_len < 1:
+            raise ValueError("streaming_prefix_len must be at least 1")
+        if stream and (not np.isfinite(streaming_interval) or streaming_interval <= 0):
+            raise ValueError("streaming_interval must be finite and positive")
+        if max_tokens <= 0:
+            return
 
         # Map CLI aliases — but enforce minimum cfg_value for VoxCPM2
         if cfg_scale is not None:
@@ -600,18 +621,23 @@ class Model(nn.Module):
         residual_outputs, res_cache = self.residual_lm(residual_input)
         residual_hidden = residual_outputs[:, -1, :]
 
-        # Prepare continuation context for streaming
-        has_continuation = audio_mask[0, -1].item() == 1.0
-        if has_continuation:
-            mask_np = np.array(audio_mask.squeeze(0))
-            audio_indices = np.nonzero(mask_np > 0)[0]
-            context_len = min(streaming_prefix_len - 1, len(audio_indices))
-            last_indices = audio_indices[-context_len:]
-            pred_feat_seq = [
-                audio_feat[:, int(idx), :, :][:, None, :, :] for idx in last_indices
-            ]
-        else:
-            pred_feat_seq = []
+        # Keep only continuation audio as decoder context, excluding references.
+        has_continuation = has_prompt
+        context_len = (
+            min(streaming_prefix_len - 1, prompt_audio_length)
+            if has_continuation
+            else 0
+        )
+        pred_feat_seq = [audio_feat[:, -context_len:, :, :]] if context_len else []
+        decode_patch_len = self.patch_size * self.audio_vae.decode_chunk_size
+        chunk_size = (
+            max(1, int(streaming_interval * self.sample_rate / decode_patch_len))
+            if stream
+            else 0
+        )
+        pending_patches = 0
+        segment_idx = 0
+        chunk_start_time = start_time
 
         # In zero-shot/ref modes, warmup patches are generated for conditioning
         # but excluded from decoded audio to avoid onset artifacts.
@@ -639,6 +665,7 @@ class Model(nn.Module):
             # Only collect patches after warmup
             if i >= warmup_patches:
                 pred_feat_seq.append(pred_feat[:, None, :, :])  # (B, 1, P, D)
+                pending_patches += 1
 
             curr_embed = self.feat_encoder(pred_feat[:, None, :, :])
             curr_embed = self.enc_to_lm_proj(curr_embed)
@@ -647,7 +674,37 @@ class Model(nn.Module):
             stop_logits = self.stop_head(nn.silu(self.stop_proj(lm_hidden)))
             stop_flag = mx.argmax(stop_logits, axis=-1).item()
             real_steps = i - warmup_patches
-            if real_steps > min_tokens and stop_flag == 1:
+            is_final = (real_steps > min_tokens and stop_flag == 1) or (
+                i == max_tokens + warmup_patches - 1
+            )
+            if (
+                stream
+                and pending_patches
+                and (pending_patches >= chunk_size or is_final)
+            ):
+                audio = self._decode(pred_feat_seq)[context_len * decode_patch_len :]
+                # Odd decoder strides can produce a short tail. Emit it only
+                # at the end; intermediate tails overlap the next chunk.
+                if not is_final:
+                    audio = audio[: pending_patches * decode_patch_len]
+                yield self._generation_result(
+                    audio,
+                    pending_patches,
+                    segment_idx,
+                    chunk_start_time,
+                    stream=True,
+                    is_final=is_final,
+                )
+                # Re-decode a bounded left context to preserve causal VAE continuity.
+                features = mx.concatenate(pred_feat_seq, axis=1)
+                context_len = min(streaming_prefix_len - 1, features.shape[1])
+                pred_feat_seq = (
+                    [features[:, -context_len:, :, :]] if context_len else []
+                )
+                pending_patches = 0
+                segment_idx += 1
+                chunk_start_time = time.perf_counter()
+            if is_final:
                 break
 
             # Autoregressive step
@@ -669,21 +726,16 @@ class Model(nn.Module):
 
             prefix_feat_cond = pred_feat
 
-        # Decode
-        all_feats = mx.concatenate(pred_feat_seq, axis=1)  # (B, Total, P, D)
-        B = all_feats.shape[0]
-        all_feats_flat = all_feats.reshape(B, -1, self.feat_dim)  # (B, Total*P, D)
+        if stream or not pending_patches:
+            return
 
-        audio = self.audio_vae.decode(all_feats_flat)
-        audio = audio.flatten()
+        audio = self._decode(pred_feat_seq)[context_len * decode_patch_len :]
+        yield self._generation_result(audio, token_count, 0, start_time)
 
-        # Trim continuation prefix if applicable
-        if has_continuation:
-            decode_patch_len = self.patch_size * self.audio_vae.decode_chunk_size
-            trim_audio_samples = decode_patch_len * (streaming_prefix_len - 1)
-            if trim_audio_samples < len(audio):
-                audio = audio[trim_audio_samples:]
-
+    def _generation_result(
+        self, audio, token_count, segment_idx, start_time, stream=False, is_final=False
+    ) -> GenerationResult:
+        mx.eval(audio)
         end_time = time.perf_counter()
         elapsed_time = end_time - start_time
 
@@ -697,11 +749,11 @@ class Model(nn.Module):
         duration_ms = int((audio_duration_seconds % 1) * 1000)
         duration_str = f"{int(audio_duration_seconds // 3600):02d}:{duration_mins:02d}:{duration_secs:02d}.{duration_ms:03d}"
 
-        yield GenerationResult(
+        return GenerationResult(
             audio=audio,
             samples=samples,
             sample_rate=self.sample_rate,
-            segment_idx=0,
+            segment_idx=segment_idx,
             token_count=token_count,
             audio_duration=duration_str,
             real_time_factor=rtf,
@@ -719,4 +771,6 @@ class Model(nn.Module):
             },
             processing_time_seconds=elapsed_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=stream,
+            is_final_chunk=stream and is_final,
         )
