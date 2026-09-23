@@ -270,6 +270,9 @@ class Model(nn.Module):
             else:
                 all_tokens = chunk_tokens
 
+            if end == len(audio_data):
+                break
+
         result = sentences_to_result(tokens_to_sentences(all_tokens))
 
         # Clear cache after each segment to avoid memory leaks
@@ -418,7 +421,11 @@ class Model(nn.Module):
     @classmethod
     def from_config(cls, config: dict):
         """Loads model from config (randomized weights)"""
-        if (
+        if config.get("ternary_modules"):
+            from .redux import ParakeetRedux
+
+            model = ParakeetRedux(config)
+        elif (
             config.get("target")
             == "nemo.collections.asr.models.rnnt_bpe_models.EncDecRNNTBPEModel"
             and config.get("model_defaults", {}).get("tdt_durations") is not None
