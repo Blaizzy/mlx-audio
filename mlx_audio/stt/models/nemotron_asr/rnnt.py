@@ -11,6 +11,60 @@ import mlx.nn as nn
 from .config import JointArgs, PredictArgs
 
 
+class GreedyDecoderState:
+    """Incremental RNN-T predictor state; timestamps use the caller's audio clock."""
+
+    def __init__(self, model):
+        self.model = model
+        self.last_token = model.blank_id
+        self.hidden = None
+
+    def decode(self, features, start_frame):
+        from mlx_audio.stt.models.nemo.alignment import AlignedToken
+
+        from . import tokenizer
+
+        model = self.model
+        frame_sec = (
+            model.encoder_config.subsampling_factor
+            * model.preprocessor_config.hop_length
+            / model.preprocessor_config.sample_rate
+        )
+        tokens = []
+        for time in range(features.shape[1]):
+            feature = features[:, time : time + 1]
+            symbols = 0
+            while True:
+                current = (
+                    mx.array([[self.last_token]], dtype=mx.int32)
+                    if self.last_token != model.blank_id
+                    else None
+                )
+                prediction, (h, c) = model.decoder(current, self.hidden)
+                token = int(
+                    mx.argmax(model.joint(feature, prediction.astype(feature.dtype)))
+                )
+                if token == model.blank_id:
+                    break
+                self.last_token = token
+                self.hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
+                if not tokenizer.is_special_token(token, model.vocabulary):
+                    tokens.append(
+                        AlignedToken(
+                            token,
+                            text=tokenizer.decode([token], model.vocabulary),
+                            start=(start_frame + time) * frame_sec,
+                            duration=frame_sec,
+                        )
+                    )
+                symbols += 1
+                if model.max_symbols is not None and symbols >= model.max_symbols:
+                    break
+        if self.hidden is not None:
+            mx.eval(*self.hidden)
+        return tokens
+
+
 class LSTM(nn.Module):
     """Multi-layer LSTM holding one ``nn.LSTM`` per layer under ``self.lstm``."""
 

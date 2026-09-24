@@ -61,6 +61,87 @@ The frontend retains only the PCM history needed for upcoming windows. Chunk bou
 
 The low-level `model(features, lengths)` evaluates a single feature window, returning native-resolution probabilities with padding masked. It does not use the speaker cache. `streaming_step()` accepts precomputed feature windows for integrations that own preprocessing.
 
+## Speaker-attributed transcription
+
+The [ASR integration example](../../../../examples/nemotron_diarization_asr.py)
+pairs this model with Nemotron 3.5 ASR in mlx-audio. Run it from the repository
+root:
+
+```bash
+python examples/nemotron_diarization_asr.py \
+    --audio conversation.wav \
+    --language en-US \
+    --output transcript.json
+```
+
+For the 8-bit models:
+
+```bash
+python examples/nemotron_diarization_asr.py \
+    --audio conversation.wav \
+    --diar-model mlx-community/Nemotron-3-Diarization-8bit \
+    --asr-model mlx-community/nemotron-3.5-asr-streaming-0.6b-8bit \
+    --output transcript.json
+```
+
+The default `--mode masked` runs a separate feature-masked Nemotron ASR stream
+for each active speaker, with independent encoder caches and RNN-T decoder state.
+Both models consume the same mono 16 kHz waveform. The script prints speaker
+turns and optionally saves tokens, turns, and per-speaker transcripts to JSON.
+`--diar-preset low` is the default; use `offline` for the longer diarization window.
+
+Temporal masking cannot separate simultaneous voices: overlapping speech can still
+cause duplicate or missing words. Speaker labels are session-local arrival-order IDs,
+and timestamps reflect token emission times.
+
+Use `--mode timestamps` for a post-hoc word attribution workflow,
+including Parakeet models returning `AlignedResult`. That mode flags overlapping
+speech as ambiguous and saves diarization segments as well. Attribution near
+speaker changes is approximate.
+
+### Python and live PCM
+
+```python
+from mlx_audio.stt import load as load_asr
+from mlx_audio.vad import load as load_diarization
+
+asr = load_asr("mlx-community/nemotron-3.5-asr-streaming-0.6b")
+diar = load_diarization("mlx-community/Nemotron-3-Diarization", strict=True)
+diar.set_streaming_config("low")
+
+for speaker, transcript in asr.generate_speakers(
+    "meeting.wav", diar, language="en-US"
+).items():
+    print(speaker, transcript.text)
+
+# Each delta contains a speaker ID, new tokens, and their absolute timestamps.
+# Iterable chunks must be 16 kHz mono PCM; exhaustion flushes the stream.
+for delta in asr.stream_generate_speakers(microphone_chunks, diar):
+    print(delta.speaker, delta.text)
+```
+
+For explicit input control, use
+`session = asr.create_speaker_streaming_session(diar)`, call `session.feed(pcm)`,
+then `session.feed([], final=True)` once. Each call returns token deltas and may
+return an empty list while waiting for activity predictions or ASR lookahead.
+`session.reset()` starts a new recording. Calls are synchronous and should run on
+one inference worker. This API is separate from the server's plain-text realtime
+session protocol.
+
+ASR waits for committed diarization predictions, averages native 10 ms activity
+into 80 ms masks, then masks log-mel features before subsampling. ASR streams
+are processed sequentially with shared weights and independent state. Inference
+buffers remain bounded by the configured windows; collecting a complete result
+requires memory proportional to transcript length. The diarization preset stays
+fixed for the session and determines additional latency.
+
+Cache gating retains activity for two ASR chunks by default, allowing delayed
+tokens after a speaker stops. `cache_gating_buffer_size` changes that history;
+`cache_gating=False` processes every speaker stream on every chunk. Inactive
+streams otherwise keep their caches frozen and resume on the original audio
+clock. The models' sample rates and feature hops must match, and diarization must
+use native output resolution (`output_subsampling_factor=1`, the default).
+
 ## Local conversion
 
 The upstream checkpoint is a `.nemo` archive. PyTorch and PyYAML are required only for conversion; inference is MLX-native and does not require NeMo.

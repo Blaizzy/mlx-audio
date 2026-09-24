@@ -107,7 +107,50 @@ class Model(nn.Module):
     ) -> mx.array:
         if isinstance(audio, (str, Path)):
             return load_audio(audio, self.preprocessor_config.sample_rate, dtype=dtype)
-        return audio.astype(dtype) if audio.dtype != dtype else audio
+        return mx.array(audio, dtype=dtype)
+
+    def create_speaker_streaming_session(self, diarization_model, **kwargs):
+        """Create a speaker-masked PCM session with independent ASR caches.
+
+        Configure the Nemotron diarization preset before creating the session.
+        ``feed(pcm)`` returns speaker-tagged token deltas; flush with
+        ``feed([], final=True)``. See :class:`SpeakerStreamingSession` for options.
+        """
+        from .speaker_streaming import SpeakerStreamingSession
+
+        return SpeakerStreamingSession(self, diarization_model, **kwargs)
+
+    def stream_generate_speakers(self, audio, diarization_model, **kwargs):
+        """Yield speaker-tagged token deltas from a file, waveform, or PCM iterable.
+
+        Arrays and iterable chunks must be mono at the model sample rate.
+        Options include ``language``, ``threshold``, ``att_context_size``,
+        ``cache_gating`` and ``cache_gating_buffer_size`` (default 2 ASR chunks).
+        """
+        import numpy as np
+
+        session = self.create_speaker_streaming_session(diarization_model, **kwargs)
+        if isinstance(audio, (str, Path, mx.array, np.ndarray)):
+            waveform = self._prepare_audio(audio, mx.float32)
+            step = session.chunk_mel * self.preprocessor_config.hop_length
+            audio = (waveform[i : i + step] for i in range(0, len(waveform), step))
+        for samples in audio:
+            yield from session.feed(samples)
+        yield from session.feed([], final=True)
+
+    def generate_speakers(self, audio, diarization_model, **kwargs):
+        """Return ``{speaker_id: AlignedResult}`` using speaker-masked ASR streams.
+
+        Speaker IDs are session-local arrival-order labels. Masking cannot
+        separate simultaneous voices; token timestamps remain emission times.
+        """
+        tokens = {}
+        for delta in self.stream_generate_speakers(audio, diarization_model, **kwargs):
+            tokens.setdefault(delta.speaker, []).extend(delta.tokens)
+        return {
+            speaker: sentences_to_result(tokens_to_sentences(hypothesis))
+            for speaker, hypothesis in tokens.items()
+        }
 
     def _mel_chunk_frames(self, chunk_duration: float) -> int:
         if chunk_duration <= 0:
@@ -323,51 +366,13 @@ class Model(nn.Module):
             mx.clear_cache()
 
     def _decode_prompted_chunks(self, prompted_chunks):
-        frame_sec = (
-            self.encoder_config.subsampling_factor
-            * self.preprocessor_config.hop_length
-            / self.preprocessor_config.sample_rate
-        )
-        last_token = self.blank_id
-        decoder_hidden = None
-        hypothesis: list[AlignedToken] = []
-        global_time = 0
+        from .rnnt import GreedyDecoderState
 
+        decoder = GreedyDecoderState(self)
+        hypothesis = []
+        global_time = 0
         for prompted in prompted_chunks:
-            chunk_len = prompted.shape[1]
-            time = 0
-            new_symbols = 0
-            while time < chunk_len:
-                feature = prompted[:, time : time + 1]
-                current_token = (
-                    mx.array([[last_token]], dtype=mx.int32)
-                    if last_token != self.blank_id
-                    else None
-                )
-                decoder_output, (h, c) = self.decoder(current_token, decoder_hidden)
-                decoder_output = decoder_output.astype(feature.dtype)
-                proposed_hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
-                joint_output = self.joint(feature, decoder_output)
-                pred_token = int(mx.argmax(joint_output))
-                if pred_token != self.blank_id:
-                    last_token = pred_token
-                    decoder_hidden = proposed_hidden
-                    if not tok.is_special_token(last_token, self.vocabulary):
-                        hypothesis.append(
-                            AlignedToken(
-                                last_token,
-                                start=(global_time + time) * frame_sec,
-                                duration=frame_sec,
-                                text=tok.decode([last_token], self.vocabulary),
-                            )
-                        )
-                    new_symbols += 1
-                    if self.max_symbols is not None and new_symbols >= self.max_symbols:
-                        time += 1
-                        new_symbols = 0
-                else:
-                    time += 1
-                    new_symbols = 0
-            global_time += chunk_len
+            hypothesis.extend(decoder.decode(prompted, global_time))
+            global_time += prompted.shape[1]
             yield sentences_to_result(tokens_to_sentences(hypothesis))
             mx.clear_cache()
