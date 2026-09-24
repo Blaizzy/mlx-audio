@@ -106,6 +106,30 @@ def _cached_walk(model: Model, hidden: mx.array, first_codebook: int):
     return logits_list, tokens[1:]
 
 
+def _synced_walk(
+    model, hidden, first_codebook, *, unconditional, cfg_scale, **sampling
+):
+    """The per-token loop: each sampled codebook is read back to the host."""
+    decoder = model.depth_decoder
+    cond_cache = decoder.model.make_cache()
+    decoder.start_frame(hidden, cond_cache)
+    uncond_cache = None
+    if unconditional is not None:
+        uncond_cache = decoder.model.make_cache()
+        decoder.start_frame(unconditional, uncond_cache)
+    tokens = [0, first_codebook]
+    for head_idx in range(model.num_codebooks - 1):
+        logits = decoder.step_logits(cond_cache, head_idx=head_idx, token_id=tokens[-1])
+        if uncond_cache is not None:
+            uncond = decoder.step_logits(
+                uncond_cache, head_idx=head_idx, token_id=tokens[-1]
+            )
+            logits = uncond + cfg_scale * (logits - uncond)
+        logits = model._mask_reserved_codec_logits(logits)
+        tokens.append(model._sample(logits, **sampling))
+    return tokens[1:]
+
+
 def test_cached_walk_reproduces_prefix_recompute_logits():
     model = _randomized_model()
     hidden = mx.random.normal((1, 16))
@@ -184,6 +208,41 @@ def test_depth_tokens_cfg_matches_the_recompute_path():
         logits = uncond + 2.0 * (cond - uncond)
         expected.append(_next_token(model, logits))
     assert tokens == expected[1:]
+
+
+@pytest.mark.parametrize("cfg_scale", [None, 2.0])
+def test_depth_tokens_stay_on_device_and_keep_the_rng_order(monkeypatch, cfg_scale):
+    """Sampled codebooks feed the next step without a host round trip.
+
+    Reading every token back with ``.item()`` stalled the GPU 15 times per
+    frame. The loop must still draw from the RNG in the same order, so a seeded
+    stochastic run reproduces the per-token loop exactly.
+    """
+    model = _randomized_model()
+    hidden = mx.random.normal((1, 16))
+    unconditional = mx.random.normal((1, 16)) if cfg_scale else None
+    kwargs = dict(
+        unconditional=unconditional,
+        cfg_scale=cfg_scale or 1.0,
+        temperature=1.0,
+        top_p=1.0,
+        top_k=0,
+    )
+    expected = []
+    for seed in range(4):
+        mx.random.seed(seed)
+        expected.append(_synced_walk(model, hidden, 1, **kwargs))
+    # Guard against a vacuous comparison: the seeds must pick different frames.
+    assert len({tuple(tokens) for tokens in expected}) > 1
+
+    def synced_sample(*_args, **_kwargs):
+        raise AssertionError("the depth loop read a token back to the host")
+
+    monkeypatch.setattr(model, "_sample", synced_sample)
+    kwargs["unconditional_hidden"] = kwargs.pop("unconditional")
+    for seed, tokens in enumerate(expected):
+        mx.random.seed(seed)
+        assert model._depth_tokens(1, hidden, **kwargs) == tokens
 
 
 def test_each_step_extends_the_frame_cache_once():
