@@ -249,6 +249,11 @@ class WNConvTranspose1d(nn.Module):
         return y.swapaxes(1, 2)
 
 
+def _step(layer: nn.Module, x: mx.array) -> mx.array:
+    """Streams through a layer: stateful layers define step(), the rest are pointwise."""
+    return layer.step(x) if hasattr(layer, "step") else layer(x)
+
+
 def snake(x: mx.array, alpha: mx.array) -> mx.array:
     return x + mx.reciprocal(alpha + 1e-9) * mx.power(mx.sin(alpha * x), 2)
 
@@ -288,12 +293,28 @@ class CausalConvNet(nn.Module):
         self.stride = stride
         self.kernel_size = (kernel_size - 1) * dilation + 1
         self.padding = self.kernel_size - self.stride
+        self._buffer = None
 
     def __call__(self, x: mx.array) -> mx.array:
         pad = self.padding
         extra = get_extra_padding_for_conv1d(x, self.kernel_size, self.stride, pad)
         x = mx.pad(x, [(0, 0), (0, 0), (pad, extra)])
         return self.conv(x)
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming forward that carries the causal left context between calls."""
+        if self.stride != 1:
+            raise NotImplementedError("Streaming requires stride 1.")
+        if self.padding > 0:
+            if self._buffer is None:
+                x = mx.pad(x, [(0, 0), (0, 0), (self.padding, 0)])
+            else:
+                x = mx.concatenate([self._buffer, x], axis=-1)
+            self._buffer = x[..., -self.padding :]
+        return self.conv(x)
+
+    def reset_state(self):
+        self._buffer = None
 
 
 class CausalTransConvNet(nn.Module):
@@ -321,6 +342,7 @@ class CausalTransConvNet(nn.Module):
         )
         self.stride = stride
         self.kernel_size = kernel_size
+        self._overlap = None
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.conv(x)
@@ -328,6 +350,27 @@ class CausalTransConvNet(nn.Module):
         padding_right = math.ceil(pad)
         padding_left = pad - padding_right
         return unpad1d(x, (padding_left, padding_right))
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming forward that overlap-adds the tail the causal trim drops.
+
+        The last kernel_size - stride output samples also receive contributions
+        from the next input frames, so they are carried into the next call.
+        """
+        y = self.conv(x)
+        valid = int(x.shape[-1]) * self.stride
+        if self._overlap is not None:
+            carry = self._overlap
+            if self.conv.bias is not None:
+                # Both halves include the bias; keep it once.
+                carry = carry - self.conv.bias[:, None]
+            n = int(carry.shape[-1])
+            y = mx.concatenate([y[..., :n] + carry, y[..., n:]], axis=-1)
+        self._overlap = y[..., valid:] if y.shape[-1] > valid else None
+        return y[..., :valid]
+
+    def reset_state(self):
+        self._overlap = None
 
 
 class CausalWNConv1d(nn.Module):
@@ -342,15 +385,21 @@ class CausalWNConv1d(nn.Module):
         self.conv.conv.weight = self.weight_v
         self.conv.conv.bias = self.bias
 
-    def __call__(self, x: mx.array) -> mx.array:
-        w = (
+    def _materialize_weight(self):
+        self.conv.conv.weight = (
             self.weight_g
             * self.weight_v
             / _normalize_weight(self.weight_v, except_dim=0)
         )
-        self.conv.conv.weight = w
         self.conv.conv.bias = self.bias
+
+    def __call__(self, x: mx.array) -> mx.array:
+        self._materialize_weight()
         return self.conv(x)
+
+    def step(self, x: mx.array) -> mx.array:
+        self._materialize_weight()
+        return self.conv.step(x)
 
 
 class CausalWNConvTranspose1d(nn.Module):
@@ -365,15 +414,21 @@ class CausalWNConvTranspose1d(nn.Module):
         self.conv.conv.weight = self.weight_v
         self.conv.conv.bias = self.bias
 
-    def __call__(self, x: mx.array) -> mx.array:
-        w = (
+    def _materialize_weight(self):
+        self.conv.conv.weight = (
             self.weight_g
             * self.weight_v
             / _normalize_weight(self.weight_v, except_dim=0)
         )
-        self.conv.conv.weight = w
         self.conv.conv.bias = self.bias
+
+    def __call__(self, x: mx.array) -> mx.array:
+        self._materialize_weight()
         return self.conv(x)
+
+    def step(self, x: mx.array) -> mx.array:
+        self._materialize_weight()
+        return self.conv.step(x)
 
 
 class VectorQuantize(nn.Module):
@@ -530,8 +585,14 @@ class ConvNeXtBlock(nn.Module):
         )
 
     def __call__(self, x: mx.array, apply_residual: bool = True) -> mx.array:
-        inp = x
-        x = self.dwconv(x)
+        return self._pointwise(x, self.dwconv(x), apply_residual)
+
+    def step(self, x: mx.array) -> mx.array:
+        return self._pointwise(x, self.dwconv.step(x), apply_residual=True)
+
+    def _pointwise(
+        self, inp: mx.array, x: mx.array, apply_residual: bool = True
+    ) -> mx.array:
         x = x.swapaxes(1, 2)
         x = self.norm(x)
         x = self.pwconv1(x)
@@ -626,12 +687,7 @@ class Attention(nn.Module):
         self.n_local_heads = config.n_local_heads
         self.pos_embed_type = config.pos_embed_type
 
-    def __call__(
-        self,
-        x: mx.array,
-        freqs_cis: mx.array | None,
-        mask: mx.array | None,
-    ) -> mx.array:
+    def _project(self, x: mx.array) -> Tuple[mx.array, mx.array, mx.array]:
         bsz, seqlen, _ = x.shape
         kv_size = self.n_local_heads * self.head_dim
         qkv = self.wqkv(x)
@@ -642,11 +698,46 @@ class Attention(nn.Module):
         q = q.reshape(bsz, seqlen, self.n_head, self.head_dim)
         k = k.reshape(bsz, seqlen, self.n_local_heads, self.head_dim)
         v = v.reshape(bsz, seqlen, self.n_local_heads, self.head_dim)
+        return q, k, v
 
+    def __call__(
+        self,
+        x: mx.array,
+        freqs_cis: mx.array | None,
+        mask: mx.array | None,
+    ) -> mx.array:
+        q, k, v = self._project(x)
         if self.pos_embed_type == "rope" and freqs_cis is not None:
             q = apply_rotary_emb(q, freqs_cis)
             k = apply_rotary_emb(k, freqs_cis)
+        return self._attend(q, k, v, mask)
 
+    def step(
+        self,
+        x: mx.array,
+        freqs_cis: mx.array | None,
+        mask: mx.array | None,
+        cache: Optional[Tuple[mx.array, mx.array]] = None,
+    ) -> Tuple[mx.array, Tuple[mx.array, mx.array]]:
+        """Attends new positions to cached ones.
+
+        Keys are cached before RoPE and rotated with freqs_cis, which covers
+        the cached and new positions, so a caller may rebase positions.
+        """
+        q, k, v = self._project(x)
+        if cache is not None:
+            k = mx.concatenate([cache[0], k], axis=1)
+            v = mx.concatenate([cache[1], v], axis=1)
+        cache = (k, v)
+        if self.pos_embed_type == "rope" and freqs_cis is not None:
+            q = apply_rotary_emb(q, freqs_cis[-q.shape[1] :])
+            k = apply_rotary_emb(k, freqs_cis)
+        return self._attend(q, k, v, mask), cache
+
+    def _attend(
+        self, q: mx.array, k: mx.array, v: mx.array, mask: mx.array | None
+    ) -> mx.array:
+        bsz, seqlen = q.shape[:2]
         q = q.transpose(0, 2, 1, 3)
         k = k.transpose(0, 2, 1, 3)
         v = v.transpose(0, 2, 1, 3)
@@ -691,6 +782,19 @@ class TransformerBlock(nn.Module):
             self.attention(self.attention_norm(x), freqs_cis, mask)
         )
         return h + self.ffn_layer_scale(self.feed_forward(self.ffn_norm(h)))
+
+    def step(
+        self,
+        x: mx.array,
+        freqs_cis: mx.array | None,
+        mask: mx.array,
+        cache: Optional[Tuple[mx.array, mx.array]] = None,
+    ) -> Tuple[mx.array, Tuple[mx.array, mx.array]]:
+        attn, cache = self.attention.step(
+            self.attention_norm(x), freqs_cis, mask, cache
+        )
+        h = x + self.attention_layer_scale(attn)
+        return h + self.ffn_layer_scale(self.feed_forward(self.ffn_norm(h))), cache
 
 
 class Transformer(nn.Module):
@@ -756,6 +860,8 @@ class WindowLimitedTransformer(Transformer):
         self.output_proj = (
             nn.Linear(config.dim, input_dim) if input_dim != config.dim else Identity()
         )
+        self._cache = None
+        self._position = 0
 
     def make_window_limited_mask(self, max_length: int) -> mx.array:
         row_indices = mx.arange(max_length)[:, None]
@@ -786,6 +892,55 @@ class WindowLimitedTransformer(Transformer):
         if self.channels_first:
             x = x.swapaxes(1, 2)
         return x
+
+    def step(self, x: mx.array) -> mx.array:
+        """Streaming forward with a per-layer KV cache of the last window - 1 positions."""
+        if not isinstance(self.look_ahead_conv, Identity):
+            raise NotImplementedError("Streaming does not support look-ahead convs.")
+        if self.channels_first:
+            x = x.swapaxes(1, 2)
+        x = self.input_proj(x)
+
+        cached = 0 if self._cache is None else int(self._cache[0][0].shape[1])
+        total = cached + int(x.shape[1])
+        # Use the same absolute RoPE rows as a full decode while the stream fits
+        # the table (converted checkpoints may store it in bfloat16, so rows are not
+        # exactly shift-invariant). Past that, rebase onto the cached window.
+        start = min(self._position - cached, self.config.block_size - total)
+        if start < 0:
+            raise ValueError(
+                f"Streaming chunk of {x.shape[1]} frames exceeds the transformer "
+                f"block size {self.config.block_size}."
+            )
+        self._position += int(x.shape[1])
+        rows = mx.arange(cached, total)[:, None]
+        cols = mx.arange(total)[None, :]
+        mask = cols <= rows
+        if self.window_size is not None:
+            mask = mask & (cols > rows - self.window_size)
+        mask = mx.where(mask, 0.0, -1e9).astype(x.dtype)[None, None]
+        freqs_cis = (
+            None if self.freqs_cis is None else self.freqs_cis[start : start + total]
+        )
+
+        caches = self._cache or [None] * len(self.layers)
+        new_caches = []
+        for layer, cache in zip(self.layers, caches):
+            x, cache = layer.step(x, freqs_cis, mask, cache)
+            if self.window_size is not None:
+                keep = self.window_size - 1
+                cache = tuple(t[:, max(0, t.shape[1] - keep) :] for t in cache)
+            new_caches.append(cache)
+        self._cache = new_caches
+
+        x = self.output_proj(self.norm(x))
+        if self.channels_first:
+            x = x.swapaxes(1, 2)
+        return x
+
+    def reset_state(self):
+        self._cache = None
+        self._position = 0
 
 
 class DownsampleResidualVectorQuantize(nn.Module):
@@ -903,6 +1058,21 @@ class DownsampleResidualVectorQuantize(nn.Module):
         )
 
     def decode(self, indices: mx.array) -> mx.array:
+        z_q = self.post_module(self._codes_to_latents(indices))
+        for block in self.upsample:
+            for layer in block:
+                z_q = layer(z_q)
+        return z_q
+
+    def decode_step(self, indices: mx.array) -> mx.array:
+        """Streaming decode of new frames; see DAC.streaming_step."""
+        z_q = _step(self.post_module, self._codes_to_latents(indices))
+        for block in self.upsample:
+            for layer in block:
+                z_q = _step(layer, z_q)
+        return z_q
+
+    def _codes_to_latents(self, indices: mx.array) -> mx.array:
         new_indices = mx.zeros_like(indices)
         new_indices[:, 0] = mx.clip(
             indices[:, 0], a_min=0, a_max=self.semantic_quantizer.codebook_size - 1
@@ -918,12 +1088,7 @@ class DownsampleResidualVectorQuantize(nn.Module):
             if indices.shape[1] > 1
             else mx.zeros_like(z_q_sem)
         )
-        z_q = z_q_sem + z_q_res
-        z_q = self.post_module(z_q)
-        for block in self.upsample:
-            for layer in block:
-                z_q = layer(z_q)
-        return z_q
+        return z_q_sem + z_q_res
 
 
 class ResidualUnit(nn.Module):
@@ -949,6 +1114,14 @@ class ResidualUnit(nn.Module):
                 x = x[..., :-pad]
             else:
                 x = x[..., pad // 2 : -pad // 2]
+        return x + y
+
+    def step(self, x: mx.array) -> mx.array:
+        if not self.causal:
+            raise NotImplementedError("Streaming requires a causal codec.")
+        y = x
+        for layer in self.block:
+            y = _step(layer, y)
         return x + y
 
 
@@ -1065,6 +1238,11 @@ class DecoderBlock(nn.Module):
             x = layer(x)
         return x
 
+    def step(self, x: mx.array) -> mx.array:
+        for layer in self.block:
+            x = _step(layer, x)
+        return x
+
 
 class Decoder(nn.Module):
     def __init__(
@@ -1096,6 +1274,11 @@ class Decoder(nn.Module):
             x = layer(x)
         return x
 
+    def step(self, x: mx.array) -> mx.array:
+        for layer in self.model:
+            x = _step(layer, x)
+        return x
+
 
 class DAC(nn.Module):
     def __init__(
@@ -1118,6 +1301,7 @@ class DAC(nn.Module):
         self.decoder_dim = decoder_dim
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
+        self.causal = causal
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -1180,6 +1364,30 @@ class DAC(nn.Module):
         z = self.quantizer.decode(indices)
         audio_lengths = feature_lengths * self.frame_length
         return self.decoder(z), audio_lengths
+
+    def reset_streaming_state(self):
+        """Clears decoder conv buffers, overlap tails and transformer KV caches."""
+        for _, module in self.named_modules():
+            if hasattr(module, "reset_state"):
+                module.reset_state()
+
+    def streaming_step(self, indices: mx.array) -> mx.array:
+        """Incrementally decodes only the new codec frames.
+
+        Concatenating the outputs of successive calls matches decode() on all
+        frames at once. Call reset_streaming_state() before each new stream.
+
+        Args:
+            indices: [batch, num_codebooks, new_frames] codes, or 2D without batch.
+
+        Returns:
+            audio: [batch, 1, new_frames * frame_length]
+        """
+        if not self.causal:
+            raise NotImplementedError("Streaming requires a causal codec.")
+        if indices.ndim == 2:
+            indices = indices[None]
+        return self.decoder.step(self.quantizer.decode_step(indices))
 
     def encode_zq(self, audio_data: mx.array) -> mx.array:
         indices, _ = self.encode(audio_data)
