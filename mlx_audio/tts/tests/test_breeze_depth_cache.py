@@ -109,8 +109,13 @@ def _cached_walk(model: Model, hidden: mx.array, first_codebook: int):
 def test_cached_walk_reproduces_prefix_recompute_logits():
     model = _randomized_model()
     hidden = mx.random.normal((1, 16))
-    reference, _ = _reference_walk(model, hidden, 1)
-    cached, _ = _cached_walk(model, hidden, 1)
+    # Compare on the CPU. On the GPU the single-query cached step and the
+    # full-prefix pass go through different attention kernels, whose results
+    # differ by ~3e-3 on an M5 Max (mlx 0.32.2) even though the arithmetic is
+    # the same; the CPU agrees to ~1e-6.
+    with mx.stream(mx.cpu):
+        reference, _ = _reference_walk(model, hidden, 1)
+        cached, _ = _cached_walk(model, hidden, 1)
 
     assert len(cached) == len(reference) == model.num_codebooks - 1
     # Guard against a vacuous comparison: a zero head would make every logits
