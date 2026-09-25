@@ -8762,6 +8762,128 @@ class TestVoxCPM2Model(unittest.TestCase):
         dit_h = mx.concatenate([lm_h, res_h], axis=-1)
         self.assertEqual(dit_h.shape, (1, 128))  # 2 * dit_hidden_dim
 
+    def test_streaming_chunks(self):
+        from unittest.mock import MagicMock
+
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        for patches, warmup, prompt_len, prefix, stop, expected in [
+            (5, 0, 0, 4, False, [2, 2, 1]),
+            (4, 0, 0, 4, False, [2, 2]),
+            (1, 0, 0, 4, False, [1]),
+            (5, 2, 0, 4, False, [2, 2, 1]),
+            (5, 0, 1, 4, False, [2, 2, 1]),
+            (5, 0, 1, 1, False, [2, 2, 1]),
+            (8, 0, 0, 4, True, [2, 2]),
+        ]:
+            with self.subTest(
+                patches=patches,
+                warmup=warmup,
+                prompt_len=prompt_len,
+                prefix=prefix,
+                stop=stop,
+            ):
+                model = Model(_tiny_voxcpm2_args())
+                model.tokenizer = MagicMock()
+                model.tokenizer.tokenize.return_value = ["hello"]
+                model.tokenizer.convert_tokens_to_ids.return_value = [1]
+                model.audio_start_token = 2
+                model.stop_head = lambda x: mx.array([[0, 1] if stop else [1, 0]])
+                model.feat_decoder.sample = MagicMock(
+                    side_effect=[
+                        mx.full((1, model.feat_dim, model.patch_size), i + 1.0)
+                        for i in range(patches + warmup)
+                    ]
+                )
+
+                # A causal decoder with one latent frame of left context.
+                def decode(z):
+                    values = z[:, :, 0]
+                    previous = mx.pad(values[:, :-1], ((0, 0), (1, 0)))
+                    return mx.pad(
+                        mx.repeat(
+                            values + previous, model.audio_vae.decode_chunk_size, axis=1
+                        ),
+                        ((0, 0), (0, 1)),
+                    )
+
+                model.audio_vae.decode = MagicMock(side_effect=decode)
+                kwargs = {}
+                if prompt_len:
+                    model._encode_wav = lambda *a, **k: mx.full(
+                        (prompt_len, model.patch_size, model.feat_dim), 10.0
+                    )
+                    kwargs = dict(prompt_audio="unused", prompt_text="prompt")
+                patch_samples = model.patch_size * model.audio_vae.decode_chunk_size
+                results = list(
+                    model.generate(
+                        "hello",
+                        max_tokens=patches,
+                        warmup_patches=warmup,
+                        stream=True,
+                        streaming_interval=2 * patch_samples / model.sample_rate,
+                        streaming_prefix_len=prefix,
+                        **kwargs,
+                    )
+                )
+                self.assertEqual(
+                    [r.samples for r in results],
+                    [
+                        n * patch_samples + (i == len(expected) - 1)
+                        for i, n in enumerate(expected)
+                    ],
+                )
+                self.assertEqual([r.token_count for r in results], expected)
+                self.assertEqual(
+                    [r.segment_idx for r in results], list(range(len(expected)))
+                )
+                self.assertTrue(all(r.is_streaming_chunk for r in results))
+                self.assertEqual(
+                    [r.is_final_chunk for r in results],
+                    [False] * (len(expected) - 1) + [True],
+                )
+                self.assertTrue(all(r.processing_time_seconds > 0 for r in results))
+                if prefix > 1:
+                    feats = [
+                        mx.full((1, model.patch_size, model.feat_dim), i + 1.0)
+                        for i in range(warmup, warmup + sum(expected))
+                    ]
+                    if prompt_len:
+                        feats.insert(
+                            0,
+                            mx.full(
+                                (1, prompt_len * model.patch_size, model.feat_dim), 10.0
+                            ),
+                        )
+                    full = decode(mx.concatenate(feats, axis=1)).flatten()[
+                        prompt_len * patch_samples :
+                    ]
+                    np.testing.assert_allclose(
+                        np.array(mx.concatenate([r.audio for r in results])),
+                        np.array(full),
+                    )
+                max_frames = (prefix - 1 + 2) * model.patch_size
+                self.assertTrue(
+                    all(
+                        call.args[0].shape[1] <= max_frames
+                        for call in model.audio_vae.decode.call_args_list
+                    )
+                )
+
+    def test_streaming_validation_and_empty_generation(self):
+        from unittest.mock import MagicMock
+
+        from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
+
+        model = Model(_tiny_voxcpm2_args())
+        model.tokenizer = MagicMock()
+        for interval in [0, -1, float("nan"), float("inf")]:
+            with self.assertRaisesRegex(ValueError, "streaming_interval"):
+                list(model.generate("hello", stream=True, streaming_interval=interval))
+        with self.assertRaisesRegex(ValueError, "streaming_prefix_len"):
+            list(model.generate("hello", streaming_prefix_len=0))
+        self.assertEqual(list(model.generate("hello", max_tokens=0)), [])
+
     def test_sanitize_populates_rope(self):
         from mlx_audio.tts.models.voxcpm2.voxcpm2 import Model
 

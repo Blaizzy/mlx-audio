@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from mlx_audio.lm.models.base import create_attention_mask, scaled_dot_product_attention
 from mlx_audio.stt.models.base import STTOutput
+from mlx_audio.stt.streaming import StreamingSession
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
 
@@ -625,6 +626,67 @@ class TextModel(nn.Module):
 
 class Qwen3ASRModel(nn.Module):
     """Qwen3-ASR Model for speech recognition."""
+
+    def create_streaming_session(
+        self,
+        *,
+        temperature=0.0,
+        language=None,
+        context="",
+        chunk_size_sec=0.16,
+        lookahead_sec=0.16,
+        unfixed_token_num=1,
+        max_audio_seconds=30.0,
+    ) -> StreamingSession:
+        """Create a live-input session emitting only committed text deltas.
+
+        Each update re-encodes accumulated audio. Use VAD to close utterances;
+        the default input limit is 30 seconds. The first chunk includes lookahead.
+        """
+        from .session import Qwen3ASRStreamingSession
+
+        return Qwen3ASRStreamingSession(
+            self,
+            temperature=temperature,
+            language=language,
+            context=context,
+            chunk_size_sec=chunk_size_sec,
+            lookahead_sec=lookahead_sec,
+            unfixed_token_num=unfixed_token_num,
+            max_audio_seconds=max_audio_seconds,
+        )
+
+    def _streaming_decode(self, audio, prefix, *, language, context, max_tokens):
+        """Decode one audio update with a committed text prefix, including EOS.
+
+        Audio features can change when input grows, so each update uses a fresh
+        decoder cache. The generator preserves that cache across cooperative steps.
+        """
+        from mlx_audio.lm.generate import generate_step
+
+        # A final utterance may be shorter than one frontend/encoder frame.
+        # Pad only this short-input case to the smallest supported audio chunk.
+        if len(audio) < 1280:
+            audio = np.pad(audio, (0, 1280 - len(audio)))
+        features, mask, count = self._preprocess_audio(audio)
+        ids = self._build_prompt(count, language, context)
+        if prefix:
+            prefix_ids = self._tokenizer.encode(prefix, add_special_tokens=False)
+            ids = mx.concatenate([ids, mx.array([prefix_ids], dtype=mx.int32)], axis=1)
+        encoded = self.get_audio_features(features, mask)
+        embeddings = self._build_inputs_embeds(ids, encoded)
+        mx.eval(embeddings)
+        eos = self._eos_token_ids()
+        for token, _ in generate_step(
+            prompt=ids[0],
+            input_embeddings=embeddings[0],
+            model=self,
+            max_tokens=max_tokens,
+        ):
+            token = int(token)
+            yield token
+            if token in eos:
+                return
 
     def __init__(self, config: ModelConfig):
         super().__init__()

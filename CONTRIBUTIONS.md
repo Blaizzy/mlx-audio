@@ -2,6 +2,14 @@
 
 This file acknowledges the original authors and contributors of models ported to mlx-audio.
 
+## Qwen3-ASR Streaming Adapter
+
+- **Original**: [NetEase Youdao/Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2)
+- **Copyright**: 2026 The NetEase Youdao team
+- **Code License**: Apache License 2.0
+- **Weights License**: NetEase Model Use License Agreement
+- **MLX Port**: Shared by Qwen3-ASR and R2T2 checkpoints; streaming logic adapted from upstream commit `80c22e6140bcb9166fb9906798894fc8b18c8309`.
+
 ## MiniMax Music 3 (Song Generation)
 
 - **Original**: [MiniMaxAI/MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3)

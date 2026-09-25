@@ -169,3 +169,14 @@ ForcedAlignResult(
     ]
 )
 ```
+
+## Live audio input
+
+Qwen3-ASR and compatible checkpoints such as Confucius4-R2T2 expose
+`model.create_streaming_session()`. Feed mono 16 kHz PCM with `feed()`, drive
+incremental decoding with `step()`, then `close()` and drain until `done`.
+This is separate from `generate(..., stream=True)`, which yields tokens from an
+already available recording. No checkpoint-name detection is performed.
+
+See the [live streaming guide](../../../../docs/models/stt/qwen3-asr.md) for
+options, commitment semantics, input limits, and checkpoint-specific tradeoffs.

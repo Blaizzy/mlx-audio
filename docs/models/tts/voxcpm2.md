@@ -37,6 +37,27 @@ voice cloning from reference audio, and speech continuation.
     audio = result.audio  # 48 kHz mono waveform as an MLX array
     ```
 
+## Streaming
+
+Set `stream=True` to receive successive audio chunks. `streaming_interval` is
+measured in seconds of audio and rounded down to whole patches (at least one).
+The last chunk has `is_final_chunk=True`; concatenate the chunks to obtain the
+complete waveform. No full-waveform result is emitted afterward.
+
+```python
+for chunk in model.generate(
+    "Hello, this is streamed speech.",
+    stream=True,
+    streaming_interval=0.5,
+):
+    audio = chunk.audio  # Each chunk contains only new samples.
+```
+
+Streaming supports the same voice design, cloning, and continuation inputs.
+`streaming_prefix_len` controls decoder overlap: the default of `4` retains
+three preceding patches as left context, whose samples are excluded from output.
+This bounded-context decoding can differ from a single full-waveform decode.
+
 ## Voice Design
 
 Describe the desired speaker and delivery with `instruct`; no reference audio is
@@ -116,6 +137,9 @@ cloning can be combined with continuation by also passing `ref_audio`.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
+| `stream` | `False` | Yield audio chunks during generation |
+| `streaming_interval` | `2.0` | Target chunk duration in seconds |
+| `streaming_prefix_len` | `4` | Decoder context window; retains this many patches minus one |
 | `inference_timesteps` | `10` | Diffusion steps; higher values trade speed for quality |
 | `cfg_value` | `2.0` | Classifier-free guidance strength |
 | `instruct` | `None` | Natural-language voice description for voice design |

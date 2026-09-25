@@ -1,4 +1,4 @@
-"""Both real session implementations satisfy the same consumer contract.
+"""The real session implementations satisfy the same consumer contract.
 
 Uses tiny random models and deterministic tokens, never downloaded weights.
 """
@@ -19,6 +19,7 @@ from mlx_audio.stt.models.voxtral_realtime.config import (
 from mlx_audio.stt.models.voxtral_realtime.voxtral_realtime import Model
 from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.stt.tests.test_nemotron_session import model as nemotron_model
+from mlx_audio.stt.tests.test_qwen3_asr_session import model as qwen3_asr_model
 
 
 def voxtral_model():
@@ -52,8 +53,19 @@ def voxtral_model():
     return model
 
 
+def qwen3_asr_streaming_model():
+    model = qwen3_asr_model()
+    create = model.create_streaming_session
+    model.create_streaming_session = lambda **kwargs: create(
+        language="English", **kwargs
+    )
+    return model
+
+
 @pytest.mark.parametrize(
-    "factory", [nemotron_model, voxtral_model], ids=["nemotron", "voxtral"]
+    "factory",
+    [nemotron_model, voxtral_model, qwen3_asr_streaming_model],
+    ids=["nemotron", "voxtral", "qwen3_asr"],
 )
 def test_shared_server_session_contract(factory):
     session: StreamingSession = _open_streaming_session(
