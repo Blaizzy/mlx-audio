@@ -7,6 +7,7 @@ with lazy imports to avoid loading unnecessary dependencies.
 import dataclasses
 import glob
 import importlib
+import importlib.machinery
 import importlib.util
 import json
 import keyword
@@ -722,13 +723,19 @@ def is_valid_module_name(name: str) -> bool:
 
 
 def _has_model_module(module_path: str) -> bool:
-    try:
-        return importlib.util.find_spec(module_path) is not None
-    except ModuleNotFoundError as exc:
-        missing_name = exc.name or ""
-        if module_path == missing_name or module_path.startswith(f"{missing_name}."):
+    # Resolve each package level through its search path instead of calling
+    # importlib.util.find_spec on the full path, which imports the parent
+    # packages. Importing e.g. mlx_audio.sts.models would fail when an optional
+    # dependency of an unrelated model in that category is not installed.
+    parts = module_path.split(".")
+    spec = importlib.util.find_spec(parts[0])
+    for i in range(1, len(parts)):
+        if spec is None or spec.submodule_search_locations is None:
             return False
-        raise
+        spec = importlib.machinery.PathFinder.find_spec(
+            ".".join(parts[: i + 1]), spec.submodule_search_locations
+        )
+    return spec is not None
 
 
 def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:

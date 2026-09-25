@@ -11,6 +11,24 @@ def test_get_model_category_detects_sts():
     assert category == "sts"
 
 
+def test_has_model_module_does_not_import_parent_packages(tmp_path, monkeypatch):
+    from mlx_audio.utils import _has_model_module
+
+    # A category package whose __init__ imports an uninstalled optional dependency.
+    models = tmp_path / "fake_audio_pkg" / "sts" / "models"
+    (models / "moshi").mkdir(parents=True)
+    (tmp_path / "fake_audio_pkg" / "__init__.py").write_text("")
+    (tmp_path / "fake_audio_pkg" / "sts" / "__init__.py").write_text("")
+    (models / "__init__.py").write_text("import missing_optional_dependency\n")
+    (models / "moshi" / "__init__.py").write_text("")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    assert _has_model_module("fake_audio_pkg.sts.models.moshi")
+    assert not _has_model_module("fake_audio_pkg.sts.models.nemotron_diarization")
+    assert not _has_model_module("fake_audio_pkg.vad.models.moshi")
+    assert "fake_audio_pkg.sts.models" not in sys.modules
+
+
 def test_get_model_name_parts_splits_underscore_sts_repo_names():
     from mlx_audio.utils import get_model_name_parts
 
