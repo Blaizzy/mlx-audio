@@ -1263,6 +1263,41 @@ class TestMossTranscribeDiarizeModel(unittest.TestCase):
             (8, 3, 80),
         )
 
+    def test_sanitize_preserves_unquantized_mlx_convolutions(self):
+        weights = {
+            "model.whisper_encoder.conv1.weight": mx.zeros((8, 3, 80)),
+            "model.whisper_encoder.conv2.weight": mx.zeros((8, 3, 8)),
+        }
+
+        sanitized = self.Model.sanitize(weights)
+
+        for key, weight in weights.items():
+            self.assertIs(sanitized[key], weight)
+
+    def test_sanitize_converts_both_hf_convolutions(self):
+        weights = {
+            "model.whisper_encoder.conv1.weight": mx.arange(8 * 80 * 3).reshape(
+                8, 80, 3
+            ),
+            "model.whisper_encoder.conv2.weight": mx.arange(8 * 8 * 3).reshape(8, 8, 3),
+        }
+
+        sanitized = self.Model.sanitize(weights)
+
+        for key, weight in weights.items():
+            np.testing.assert_array_equal(
+                np.array(sanitized[key]), np.array(weight).transpose(0, 2, 1)
+            )
+
+    def test_sanitize_preserves_convolutions_with_quantization_scales(self):
+        conv_key = "model.whisper_encoder.conv1.weight"
+        conv_weight = mx.zeros((8, 80, 3))
+        weights = {conv_key: conv_weight, "model.language_model.scales": mx.ones((1,))}
+
+        sanitized = self.Model.sanitize(weights)
+
+        self.assertIs(sanitized[conv_key], conv_weight)
+
     def test_parse_segments_from_compact_transcript(self):
         text = "[0.48][S01]hello[1.66][2.00][S02]world[3.50]"
 
