@@ -2,7 +2,7 @@ import mlx.core as mx
 import mlx.nn as nn
 import pytest
 
-from mlx_audio.lm.generate import generate_step, stream_generate
+from mlx_audio.lm.generate import StreamingDetokenizer, generate_step, stream_generate
 
 VOCAB = 17
 EOS = 5
@@ -96,6 +96,63 @@ def test_generate_step_negative_max_tokens_is_unbounded():
     assert len(produced) == 40
 
 
+@pytest.mark.parametrize(
+    ("pieces", "tokens", "expected"),
+    [
+        (
+            {1: b"hello ", 2: b"\xe4", 3: b"\xb8", 4: b"\x96"},
+            [1, 2, 3, 4],
+            "hello \u4e16",
+        ),
+        (
+            {1: b"hi", 2: b"\n\xe4\xb8", 3: b"\x96"},
+            [1, 2, 3],
+            "hi\n\u4e16",
+        ),
+    ],
+)
+def test_streaming_detokenizer_buffers_split_utf8_codepoints(pieces, tokens, expected):
+    class ByteTokenizer:
+        clean_up_tokenization_spaces = False
+
+        def decode(self, token_ids, **kwargs):
+            del kwargs
+            encoded = b"".join(pieces[token_id] for token_id in token_ids)
+            return encoded.decode("utf-8", errors="replace")
+
+    detokenizer = StreamingDetokenizer(ByteTokenizer())
+    deltas = []
+    for token in tokens:
+        detokenizer.add_token(token)
+        deltas.append(detokenizer.last_segment)
+    detokenizer.finalize()
+    deltas.append(detokenizer.last_segment)
+
+    assert "".join(deltas) == expected
+    assert "\ufffd" not in "".join(deltas)
+    assert detokenizer.text == expected
+
+
+def test_streaming_detokenizer_last_segment_decodes_once():
+    class CountingTokenizer:
+        clean_up_tokenization_spaces = False
+
+        def __init__(self):
+            self.decode_calls = 0
+
+        def decode(self, token_ids, **kwargs):
+            del kwargs
+            self.decode_calls += 1
+            return "".join(str(token_id) for token_id in token_ids)
+
+    tokenizer = CountingTokenizer()
+    detokenizer = StreamingDetokenizer(tokenizer)
+    detokenizer.add_token(1)
+
+    assert detokenizer.last_segment == "1"
+    assert tokenizer.decode_calls == 1
+
+
 def test_stream_generate_accepts_scalar_eos_token_ids():
     """A plain transformers tokenizer reports eos_token_ids as an int."""
     out = list(
@@ -111,3 +168,99 @@ def test_stream_generate_without_any_eos_runs_to_max_tokens():
     )
     assert len(out) == 4
     assert out[-1].finish_reason == "length"
+
+
+def test_fast_streaming_detokenizer_is_linear_and_matches_batch_decode():
+    from tokenizers import Tokenizer, models
+
+    backend = Tokenizer(models.WordLevel({"世": 0, "[EOS]": 1}, unk_token="[EOS]"))
+    backend.add_special_tokens(["[EOS]"])
+
+    class FastTokenizer:
+        backend_tokenizer = backend
+        clean_up_tokenization_spaces = False
+
+        def __init__(self):
+            self.decode_calls = 0
+
+        def decode(self, token_ids, **kwargs):
+            self.decode_calls += 1
+            return backend.decode(token_ids, **kwargs)
+
+    tokenizer = FastTokenizer()
+    token_ids = [0, 1] * 500
+    detokenizer = StreamingDetokenizer(tokenizer, skip_special_tokens=True)
+    deltas = []
+    for token_id in token_ids:
+        detokenizer.add_token(token_id)
+        deltas.append(detokenizer.last_segment)
+    detokenizer.finalize()
+    deltas.append(detokenizer.last_segment)
+
+    expected = backend.decode(token_ids, skip_special_tokens=True)
+    assert "".join(deltas) == expected
+    assert detokenizer.text == expected
+    assert tokenizer.decode_calls == 0
+
+    detokenizer.reset()
+    assert detokenizer.text == ""
+    detokenizer.add_token(0)
+    assert detokenizer.last_segment == "世"
+
+
+def test_backendless_fallback_bounds_total_decode_work():
+    class CountingTokenizer:
+        clean_up_tokenization_spaces = False
+
+        def __init__(self):
+            self.decoded_ids = 0
+            self.max_decode_size = 0
+
+        def decode(self, token_ids, **kwargs):
+            del kwargs
+            self.decoded_ids += len(token_ids)
+            self.max_decode_size = max(self.max_decode_size, len(token_ids))
+            return "".join("x" for _ in token_ids)
+
+    tokenizer = CountingTokenizer()
+    detokenizer = StreamingDetokenizer(tokenizer)
+    deltas = []
+    for token_id in range(1_000):
+        detokenizer.add_token(token_id)
+        deltas.append(detokenizer.last_segment)
+    detokenizer.finalize()
+    deltas.append(detokenizer.last_segment)
+
+    assert "".join(deltas) == "x" * 1_000
+    assert tokenizer.max_decode_size <= 65
+    assert tokenizer.decoded_ids < 70_000
+
+
+def test_backendless_fallback_keeps_unsplittable_output_pending():
+    class LeadingSpaceTokenizer:
+        clean_up_tokenization_spaces = False
+
+        def __init__(self):
+            self.decoded_ids = 0
+
+        def decode(self, token_ids, **kwargs):
+            del kwargs
+            self.decoded_ids += len(token_ids)
+            # Like SentencePiece, drop the leading space of every decoded
+            # sequence, so no split point reproduces the joint decode.
+            return "".join(f" w{token_id}" for token_id in token_ids).lstrip()
+
+    tokenizer = LeadingSpaceTokenizer()
+    detokenizer = StreamingDetokenizer(tokenizer)
+    token_ids = list(range(300))
+    deltas = []
+    for token_id in token_ids:
+        detokenizer.add_token(token_id)
+        deltas.append(detokenizer.last_segment)
+    detokenizer.finalize()
+    deltas.append(detokenizer.last_segment)
+
+    assert "".join(deltas) == " ".join(f"w{token_id}" for token_id in token_ids)
+    # Split-point searches back off as pending tokens double instead of
+    # repeating on every token.
+    assert tokenizer.decoded_ids < 250_000
