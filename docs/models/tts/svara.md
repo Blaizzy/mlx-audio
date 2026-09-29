@@ -26,8 +26,8 @@ Multilingual autoregressive text-to-speech for **19 Indian languages**, in the O
 
     ```python
     import numpy as np
-    import soundfile as sf
     import mlx.core as mx
+    from mlx_audio.audio_io import write
     from mlx_audio.tts.utils import load_model
 
     model = load_model("mlx-community/svara-tts-v1-4bit")
@@ -45,7 +45,7 @@ Multilingual autoregressive text-to-speech for **19 Indian languages**, in the O
         chunks.append(result.audio)
 
     audio = mx.concatenate(chunks, axis=0)
-    sf.write("hello_hi.wav", np.asarray(audio), model.sample_rate)
+    write("hello_hi.wav", np.asarray(audio), model.sample_rate)
     ```
 
 ## Voices

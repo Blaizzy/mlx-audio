@@ -983,24 +983,11 @@ class Model(nn.Module):
 
     # audio ------------------------------------------------------------------
     def _load_reference_audio(self, ref_audio) -> mx.array:
-        import soundfile as sf
-
-        from mlx_audio.utils import resample_audio
+        from mlx_audio.utils import load_audio
 
         if isinstance(ref_audio, (str, Path)):
-            array, source_rate = sf.read(
-                str(ref_audio), dtype="float32", always_2d=True
-            )
-            array = array.mean(axis=1)
-        else:
-            array = np.asarray(ref_audio, dtype=np.float32)
-            source_rate = self.config.codec_sample_rate
-        if int(source_rate) != self.config.codec_sample_rate:
-            array = np.asarray(
-                resample_audio(array, int(source_rate), self.config.codec_sample_rate),
-                dtype=np.float32,
-            )
-        return mx.array(array)
+            return load_audio(str(ref_audio), sample_rate=self.config.codec_sample_rate)
+        return mx.array(np.asarray(ref_audio, dtype=np.float32))
 
     def encode_reference(self, ref_audio) -> tuple[mx.array, mx.array]:
         audio = self._load_reference_audio(ref_audio)

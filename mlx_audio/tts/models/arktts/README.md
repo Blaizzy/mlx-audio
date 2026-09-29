@@ -23,7 +23,7 @@ repos, so the converted codec tensors are shared and carry the 0.6b's Apache-2.0
 Python API:
 
 ```python
-import soundfile as sf
+from mlx_audio.audio_io import write
 from mlx_audio.tts.utils import load
 
 model = load("mlx-community/Audio8-TTS-Preview-0.6b-bf16")
@@ -35,7 +35,7 @@ for result in model.generate(
     ref_audio="reference.wav",
     ref_text="Transcript of the reference clip.",
 ):
-    sf.write("output.wav", result.audio, result.sample_rate)
+    write("output.wav", result.audio, result.sample_rate)
 ```
 
 Without `ref_audio` the model synthesizes with its own default voice.
