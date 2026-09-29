@@ -40,6 +40,14 @@ class StreamingResult:
     generation_tokens: int = 0
 
 
+def _logprob_metadata(token_logprobs: List[float]) -> Dict[str, Any]:
+    metadata = {"token_logprobs": token_logprobs}
+    if token_logprobs:
+        metadata["avg_logprob"] = math.fsum(token_logprobs) / len(token_logprobs)
+        metadata["min_logprob"] = min(token_logprobs)
+    return metadata
+
+
 def split_audio_into_chunks(
     wav: np.ndarray,
     sr: int,
@@ -1059,16 +1067,17 @@ class Qwen3ASRModel(nn.Module):
         prefill_step_size: int = 2048,
         verbose: bool = False,
         system_prompt: str | None = None,
-    ) -> Tuple[str, int, int]:
+    ) -> Tuple[str, int, int, List[float]]:
         """Generate transcription for a single audio chunk.
 
         Returns:
-            Tuple of (text, prompt_tokens, generation_tokens).
+            Tuple of (text, prompt_tokens, generation_tokens, token_logprobs).
         """
         generated_tokens = []
+        token_logprobs = []
         prompt_tokens = 0
 
-        for token, _ in self.stream_generate(
+        for token, logprobs in self.stream_generate(
             audio_chunk,
             max_tokens=max_tokens,
             sampler=sampler,
@@ -1085,10 +1094,12 @@ class Qwen3ASRModel(nn.Module):
                     num_audio_tokens, language, system_prompt
                 )
                 prompt_tokens = input_ids.shape[1]
-            generated_tokens.append(int(token))
+            token = int(token)
+            generated_tokens.append(token)
+            token_logprobs.append(float(logprobs[token]))
 
         text = self._tokenizer.decode(generated_tokens, skip_special_tokens=True)
-        return text, prompt_tokens, len(generated_tokens)
+        return text, prompt_tokens, len(generated_tokens), token_logprobs
 
     def _generate_chunks_batched(
         self,
@@ -1115,11 +1126,12 @@ class Qwen3ASRModel(nn.Module):
         texts = [""] * len(chunks)
         gen_tokens = [0] * len(chunks)
         prompt_tokens = [0] * len(chunks)
+        token_logprobs = [[] for _ in chunks]
         processed = [False] * len(chunks)
         remaining_tokens = max_tokens
 
         if remaining_tokens <= 0:
-            return texts, gen_tokens, prompt_tokens, processed
+            return texts, gen_tokens, prompt_tokens, processed, token_logprobs
 
         pbar = tqdm(total=len(chunks), desc="Processing chunks", disable=not verbose)
         for b0 in range(0, len(chunks), batch_size):
@@ -1171,8 +1183,13 @@ class Qwen3ASRModel(nn.Module):
                     processed.append(sample_logits)
                 return mx.concatenate(processed, axis=0)
 
-            y = sampler(apply_logits_processors(logits[:, -1, :]))
-            mx.async_eval(y)
+            scores = apply_logits_processors(logits[:, -1, :])
+            y = sampler(scores)
+            logprobs = scores - mx.logsumexp(scores, axis=-1, keepdims=True)
+            selected_logprobs = mx.take_along_axis(
+                logprobs, y[:, None], axis=-1
+            ).squeeze(-1)
+            mx.async_eval(y, selected_logprobs)
 
             out_ids = [[] for _ in range(bsz)]
             done = [False] * bsz
@@ -1192,11 +1209,19 @@ class Qwen3ASRModel(nn.Module):
                 next_logits = self._forward_with_embeds(
                     self.model.embed_tokens(y[:, None]), cache
                 )
-                next_y = sampler(apply_logits_processors(next_logits[:, -1, :]))
-                mx.async_eval(next_y)
+                next_scores = apply_logits_processors(next_logits[:, -1, :])
+                next_y = sampler(next_scores)
+                next_logprobs = next_scores - mx.logsumexp(
+                    next_scores, axis=-1, keepdims=True
+                )
+                next_selected_logprobs = mx.take_along_axis(
+                    next_logprobs, next_y[:, None], axis=-1
+                ).squeeze(-1)
+                mx.async_eval(next_y, next_selected_logprobs)
 
                 current_tokens = y.tolist()
-                for i, t in enumerate(current_tokens):
+                current_logprobs = selected_logprobs.tolist()
+                for i, (t, logprob) in enumerate(zip(current_tokens, current_logprobs)):
                     if budget_exhausted:
                         break
                     if done[i]:
@@ -1206,6 +1231,7 @@ class Qwen3ASRModel(nn.Module):
                         done[i] = True
                     else:
                         out_ids[i].append(t)
+                        token_logprobs[b0 + i].append(logprob)
                         group_tokens += 1
                         if group_tokens >= remaining_tokens:
                             budget_exhausted = True
@@ -1213,6 +1239,7 @@ class Qwen3ASRModel(nn.Module):
                 if all(done) or budget_exhausted:
                     break
                 y = next_y
+                selected_logprobs = next_selected_logprobs
 
             for i in range(bsz):
                 texts[b0 + i] = self._tokenizer.decode(
@@ -1222,7 +1249,7 @@ class Qwen3ASRModel(nn.Module):
             remaining_tokens -= group_tokens
             pbar.update(bsz)
         pbar.close()
-        return texts, gen_tokens, prompt_tokens, processed
+        return texts, gen_tokens, prompt_tokens, processed, token_logprobs
 
     def generate(
         self,
@@ -1432,18 +1459,20 @@ class Qwen3ASRModel(nn.Module):
         remaining_tokens = max_tokens
 
         if max_tokens > 0 and batch_size > 1 and len(chunks) > 1:
-            texts, gen_toks, prompt_toks, processed = self._generate_chunks_batched(
-                chunks,
-                max_tokens=max_tokens,
-                sampler=sampler,
-                logits_processors=logits_processors,
-                language=language,
-                system_prompt=system_prompt,
-                batch_size=batch_size,
-                verbose=verbose,
+            texts, gen_toks, prompt_toks, processed, chunk_logprobs = (
+                self._generate_chunks_batched(
+                    chunks,
+                    max_tokens=max_tokens,
+                    sampler=sampler,
+                    logits_processors=logits_processors,
+                    language=language,
+                    system_prompt=system_prompt,
+                    batch_size=batch_size,
+                    verbose=verbose,
+                )
             )
-            for (chunk_audio, offset_sec), text, gt, pt, was_processed in zip(
-                chunks, texts, gen_toks, prompt_toks, processed
+            for (chunk_audio, offset_sec), text, gt, pt, was_processed, logprobs in zip(
+                chunks, texts, gen_toks, prompt_toks, processed, chunk_logprobs
             ):
                 if not was_processed:
                     continue
@@ -1458,6 +1487,7 @@ class Qwen3ASRModel(nn.Module):
                         "language": language,
                         "start": offset_sec,
                         "end": offset_sec + len(chunk_audio) / self.sample_rate,
+                        **_logprob_metadata(logprobs),
                     }
                 )
             chunks = []  # skip the sequential loop below
@@ -1472,7 +1502,7 @@ class Qwen3ASRModel(nn.Module):
 
             actual_chunk_duration = len(chunk_audio) / self.sample_rate
 
-            text, prompt_toks, gen_toks = self._generate_single_chunk(
+            text, prompt_toks, gen_toks, token_logprobs = self._generate_single_chunk(
                 chunk_audio,
                 max_tokens=remaining_tokens,
                 sampler=sampler,
@@ -1499,6 +1529,7 @@ class Qwen3ASRModel(nn.Module):
                     "language": language,
                     "start": offset_sec,
                     "end": offset_sec + actual_chunk_duration,
+                    **_logprob_metadata(token_logprobs),
                 }
             )
 
