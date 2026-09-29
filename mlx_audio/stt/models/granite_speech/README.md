@@ -1,14 +1,15 @@
 # Granite Speech
 
-MLX implementation of IBM's Granite Speech, a speech-to-text model that combines a CTC Conformer encoder with a Granite LLM decoder via a BLIP-2 QFormer projector. Supports ASR (transcription) and AST (speech translation).
+MLX implementation of IBM's Granite Speech, a speech-to-text model that combines a CTC Conformer encoder with a Granite LLM decoder via a BLIP-2 QFormer projector. Supports ASR (transcription), AST (speech translation), and, with the plus checkpoint, speaker-attributed ASR and word-level timestamps.
 
 ## Available Models
 
 | Model | Parameters | Description |
 |-------|------------|-------------|
-| [ibm-granite/granite-4.0-1b-speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | ~1B | Speech recognition and translation |
+| [ibm-granite/granite-4.0-1b-speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) | ~1B | Speech recognition and translation, keyword biasing |
+| [ibm-granite/granite-speech-4.1-2b-plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) | ~2B | Rich transcription: speaker attribution, word timestamps, keyword biasing (EN, FR, DE, ES, PT) |
 
-**Supported Languages:** English, French, German, Spanish, Portuguese, Japanese
+**Supported Languages:** English, French, German, Spanish, Portuguese, Japanese (plus checkpoint: no Japanese)
 
 ## CLI Usage
 
@@ -78,6 +79,44 @@ print(result.text)
 
 > **Note:** If the model receives an unfamiliar prompt, it falls back to transcription as the default mode.
 
+### Rich Transcription (granite-speech-4.1-2b-plus)
+
+The plus checkpoint selects its mode through the prompt; the `task` parameter picks the right one. Audio limits from the model card: up to 9 minutes for `asr`/`saa`, up to 3.5 minutes for `timestamps`. Timestamps mode emits roughly one tag per word, so budget `max_tokens` accordingly. The model card describes unpunctuated, lowercase output, but generated text can include punctuation and casing; the implementation preserves it.
+
+The canonical `saa` and `timestamps` prompts define their output schemas and cannot be replaced with `prompt=`. Use `hotwords=` for contextual biasing, or use `task="asr"` when supplying a custom instruction. If the checkpoint returns plain or malformed text instead of the requested tags, `generate()` raises `StructuredTranscriptError`; the model output is available on its `raw_text` attribute. Requesting `saa` or `timestamps` from a 4.0/4.1 checkpoint raises `UnsupportedTranscriptionTask`. Both exceptions are importable from `mlx_audio.stt.models.granite_speech.granite_speech`.
+
+Plus checkpoints send the system turn from the model card by default; pass `system_prompt=` to replace it.
+
+```python
+from mlx_audio.stt import load
+
+model = load("ibm-granite/granite-speech-4.1-2b-plus")
+
+# Speaker-attributed ASR: [Speaker N]: tags, parsed into segments
+result = model.generate("meeting.wav", task="saa")
+for seg in result.segments:
+    print(f"Speaker {seg['speaker_id']}: {seg['text']}")
+
+# Word-level timestamps: [T:N] tags, parsed into at most one segment with word timings
+result = model.generate("audio.wav", task="timestamps", max_tokens=8192)
+for seg in result.segments:
+    for word in seg["words"]:
+        print(f"{word['word']}\t{word['start']:.2f}-{word['end']:.2f}s")
+
+# Keyword biasing (names, technical terms) works with any task and checkpoint
+result = model.generate("audio.wav", hotwords=["Nativ", "QFormer"])
+```
+
+From the CLI, `task` and `hotwords` go through `--gen-kwargs`:
+
+```bash
+mlx_audio.stt.generate --model ibm-granite/granite-speech-4.1-2b-plus \
+  --audio meeting.wav --output-path output --format json \
+  --gen-kwargs '{"task": "saa", "hotwords": ["Acme Ledger", "Q3 close"]}'
+```
+
+Speaker-attributed segments carry no timing, so save them as JSON; SRT and VTT output needs `task="timestamps"`.
+
 ### Streaming
 
 ```python
@@ -85,9 +124,11 @@ from mlx_audio.stt import load
 
 model = load("ibm-granite/granite-4.0-1b-speech")
 
-for text in model.generate("audio.wav", stream=True):
-    print(text, end="", flush=True)
+for result in model.generate("audio.wav", stream=True):
+    print(result.text, end="", flush=True)
 ```
+
+For `saa` and `timestamps`, the stream carries the raw tagged text; call `generate()` without `stream=True` to get parsed segments.
 
 ### Generation Parameters
 
