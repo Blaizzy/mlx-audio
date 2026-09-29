@@ -18,6 +18,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.lm.generate import StreamingDetokenizer
+
 from .config import RAW_AUDIO_LENGTH_PER_TOK, _num_delay_tokens
 
 
@@ -479,7 +481,7 @@ class VoxtralStreamingSession:
         self._next_tok: Optional[mx.array] = None
         self._pos = self._prompt_len
         self.generated: list[int] = []
-        self._prev_text = ""
+        self._detokenizer = StreamingDetokenizer(model._tokenizer)
         self._trailing_after_close = 0
         self._done = False
         self._left_pad_seeded = False
@@ -636,12 +638,13 @@ class VoxtralStreamingSession:
                 # matches voxmlx's finalize() behavior.
                 token = int(self._next_tok.item())
                 self.generated.append(token)
-                text_so_far = self.model._tokenizer.decode(
-                    [t for t in self.generated if t != eos]
-                )
-                if text_so_far != self._prev_text:
-                    deltas.append(text_so_far[len(self._prev_text) :])
-                    self._prev_text = text_so_far
+                if token != eos:
+                    self._detokenizer.add_token(token)
+                    if text := self._detokenizer.last_segment:
+                        deltas.append(text)
+                self._detokenizer.finalize()
+                if text := self._detokenizer.last_segment:
+                    deltas.append(text)
                 self._done = True
                 return deltas
 
@@ -669,14 +672,15 @@ class VoxtralStreamingSession:
             token = int(prev_tok_mx.item())
             self.generated.append(token)
 
-            text_so_far = self.model._tokenizer.decode(
-                [t for t in self.generated if t != eos]
-            )
-            if text_so_far != self._prev_text:
-                deltas.append(text_so_far[len(self._prev_text) :])
-                self._prev_text = text_so_far
+            if token != eos:
+                self._detokenizer.add_token(token)
+                if text := self._detokenizer.last_segment:
+                    deltas.append(text)
 
             if token == eos or len(self.generated) > self.max_tokens:
+                self._detokenizer.finalize()
+                if text := self._detokenizer.last_segment:
+                    deltas.append(text)
                 self._done = True
                 return deltas
 
