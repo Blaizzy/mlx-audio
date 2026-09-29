@@ -183,10 +183,14 @@ class HFTokenizerWrapper:
 
         miscellaneous = set("♩♪♫♬♭♮♯")
 
-        result = {self.encode(" -")[0], self.encode(" '")[0]}
+        result = set()
+        for seed in (" -", " '"):
+            tokens = self.encode(seed)
+            if tokens:
+                result.add(tokens[0])
         for symbol in symbols + list(miscellaneous):
             for tokens in [self.encode(symbol), self.encode(" " + symbol)]:
-                if len(tokens) == 1 or symbol in miscellaneous:
+                if tokens and (len(tokens) == 1 or symbol in miscellaneous):
                     result.add(tokens[0])
 
         return tuple(sorted(result))
