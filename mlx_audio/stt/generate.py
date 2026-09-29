@@ -136,6 +136,10 @@ def _get_cues(segments):
         ]
     cues = []
     for s in segments.segments:
+        # Speaker-only segments (e.g. Granite SAA) carry no timing, so they
+        # cannot produce cues.
+        if "start" not in s:
+            continue
         cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
         if "words" in s and s["words"]:
             for w in s["words"]:
@@ -214,12 +218,12 @@ def save_as_json(segments, output_path: str):
             "segments": [],
         }
         for s in segments.segments:
-            seg = {
-                "text": s["text"],
-                "start": s["start"],
-                "end": s["end"],
-                "duration": s["end"] - s["start"],
-            }
+            seg = {"text": s["text"]}
+            # Speaker-only segments (e.g. Granite SAA) carry no timing
+            if "start" in s:
+                seg["start"] = s["start"]
+                seg["end"] = s["end"]
+                seg["duration"] = s["end"] - s["start"]
             # Add word-level timestamps if available
             if "words" in s and s["words"]:
                 seg["words"] = s["words"]

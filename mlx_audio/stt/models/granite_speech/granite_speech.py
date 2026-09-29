@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,205 @@ PLUS_SYSTEM_PROMPT = (
     "Knowledge Cutoff Date: April 2024.\nToday's Date: December 19, 2024.\n"
     "You are Granite, developed by IBM. You are a helpful AI assistant"
 )
+
+# Task prompts verbatim from the model card. An unfamiliar or malformed prompt
+# makes the model silently fall back to plain transcription, so these must not
+# be reworded.
+TASK_PROMPTS = {
+    "asr": "can you transcribe the speech into a written format?",
+    "saa": (
+        "Speaker attribution: Transcribe and denote who is speaking by adding "
+        "[Speaker 1]: and [Speaker 2]: tags before speaker turns."
+    ),
+    "timestamps": (
+        "Timestamps: Transcribe the speech. After each word, add a timestamp tag "
+        "showing the end time in centiseconds, e.g. hello [T:45] world [T:82]"
+    ),
+}
+
+_SPEAKER_RE = re.compile(r"\[Speaker (\d+)\]:")
+_TS_RE = re.compile(r"\[T:(\d+)\]")
+
+
+class UnsupportedTranscriptionTask(ValueError):
+    """The loaded checkpoint cannot perform the requested transcription task."""
+
+
+class StructuredTranscriptError(RuntimeError):
+    """A rich transcription did not contain the requested structured syntax."""
+
+    def __init__(self, message: str, *, raw_text: str) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+
+
+def _normalize_task(task: str, *, word_timestamps: bool = False) -> str:
+    normalized = (task or "asr").lower().strip()
+    if normalized not in TASK_PROMPTS:
+        raise ValueError(
+            f"Unknown task {task!r}; expected one of {sorted(TASK_PROMPTS)}"
+        )
+    if word_timestamps:
+        if normalized not in ("asr", "timestamps"):
+            raise ValueError(f"word_timestamps=True conflicts with task={normalized!r}")
+        normalized = "timestamps"
+    return normalized
+
+
+def _parse_saa(text: str) -> List[dict]:
+    """Parse ``[Speaker N]:`` turns without inventing speaker metadata."""
+    matches = list(_SPEAKER_RE.finditer(text))
+    if not matches:
+        raise StructuredTranscriptError(
+            "Granite speaker-attribution mode produced no [Speaker N]: tags. The "
+            "model may have fallen back to plain ASR.",
+            raw_text=text,
+        )
+    if text[: matches[0].start()].strip():
+        raise StructuredTranscriptError(
+            "Granite SAA output begins with unattributed text before the first "
+            "[Speaker N]: tag.",
+            raw_text=text,
+        )
+
+    seen: List[int] = []
+    segments: List[dict] = []
+    for index, match in enumerate(matches):
+        speaker_id = int(match.group(1))
+        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.end() : body_end].strip()
+        if not body:
+            raise StructuredTranscriptError(
+                f"[Speaker {speaker_id}]: has no associated transcript text.",
+                raw_text=text,
+            )
+        if speaker_id not in seen:
+            expected = len(seen) + 1
+            if speaker_id != expected:
+                raise StructuredTranscriptError(
+                    "SAA speakers must be introduced in order: "
+                    f"expected Speaker {expected}, got Speaker {speaker_id}.",
+                    raw_text=text,
+                )
+            seen.append(speaker_id)
+        segments.append({"speaker_id": speaker_id, "text": body})
+
+    return segments
+
+
+def _resolve_timestamp_centiseconds(value: str, previous_cs: Optional[int]) -> int:
+    """Resolve a modulo-1000 timestamp while enforcing monotonic output."""
+    current_cs = int(value)
+    if current_cs >= 1000:
+        if previous_cs is not None and current_cs < previous_cs:
+            raise ValueError(
+                "Absolute Granite timestamp moved backwards: "
+                f"{current_cs} < {previous_cs} centiseconds."
+            )
+        return current_cs
+    if previous_cs is None:
+        return current_cs
+
+    current_cs += (previous_cs // 1000) * 1000
+    while current_cs < previous_cs:
+        current_cs += 1000
+    return current_cs
+
+
+def _timestamp_items(text: str) -> List[Tuple[str, str]]:
+    """Return validated ``(word, timestamp)`` pairs for one transcript string."""
+    tags = _TS_RE.findall(text)
+    if not tags:
+        raise StructuredTranscriptError(
+            "Granite timestamp mode produced no [T:N] tags. The model may have "
+            "fallen back to plain ASR.",
+            raw_text=text,
+        )
+
+    parts = _TS_RE.split(text)
+    trailing = parts[-1].strip()
+    if trailing:
+        raise StructuredTranscriptError(
+            "Granite timestamp output ends with content lacking a [T:N] tag: "
+            f"{trailing!r}.",
+            raw_text=text,
+        )
+
+    items: List[Tuple[str, str]] = []
+    for raw_token, raw_timestamp in zip(parts[0::2], tags):
+        token = raw_token.strip()
+        if not token:
+            raise StructuredTranscriptError(
+                f"[T:{raw_timestamp}] has no preceding word or '_' marker.",
+                raw_text=text,
+            )
+        if token != "_" and len(token.split()) != 1:
+            raise StructuredTranscriptError(
+                "Expected exactly one word or '_' before each timestamp tag, "
+                f"but {token!r} precedes [T:{raw_timestamp}]. One or more "
+                "timestamp tags are missing.",
+                raw_text=text,
+            )
+        items.append((token, raw_timestamp))
+    return items
+
+
+def _parse_timestamps(text: str) -> List[dict]:
+    """Parse a complete word-timestamp sequence without fabricating alignment."""
+    cursor = 0.0
+    previous_cs: Optional[int] = None
+    words = []
+
+    for token, raw_timestamp in _timestamp_items(text):
+        try:
+            current_cs = _resolve_timestamp_centiseconds(raw_timestamp, previous_cs)
+        except ValueError as exc:
+            raise StructuredTranscriptError(str(exc), raw_text=text) from exc
+        end = current_cs / 100.0
+        # "_" marks silence: it advances the clock but is not a word.
+        if token != "_":
+            words.append({"word": token, "start": cursor, "end": end})
+        cursor = end
+        previous_cs = current_cs
+
+    if not words:
+        return []
+    return [
+        {
+            "text": " ".join(word["word"] for word in words),
+            "start": words[0]["start"],
+            "end": words[-1]["end"],
+            "words": words,
+        }
+    ]
+
+
+def _resolve_prompt(task: str, prompt: Optional[str], language: Optional[str]) -> str:
+    # Rich tasks are prompt-controlled, so their canonical prompts are part of
+    # the output-schema contract. Custom prompts remain available for ASR.
+    task = _normalize_task(task)
+    if prompt is not None:
+        if task != "asr":
+            raise ValueError(
+                f"prompt cannot override task={task!r}. Use hotwords=[...] for "
+                "contextual biasing, or use task='asr' for an unconstrained "
+                "custom instruction."
+            )
+        return prompt
+    if task != "asr":
+        return TASK_PROMPTS[task]
+    if language is not None:
+        lang_name = LANGUAGE_CODES.get(language.lower(), language)
+        return f"Translate the speech to {lang_name}."
+    return TASK_PROMPTS["asr"]
+
+
+def _parse_segments(task: str, text: str) -> List[dict]:
+    if task == "saa":
+        return _parse_saa(text)
+    if task == "timestamps":
+        return _parse_timestamps(text)
+    return []
 
 
 @dataclass
@@ -617,7 +817,7 @@ class Model(nn.Module):
         system_prompt: Optional[str] = None,
     ) -> mx.array:
         if user_prompt is None:
-            user_prompt = "can you transcribe the speech into a written format?"
+            user_prompt = TASK_PROMPTS["asr"]
 
         # The plus checkpoint was trained with a separator after the audio
         # placeholder; the 4.0/4.1 checkpoints concatenate the instruction.
@@ -672,17 +872,35 @@ class Model(nn.Module):
         min_p: float = 0.0,
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
+        task: str = "asr",
         prompt: str = None,
         language: str = None,
         system_prompt: Optional[str] = None,
+        hotwords: Optional[List[str]] = None,
+        word_timestamps: bool = False,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        if prompt is None and language is not None:
-            lang_name = LANGUAGE_CODES.get(language.lower(), language)
-            prompt = f"Translate the speech to {lang_name}."
+        from mlx_audio.stt.utils import merge_hotwords
+
+        # 4.0/4.1 have no timestamp mode. Like other models without word
+        # timings, they ignore the generic word_timestamps flag (the server
+        # forwards it to every STT model); an explicit rich task still raises.
+        task = _normalize_task(task, word_timestamps=word_timestamps and self.is_plus)
+        if task != "asr" and not self.is_plus:
+            raise UnsupportedTranscriptionTask(
+                f"task={task!r} requires a Granite Speech Plus checkpoint, but the "
+                f"loaded model has model_type={self.config.model_type!r}. Load "
+                "ibm-granite/granite-speech-4.1-2b-plus or use task='asr'."
+            )
+        prompt = _resolve_prompt(task, prompt, language)
+
+        # Granite biases toward rare vocabulary via an inline "Keywords:" clause.
+        keywords = merge_hotwords(None, hotwords)
+        if keywords:
+            prompt = f"{prompt} Keywords: {keywords}"
 
         if system_prompt is None and self.is_plus:
             system_prompt = PLUS_SYSTEM_PROMPT
@@ -747,6 +965,7 @@ class Model(nn.Module):
             tokens.append(token)
 
         text = self._tokenizer.decode(tokens, skip_special_tokens=True)
+        segments = _parse_segments(task, text)
         elapsed = time.time() - start_time
         gen_tokens = len(tokens)
 
@@ -759,7 +978,7 @@ class Model(nn.Module):
 
         return STTOutput(
             text=text,
-            segments=[],
+            segments=segments,
             prompt_tokens=prompt_tokens,
             generation_tokens=gen_tokens,
             total_tokens=prompt_tokens + gen_tokens,
