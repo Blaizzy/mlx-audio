@@ -1,6 +1,6 @@
 import inspect
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -17,6 +17,10 @@ class EncoderConfig:
     dropout: float = 0.1
     conv_kernel_size: int = 15
     conv_expansion_factor: int = 2
+    # 1-based Conformer block indices whose outputs are concatenated onto the
+    # final layer output (0 = post input_linear). granite-speech-4.1-2b-plus
+    # uses [3]; None/[] for 4.0 and 4.1.
+    cat_hidden_layers: Optional[List[int]] = None
     model_type: str = "granite_speech_encoder"
 
     @classmethod

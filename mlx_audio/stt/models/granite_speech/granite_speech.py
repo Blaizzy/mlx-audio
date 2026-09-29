@@ -25,6 +25,14 @@ LANGUAGE_CODES = {
     "ja": "Japanese",
 }
 
+# Verbatim from the granite-speech-4.1-2b-plus model card. IBM's reference code
+# sends this system turn; without one the plus chat template substitutes a
+# generic assistant message the model was not trained against.
+PLUS_SYSTEM_PROMPT = (
+    "Knowledge Cutoff Date: April 2024.\nToday's Date: December 19, 2024.\n"
+    "You are Granite, developed by IBM. You are a helpful AI assistant"
+)
+
 
 @dataclass
 class StreamingResult:
@@ -113,19 +121,17 @@ class ConformerAttention(nn.Module):
         rel_pos_emb = self.rel_pos_emb(attention_dists)
 
         C = self.context_size
-        pos_attn = (
-            mx.sum(
-                q[:, :, :, :, None, :] * rel_pos_emb[None, None, None, :, :, :],
-                axis=-1,
-            )
-            * self.scale
-        )
+        # Contract the head dimension directly.  Expanding q and rel_pos_emb
+        # first creates a [B, blocks, heads, C, C, dim_head] temporary; for the
+        # supported nine-minute input that single allocation can exceed Metal's
+        # buffer-size limit by itself.
+        pos_attn = mx.einsum("bnhcd,crd->bnhcr", q, rel_pos_emb) * self.scale
 
         if remainder > 0:
             row_valid = mx.arange(C)[:, None] < remainder
             col_valid = mx.arange(C)[None, :] < remainder
             mask = ~(row_valid & col_valid)
-            mask_value = mx.array(mx.finfo(pos_attn.dtype).min)
+            mask_value = mx.array(mx.finfo(pos_attn.dtype).min, dtype=pos_attn.dtype)
             pos_attn_last = mx.where(
                 mask[None, None, None], mask_value, pos_attn[:, -1:, :, :, :]
             )
@@ -224,11 +230,20 @@ class CTCEncoder(nn.Module):
 
     def __call__(self, x: mx.array) -> mx.array:
         x = self.input_linear(x)
+        cat_layers = set(self.config.cat_hidden_layers or ())
+        exported = [x] if 0 in cat_layers else []
         for idx, layer in enumerate(self.layers, start=1):
             x = layer(x, attention_dists=self._attention_dists)
             if idx == self.num_layers // 2:
                 x_mid = self.out(x)
                 x = x + self.out_mid(mx.softmax(x_mid, axis=-1))
+            # Export after the mid-layer CTC injection: HF adds it in place to
+            # the tensor it has already exported, so an exported mid layer
+            # carries the injection.
+            if idx in cat_layers:
+                exported.append(x)
+        if exported:
+            x = mx.concatenate([*exported, x], axis=-1)
         return x
 
 
@@ -440,6 +455,15 @@ class Model(nn.Module):
     def layers(self):
         return self.language_model.model.layers
 
+    @property
+    def is_plus(self) -> bool:
+        # mlx_audio.convert rewrites model_type to the module name
+        # ("granite_speech"), so detect the plus variant by its architectural
+        # fingerprint, which survives conversion.
+        return self.config.model_type == "granite_speech_plus" or bool(
+            self.config.encoder_config.cat_hidden_layers
+        )
+
     def make_cache(self) -> List[KVCache]:
         return [KVCache() for _ in range(len(self.layers))]
 
@@ -474,6 +498,12 @@ class Model(nn.Module):
         return logits / self.language_model.logits_scaling
 
     def get_audio_features(self, input_features: mx.array) -> mx.array:
+        # Plus runs its encoder in the loaded weight dtype, as HF does. 4.0/4.1
+        # keep their established float32 activations (float32 features promote
+        # the weights).
+        encoder_dtype = self.encoder.input_linear.weight.dtype
+        if self.is_plus and input_features.dtype != encoder_dtype:
+            input_features = input_features.astype(encoder_dtype)
         encoder_output = self.encoder(input_features)
         projected = self.projector(encoder_output)
         return projected
@@ -483,27 +513,27 @@ class Model(nn.Module):
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        already_converted = any("scales" in k for k in weights)
-
         sanitized = {}
         for k, v in weights.items():
             if "num_batches_tracked" in k:
                 continue
 
             if (
-                not already_converted
-                and any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
-                and "weight" in k
+                any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
+                and k.endswith("weight")
                 and len(v.shape) == 3
             ):
                 # MLX Conv1d expects weights in (out_channels, kernel_size, in_channels)
                 # layout, while PyTorch uses (out_channels, in_channels, kernel_size).
-                # Models converted from PyTorch checkpoints need transposing; models
-                # already saved in MLX-native layout (e.g. bf16 safetensors) do not.
-                # depth_conv (kernel > 1) needs the shape heuristic to distinguish
-                # PyTorch (out, 1, kernel) from MLX (out, kernel, 1). up_conv and
-                # down_conv always use kernel_size=1, so they are always transposed.
-                if "depth_conv" not in k or v.shape[-1] > v.shape[-2]:
+                # Use each convolution's singleton dimension to distinguish those
+                # layouts, making sanitization safe both during conversion and when
+                # loading the resulting unquantized checkpoint.
+                is_pointwise = "up_conv" in k or "down_conv" in k
+                pytorch_pointwise = is_pointwise and v.shape[-1] == 1
+                pytorch_depthwise = (
+                    "depth_conv" in k and v.shape[1] == 1 and v.shape[-1] != 1
+                )
+                if pytorch_pointwise or pytorch_depthwise:
                     v = v.transpose(0, 2, 1)
 
             sanitized[k] = v
@@ -583,15 +613,24 @@ class Model(nn.Module):
         self,
         num_audio_tokens: int,
         user_prompt: str = None,
+        *,
+        system_prompt: Optional[str] = None,
     ) -> mx.array:
         if user_prompt is None:
             user_prompt = "can you transcribe the speech into a written format?"
 
+        # The plus checkpoint was trained with a separator after the audio
+        # placeholder; the 4.0/4.1 checkpoints concatenate the instruction.
         audio_placeholder = "<|audio|>" * num_audio_tokens
-        content = f"{audio_placeholder}{user_prompt}"
+        if self.is_plus:
+            content = f"{audio_placeholder} {user_prompt.lstrip()}"
+        else:
+            content = f"{audio_placeholder}{user_prompt}"
 
         if getattr(self._tokenizer, "chat_template", None):
             chat = [{"role": "user", "content": content}]
+            if system_prompt:
+                chat.insert(0, {"role": "system", "content": system_prompt})
             prompt_str = self._tokenizer.apply_chat_template(
                 chat, tokenize=False, add_generation_prompt=True
             )
@@ -635,6 +674,7 @@ class Model(nn.Module):
         repetition_context_size: int = 100,
         prompt: str = None,
         language: str = None,
+        system_prompt: Optional[str] = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
         stream: bool = False,
@@ -643,6 +683,9 @@ class Model(nn.Module):
         if prompt is None and language is not None:
             lang_name = LANGUAGE_CODES.get(language.lower(), language)
             prompt = f"Translate the speech to {lang_name}."
+
+        if system_prompt is None and self.is_plus:
+            system_prompt = PLUS_SYSTEM_PROMPT
 
         if stream:
             return self._stream_generate(
@@ -655,6 +698,7 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 repetition_context_size=repetition_context_size,
                 prompt=prompt,
+                system_prompt=system_prompt,
                 prefill_step_size=prefill_step_size,
                 verbose=verbose,
             )
@@ -672,7 +716,9 @@ class Model(nn.Module):
         audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
-        prompt_ids = self._build_prompt(num_audio_tokens, prompt)
+        prompt_ids = self._build_prompt(
+            num_audio_tokens, prompt, system_prompt=system_prompt
+        )
         inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
         mx.eval(inputs_embeds)
 
@@ -734,6 +780,7 @@ class Model(nn.Module):
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
         prompt: str = None,
+        system_prompt: Optional[str] = None,
         prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
@@ -746,7 +793,9 @@ class Model(nn.Module):
         audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
-        prompt_ids = self._build_prompt(num_audio_tokens, prompt)
+        prompt_ids = self._build_prompt(
+            num_audio_tokens, prompt, system_prompt=system_prompt
+        )
         inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
         mx.eval(inputs_embeds)
 
