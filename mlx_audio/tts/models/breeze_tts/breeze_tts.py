@@ -201,7 +201,7 @@ class _TextEmbedding(nn.Module):
         self.eoi_token_index = eoi_token_index
 
     def __call__(self, input_ids: mx.array) -> mx.array:
-        embeds = self.weight[input_ids] * mx.array(self.weight.shape[-1] ** 0.5)
+        embeds = self.weight[input_ids] * (self.weight.shape[-1] ** 0.5)
         return mx.where(
             (input_ids == self.eoi_token_index)[..., None], self.eoi_embedding, embeds
         )
