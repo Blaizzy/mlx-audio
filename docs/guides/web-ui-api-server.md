@@ -264,10 +264,11 @@ To use a different VAD model, launch the server with `--vad-model <id>` (or set 
 **Minimal Python client:**
 
 ```python
-import asyncio, base64, json, websockets, numpy as np, soundfile as sf
+import asyncio, base64, json, websockets
+from mlx_audio.audio_io import read
 
 async def transcribe(path: str):
-    audio, sr = sf.read(path, dtype="int16", always_2d=False)
+    audio, sr = read(path, dtype="int16", nchannels=1)
     uri = "ws://localhost:8000/v1/realtime?model=iris-sfg/Voxtral-Mini-4B-Realtime-2602-4bit"
     async with websockets.connect(uri) as ws:
         # Wait for session.created
