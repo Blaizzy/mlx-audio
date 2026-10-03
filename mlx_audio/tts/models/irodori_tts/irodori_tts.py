@@ -16,7 +16,7 @@ from mlx_audio.utils import load_audio as load_audio_any
 from .config import ModelConfig
 from .duration import build_duration_features
 from .model import IrodoriDiT
-from .sampling import sample_euler_cfg
+from .sampling import sample_euler_cfg, sample_euler_meanflow
 from .text import encode_text, normalize_text
 
 
@@ -66,19 +66,23 @@ class Model(nn.Module):
     # Weight loading hooks
     # ------------------------------------------------------------------
 
+    # PyTorch Sequential submodules use integer keys; MLX nn.Sequential nests
+    # them under "layers.N" instead.
+    _SEQUENTIAL_PREFIXES = ("cond_module.", "delta_cond_module.")
+
     def sanitize(self, weights: dict) -> dict:
         """
         Remap Irodori PyTorch weight keys to mlx-audio MLX conventions:
-          cond_module.0.weight  → cond_module.layers.0.weight
-          <key>                 → model.<key>
+          cond_module.0.weight        → cond_module.layers.0.weight
+          delta_cond_module.0.weight  → delta_cond_module.layers.0.weight
+          <key>                       → model.<key>
         """
         out = {}
         for k, v in weights.items():
-            # PyTorch Sequential uses integer keys; MLX nn.Sequential uses "layers.N"
-            if k.startswith("cond_module."):
+            if k.startswith(self._SEQUENTIAL_PREFIXES):
                 parts = k.split(".")
                 if len(parts) > 1 and parts[1].isdigit():
-                    k = ".".join(["cond_module", "layers", parts[1], *parts[2:]])
+                    k = ".".join([parts[0], "layers", parts[1], *parts[2:]])
             # Nest under self.model
             out_key = f"model.{k}" if not k.startswith("model.") else k
             out[out_key] = v
@@ -438,7 +442,13 @@ class Model(nn.Module):
             if k in sampler_cfg:
                 sampler_cfg[k] = v
 
-        latent_out = sample_euler_cfg(
+        # MeanFlow checkpoints bake CFG into distillation and use a dedicated
+        # few-step sampler; sample_euler_meanflow ignores RF-only kwargs
+        # (cfg_scale_*, t_schedule_mode, ...) still present in sampler_cfg.
+        sampler_fn = (
+            sample_euler_meanflow if self.config.dit.use_meanflow else sample_euler_cfg
+        )
+        latent_out = sampler_fn(
             model=self.model,
             text_input_ids=text_input_ids,
             text_mask=text_mask,

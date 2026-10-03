@@ -15,6 +15,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [**OmniVoice**](omnivoice.md) | 0.6B backbone + HiggsAudio tokenizer | 646+ languages | Yes | -- | Zero-shot multilingual cloning, nonverbal tags, CMU + pinyin controls |
 | [**Voxtral TTS**](voxtral-tts.md) | 4B | EN, FR, ES, DE, IT, PT, NL, AR, HI | -- | Yes | 20 voice presets, 9 languages, chunked streaming output |
 | [**Svara TTS**](svara.md) | 3B | 19 Indian langs (HI, BN, TA, TE, KN, ML, MR, GU, PA, OR, AS, BH, MAG, MAI, HNE, BRX, DOI, NE, SA, EN-IN) | -- | Yes | Orpheus-family, SNAC 24 kHz, 38 voices, 4-bit/8-bit MLX quants |
+| [**rumik-oss 1**](rumik-oss.md) | 3B | 22 Indic langs (HI, BN, TA, TE, MR, GU, KN, ML, PA, OR, AS, UR, NE, SA, MAI, MNI, BRX, DOI, KOK, SAT, KS) + EN | -- | Yes | Expressive multilingual Indic TTS, description-conditioned delivery (tone, accent, pace), `<laugh>`/`<chuckle>`/`<sigh>` tags, 4 voices, streaming, 8-bit/4-bit MLX quants |
 | [**CSM / MisoTTS**](csm.md) | 1B / 8B | EN | Yes | Yes | Sesame-style conversational speech, voice cloning, multi-turn context |
 | [**Dia**](dia.md) | 1.6B | EN | -- | -- | Dialogue with `[S1]`/`[S2]` speaker tags |
 | [**Chatterbox**](chatterbox.md) | 0.5B | 23 languages | Yes | -- | Multilingual v2/v3, emotion exaggeration control |
@@ -27,7 +28,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [Echo TTS](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/echo_tts/README.md) | -- | EN | Yes | -- | Diffusion-based, fast voice cloning |
 | [Irodori TTS](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/irodori_tts/README.md) | 500M | JA | Yes | -- | Japanese-only, DiT + DACVAE |
 | [Fish Speech](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/fish_qwen3_omni/README.md) | -- | EN | Yes | -- | Inline control tags, multi-speaker, long-form batching |
-| [VoxCPM2](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/voxcpm2/README.md) | 2B | 30 languages | Yes | -- | 48kHz, voice design, voice cloning, continuation |
+| [**VoxCPM2**](voxcpm2.md) | 2B | 30 languages | Yes | -- | 48kHz, voice design, voice cloning, continuation |
 
 ## Quick Start
 
@@ -55,7 +56,7 @@ All TTS models share a common interface:
 
 !!! tip "Choosing a model"
     - **Fastest / smallest:** Kokoro (82M) -- great for quick generation with many voice presets.
-    - **Voice cloning:** CSM, Qwen3-TTS, Higgs Audio v3, or OmniVoice -- clone a voice from reference speech.
-    - **Multilingual:** Voxtral TTS (9 languages, 20 voices) or Chatterbox (23 languages).
+    - **Voice cloning:** CSM, Qwen3-TTS, Higgs Audio v3, OmniVoice, or VoxCPM2 -- clone a voice from reference speech.
+    - **Multilingual:** VoxCPM2 (30 languages), Voxtral TTS (9 languages, 20 voices), or Chatterbox (23 languages).
     - **Dialogue:** Dia -- built-in support for multi-speaker conversations.
-    - **Emotion / style control:** Qwen3-TTS CustomVoice or VoiceDesign variants.
+    - **Emotion / style control:** Qwen3-TTS CustomVoice and VoiceDesign variants, or VoxCPM2 voice design.

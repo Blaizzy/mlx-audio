@@ -8,6 +8,7 @@ no PyTorch or upstream Breeze runtime is required at inference time.
 
 import json
 import math
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Generator, Optional, Union
@@ -25,6 +26,50 @@ from mlx_audio.tts.models.base import GenerationResult
 from mlx_audio.utils import load_audio
 
 from .config import ModelConfig
+
+
+def _split_long_segment(text: str, max_chars: int = 600) -> list[str]:
+    """Split text into non-empty chunks no longer than ``max_chars``."""
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive.")
+    if len(text) <= max_chars:
+        return [text]
+
+    # Keep sentence-ending punctuation attached to the preceding sentence.
+    # Full-width terminators cover Chinese and Japanese text, where sentence
+    # boundaries are commonly not followed by whitespace.
+    sentences = [s for s in re.split(r"(?<=[.!?。！？])", text) if s]
+    chunks: list[str] = []
+    current = ""
+
+    for sentence in sentences:
+        while sentence:
+            if current and len(current) + len(sentence) > max_chars:
+                chunks.append(current.strip())
+                current = ""
+                sentence = sentence.lstrip()
+                continue
+
+            available = max_chars - len(current)
+            if len(sentence) <= available:
+                current += sentence
+                break
+
+            # A sentence can itself exceed the limit. Prefer a nearby word
+            # boundary, then fall back to a hard split for unspaced/CJK text.
+            split_at = available
+            whitespace = list(re.finditer(r"\s+", sentence[: available + 1]))
+            if whitespace and whitespace[-1].start() >= available // 2:
+                split_at = whitespace[-1].start()
+            chunk = (current + sentence[:split_at]).strip()
+            if chunk:
+                chunks.append(chunk)
+            current = ""
+            sentence = sentence[split_at:].lstrip()
+
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks
 
 
 class _AudioEmbedding(nn.Module):
@@ -963,6 +1008,7 @@ class Model(nn.Module):
         seed: Optional[int] = None,
         stream: bool = False,
         streaming_interval: float = 2.0,
+        split_pattern: Optional[str] = "\n",
         **_: object,
     ) -> Generator[GenerationResult, None, None]:
         """Generate Breeze audio for voice design, cloning, or direction."""
@@ -983,29 +1029,23 @@ class Model(nn.Module):
         if streaming_interval <= 0:
             raise ValueError("streaming_interval must be positive.")
 
-        started = time.perf_counter()
-        cond = self._prompt_embeddings(
-            text, voice=voice, instruct=instruct, ref_audio=ref_audio, ref_text=ref_text
-        )
-        use_cfg = bool(instruct) and cfg_scale not in (None, 1.0)
-        scale = 1.0 if cfg_scale is None else cfg_scale
-        if use_cfg:
-            uncond = self._prompt_embeddings(
-                text, voice=voice, instruct=None, ref_audio=ref_audio, ref_text=ref_text
-            )
+        if split_pattern:
+            try:
+                raw_segments = [
+                    s.strip() for s in re.split(split_pattern, text) if s.strip()
+                ]
+            except Exception:
+                raw_segments = [
+                    s.strip() for s in text.split(split_pattern) if s.strip()
+                ]
+            segments: list[str] = []
+            for segment in raw_segments:
+                segments.extend(_split_long_segment(segment))
+        else:
+            segments = [text.strip()] if text.strip() else []
+        if not segments:
+            segments = [text]
 
-        cond_cache = self.backbone_model.make_cache()
-        cond_hidden = self.backbone_model(input_embeddings=cond, cache=cond_cache)[
-            :, -1, :
-        ]
-        if use_cfg:
-            uncond_cache = self.backbone_model.make_cache()
-            uncond_hidden = self.backbone_model(
-                input_embeddings=uncond, cache=uncond_cache
-            )[:, -1, :]
-
-        frames: list[list[int]] = []
-        pending_frames: list[list[int]] = []
         decode_rate = getattr(self.audio_tokenizer, "decode_upsample_rate", None)
         if decode_rate is None:
             decoder = getattr(self.audio_tokenizer, "decoder", None)
@@ -1013,20 +1053,179 @@ class Model(nn.Module):
         if decode_rate is None or decode_rate <= 0:
             raise ValueError("Breeze audio tokenizer has no valid decode rate")
         chunk_frames = max(1, int(streaming_interval * self.sample_rate / decode_rate))
-        if stream:
-            self.audio_tokenizer.decoder.reset_streaming_state()
 
-        def stream_result(audio: mx.array, token_count: int, final: bool):
-            mx.eval(audio)
+        total_segments = len(segments)
+        for segment_idx, segment_text in enumerate(segments):
+            is_last_segment = segment_idx == total_segments - 1
+            started = time.perf_counter()
+            cond = self._prompt_embeddings(
+                segment_text,
+                voice=voice,
+                instruct=instruct,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+            )
+            use_cfg = bool(instruct) and cfg_scale not in (None, 1.0)
+            scale = 1.0 if cfg_scale is None else cfg_scale
+            if use_cfg:
+                uncond = self._prompt_embeddings(
+                    segment_text,
+                    voice=voice,
+                    instruct=None,
+                    ref_audio=ref_audio,
+                    ref_text=ref_text,
+                )
+
+            cond_cache = self.backbone_model.make_cache()
+            cond_hidden = self.backbone_model(input_embeddings=cond, cache=cond_cache)[
+                :, -1, :
+            ]
+            if use_cfg:
+                uncond_cache = self.backbone_model.make_cache()
+                uncond_hidden = self.backbone_model(
+                    input_embeddings=uncond, cache=uncond_cache
+                )[:, -1, :]
+
+            frames: list[list[int]] = []
+            pending_frames: list[list[int]] = []
+            if stream:
+                self.audio_tokenizer.decoder.reset_streaming_state()
+
+            def stream_result(
+                audio: mx.array, token_count: int, final: bool, s_idx: int = segment_idx
+            ):
+                mx.eval(audio)
+                samples = audio.shape[0]
+                elapsed = time.perf_counter() - started
+                tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
+                samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
+                return GenerationResult(
+                    audio=audio,
+                    samples=samples,
+                    sample_rate=self.sample_rate,
+                    segment_idx=s_idx,
+                    token_count=token_count,
+                    audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
+                    real_time_factor=elapsed / max(samples / self.sample_rate, 1e-6),
+                    prompt={
+                        "tokens": token_count,
+                        "tokens-per-sec": tokens_per_sec,
+                    },
+                    audio_samples={
+                        "samples": samples,
+                        "samples-per-sec": samples_per_sec,
+                    },
+                    processing_time_seconds=elapsed,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    is_streaming_chunk=True,
+                    is_final_chunk=final and is_last_segment,
+                )
+
+            for _ in range(max_tokens):
+                cond_logits = self.lm_head(cond_hidden)
+                if use_cfg:
+                    uncond_logits = self.lm_head(uncond_hidden)
+                    logits = uncond_logits + scale * (cond_logits - uncond_logits)
+                else:
+                    logits = cond_logits
+                logits = self._apply_repetition_penalty(
+                    logits, [frame[0] for frame in frames], repetition_penalty
+                )
+                logits = self._mask_reserved_codec_logits(logits)
+                first = self._sample(
+                    logits,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    allow_eos=True,
+                )
+                if first == self.vocab_size:
+                    break
+                frame = self._depth_tokens(
+                    first,
+                    cond_hidden,
+                    unconditional_hidden=uncond_hidden if use_cfg else None,
+                    cfg_scale=scale,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                )
+                frames.append(frame)
+                pending_frames.append(frame)
+                if stream and len(pending_frames) >= chunk_frames:
+                    chunk = pending_frames[:chunk_frames]
+                    del pending_frames[:chunk_frames]
+                    pending_codes = mx.array(chunk, dtype=mx.int32)[None, :, :]
+                    stream_audio = self.audio_tokenizer.decoder.streaming_step(
+                        mx.transpose(pending_codes, (0, 2, 1))
+                    )
+                    yield stream_result(
+                        self._audio_vector(stream_audio), len(chunk), final=False
+                    )
+                codebooks = mx.array(frame, dtype=mx.int32)[None, None, :]
+                cond_hidden = self.backbone_model(
+                    input_ids=codebooks, cache=cond_cache
+                )[:, -1, :]
+                if use_cfg:
+                    uncond_hidden = self.backbone_model(
+                        input_ids=codebooks, cache=uncond_cache
+                    )[:, -1, :]
+
+            if not frames:
+                empty_audio = self._empty_audio()
+                if stream:
+                    self.audio_tokenizer.decoder.reset_streaming_state()
+                mx.eval(empty_audio)
+                elapsed = time.perf_counter() - started
+                samples = empty_audio.shape[0]
+                samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
+                yield GenerationResult(
+                    audio=empty_audio,
+                    samples=samples,
+                    sample_rate=self.sample_rate,
+                    segment_idx=segment_idx,
+                    token_count=0,
+                    audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
+                    real_time_factor=0.0,
+                    prompt={"tokens": 0, "tokens-per-sec": 0.0},
+                    audio_samples={
+                        "samples": samples,
+                        "samples-per-sec": samples_per_sec,
+                    },
+                    processing_time_seconds=elapsed,
+                    peak_memory_usage=mx.get_peak_memory() / 1e9,
+                    is_streaming_chunk=stream,
+                    is_final_chunk=is_last_segment,
+                )
+                continue
+            if stream:
+                if pending_frames:
+                    pending_codes = mx.array(pending_frames, dtype=mx.int32)[None, :, :]
+                    stream_audio = self.audio_tokenizer.decoder.streaming_step(
+                        mx.transpose(pending_codes, (0, 2, 1))
+                    )
+                    self.audio_tokenizer.decoder.reset_streaming_state()
+                    yield stream_result(
+                        self._audio_vector(stream_audio),
+                        len(pending_frames),
+                        final=True,
+                    )
+                else:
+                    self.audio_tokenizer.decoder.reset_streaming_state()
+                continue
+            codes = mx.array(frames, dtype=mx.int32)[None, :, :]
+            audio = self._decode_codes(codes)
             samples = audio.shape[0]
+            mx.eval(audio)
             elapsed = time.perf_counter() - started
+            token_count = len(frames)
             tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
             samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
-            return GenerationResult(
+            yield GenerationResult(
                 audio=audio,
                 samples=samples,
                 sample_rate=self.sample_rate,
-                segment_idx=0,
+                segment_idx=segment_idx,
                 token_count=token_count,
                 audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
                 real_time_factor=elapsed / max(samples / self.sample_rate, 1e-6),
@@ -1040,125 +1239,5 @@ class Model(nn.Module):
                 },
                 processing_time_seconds=elapsed,
                 peak_memory_usage=mx.get_peak_memory() / 1e9,
-                is_streaming_chunk=True,
-                is_final_chunk=final,
+                is_final_chunk=is_last_segment,
             )
-
-        for _ in range(max_tokens):
-            cond_logits = self.lm_head(cond_hidden)
-            if use_cfg:
-                uncond_logits = self.lm_head(uncond_hidden)
-                logits = uncond_logits + scale * (cond_logits - uncond_logits)
-            else:
-                logits = cond_logits
-            logits = self._apply_repetition_penalty(
-                logits, [frame[0] for frame in frames], repetition_penalty
-            )
-            logits = self._mask_reserved_codec_logits(logits)
-            first = self._sample(
-                logits,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                allow_eos=True,
-            )
-            if first == self.vocab_size:
-                break
-            frame = self._depth_tokens(
-                first,
-                cond_hidden,
-                unconditional_hidden=uncond_hidden if use_cfg else None,
-                cfg_scale=scale,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-            )
-            frames.append(frame)
-            pending_frames.append(frame)
-            if stream and len(pending_frames) >= chunk_frames:
-                chunk = pending_frames[:chunk_frames]
-                del pending_frames[:chunk_frames]
-                pending_codes = mx.array(chunk, dtype=mx.int32)[None, :, :]
-                stream_audio = self.audio_tokenizer.decoder.streaming_step(
-                    mx.transpose(pending_codes, (0, 2, 1))
-                )
-                yield stream_result(
-                    self._audio_vector(stream_audio), len(chunk), final=False
-                )
-            codebooks = mx.array(frame, dtype=mx.int32)[None, None, :]
-            cond_hidden = self.backbone_model(input_ids=codebooks, cache=cond_cache)[
-                :, -1, :
-            ]
-            if use_cfg:
-                uncond_hidden = self.backbone_model(
-                    input_ids=codebooks, cache=uncond_cache
-                )[:, -1, :]
-
-        if not frames:
-            empty_audio = self._empty_audio()
-            if stream:
-                self.audio_tokenizer.decoder.reset_streaming_state()
-            mx.eval(empty_audio)
-            elapsed = time.perf_counter() - started
-            samples = empty_audio.shape[0]
-            samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
-            yield GenerationResult(
-                audio=empty_audio,
-                samples=samples,
-                sample_rate=self.sample_rate,
-                segment_idx=0,
-                token_count=0,
-                audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
-                real_time_factor=0.0,
-                prompt={"tokens": 0, "tokens-per-sec": 0.0},
-                audio_samples={
-                    "samples": samples,
-                    "samples-per-sec": samples_per_sec,
-                },
-                processing_time_seconds=elapsed,
-                peak_memory_usage=mx.get_peak_memory() / 1e9,
-                is_streaming_chunk=stream,
-                is_final_chunk=True,
-            )
-            return
-        if stream:
-            if pending_frames:
-                pending_codes = mx.array(pending_frames, dtype=mx.int32)[None, :, :]
-                stream_audio = self.audio_tokenizer.decoder.streaming_step(
-                    mx.transpose(pending_codes, (0, 2, 1))
-                )
-                self.audio_tokenizer.decoder.reset_streaming_state()
-                yield stream_result(
-                    self._audio_vector(stream_audio), len(pending_frames), final=True
-                )
-            else:
-                self.audio_tokenizer.decoder.reset_streaming_state()
-            return
-        codes = mx.array(frames, dtype=mx.int32)[None, :, :]
-        audio = self._decode_codes(codes)
-        samples = audio.shape[0]
-        mx.eval(audio)
-        elapsed = time.perf_counter() - started
-        token_count = len(frames)
-        tokens_per_sec = token_count / elapsed if elapsed > 0 else 0.0
-        samples_per_sec = samples / elapsed if elapsed > 0 else 0.0
-        yield GenerationResult(
-            audio=audio,
-            samples=samples,
-            sample_rate=self.sample_rate,
-            segment_idx=0,
-            token_count=token_count,
-            audio_duration=f"00:00:{samples / self.sample_rate:06.3f}",
-            real_time_factor=elapsed / max(samples / self.sample_rate, 1e-6),
-            prompt={
-                "tokens": token_count,
-                "tokens-per-sec": tokens_per_sec,
-            },
-            audio_samples={
-                "samples": samples,
-                "samples-per-sec": samples_per_sec,
-            },
-            processing_time_seconds=elapsed,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
-            is_final_chunk=True,
-        )

@@ -1,3 +1,5 @@
+import inspect
+
 import pytest
 
 try:
@@ -5,7 +7,11 @@ try:
 except (ImportError, RuntimeError) as exc:  # pragma: no cover - no Metal host
     pytest.skip(f"MLX device unavailable: {exc}", allow_module_level=True)
 
-from mlx_audio.tts.models.breeze_tts.breeze_tts import Model, _t5gemma2_attention_mask
+from mlx_audio.tts.models.breeze_tts.breeze_tts import (
+    Model,
+    _split_long_segment,
+    _t5gemma2_attention_mask,
+)
 from mlx_audio.tts.models.breeze_tts.config import ModelConfig
 from mlx_audio.tts.utils import get_model_and_args
 from mlx_audio.utils import get_model_name_parts
@@ -380,3 +386,99 @@ def test_breeze_registry_loads_model_module():
     )
     assert model_type == "breeze_tts"
     assert module.Model is Model
+
+
+def test_breeze_generate_splits_segments(monkeypatch):
+    model = Model(tiny_config())
+
+    class Decoder:
+        decode_upsample_rate = 24000
+
+        def reset_streaming_state(self):
+            pass
+
+    class AudioTokenizer:
+        decode_upsample_rate = 24000
+        decoder = Decoder()
+
+        def decode(self, codes):
+            return mx.zeros((1, 4)), mx.array([4], dtype=mx.int32)
+
+    class Backbone:
+        def make_cache(self):
+            return []
+
+        def __call__(self, input_embeddings=None, input_ids=None, cache=None):
+            del cache
+            length = (
+                input_embeddings.shape[1]
+                if input_embeddings is not None
+                else input_ids.shape[1]
+            )
+            return mx.zeros((1, length, 16))
+
+    class Head:
+        def __call__(self, _hidden):
+            logits = mx.full((1, 9), -100.0)
+            logits[..., 8] = 100.0
+            return logits
+
+    model.audio_tokenizer = AudioTokenizer()
+    model.backbone_model = Backbone()
+    model.lm_head = Head()
+    prompt_calls = []
+    monkeypatch.setattr(
+        model,
+        "_prompt_embeddings",
+        lambda text, *args, **kwargs: prompt_calls.append(text) or mx.zeros((1, 1, 16)),
+    )
+
+    results = list(model.generate("Segment 1\n\nSegment 2", temperature=0, top_k=0))
+    assert len(results) == 2
+    assert prompt_calls == ["Segment 1", "Segment 2"]
+    assert results[0].segment_idx == 0
+    assert not results[0].is_final_chunk
+    assert results[1].segment_idx == 1
+    assert results[1].is_final_chunk
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * 1201,
+        "word " * 300,
+        "这是第一句。这是第二句！这是第三句？" * 50,
+    ],
+)
+def test_breeze_long_segments_are_bounded(text):
+    chunks = _split_long_segment(text)
+
+    assert len(chunks) > 1
+    assert all(chunk for chunk in chunks)
+    assert all(len(chunk) <= 600 for chunk in chunks)
+
+
+def test_breeze_generate_preserves_existing_positional_arguments():
+    signature = inspect.signature(Model.generate)
+    bound = signature.bind(
+        None,
+        "text",
+        "voice",
+        "instruction",
+        "reference.wav",
+        "reference text",
+        2.0,
+        321,
+        0.4,
+        0.8,
+        7,
+        1.2,
+        123,
+        True,
+        0.5,
+    )
+
+    assert bound.arguments["max_tokens"] == 321
+    assert bound.arguments["temperature"] == 0.4
+    assert bound.arguments["streaming_interval"] == 0.5
+    assert "split_pattern" not in bound.arguments

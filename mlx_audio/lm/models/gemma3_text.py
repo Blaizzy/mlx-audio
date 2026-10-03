@@ -87,8 +87,9 @@ class Attention(nn.Module):
         keys = self.k_norm(keys)
 
         if cache is not None:
-            queries = self.rope(queries, offset=cache.offset)
-            keys = self.rope(keys, offset=cache.offset)
+            offset = mx.full((B,), cache.offset) if B > 1 else cache.offset
+            queries = self.rope(queries, offset=offset)
+            keys = self.rope(keys, offset=offset)
             keys, values = cache.update_and_fetch(keys, values)
         else:
             queries = self.rope(queries)
@@ -188,7 +189,7 @@ class Gemma3Model(nn.Module):
             h = input_embeddings
         else:
             h = self.embed_tokens(inputs)
-        h *= mx.array(self.args.hidden_size**0.5, mx.bfloat16).astype(h.dtype)
+            h *= mx.array(self.args.hidden_size**0.5, mx.bfloat16).astype(h.dtype)
 
         if cache is None:
             cache = [None] * len(self.layers)

@@ -313,6 +313,12 @@ class ConvTransformerBlock(nn.Module):
         return x, new_cache
 
 
+def causal_mask(seq_len: int, dtype: mx.Dtype = mx.float32) -> mx.array:
+    """Additive causal mask of shape (seq_len, seq_len)."""
+    idx = mx.arange(seq_len)
+    return mx.where(idx[:, None] >= idx[None, :], 0.0, -mx.inf).astype(dtype)
+
+
 class Depthformer(nn.Module):
     """Depthformer for audio frame generation using self-attention."""
 
@@ -323,6 +329,7 @@ class Depthformer(nn.Module):
         num_heads: int = 32,
         num_kv_heads: int = 8,
         ff_dim: Optional[int] = None,
+        rope_theta: float = 1000000.0,
         tie: bool = True,
     ):
         super().__init__()
@@ -342,7 +349,7 @@ class Depthformer(nn.Module):
                 num_kv_heads=num_kv_heads,
                 ff_dim=ff_dim,
                 max_seq_len=4096,
-                rope_theta=10000.0,
+                rope_theta=rope_theta,
                 use_qk_norm=True,  # Depthformer uses bounded attention
             )
             for _ in range(layers)
@@ -353,12 +360,13 @@ class Depthformer(nn.Module):
         x: mx.array,
         cache: Optional[List[Any]] = None,
         use_cache: bool = False,
+        mask: Optional[mx.array] = None,
     ) -> Tuple[mx.array, Optional[List[Any]]]:
         new_cache = [] if use_cache else None
 
         for i in range(self.layers_count):
             layer_cache = cache[i] if cache is not None else None
-            x, layer_new_cache = self.blocks[i](x, cache=layer_cache)
+            x, layer_new_cache = self.blocks[i](x, mask=mask, cache=layer_cache)
 
             if use_cache:
                 new_cache.append(layer_new_cache)

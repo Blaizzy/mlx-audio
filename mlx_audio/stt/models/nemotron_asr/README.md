@@ -33,6 +33,33 @@ python -m mlx_audio.stt.generate \
     --model mlx-community/nemotron-3.5-asr-streaming-0.6b --audio speech.wav --format txt
 ```
 
+## Speaker-masked transcription
+
+Use Nemotron 3 Diarization to run an independent ASR stream for each speaker:
+
+```python
+from mlx_audio.vad import load as load_diarization
+
+diar = load_diarization("mlx-community/Nemotron-3-Diarization", strict=True)
+diar.set_streaming_config("low")
+for speaker, transcript in model.generate_speakers("meeting.wav", diar).items():
+    print(speaker, transcript.text)
+
+# Also accepts an iterable of 16 kHz mono PCM chunks, with automatic final flush.
+for delta in model.stream_generate_speakers("meeting.wav", diar):
+    print(delta.speaker, delta.text)
+```
+
+`generate_speakers()` returns a dictionary of speaker IDs to `AlignedResult`.
+Streaming deltas contain `speaker`, `tokens`, and `text`; timestamps use the
+original recording clock. `create_speaker_streaming_session(diar)` exposes
+`feed(pcm)` and `feed([], final=True)` for explicit live input.
+
+This uses existing weights with feature masking, independent encoder/decoder
+caches, and activity-based cache gating. Overlapping voices are not separated.
+See the [diarization integration documentation](../../../vad/models/nemotron_diarization/README.md#speaker-attributed-transcription)
+for options, latency, and the runnable example.
+
 ## Language prompt
 
 Pass `language=<key>` where `<key>` is from the model's `prompt_dictionary`

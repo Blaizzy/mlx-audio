@@ -389,3 +389,37 @@ def test_integrated_loudness_validation_matches_previous_behavior():
         ValueError, match="Audio must have length greater than the block size."
     ):
         integrated_loudness(np.zeros(100, dtype=np.float64), 24000)
+
+
+def test_log_mel_spectrogram_uses_periodic_hann_window():
+    """log_mel_spectrogram must build its Hann window with periodic=True (the
+    DFT-even window), matching openai-whisper's torch.hann_window(N_FFT) and
+    Hugging Face transformers' WhisperFeatureExtractor."""
+    import mlx.core as mx
+
+    from mlx_audio.dsp import hanning, mel_filters, stft
+    from mlx_audio.stt.models.whisper.audio import (
+        HOP_LENGTH,
+        N_FFT,
+        SAMPLE_RATE,
+        log_mel_spectrogram,
+    )
+
+    rng = np.random.default_rng(0)
+    audio = rng.standard_normal(SAMPLE_RATE).astype(np.float32) * 0.1
+
+    actual = np.asarray(log_mel_spectrogram(audio))
+
+    def _reference(periodic):
+        audio_mx = mx.array(audio)
+        window = hanning(N_FFT, periodic=periodic)
+        freqs = stft(audio_mx, window=window, n_fft=N_FFT, hop_length=HOP_LENGTH)
+        magnitudes = freqs[:-1, :].abs().square()
+        filters = mel_filters(SAMPLE_RATE, N_FFT, 80, norm="slaney", mel_scale=None)
+        mel_spec = magnitudes @ filters.T
+        log_spec = mx.maximum(mel_spec, 1e-10).log10()
+        log_spec = mx.maximum(log_spec, log_spec.max() - 8.0)
+        return np.asarray((log_spec + 4.0) / 4.0)
+
+    np.testing.assert_allclose(actual, _reference(periodic=True), atol=1e-6)
+    assert not np.allclose(actual, _reference(periodic=False), atol=1e-3)

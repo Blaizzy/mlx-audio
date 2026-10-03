@@ -132,6 +132,8 @@ for result in model.generate(
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
 | **KugelAudio** | SOTA 7B AR+Diffusion TTS for European languages | EN, DE, FR, ES, IT, PT, NL, PL, RU, UK, + 14 more | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
+| **rumik-oss 1** | 3B expressive multilingual Indic TTS with 22-language support, description-conditioned delivery and inline vocalizations | 22 Indic languages + EN | [rumik-ai/rumik-oss-1](https://huggingface.co/rumik-ai/rumik-oss-1), [8bit](https://huggingface.co/rumik-ai/rumik-oss-1-mlx-8bit), [4bit](https://huggingface.co/rumik-ai/rumik-oss-1-mlx-4bit) |
+| **VoxCPM2** | 2B tokenizer-free TTS with 48kHz output, voice design, voice cloning, and continuation | 30 languages | [bf16](https://huggingface.co/mlx-community/VoxCPM2-bf16), [8bit](https://huggingface.co/mlx-community/VoxCPM2-8bit), [4bit](https://huggingface.co/mlx-community/VoxCPM2-4bit) |
 | **LongCat-AudioDiT** | SOTA diffusion TTS in waveform latent space with voice cloning | ZH, EN | [mlx-community/LongCat-AudioDiT-1B-bf16](https://huggingface.co/mlx-community/LongCat-AudioDiT-1B-bf16) |
 | **MeloTTS** | Lightweight VITS2-based TTS with streaming | EN (more coming) | [mlx-community/MeloTTS-English-MLX](https://huggingface.co/mlx-community/MeloTTS-English-MLX) |
 | **MOSS-TTS** | 8B delay-pattern and local-transformer multilingual TTS with voice cloning | 31 languages | [OpenMOSS-Team/MOSS-TTS-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5), [OpenMOSS-Team/MOSS-TTS](https://huggingface.co/OpenMOSS-Team/MOSS-TTS), [OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5), [OpenMOSS-Team/MOSS-TTS-Local-Transformer](https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer) |
@@ -152,11 +154,12 @@ for result in model.generate(
 | **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **Voxtral Realtime** | Mistral's 4B streaming STT | Multiple | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
-| **VibeVoice-ASR** | Microsoft's 9B ASR with diarization & timestamps | Multiple | [mlx-community/VibeVoice-ASR-bf16](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) |
+| **VibeVoice-ASR** | Microsoft's 3B/9B ASR with diarization, timestamps, hotwords, and native chunk streaming | 10 streaming / 50+ long-form | [Streaming 1.5B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-1.5B) · [Streaming 7B](https://huggingface.co/microsoft/VibeVoice-ASR-Streaming-7B) · [Long-form](https://huggingface.co/mlx-community/VibeVoice-ASR-bf16) · [README](mlx_audio/stt/models/vibevoice_asr/README.md) |
 | **Canary** | NVIDIA's multilingual ASR with translation | 25 EU + RU, UK | [README](mlx_audio/stt/models/canary/README.md) |
 | **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
 | **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+| **Granite Speech 5.0 TurboCTC** | IBM's fast encoder-only CTC ASR | EN | [README](mlx_audio/stt/models/granite_speech5_ctc/README.md) |
 | **Qwen2-Audio** | Alibaba's multimodal audio understanding (ASR, captioning, emotion, translation) | Multiple | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
 | **MOSS-Music** | OpenMOSS music understanding and lyrics ASR | EN, ZH | [README](mlx_audio/stt/models/moss_music/README.md) |
 
@@ -168,6 +171,7 @@ for result in model.generate(
 | **Silero VAD** | Lightweight speech/non-speech detection with streaming state | Language-agnostic | [mlx-community/silero-vad](https://huggingface.co/mlx-community/silero-vad) |
 | **Sortformer v1** | NVIDIA's end-to-end speaker diarization (up to 4 speakers) | Language-agnostic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
 | **Sortformer v2.1** | NVIDIA's streaming speaker diarization with AOSC compression | Language-agnostic | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32) |
+| **Nemotron 3 Diarization** | NVIDIA's streaming diarization for up to 8 speakers at 10 ms resolution | Language-agnostic | [mlx-community/Nemotron-3-Diarization](https://huggingface.co/mlx-community/Nemotron-3-Diarization) |
 
 See the model READMEs for API details, streaming examples, and conversion steps.
 
@@ -176,9 +180,12 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 | Model | Description | Use Case | Repo |
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
+| [**DialogueSidon**](mlx_audio/sts/models/dialogue_sidon/README.md) | Two-speaker separation and restoration | Separate dialogue into speaker tracks | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
 | **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
+| **MiMo-Audio** | English/Chinese TTS, ASR, audio understanding and dialogue; Base few-shot speech tasks | Speech interactions and audio completion | [Instruct](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct), [Base](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Base), [audio tokenizer](https://huggingface.co/XiaomiMiMo/MiMo-Audio-Tokenizer), [guide](mlx_audio/sts/models/mimo_audio/README.md) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
+| **NemotronLabs VoiceChat** | Full-duplex speech-to-speech with streaming transcription and function calling | Real-time voice conversation | [mlx-community/NemotronLabs-VoiceChat-11B-4bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-4bit) |
 
 ### Music Generation
 
@@ -337,6 +344,22 @@ for item in result:
 ```
 
 See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
+
+### Phonon-1
+
+Fermion Research's compact English Qwen3-ASR derivatives load directly from
+their public transport repositories:
+
+```python
+from mlx_audio.stt import load
+
+model = load("FermionResearch/Phonon-1")
+result = model.generate("audio.wav", language="English")
+print(result.text)
+```
+
+Available builds are `Phonon-1-Micro` (285 MB), `Phonon-1` (415 MB), and
+`Phonon-1-Big` (581 MB). See the [Phonon-1 README](mlx_audio/stt/models/phonon/README.md).
 
 ### VibeVoice-ASR
 

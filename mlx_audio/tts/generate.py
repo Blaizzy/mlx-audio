@@ -319,7 +319,6 @@ def generate_audio(
 
         gen_kwargs = dict(
             text=text,
-            voice=voice,
             speed=speed,
             lang_code=lang_code,
             ref_audio=ref_audio,
@@ -332,6 +331,8 @@ def generate_audio(
             use_zero_spk_emb=use_zero_spk_emb,
             **extra_kwargs,
         )
+        if voice is not None:
+            gen_kwargs["voice"] = voice
         if max_tokens is not None:
             gen_kwargs["max_tokens"] = max_tokens
         if cfg_scale is not None:
@@ -384,7 +385,7 @@ def generate_audio(
                     f"Samples/sec:           {result.audio_samples['samples-per-sec']:.1f}"
                 )
                 print(
-                    f"Prompt:                {result.token_count} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
+                    f"Prompt:                {result.prompt['tokens']} tokens, {result.prompt['tokens-per-sec']:.1f} tokens-per-sec"
                 )
                 print(
                     f"Audio:                 {result.audio_samples['samples']} samples, {result.audio_samples['samples-per-sec']:.1f} samples-per-sec"

@@ -4,8 +4,8 @@ MLX implementation of [BreezeBlue/Breeze-TTS-2](https://huggingface.co/BreezeBlu
 The original checkpoint bundles the text encoder and Qwen3-TTS codec used by
 this implementation, so loading it does not require the upstream PyTorch
 runtime. Its PyTorch safetensors do not load in MLX directly; the examples
-use an [unofficial MLX 4-bit
-conversion](https://huggingface.co/LunaFox/Breeze-TTS-2-mlx-4bit).
+use the [mlx-community MLX
+conversion](https://huggingface.co/mlx-community/Breeze-TTS-2-mlx).
 
 ## Voice design
 
@@ -14,7 +14,7 @@ model repository:
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --text "Welcome aboard. Your journey begins now." \
   --instruction "A warm, thoughtful young woman with a clear voice." \
   --cfg-scale 4
@@ -30,7 +30,7 @@ such as `(sigh)` are kept in the generated text.
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(sigh) It is good to hear your voice again." \
@@ -49,7 +49,7 @@ while directing tone, emotion, pace, or delivery:
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(clears throat) We need to discuss what happened." \
@@ -69,7 +69,7 @@ English events use parentheses, for example `(laugh)`, `(cough)`, and
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --text "[笑] 欢迎来到今晚的故事时间，让我们一起开始吧。" \
   --instruction "一位温柔自信的年轻女性，声音清晰，语气亲切。" \
   --cfg-scale 4
@@ -81,7 +81,7 @@ cadence:
 
 ```bash
 mlx_audio.tts.generate \
-  --model LunaFox/Breeze-TTS-2-mlx-4bit \
+  --model mlx-community/Breeze-TTS-2-mlx \
   --ref-audio reference.wav \
   --ref-text "This is the exact transcript of the reference audio." \
   --text "(sigh) This response is streamed as it is generated." \
@@ -98,7 +98,7 @@ mono waveforms:
 ```python
 from mlx_audio.tts import load
 
-model = load("LunaFox/Breeze-TTS-2-mlx-4bit")
+model = load("mlx-community/Breeze-TTS-2-mlx")
 for chunk in model.generate(
     text="(laugh) Hello from MLX-Audio.",
     instruct="A bright, friendly voice.",
@@ -112,4 +112,4 @@ for chunk in model.generate(
 
 The model weights, derivatives, and generated outputs are governed by the
 upstream BreezeBlue Research and Non-Commercial License. Review the [original
-model card](https://huggingface.co/BreezeBlue/breeze-tts-2) before use.
+model card](https://huggingface.co/BreezeBlue/Breeze-TTS-2) before use.
