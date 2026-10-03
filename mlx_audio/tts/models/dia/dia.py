@@ -371,24 +371,7 @@ class Model(nn.Module):
         )  # Shape: (B, S, E)
 
         # 3. Prepare Decoder Inputs
-        # 3-1. Allocate KV Cache (Static)
-        decoder_cross_attention_cache: list[KVCache] = (
-            self.model.decoder.precompute_cross_attention_kv(
-                max_tokens, encoder_out, src_positions_BxS
-            )
-        )
-
-        decoder_self_attention_cache: list[KVCache] = []
-        for _ in range(self.model.decoder.num_layers):
-            decoder_self_attention_cache.append(
-                KVCache(
-                    self.config.model.decoder.gqa_query_heads,
-                    max_tokens,
-                    self.config.model.decoder.gqa_head_dim,
-                )
-            )
-
-        # 3-2. Initialize Decoder Inputs
+        # 3-1. Initialize Decoder Inputs
         generated_BxTxC = mx.full(
             (2, 1, num_channels),
             vals=audio_bos_value,
@@ -397,8 +380,9 @@ class Model(nn.Module):
 
         current_step = 0
         prompt_len_inc_bos = 1  # Start with BOS length
+        prefill_len = 0
 
-        # 3-3. Load Audio Prompt (if provided)
+        # 3-2. Load Audio Prompt (if provided) to determine prefill length
         if ref_audio is not None:
             audio_prompt = mx.array(ref_audio)[None, None, ...]  # 1, C, T
 
@@ -414,6 +398,28 @@ class Model(nn.Module):
 
             prefill_len = generated_BxTxC.shape[1]
             prompt_len_inc_bos = prefill_len
+
+        # 3-3. Allocate KV Cache (sized to fit prefill + generation)
+        cache_len = prefill_len + max_tokens
+
+        decoder_cross_attention_cache: list[KVCache] = (
+            self.model.decoder.precompute_cross_attention_kv(
+                cache_len, encoder_out, src_positions_BxS
+            )
+        )
+
+        decoder_self_attention_cache: list[KVCache] = []
+        for _ in range(self.model.decoder.num_layers):
+            decoder_self_attention_cache.append(
+                KVCache(
+                    self.config.model.decoder.gqa_query_heads,
+                    cache_len,
+                    self.config.model.decoder.gqa_head_dim,
+                )
+            )
+
+        # 3-4. Run prefill pass if we have reference audio
+        if ref_audio is not None:
             prefill_tgt_pos = mx.broadcast_to(
                 mx.expand_dims(mx.arange(prefill_len), 0), (2, prefill_len)
             )
