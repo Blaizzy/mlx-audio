@@ -153,6 +153,62 @@ def test_streaming_detokenizer_last_segment_decodes_once():
     assert tokenizer.decode_calls == 1
 
 
+@pytest.mark.parametrize(
+    ("pieces", "expected"),
+    [
+        (["▁hello", "<0x0A>", "▁world"], "hello\n world"),
+        (["▁hello", "<0x0A>", "▁", "▁ind", "ented"], "hello\n  indented"),
+        (
+            ["▁hello", "▁", "<0xF0>", "<0x9F>", "<0xAB>", "<0xA0>"],
+            "hello 🫠",
+        ),
+        (
+            ["▁hello", "<0x0A>", "▁", "<0xF0>", "<0x9F>", "<0xAB>", "<0xA0>"],
+            "hello\n 🫠",
+        ),
+        (
+            ["x"] * 63 + ["<0xF0>", "<0x9F>", "<0xAB>", "<0xA0>"],
+            "x" * 63 + "🫠",
+        ),
+        (["▁hello", "<0x0A>"] + ["▁world"] * 100, "hello\n" + " world" * 100),
+    ],
+)
+def test_backendless_sentencepiece_preserves_context_and_split_bytes(pieces, expected):
+    from tokenizers import decoders
+
+    # SentencePiece strips the initial space and renders each incomplete byte
+    # as U+FFFD. Exercise those decoder semantics without a downloaded model.
+    decoder = decoders.Sequence(
+        [
+            decoders.Replace("▁", " "),
+            decoders.ByteFallback(),
+            decoders.Fuse(),
+            decoders.Strip(" ", 1, 0),
+        ]
+    )
+
+    class Tokenizer:
+        def decode(self, token_ids):
+            return decoder.decode([pieces[token_id] for token_id in token_ids])
+
+    tokenizer = Tokenizer()
+    token_ids = list(range(len(pieces)))
+    assert tokenizer.decode(token_ids) == expected
+    detokenizer = StreamingDetokenizer(tokenizer)
+    text = ""
+    for token_id in token_ids:
+        detokenizer.add_token(token_id)
+        segment = detokenizer.last_segment
+        assert "\ufffd" not in segment
+        text += segment
+        assert expected.startswith(text)
+    detokenizer.finalize()
+    text += detokenizer.last_segment
+
+    assert text == expected
+    assert detokenizer.text == expected
+
+
 def test_stream_generate_accepts_scalar_eos_token_ids():
     """A plain transformers tokenizer reports eos_token_ids as an int."""
     out = list(

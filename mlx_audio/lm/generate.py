@@ -129,22 +129,18 @@ class _BoundedStreamingDetokenizer:
 
     @property
     def text(self):
-        has_incomplete_codepoint = False
         if self._current_tokens:
             current_text = self._decode(self._current_tokens)
-            has_incomplete_codepoint = current_text.endswith("\ufffd")
-            if has_incomplete_codepoint:
-                current_text = current_text[:-1]
+            if current_text.endswith("\ufffd"):
+                # Byte-fallback decoders can render each incomplete byte as
+                # U+FFFD. Hold back the entire suffix until it decodes fully.
+                current_text = current_text.rstrip("\ufffd")
             elif self.clean_spaces and current_text.endswith(" "):
                 current_text = current_text[:-1]
             self._current_text = current_text
 
-        if not has_incomplete_codepoint and self._current_text.endswith("\n"):
-            self._text += self._current_text
-            self._current_tokens = []
-            self._current_text = ""
-            self._next_compaction = self._REDECODE_WINDOW
-
+        # Even a newline needs context with decoders that strip an initial
+        # space. Only _compact_pending_tokens may commit a validated boundary.
         return self._text + self._current_text
 
     @property
