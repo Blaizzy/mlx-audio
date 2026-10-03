@@ -80,6 +80,8 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 
 MODEL_REMAPPING = {
+    "parakeet": "parakeet",
+    "parakeet_tdt": "parakeet",
     "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
@@ -166,6 +168,11 @@ def load_model(
         )
 
     config = load_config(model_path)
+    # Resolve the HF alias here so the shared loader recognizes Parakeet even
+    # when a local checkpoint directory has an unrelated model family name.
+    if (kwargs.get("model_type") or config.get("model_type")) == "parakeet_tdt":
+        kwargs["model_type"] = "parakeet"
+
     from mlx_audio.stt.models.phonon.transport import (
         is_phonon_model,
         prepare_model_path,

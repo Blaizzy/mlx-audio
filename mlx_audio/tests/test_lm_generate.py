@@ -42,6 +42,17 @@ def responses(prompt, **kwargs):
     return list(stream_generate(CycleModel(), Tok(), mx.array(prompt), **kwargs))
 
 
+class IntEosTok(Tok):
+    """transformers>=5 exposes eos_token_ids as a single int, not a collection."""
+
+    eos_token_ids = EOS
+
+
+class NoEosTok(Tok):
+    eos_token_ids = None
+    eos_token_id = None
+
+
 def test_final_response_carries_eos_token_and_stop_reason():
     out = responses([EOS - 1], max_tokens=10)
     assert out, "expected at least the terminal response"
@@ -83,3 +94,20 @@ def test_generate_step_negative_max_tokens_is_unbounded():
     stream = generate_step(mx.array([1, 2]), CycleModel(), max_tokens=-1)
     produced = [int(pair[0]) for pair, _ in zip(stream, range(40))]
     assert len(produced) == 40
+
+
+def test_stream_generate_accepts_scalar_eos_token_ids():
+    """A plain transformers tokenizer reports eos_token_ids as an int."""
+    out = list(
+        stream_generate(CycleModel(), IntEosTok(), mx.array([EOS - 1]), max_tokens=8)
+    )
+    assert out[-1].token == EOS
+    assert out[-1].finish_reason == "stop"
+
+
+def test_stream_generate_without_any_eos_runs_to_max_tokens():
+    out = list(
+        stream_generate(CycleModel(), NoEosTok(), mx.array([EOS - 1]), max_tokens=4)
+    )
+    assert len(out) == 4
+    assert out[-1].finish_reason == "length"

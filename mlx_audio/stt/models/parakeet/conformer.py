@@ -30,6 +30,7 @@ class ConformerArgs:
     pos_bias_u: mx.array | None = None
     pos_bias_v: mx.array | None = None
     subsampling_conv_chunking_factor: int = 1
+    mask_padding: bool = False
 
 
 class FeedForward(nn.Module):
@@ -76,11 +77,13 @@ class Convolution(nn.Module):
             bias=args.use_bias,
         )
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, valid: mx.array | None = None) -> mx.array:
         # x = x.swapaxes(1, 2)
 
         x = self.pointwise_conv1(x)
         x = nn.glu(x, axis=2)  # might make it variable later
+        if valid is not None:
+            x = mx.where(valid[..., None], x, 0)
 
         x = self.depthwise_conv(x)
         x = self.batch_norm(x)
@@ -129,6 +132,7 @@ class ConformerBlock(nn.Module):
         pos_emb: mx.array | None = None,
         mask: mx.array | None = None,
         cache=None,
+        valid: mx.array | None = None,
     ) -> mx.array:
         x += 0.5 * self.feed_forward1(self.norm_feed_forward1(x))
 
@@ -137,7 +141,7 @@ class ConformerBlock(nn.Module):
             x_norm, x_norm, x_norm, mask=mask, pos_emb=pos_emb, cache=cache
         )
 
-        x += self.conv(self.norm_conv(x))
+        x += self.conv(self.norm_conv(x), valid=valid)
         x += 0.5 * self.feed_forward2(self.norm_feed_forward2(x))
 
         return self.norm_out(x)
@@ -157,6 +161,7 @@ class DwStridingSubsampling(nn.Module):
         self._stride = 2
         self._kernel_size = 3
         self._padding = (self._kernel_size - 1) // 2
+        self._mask_padding = args.mask_padding
 
         in_channels = 1
         final_freq_dim = args.feat_in
@@ -238,6 +243,19 @@ class DwStridingSubsampling(nn.Module):
         )
 
     def __call__(self, x: mx.array, lengths: mx.array) -> tuple[mx.array, mx.array]:
+        if self._mask_padding:
+            # Mask after each strided convolution, before later convolutions can
+            # mix padded frames back into valid frames (HF/Photon semantics).
+            x = x[..., None]
+            for layer in self.conv:
+                x = layer(x)
+                if isinstance(layer, nn.Conv2d) and layer.stride != (1, 1):
+                    lengths = (lengths + 1) // 2
+                    valid = mx.arange(x.shape[1])[None, :] < lengths[:, None]
+                    x = mx.where(valid[:, :, None, None], x, 0)
+            x = x.transpose(0, 1, 3, 2).reshape(x.shape[0], x.shape[1], -1)
+            return self.out(x), lengths
+
         for _ in range(self._sampling_num):
             lengths = (
                 mx.floor(
@@ -274,6 +292,7 @@ class DwStridingSubsampling(nn.Module):
 class Conformer(nn.Module):
     def __init__(self, args: ConformerArgs):
         super().__init__()
+        self._mask_padding = args.mask_padding
 
         if args.self_attention_model == "rel_pos":
             self.pos_enc = RelPositionalEncoding(
@@ -303,7 +322,7 @@ class Conformer(nn.Module):
         if lengths is None:
             lengths = mx.full(
                 (x.shape[0],),
-                x.shape[-2],
+                x.shape[-2] - int(self._mask_padding),
                 dtype=mx.int64,
             )
 
@@ -325,7 +344,13 @@ class Conformer(nn.Module):
                 offset=cache[0].offset if cache[0] is not None else 0,  # type: ignore
             )
 
+        valid = None
+        mask = None
+        if self._mask_padding:
+            valid = mx.arange(x.shape[1])[None, :] < out_lengths[:, None]
+            mask = ~valid[:, None, None, :]
+
         for layer, c in zip(self.layers, cache):
-            x = layer(x, pos_emb=pos_emb, cache=c)
+            x = layer(x, pos_emb=pos_emb, cache=c, mask=mask, valid=valid)
 
         return x, out_lengths

@@ -171,6 +171,7 @@ for result in model.generate(
 | **Silero VAD** | Lightweight speech/non-speech detection with streaming state | Language-agnostic | [mlx-community/silero-vad](https://huggingface.co/mlx-community/silero-vad) |
 | **Sortformer v1** | NVIDIA's end-to-end speaker diarization (up to 4 speakers) | Language-agnostic | [mlx-community/diar_sortformer_4spk-v1-fp32](https://huggingface.co/mlx-community/diar_sortformer_4spk-v1-fp32) |
 | **Sortformer v2.1** | NVIDIA's streaming speaker diarization with AOSC compression | Language-agnostic | [mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32](https://huggingface.co/mlx-community/diar_streaming_sortformer_4spk-v2.1-fp32) |
+| **Nemotron 3 Diarization** | NVIDIA's streaming diarization for up to 8 speakers at 10 ms resolution | Language-agnostic | [mlx-community/Nemotron-3-Diarization](https://huggingface.co/mlx-community/Nemotron-3-Diarization) |
 
 See the model READMEs for API details, streaming examples, and conversion steps.
 
