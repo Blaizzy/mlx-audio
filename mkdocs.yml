@@ -104,6 +104,7 @@ nav:
       - VibeVoice ASR: models/stt/vibevoice-asr.md
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md
+      - Granite Speech: models/stt/granite-speech.md
     - Speech-to-Speech:
       - models/sts/index.md
       - MiMo-Audio: models/sts/mimo-audio.md

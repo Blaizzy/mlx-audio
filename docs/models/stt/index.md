@@ -26,7 +26,8 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | **Canary** | NVIDIA | ~1B | 25 EU + RU, UK | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/canary/README.md) |
 | **SenseVoice** | Alibaba DAMO | ~234M | 50+ | -- | -- | [mlx-community/SenseVoiceSmall](https://huggingface.co/mlx-community/SenseVoiceSmall) |
 | **FireRedASR2** | Xiaohongshu | ~1.18B | ZH, EN | -- | -- | [mlx-community/FireRedASR2-AED-mlx](https://huggingface.co/mlx-community/FireRedASR2-AED-mlx) |
-| **Granite Speech** | IBM | ~1B | EN, FR, DE, ES, PT, JA | Yes | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/granite_speech/README.md) |
+| [**Granite Speech 4.0**](granite-speech.md) | IBM | ~1B | EN, FR, DE, ES, PT, JA | Yes | -- | [ibm-granite/granite-4.0-1b-speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) |
+| [**Granite Speech 4.1 Plus**](granite-speech.md) | IBM | ~2B | EN, FR, DE, ES, PT | Yes | Word (separate from speaker attribution) | [ibm-granite/granite-speech-4.1-2b-plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) |
 | **Moonshine** | Useful Sensors | 27M / 61M | EN | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta | 1B | 1000+ | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/mms/README.md) |
 
