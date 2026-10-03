@@ -17,6 +17,9 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "breeze": "breeze_tts",
+    "breeze-tts": "breeze_tts",
+    "breeze_tts": "breeze_tts",
     "qwen3_tts": "qwen3_tts",
     "outetts": "outetts",
     "spark": "spark",
@@ -222,8 +225,13 @@ def convert(
     quant_predicate: Optional[str] = None,
     q_mode: str = "affine",
 ):
-    from mlx_lm.convert import mixed_quant_predicate_builder
-    from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
+    from mlx_audio.lm.convert import (
+        dequantize_model,
+        mixed_quant_predicate_builder,
+        quantize_model,
+        save_config,
+        save_model,
+    )
 
     print("[INFO] Loading")
     model_path = get_model_path(hf_path, revision=revision)

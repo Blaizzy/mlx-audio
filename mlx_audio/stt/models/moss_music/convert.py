@@ -102,7 +102,7 @@ def _quantize(
     q_bits: int,
     q_group_size: int,
 ) -> tuple[dict[str, Any], dict[str, mx.array]]:
-    from mlx_lm.utils import quantize_model
+    from mlx_audio.lm.convert import quantize_model
 
     from .config import ModelConfig
     from .moss_music import Model

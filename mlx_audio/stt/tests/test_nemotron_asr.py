@@ -13,13 +13,22 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
-from mlx_audio.stt.models.nemotron_asr import Model, ModelConfig
+from mlx_audio.stt.models.nemotron_asr import (
+    ConformerStreamingState,
+    Model,
+    ModelConfig,
+    StreamingLogMelSpectrogram,
+)
 from mlx_audio.stt.models.nemotron_asr import tokenizer as tok
 from mlx_audio.stt.models.nemotron_asr.audio import (
+    _padded_window,
+    _power_to_log_mel,
+    _preemphasize,
     iter_log_mel_spectrogram,
     log_mel_spectrogram,
 )
 from mlx_audio.stt.models.nemotron_asr.conformer import create_chunked_limited_mask
+from mlx_audio.utils import stft
 
 
 def _tiny_config() -> dict:
@@ -111,6 +120,89 @@ def test_chunked_log_mel_matches_full():
     np.testing.assert_allclose(np.array(chunked), np.array(full), rtol=1e-3, atol=1e-3)
 
 
+def test_log_mel_uses_nemo_reflect_padding():
+    args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
+    audio = mx.array(np.linspace(-0.5, 0.75, args.n_fft * 2, dtype=np.float32))
+    window = _padded_window(args)
+    emphasized = _preemphasize(audio, args)
+
+    def features(pad_mode):
+        spectrum = stft(
+            emphasized,
+            args.n_fft,
+            args.hop_length,
+            args.n_fft,
+            window,
+            pad_mode=pad_mode,
+        )
+        power = mx.square(mx.abs(spectrum)).astype(audio.dtype)
+        return _power_to_log_mel(power, args, audio.dtype)
+
+    actual = log_mel_spectrogram(audio, args)
+    reflected = features("reflect")
+    zero_padded = features("constant")
+    np.testing.assert_allclose(np.array(actual), np.array(reflected), atol=1e-6)
+    assert not np.allclose(
+        np.array(actual[:, 0]),
+        np.array(zero_padded[:, 0]),
+        rtol=1e-3,
+        atol=1e-3,
+    )
+
+
+def test_streaming_log_mel_matches_full_with_bounded_state():
+    args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
+    audio = mx.array(
+        (np.random.randn(args.sample_rate * 2 + 123) * 0.1).astype(np.float32)
+    )
+    frontend = StreamingLogMelSpectrogram(args)
+    chunks = []
+    for start in range(0, audio.shape[0], 937):
+        chunks.append(frontend.push(audio[start : start + 937]))
+        assert frontend.buffered_samples <= args.n_fft + 937
+    chunks.append(frontend.flush())
+
+    streamed = mx.concatenate(chunks, axis=1)
+    full = log_mel_spectrogram(audio, args)
+    np.testing.assert_allclose(np.array(streamed), np.array(full), rtol=1e-3, atol=1e-3)
+
+
+def test_voicechat_style_frontend_and_conformer_state_tracks_bounded_encoder():
+    mx.random.seed(0)
+    rng = np.random.default_rng(0)
+    config = _tiny_config()
+    config["encoder"]["att_context_size"] = [[56, 0]]
+    config["default_att_context_size"] = [56, 0]
+    model = Model(ModelConfig.from_dict(config))
+    mx.eval(model.parameters())
+    model.eval()
+
+    args = model.preprocessor_config
+    frame_samples = 1280
+    frontend = StreamingLogMelSpectrogram(
+        args,
+        lookahead_samples=frame_samples,
+    )
+    state = ConformerStreamingState(model.encoder, att_context_size=[56, 0])
+    audio = mx.zeros((0,), dtype=mx.float32)
+
+    for _ in range(4):
+        frame = mx.array((rng.standard_normal(frame_samples) * 0.1).astype(np.float32))
+        audio = mx.concatenate([audio, frame])
+        mel = frontend.push(frame)
+        outputs = state.push(mel, emit_partial=True)
+        assert len(outputs) == 1
+        assert outputs[0].shape[1] == 1
+
+        full_mel = log_mel_spectrogram(audio, args)
+        bounded, _ = model.encoder(full_mel, att_context_size=[56, 0])
+        error = np.abs(np.array(outputs[0]) - np.array(bounded[:, -2:-1]))
+        # Different matmul shapes introduce small floating-point drift, while the
+        # causal frame and all persistent state remain aligned.
+        assert float(error.max()) < 0.03
+        assert float(error.mean()) < 0.01
+
+
 def test_encoder_and_prompt_shapes():
     model = _build_tiny()
     d_model = model.encoder_config.d_model
@@ -155,8 +247,8 @@ def test_stream_generate_runs_and_is_clean():
 
 
 def test_stream_matches_offline():
-    # Cache-aware streaming is frame-identical to the offline chunked_limited
-    # encoder at the native chunk size, so the greedy decode must be identical.
+    # Cache-aware streaming tracks the offline chunked_limited encoder closely at
+    # the native chunk size, so the greedy decode must be identical.
     model = _build_tiny()
     sr = model.preprocessor_config.sample_rate
     audio = mx.array((np.random.randn(int(2.5 * sr)) * 0.1).astype(np.float32))

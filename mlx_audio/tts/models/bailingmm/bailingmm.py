@@ -8,17 +8,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import mlx_lm.models.bailing_moe as bailing_moe_impl
-import mlx_lm.models.qwen2 as qwen2_impl
 import numpy as np
 from huggingface_hub import snapshot_download
-from mlx_lm.models.bailing_moe import Model as BailingMoeModel
-from mlx_lm.models.bailing_moe import ModelArgs as BailingMoeModelArgs
-from mlx_lm.models.base import create_attention_mask
-from mlx_lm.models.cache import KVCache
-from mlx_lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
-from mlx_lm.models.qwen2 import Qwen2Model
 
+import mlx_audio.lm.models.bailing_moe as bailing_moe_impl
+import mlx_audio.lm.models.qwen2 as qwen2_impl
+from mlx_audio.lm.models.bailing_moe import Model as BailingMoeModel
+from mlx_audio.lm.models.bailing_moe import ModelArgs as BailingMoeModelArgs
+from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.qwen2 import ModelArgs as Qwen2ModelArgs
+from mlx_audio.lm.models.qwen2 import Qwen2Model
 from mlx_audio.tts.models.base import BaseModelArgs, GenerationResult
 from mlx_audio.utils import load_audio
 

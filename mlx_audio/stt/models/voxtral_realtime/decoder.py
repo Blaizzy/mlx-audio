@@ -20,7 +20,8 @@ import math
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import RotatingKVCache
+
+from mlx_audio.lm.models.cache import RotatingKVCache
 
 from .config import DecoderConfig
 

@@ -46,6 +46,26 @@ TTS models use the base classes from `mlx_audio/tts/models/base.py`:
 - **`GenerationResult`** -- Dataclass returned by `generate()`. Contains `audio`, `sample_rate`, `token_count`, timing information, and streaming flags.
 - **`BatchGenerationResult`** -- Dataclass for batch generation results.
 
+### Transformer Components
+
+Many speech models wrap a language-model backbone. Import that machinery from
+`mlx_audio.lm`, **not** from `mlx-lm` -- mlx-audio vendors it so the package has
+no runtime dependency on mlx-lm, and a test fails the build if `mlx_lm` is
+imported anywhere outside `sts/voice_pipeline.py`.
+
+| Need | Import from |
+|---|---|
+| KV caches (`KVCache`, `RotatingKVCache`, `BatchKVCache`, `make_prompt_cache`) | `mlx_audio.lm.models.cache` |
+| Attention masks, `scaled_dot_product_attention` | `mlx_audio.lm.models.base` |
+| Samplers, logits processors | `mlx_audio.lm.sample_utils` |
+| `generate_step`, `stream_generate` | `mlx_audio.lm.generate` |
+| Backbones (llama, qwen2, qwen3, gpt2, granite, lfm2, bailing_moe, gemma3) | `mlx_audio.lm.models.<name>` |
+| Quantize / save helpers | `mlx_audio.lm.convert` |
+
+If your model needs a backbone that is not vendored yet, copy it from mlx-lm
+into `mlx_audio/lm/models/` verbatim and add the provenance header used by the
+other files there (upstream path, version, commit).
+
 ### Model Configuration
 
 Create a dataclass for your model's config that extends `BaseModelArgs`:

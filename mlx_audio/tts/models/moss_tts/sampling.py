@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.sample_utils import apply_top_k as _apply_top_k_logprobs
-from mlx_lm.sample_utils import apply_top_p as _apply_top_p_logprobs
+
+from mlx_audio.lm.sample_utils import apply_top_k as _apply_top_k_logprobs
+from mlx_audio.lm.sample_utils import apply_top_p as _apply_top_p_logprobs
 
 
 def _mask_logits_from_logprobs(logits: mx.array, logprobs: mx.array) -> mx.array:

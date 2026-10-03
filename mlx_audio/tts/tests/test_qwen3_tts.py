@@ -353,6 +353,99 @@ class TestMelSpectrogram(unittest.TestCase):
         )
 
 
+class _DtypeTestEmbedding:
+    def __init__(self, hidden_size: int, dtype):
+        self.hidden_size = hidden_size
+        self.dtype = dtype
+
+    def __call__(self, token_ids):
+        return mx.zeros((*token_ids.shape, self.hidden_size), dtype=self.dtype)
+
+
+class _DtypeTestCodePredictor:
+    def __init__(self, embedding):
+        self.codec_embedding = [embedding]
+
+
+class _DtypeTestTalker:
+    def __init__(self, hidden_size: int = 4, dtype=mx.bfloat16):
+        self.embedding = _DtypeTestEmbedding(hidden_size, dtype)
+        self.code_predictor = _DtypeTestCodePredictor(self.embedding)
+
+    def get_input_embeddings(self):
+        return self.embedding
+
+    def get_text_embeddings(self):
+        return self.embedding
+
+    def text_projection(self, embeddings):
+        return embeddings
+
+
+class _DtypeTestSpeechTokenizer:
+    def encode(self, audio):
+        return mx.zeros((1, 2, 2), dtype=mx.int32)
+
+
+def _make_dtype_test_model():
+    model = Model.__new__(Model)
+    model.config = SimpleNamespace(
+        tts_bos_token_id=1,
+        tts_eos_token_id=2,
+        tts_pad_token_id=3,
+        talker_config=SimpleNamespace(
+            spk_id={},
+            spk_is_dialect={},
+            codec_language_id={},
+            codec_nothink_id=4,
+            codec_think_bos_id=5,
+            codec_think_eos_id=6,
+            codec_think_id=7,
+            codec_pad_id=8,
+            codec_bos_id=9,
+            num_code_groups=2,
+        ),
+    )
+    model.talker = _DtypeTestTalker()
+    model.tokenizer = SimpleNamespace(encode=lambda text: list(range(12)))
+    model.speaker_encoder = object()
+    model.speech_tokenizer = _DtypeTestSpeechTokenizer()
+    model.extract_speaker_embedding = lambda audio: mx.ones((1, 4), dtype=mx.float32)
+    model._icl_cache = {}
+    return model
+
+
+class TestQwen3TTSSpeakerEmbeddingDtype(unittest.TestCase):
+    def test_xvector_prefill_uses_talker_dtype(self):
+        model = _make_dtype_test_model()
+
+        input_embeds, trailing_text_hidden, tts_pad_embed = (
+            model._prepare_generation_inputs(
+                text="dtype regression",
+                ref_audio=mx.zeros((2400,), dtype=mx.float32),
+            )
+        )
+
+        self.assertEqual(input_embeds.dtype, mx.bfloat16)
+        self.assertEqual(trailing_text_hidden.dtype, mx.bfloat16)
+        self.assertEqual(tts_pad_embed.dtype, mx.bfloat16)
+
+    def test_icl_prefill_uses_talker_dtype(self):
+        model = _make_dtype_test_model()
+
+        input_embeds, trailing_text_hidden, tts_pad_embed, _ = (
+            model._prepare_icl_generation_inputs(
+                text="dtype regression",
+                ref_audio=mx.zeros((2400,), dtype=mx.float32),
+                ref_text="reference transcript",
+            )
+        )
+
+        self.assertEqual(input_embeds.dtype, mx.bfloat16)
+        self.assertEqual(trailing_text_hidden.dtype, mx.bfloat16)
+        self.assertEqual(tts_pad_embed.dtype, mx.bfloat16)
+
+
 class _FakeCodePredictor:
     def __init__(self):
         self.codec_embedding = []
@@ -403,7 +496,7 @@ def _make_generation_test_model(text_token_count: int = 10):
     model.talker = _FakeTalker(hidden_size=hidden_size, vocab_size=vocab_size)
     model.speech_tokenizer = _FakeSpeechTokenizer()
     model.tokenizer = SimpleNamespace(encode=lambda text: list(range(text_token_count)))
-    model._prepare_generation_inputs = lambda **kwargs: (
+    model._prepare_generation_inputs = lambda *args, **kwargs: (
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
         mx.zeros((1, 1, hidden_size), dtype=mx.float32),
@@ -500,6 +593,140 @@ class TestQwen3TTSSamplingFilters(unittest.TestCase):
         self.assertEqual(captured["temperature"], 1.0)
 
 
+class TestQwen3TTSRepetitionPenaltyWindow(unittest.TestCase):
+    """Regression tests for mlx-audio#910.
+
+    The ICL voice-cloning path forces repetition_penalty to a 1.5 floor and used
+    to penalize the *set of all* previously generated codec tokens. A slow
+    reference voice's recurring tokens therefore stayed suppressed for the whole
+    utterance, progressively accelerating the speaking pace. The penalty now
+    only considers a bounded recent window (repetition_context_size).
+    """
+
+    # idx 5 is the top logit, idx 7 a close runner-up. Penalizing idx 5 (÷1.5)
+    # drops it below idx 7 and flips the greedy argmax from 5 -> 7.
+    _LOGITS = mx.array([[[1.0, 1.0, 1.0, 1.0, 1.0, 10.0, 1.0, 9.0]]], dtype=mx.float32)
+
+    def _greedy(self, generated_tokens, repetition_context_size):
+        token = Model._sample_token(
+            Model.__new__(Model),
+            self._LOGITS,
+            temperature=0.0,  # greedy -> deterministic argmax
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.5,
+            repetition_context_size=repetition_context_size,
+            generated_tokens=generated_tokens,
+        )
+        return int(np.array(token).reshape(-1)[0])
+
+    def test_old_token_outside_window_is_not_penalized(self):
+        # idx 5 appears once at the very start, then 100 unrelated tokens.
+        generated = [5] + [0] * 100
+        # Default bounded window: idx 5 has fallen out -> not penalized -> stays.
+        self.assertEqual(self._greedy(generated, repetition_context_size=64), 5)
+        # Full-history behavior (the bug): idx 5 still penalized -> flips to 7.
+        self.assertEqual(self._greedy(generated, repetition_context_size=200), 7)
+
+    def test_token_repeating_within_window_is_still_penalized(self):
+        # idx 5 recurs constantly inside the window: it should still be penalized,
+        # so the window does not silently disable the repetition penalty.
+        generated = [5] * 100
+        self.assertEqual(self._greedy(generated, repetition_context_size=64), 7)
+
+    def test_batch_old_token_outside_window_is_not_penalized(self):
+        generated = [[5] + [0] * 100]
+        token = Model._sample_token_batch(
+            Model.__new__(Model),
+            self._LOGITS,
+            temperature=0.0,
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.5,
+            repetition_context_size=64,
+            generated_tokens_per_seq=generated,
+        )
+        self.assertEqual(int(np.array(token).reshape(-1)[0]), 5)
+
+        token_full = Model._sample_token_batch(
+            Model.__new__(Model),
+            self._LOGITS,
+            temperature=0.0,
+            top_k=0,
+            top_p=1.0,
+            repetition_penalty=1.5,
+            repetition_context_size=200,
+            generated_tokens_per_seq=generated,
+        )
+        self.assertEqual(int(np.array(token_full).reshape(-1)[0]), 7)
+
+
+class TestQwen3TTSNoEosFilterBypass(unittest.TestCase):
+    """Regression tests for mlx-audio#882.
+
+    _sample_token/_sample_token_batch used to splice a token's pre-filter
+    logit back in after top_k/top_p filtering when it matched eos_token_id,
+    giving it nonzero sampling probability even when top_k/top_p had ranked
+    it out of the surviving candidate set. That let EOS fire before the
+    model's true completion point, truncating audio mid-utterance. Every
+    token, including EOS, must now be filtered identically.
+    """
+
+    def test_low_ranked_token_never_sampled_under_top_k(self):
+        model = Model.__new__(Model)
+        # Last token sits far below the top-2 cutoff; a correct top_k filter
+        # must exclude it from every draw.
+        logits = mx.array([[[10.0, 9.0, 8.0, 7.0, -100.0]]], dtype=mx.float32)
+
+        sampled = set()
+        for _ in range(200):
+            token = Model._sample_token(
+                model,
+                logits,
+                temperature=1.0,
+                top_k=2,
+                top_p=1.0,
+                repetition_penalty=1.0,
+            )
+            sampled.add(int(token[0, 0]))
+
+        self.assertNotIn(4, sampled)
+
+    def test_low_ranked_token_never_sampled_under_top_k_batched(self):
+        model = Model.__new__(Model)
+        logits = mx.array(
+            [
+                [[10.0, 9.0, 8.0, 7.0, -100.0]],
+                [[7.0, 8.0, 9.0, 10.0, -100.0]],
+            ],
+            dtype=mx.float32,
+        )
+
+        sampled = set()
+        for _ in range(200):
+            tokens = Model._sample_token_batch(
+                model,
+                logits,
+                temperature=1.0,
+                top_k=2,
+                top_p=1.0,
+                repetition_penalty=1.0,
+            )
+            sampled.update(int(t) for t in tokens[:, 0].tolist())
+
+        self.assertNotIn(4, sampled)
+
+    def test_sample_token_no_longer_accepts_eos_token_id(self):
+        model = Model.__new__(Model)
+        logits = mx.array([[[1.0, 0.0]]], dtype=mx.float32)
+
+        with self.assertRaises(TypeError):
+            Model._sample_token(model, logits, eos_token_id=1)
+
+        with self.assertRaises(TypeError):
+            Model._sample_token_batch(model, logits, eos_token_id=1)
+
+
 class TestQwen3TTSMaxTokens(unittest.TestCase):
     def test_generate_with_instruct_honors_explicit_max_tokens(self):
         model = _make_generation_test_model(text_token_count=10)
@@ -542,6 +769,36 @@ class TestQwen3TTSMaxTokens(unittest.TestCase):
         )
 
         self.assertEqual(results[-1].token_count, 120)
+
+
+class TestQwen3TTSBaseVoiceValidation(unittest.TestCase):
+    """Regression tests for mlx-audio#892: passing an unsupported `voice` to a
+    Base model (which has no preset speakers) used to silently no-op instead
+    of erroring, producing unconditioned/random-sounding audio on every call.
+    """
+
+    def test_generate_rejects_unsupported_voice_on_base_model(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = []
+
+        with self.assertRaises(ValueError):
+            next(model.generate(text="Hello", voice="Chelsie"))
+
+    def test_generate_allows_no_voice_on_base_model(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = []
+
+        results = list(model.generate(text="Hello", voice=None, max_tokens=1))
+
+        self.assertTrue(results)
+
+    def test_generate_allows_supported_voice_case_insensitively(self):
+        model = _make_generation_test_model()
+        model.supported_speakers = ["Vivian"]
+
+        results = list(model.generate(text="Hello", voice="vivian", max_tokens=1))
+
+        self.assertTrue(results)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,13 @@
 
 This file acknowledges the original authors and contributors of models ported to mlx-audio.
 
+## MiniMax Music 3 (Song Generation)
+
+- **Original**: [MiniMaxAI/MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3)
+- **Copyright**: MiniMax
+- **License**: [MiniMax-Music3 Community License](https://huggingface.co/MiniMaxAI/MiniMax-Music3/blob/main/LICENSE)
+- **MLX Port**: Adapted from [mikolaj92/minimax-music3-mlx](https://github.com/mikolaj92/minimax-music3-mlx) (Apache-2.0)
+
 ## MossFormer2 SE (Speech Enhancement)
 
 - **Original**: [ClearerVoice-Studio](https://github.com/modelscope/ClearerVoice-Studio)
@@ -22,3 +29,10 @@ This file acknowledges the original authors and contributors of models ported to
 - **Copyright**: NVIDIA Corporation
 - **License**: [NVIDIA Open Model License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/)
 - **MLX Port**: [@ARahim3](https://github.com/ARahim3)
+
+## rumik-oss 1 (Text-to-Speech)
+
+- **Original**: [rumik-ai/rumik-oss-1](https://huggingface.co/rumik-ai/rumik-oss-1)
+- **Copyright**: rumik.ai
+- **License**: [CC-BY-NC 4.0 with Cohere Labs acceptable-use addendum](https://cohere.com/cohere-labs-cc-by-nc-license) (weights); Mimi codec CC-BY-4.0
+- **MLX Port**: Suryansh Shakya ([@nullHawk](https://github.com/nullHawk))

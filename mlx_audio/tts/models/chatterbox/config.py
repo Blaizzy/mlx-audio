@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..base import BaseModelArgs
 
@@ -70,7 +70,10 @@ class T3Config:
 @dataclass
 class ModelConfig(BaseModelArgs):
     model_type: str = "chatterbox"
-    t3_config: T3Config = None
+    t3_config: Optional[T3Config] = None
+    multilingual: bool = False
+    t3_model: str = "english"
+    text_preprocessing: str = "legacy"
     s3_sr: int = 16000  # S3 tokenizer sample rate
     s3gen_sr: int = 24000  # S3Gen output sample rate
     sample_rate: int = 24000  # Output sample rate (alias for s3gen_sr)
@@ -82,17 +85,45 @@ class ModelConfig(BaseModelArgs):
 
     def __post_init__(self):
         if self.t3_config is None:
-            self.t3_config = T3Config.english_only()
+            self.t3_config = (
+                T3Config.multilingual()
+                if self.multilingual
+                else T3Config.english_only()
+            )
+        elif self.t3_config.is_multilingual:
+            self.multilingual = True
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> "ModelConfig":
+        multilingual = bool(config.get("multilingual", False))
+        multilingual = multilingual or config.get("vocab_size") == 2454
+        t3_model = config.get("t3_model")
+        if t3_model is None:
+            # The first MLX multilingual artifacts predate this field and
+            # contain the v2 checkpoint.
+            t3_model = "v2" if multilingual else "english"
+        t3_model = str(t3_model).lower()
+        multilingual = multilingual or t3_model in {"v2", "v3"}
+
         t3_config = None
         if "t3_config" in config:
             t3_config = T3Config(**config["t3_config"])
+        elif multilingual:
+            # Older converted multilingual checkpoints only recorded
+            # ``multilingual``/``vocab_size`` in config.json. Build the matching
+            # 2,454-token T3 rather than falling back to the 704-token English T3.
+            t3_config = T3Config.multilingual()
+
+        text_preprocessing = config.get("text_preprocessing")
+        if text_preprocessing is None:
+            text_preprocessing = "NFKD,fullcase" if t3_model == "v3" else "legacy"
 
         return cls(
             model_type=config.get("model_type", "chatterbox"),
             t3_config=t3_config,
+            multilingual=multilingual,
+            t3_model=t3_model,
+            text_preprocessing=text_preprocessing,
             s3_sr=config.get("s3_sr", 16000),
             s3gen_sr=config.get("s3gen_sr", 24000),
             sample_rate=config.get("sample_rate", config.get("s3gen_sr", 24000)),

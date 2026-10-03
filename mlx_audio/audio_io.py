@@ -33,6 +33,8 @@ _SAMPLE_FORMAT_MAP = {
     "float32": "FLOAT32",
 }
 
+_RESAMPLE_CHUNK_DURATION_SECONDS = 1.0
+
 
 def _detect_format_from_bytes(data: bytes) -> str:
     """Detect audio format from bytes data using magic bytes."""
@@ -50,6 +52,9 @@ def _detect_format_from_bytes(data: bytes) -> str:
     elif data[:4] == b"\x1a\x45\xdf\xa3":
         # WebM/Matroska container (EBML header)
         return "webm"
+    elif data[:4] == b"caff":
+        # Core Audio Format (macOS default recording container)
+        return "caf"
     else:
         raise ValueError("Unable to detect audio format from bytes")
 
@@ -185,6 +190,48 @@ def _decode_ffmpeg(
     return samples, output_sample_rate, output_nchannels
 
 
+def _decode_miniaudio_downsampled(
+    input_data: Union[str, Path, bytes],
+    input_sample_rate: int,
+    input_num_frames: int,
+    output_sample_rate: int,
+    output_nchannels: int,
+) -> np.ndarray:
+    """Stream native-rate mono/stereo PCM through the high-quality FIR."""
+    import miniaudio
+
+    from mlx_audio.resample import resample_audio_chunks
+
+    frames_per_chunk = max(1, int(_RESAMPLE_CHUNK_DURATION_SECONDS * input_sample_rate))
+    stream_kwargs = {
+        "output_format": miniaudio.SampleFormat.SIGNED16,
+        "nchannels": output_nchannels,
+        "sample_rate": input_sample_rate,
+        "frames_to_read": frames_per_chunk,
+    }
+    if isinstance(input_data, bytes):
+        pcm_stream = miniaudio.stream_memory(input_data, **stream_kwargs)
+    else:
+        pcm_stream = miniaudio.stream_file(str(input_data), **stream_kwargs)
+
+    def normalized_chunks():
+        for raw_samples in pcm_stream:
+            chunk = np.asarray(raw_samples, dtype=np.int16)
+            if output_nchannels > 1:
+                chunk = chunk.reshape(-1, output_nchannels)
+            chunk = chunk.astype(np.float32)
+            chunk /= 32768.0
+            yield chunk
+
+    return resample_audio_chunks(
+        normalized_chunks(),
+        input_sample_rate,
+        output_sample_rate,
+        input_num_frames,
+        chunk_duration_seconds=_RESAMPLE_CHUNK_DURATION_SECONDS,
+    )
+
+
 def read(
     file: Union[str, Path, io.BytesIO],
     always_2d: bool = False,
@@ -192,13 +239,14 @@ def read(
     sample_rate: Optional[int] = None,
     nchannels: Optional[int] = None,
 ) -> Tuple[np.ndarray, int]:
-    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM).
+    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM/CAF).
 
     Args:
         file: Path to the audio file or a BytesIO object.
         always_2d: If True, always return a 2D array (samples, channels).
         dtype: Data type for the output array. Supports 'float32', 'float64', 'int16'.
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
+            Miniaudio-backed downsampling uses the high-quality chunked FIR path.
         nchannels: Optional target channel count. Preserves the input channels when omitted.
 
     Returns:
@@ -214,7 +262,7 @@ def read(
     use_ffmpeg = False
     if isinstance(file, (str, Path)):
         ext = Path(file).suffix.lstrip(".").lower()
-        if ext in ("m4a", "aac", "ogg", "opus", "webm"):
+        if ext in ("m4a", "m4b", "mp4", "aac", "ogg", "opus", "webm", "caf"):
             use_ffmpeg = True
     elif isinstance(file, io.BytesIO):
         file.seek(0)
@@ -224,9 +272,11 @@ def read(
             header[4:8] == b"ftyp"
             or header[:4] == b"OggS"
             or header[:4] == b"\x1a\x45\xdf\xa3"
+            or header[:4] == b"caff"
         ):
             use_ffmpeg = True
 
+    samples_are_normalized = False
     if use_ffmpeg:
         # Use ffmpeg for M4A/AAC decoding
         if isinstance(file, io.BytesIO):
@@ -246,11 +296,7 @@ def read(
         if isinstance(file, (str, Path)):
             # Get file info to preserve original sample rate and channels
             info = miniaudio.get_file_info(str(file))
-            decoded = miniaudio.decode_file(
-                str(file),
-                nchannels=nchannels or info.nchannels,
-                sample_rate=sample_rate or info.sample_rate,
-            )
+            miniaudio_input = file
         elif isinstance(file, io.BytesIO):
             file.seek(0)
             data = file.read()
@@ -266,20 +312,39 @@ def read(
                 info = miniaudio.vorbis_get_info(data)
             else:
                 raise ValueError(f"Unsupported format: {fmt}")
-            decoded = miniaudio.decode(
-                data,
-                nchannels=nchannels or info.nchannels,
-                sample_rate=sample_rate or info.sample_rate,
-            )
+            miniaudio_input = data
         else:
             raise TypeError(f"Unsupported file type: {type(file)}")
 
-        sample_rate = decoded.sample_rate
-        nchannels = decoded.nchannels
+        output_nchannels = nchannels or info.nchannels
+        if sample_rate is not None and sample_rate < info.sample_rate:
+            samples = _decode_miniaudio_downsampled(
+                miniaudio_input,
+                info.sample_rate,
+                info.num_frames,
+                sample_rate,
+                output_nchannels,
+            )
+            nchannels = output_nchannels
+            samples_are_normalized = True
+        else:
+            if isinstance(miniaudio_input, bytes):
+                decoded = miniaudio.decode(
+                    miniaudio_input,
+                    nchannels=output_nchannels,
+                    sample_rate=sample_rate or info.sample_rate,
+                )
+            else:
+                decoded = miniaudio.decode_file(
+                    str(miniaudio_input),
+                    nchannels=output_nchannels,
+                    sample_rate=sample_rate or info.sample_rate,
+                )
+            sample_rate = decoded.sample_rate
+            nchannels = decoded.nchannels
 
-        # Convert to numpy array
-        # miniaudio returns samples as array of signed 16-bit integers interleaved
-        samples = np.array(decoded.samples, dtype=np.int16)
+            # miniaudio returns signed 16-bit interleaved samples.
+            samples = np.array(decoded.samples, dtype=np.int16)
 
     # Reshape to (samples, channels) if multi-channel
     if nchannels > 1:
@@ -287,11 +352,18 @@ def read(
 
     # Convert to requested dtype
     if dtype in ("float32", "float64"):
-        samples = samples.astype(dtype)
-        samples /= 32768.0
+        samples = samples.astype(dtype, copy=False)
+        if not samples_are_normalized:
+            samples /= 32768.0
+    elif dtype == "int16" and samples_are_normalized:
+        samples = np.clip(np.rint(samples * 32768.0), -32768, 32767).astype(np.int16)
     elif dtype == "int16":
-        pass  # Already int16
+        pass
     else:
+        if samples_are_normalized:
+            samples = np.clip(np.rint(samples * 32768.0), -32768, 32767).astype(
+                np.int16
+            )
         samples = samples.astype(dtype)
 
     # Handle always_2d

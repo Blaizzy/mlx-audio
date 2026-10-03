@@ -1,0 +1,365 @@
+name: PR contributor reminder
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_run:
+    workflows: [Tests and Checks]
+    types: [completed]
+
+permissions:
+  contents: read
+
+# GitHub usernames that should not receive reminders, one per line.
+env:
+  PR_REMINDER_EXCLUDED_USERS: |
+    Lazarus-931
+    Blaizzy
+    lucasnewman
+
+jobs:
+  signed-commit-reminder:
+    name: Check commit signatures
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Update signed-commit reminder
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const excludedUsers = new Set(
+              process.env.PR_REMINDER_EXCLUDED_USERS
+                .split("\n")
+                .map((username) => username.trim().toLowerCase())
+                .filter(Boolean)
+            );
+            const author = context.payload.pull_request.user.login;
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const marker = "<!-- mlx-audio-unverified-commits -->";
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) =>
+              comment.user?.type === "Bot" && comment.body?.includes(marker)
+            );
+
+            async function removeExistingReminder() {
+              if (!existing) return;
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+              });
+            }
+
+            if (excludedUsers.has(author.toLowerCase())) {
+              core.info(`Skipping reminder for excluded user @${author}.`);
+              await removeExistingReminder();
+              return;
+            }
+
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner,
+              repo,
+              pull_number: issue_number,
+              per_page: 100,
+            });
+            const unverified = commits.filter(
+              (commit) => commit.commit.verification?.verified !== true
+            );
+
+            if (unverified.length === 0) {
+              core.info("Every commit is verified; no reminder is needed.");
+              await removeExistingReminder();
+              return;
+            }
+
+            const commitWord = unverified.length === 1 ? "commit" : "commits";
+            const body = `${marker}
+            ⚠️ GitHub does not mark **${unverified.length} ${commitWord}** in this PR as **Verified**.
+
+            Please sign every commit, then update the PR. You can review the commits on the [commits tab](${context.payload.pull_request.html_url}/commits) and follow [GitHub's commit-signing guide](https://docs.github.com/en/authentication/managing-commit-signature-verification/signing-commits) if needed.`;
+
+            if (existing && existing.body !== body) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else if (!existing) {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+  ci-failure-reminders:
+    name: Check pre-commit and test results
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Update CI failure reminders
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const excludedUsers = new Set(
+              process.env.PR_REMINDER_EXCLUDED_USERS
+                .split("\n")
+                .map((username) => username.trim().toLowerCase())
+                .filter(Boolean)
+            );
+            const { owner, repo } = context.repo;
+            const run = context.payload.workflow_run;
+            let pullRequestSummary = run.pull_requests?.find(
+              (pullRequest) =>
+                pullRequest.base?.repo?.full_name === `${owner}/${repo}` &&
+                pullRequest.head?.sha === run.head_sha
+            );
+
+            if (!pullRequestSummary) {
+              const headOwner = run.head_repository?.owner?.login;
+              if (!headOwner) {
+                core.info("The workflow run's head repository is unavailable.");
+                return;
+              }
+
+              const candidatePullRequests = await github.paginate(
+                github.rest.pulls.list,
+                {
+                  owner,
+                  repo,
+                  state: "all",
+                  head: `${headOwner}:${run.head_branch}`,
+                  per_page: 100,
+                }
+              );
+              pullRequestSummary = candidatePullRequests.find(
+                (pullRequest) =>
+                  pullRequest.base.repo.full_name === `${owner}/${repo}` &&
+                  pullRequest.head.sha === run.head_sha
+              );
+            }
+
+            if (!pullRequestSummary) {
+              core.info("This workflow run is not associated with a pull request.");
+              return;
+            }
+
+            const issue_number = pullRequestSummary.number;
+            const { data: pullRequest } = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: issue_number,
+            });
+
+            if (pullRequest.head.sha !== run.head_sha) {
+              core.info("Ignoring a completed workflow run for an outdated PR revision.");
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            function findReminder(marker) {
+              return comments.find((comment) =>
+                comment.user?.type === "Bot" && comment.body?.includes(marker)
+              );
+            }
+
+            async function removeReminder(marker) {
+              const existing = findReminder(marker);
+              if (!existing) return;
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+              });
+            }
+
+            async function updateFailureReminder({ marker, body, failed, settled, label }) {
+              if (!failed && settled) {
+                core.info(`${label} passed; no reminder is needed.`);
+                await removeReminder(marker);
+                return;
+              }
+
+              if (!failed) {
+                core.info(`${label} did not fail; leaving its reminder unchanged.`);
+                return;
+              }
+
+              const existing = findReminder(marker);
+              if (existing && existing.body !== body) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else if (!existing) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number,
+                  body,
+                });
+              }
+            }
+
+            const preCommitMarker = "<!-- mlx-audio-pre-commit-failure -->";
+            const testMarker = "<!-- mlx-audio-test-failure -->";
+            const author = pullRequest.user.login;
+            if (excludedUsers.has(author.toLowerCase())) {
+              core.info(`Skipping reminder for excluded user @${author}.`);
+              await removeReminder(preCommitMarker);
+              await removeReminder(testMarker);
+              return;
+            }
+
+            const jobs = await github.paginate(
+              github.rest.actions.listJobsForWorkflowRun,
+              {
+                owner,
+                repo,
+                run_id: run.id,
+                filter: "latest",
+                per_page: 100,
+              }
+            );
+            const styleJob = jobs.find((job) => job.name === "style");
+            const testJobs = jobs.filter(
+              (job) =>
+                job.name === "core" ||
+                job.name === "parity" ||
+                job.name.startsWith("modular (") ||
+                job.name.startsWith("tests (")
+            );
+            const failingTestJobs = testJobs.filter(
+              (job) => job.conclusion === "failure"
+            );
+            const testsSettled =
+              testJobs.length > 0 &&
+              testJobs.every((job) =>
+                ["success", "skipped"].includes(job.conclusion)
+              );
+
+            const preCommitBody = `${preCommitMarker}
+            ⚠️ The **pre-commit checks failed** in [CI](${run.html_url}).
+
+            Run the following from the repository root, then commit and push any changes:
+
+            \`\`\`shell
+            python -m pip install pre-commit
+            pre-commit run --all-files
+            \`\`\`
+
+            The project's pre-commit configuration includes **Black** and the other required formatters.`;
+
+            await updateFailureReminder({
+              marker: preCommitMarker,
+              body: preCommitBody,
+              failed: styleJob?.conclusion === "failure",
+              settled: ["success", "skipped"].includes(styleJob?.conclusion),
+              label: "Pre-commit",
+            });
+
+            async function getMainTestBaseline() {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: "tests.yml",
+                branch: pullRequest.base.ref,
+                event: "push",
+                status: "completed",
+                per_page: 100,
+              });
+              const baselineRun = data.workflow_runs.find(
+                (candidate) => candidate.head_sha === pullRequest.base.sha
+              );
+
+              if (!baselineRun) return;
+
+              const baselineJobs = await github.paginate(
+                github.rest.actions.listJobsForWorkflowRun,
+                {
+                  owner,
+                  repo,
+                  run_id: baselineRun.id,
+                  filter: "latest",
+                  per_page: 100,
+                }
+              );
+              return {
+                url: baselineRun.html_url,
+                conclusions: new Map(
+                  baselineJobs.map((job) => [job.name, job.conclusion])
+                ),
+              };
+            }
+
+            let testBody;
+            if (failingTestJobs.length > 0) {
+              const baseline = await getMainTestBaseline();
+              const failingNames = failingTestJobs.map((job) => job.name);
+              const failingList = failingNames
+                .map((name) => `- \`${name}\``)
+                .join("\n");
+
+              if (!baseline) {
+                testBody = `${testMarker}
+            ⚠️ These **MLX-Audio test jobs failed** in [CI](${run.html_url}):
+
+            ${failingList}
+
+            The bot could not compare them with the current \`main\` baseline. Review the job output to determine whether the failures are related to this PR.`;
+              } else {
+                const prOnlyFailures = failingNames.filter(
+                  (name) => baseline.conclusions.get(name) !== "failure"
+                );
+
+                if (prOnlyFailures.length === 0) {
+                  testBody = `${testMarker}
+            ⚠️ These **MLX-Audio test jobs failed** in [this PR's CI run](${run.html_url}), but the same jobs also fail on [the current \`main\` baseline](${baseline.url}):
+
+            ${failingList}
+
+            No contributor action is requested yet. This is likely a baseline or dependency issue for the maintainers to investigate.`;
+                } else {
+                  const prOnlyList = prOnlyFailures
+                    .map((name) => `- \`${name}\``)
+                    .join("\n");
+                  testBody = `${testMarker}
+            ⚠️ These **MLX-Audio test jobs fail only on this PR** while [the current \`main\` baseline](${baseline.url}) passes them:
+
+            ${prOnlyList}
+
+            Review the failing [CI output](${run.html_url}) and run the corresponding command from \`.github/workflows/tests.yml\` locally. If a failure is unrelated, leave a note for the maintainers.`;
+                }
+              }
+            }
+
+            await updateFailureReminder({
+              marker: testMarker,
+              body: testBody,
+              failed: failingTestJobs.length > 0,
+              settled: testsSettled,
+              label: "MLX-Audio tests",
+            });

@@ -4,13 +4,13 @@ from pathlib import Path
 from typing import List, Optional, Union
 
 import mlx.core as mx
-from mlx_lm.generate import stream_generate
-from mlx_lm.models.qwen3 import Model as Qwen3Model
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
-from mlx_lm.sample_utils import make_logits_processors, make_sampler
 from tqdm import tqdm
 
 from mlx_audio.codec.models.snac import SNAC
+from mlx_audio.lm.generate import stream_generate
+from mlx_audio.lm.models.qwen3 import Model as Qwen3Model
+from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3ModelConfig
+from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult
@@ -291,7 +291,7 @@ class Model(Qwen3Model):
     def generate(
         self,
         text,
-        voice: str,
+        voice: Optional[str] = None,
         temperature: float = 0.6,
         top_p: float = 0.8,
         split_pattern: str = "\n",

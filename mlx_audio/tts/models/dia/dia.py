@@ -6,10 +6,10 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 from huggingface_hub import hf_hub_download
-from mlx_lm.sample_utils import make_sampler
 from tqdm import trange
 
 from mlx_audio.codec.models import DAC
+from mlx_audio.lm.sample_utils import make_sampler
 from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult

@@ -8,7 +8,8 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import KVCache, RotatingKVCache
+
+from mlx_audio.lm.models.cache import KVCache, RotatingKVCache
 
 
 @dataclass

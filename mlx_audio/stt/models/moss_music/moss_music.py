@@ -8,11 +8,11 @@ from typing import Dict, Generator, List, Optional, Sequence, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask
-from mlx_lm.models.cache import KVCache
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3Args
-from mlx_lm.models.qwen3 import Qwen3Model
 
+from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3Args
+from mlx_audio.lm.models.qwen3 import Qwen3Model
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import AudioEncoderConfig, ModelConfig
@@ -482,7 +482,7 @@ class Model(nn.Module):
         repetition_context_size: int,
         prefill_step_size: int,
     ) -> Generator[int, None, None]:
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
         logits_processors = make_logits_processors(

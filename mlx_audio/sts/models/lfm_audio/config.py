@@ -1,11 +1,10 @@
 # Copyright (c) 2025 Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
-from mlx_lm.models.lfm2 import ModelArgs as LFM2Config
-
 from mlx_audio.base import BaseModelArgs
+from mlx_audio.lm.models.lfm2 import ModelArgs as LFM2Config
 
 
 @dataclass
@@ -74,6 +73,7 @@ class DepthformerConfig(BaseModelArgs):
     dim: int = 1024
     num_heads: int = 32  # Q attention heads
     num_kv_heads: int = 8  # K/V attention heads (GQA)
+    rope_theta: float = 1000000.0  # reference MHA default; not stored in config.json
     tie: bool = True
 
 
@@ -151,12 +151,13 @@ class LFM2AudioConfig(BaseModelArgs):
             )
         }
 
+        known = {f.name for f in fields(cls)}
         return cls(
             preprocessor=preprocessor,
             encoder=encoder,
             lfm=lfm,
             depthformer=depthformer,
-            **config_dict,
+            **{k: v for k, v in config_dict.items() if k in known},
         )
 
     def to_dict(self) -> Dict[str, Any]:

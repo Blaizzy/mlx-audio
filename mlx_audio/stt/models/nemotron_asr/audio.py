@@ -10,6 +10,7 @@ window, power spectrogram (mag_power=2.0), Slaney mel filters, log with a small
 additive guard, and no dither (dither is training-only in NeMo).
 """
 
+import math
 from collections.abc import Iterator
 
 import mlx.core as mx
@@ -81,7 +82,7 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     window = _padded_window(args)
     x = _preemphasize(x, args)
 
-    x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="constant")
+    x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="reflect")
     # Power spectrum (mag_power = 2.0).
     x = mx.square(mx.abs(x)).astype(original_dtype)
 
@@ -135,10 +136,10 @@ def log_mel_spectrogram_frames(
     right_pad = max(sample_end - total_samples, 0)
     pieces = []
     if left_pad:
-        pieces.append(mx.zeros((left_pad,), dtype=original_dtype))
+        pieces.append(raw[1 : left_pad + 1][::-1])
     pieces.append(raw.astype(original_dtype))
     if right_pad:
-        pieces.append(mx.zeros((right_pad,), dtype=original_dtype))
+        pieces.append(raw[-(right_pad + 1) : -1][::-1])
     segment = mx.concatenate(pieces, axis=0) if len(pieces) > 1 else pieces[0]
 
     expected_len = (num_frames - 1) * hop + n_fft
@@ -170,3 +171,111 @@ def iter_log_mel_spectrogram(
     for frame_start in range(0, total_frames, chunk_frames):
         frame_end = min(frame_start + chunk_frames, total_frames)
         yield log_mel_spectrogram_frames(x, args, frame_start, frame_end)
+
+
+class StreamingLogMelSpectrogram:
+    """Incremental centered log-mel frontend with bounded sample state.
+
+    ``push`` emits only newly available hop-aligned frames whose centers trail the
+    input edge by ``lookahead_samples``. The default is the minimum future context
+    needed by the centered STFT. Joining all outputs, including ``flush()``, is
+    equivalent to :func:`log_mel_spectrogram` without retaining the full waveform.
+    """
+
+    def __init__(
+        self,
+        args: PreprocessArgs,
+        *,
+        lookahead_samples: int | None = None,
+    ):
+        if args.pad_to > 0:
+            raise NotImplementedError(
+                "streaming Nemotron mel extraction does not support pad_to > 0"
+            )
+        if args.normalize in ("per_feature", "all_features"):
+            raise NotImplementedError(
+                "streaming Nemotron mel extraction only supports normalize='NA'"
+            )
+        self.args = args
+        self._samples = mx.zeros((0,), dtype=mx.float32)
+        self._buffer_start = 0
+        self._total_samples = 0
+        self._next_frame = 0
+        self._closed = False
+        if lookahead_samples is None:
+            lookahead_samples = args.n_fft // 2
+        if lookahead_samples < args.n_fft // 2:
+            raise ValueError(
+                "lookahead_samples must cover at least half the centered STFT window"
+            )
+        self.lookahead_samples = lookahead_samples
+        # Keep enough audio before the next frame center for the centered STFT,
+        # plus the preceding sample needed by preemphasis.
+        self._lookbehind_frames = math.ceil((args.n_fft // 2 + 1) / args.hop_length)
+
+    @property
+    def total_samples(self) -> int:
+        return self._total_samples
+
+    @property
+    def emitted_frames(self) -> int:
+        return self._next_frame
+
+    @property
+    def buffered_samples(self) -> int:
+        return self._samples.shape[0]
+
+    def push(self, samples: mx.array, *, final: bool = False) -> mx.array:
+        """Append mono PCM and return newly available ``(1, T, features)`` frames."""
+
+        if self._closed:
+            raise RuntimeError("streaming log-mel frontend is closed")
+        samples = mx.array(samples)
+        if samples.ndim != 1:
+            raise ValueError("streaming log-mel input must be mono PCM")
+        if self._samples.shape[0] == 0:
+            self._samples = samples
+        elif samples.shape[0] > 0:
+            if samples.dtype != self._samples.dtype:
+                samples = samples.astype(self._samples.dtype)
+            self._samples = mx.concatenate([self._samples, samples])
+        self._total_samples += samples.shape[0]
+
+        available_center = self._total_samples - self.lookahead_samples
+        frame_end = (
+            available_center // self.args.hop_length + 1 if available_center >= 0 else 0
+        )
+        if final:
+            frame_end = self._total_samples // self.args.hop_length + 1
+            self._closed = True
+
+        if frame_end <= self._next_frame:
+            return mx.zeros((1, 0, self.args.features), dtype=self._samples.dtype)
+
+        buffer_start_frame = self._buffer_start // self.args.hop_length
+        local_start = self._next_frame - buffer_start_frame
+        local_end = frame_end - buffer_start_frame
+        result = log_mel_spectrogram_frames(
+            self._samples,
+            self.args,
+            local_start,
+            local_end,
+        )
+        self._next_frame = frame_end
+
+        keep_frame = max(self._next_frame - self._lookbehind_frames, 0)
+        keep_sample = keep_frame * self.args.hop_length
+        trim = keep_sample - self._buffer_start
+        if trim > 0:
+            retained = self._samples[trim:]
+            # Materialize the small retained tail so lazy concatenate/slice graphs
+            # cannot keep prior waveform chunks alive across a long stream.
+            mx.eval(retained)
+            self._samples = retained
+            self._buffer_start = keep_sample
+        return result
+
+    def flush(self) -> mx.array:
+        """Emit the final centered frame and close the frontend."""
+
+        return self.push(mx.zeros((0,), dtype=self._samples.dtype), final=True)

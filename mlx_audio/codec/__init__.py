@@ -3,7 +3,9 @@ from .models import (
     EcapaTdnnBackbone,
     Encodec,
     Mimi,
+    MiMoAudioTokenizer,
     MossAudioTokenizer,
+    NemotronVoiceChatCodec,
     StepAudio2Token2Wav,
     Vocos,
 )
@@ -13,7 +15,9 @@ __all__ = [
     "EcapaTdnnBackbone",
     "Encodec",
     "Mimi",
+    "MiMoAudioTokenizer",
     "MossAudioTokenizer",
+    "NemotronVoiceChatCodec",
     "StepAudio2Token2Wav",
     "Vocos",
 ]

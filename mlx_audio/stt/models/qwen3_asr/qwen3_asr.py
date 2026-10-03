@@ -9,9 +9,9 @@ from typing import Any, Callable, Dict, Generator, List, Optional, Tuple, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from mlx_lm.models.base import create_attention_mask, scaled_dot_product_attention
 from tqdm import tqdm
 
+from mlx_audio.lm.models.base import create_attention_mask, scaled_dot_product_attention
 from mlx_audio.stt.models.base import STTOutput
 
 from .config import AudioEncoderConfig, ModelConfig, TextConfig
@@ -768,7 +768,7 @@ class Qwen3ASRModel(nn.Module):
 
     def make_cache(self) -> List[Any]:
         """Create KV cache for generation."""
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         return [KVCache() for _ in range(self.config.text_config.num_hidden_layers)]
 
@@ -871,19 +871,17 @@ class Qwen3ASRModel(nn.Module):
 
     def _preprocess_audio(
         self,
-        audio: Union[str, mx.array, np.ndarray, List[Union[str, mx.array, np.ndarray]]],
+        audio: Union[str, mx.array, np.ndarray],
     ) -> Tuple[mx.array, mx.array, int]:
         """Preprocess audio for the model."""
         from mlx_audio.stt.utils import load_audio
 
-        audio_input = audio[0] if isinstance(audio, list) else audio
+        if isinstance(audio, list):
+            raise ValueError("Audio preprocessing expects one input")
+        if isinstance(audio, str):
+            audio = load_audio(audio)
 
-        if isinstance(audio_input, str):
-            audio_input = load_audio(audio_input)
-
-        audio_np = (
-            np.array(audio_input) if isinstance(audio_input, mx.array) else audio_input
-        )
+        audio_np = np.array(audio) if isinstance(audio, mx.array) else audio
 
         audio_inputs = self._feature_extractor(
             audio_np,
@@ -948,7 +946,7 @@ class Qwen3ASRModel(nn.Module):
 
     def stream_generate(
         self,
-        audio: Union[str, mx.array, np.ndarray, List[Union[str, mx.array, np.ndarray]]],
+        audio: Union[str, mx.array, np.ndarray],
         *,
         max_tokens: int = 8192,
         sampler: Optional[Callable[[mx.array], mx.array]] = None,
@@ -959,7 +957,7 @@ class Qwen3ASRModel(nn.Module):
         system_prompt: str | None = None,
     ) -> Generator[Tuple[mx.array, mx.array], None, None]:
         """Stream generate tokens from audio using mlx_lm generate_step."""
-        from mlx_lm.generate import generate_step
+        from mlx_audio.lm.generate import generate_step
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
             raise RuntimeError(
@@ -1111,7 +1109,7 @@ class Qwen3ASRModel(nn.Module):
         across the batch. Chunks within a batch are padded (audio) to equal
         length so prompts share one length and the plain causal mask stays valid.
         """
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         eos_token_ids = self._eos_token_ids()
         texts = [""] * len(chunks)
@@ -1239,6 +1237,110 @@ class Qwen3ASRModel(nn.Module):
         min_tokens_to_keep: int = 1,
         repetition_penalty: Optional[float] = None,
         repetition_context_size: int = 100,
+        language: Union[Optional[str], List[Optional[str]]] = None,
+        prefill_step_size: int = 2048,
+        chunk_duration: float = 1200.0,
+        min_chunk_duration: float = 1.0,
+        verbose: bool = False,
+        stream: bool = False,
+        system_prompt: str | None = None,
+        hotwords: Optional[List[str]] = None,
+        **kwargs,
+    ) -> Union[STTOutput, List[STTOutput], Generator[StreamingResult, None, None]]:
+        """Generate transcription from one audio input or a list of inputs.
+
+        Lists are processed independently in input order. ``batch_size`` still
+        controls parallel decoding of chunks within each input. Streaming a
+        list is not supported.
+
+        Args:
+            chunk_duration: Maximum chunk duration in seconds (default: 1200 = 20 min).
+            min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
+            stream: If True, return a generator that yields tokens as they are generated.
+            hotwords: Optional vocabulary/hotword list, folded into ``system_prompt``.
+        """
+        if not isinstance(audio, list):
+            if isinstance(language, list):
+                if len(language) != 1:
+                    raise ValueError(
+                        "language must contain one item for a single audio input"
+                    )
+                language = language[0]
+            return self._generate_one(
+                audio,
+                max_tokens=max_tokens,
+                batch_size=batch_size,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+                language=language,
+                prefill_step_size=prefill_step_size,
+                chunk_duration=chunk_duration,
+                min_chunk_duration=min_chunk_duration,
+                verbose=verbose,
+                stream=stream,
+                system_prompt=system_prompt,
+                hotwords=hotwords,
+                **kwargs,
+            )
+
+        if stream:
+            raise ValueError("Streaming does not support a list of audio inputs")
+
+        if isinstance(language, list):
+            if len(language) == 1:
+                languages = language * len(audio)
+            elif len(language) != len(audio):
+                raise ValueError(
+                    "language and audio must contain the same number of items"
+                )
+            else:
+                languages = language
+        else:
+            languages = [language] * len(audio)
+
+        return [
+            self._generate_one(
+                audio_input,
+                max_tokens=max_tokens,
+                batch_size=batch_size,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                min_p=min_p,
+                min_tokens_to_keep=min_tokens_to_keep,
+                repetition_penalty=repetition_penalty,
+                repetition_context_size=repetition_context_size,
+                language=input_language,
+                prefill_step_size=prefill_step_size,
+                chunk_duration=chunk_duration,
+                min_chunk_duration=min_chunk_duration,
+                verbose=verbose,
+                stream=False,
+                system_prompt=system_prompt,
+                hotwords=hotwords,
+                **kwargs,
+            )
+            for audio_input, input_language in zip(audio, languages)
+        ]
+
+    def _generate_one(
+        self,
+        audio: Union[str, mx.array, np.ndarray],
+        *,
+        max_tokens: int = 8192,
+        batch_size: int = 1,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 0,
+        min_p: float = 0.0,
+        min_tokens_to_keep: int = 1,
+        repetition_penalty: Optional[float] = None,
+        repetition_context_size: int = 100,
         language: Optional[str] = None,
         prefill_step_size: int = 2048,
         chunk_duration: float = 1200.0,
@@ -1246,17 +1348,15 @@ class Qwen3ASRModel(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         system_prompt: str | None = None,
+        hotwords: Optional[List[str]] = None,
         **kwargs,
-    ) -> Union[STTOutput, Generator[str, None, None]]:
-        """Generate transcription from audio.
+    ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
+        """Generate transcription from one audio input."""
+        from mlx_audio.stt.utils import merge_hotwords
 
-        Automatically chunks long audio and processes sequentially.
+        # Qwen3-ASR biases toward rare vocabulary via the system prompt.
+        system_prompt = merge_hotwords(system_prompt, hotwords)
 
-        Args:
-            chunk_duration: Maximum chunk duration in seconds (default: 1200 = 20 min).
-            min_chunk_duration: Minimum chunk duration in seconds (default: 1.0).
-            stream: If True, return a generator that yields tokens as they are generated.
-        """
         # If streaming requested, delegate to stream_transcribe
         if stream:
             return self.stream_transcribe(
@@ -1277,8 +1377,7 @@ class Qwen3ASRModel(nn.Module):
                 system_prompt=system_prompt,
             )
 
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         del kwargs
@@ -1296,12 +1395,9 @@ class Qwen3ASRModel(nn.Module):
             )
 
         # Load audio
-        audio_input = audio[0] if isinstance(audio, list) else audio
-        if isinstance(audio_input, str):
-            audio_input = load_audio(audio_input)
-        audio_np = (
-            np.array(audio_input) if isinstance(audio_input, mx.array) else audio_input
-        )
+        if isinstance(audio, str):
+            audio = load_audio(audio)
+        audio_np = np.array(audio) if isinstance(audio, mx.array) else audio
 
         # Split into chunks if needed
         chunks = split_audio_into_chunks(
@@ -1436,7 +1532,7 @@ class Qwen3ASRModel(nn.Module):
 
     def stream_transcribe(
         self,
-        audio: Union[str, mx.array, np.ndarray, List[Union[str, mx.array, np.ndarray]]],
+        audio: Union[str, mx.array, np.ndarray],
         *,
         max_tokens: int = 8192,
         temperature: float = 0.0,
@@ -1461,8 +1557,7 @@ class Qwen3ASRModel(nn.Module):
         Yields:
             StreamingResult objects with text, timing, and status information.
         """
-        from mlx_lm.sample_utils import make_logits_processors, make_sampler
-
+        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
         from mlx_audio.stt.utils import load_audio
 
         if not hasattr(self, "_tokenizer") or not hasattr(self, "_feature_extractor"):
@@ -1471,12 +1566,11 @@ class Qwen3ASRModel(nn.Module):
             )
 
         # Load audio
-        audio_input = audio[0] if isinstance(audio, list) else audio
-        if isinstance(audio_input, str):
-            audio_input = load_audio(audio_input)
-        audio_np = (
-            np.array(audio_input) if isinstance(audio_input, mx.array) else audio_input
-        )
+        if isinstance(audio, list):
+            raise ValueError("Streaming does not support a list of audio inputs")
+        if isinstance(audio, str):
+            audio = load_audio(audio)
+        audio_np = np.array(audio) if isinstance(audio, mx.array) else audio
 
         # Calculate total audio duration
         total_duration = len(audio_np) / self.sample_rate

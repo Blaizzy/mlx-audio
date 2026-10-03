@@ -2,10 +2,11 @@ from typing import Dict, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
-from mlx_lm.models.cache import make_prompt_cache
-from mlx_lm.models.llama import Model as LlamaModel
-from mlx_lm.models.llama import ModelArgs as LlamaModelConfig
-from mlx_lm.sample_utils import make_logits_processors, make_sampler
+
+from mlx_audio.lm.models.cache import make_prompt_cache
+from mlx_audio.lm.models.llama import Model as LlamaModel
+from mlx_audio.lm.models.llama import ModelArgs as LlamaModelConfig
+from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
 from ..config import LLAMA_CONFIGS, T3Config
 from .cond_enc import T3Cond, T3CondEnc
@@ -349,53 +350,12 @@ class T3(nn.Module):
         if text_tokens.ndim == 1:
             text_tokens = mx.expand_dims(text_tokens, 0)
 
-        # Default initial speech token (BOS)
-        bos_token = mx.array([[self.hp.start_speech_token]], dtype=mx.int32)
-
-        # Prepare conditioning and text embeddings
-        embeds, len_cond = self.prepare_input_embeds(
+        input_embeddings = self._prepare_inference_context(
             t3_cond=t3_cond,
             text_tokens=text_tokens,
-            speech_tokens=bos_token,
             cfg_weight=cfg_weight,
+            initial_speech_tokens=initial_speech_tokens,
         )
-
-        # Create BOS embedding with position embedding at position 0
-        bos_embed = self.speech_emb(bos_token)  # (1, 1, dim)
-        bos_embed = bos_embed + self.speech_pos_emb.get_fixed_embedding(0)
-
-        # For CFG, duplicate BOS embed
-        if cfg_weight > 0.0:
-            bos_embed = mx.concatenate([bos_embed, bos_embed], axis=0)
-
-        # Combine conditioning+text embeddings with BOS token
-        # embeds already has [cond | text | bos] structure from prepare_input_embeds
-        # We need to replace the speech part with our position-embedded BOS
-        # Actually, let's rebuild the input properly
-        cond_emb = self.prepare_conditioning(t3_cond)  # (1, len_cond, dim)
-        text_emb = self.text_emb(text_tokens)  # (B, len_text, dim)
-
-        if cfg_weight > 0.0:
-            # Zero out second batch for unconditional
-            text_emb = mx.concatenate(
-                [
-                    text_emb[:1],
-                    mx.zeros_like(text_emb[:1]),
-                ],
-                axis=0,
-            )
-
-        if self.hp.input_pos_emb == "learned":
-            text_emb = text_emb + self.text_pos_emb(text_tokens)
-
-        # Broadcast conditioning if needed
-        if cond_emb.shape[0] != text_emb.shape[0]:
-            cond_emb = mx.broadcast_to(
-                cond_emb, (text_emb.shape[0],) + cond_emb.shape[1:]
-            )
-
-        # Build initial input: [cond | text | bos]
-        input_embeddings = mx.concatenate([cond_emb, text_emb, bos_embed], axis=1)
 
         # Create KV cache
         cache = make_prompt_cache(self.tfmr)
@@ -469,3 +429,42 @@ class T3(nn.Module):
             mx.eval(hidden)
 
         return mx.array([generated_ids])
+
+    def _prepare_inference_context(
+        self,
+        t3_cond: T3Cond,
+        text_tokens: mx.array,
+        cfg_weight: float,
+        initial_speech_tokens: Optional[mx.array] = None,
+    ) -> mx.array:
+        """Build the upstream-compatible ``[cond | text | BOS | BOS]`` prompt."""
+        # The first BOS belongs to the normal speech input assembled by
+        # prepare_input_embeds. Chatterbox then appends a second position-0 BOS
+        # before sampling; omitting it changes the speech-token distribution.
+        if initial_speech_tokens is None:
+            initial_speech_tokens = mx.full(
+                (text_tokens.shape[0], 1),
+                self.hp.start_speech_token,
+                dtype=mx.int32,
+            )
+        elif initial_speech_tokens.ndim == 1:
+            initial_speech_tokens = mx.expand_dims(initial_speech_tokens, 0)
+        embeds, _ = self.prepare_input_embeds(
+            t3_cond=t3_cond,
+            text_tokens=text_tokens,
+            speech_tokens=initial_speech_tokens,
+            cfg_weight=cfg_weight,
+        )
+
+        # Create BOS embedding with position embedding at position 0
+        bos_token = mx.array([[self.hp.start_speech_token]], dtype=mx.int32)
+        bos_embed = self.speech_emb(bos_token)  # (1, 1, dim)
+        bos_embed = bos_embed + self.speech_pos_emb.get_fixed_embedding(0)
+
+        if bos_embed.shape[0] != embeds.shape[0]:
+            bos_embed = mx.broadcast_to(
+                bos_embed,
+                (embeds.shape[0],) + bos_embed.shape[1:],
+            )
+
+        return mx.concatenate([embeds, bos_embed], axis=1)

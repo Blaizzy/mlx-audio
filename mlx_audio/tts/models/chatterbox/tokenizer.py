@@ -15,6 +15,7 @@ EOT = "[STOP]"
 UNK = "[UNK]"
 SPACE = "[SPACE]"
 SPECIAL_TOKENS = [SOT, EOT, UNK, SPACE, "[PAD]", "[SEP]", "[CLS]", "[MASK]"]
+V3_TEXT_PREPROCESSING = "NFKD,fullcase"
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,6 @@ def korean_normalize(text: str) -> str:
 
 
 class ChineseCangjieConverter:
-
     def __init__(self, model_dir=None):
         self.word2cj = {}
         self.cj2word = {}
@@ -169,9 +169,17 @@ class ChineseCangjieConverter:
 
     def _load_cangjie_mapping(self, model_dir=None):
         try:
-            cangjie_file = hf_hub_download(
-                repo_id=REPO_ID, filename="Cangjie5_TC.json", cache_dir=model_dir
-            )
+            cangjie_file = None
+            if model_dir is not None:
+                local_file = Path(model_dir) / "Cangjie5_TC.json"
+                if local_file.exists():
+                    cangjie_file = str(local_file)
+
+            if cangjie_file is None:
+                cangjie_file = hf_hub_download(
+                    repo_id=REPO_ID,
+                    filename="Cangjie5_TC.json",
+                )
 
             with open(cangjie_file, "r", encoding="utf-8") as fp:
                 data = json.load(fp)
@@ -258,11 +266,16 @@ def add_russian_stress(text: str) -> str:
 
 
 class MTLTokenizer:
-    def __init__(self, vocab_file_path):
+    def __init__(self, vocab_file_path, text_preprocessing: str = "legacy"):
         self.tokenizer: Tokenizer = Tokenizer.from_file(str(vocab_file_path))
+        self.text_preprocessing = text_preprocessing
         model_dir = Path(vocab_file_path).parent
         self.cangjie_converter = ChineseCangjieConverter(model_dir)
         self.check_vocabset_sot_eot()
+
+    @property
+    def uses_v3_preprocessing(self) -> bool:
+        return self.text_preprocessing.lower() == V3_TEXT_PREPROCESSING.lower()
 
     def check_vocabset_sot_eot(self):
         voc = self.tokenizer.get_vocab()
@@ -280,6 +293,17 @@ class MTLTokenizer:
         Text preprocessor that handles lowercase conversion and NFKD normalization.
         """
         preprocessed_text = raw_text
+
+        # Multilingual v3 was trained with full case plus NFKD. Its Chinese and
+        # Russian transforms happen before NFKD, and it does not apply the
+        # legacy Japanese, Hebrew, or Korean transforms.
+        if self.uses_v3_preprocessing:
+            if language_id == "zh":
+                preprocessed_text = self.cangjie_converter(preprocessed_text)
+            elif language_id == "ru":
+                preprocessed_text = add_russian_stress(preprocessed_text)
+            return normalize("NFKD", preprocessed_text)
+
         if lowercase:
             preprocessed_text = preprocessed_text.lower()
         if nfkd_normalize:
@@ -317,17 +341,20 @@ class MTLTokenizer:
             nfkd_normalize=nfkd_normalize,
         )
 
-        # Language-specific text processing
-        if language_id == "zh":
-            txt = self.cangjie_converter(txt)
-        elif language_id == "ja":
-            txt = hiragana_normalize(txt)
-        elif language_id == "he":
-            txt = add_hebrew_diacritics(txt)
-        elif language_id == "ko":
-            txt = korean_normalize(txt)
-        elif language_id == "ru":
-            txt = add_russian_stress(txt)
+        # Language-specific text processing for the legacy multilingual model.
+        # V3 applies its language-specific transforms inside preprocess_text so
+        # they happen before NFKD, matching the training pipeline.
+        if not self.uses_v3_preprocessing:
+            if language_id == "zh":
+                txt = self.cangjie_converter(txt)
+            elif language_id == "ja":
+                txt = hiragana_normalize(txt)
+            elif language_id == "he":
+                txt = add_hebrew_diacritics(txt)
+            elif language_id == "ko":
+                txt = korean_normalize(txt)
+            elif language_id == "ru":
+                txt = add_russian_stress(txt)
 
         # Prepend language token
         if language_id:

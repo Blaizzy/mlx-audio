@@ -21,19 +21,19 @@ requires-python = ">=3.10"
 dependencies = [
     "huggingface_hub>=1.0",
     "miniaudio>=1.61",
-    "mlx-lm>=0.31.1",
     "mlx>=0.31.1",
     "numpy>=1.26.4",
     "scipy>=1.10.0",
     "sounddevice>=0.5.3",
     "tqdm>=4.67.1",
-    "transformers>=5.5.0,<5.13.0",
+    "transformers>=5.14.0",
 ]
 
 [project.optional-dependencies]
 # STT dependencies
 stt = [
     "sentencepiece>=0.2.0",
+    "zstandard>=0.23.0",
 ]
 
 # TTS dependencies
@@ -54,7 +54,11 @@ server = [
 # STS (Speech-to-Speech) dependencies
 sts = [
     "sentencepiece>=0.2.0",
-    
+
+    # The speech-to-speech pipeline's default responder loads an arbitrary chat
+    # model, which is mlx-lm's job; every other use is vendored in mlx_audio/lm.
+    "mlx-lm>=0.31.1",
+
     "webrtcvad>=2.0.10",
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
 ]
@@ -63,12 +67,27 @@ sts = [
 all = [
     "mistral-common[audio]",
     "sentencepiece>=0.2.0",
+    "zstandard>=0.23.0",
+
+    "mlx-lm>=0.31.1",
 
     "fastapi>=0.95.0",
+    "python-multipart>=0.0.22",
     "uvicorn[standard]>=0.22.0",
 
     "webrtcvad>=2.0.10",
     "setuptools<81", # pinned because >=81 drops pkg_resources which breaks webrtcvad
+]
+
+# Optional in-process LLM responder for the speech-to-speech pipeline. Every
+# other mlx-lm use is vendored under mlx_audio/lm.
+llm = [
+    "mlx-lm>=0.31.1",
+]
+
+# Differential tests against the mlx-lm version mlx_audio/lm was vendored from.
+parity = [
+    "mlx-lm==0.31.3",
 ]
 
 # Development dependencies
@@ -90,6 +109,7 @@ docs = [
 "mlx_audio.convert" = "mlx_audio.convert:main"
 "mlx_audio.stt.generate" = "mlx_audio.stt.generate:main"
 "mlx_audio.tts.generate" = "mlx_audio.tts.generate:main"
+"mlx_audio.music.generate" = "mlx_audio.music.generate:main"
 "mlx_audio.server" = "mlx_audio.server:main"
 "mlx_audio.sts.generate" = "mlx_audio.sts.generate:main"
 

@@ -17,7 +17,7 @@ from .s3gen import S3Token2Wav
 from .s3tokenizer import S3TokenizerV2, log_mel_spectrogram
 from .t3 import T3
 from .t3.cond_enc import T3Cond
-from .tokenizer import MTLTokenizer
+from .tokenizer import V3_TEXT_PREPROCESSING, MTLTokenizer
 from .voice_encoder import VoiceEncoder
 
 # Constants
@@ -30,8 +30,34 @@ SOT = "[START]"
 EOT = "[STOP]"
 SPACE = "[SPACE]"
 
+SUPPORTED_LANGUAGES = {
+    "ar": "Arabic",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fi": "Finnish",
+    "fr": "French",
+    "he": "Hebrew",
+    "hi": "Hindi",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "no": "Norwegian",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "sw": "Swahili",
+    "tr": "Turkish",
+    "zh": "Chinese",
+}
 
-def punc_norm(text: str) -> str:
+
+def punc_norm(text: str, capitalize: bool = True) -> str:
     """
     Quick cleanup func for punctuation from LLMs or
     containing chars not seen often in the dataset.
@@ -40,7 +66,7 @@ def punc_norm(text: str) -> str:
         return "You need to add some text for me to talk."
 
     # Capitalise first letter
-    if text[0].islower():
+    if capitalize and text[0].islower():
         text = text[0].upper() + text[1:]
 
     # Remove multiple space chars
@@ -69,7 +95,7 @@ def punc_norm(text: str) -> str:
 
     # Add full stop if no ending punc
     text = text.rstrip(" ")
-    sentence_enders = {".", "!", "?", "-", ","}
+    sentence_enders = {".", "!", "?", "-", ",", "、", "，", "。", "？", "！"}
     if not any(text.endswith(p) for p in sentence_enders):
         text += "."
 
@@ -180,6 +206,71 @@ class Model(nn.Module):
         # Text tokenizer (initialized during load_weights if model_path is available)
         self.tokenizer = None
         self.mtl_tokenizer = None
+
+    def _init_text_tokenizers(self, model_path: Path) -> None:
+        """Initialize the tokenizer matching the checkpoint configuration."""
+        tokenizer_path = model_path / "tokenizer.json"
+        if not tokenizer_path.exists():
+            print(f"Warning: tokenizer.json not found at {tokenizer_path}")
+            self.tokenizer = None
+            self.mtl_tokenizer = None
+            return
+
+        from .tokenizer import EnTokenizer
+
+        if self.config is not None and self.config.multilingual:
+            self.mtl_tokenizer = MTLTokenizer(
+                tokenizer_path,
+                text_preprocessing=self.config.text_preprocessing,
+            )
+            self.tokenizer = None
+            print(
+                "Loaded multilingual tokenizer "
+                f"({self.config.text_preprocessing} preprocessing)"
+            )
+        else:
+            self.tokenizer = EnTokenizer(tokenizer_path)
+            self.mtl_tokenizer = None
+            print("Loaded English tokenizer (EnTokenizer)")
+
+    def _tokenize_text(self, text: str, lang_code: str) -> mx.array:
+        """Normalize and tokenize text for English, multilingual v2, or v3."""
+        lang_code = (lang_code or "en").lower()
+        is_multilingual = self.config is not None and self.config.multilingual
+
+        if is_multilingual:
+            if lang_code not in SUPPORTED_LANGUAGES:
+                supported = ", ".join(SUPPORTED_LANGUAGES)
+                raise ValueError(
+                    f"Unsupported language code '{lang_code}'. "
+                    f"Supported languages: {supported}"
+                )
+            if self.mtl_tokenizer is None:
+                raise ValueError(
+                    "Multilingual tokenizer not initialized. "
+                    "Load the model with mlx_audio.tts.utils.load_model()."
+                )
+
+            preserve_case = (
+                self.config.text_preprocessing.lower() == V3_TEXT_PREPROCESSING.lower()
+            )
+            text = punc_norm(text, capitalize=not preserve_case)
+            return self.mtl_tokenizer.text_to_tokens(
+                text,
+                language_id=lang_code,
+            )
+
+        if lang_code != "en":
+            raise ValueError(
+                f"The English Chatterbox checkpoint does not support '{lang_code}'. "
+                "Use a multilingual v2 or v3 checkpoint."
+            )
+        if self.tokenizer is None:
+            raise ValueError(
+                "Text tokenizer not initialized. "
+                "Load the model with mlx_audio.tts.utils.load_model()."
+            )
+        return self.tokenizer.text_to_tokens(punc_norm(text))
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
         """
@@ -374,12 +465,20 @@ class Model(nn.Module):
                         "model.safetensors",
                         "tokenizer.json",
                         "config.json",
+                        "conds.safetensors",
+                        "Cangjie5_TC.json",
                     ],
                 )
             )
 
-        # Initialize models with default config
-        model = cls()
+        # Load config before constructing T3. Multilingual v2/v3 checkpoints
+        # have a 2,454-token text embedding instead of the English 704-token one.
+        config_path = ckpt_dir / "config.json"
+        config = {}
+        if config_path.exists():
+            with open(config_path) as f:
+                config = json.load(f)
+        model = cls(ModelConfig.from_dict(config))
 
         print("Loading MLX weights...")
 
@@ -389,13 +488,6 @@ class Model(nn.Module):
                 f"model.safetensors not found in {ckpt_dir}. "
                 "Use scripts/convert.py to convert from PyTorch weights."
             )
-
-        # Load config to check for quantization
-        config_path = ckpt_dir / "config.json"
-        config = {}
-        if config_path.exists():
-            with open(config_path) as f:
-                config = json.load(f)
 
         all_weights = mx.load(str(combined_path))
 
@@ -468,33 +560,7 @@ class Model(nn.Module):
         load_component_weights(model._s3_tokenizer, s3tok_weights, strict=False)
         mx.eval(model._s3_tokenizer.parameters())
 
-        # Initialize text tokenizer (check config for multilingual setting)
-        tokenizer_path = ckpt_dir / "tokenizer.json"
-        config = None
-        if tokenizer_path.exists():
-            try:
-                import json
-
-                from .tokenizer import EnTokenizer, MTLTokenizer
-
-                # Check if multilingual model from config.json
-                config_path = ckpt_dir / "config.json"
-                if config_path.exists():
-                    with open(config_path) as f:
-                        config = json.load(f)
-
-                if config and config.get("multilingual", False):
-                    model.mtl_tokenizer = MTLTokenizer(tokenizer_path)
-                    print("Loaded multilingual tokenizer (MTLTokenizer)")
-
-                model.tokenizer = EnTokenizer(tokenizer_path)
-                print("Loaded English tokenizer (EnTokenizer)")
-            except ImportError:
-                print("Warning: tokenizers library not available")
-                model.tokenizer = None
-        else:
-            print("Warning: tokenizer.json not found")
-            model.tokenizer = None
+        model._init_text_tokenizers(ckpt_dir)
 
         # Set to eval mode for inference (important for BatchNorm)
         mx.eval(model.parameters(), model._s3_tokenizer.parameters())
@@ -514,33 +580,7 @@ class Model(nn.Module):
         Returns:
             The model with tokenizer and conditionals initialized
         """
-        # Load text tokenizer (check config for multilingual setting)
-        tokenizer_path = model_path / "tokenizer.json"
-        config = None
-        if tokenizer_path.exists():
-            try:
-                import json
-
-                from .tokenizer import EnTokenizer, MTLTokenizer
-
-                # Check if multilingual model from config..json
-                config_path = model_path / "config.json"
-                if config_path.exists():
-                    with open(config_path) as f:
-                        config = json.load(f)
-
-                if config and config.get("multilingual", False):
-                    model.mtl_tokenizer = MTLTokenizer(tokenizer_path)
-                    print("Loaded multilingual tokenizer (MTLTokenizer)")
-
-                model.tokenizer = EnTokenizer(tokenizer_path)
-                print("Loaded English tokenizer (EnTokenizer)")
-            except ImportError:
-                print("Warning: tokenizers library not available")
-                model.tokenizer = None
-        else:
-            print(f"Warning: tokenizer.json not found at {tokenizer_path}")
-            model.tokenizer = None
+        model._init_text_tokenizers(model_path)
 
         # Load S3Tokenizer from separate repo
         from huggingface_hub import snapshot_download
@@ -758,7 +798,7 @@ class Model(nn.Module):
             ref_audio: Alias for audio_prompt (for mlx_audio.tts.generate compatibility)
             voice: Ignored (Chatterbox uses reference audio for voice cloning)
             speed: Ignored (Chatterbox doesn't support speed adjustment)
-            lang_code: Ignored (Chatterbox is English-only)
+            lang_code: Language code for multilingual v2/v3 checkpoints
             max_tokens: Alias for max_new_tokens
             verbose: Whether to print verbose output
             stream: Ignored (Chatterbox doesn't support streaming)
@@ -796,35 +836,7 @@ class Model(nn.Module):
         if exaggeration != float(conds.t3.emotion_adv[0, 0, 0]):
             conds.t3.emotion_adv = mx.ones((1, 1, 1)) * exaggeration
 
-        # Normalize and tokenize text
-        text = punc_norm(text)
-
-        try:
-            if lang_code == "en":
-                text_tokens = self.tokenizer.text_to_tokens(text)
-            elif isinstance(self.mtl_tokenizer, MTLTokenizer):
-                text_tokens = self.mtl_tokenizer.text_to_tokens(
-                    text, language_id=lang_code
-                )
-            else:
-                if self.tokenizer is None and self.mtl_tokenizer is None:
-                    raise ValueError(
-                        "Text tokenizer or multilingual tokenizer not initialized.\n"
-                        "Load model with from_pretrained() or set model.tokenizer manually.\n"
-                    )
-                else:
-                    raise ValueError(
-                        "Invalid language code. Supported languages: "
-                        "ar (Arabic), da (Danish), de (German), el (Greek), en (English), "
-                        "es (Spanish), fi (Finnish), fr (French), he (Hebrew), hi (Hindi), "
-                        "it (Italian), ja (Japanese), ko (Korean), ms (Malay), nl (Dutch), "
-                        "no (Norwegian), pl (Polish), pt (Portuguese), ru (Russian), "
-                        "sv (Swedish), sw (Swahili), tr (Turkish), zh (Chinese)"
-                    )
-
-        except Exception as e:
-            print(f"Error tokenizing text: {e}")
-            raise e
+        text_tokens = self._tokenize_text(text, lang_code)
 
         token_count = text_tokens.shape[1]
 

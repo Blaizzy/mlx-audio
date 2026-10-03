@@ -92,6 +92,11 @@ def interpolate1d(
             x = mx.arange(size) * (in_width / size)
             if not align_corners:
                 x = x + 0.5 * (in_width / size) - 0.5
+                # torch clamps source coords at 0. Without this, floor(x) = -1
+                # for the first outputs when upsampling, and the gather below
+                # reads an out-of-range index (observed as index -1, i.e. the
+                # last frame) instead of repeating the first frame.
+                x = mx.maximum(x, 0.0)
 
     # Handle the case where input width is 1
     if in_width == 1:

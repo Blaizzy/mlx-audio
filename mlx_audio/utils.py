@@ -38,6 +38,7 @@ from mlx_audio.dsp import (
     mel_filters,
     stft,
 )
+from mlx_audio.registry import model_type_from_config
 
 T = TypeVar("T")
 
@@ -366,7 +367,7 @@ def base_load_model(
 
     # Determine model_type from config or model_name
     if model_type is None:
-        model_type = config.get("model_type", None)
+        model_type = model_type_from_config(config)
     if model_type is None:
         model_type = config.get("architecture", None)
     if model_type is None:
@@ -562,37 +563,16 @@ def resample_audio(
     Returns:
         Audio resampled to ``sample_rate``. The return type matches the input type.
     """
-    import math
-
     import numpy as np
-    from scipy import signal
+
+    from mlx_audio.resample import resample_audio_array
 
     if orig_sample_rate == sample_rate:
         return audio
 
-    audio_np = np.asarray(audio)
-    gcd = math.gcd(int(orig_sample_rate), int(sample_rate))
-    up = sample_rate // gcd
-    down = orig_sample_rate // gcd
-
-    # kaiser_best-equivalent anti-aliasing FIR (resampy defaults): a long,
-    # high-attenuation Kaiser sinc designed at the upsampled rate. Cutoff is at
-    # ``rolloff / max(up, down)`` of the upsampled Nyquist.
-    max_rate = max(up, down)
-    num_zeros, rolloff, beta = 64, 0.9475937167399596, 14.769656459379492
-    fir = signal.firwin(
-        2 * num_zeros * max_rate + 1,
-        rolloff / max_rate,
-        window=("kaiser", beta),
+    resampled = resample_audio_array(
+        np.asarray(audio), orig_sample_rate, sample_rate, axis=axis
     )
-    resampled = signal.resample_poly(
-        audio_np,
-        up,
-        down,
-        axis=axis,
-        window=fir,
-        padtype="edge",
-    ).astype(np.float32, copy=False)
 
     if isinstance(audio, mx.array):
         return mx.array(resampled)
@@ -872,7 +852,7 @@ def load_model(model_name: str):
         load_error = exc
 
     # Try to determine model type from config first, then from name
-    model_type = config.get("model_type", None)
+    model_type = model_type_from_config(config)
     if model_type is None:
         model_type = config.get("architecture", None)
     if model_type is None:

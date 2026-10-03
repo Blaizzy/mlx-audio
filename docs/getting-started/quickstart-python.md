@@ -5,7 +5,10 @@ Use the mlx-audio Python API to generate speech, transcribe audio, and process a
 ## Text-to-Speech
 
 !!! note
-    These TTS quickstart examples use `mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit`.
+    These TTS quickstart examples use `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit`,
+    which supports preset voices. The Qwen3-TTS **Base** models (e.g.
+    `Qwen3-TTS-12Hz-1.7B-Base-8bit`) have no preset voices — clone a voice with them
+    instead by passing `ref_audio` + `ref_text` to `generate()`.
 
 ### Basic Generation
 
@@ -13,13 +16,13 @@ Use the mlx-audio Python API to generate speech, transcribe audio, and process a
 from mlx_audio.tts.utils import load_model
 
 # Load a TTS model
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
 # Generate speech
-for result in model.generate(
+for result in model.generate_custom_voice(
     "Hello from MLX-Audio!",
-    voice="Chelsie",
-    lang_code="English",
+    speaker="Vivian",
+    language="English",
 ):
     print(f"Generated {result.audio.shape[0]} samples")
     # result.audio contains the waveform as mx.array
@@ -30,18 +33,18 @@ for result in model.generate(
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
 
-for result in model.generate(
+for result in model.generate_custom_voice(
     text="Welcome to MLX-Audio!",
-    voice="Ethan",
-    lang_code="English",
+    speaker="Ryan",
+    language="English",
 ):
     audio = result.audio
 ```
 
-!!! tip "Qwen3-TTS Base Model"
-    Pass `voice` to pick a preset speaker and `lang_code` to hint the language, for example `voice="Chelsie"` and `lang_code="English"`.
+!!! tip "Qwen3-TTS CustomVoice Model"
+    Pass `speaker` to pick a preset voice and `language` to hint the language, for example `speaker="Vivian"` and `language="English"`. Call `model.get_supported_speakers()` to list the voices available on a given checkpoint.
 
 ### Voxtral TTS
 
@@ -59,11 +62,11 @@ for result in model.generate(text="Hello, how are you today?", voice="casual_mal
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit")
-results = list(model.generate(
+model = load_model("mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit")
+results = list(model.generate_custom_voice(
     text="Hello, welcome to MLX-Audio!",
-    voice="Chelsie",
-    lang_code="English",
+    speaker="Vivian",
+    language="English",
 ))
 
 audio = results[0].audio  # mx.array

@@ -10,8 +10,6 @@ from typing import Any, Callable, Iterable, Optional
 import mlx.core as mx
 import numpy as np
 import sounddevice as sd
-from mlx_lm.generate import generate as generate_text
-from mlx_lm.utils import load as load_llm
 
 from mlx_audio.sts.audio_player import AudioPlayer
 from mlx_audio.tts.utils import load_model as load_tts
@@ -399,6 +397,13 @@ class LocalLLMResponseEngine:
         self.tokenizer = None
 
     def load(self) -> None:
+        try:
+            from mlx_lm.utils import load as load_llm
+        except ImportError as exc:
+            raise ImportError(
+                "The in-process LLM responder needs mlx-lm, please run `pip install -U mlx-lm` first. "
+            ) from exc
+
         self.llm, self.tokenizer = load_llm(self.model_name)
 
     def generate(self, transcript: str, context: Optional[list[dict]] = None) -> str:
@@ -411,6 +416,8 @@ class LocalLLMResponseEngine:
         prompt = self.tokenizer.apply_chat_template(
             messages, tokenize=False, enable_thinking=False, add_generation_prompt=True
         )
+        from mlx_lm.generate import generate as generate_text
+
         return generate_text(self.llm, self.tokenizer, prompt, verbose=False).strip()
 
 

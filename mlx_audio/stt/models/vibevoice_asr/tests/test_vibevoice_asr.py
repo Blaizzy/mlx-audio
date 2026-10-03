@@ -657,6 +657,23 @@ class TestModel(unittest.TestCase):
 
         self.assertEqual(embeddings.shape, (1, seq_len, hidden))
 
+    def test_merge_keeps_text_embedding_dtype(self):
+        """float32 speech features must not promote a bf16 prompt (and its KV cache)."""
+        hidden = self.config.decoder_config.hidden_size
+        self.model.set_dtype(mx.bfloat16)
+        input_ids = mx.ones((1, 6), dtype=mx.int32)
+        speech_features = mx.random.normal(
+            (1, 2, hidden)
+        )  # float32, as encode_speech yields
+        mask = mx.array([[False, True, True, False, False, False]])
+
+        embeddings = self.model._merge_speech_text_embeddings(
+            input_ids, speech_features, mask
+        )
+        mx.eval(embeddings)
+
+        self.assertEqual(embeddings.dtype, mx.bfloat16)
+
     def test_merge_no_speech_features(self):
         """Test embedding merging without speech features returns text embeddings."""
         input_ids = mx.array([[1, 2, 3]])

@@ -17,6 +17,8 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from mlx.utils import tree_flatten
 
+from mlx_audio.registry import model_type_from_config
+
 # Constants
 MODEL_CONVERSION_DTYPES = ["float16", "bfloat16", "float32"]
 QUANT_RECIPES = ["mixed_2_6", "mixed_3_4", "mixed_3_6", "mixed_4_6"]
@@ -30,6 +32,7 @@ class Domain(str, Enum):
     STT = "stt"
     STS = "sts"
     LID = "lid"
+    MUSIC = "music"
 
 
 @dataclass
@@ -113,6 +116,23 @@ DOMAIN_CONFIGS = {
             print(f"{lang}: {prob:.1%}")
         """,
     ),
+    Domain.MUSIC: DomainConfig(
+        name="Music",
+        tags=["text-to-audio", "music-generation", "music", "audio"],
+        cli_example=(
+            "python -m mlx_audio.music.generate --model {repo} "
+            '--caption "Warm acoustic pop" --lyrics "[verse]\\nMorning light"'
+        ),
+        python_example="""
+        from mlx_audio.music import load
+
+        model = load("{repo}")
+        result = next(model.generate(
+            text="Warm acoustic pop",
+            lyrics="[verse]\\nMorning light",
+        ))
+        """,
+    ),
 }
 
 
@@ -156,23 +176,38 @@ def _discover_detection_hints(domain: str) -> dict:
     Discover detection hints for all models in a domain.
 
     Each model can optionally define:
-    - DETECTION_HINTS: dict with 'config_keys', 'architectures', 'path_patterns'
+    - DETECTION_HINTS: dict with 'model_type_aliases', 'config_keys',
+      'architectures', and 'path_patterns'
     - Or we infer from the ModelConfig class
     """
     hints = {
+        "model_type_aliases": {},  # model_type -> set of config aliases
         "config_keys": {},  # model_type -> set of unique config keys
         "architectures": {},  # model_type -> set of architecture patterns
         "path_patterns": {},  # model_type -> set of path patterns
     }
 
-    for model_type in get_model_types(Domain(domain)):
+    for model_type in sorted(get_model_types(Domain(domain))):
         module_path = f"mlx_audio.{domain}.models.{model_type}"
         try:
             module = importlib.import_module(module_path)
 
+            # Infer defaults from the model module.
+            if hasattr(module, "ModelConfig"):
+                hints["config_keys"][model_type] = _get_config_keys(module.ModelConfig)
+            hints["path_patterns"][model_type] = {
+                model_type,
+                model_type.replace("_", ""),
+                model_type.replace("_", "-"),
+            }
+
             # Check for explicit detection hints
             if hasattr(module, "DETECTION_HINTS"):
                 model_hints = module.DETECTION_HINTS
+                if "model_type_aliases" in model_hints:
+                    hints["model_type_aliases"][model_type] = set(
+                        model_hints["model_type_aliases"]
+                    )
                 if "config_keys" in model_hints:
                     hints["config_keys"][model_type] = set(model_hints["config_keys"])
                 if "architectures" in model_hints:
@@ -183,17 +218,6 @@ def _discover_detection_hints(domain: str) -> dict:
                     hints["path_patterns"][model_type] = set(
                         model_hints["path_patterns"]
                     )
-            else:
-                # Infer from ModelConfig if available
-                if hasattr(module, "ModelConfig"):
-                    config_keys = _get_config_keys(module.ModelConfig)
-                    hints["config_keys"][model_type] = config_keys
-
-                # Use model_type as default path pattern
-                hints["path_patterns"][model_type] = {
-                    model_type,
-                    model_type.replace("_", ""),
-                }
 
         except ImportError:
             continue
@@ -243,21 +267,34 @@ def get_model_path(path_or_hf_repo: str, revision: Optional[str] = None) -> Path
 
 def load_config(model_path: Path) -> dict:
     """Load model configuration from a path."""
-    config_path = model_path / "config.json"
-    if config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+    for name in ("config.json", "modular_model_index.json"):
+        config_path = model_path / name
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                return json.load(f)
     raise FileNotFoundError(f"Config not found at {model_path}")
+
+
+def _resolve_model_type(model_type: str, domain: Domain) -> Optional[str]:
+    """Resolve a config model type to a model implementation in a domain."""
+    if not model_type:
+        return None
+
+    if model_type in get_model_types(domain):
+        return model_type
+
+    aliases = get_detection_hints(domain).get("model_type_aliases", {})
+    for candidate, candidate_aliases in sorted(aliases.items()):
+        if model_type in candidate_aliases:
+            return candidate
+
+    return None
 
 
 def _match_by_model_type(model_type: str) -> Optional[Domain]:
     """Try to match a model_type string to a domain."""
-    if not model_type:
-        return None
-
-    # Check each domain's known model types
     for domain in Domain:
-        if model_type in get_model_types(domain):
+        if _resolve_model_type(model_type, domain):
             return domain
 
     return None
@@ -265,7 +302,11 @@ def _match_by_model_type(model_type: str) -> Optional[Domain]:
 
 def _get_model_identifier(config: dict) -> str:
     """Get model identifier from config, checking model_type and name fields."""
-    return config.get("model_type", "").lower() or config.get("name", "").lower()
+    return (
+        config.get("model_type", "").lower()
+        or config.get("name", "").lower()
+        or config.get("_class_name", "").lower()
+    )
 
 
 def _match_by_config_keys(config: dict) -> Optional[tuple[Domain, str]]:
@@ -277,7 +318,7 @@ def _match_by_config_keys(config: dict) -> Optional[tuple[Domain, str]]:
 
     for domain in Domain:
         hints = get_detection_hints(domain)
-        for model_type, model_keys in hints.get("config_keys", {}).items():
+        for model_type, model_keys in sorted(hints.get("config_keys", {}).items()):
             # Score by number of matching unique keys
             intersection = config_keys & model_keys
             # Weight by how unique the match is (intersection / total model keys)
@@ -291,27 +332,33 @@ def _match_by_config_keys(config: dict) -> Optional[tuple[Domain, str]]:
 
 
 def _match_by_path(model_path: Path) -> Optional[tuple[Domain, str]]:
-    """Try to match path patterns to a domain and model type."""
+    """Match the most specific path pattern to a domain and model type."""
     path_str = str(model_path).lower()
+    best_match = None
+    best_pattern_length = -1
 
     for domain in Domain:
         hints = get_detection_hints(domain)
-        for model_type, patterns in hints.get("path_patterns", {}).items():
-            if any(pattern in path_str for pattern in patterns):
-                return (domain, model_type)
+        for model_type, patterns in sorted(hints.get("path_patterns", {}).items()):
+            for pattern in patterns:
+                if pattern in path_str and len(pattern) > best_pattern_length:
+                    best_match = (domain, model_type)
+                    best_pattern_length = len(pattern)
 
-    return None
+    return best_match
 
 
 def detect_model_domain(config: dict, model_path: Path) -> Domain:
     """
-    Detect whether a model is TTS, STT, or STS based on its configuration.
+    Detect the model domain from its configuration and repository path.
 
     Uses multiple heuristics in order of reliability:
     1. model_type or name field in config
     2. Config key matching
     3. Path pattern matching
     """
+    if model_type_from_config(config) == "mimo_audio":
+        return Domain.STS
     model_identifier = _get_model_identifier(config)
 
     # 1. Path pattern matching
@@ -336,13 +383,15 @@ def detect_model_domain(config: dict, model_path: Path) -> Domain:
 def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     """Determine the specific model type within a domain."""
     # Check both model_type and name fields
-    model_type = config.get("model_type", "").lower()
+    model_type = (model_type_from_config(config) or "").lower()
     model_name = config.get("name", "").lower()
+    class_name = config.get("_class_name", "").lower()
 
     # Direct match via config (model_type takes precedence)
-    for candidate in [model_type, model_name]:
-        if candidate and candidate in get_model_types(domain):
-            return candidate
+    for candidate in [model_type, model_name, class_name]:
+        resolved_model_type = _resolve_model_type(candidate, domain)
+        if resolved_model_type:
+            return resolved_model_type
 
     # Try config key matching within domain
     hints = get_detection_hints(domain)
@@ -351,7 +400,7 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
     best_match = None
     best_score = 0
 
-    for mt, model_keys in hints.get("config_keys", {}).items():
+    for mt, model_keys in sorted(hints.get("config_keys", {}).items()):
         if model_keys:
             intersection = config_keys & model_keys
             score = len(intersection) / len(model_keys)
@@ -364,13 +413,13 @@ def get_model_type(config: dict, model_path: Path, domain: Domain) -> str:
 
     # Try path matching within domain
     path_str = str(model_path).lower()
-    for mt, patterns in hints.get("path_patterns", {}).items():
+    for mt, patterns in sorted(hints.get("path_patterns", {}).items()):
         if any(pattern in path_str for pattern in patterns):
             return mt
 
     # Fallback: return first available model type or "unknown"
     model_types = get_model_types(domain)
-    return next(iter(model_types), "unknown") if model_types else "unknown"
+    return min(model_types) if model_types else "unknown"
 
 
 def get_model_class(model_type: str, domain: Domain):
@@ -422,24 +471,27 @@ def generate_readme_content(
     return tags, content
 
 
-def upload_to_hub(path: Path, upload_repo: str, hf_path: str, domain: Domain):
+def upload_to_hub(
+    path: Path, upload_repo: str, hf_path: str, domain: Domain, model_card_path=None
+):
     """Upload converted model to HuggingFace Hub."""
     from huggingface_hub import HfApi, ModelCard
 
     print(f"[INFO] Uploading to {upload_repo}")
 
-    tags, readme_content = generate_readme_content(upload_repo, hf_path, domain)
-
-    try:
-        card = ModelCard.load(hf_path)
-        card.data.tags = tags if card.data.tags is None else card.data.tags + tags
-        card.data.library_name = "mlx-audio"
-    except Exception:
-        card = ModelCard("")
-        card.data.tags = tags
-        card.data.library_name = "mlx-audio"
-
-    card.text = readme_content
+    if model_card_path is not None:
+        card = ModelCard.load(str(model_card_path))
+    else:
+        tags, readme_content = generate_readme_content(upload_repo, hf_path, domain)
+        try:
+            card = ModelCard.load(hf_path)
+            card.data.tags = tags if card.data.tags is None else card.data.tags + tags
+            card.data.library_name = "mlx-audio"
+        except Exception:
+            card = ModelCard("")
+            card.data.tags = tags
+            card.data.library_name = "mlx-audio"
+        card.text = readme_content
     card.save(path / "README.md")
 
     api = HfApi()
@@ -469,7 +521,7 @@ def build_quant_predicate(
     if not quant_predicate_name:
         return base_requirements
 
-    from mlx_lm.convert import mixed_quant_predicate_builder
+    from mlx_audio.lm.convert import mixed_quant_predicate_builder
 
     mixed_predicate = mixed_quant_predicate_builder(quant_predicate_name, model)
     return lambda p, m: base_requirements(p, m) and mixed_predicate(p, m)
@@ -556,8 +608,7 @@ def convert(
     """
     Convert a model from HuggingFace to MLX format.
 
-    Automatically detects whether the model is TTS, STT, or STS and handles
-    conversion appropriately.
+    Automatically detects the model domain and handles conversion appropriately.
 
     Args:
         hf_path: Path to the Hugging Face model or repo ID.
@@ -571,9 +622,14 @@ def convert(
         dequantize: Whether to dequantize a quantized model.
         quant_predicate: Mixed-bit quantization recipe.
         q_mode: Quantization mode (affine, mxfp4, nvfp4, mxfp8).
-        model_domain: Force model domain ("tts", "stt", or "sts"). Auto-detected if None.
+        model_domain: Force model domain. Auto-detected if None.
     """
-    from mlx_lm.utils import dequantize_model, quantize_model, save_config, save_model
+    from mlx_audio.lm.convert import (
+        dequantize_model,
+        quantize_model,
+        save_config,
+        save_model,
+    )
 
     if quantize and dequantize:
         raise ValueError("Choose either quantize or dequantize, not both.")
@@ -593,6 +649,9 @@ def convert(
 
     # Get model class and instantiate
     model_class = get_model_class(model_type, domain)
+    prepare_config = getattr(model_class, "prepare_config", None)
+    if prepare_config is not None:
+        config = prepare_config(config, model_path)
 
     model_config = (
         model_class.ModelConfig.from_dict(config)
@@ -605,7 +664,8 @@ def convert(
         model_config.model_path = model_path
 
     # Load and process weights
-    weights = load_weights(model_path)
+    source_weight_loader = getattr(model_class, "load_source_weights", load_weights)
+    weights = source_weight_loader(model_path)
     model = model_class.Model(model_config)
 
     if hasattr(model, "sanitize"):
@@ -620,6 +680,7 @@ def convert(
         print(f"[INFO] Converting to {target_dtype}")
         mx_dtype = getattr(mx, target_dtype)
         weights = {k: v.astype(mx_dtype) for k, v in weights.items()}
+        model.load_weights(list(weights.items()))
 
     # Handle quantization/dequantization
     if quantize:
@@ -642,23 +703,35 @@ def convert(
     # Create output directory and copy files
     mlx_path = Path(mlx_path)
     mlx_path.mkdir(parents=True, exist_ok=True)
-    copy_model_files(model_path, mlx_path)
+    supporting_file_copier = getattr(
+        model_class, "copy_supporting_files", copy_model_files
+    )
+    supporting_file_copier(model_path, mlx_path)
 
     # Save model weights and config
     save_model(mlx_path, model, donate_model=True)
     config["model_type"] = model_type
     save_config(config, config_path=mlx_path / "config.json")
+    write_model_card = getattr(model_class, "write_model_card", None)
+    if write_model_card is not None:
+        write_model_card(mlx_path, hf_path, upload_repo or str(mlx_path), config)
 
     print(f"[INFO] Conversion complete! Model saved to {mlx_path}")
 
     if upload_repo:
-        upload_to_hub(mlx_path, upload_repo, hf_path, domain)
+        upload_to_hub(
+            mlx_path,
+            upload_repo,
+            hf_path,
+            domain,
+            model_card_path=mlx_path / "README.md" if write_model_card else None,
+        )
 
 
 def configure_parser() -> argparse.ArgumentParser:
     """Configure and return the argument parser."""
     parser = argparse.ArgumentParser(
-        description="Convert HuggingFace model (TTS, STT, or STS) to MLX format"
+        description="Convert a Hugging Face audio model to MLX format"
     )
 
     parser.add_argument(
@@ -732,7 +805,7 @@ def configure_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model-domain",
         type=str,
-        choices=["tts", "stt", "sts", "lid"],
+        choices=[domain.value for domain in Domain],
         default=None,
         help="Force model domain (auto-detected if not specified).",
     )

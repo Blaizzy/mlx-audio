@@ -4,7 +4,7 @@
 # flake8: noqa
 """Modules used for building the models."""
 
-from mlx_lm.models.cache import KVCache, RotatingKVCache
+from mlx_audio.lm.models.cache import KVCache, RotatingKVCache
 
 from .conv import (
     Conv1d,

@@ -59,6 +59,7 @@ from mlx_audio.server_inference import (
     InferenceRequest,
     InferenceResultChunk,
 )
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.utils import load_model
 
@@ -250,7 +251,17 @@ async def _preflight_model_load(model_name: str) -> None:
     response. Warm models are a no-op (``ModelProvider.load_model`` is cached).
     """
     try:
-        await asyncio.to_thread(_load_model_for_inference, model_name)
+        handle = get_inference_broker().submit(
+            endpoint_kind="model-load",
+            model_name=model_name,
+            payload=None,
+        )
+        while True:
+            chunk = await _next_inference_chunk(handle)
+            if chunk.kind == "error":
+                raise chunk.error
+            if chunk.kind == "done":
+                break
     except HTTPException:
         raise
     except RepositoryNotFoundError as exc:
@@ -315,6 +326,12 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+        request.emit_done()
+
+
+class ModelLoadExecutionAdapter(BaseModelExecutionAdapter):
+    def run_serial(self, request: InferenceRequest) -> None:
+        _load_model_for_inference(request.model_name)
         request.emit_done()
 
 
@@ -824,6 +841,7 @@ def get_inference_broker() -> InferenceBroker:
     global INFERENCE_BROKER
     if INFERENCE_BROKER is None:
         broker = InferenceBroker()
+        broker.register_adapter("model-load", ModelLoadExecutionAdapter())
         broker.register_adapter("stt", STTExecutionAdapter())
         broker.register_adapter("tts", TTSExecutionAdapter())
         broker.register_adapter("separation", SeparationExecutionAdapter())
@@ -835,7 +853,9 @@ async def _next_inference_chunk(handle: InferenceHandle) -> InferenceResultChunk
     return await asyncio.to_thread(handle.result_queue.get)
 
 
-async def _stream_inference_results(handle: InferenceHandle, request: Request):
+async def _stream_inference_results(
+    handle: InferenceHandle, request: Request, *, ndjson_errors: bool = False
+):
     try:
         while True:
             chunk = await _next_inference_chunk(handle)
@@ -848,6 +868,14 @@ async def _stream_inference_results(handle: InferenceHandle, request: Request):
             if await request.is_disconnected():
                 handle.cancel()
                 break
+    except Exception as exc:
+        if not ndjson_errors:
+            raise
+        # StreamingResponse has already committed its status, so report the
+        # inference failure in-band rather than raising into the response body.
+        yield json.dumps(
+            {"error": {"message": str(exc), "type": type(exc).__name__}}
+        ) + "\n"
     finally:
         handle.cancel()
 
@@ -1101,7 +1129,7 @@ async def stt_transcriptions(
         return JSONResponse(full)
 
     return StreamingResponse(
-        _stream_inference_results(handle, request),
+        _stream_inference_results(handle, request, ndjson_errors=True),
         media_type="application/x-ndjson",
     )
 
@@ -1470,7 +1498,9 @@ def _default_transcription_delay_ms() -> Optional[int]:
         return None
 
 
-def _open_streaming_session(model, *, temperature: float, delay_ms: Optional[int]):
+def _open_streaming_session(
+    model, *, temperature: float, delay_ms: Optional[int]
+) -> StreamingSession:
     """Open a streaming session, forwarding ``transcription_delay_ms`` only to
     models that declare the parameter.
     """

@@ -3,6 +3,9 @@ import importlib
 from .utils import load, load_model
 
 _LAZY_EXPORTS = {
+    "DialogueSidon": ("mlx_audio.sts.models.dialogue_sidon", "Model"),
+    "DialogueSidonConfig": ("mlx_audio.sts.models.dialogue_sidon", "ModelConfig"),
+    "DialogueSidonResult": ("mlx_audio.sts.models.dialogue_sidon", "SeparationResult"),
     "DeepFilterNet2Config": (
         "mlx_audio.sts.models.deepfilternet",
         "DeepFilterNet2Config",
@@ -49,6 +52,9 @@ __all__ = [
     "DeepFilterNetModel",
     "DeepFilterNetStreamer",
     "DeepFilterNetStreamingConfig",
+    "DialogueSidon",
+    "DialogueSidonConfig",
+    "DialogueSidonResult",
     "MossFormer2SE",
     "MossFormer2SEConfig",
     "MossFormer2SEModel",

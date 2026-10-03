@@ -10,12 +10,13 @@ from io import BytesIO
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import torch
 from datasets import Audio, load_dataset
 from huggingface_hub import snapshot_download
 from safetensors.torch import safe_open
 from scipy.signal import fftconvolve, resample_poly
+
+from mlx_audio.audio_io import read, write
 
 REPO_ROOT = Path("/mnt/d/Projects/Mega-ASR")
 FIXTURE_DIR = REPO_ROOT / "fixtures_out"
@@ -68,7 +69,7 @@ def peak_normalize(audio: np.ndarray, peak: float = 0.8) -> np.ndarray:
 
 
 def save_wav(path: Path, audio: np.ndarray) -> None:
-    sf.write(str(path), peak_normalize(audio), TARGET_SR, subtype="PCM_16")
+    write(path, peak_normalize(audio), TARGET_SR)
 
 
 def router_features(router: AudioQualityRouter, audio_path: Path) -> dict:
@@ -93,9 +94,9 @@ def select_clean_clip(router: AudioQualityRouter) -> tuple[Path, dict]:
     for idx, sample in enumerate(ds):
         audio_info = sample["audio"]
         if audio_info.get("bytes") is not None:
-            audio, sr = sf.read(BytesIO(audio_info["bytes"]), dtype="float32")
+            audio, sr = read(BytesIO(audio_info["bytes"]), dtype="float32")
         else:
-            audio, sr = sf.read(audio_info["path"], dtype="float32")
+            audio, sr = read(audio_info["path"], dtype="float32")
         audio = to_mono_16k(audio, int(sr))
         duration = len(audio) / TARGET_SR
         if duration <= 0.5 or duration > MAX_SECONDS:
@@ -165,7 +166,7 @@ def distort(audio: np.ndarray, drive: float) -> np.ndarray:
 def make_degraded_clip(
     router: AudioQualityRouter, clean_path: Path
 ) -> tuple[Path, dict]:
-    clean_audio, sr = sf.read(str(clean_path), dtype="float32")
+    clean_audio, sr = read(clean_path, dtype="float32")
     clean_audio = to_mono_16k(clean_audio, sr)
     degraded_path = FIXTURE_DIR / "degraded.wav"
     configs = [

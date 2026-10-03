@@ -13,6 +13,9 @@ Usage:
     # Convert standard Chatterbox (without S3Tokenizer) to fp16
     python scripts/convert.py
 
+    # Convert Chatterbox Multilingual v3
+    python scripts/convert.py --variant v3
+
     # Convert Chatterbox Turbo
     python scripts/convert.py --turbo
 
@@ -43,27 +46,84 @@ Requirements (for conversion only):
     pip install torch safetensors huggingface_hub onnx s3tokenizer
 
 After conversion, the model only needs:
-    pip install mlx mlx-lm
+    pip install mlx
 """
 
 import argparse
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict
 
 import numpy as np
 
-from mlx_audio.tts.models.chatterbox import tokenizer
+
+@dataclass(frozen=True)
+class ChatterboxVariant:
+    t3_filename: str
+    tokenizer_filename: str
+    multilingual: bool
+    text_preprocessing: str
 
 
-def download_chatterbox_weights(repo_id: str, cache_dir: Path) -> Path:
+CHATTERBOX_VARIANTS = {
+    "english": ChatterboxVariant(
+        t3_filename="t3_cfg.safetensors",
+        tokenizer_filename="tokenizer.json",
+        multilingual=False,
+        text_preprocessing="legacy",
+    ),
+    "v2": ChatterboxVariant(
+        t3_filename="t3_mtl23ls_v2.safetensors",
+        tokenizer_filename="grapheme_mtl_merged_expanded_v1.json",
+        multilingual=True,
+        text_preprocessing="legacy",
+    ),
+    "v3": ChatterboxVariant(
+        t3_filename="t3_mtl23ls_v3.safetensors",
+        tokenizer_filename="grapheme_mtl_merged_expanded_v1.json",
+        multilingual=True,
+        text_preprocessing="NFKD,fullcase",
+    ),
+}
+
+VARIANT_ALIASES = {
+    "original": "english",
+    "multilingual": "v2",
+}
+
+
+def resolve_variant(variant: str) -> tuple[str, ChatterboxVariant]:
+    """Resolve a user-facing Chatterbox variant to exact source artifacts."""
+    variant = VARIANT_ALIASES.get(variant.lower(), variant.lower())
+    if variant not in CHATTERBOX_VARIANTS:
+        expected = ", ".join(CHATTERBOX_VARIANTS)
+        raise ValueError(
+            f"Unknown Chatterbox variant '{variant}'. Expected: {expected}"
+        )
+    return variant, CHATTERBOX_VARIANTS[variant]
+
+
+def download_chatterbox_weights(
+    repo_id: str,
+    cache_dir: Path,
+    variant: ChatterboxVariant,
+) -> Path:
     """Download Chatterbox weights from Hugging Face."""
     from huggingface_hub import snapshot_download
 
     print("Downloading Chatterbox weights from Hugging Face...")
+    allow_patterns = [
+        "ve.safetensors",
+        variant.t3_filename,
+        "s3gen.safetensors",
+        variant.tokenizer_filename,
+    ]
+    if variant.multilingual:
+        allow_patterns.append("Cangjie5_TC.json")
     ckpt_dir = Path(
         snapshot_download(
             repo_id=repo_id,
-            allow_patterns=["*.safetensors", "*.json", "*.yaml"],
+            allow_patterns=allow_patterns,
             cache_dir=cache_dir,
         )
     )
@@ -87,7 +147,6 @@ def download_s3tokenizer_onnx(cache_dir: Path) -> Path:
 
 def load_pytorch_safetensors(path: Path) -> Dict[str, np.ndarray]:
     """Load PyTorch safetensors and convert to numpy."""
-    import torch
     from safetensors.torch import load_file
 
     state_dict = load_file(path)
@@ -166,10 +225,17 @@ def numpy_to_mlx(weights: Dict[str, np.ndarray]) -> Dict:
 
 
 def mlx_to_numpy(weights: Dict) -> Dict[str, np.ndarray]:
-    """Convert MLX arrays back to numpy for saving."""
+    """Convert MLX arrays back to contiguous numpy arrays for saving.
+
+    MLX preserves strides when exporting a transposed array to numpy.  The
+    safetensors numpy writer does not preserve those strides, so serializing a
+    non-contiguous convolution kernel stores its backing order under the
+    transposed shape and silently scrambles the kernel.  Materialize the
+    logical layout before handing arrays to safetensors.
+    """
     import numpy as np
 
-    return {k: np.array(v) for k, v in weights.items()}
+    return {k: np.ascontiguousarray(np.array(v)) for k, v in weights.items()}
 
 
 def save_mlx_safetensors(weights: Dict[str, np.ndarray], path: Path):
@@ -183,9 +249,9 @@ def save_mlx_safetensors(weights: Dict[str, np.ndarray], path: Path):
             # Keep original dtype but ensure it's a supported type
             if v.dtype == np.float64:
                 v = v.astype(np.float32)
-            clean_weights[k] = v
+            clean_weights[k] = np.ascontiguousarray(v)
         else:
-            clean_weights[k] = np.array(v)
+            clean_weights[k] = np.ascontiguousarray(np.array(v))
 
     save_file(clean_weights, path)
     print(f"Saved: {path} ({len(clean_weights)} tensors)")
@@ -236,22 +302,62 @@ def quantize_t3_backbone(model, bits: int = 4, group_size: int = 64):
     return quantized_count[0]
 
 
-def generate_readme(path: Path, upload_repo: str):
+def generate_readme(path: Path, upload_repo: str, variant_name: str):
     """Generate README.md model card for Chatterbox on Hugging Face."""
     from mlx_audio.version import __version__
 
+    variant = CHATTERBOX_VARIANTS[variant_name]
+    language_metadata = ""
+    language_example = ""
+    display_name = "Chatterbox"
+    example_text = "Hello, this is Chatterbox on MLX!"
+    cli_language = ""
+    if variant.multilingual:
+        display_name = f"Chatterbox Multilingual {variant_name.upper()}"
+        example_text = "Bonjour, voici Chatterbox sur MLX !"
+        cli_language = " --lang_code fr"
+        language_metadata = """language:
+  - ar
+  - da
+  - de
+  - el
+  - en
+  - es
+  - fi
+  - fr
+  - he
+  - hi
+  - it
+  - ja
+  - ko
+  - ms
+  - nl
+  - no
+  - pl
+  - pt
+  - ru
+  - sv
+  - sw
+  - tr
+  - zh
+"""
+        language_example = '\n    lang_code="fr",'
+
     card_text = f"""---
 library_name: mlx-audio
+license: mit
 base_model:
 - ResembleAI/chatterbox
+{language_metadata}pipeline_tag: text-to-speech
 tags:
 - mlx
-pipeline_tag: text-to-speech
+- text-to-speech
+- voice-cloning
 ---
 
 # {upload_repo}
 
-This model was converted to MLX format from [ResembleAI/chatterbox](https://huggingface.co/ResembleAI/chatterbox) using [mlx-audio](https://github.com/Blaizzy/mlx-audio) version **{__version__}**.
+This is {display_name}, converted to MLX format from [ResembleAI/chatterbox](https://huggingface.co/ResembleAI/chatterbox) using [mlx-audio](https://github.com/Blaizzy/mlx-audio) version **{__version__}**.
 
 **Note:** This model requires the S3Tokenizer weights from [mlx-community/S3TokenizerV2](https://huggingface.co/mlx-community/S3TokenizerV2), which will be downloaded automatically.
 
@@ -264,7 +370,7 @@ pip install -U mlx-audio
 ### Command line
 
 ```bash
-mlx_audio.tts.generate --model {upload_repo} --text "Hello, this is Chatterbox on MLX!" --ref_audio reference.wav
+mlx_audio.tts.generate --model {upload_repo} --text "{example_text}" --ref_audio reference.wav{cli_language}
 ```
 
 ### Python
@@ -273,9 +379,9 @@ mlx_audio.tts.generate --model {upload_repo} --text "Hello, this is Chatterbox o
 from mlx_audio.tts.generate import generate_audio
 
 generate_audio(
-    text="Hello, this is Chatterbox on MLX!",
+    text="{example_text}",
     model="{upload_repo}",
-    ref_audio="reference.wav",
+    ref_audio="reference.wav",{language_example}
     file_prefix="output",
 )
 ```
@@ -400,6 +506,7 @@ def convert_s3_tokenizer(
 def convert_all(
     repo_id: str,
     output_dir: Path,
+    variant: str = "english",
     cache_dir: Path = None,
     upload_repo: str = None,
     quantize: bool = False,
@@ -418,7 +525,9 @@ def convert_all(
     between conversion and runtime loading.
 
     Args:
+        repo_id: Hugging Face repository containing the source checkpoints
         output_dir: Directory to save converted weights
+        variant: Chatterbox checkpoint variant: english, v2, or v3
         cache_dir: Directory to cache downloaded weights
         upload_repo: Optional Hugging Face repo to upload to (e.g., "mlx-community/Chatterbox-TTS-fp16")
         quantize: Whether to apply selective quantization to T3 backbone
@@ -435,10 +544,11 @@ def convert_all(
     if cache_dir is None:
         cache_dir = Path.home() / ".cache" / "chatterbox-convert"
 
+    variant_name, variant_config = resolve_variant(variant)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Download Chatterbox weights
-    ckpt_dir = download_chatterbox_weights(repo_id, cache_dir)
+    ckpt_dir = download_chatterbox_weights(repo_id, cache_dir, variant_config)
 
     # Import model components for their sanitize methods
     from mlx_audio.tts.models.chatterbox.s3gen import S3Token2Wav
@@ -462,15 +572,20 @@ def convert_all(
 
     # Convert T3
     print("\nConverting T3...")
-    # Find T3 weight file (file starting with t3 and ending with .safetensors)
-    t3_files = list(ckpt_dir.glob("t3*.safetensors"))
-    if not t3_files:
-        raise FileNotFoundError("No T3 safetensors file found in checkpoint directory")
-    t3_file = t3_files[0]
+    t3_file = ckpt_dir / variant_config.t3_filename
+    if not t3_file.exists():
+        raise FileNotFoundError(f"T3 checkpoint not found: {t3_file}")
     print(f"  Using T3 weights from: {t3_file}")
     t3_weights = load_pytorch_safetensors(t3_file)
     t3_weights_mx = numpy_to_mlx(t3_weights)
-    t3 = T3()
+    from mlx_audio.tts.models.chatterbox.config import T3Config
+
+    t3_config = (
+        T3Config.multilingual()
+        if variant_config.multilingual
+        else T3Config.english_only()
+    )
+    t3 = T3(t3_config)
     t3_weights_mx = t3.sanitize(t3_weights_mx)
     t3_weights = mlx_to_numpy(t3_weights_mx)
     # Add with prefix
@@ -511,7 +626,7 @@ def convert_all(
         # Create fresh model instances for quantization
         # (NOT using Model.load_weights which downloads S3Tokenizer)
         ve_model = VoiceEncoder()
-        t3_model = T3()
+        t3_model = T3(t3_config)
         s3gen_model = S3Token2Wav()
 
         all_weights_mx = numpy_to_mlx(all_weights)
@@ -567,22 +682,27 @@ def convert_all(
 
     # Copy tokenizer.json
     print("\nCopying tokenizer.json...")
-    # Find tokenizer file that starts with 'tokenizer' and ends with '.json'
-    tokenizer_path = None
-    for file in ckpt_dir.iterdir():
-        if file.name.startswith("tokenizer") and file.name.endswith(".json"):
-            tokenizer_path = file
-            break
-    if tokenizer_path is None:
-        raise FileNotFoundError("No tokenizer JSON file found in checkpoint directory.")
+    tokenizer_path = ckpt_dir / variant_config.tokenizer_filename
+    if not tokenizer_path.exists():
+        raise FileNotFoundError(f"Tokenizer not found: {tokenizer_path}")
+    shutil.copy(tokenizer_path, output_dir / "tokenizer.json")
 
-    shutil.copy(tokenizer_path, output_dir / tokenizer_path.name)
+    if variant_config.multilingual:
+        cangjie_path = ckpt_dir / "Cangjie5_TC.json"
+        if not cangjie_path.exists():
+            raise FileNotFoundError(f"Cangjie mapping not found: {cangjie_path}")
+        shutil.copy(cangjie_path, output_dir / cangjie_path.name)
 
     # Create config.json
     print("\nCreating config.json...")
     config = {
         "model_type": "chatterbox",
         "version": "1.0",
+        "t3_model": variant_name,
+        "multilingual": variant_config.multilingual,
+        "vocab_size": t3_config.text_tokens_dict_size,
+        "text_preprocessing": variant_config.text_preprocessing,
+        "t3_config": asdict(t3_config),
     }
     if quantize:
         config["quantization"] = {
@@ -596,7 +716,7 @@ def convert_all(
     # Generate README if upload_repo is specified
     if upload_repo:
         print("\nGenerating README.md...")
-        generate_readme(output_dir, upload_repo)
+        generate_readme(output_dir, upload_repo, variant_name)
 
     print(
         f"\n{'🔢' if quantize else '✅'} Conversion complete! Output directory: {output_dir}"
@@ -618,6 +738,7 @@ def convert_all(
 def convert_from_source(
     repo_id: str = "ResembleAI/chatterbox",
     output_dir: Path = None,
+    variant: str = "english",
     quantize: bool = False,
     q_bits: int = 4,
     q_group_size: int = 64,
@@ -631,17 +752,20 @@ def convert_from_source(
     a Chatterbox model, or can be called directly.
 
     Args:
-        model_id: Hugging Face model ID (default: ResembleAI/chatterbox)
+        repo_id: Hugging Face model ID (default: ResembleAI/chatterbox)
         output_dir: Output directory for MLX weights
+        variant: Chatterbox checkpoint variant: english, v2, or v3
         quantize: Whether to quantize weights
         q_bits: Quantization bits (default: 4)
         q_group_size: Quantization group size (default: 64)
         upload_repo: Hugging Face repo to upload to
         dry_run: Generate files but skip upload
     """
+    variant_name, _ = resolve_variant(variant)
     if output_dir is None:
         suffix = f"{q_bits}bit" if quantize else "fp16"
-        output_dir = Path(f"./{repo_id.split('/')[-1]}-{suffix}")
+        variant_suffix = "" if variant_name == "english" else f"-{variant_name}"
+        output_dir = Path(f"./{repo_id.split('/')[-1]}{variant_suffix}-{suffix}")
 
     output_dir = Path(output_dir)
 
@@ -649,6 +773,7 @@ def convert_from_source(
     convert_all(
         repo_id=repo_id,
         output_dir=output_dir,
+        variant=variant_name,
         cache_dir=None,  # Use default cache
         upload_repo=upload_repo if not dry_run else None,
         quantize=quantize,
@@ -667,6 +792,14 @@ def main():
         type=str,
         default="ResembleAI/chatterbox",
         help="Hugging Face repo ID (default: ResembleAI/chatterbox)",
+    )
+    parser.add_argument(
+        "--variant",
+        "--t3-model",
+        dest="variant",
+        default="english",
+        choices=sorted(CHATTERBOX_VARIANTS),
+        help="Checkpoint variant to convert: english, v2, or v3 (default: english)",
     )
     parser.add_argument(
         "--output-dir",
@@ -727,15 +860,18 @@ def main():
             dry_run=not should_upload,
         )
     else:
+        variant_name, _ = resolve_variant(args.variant)
         precision_suffix = f"{args.q_bits}bit" if args.quantize else "fp16"
+        variant_suffix = "" if variant_name == "english" else f"-{variant_name}"
         output_dir = args.output_dir or Path(
-            f"./{args.repo_id.split('/')[-1]}-{precision_suffix}"
+            f"./{args.repo_id.split('/')[-1]}{variant_suffix}-{precision_suffix}"
         )
         upload_repo = args.upload_repo or f"mlx-community/{output_dir.name}"
 
         convert_all(
             repo_id=args.repo_id,
             output_dir=output_dir,
+            variant=variant_name,
             cache_dir=args.cache_dir,
             upload_repo=upload_repo,
             quantize=args.quantize,

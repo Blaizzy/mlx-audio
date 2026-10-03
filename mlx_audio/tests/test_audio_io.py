@@ -2,6 +2,7 @@
 
 import io
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -66,7 +67,7 @@ class TestAudioIOFormats:
     def test_read_wav_target_sample_rate_and_channels(
         self, sample_audio_stereo, tmp_path
     ):
-        """Test decoder-side resampling and mono conversion."""
+        """Test target-rate loading and decoder-side mono conversion."""
         data, samplerate = sample_audio_stereo
         output_file = tmp_path / "test_resampled_mono.wav"
         target_samplerate = samplerate // 2
@@ -83,6 +84,50 @@ class TestAudioIOFormats:
         assert read_data.dtype == np.float32
         assert read_data.ndim == 1
         assert abs(read_data.shape[0] - target_samplerate) <= 1
+
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    def test_miniaudio_downsampling_rejects_alias(self, tmp_path, use_buffer):
+        """Miniaudio inputs use the high-quality FIR when downsampling."""
+        source_rate = 44100
+        target_rate = 16000
+        t = np.arange(2 * source_rate) / source_rate
+        tone = (0.5 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)
+
+        if use_buffer:
+            audio_input = io.BytesIO()
+            write(audio_input, tone, source_rate, format="wav")
+        else:
+            audio_input = tmp_path / "out_of_band.wav"
+            write(audio_input, tone, source_rate, format="wav")
+
+        loaded, loaded_rate = read(
+            audio_input,
+            dtype="float32",
+            sample_rate=target_rate,
+            nchannels=1,
+        )
+        loaded = loaded[len(loaded) // 4 : -len(loaded) // 4]
+        rms = float(np.sqrt(np.mean(loaded.astype(np.float64) ** 2)))
+
+        assert loaded_rate == target_rate
+        assert rms < 0.001
+
+    def test_stt_load_audio_rejects_alias(self, tmp_path):
+        """Protect the public STT loader path reported in issue #870."""
+        from mlx_audio.stt.utils import load_audio
+
+        source_rate = 44100
+        target_rate = 16000
+        t = np.arange(2 * source_rate) / source_rate
+        tone = (0.5 * np.sin(2 * np.pi * 12000.0 * t)).astype(np.float32)
+        audio_path = tmp_path / "stt_out_of_band.wav"
+        write(audio_path, tone, source_rate, format="wav")
+
+        loaded = np.asarray(load_audio(str(audio_path), sr=target_rate))
+        loaded = loaded[len(loaded) // 4 : -len(loaded) // 4]
+        rms = float(np.sqrt(np.mean(loaded.astype(np.float64) ** 2)))
+
+        assert rms < 0.001
 
     @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
     def test_write_read_mp3(self, sample_audio_mono, tmp_path):
@@ -285,7 +330,7 @@ class TestAudioIOEdgeCases:
         """Test that values outside [-1, 1] are clipped."""
         samplerate = 16000
         # Create data with values outside [-1, 1]
-        data = np.array([1.5, -1.5, 0.5, -0.5], dtype=np.float32)
+        data = np.tile([1.5, -1.5, 0.5, -0.5], 1024).astype(np.float32)
 
         output_file = tmp_path / "test_clipped.ogg"
         write(output_file, data, samplerate, format="ogg")
@@ -315,3 +360,55 @@ class TestAudioIOEdgeCases:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestAudioIOCAF:
+    """Test reading Core Audio Format, the macOS native recording container."""
+
+    @pytest.fixture
+    def caf_file(self, tmp_path):
+        """Encode one second of 440 Hz mono audio into a CAF container."""
+        samplerate = 16000
+        t = np.linspace(0, 1.0, samplerate, endpoint=False)
+        pcm = (np.sin(2 * np.pi * 440 * t) * 0.5 * 32767).astype(np.int16)
+        path = tmp_path / "recording.caf"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "s16le",
+                "-ar",
+                str(samplerate),
+                "-ac",
+                "1",
+                "-i",
+                "pipe:0",
+                "-c:a",
+                "pcm_s16le",
+                str(path),
+            ],
+            input=pcm.tobytes(),
+            capture_output=True,
+            check=True,
+        )
+        return path, samplerate
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_read_caf_path(self, caf_file):
+        path, samplerate = caf_file
+
+        data, read_samplerate = read(path)
+
+        assert read_samplerate == samplerate
+        assert data.shape[0] > 0
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_read_caf_bytesio(self, caf_file):
+        """Uploads arrive as bytes, so the caff magic alone must route to ffmpeg."""
+        path, samplerate = caf_file
+
+        data, read_samplerate = read(io.BytesIO(path.read_bytes()))
+
+        assert read_samplerate == samplerate
+        assert data.shape[0] > 0

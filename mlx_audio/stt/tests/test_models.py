@@ -435,9 +435,8 @@ class TestCohereQuantizedModel(unittest.TestCase):
         return _cohere_small_config_dict()
 
     def _build_quantized_checkpoint(self, bits: int) -> Path:
-        from mlx_lm.utils import save_model
-
         from mlx_audio.convert import convert
+        from mlx_audio.lm.convert import save_model
         from mlx_audio.stt.models.cohere_asr.cohere_asr import Model, STTOutput
 
         self.STTOutput = STTOutput
@@ -1803,7 +1802,7 @@ class TestQwen3ASRModel(unittest.TestCase):
         self.assertEqual(output.shape, (1, 5, self.text_config.hidden_size))
 
     def test_text_model_cached_chunks_match_full_causal_pass(self):
-        from mlx_lm.models.cache import KVCache
+        from mlx_audio.lm.models.cache import KVCache
 
         model = self.TextModel(self.text_config)
         input_ids = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)

@@ -198,7 +198,7 @@ class AudioEncoder(nn.Module):
         Yields:
             mx.array: [chunk_size, dim] encoded chunk
         """
-        from mlx_lm.models.cache import RotatingKVCache
+        from mlx_audio.lm.models.cache import RotatingKVCache
 
         seq_len = conv_out.shape[0]
         sw = self.config.sliding_window

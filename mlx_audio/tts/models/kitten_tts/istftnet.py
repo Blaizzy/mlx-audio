@@ -3,8 +3,8 @@ from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
-import numpy as np
 
+from mlx_audio.dsp import hanning
 from mlx_audio.utils import istft, stft
 
 from ..base import check_array_shape
@@ -471,7 +471,17 @@ class MLXSTFT:
         self.hop_length = hop_length
         self.win_length = win_length
 
-        self.window = window
+        # torch reference uses hann_window(win_length, periodic=True) for BOTH
+        # analysis and synthesis. Materialize it once: the string path in
+        # dsp.stft resolves "hann" to a SYMMETRIC window, while dsp.istft
+        # builds a periodic one — the mismatch breaks exact COLA inversion
+        # (~3% ripple) and skews the harmonic-source STFT features.
+        if isinstance(window, str):
+            if window.lower() not in ("hann", "hanning"):
+                raise ValueError(f"Unsupported window: {window}")
+            self.window = hanning(win_length, periodic=True)
+        else:
+            self.window = window
 
     def transform(self, input_data):
         # Ensure 2D
@@ -572,7 +582,8 @@ class SineGen:
         # because 2 * np.pi * n doesn't affect phase
         rad_values = (f0_values / self.sampling_rate) % 1
         # initial phase noise (no noise for fundamental component)
-        rand_ini = mx.random.normal((f0_values.shape[0], f0_values.shape[2]))
+        # torch reference uses rand() — UNIFORM [0,1) phase offsets, not normal
+        rand_ini = mx.random.uniform(shape=(f0_values.shape[0], f0_values.shape[2]))
         rand_ini[:, 0] = 0
         rad_values[:, 0, :] = rad_values[:, 0, :] + rand_ini
         # instantanouse phase sine[t] = sin(2*pi \sum_i=1 ^{t} rad)
@@ -876,8 +887,10 @@ class AdainResBlk1d(nn.Module):
         if upsample == "none":
             self.pool = nn.Identity()
         else:
+            # Unpadded on purpose: _residual slices the (2T+1)-long output to
+            # emulate torch ConvTranspose1d(padding=1, output_padding=1).
             self.pool = ConvWeighted(
-                1, dim_in, kernel_size=3, stride=2, padding=1, groups=dim_in
+                1, dim_in, kernel_size=3, stride=2, padding=0, groups=dim_in
             )
 
     def _build_weights(self, dim_in, dim_out, style_dim):
@@ -905,11 +918,13 @@ class AdainResBlk1d(nn.Module):
         x = self.norm1(x, s)
         x = self.actv(x)
 
-        # Manually implement grouped ConvTranspose1d since MLX doesn't support groups
+        # torch ConvTranspose1d(k=3, stride=2, padding=1, output_padding=1)
+        # maps T -> 2T by trimming one sample from the LEFT of the unpadded
+        # (2T+1) transpose-conv output. Right-zero-padding a padding=1 output
+        # keeps the alignment but replaces the computed tail sample with 0.
         x = x.swapaxes(2, 1)
-        x = self.pool(x, mx.conv_transpose1d) if self.upsample_type != "none" else x
-        # Match ConvTranspose output_padding=1 by padding the right side.
-        x = mx.pad(x, ((0, 0), (0, 1), (0, 0))) if self.upsample_type != "none" else x
+        if self.upsample_type != "none":
+            x = self.pool(x, mx.conv_transpose1d)[:, 1:, :]
         x = x.swapaxes(2, 1)
 
         x = x.swapaxes(2, 1)

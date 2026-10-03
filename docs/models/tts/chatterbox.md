@@ -1,15 +1,24 @@
 # Chatterbox
 
-Chatterbox is an expressive TTS model by [ResembleAI](https://huggingface.co/ResembleAI/chatterbox) with voice cloning and fine-grained emotion control. It supports 16 languages and provides an `exaggeration` parameter to dial expressiveness up or down.
+Chatterbox is an expressive 0.5B TTS model by [ResembleAI](https://huggingface.co/ResembleAI/chatterbox) with voice cloning and fine-grained emotion control. MLX-Audio supports the English model and the 23-language multilingual v2 and v3 checkpoints. V3 improves speaker similarity, stability, and conversational speech while retaining the v2 architecture.
 
 ## Model Variants
 
-| Model | HuggingFace |
-|-------|-------------|
-| `mlx-community/chatterbox-fp16` | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/chatterbox-fp16) |
+| Model | Variant | HuggingFace |
+|-------|---------|-------------|
+| `mlx-community/chatterbox-multilingual-v3` | Multilingual v3 | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/chatterbox-multilingual-v3) |
+| `mlx-community/chatterbox-fp16` | Multilingual v2 | [:octicons-link-external-16: Model Card](https://huggingface.co/mlx-community/chatterbox-fp16) |
 
 !!! note
     Chatterbox requires the S3Tokenizer weights from [mlx-community/S3TokenizerV2](https://huggingface.co/mlx-community/S3TokenizerV2), which are downloaded automatically on first use.
+
+To convert the official multilingual v3 checkpoint locally:
+
+```bash
+python -m mlx_audio.tts.models.chatterbox.scripts.convert \
+    --variant v3 \
+    --output-dir Chatterbox-Multilingual-v3-MLX
+```
 
 ## Usage
 
@@ -21,7 +30,7 @@ Chatterbox requires a reference audio for voice cloning:
 
     ```bash
     mlx_audio.tts.generate \
-        --model mlx-community/chatterbox-fp16 \
+        --model mlx-community/chatterbox-multilingual-v3 \
         --text "Hello, this is Chatterbox on MLX!" \
         --ref_audio reference.wav
     ```
@@ -31,7 +40,7 @@ Chatterbox requires a reference audio for voice cloning:
     ```python
     from mlx_audio.tts.utils import load_model
 
-    model = load_model("mlx-community/chatterbox-fp16")
+    model = load_model("mlx-community/chatterbox-multilingual-v3")
 
     for result in model.generate(
         text="Hello, this is Chatterbox on MLX!",
@@ -47,7 +56,7 @@ Control expressiveness with the `exaggeration` parameter (0 to 1):
 ```python
 from mlx_audio.tts.utils import load_model
 
-model = load_model("mlx-community/chatterbox-fp16")
+model = load_model("mlx-community/chatterbox-multilingual-v3")
 
 # Subtle expression
 for result in model.generate(
@@ -80,10 +89,11 @@ for result in model.generate(
 
 ## Supported Languages
 
-English, Spanish, French, German, Italian, Portuguese, Polish, Turkish, Russian, Dutch, Czech, Arabic, Chinese, Japanese, Hungarian, Korean.
+Arabic, Danish, German, Greek, English, Spanish, Finnish, French, Hebrew, Hindi, Italian, Japanese, Korean, Malay, Dutch, Norwegian, Polish, Portuguese, Russian, Swedish, Swahili, Turkish, and Chinese.
 
 ## Links
 
 - [:octicons-mark-github-16: Source code](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/tts/models/chatterbox)
+- [:octicons-link-external-16: mlx-community/chatterbox-multilingual-v3](https://huggingface.co/mlx-community/chatterbox-multilingual-v3)
 - [:octicons-link-external-16: mlx-community/chatterbox-fp16](https://huggingface.co/mlx-community/chatterbox-fp16)
 - [:octicons-link-external-16: ResembleAI/chatterbox](https://huggingface.co/ResembleAI/chatterbox) (original model)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from mlx_lm.models.qwen3 import ModelArgs as Qwen3ModelArgs
+from mlx_audio.lm.models.qwen3 import ModelArgs as Qwen3ModelArgs
 
 
 @dataclass

@@ -1,8 +1,82 @@
 import sys  # Import sys to patch argv
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from mlx_audio.convert import configure_parser, main
+from mlx_audio.convert import (
+    Domain,
+    _discover_detection_hints,
+    configure_parser,
+    get_model_type,
+    main,
+)
+
+
+class TestModelTypeDetection(unittest.TestCase):
+    def test_higgs_v3_upstream_model_type_resolves_to_local_implementation(self):
+        with patch(
+            "mlx_audio.convert.get_model_types", return_value={"higgs_audio_v3"}
+        ):
+            hints = _discover_detection_hints(Domain.TTS.value)
+
+        self.assertIn(
+            "higgs_multimodal_qwen3",
+            hints["model_type_aliases"]["higgs_audio_v3"],
+        )
+
+        with (
+            patch(
+                "mlx_audio.convert.get_model_types",
+                return_value={"dense", "higgs_audio_v3"},
+            ),
+            patch("mlx_audio.convert.get_detection_hints", return_value=hints),
+        ):
+            model_type = get_model_type(
+                {"model_type": "higgs_multimodal_qwen3"},
+                Path("model"),
+                Domain.TTS,
+            )
+
+        self.assertEqual(model_type, "higgs_audio_v3")
+
+    def test_config_key_score_ties_use_model_type_name_as_tiebreaker(self):
+        hints = {
+            "model_type_aliases": {},
+            "config_keys": {
+                "z_model": {"shared_key"},
+                "a_model": {"shared_key"},
+            },
+            "path_patterns": {},
+        }
+
+        with (
+            patch(
+                "mlx_audio.convert.get_model_types",
+                return_value={"z_model", "a_model"},
+            ),
+            patch("mlx_audio.convert.get_detection_hints", return_value=hints),
+        ):
+            model_type = get_model_type({"shared_key": True}, Path("model"), Domain.TTS)
+
+        self.assertEqual(model_type, "a_model")
+
+    def test_fallback_model_type_is_deterministic(self):
+        hints = {
+            "model_type_aliases": {},
+            "config_keys": {},
+            "path_patterns": {},
+        }
+
+        with (
+            patch(
+                "mlx_audio.convert.get_model_types",
+                return_value={"z_model", "a_model"},
+            ),
+            patch("mlx_audio.convert.get_detection_hints", return_value=hints),
+        ):
+            model_type = get_model_type({}, Path("model"), Domain.TTS)
+
+        self.assertEqual(model_type, "a_model")
 
 
 class TestConvert(unittest.TestCase):

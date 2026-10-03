@@ -33,7 +33,7 @@ Requirements (for conversion only):
     pip install torch safetensors huggingface_hub onnx s3tokenizer
 
 After conversion, the model only needs:
-    pip install mlx mlx-lm
+    pip install mlx
 """
 
 import argparse
@@ -80,7 +80,6 @@ def download_s3tokenizer_onnx(cache_dir: Path) -> Path:
 
 def load_pytorch_safetensors(path: Path) -> Dict[str, np.ndarray]:
     """Load PyTorch safetensors and convert to numpy."""
-    import torch
     from safetensors.torch import load_file
 
     state_dict = load_file(path)
@@ -130,10 +129,17 @@ def numpy_to_mlx(weights: Dict[str, np.ndarray]) -> Dict:
 
 
 def mlx_to_numpy(weights: Dict) -> Dict[str, np.ndarray]:
-    """Convert MLX arrays back to numpy for saving."""
+    """Convert MLX arrays back to contiguous numpy arrays for saving.
+
+    MLX preserves strides when exporting a transposed array to numpy.  The
+    safetensors numpy writer does not preserve those strides, so serializing a
+    non-contiguous convolution kernel stores its backing order under the
+    transposed shape and silently scrambles the kernel.  Materialize the
+    logical layout before handing arrays to safetensors.
+    """
     import numpy as np
 
-    return {k: np.array(v) for k, v in weights.items()}
+    return {k: np.ascontiguousarray(np.array(v)) for k, v in weights.items()}
 
 
 def save_mlx_safetensors(weights: Dict[str, np.ndarray], path: Path):
@@ -147,9 +153,9 @@ def save_mlx_safetensors(weights: Dict[str, np.ndarray], path: Path):
             # Keep original dtype but ensure it's a supported type
             if v.dtype == np.float64:
                 v = v.astype(np.float32)
-            clean_weights[k] = v
+            clean_weights[k] = np.ascontiguousarray(v)
         else:
-            clean_weights[k] = np.array(v)
+            clean_weights[k] = np.ascontiguousarray(np.array(v))
 
     save_file(clean_weights, path)
     print(f"Saved: {path} ({len(clean_weights)} tensors)")

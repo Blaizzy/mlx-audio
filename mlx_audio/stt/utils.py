@@ -7,9 +7,36 @@ import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_reduce
 
-from mlx_audio.utils import base_load_model, get_model_path, load_config
+from mlx_audio.utils import (
+    base_load_model,
+    get_model_name_parts,
+    get_model_path,
+    load_config,
+)
 
 SAMPLE_RATE = 16000
+
+
+def merge_hotwords(base: Optional[str], hotwords: Optional[List[str]]) -> Optional[str]:
+    """Merge a structured vocabulary/hotword list into a model's native prompt.
+
+    ASR backends bias their transcription toward rare words (names, acronyms,
+    product terms) through a text field that differs per model — ``system_prompt``
+    for Qwen3-ASR, ``initial_prompt`` for Whisper, ``context`` for VibeVoice,
+    ``prompt`` for MOSS, etc. This helper lets each model accept a uniform
+    ``hotwords`` list and fold it into whichever field it already uses, so callers
+    (e.g. the mlx-vlm server) can pass one structured list regardless of backend.
+
+    Returns ``base`` unchanged when ``hotwords`` is empty/None (silent no-op), the
+    joined terms when ``base`` is empty, or ``base`` followed by the terms.
+    """
+    if not hotwords:
+        return base
+    terms = [str(t).strip() for t in hotwords if t is not None and str(t).strip()]
+    if not terms:
+        return base
+    joined = ", ".join(terms)
+    return f"{base}\n{joined}" if base else joined
 
 
 @contextlib.contextmanager
@@ -53,6 +80,8 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 
 MODEL_REMAPPING = {
+    "parakeet": "parakeet",
+    "parakeet_tdt": "parakeet",
     "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
@@ -62,12 +91,14 @@ MODEL_REMAPPING = {
     "voxtral_realtime": "voxtral_realtime",
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
+    "phonon": "phonon",
     "moss_transcribe_diarize": "moss_transcribe_diarize",
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
     "moonshine": "moonshine",
     "mms": "mms",
     "granite_speech": "granite_speech",
+    "granite_speech5_ctc": "granite_speech5_ctc",
     "granite_speech_nar": "granite_speech_nar",
     "qwen2_audio": "qwen2_audio",
     "mega_asr": "mega_asr",
@@ -127,6 +158,41 @@ def load_model(
     Returns:
         nn.Module: The loaded and initialized model.
     """
+    source = model_path
+    if isinstance(model_path, str):
+        kwargs.setdefault("model_name_parts", get_model_name_parts(model_path))
+        model_path = get_model_path(
+            model_path,
+            revision=kwargs.get("revision"),
+            force_download=kwargs.get("force_download", False),
+            allow_patterns=kwargs.get("allow_patterns"),
+        )
+
+    config = load_config(model_path)
+    # Resolve the HF alias here so the shared loader recognizes Parakeet even
+    # when a local checkpoint directory has an unrelated model family name.
+    if (kwargs.get("model_type") or config.get("model_type")) == "parakeet_tdt":
+        kwargs["model_type"] = "parakeet"
+
+    from mlx_audio.stt.models.phonon.transport import (
+        is_phonon_model,
+        prepare_model_path,
+    )
+
+    if is_phonon_model(Path(model_path), config):
+        remote_source = (
+            source
+            if isinstance(source, str) and not Path(source).expanduser().exists()
+            else None
+        )
+        model_path = prepare_model_path(
+            Path(model_path),
+            source=remote_source,
+            revision=kwargs.get("revision"),
+            force_download=kwargs.get("force_download", False),
+        )
+        kwargs["model_type"] = "phonon"
+
     return base_load_model(
         model_path=model_path,
         category="stt",
