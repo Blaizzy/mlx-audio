@@ -38,6 +38,7 @@ from mlx_audio.dsp import (
     mel_filters,
     stft,
 )
+from mlx_audio.registry import model_type_from_config
 
 T = TypeVar("T")
 
@@ -366,7 +367,7 @@ def base_load_model(
 
     # Determine model_type from config or model_name
     if model_type is None:
-        model_type = config.get("model_type", None)
+        model_type = model_type_from_config(config)
     if model_type is None:
         model_type = config.get("architecture", None)
     if model_type is None:
@@ -851,7 +852,7 @@ def load_model(model_name: str):
         load_error = exc
 
     # Try to determine model type from config first, then from name
-    model_type = config.get("model_type", None)
+    model_type = model_type_from_config(config)
     if model_type is None:
         model_type = config.get("architecture", None)
     if model_type is None:

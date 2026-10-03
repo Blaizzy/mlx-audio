@@ -2,6 +2,7 @@
 
 import io
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -329,7 +330,7 @@ class TestAudioIOEdgeCases:
         """Test that values outside [-1, 1] are clipped."""
         samplerate = 16000
         # Create data with values outside [-1, 1]
-        data = np.array([1.5, -1.5, 0.5, -0.5], dtype=np.float32)
+        data = np.tile([1.5, -1.5, 0.5, -0.5], 1024).astype(np.float32)
 
         output_file = tmp_path / "test_clipped.ogg"
         write(output_file, data, samplerate, format="ogg")
@@ -359,3 +360,55 @@ class TestAudioIOEdgeCases:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestAudioIOCAF:
+    """Test reading Core Audio Format, the macOS native recording container."""
+
+    @pytest.fixture
+    def caf_file(self, tmp_path):
+        """Encode one second of 440 Hz mono audio into a CAF container."""
+        samplerate = 16000
+        t = np.linspace(0, 1.0, samplerate, endpoint=False)
+        pcm = (np.sin(2 * np.pi * 440 * t) * 0.5 * 32767).astype(np.int16)
+        path = tmp_path / "recording.caf"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "s16le",
+                "-ar",
+                str(samplerate),
+                "-ac",
+                "1",
+                "-i",
+                "pipe:0",
+                "-c:a",
+                "pcm_s16le",
+                str(path),
+            ],
+            input=pcm.tobytes(),
+            capture_output=True,
+            check=True,
+        )
+        return path, samplerate
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_read_caf_path(self, caf_file):
+        path, samplerate = caf_file
+
+        data, read_samplerate = read(path)
+
+        assert read_samplerate == samplerate
+        assert data.shape[0] > 0
+
+    @pytest.mark.skipif(not FFMPEG_AVAILABLE, reason="ffmpeg not installed")
+    def test_read_caf_bytesio(self, caf_file):
+        """Uploads arrive as bytes, so the caff magic alone must route to ffmpeg."""
+        path, samplerate = caf_file
+
+        data, read_samplerate = read(io.BytesIO(path.read_bytes()))
+
+        assert read_samplerate == samplerate
+        assert data.shape[0] > 0

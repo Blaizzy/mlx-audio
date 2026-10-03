@@ -51,7 +51,7 @@ print(segments)  # [[270, 3790], [4460, 6900], ...]
 
 ## Requirements
 
-The FSMN-VAD frontend uses `mlx_audio.dsp.compute_fbank_kaldi`, `mlx_audio.audio_io.read`, and `mlx_audio.utils.resample_audio`, so no extra torch/torchaudio/soundfile dependencies are required.
+The FSMN-VAD frontend uses `mlx_audio.dsp.compute_fbank_kaldi`, `mlx_audio.audio_io.read`, and `mlx_audio.utils.resample_audio`, so no extra audio-processing dependencies are required.
 
 ## Architecture
 

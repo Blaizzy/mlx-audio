@@ -127,6 +127,10 @@ class DecodingOptions:
     beam_size: Optional[int] = None  # number of beams in beam search, if t == 0
     patience: Optional[float] = None  # patience in beam search (arxiv:2204.05424)
 
+    # penalize logits of tokens already present in the generated sequence, to
+    # discourage degenerate repetition on temperature-ladder escalation
+    repetition_penalty: Optional[float] = None
+
     # "alpha" in Google NMT, or None for length norm, when ranking generations
     # to select which to return among the beams or best-of-N samples
     length_penalty: Optional[float] = None
@@ -369,6 +373,22 @@ class SuppressTokens(LogitFilter):
         return logits + self.mask
 
 
+class RepetitionPenalty(LogitFilter):
+    def __init__(self, penalty: float):
+        self.penalty = penalty
+
+    def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
+        n_vocab = logits.shape[-1]
+        seen = np.zeros((tokens.shape[0], n_vocab), dtype=bool)
+        for i, seq in enumerate(tokens.tolist()):
+            for token in seq:
+                if token < n_vocab:
+                    seen[i, token] = True
+        seen = mx.array(seen)
+        penalized = mx.where(logits > 0, logits / self.penalty, logits * self.penalty)
+        return mx.where(seen, penalized, logits)
+
+
 class ApplyTimestampRules(LogitFilter):
     def __init__(
         self,
@@ -492,6 +512,10 @@ class DecodingTask:
                     get_suppress_tokens(self.tokenizer, self.options.suppress_tokens),
                     model.dims.n_vocab,
                 )
+            )
+        if self.options.repetition_penalty is not None:
+            self.logit_filters.append(
+                RepetitionPenalty(self.options.repetition_penalty)
             )
 
         if not options.without_timestamps:

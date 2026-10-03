@@ -183,6 +183,16 @@ class ModelConfig:
     # Speech token compression ratio
     speech_tok_compress_ratio: int = 3200
 
+    # Audio preprocessing.  The original long-form checkpoint normalizes its
+    # input, while VibeVoice-ASR-Streaming is trained with normalization off.
+    normalize_audio: bool = True
+
+    # Streaming checkpoints store these in preprocessor_config.json.  Keeping
+    # them on the runtime config also supports converted repositories which
+    # choose to fold the processor metadata into config.json.
+    chunk_frames: Optional[int] = None
+    lookahead_frames: Optional[int] = None
+
     @classmethod
     def from_dict(cls, config_dict: dict) -> "ModelConfig":
         """Create config from dictionary (loaded from config.json)."""
@@ -203,4 +213,13 @@ class ModelConfig:
             acoustic_vae_dim=config_dict.get("acoustic_vae_dim", 64),
             semantic_vae_dim=config_dict.get("semantic_vae_dim", 128),
             dtype=config_dict.get("dtype", "float32"),
+            sample_rate=config_dict.get(
+                "target_sample_rate", config_dict.get("sample_rate", 24000)
+            ),
+            speech_tok_compress_ratio=config_dict.get(
+                "speech_tok_compress_ratio", 3200
+            ),
+            normalize_audio=config_dict.get("normalize_audio", True),
+            chunk_frames=config_dict.get("chunk_frames"),
+            lookahead_frames=config_dict.get("lookahead_frames"),
         )

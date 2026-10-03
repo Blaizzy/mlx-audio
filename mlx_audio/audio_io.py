@@ -52,6 +52,9 @@ def _detect_format_from_bytes(data: bytes) -> str:
     elif data[:4] == b"\x1a\x45\xdf\xa3":
         # WebM/Matroska container (EBML header)
         return "webm"
+    elif data[:4] == b"caff":
+        # Core Audio Format (macOS default recording container)
+        return "caf"
     else:
         raise ValueError("Unable to detect audio format from bytes")
 
@@ -236,7 +239,7 @@ def read(
     sample_rate: Optional[int] = None,
     nchannels: Optional[int] = None,
 ) -> Tuple[np.ndarray, int]:
-    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM).
+    """Read an audio file using miniaudio (or ffmpeg for M4A/AAC/OGG/Opus/WebM/CAF).
 
     Args:
         file: Path to the audio file or a BytesIO object.
@@ -259,7 +262,7 @@ def read(
     use_ffmpeg = False
     if isinstance(file, (str, Path)):
         ext = Path(file).suffix.lstrip(".").lower()
-        if ext in ("m4a", "aac", "ogg", "opus", "webm"):
+        if ext in ("m4a", "m4b", "mp4", "aac", "ogg", "opus", "webm", "caf"):
             use_ffmpeg = True
     elif isinstance(file, io.BytesIO):
         file.seek(0)
@@ -269,6 +272,7 @@ def read(
             header[4:8] == b"ftyp"
             or header[:4] == b"OggS"
             or header[:4] == b"\x1a\x45\xdf\xa3"
+            or header[:4] == b"caff"
         ):
             use_ffmpeg = True
 

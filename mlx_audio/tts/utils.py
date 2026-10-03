@@ -17,6 +17,9 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "breeze": "breeze_tts",
+    "breeze-tts": "breeze_tts",
+    "breeze_tts": "breeze_tts",
     "qwen3_tts": "qwen3_tts",
     "outetts": "outetts",
     "spark": "spark",

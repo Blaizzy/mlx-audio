@@ -12,6 +12,7 @@ title: Parakeet
 |-------|-----------|-------------|------|
 | **Parakeet v2** | English | English-only, high accuracy | [mlx-community/parakeet-tdt-0.6b-v2](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v2) |
 | **Parakeet v3** | 25 EU languages | Multilingual European | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **Parakeet Redux** | 25 EU languages | Ternary encoder, approximately 217 MB of MLX weights | [moondream/parakeet-redux](https://huggingface.co/moondream/parakeet-redux) |
 
 ## Supported Languages (v3)
 

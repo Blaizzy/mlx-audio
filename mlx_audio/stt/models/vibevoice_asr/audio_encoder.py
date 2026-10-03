@@ -1,7 +1,6 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
-from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn

@@ -8,6 +8,12 @@ from mlx_audio.tts.models.base import BaseModelArgs
 
 @dataclass
 class IrodoriDiTConfig(BaseModelArgs):
+    # Flow parameterization: "rf_velocity" (standard RF, 40-step default) or
+    # "meanflow" (MeanFlow distillation target, 4-step default). MeanFlow
+    # checkpoints add a delta_cond_module that conditions on the sampling
+    # interval length (t - r) in addition to t itself.
+    flow_parameterization: str = "rf_velocity"
+
     # Audio latent dimensions (v2: 32-dim Semantic-DACVAE, v1: 128-dim DACVAE)
     latent_dim: int = 32
     latent_patch_size: int = 1
@@ -75,6 +81,10 @@ class IrodoriDiTConfig(BaseModelArgs):
     @property
     def use_pretrained_text_encoder(self) -> bool:
         return str(self.text_encoder_type).strip().lower() == "pretrained"
+
+    @property
+    def use_meanflow(self) -> bool:
+        return str(self.flow_parameterization).strip().lower() == "meanflow"
 
     @property
     def use_speaker_condition_resolved(self) -> bool:
