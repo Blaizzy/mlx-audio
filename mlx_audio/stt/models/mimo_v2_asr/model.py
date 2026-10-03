@@ -60,8 +60,8 @@ from .config import MiMoAudioConfig
 
 
 def _make_kv_cache(num_layers: int):
-    """Create an MLX-LM KV cache list for Qwen2-style autoregressive decoding."""
-    from mlx_lm.models.cache import KVCache
+    """Create a KV cache list for Qwen2-style autoregressive decoding."""
+    from mlx_audio.lm.models.cache import KVCache
 
     return [KVCache() for _ in range(num_layers)]
 
@@ -70,20 +70,20 @@ def _make_kv_cache(num_layers: int):
 
 
 def _get_qwen2_model_and_args():
-    """Import Qwen2Model and ModelArgs from mlx_lm."""
+    """Import the vendored Qwen2 model and arguments."""
     try:
-        from mlx_lm.models.qwen2 import Model as Qwen2Model
-        from mlx_lm.models.qwen2 import ModelArgs
+        from mlx_audio.lm.models.qwen2 import Model as Qwen2Model
+        from mlx_audio.lm.models.qwen2 import ModelArgs
 
         return Qwen2Model, ModelArgs
     except ImportError:
         raise ImportError(
-            "mlx_lm is required for Phase 3. Install with: pip install mlx-lm"
+            "The vendored mlx_audio.lm Qwen2 implementation is required for Phase 3"
         )
 
 
 def _to_qwen2_args(config: MiMoAudioConfig, **overrides) -> "ModelArgs":
-    """Convert our MiMoAudioConfig to mlx_lm's Qwen2 ModelArgs."""
+    """Convert MiMoAudioConfig to Qwen2 ModelArgs."""
     _, ModelArgs = _get_qwen2_model_and_args()
     return ModelArgs(
         model_type="qwen2",
@@ -213,7 +213,7 @@ class MiMoAudioMLX(nn.Module):
         self.config = config
         _, ModelArgs = _get_qwen2_model_and_args()
         # Import Qwen2Model (the inner class, no wrapper) for direct access to hidden states
-        from mlx_lm.models.qwen2 import Qwen2Model
+        from mlx_audio.lm.models.qwen2 import Qwen2Model
 
         # ── Qwen2 LLM backbone (36 layers, d=4096) ──
         llm_args = _to_qwen2_args(config)
