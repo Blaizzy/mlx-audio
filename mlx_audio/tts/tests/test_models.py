@@ -4352,6 +4352,76 @@ class TestFishSpeechModel(unittest.TestCase):
         self.assertEqual(tuple(codes[0].shape), (2, 1))
         self.assertEqual(tuple(codes[1].shape), (2, 1))
 
+    def _streaming_model(self, frames_per_segment):
+        from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
+
+        class FakeStreamingCodec:
+            frame_length = 4
+
+            def __init__(self):
+                self.resets = 0
+                self.decoded = []
+
+            def reset_streaming_state(self):
+                self.resets += 1
+
+            def streaming_step(self, codes):
+                self.decoded.append(codes.shape[-1])
+                return mx.ones((1, 1, codes.shape[-1] * self.frame_length))
+
+        model = Model(tiny_config())
+        model.tokenizer = FakeTokenizer()
+        model.codec = FakeStreamingCodec()
+        segments = iter(frames_per_segment)
+
+        def fake_iter_codes(**kwargs):
+            for idx in range(next(segments)):
+                yield mx.array([idx, idx], dtype=mx.int32)
+
+        model._iter_codes_for_batch = fake_iter_codes
+        model._split_generation_text = lambda text, chunk_length: text.split("|")
+        # Two frames per chunk.
+        interval = 2.5 * model.codec.frame_length / model.sample_rate
+        return model, interval
+
+    def test_generate_stream_decodes_only_new_frames(self):
+        model, interval = self._streaming_model([5])
+
+        results = list(
+            model.generate("hello", stream=True, streaming_interval=interval)
+        )
+
+        self.assertEqual([r.token_count for r in results], [2, 2, 1])
+        self.assertEqual([r.samples for r in results], [8, 8, 4])
+        self.assertEqual(model.codec.decoded, [2, 2, 1])
+        self.assertEqual(model.codec.resets, 1)
+        self.assertTrue(all(r.is_streaming_chunk for r in results))
+        self.assertEqual([r.is_final_chunk for r in results], [False, False, True])
+
+    def test_generate_stream_marks_empty_final_chunk_on_exact_multiple(self):
+        model, interval = self._streaming_model([4])
+
+        results = list(
+            model.generate("hello", stream=True, streaming_interval=interval)
+        )
+
+        self.assertEqual([r.samples for r in results], [8, 8, 0])
+        self.assertEqual([r.is_final_chunk for r in results], [False, False, True])
+
+    def test_generate_stream_resets_codec_per_segment_with_one_final(self):
+        model, interval = self._streaming_model([3, 3])
+
+        results = list(
+            model.generate("first|second", stream=True, streaming_interval=interval)
+        )
+
+        self.assertEqual([r.segment_idx for r in results], [0, 0, 1, 1])
+        self.assertEqual([r.token_count for r in results], [2, 1, 2, 1])
+        self.assertEqual(model.codec.resets, 2)
+        self.assertEqual(
+            [r.is_final_chunk for r in results], [False, False, False, True]
+        )
+
     def test_batch_generate_validates_parallel_arg_lengths(self):
         from mlx_audio.tts.models.fish_qwen3_omni.fish_speech import Model
 
