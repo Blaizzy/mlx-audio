@@ -808,6 +808,8 @@ class Model(nn.Module):
         prefill_step_size: int,
         verbose: bool,
     ) -> Generator[StreamingResult, None, None]:
+        from mlx_audio.lm.generate import StreamingDetokenizer
+
         processor = self._ensure_processor()
         processed = processor(
             text=prompt or self.config.default_prompt,
@@ -818,6 +820,7 @@ class Model(nn.Module):
             self._build_prompt_embeddings(processed)
         )
         generated = 0
+        detokenizer = StreamingDetokenizer(processor, skip_special_tokens=True)
         for token in self._generate_tokens(
             prompt_ids,
             input_embeds,
@@ -834,17 +837,19 @@ class Model(nn.Module):
             if token == self.config.eos_token_id:
                 break
             generated += 1
-            text = processor.decode([token], skip_special_tokens=True)
-            yield StreamingResult(
-                text=text,
-                is_final=False,
-                start_time=0.0,
-                end_time=0.0,
-                prompt_tokens=prompt_tokens,
-                generation_tokens=generated,
-            )
+            detokenizer.add_token(token)
+            if text := detokenizer.last_segment:
+                yield StreamingResult(
+                    text=text,
+                    is_final=False,
+                    start_time=0.0,
+                    end_time=0.0,
+                    prompt_tokens=prompt_tokens,
+                    generation_tokens=generated,
+                )
+        detokenizer.finalize()
         yield StreamingResult(
-            text="",
+            text=detokenizer.last_segment,
             is_final=True,
             start_time=0.0,
             end_time=0.0,

@@ -621,7 +621,10 @@ class Model(nn.Module):
         prefill_step_size: int,
         verbose: bool,
     ) -> Generator[StreamingResult, None, None]:
+        from mlx_audio.lm.generate import StreamingDetokenizer
+
         gen_tokens = 0
+        detokenizer = StreamingDetokenizer(self._tokenizer, skip_special_tokens=True)
         for token, _ in self.stream_generate(
             audio,
             max_tokens=max_tokens,
@@ -632,17 +635,19 @@ class Model(nn.Module):
             verbose=verbose,
         ):
             gen_tokens += 1
-            text = self._tokenizer.decode([int(token)], skip_special_tokens=True)
-            yield StreamingResult(
-                text=text,
-                is_final=False,
-                start_time=0.0,
-                end_time=0.0,
-                generation_tokens=gen_tokens,
-            )
+            detokenizer.add_token(int(token))
+            if text := detokenizer.last_segment:
+                yield StreamingResult(
+                    text=text,
+                    is_final=False,
+                    start_time=0.0,
+                    end_time=0.0,
+                    generation_tokens=gen_tokens,
+                )
 
+        detokenizer.finalize()
         yield StreamingResult(
-            text="",
+            text=detokenizer.last_segment,
             is_final=True,
             start_time=0.0,
             end_time=0.0,
