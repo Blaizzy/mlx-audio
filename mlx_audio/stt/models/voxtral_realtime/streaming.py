@@ -467,6 +467,8 @@ class VoxtralStreamingSession:
         self._sconv = StreamingConvStem(model.encoder)
         self._senc = StreamingEncoder(model.encoder)
         self._sproj = StreamingDownsampler(model.encoder)
+        self._mel_frame_group = self._raw_tok // aec.hop_length
+        self._pending_mel: Optional[mx.array] = None
 
         self._audio_q: list[np.ndarray] = []
         self._audio_lock = threading.Lock()
@@ -565,10 +567,29 @@ class VoxtralStreamingSession:
             right_pad = np.zeros(right_pad_toks * self._raw_tok, dtype=np.float32)
             self._ingest_mel(self._smel.append(right_pad))
             self._ingest_mel(self._smel.close())
+            self._flush_mel()
 
     def _ingest_mel(self, mel_chunk: Optional[mx.array]) -> None:
         if mel_chunk is None or mel_chunk.shape[1] == 0:
             return
+        if self._pending_mel is not None:
+            mel_chunk = mx.concatenate([self._pending_mel, mel_chunk], axis=1)
+
+        usable = mel_chunk.shape[1] - (mel_chunk.shape[1] % self._mel_frame_group)
+        self._pending_mel = (
+            mel_chunk[:, usable:] if usable < mel_chunk.shape[1] else None
+        )
+        for start in range(0, usable, self._mel_frame_group):
+            self._encode_mel(mel_chunk[:, start : start + self._mel_frame_group])
+
+    def _flush_mel(self) -> None:
+        if self._pending_mel is None or self._pending_mel.shape[1] == 0:
+            return
+        mel_chunk = self._pending_mel
+        self._pending_mel = None
+        self._encode_mel(mel_chunk)
+
+    def _encode_mel(self, mel_chunk: mx.array) -> None:
         conv_out = self._sconv.step(mel_chunk)
         if conv_out.shape[0] == 0:
             return

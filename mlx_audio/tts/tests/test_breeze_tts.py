@@ -267,6 +267,22 @@ def test_exact_prompt_template_for_cloning_and_direction(monkeypatch):
     assert prompts == ["[S2]reference text", "[S2]<ins_bos>warm<ins_eos>target"]
 
 
+def test_bf16_prompt_embeddings_keep_the_weight_dtype(monkeypatch):
+    # A float32 scale in the text embedding used to promote every prompt
+    # activation, and with it the backbone KV cache, to float32, which made
+    # bf16 checkpoints ~3.4x slower than necessary.
+    model = Model(tiny_config())
+    model.set_dtype(mx.bfloat16)
+    monkeypatch.setattr(
+        model, "_text_ids", lambda _text: mx.array([1, 2, 3], dtype=mx.int32)
+    )
+    embeds = model._prompt_embeddings(
+        "target", voice=None, instruct=None, ref_audio=None, ref_text=None
+    )
+    assert model.text_encoder.embed_tokens.weight.dtype == mx.bfloat16
+    assert embeds.dtype == mx.bfloat16
+
+
 def test_stream_flushes_at_exact_interval_and_resets_state(monkeypatch):
     model = Model(tiny_config())
 

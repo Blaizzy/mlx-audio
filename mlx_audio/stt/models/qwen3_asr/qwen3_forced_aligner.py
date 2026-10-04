@@ -1,6 +1,7 @@
 # Copyright 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -145,36 +146,36 @@ class ForceAlignProcessor:
         return tokens
 
     def fix_timestamp(self, data: np.ndarray) -> List[int]:
-        """Fix non-monotonic timestamps using Longest Increasing Subsequence."""
+        """Repair timestamps with a longest nondecreasing subsequence."""
         data = data.tolist()
         n = len(data)
 
         if n == 0:
             return []
 
-        # Find LIS using dynamic programming
-        dp = [1] * n
-        parent = [-1] * n
+        # Group indices by subsequence length in O(n log n) time.
+        tails = []
+        levels = [[]]
+        for i, value in enumerate(data):
+            if value != value:  # NaN has no valid predecessor.
+                levels[0].append(i)
+                continue
+            length = bisect_right(tails, value)
+            if length == len(tails):
+                tails.append(value)
+                if length == len(levels):
+                    levels.append([])
+            else:
+                tails[length] = value
+            levels[length].append(i)
 
-        for i in range(1, n):
-            for j in range(i):
-                if data[j] <= data[i] and dp[j] + 1 > dp[i]:
-                    dp[i] = dp[j] + 1
-                    parent[i] = j
-
-        max_length = max(dp)
-        max_idx = dp.index(max_length)
-
-        # Reconstruct LIS indices
-        lis_indices = []
-        idx = max_idx
-        while idx != -1:
-            lis_indices.append(idx)
-            idx = parent[idx]
-        lis_indices.reverse()
-
+        # Keep the first endpoint and first valid predecessor, as before.
+        # Each level is scanned at most once, so this step takes O(n) time.
         is_normal = [False] * n
-        for idx in lis_indices:
+        idx = levels[-1][0]
+        is_normal[idx] = True
+        for level in reversed(levels[:-1]):
+            idx = next(i for i in level if data[i] <= data[idx])
             is_normal[idx] = True
 
         result = data.copy()
