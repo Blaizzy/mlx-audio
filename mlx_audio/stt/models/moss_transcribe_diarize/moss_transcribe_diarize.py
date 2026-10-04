@@ -303,7 +303,11 @@ class Model(nn.Module):
                 and "conv" in new_key
                 and new_key.endswith(".weight")
                 and len(v.shape) == 3
+                and v.shape[1] != 3
+                and v.shape[2] == 3
             ):
+                # PyTorch stores (out, in, kernel); MLX stores (out, kernel, in).
+                # Unquantized converted checkpoints may have no scales.
                 v = v.transpose(0, 2, 1)
 
             sanitized[new_key] = v
