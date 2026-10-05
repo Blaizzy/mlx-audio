@@ -850,6 +850,58 @@ def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
     assert captured_kwargs.get("word_timestamps") is True
 
 
+def test_stt_prompt_passed_to_generate(client, mock_model_provider):
+    """prompt form field reaches generate() for prompt-driven STT models (e.g. MOSS-Music)."""
+    captured_kwargs: dict = {}
+
+    def mock_generate(path, prompt=None, **kwargs):
+        captured_kwargs["prompt"] = prompt
+        return {"text": "C major"}
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = mock_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "json",
+            "prompt": "What is the key of this music?",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured_kwargs["prompt"] == "What is the key of this music?"
+
+
+def test_stt_prompt_dropped_for_models_without_prompt(client, mock_model_provider):
+    """Models whose generate() does not declare prompt never receive it."""
+    captured_kwargs: dict = {}
+
+    def mock_generate(path, language=None, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"text": "hello"}
+
+    mock_stt_model = MagicMock()
+    mock_stt_model.generate = mock_generate
+    mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
+
+    response = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
+        data={
+            "model": "test_stt_model",
+            "response_format": "json",
+            "prompt": "ignored",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "prompt" not in captured_kwargs
+
+
 def test_stt_word_timestamps_verbose_json_words_passthrough(
     client, mock_model_provider
 ):
