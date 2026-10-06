@@ -123,12 +123,16 @@ class AudioPlayer:
         return self.drain_event.wait()
 
     def stop(self):
-        if self.playing:
-            self.wait_for_drain()
+        # wait_for_drain() force-starts the stream when buffered audio never
+        # reached min_buffer_seconds, so it must run even if playback has not
+        # started; gating on `self.playing` silently dropped short utterances.
+        had_audio = self.playing or self.buffered_samples() > 0
+        self.wait_for_drain()
+        if had_audio:
             sd.sleep(100)
 
-            self.stop_stream()
-            self.playing = False
+        self.stop_stream()
+        self.playing = False
 
     def flush(self):
         """Discard everything and stop playback immediately."""
