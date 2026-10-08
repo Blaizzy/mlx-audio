@@ -3,7 +3,10 @@ from .granite_speech import Model
 
 DETECTION_HINTS = {
     "config_keys": {"encoder_config", "projector_config", "audio_token_index"},
-    "architectures": {"GraniteSpeechForConditionalGeneration"},
+    "architectures": {
+        "GraniteSpeechForConditionalGeneration",
+        "GraniteSpeechPlusForConditionalGeneration",
+    },
 }
 
 __all__ = [
