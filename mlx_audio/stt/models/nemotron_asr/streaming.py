@@ -51,7 +51,14 @@ class ConformerStreamingState:
     returned as a list of ``(B, T, D)`` arrays.
     """
 
-    def __init__(self, encoder, *, chunk_frames=None, att_context_size=None):
+    def __init__(
+        self,
+        encoder,
+        *,
+        chunk_frames=None,
+        att_context_size=None,
+        first_chunk_mel=None,
+    ):
         self.encoder = encoder
         acs = att_context_size or encoder.args.att_context_size[0]
         self.left_cache = int(acs[0])
@@ -61,6 +68,7 @@ class ConformerStreamingState:
             raise ValueError("chunk_frames must be positive")
         self.subsampling_factor = encoder.args.subsampling_factor
         self.chunk_mel = self.chunk_frames * self.subsampling_factor
+        self.first_chunk_mel = first_chunk_mel or self.chunk_mel
         self.conv_left = encoder.args.conv_kernel_size - 1
 
         n = len(encoder.layers)
@@ -132,11 +140,12 @@ class ConformerStreamingState:
         self._append_pending(mel)
         outputs = []
         while self.pending is not None and self.pending.shape[1] > 0:
-            if self.pending.shape[1] < self.chunk_mel and not (final or emit_partial):
+            chunk_mel = self.first_chunk_mel if self.consumed == 0 else self.chunk_mel
+            if self.pending.shape[1] < chunk_mel and not (final or emit_partial):
                 break
 
-            take = min(self.chunk_mel, self.pending.shape[1])
-            if (final or emit_partial) and self.pending.shape[1] <= self.chunk_mel:
+            take = min(chunk_mel, self.pending.shape[1])
+            if (final or emit_partial) and self.pending.shape[1] <= chunk_mel:
                 take = self.pending.shape[1]
 
             m = self.pending[:, :take]

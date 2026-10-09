@@ -63,6 +63,28 @@ results = list(
 
 Each yielded result is one generated segment with audio, timing, and token statistics.
 
+## Streaming
+
+With `stream=True`, audio is yielded as codec frames are sampled instead of after each segment. The codec decodes only the new frames of each chunk, so the chunks of a segment join into the same audio as a full decode:
+
+```python
+from mlx_audio.tts.audio_player import AudioPlayer
+from mlx_audio.tts.utils import load_model
+
+model = load_model("mlx-community/fish-audio-s2-pro")
+player = AudioPlayer(sample_rate=model.sample_rate)
+for chunk in model.generate(
+    text="Streaming starts playback before the sentence is finished.",
+    stream=True,
+    streaming_interval=0.5,  # seconds of audio per chunk
+):
+    player.queue_audio(chunk.audio)
+player.wait_for_drain()
+player.stop()
+```
+
+The last chunk has `is_final_chunk=True` and may be empty. From the command line, use `--stream --streaming_interval 0.5 --play`.
+
 ## Sampling Controls
 
 Fish Speech exposes the main sampling controls used during semantic and residual decoding:

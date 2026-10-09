@@ -26,6 +26,18 @@ also available for 4-step inference instead of the usual 40 steps.
 |---|---|---|
 | `mlx-community/Irodori-TTS-v4-Small-fp16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Small-fp16) | Voice cloning + VoiceDesign + automatic duration |
 | `mlx-community/Irodori-TTS-v4-Small-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Small-8bit) | Voice cloning + VoiceDesign + automatic duration |
+| `mlx-community/Irodori-TTS-v4-Large-bf16` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Large-bf16) | Voice cloning + VoiceDesign + automatic duration |
+| `mlx-community/Irodori-TTS-v4-Large-8bit` | [link](https://huggingface.co/mlx-community/Irodori-TTS-v4-Large-8bit) | Voice cloning + VoiceDesign + automatic duration |
+
+v4-Large shares v4-Small's architecture but swaps the shared text/caption
+backbone from ModernBERT-ja-310m to the bidirectional text encoder half of
+[T5Gemma2](https://huggingface.co/google/t5gemma-2-1b-1b) (`PretrainedTextBackbone`
+dispatches on the embedded backbone config's `model_type`). Use `bf16`, not
+`fp16`: like other Gemma-family models, T5Gemma2's activations routinely
+exceed fp16's range mid-stack, and while a clip keeps that finite rather than
+NaN, it still measurably degrades output quality -- bf16 (this backbone's
+native training/inference precision) does not have that problem and costs
+nothing extra in size.
 
 ### v3
 
@@ -167,9 +179,12 @@ python -m mlx_audio.tts.generate \
 ### Shared pretrained text encoder
 
 v4 replaces the two scratch-trained text/caption encoders with a single
-pretrained [ModernBERT-ja-310m](https://huggingface.co/sbintuitions/modernbert-ja-310m)
-backbone feeding separate projectors. The backbone weights and its tokenizer are
-bundled in the converted model, so no extra download happens at inference time.
+pretrained backbone feeding separate projectors --
+[ModernBERT-ja-310m](https://huggingface.co/sbintuitions/modernbert-ja-310m)
+for v4/v4.1-Small, the bidirectional text encoder half of
+[T5Gemma2](https://huggingface.co/google/t5gemma-2-1b-1b) for v4-Large. The
+backbone weights and its tokenizer are bundled in the converted model, so no
+extra download happens at inference time.
 
 ### Multi-clip reference audio (up to 120s)
 
@@ -273,8 +288,9 @@ With `cfg_guidance_mode="independent"` (default), multiply memory by ~3.
 ## Notes
 
 - v4 and v4.1 use [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
-  and bundle a ModernBERT-ja-310m text encoder, so their weights are roughly
-  1 GB larger than v3 at the same precision.
+  and bundle a pretrained text encoder (ModernBERT-ja-310m for v4/v4.1-Small,
+  T5Gemma2 for v4-Large), so their weights are roughly 1 GB (v4-Small) to
+  several GB (v4-Large) larger than v3 at the same precision.
 - v3 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)
   and includes an integrated duration predictor for automatic output length estimation.
 - v2 uses [Semantic-DACVAE-Japanese-32dim](https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim)

@@ -19,12 +19,26 @@ class NemotronStreamingSession:
     just visible text, so silence also yields cooperatively.
     """
 
-    def __init__(self, model, *, temperature=0.0, language=None):
+    def __init__(
+        self, model, *, temperature=0.0, language=None, transcription_delay_ms=None
+    ):
         if temperature != 0.0:
             raise ValueError("Nemotron streaming supports greedy temperature=0 only")
         self.model = model
         self.language = language or model.default_language
         model._resolve_prompt_index(self.language)
+        self.att_context_size = model.default_att_context_size
+        if (
+            transcription_delay_ms is not None
+            and model.model_type == "nemotron_asr_streaming"
+        ):
+            lookahead = {80: 0, 160: 1, 560: 6, 1120: 13}.get(transcription_delay_ms)
+            if lookahead is None:
+                raise ValueError(
+                    f"Unsupported transcription_delay_ms={transcription_delay_ms}; "
+                    "expected one of [80, 160, 560, 1120]"
+                )
+            self.att_context_size = [model.default_att_context_size[0], lookahead]
         self.input_sample_rate = model.preprocessor_config.sample_rate
         self._lock = Lock()
         self.reset()
@@ -37,14 +51,21 @@ class NemotronStreamingSession:
             self._closed = False
             self._done = False
         self._frontend = StreamingLogMelSpectrogram(self.model.preprocessor_config)
+        first_chunk_mel = None
+        if self.model.model_type == "nemotron_asr_streaming":
+            factor = self.model.encoder_config.subsampling_factor
+            first_chunk_mel = 1 + factor * self.att_context_size[1]
         self._encoder = ConformerStreamingState(
-            self.model.encoder, att_context_size=self.model.default_att_context_size
+            self.model.encoder,
+            att_context_size=self.att_context_size,
+            first_chunk_mel=first_chunk_mel,
         )
         self._encoded = deque()
         self._frame = 0
         self._symbols = 0
         self._last_token = self.model.blank_id
         self._hidden = None
+        self._prediction = None
         self._flushed = False
         self._has_text = False
 
@@ -117,12 +138,14 @@ class NemotronStreamingSession:
             if not self._encoded:
                 break
             feature = self._encoded[0][:, self._frame : self._frame + 1]
-            token = (
-                mx.array([[self._last_token]], dtype=mx.int32)
-                if self._last_token != self.model.blank_id
-                else None
-            )
-            output, (h, c) = self.model.decoder(token, self._hidden)
+            if self._prediction is None:
+                token = (
+                    mx.array([[self._last_token]], dtype=mx.int32)
+                    if self._last_token != self.model.blank_id
+                    else None
+                )
+                self._prediction = self.model.decoder(token, self._hidden)
+            output, (h, c) = self._prediction
             hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
             prediction = int(
                 mx.argmax(self.model.joint(feature, output.astype(feature.dtype)))
@@ -130,6 +153,7 @@ class NemotronStreamingSession:
             if prediction != self.model.blank_id:
                 self._last_token = prediction
                 self._hidden = hidden
+                self._prediction = None
                 mx.eval(*hidden)
                 text = tokenizer.decode([prediction], self.model.vocabulary)
                 if not self._has_text:

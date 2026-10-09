@@ -106,6 +106,8 @@ class FlashAttentionImplementations:
     @staticmethod
     def simple_kernel(q, k, v, group_size=None):
         """Simple kernel - only ReLU² is fused"""
+        if not mx.metal.is_available():
+            return FlashAttentionImplementations.standard(q, k, v, group_size)
         if group_size is None:
             group_size = q.shape[2]
         scale = 1.0 / group_size
