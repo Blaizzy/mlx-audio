@@ -153,16 +153,21 @@ def test_default_generic_voice_maps_to_breeze_s0():
 def test_depth_cfg_applies_to_every_remaining_codebook(monkeypatch):
     model = Model(tiny_config())
     sampled_logits = []
+    frame_values = {}
 
-    def next_logits(_token_ids, hidden):
-        return mx.full((1, 8), hidden[0, 0])
+    def start_frame(hidden, cache):
+        frame_values[id(cache)] = hidden[0, 0]
+
+    def step_logits(cache, *, head_idx, token_id):
+        return mx.full((1, 8), frame_values[id(cache)])
 
     def sample(logits, **_kwargs):
         sampled_logits.append(logits)
-        return 1
+        return mx.array([1])
 
-    monkeypatch.setattr(model.depth_decoder, "next_logits", next_logits)
-    monkeypatch.setattr(model, "_sample", sample)
+    monkeypatch.setattr(model.depth_decoder, "start_frame", start_frame)
+    monkeypatch.setattr(model.depth_decoder, "step_logits", step_logits)
+    monkeypatch.setattr(model, "_sample_array", sample)
     tokens = model._depth_tokens(
         1,
         mx.ones((1, 16)),
@@ -182,15 +187,19 @@ def test_depth_cfg_masks_reserved_tokens_at_every_step(monkeypatch):
     model = Model(tiny_config())
     sampled_logits = []
 
-    def next_logits(_token_ids, _hidden):
+    def start_frame(_hidden, _cache):
+        return None
+
+    def step_logits(_cache, *, head_idx, token_id):
         return mx.arange(8, dtype=mx.float32)[None, :]
 
     def sample(logits, **_kwargs):
         sampled_logits.append(logits)
-        return 1
+        return mx.array([1])
 
-    monkeypatch.setattr(model.depth_decoder, "next_logits", next_logits)
-    monkeypatch.setattr(model, "_sample", sample)
+    monkeypatch.setattr(model.depth_decoder, "start_frame", start_frame)
+    monkeypatch.setattr(model.depth_decoder, "step_logits", step_logits)
+    monkeypatch.setattr(model, "_sample_array", sample)
     model._depth_tokens(
         1,
         mx.ones((1, 16)),
