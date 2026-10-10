@@ -59,6 +59,7 @@ from mlx_audio.server_inference import (
     InferenceRequest,
     InferenceResultChunk,
 )
+from mlx_audio.stt.streaming import StreamingSession
 from mlx_audio.tts.continuous import TTSBatchItem, TTSBatchOptions
 from mlx_audio.utils import load_model
 
@@ -190,7 +191,7 @@ class TranscriptionRequest(BaseModel):
     model: str
     language: str | None = None
     verbose: bool = False
-    max_tokens: int = 1024
+    max_tokens: int | None = None
     chunk_duration: float = 30.0
     frame_threshold: int = 25
     stream: bool = False
@@ -277,6 +278,18 @@ async def _preflight_model_load(model_name: str) -> None:
 
 _STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
 
+# Floor for max_tokens when the client does not send one. Models whose own
+# generate() default is larger (e.g. Qwen3-ASR's 8192, which is one budget for
+# every chunk of the file) keep that default, so long audio is not truncated.
+_STT_MIN_DEFAULT_MAX_TOKENS = 1024
+
+
+def _default_stt_max_tokens(signature: inspect.Signature) -> int:
+    model_default = signature.parameters["max_tokens"].default
+    if isinstance(model_default, int) and model_default > _STT_MIN_DEFAULT_MAX_TOKENS:
+        return model_default
+    return _STT_MIN_DEFAULT_MAX_TOKENS
+
 
 class STTExecutionAdapter(BaseModelExecutionAdapter):
     def run_serial(self, request: InferenceRequest) -> None:
@@ -292,16 +305,13 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
                 exclude={"model"}, exclude_none=True
             )
             signature = inspect.signature(stt_model.generate)
-            accepts_extra_kwargs = any(
-                parameter.kind == inspect.Parameter.VAR_KEYWORD
-                for parameter in signature.parameters.values()
-            )
             gen_kwargs = {
                 key: value
                 for key, value in gen_kwargs.items()
-                if key in signature.parameters
-                or (accepts_extra_kwargs and key in _STT_EXTRA_KWARGS)
+                if key in signature.parameters or key in _STT_EXTRA_KWARGS
             }
+            if "max_tokens" in signature.parameters and "max_tokens" not in gen_kwargs:
+                gen_kwargs["max_tokens"] = _default_stt_max_tokens(signature)
 
             result = stt_model.generate(tmp_path, **gen_kwargs)
             if hasattr(result, "__iter__") and hasattr(result, "__next__"):
@@ -1030,7 +1040,7 @@ async def stt_transcriptions(
     model: str = Form(...),
     language: Optional[str] = Form(None),
     verbose: bool = Form(False),
-    max_tokens: int = Form(1024),
+    max_tokens: Optional[int] = Form(None),
     chunk_duration: float = Form(30.0),
     frame_threshold: int = Form(25),
     stream: bool = Form(False),
@@ -1502,7 +1512,9 @@ def _default_transcription_delay_ms() -> Optional[int]:
         return None
 
 
-def _open_streaming_session(model, *, temperature: float, delay_ms: Optional[int]):
+def _open_streaming_session(
+    model, *, temperature: float, delay_ms: Optional[int]
+) -> StreamingSession:
     """Open a streaming session, forwarding ``transcription_delay_ms`` only to
     models that declare the parameter.
     """

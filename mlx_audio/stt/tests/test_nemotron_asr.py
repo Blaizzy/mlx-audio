@@ -28,6 +28,7 @@ from mlx_audio.stt.models.nemotron_asr.audio import (
     log_mel_spectrogram,
 )
 from mlx_audio.stt.models.nemotron_asr.conformer import create_chunked_limited_mask
+from mlx_audio.stt.models.nemotron_asr.rnnt import GreedyDecoderState
 from mlx_audio.utils import stft
 
 
@@ -150,6 +151,17 @@ def test_log_mel_uses_nemo_reflect_padding():
     )
 
 
+def test_log_mel_supports_hf_constant_padding():
+    args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
+    args.pad_mode = "constant"
+    audio = mx.array(np.linspace(-0.5, 0.75, args.n_fft * 2, dtype=np.float32))
+    full = log_mel_spectrogram(audio, args)
+    chunked = mx.concatenate(
+        list(iter_log_mel_spectrogram(audio, args, chunk_frames=7)), axis=1
+    )
+    np.testing.assert_allclose(np.array(chunked), np.array(full), atol=1e-6)
+
+
 def test_streaming_log_mel_matches_full_with_bounded_state():
     args = ModelConfig.from_dict(_tiny_config()).config.preprocessor
     audio = mx.array(
@@ -268,6 +280,84 @@ def test_tokenizer_decode_and_lang_tags():
         tok.decode([1, 2, 3, 4], vocab, strip_lang_tags=False) == "<en-US> hello world!"
     )
     assert tok.detected_language([1, 2, 3], vocab) == "en-US"
+
+
+def _scripted_predictor(tokens, max_symbols=2):
+    model = _build_tiny()
+    model.max_symbols = max_symbols
+    calls, joints = [], []
+    predictions = iter(tokens)
+
+    def predictor(token, hidden):
+        calls.append(None if token is None else int(token.item()))
+        state = 0.0 if hidden is None else float(hidden[0][0, 0, 0].item())
+        output = mx.full((1, 1, 16), state)
+        next_state = mx.full((2, 1, 16), state + 1)
+        return output, (next_state, next_state)
+
+    def joint(feature, prediction):
+        joints.append((float(prediction[0, 0, 0].item()), prediction.dtype))
+        token = next(predictions)
+        return mx.array([float(i == token) for i in range(model.blank_id + 1)])
+
+    model.decoder = predictor
+    model.joint = joint
+    return model, calls, joints
+
+
+@pytest.mark.parametrize("dtype", [mx.float32, mx.float16])
+def test_greedy_predictor_reused_across_blanks_and_chunks(dtype):
+    blank = len(_tiny_config()["vocabulary"])
+    model, calls, joints = _scripted_predictor(
+        [blank, blank, 1, 2, blank, blank, 3, blank]
+    )
+    decoder = GreedyDecoderState(model)
+    features = mx.zeros((1, 6, 32), dtype=dtype)
+    assert decoder.decode(features[:, :0], 0) == []
+    assert calls == []
+    assert decoder.decode(features[:, :2], 0) == []
+    tokens = decoder.decode(features[:, 2:], 2)
+    assert [(t.id, t.start, t.duration) for t in tokens] == [
+        (2, 0.16, 0.08),
+        (3, 0.4, 0.08),
+    ]
+    assert decoder.last_token == 3
+    assert np.all(np.array(decoder.hidden[0]) == 3)
+    assert [value for value, _ in joints] == [0, 0, 0, 1, 2, 2, 2, 3]
+    assert all(actual_dtype == dtype for _, actual_dtype in joints)
+    assert calls == [None, 1, 2, 3]
+
+
+def test_nonchunked_decode_reuses_predictor_and_respects_encoded_length():
+    blank = len(_tiny_config()["vocabulary"])
+    model, calls, joints = _scripted_predictor([blank] * 4)
+    model.encoder_config.att_context_style = "regular"
+    model.encoder = lambda mel, **kwargs: (mx.zeros((1, 6, 32)), mx.array([4]))
+    model.apply_prompt = lambda encoded, language: encoded
+    assert model.decode(mx.zeros((1, 10, 80))).text == ""
+    assert len(joints) == 4
+    assert calls == [None]
+
+
+def test_live_predictor_cache_survives_steps_and_resets():
+    blank = len(_tiny_config()["vocabulary"])
+    model, calls, joints = _scripted_predictor([blank, blank, 2, blank, blank])
+    session = model.create_streaming_session()
+    session._encoded.append(mx.zeros((1, 4, 32)))
+    session._flushed = True
+    parts = []
+    while not session.done:
+        parts.extend(session.step(max_decode_tokens=1))
+    assert parts == ["hello"]
+    assert [value for value, _ in joints] == [0, 0, 0, 1, 1]
+    assert calls == [None, 2]
+    session.reset()
+    model.joint = lambda feature, prediction: mx.array([0.0] * blank + [1.0])
+    session._encoded.append(mx.zeros((1, 1, 32)))
+    session._flushed = True
+    assert session.step() == []
+    assert session.done
+    assert calls == [None, 2, None]
 
 
 @pytest.mark.requires_weights

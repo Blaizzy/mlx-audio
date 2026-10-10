@@ -1,9 +1,13 @@
-# Nemotron 3.5 ASR (streaming) — MLX
+# Nemotron streaming ASR — MLX
 
 MLX port of NVIDIA's
 [`nvidia/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b):
 a 600M-parameter **cache-aware streaming FastConformer-RNNT** with **language-ID prompt
 conditioning**, covering 40 language-locales with punctuation and capitalization.
+
+The same implementation loads NVIDIA's native Transformers checkpoint
+[`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+directly, including its 80, 160, 560, and 1120 ms English streaming modes.
 
 ## Models
 
@@ -26,12 +30,53 @@ print(model.generate("speech.wav").text)
 print(model.generate("speech.wav", language="en-US").text)
 ```
 
+The English checkpoint uses the shared streaming contract with
+`transcription_delay_ms` set to `80`, `160`, `560`, or `1120`:
+
+```python
+model = load("nvidia/nemotron-speech-streaming-en-0.6b")
+session = model.create_streaming_session(transcription_delay_ms=160)
+for pcm in audio_chunks:
+    session.feed(pcm)
+    print("".join(session.step()), end="", flush=True)
+session.close()
+while not session.done:
+    print("".join(session.step()), end="", flush=True)
+```
+
 CLI:
 
 ```bash
 python -m mlx_audio.stt.generate \
     --model mlx-community/nemotron-3.5-asr-streaming-0.6b --audio speech.wav --format txt
 ```
+
+## Speaker-masked transcription
+
+Use Nemotron 3 Diarization to run an independent ASR stream for each speaker:
+
+```python
+from mlx_audio.vad import load as load_diarization
+
+diar = load_diarization("mlx-community/Nemotron-3-Diarization", strict=True)
+diar.set_streaming_config("low")
+for speaker, transcript in model.generate_speakers("meeting.wav", diar).items():
+    print(speaker, transcript.text)
+
+# Also accepts an iterable of 16 kHz mono PCM chunks, with automatic final flush.
+for delta in model.stream_generate_speakers("meeting.wav", diar):
+    print(delta.speaker, delta.text)
+```
+
+`generate_speakers()` returns a dictionary of speaker IDs to `AlignedResult`.
+Streaming deltas contain `speaker`, `tokens`, and `text`; timestamps use the
+original recording clock. `create_speaker_streaming_session(diar)` exposes
+`feed(pcm)` and `feed([], final=True)` for explicit live input.
+
+This uses existing weights with feature masking, independent encoder/decoder
+caches, and activity-based cache gating. Overlapping voices are not separated.
+See the [diarization integration documentation](../../../vad/models/nemotron_diarization/README.md#speaker-attributed-transcription)
+for options, latency, and the runnable example.
 
 ## Language prompt
 

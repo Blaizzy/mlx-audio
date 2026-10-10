@@ -82,7 +82,7 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     window = _padded_window(args)
     x = _preemphasize(x, args)
 
-    x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="reflect")
+    x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode=args.pad_mode)
     # Power spectrum (mag_power = 2.0).
     x = mx.square(mx.abs(x)).astype(original_dtype)
 
@@ -136,10 +136,20 @@ def log_mel_spectrogram_frames(
     right_pad = max(sample_end - total_samples, 0)
     pieces = []
     if left_pad:
-        pieces.append(raw[1 : left_pad + 1][::-1])
+        if args.pad_mode == "reflect":
+            pieces.append(raw[1 : left_pad + 1][::-1])
+        elif args.pad_mode == "constant":
+            pieces.append(mx.zeros((left_pad,), dtype=original_dtype))
+        else:
+            raise ValueError(f"Unsupported Nemotron STFT pad mode: {args.pad_mode}")
     pieces.append(raw.astype(original_dtype))
     if right_pad:
-        pieces.append(raw[-(right_pad + 1) : -1][::-1])
+        if args.pad_mode == "reflect":
+            pieces.append(raw[-(right_pad + 1) : -1][::-1])
+        elif args.pad_mode == "constant":
+            pieces.append(mx.zeros((right_pad,), dtype=original_dtype))
+        else:
+            raise ValueError(f"Unsupported Nemotron STFT pad mode: {args.pad_mode}")
     segment = mx.concatenate(pieces, axis=0) if len(pieces) > 1 else pieces[0]
 
     expected_len = (num_frames - 1) * hop + n_fft

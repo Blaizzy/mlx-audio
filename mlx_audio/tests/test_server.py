@@ -1,10 +1,11 @@
 import functools
+import inspect
 import io
 import json
 import queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
+import httpx2
 import mlx.core as mx
 import numpy as np
 import pytest
@@ -143,8 +144,8 @@ def test_tts_speech(client, mock_model_provider):
 
 def _hf_repo_not_found(model_name: str) -> RepositoryNotFoundError:
     """Construct a RepositoryNotFoundError shaped like the real HF client raises."""
-    request = httpx.Request("GET", f"https://huggingface.co/api/models/{model_name}")
-    response = httpx.Response(404, request=request)
+    request = httpx2.Request("GET", f"https://huggingface.co/api/models/{model_name}")
+    response = httpx2.Response(404, request=request)
     return RepositoryNotFoundError(
         f"404 Client Error. Repository Not Found", response=response
     )
@@ -824,7 +825,7 @@ def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
     """word_timestamps=true form field reaches stt_model.generate() as a kwarg.
 
     The STTExecutionAdapter allowlist (_STT_EXTRA_KWARGS) must pass word_timestamps
-    through when the model's generate() signature accepts arbitrary keyword arguments.
+    through even when it isn't declared in the model's generate() signature.
     """
     captured_kwargs: dict = {}
 
@@ -850,29 +851,71 @@ def test_stt_word_timestamps_passed_to_generate(client, mock_model_provider):
     assert captured_kwargs.get("word_timestamps") is True
 
 
-def test_stt_default_word_timestamps_omitted_for_strict_generate(
-    client, mock_model_provider
-):
-    """Default timestamp options do not reach models with strict signatures."""
+def _post_transcription_capturing_kwargs(client, mock_model_provider, generate, data):
+    """Serve ``generate`` as the STT model's generate() and return its kwargs."""
+    captured_kwargs: dict = {}
 
-    def mock_generate(path, *, verbose=False):
-        return {"text": "hello", "segments": [], "language": "en"}
+    def capturing_generate(path, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {"text": "hello"}
+
+    # Expose the real generate() signature to the server's kwarg filter.
+    capturing_generate.__signature__ = inspect.signature(generate)
 
     mock_stt_model = MagicMock()
-    mock_stt_model.generate = mock_generate
+    mock_stt_model.generate = capturing_generate
     mock_model_provider.load_model = MagicMock(return_value=mock_stt_model)
 
     response = client.post(
         "/v1/audio/transcriptions",
         files={"file": ("test.mp3", _make_transcription_audio_buffer(), "audio/mp3")},
-        data={
-            "model": "test_stt_model",
-            "response_format": "json",
-        },
+        data={"model": "test_stt_model", "response_format": "json", **data},
     )
-
     assert response.status_code == 200
-    assert response.json() == {"text": "hello"}
+    return captured_kwargs
+
+
+def _generate_default_8192(audio, *, max_tokens: int = 8192, **kwargs): ...
+
+
+def _generate_default_128(audio, *, max_tokens: int = 128, **kwargs): ...
+
+
+def _generate_default_none(audio, *, max_tokens=None, **kwargs): ...
+
+
+def _generate_without_max_tokens(audio, **kwargs): ...
+
+
+@pytest.mark.parametrize(
+    "generate, data, expected",
+    [
+        # The model's larger default applies when the client omits max_tokens.
+        (_generate_default_8192, {}, 8192),
+        # Models with a smaller (or no) default keep the previous 1024 floor.
+        (_generate_default_128, {}, 1024),
+        (_generate_default_none, {}, 1024),
+        # An explicit client value always wins.
+        (_generate_default_8192, {"max_tokens": "300"}, 300),
+        (_generate_default_128, {"max_tokens": "64"}, 64),
+    ],
+    ids=["default-8192", "default-128", "default-none", "explicit-300", "explicit-64"],
+)
+def test_stt_max_tokens_default_reaches_generate(
+    client, mock_model_provider, generate, data, expected
+):
+    """A request without max_tokens must not cap a long-audio model at 1024."""
+    captured_kwargs = _post_transcription_capturing_kwargs(
+        client, mock_model_provider, generate, data
+    )
+    assert captured_kwargs.get("max_tokens") == expected
+
+
+def test_stt_max_tokens_not_passed_when_generate_lacks_it(client, mock_model_provider):
+    captured_kwargs = _post_transcription_capturing_kwargs(
+        client, mock_model_provider, _generate_without_max_tokens, {}
+    )
+    assert "max_tokens" not in captured_kwargs
 
 
 def test_stt_word_timestamps_verbose_json_words_passthrough(

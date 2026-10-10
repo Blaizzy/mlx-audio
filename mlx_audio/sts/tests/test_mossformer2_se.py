@@ -306,5 +306,52 @@ class TestMossFormer2SE(unittest.TestCase):
         self.assertEqual(out.shape[2], 961)
 
 
+class TestMetalKernelGates(unittest.TestCase):
+    """The custom Metal kernels are only used when Metal is available."""
+
+    def test_no_metal_uses_standard_attention(self):
+        from unittest import mock
+
+        from mlx_audio.sts.models.mossformer2_se import flash_attention_kernels as fa
+
+        q = mx.random.normal((1, 2, 6, 4))
+        k = mx.random.normal((1, 2, 6, 4))
+        v = mx.random.normal((1, 2, 6, 4))
+        expected = fa.FlashAttentionImplementations.standard(q, k, v, 6)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Metal kernel called without Metal")
+
+        with (
+            mock.patch.object(mx.metal, "is_available", return_value=False),
+            mock.patch.object(fa, "relu_squared_kernel", forbidden),
+        ):
+            out = fa.FlashAttentionImplementations.simple_kernel(q, k, v, 6)
+
+        self.assertTrue(mx.allclose(out, expected))
+
+    def test_no_metal_uses_mx_conv1d(self):
+        from unittest import mock
+
+        from mlx_audio.sts.models.mossformer2_se import depthwise_conv1d_kernel as dw
+
+        channels, kernel_size = 8, 5
+        x = mx.random.normal((2, 16, channels))
+        weight = mx.random.normal((channels, kernel_size, 1))
+        padding = (kernel_size - 1) // 2
+        expected = mx.conv1d(x, weight, padding=padding, groups=channels)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("Metal kernel called without Metal")
+
+        with (
+            mock.patch.object(mx.metal, "is_available", return_value=False),
+            mock.patch.object(dw, "_depthwise_conv1d_kernel", forbidden),
+        ):
+            out = dw.depthwise_conv1d(x, weight, padding=padding, groups=channels)
+
+        self.assertTrue(mx.allclose(out, expected))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,8 +10,8 @@ import mlx.nn as nn
 
 from .config import T5EncoderConfig
 
-# Suppress HTTPX and HuggingFace Hub logging
-logging.getLogger("httpx").setLevel(logging.WARNING)
+# Suppress HTTPX2 and HuggingFace Hub logging
+logging.getLogger("httpx2").setLevel(logging.WARNING)
 logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
 
 

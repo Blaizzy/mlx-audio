@@ -630,3 +630,99 @@ def sample_euler_cfg(
         mx.eval(x_t)
 
     return x_t
+
+
+# ---------------------------------------------------------------------------
+# MeanFlow sampler (v4.1 MF)
+# ---------------------------------------------------------------------------
+
+
+def sample_euler_meanflow(
+    model: IrodoriDiT,
+    text_input_ids: mx.array,
+    text_mask: mx.array,
+    ref_latent: Optional[mx.array],
+    ref_mask: Optional[mx.array],
+    latent_dim: int,
+    rng_seed: int = 0,
+    sequence_length: int = 750,
+    num_steps: int = 4,
+    caption_input_ids: Optional[mx.array] = None,
+    caption_mask: Optional[mx.array] = None,
+    **_ignored,
+) -> mx.array:
+    """
+    Linear Euler sampler for a MeanFlow-distilled model (default: 4 NFE).
+
+    MeanFlow checkpoints bake classifier-free guidance into distillation, so
+    unlike ``sample_euler_cfg`` this sampler runs a single conditional branch
+    per step and ignores any RF-only CFG controls (``cfg_scale_*``,
+    ``t_schedule_mode``, ``truncation_factor``, etc. are accepted and ignored
+    via ``**_ignored`` so callers can pass a shared kwargs dict unmodified).
+
+    Returns latent of shape (batch, sequence_length, latent_dim).
+    """
+    if not model.cfg.use_meanflow:
+        raise ValueError("sample_euler_meanflow requires a MeanFlow model.")
+    if num_steps <= 0:
+        raise ValueError(f"MeanFlow num_steps must be positive, got {num_steps}.")
+
+    batch_size = text_input_ids.shape[0]
+
+    (
+        text_state,
+        text_mask_full,
+        speaker_state,
+        speaker_mask,
+        caption_state,
+        caption_mask_full,
+    ) = model.encode_conditions_full(
+        text_input_ids=text_input_ids,
+        text_mask=text_mask,
+        ref_latent=ref_latent,
+        ref_mask=ref_mask,
+        caption_input_ids=caption_input_ids,
+        caption_mask=caption_mask,
+    )
+    mx.eval(text_state)
+    if speaker_state is not None:
+        mx.eval(speaker_state)
+    if caption_state is not None:
+        mx.eval(caption_state)
+
+    kv_text, kv_speaker, kv_caption = model.build_kv_cache(
+        text_state, speaker_state, caption_state
+    )
+    mx.eval(kv_text)
+    if kv_speaker is not None:
+        mx.eval(kv_speaker)
+    if kv_caption is not None:
+        mx.eval(kv_caption)
+
+    mx.random.seed(rng_seed)
+    x_t = mx.random.normal((batch_size, sequence_length, latent_dim))
+
+    t_schedule = np.linspace(1.0, 0.0, num_steps + 1, dtype=np.float32)
+    for i in range(num_steps):
+        t = float(t_schedule[i])
+        t_next = float(t_schedule[i + 1])
+        t_arr = mx.full((batch_size,), t, dtype=mx.float32)
+        delta_arr = mx.full((batch_size,), t - t_next, dtype=mx.float32)
+        velocity = model.forward_with_conditions(
+            x_t=x_t,
+            t=t_arr,
+            text_state=text_state,
+            text_mask=text_mask_full,
+            speaker_state=speaker_state,
+            speaker_mask=speaker_mask,
+            kv_text=kv_text,
+            kv_speaker=kv_speaker,
+            caption_state=caption_state,
+            caption_mask=caption_mask_full,
+            kv_caption=kv_caption,
+            delta_t=delta_arr,
+        )
+        x_t = x_t + velocity * (t_next - t)
+        mx.eval(x_t)
+
+    return x_t

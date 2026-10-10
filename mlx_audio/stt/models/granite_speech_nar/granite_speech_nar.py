@@ -18,6 +18,7 @@ from transformers import AutoTokenizer
 
 from mlx_audio import dsp
 from mlx_audio.stt.models.base import STTOutput
+from mlx_audio.stt.utils import load_audio
 
 from .config import ModelConfig
 from .decoding import add_insertion_slots, ctc_collapse_decode
@@ -85,14 +86,7 @@ def _load_waveform(audio) -> mx.array:
     if isinstance(audio, mx.array):
         return audio.astype(mx.float32)
     if isinstance(audio, (str, Path)):
-        import soundfile as sf
-
-        wav, sr = sf.read(str(audio), dtype="float32", always_2d=False)
-        if wav.ndim > 1:
-            wav = wav.mean(axis=1)
-        if sr != SAMPLING_RATE:
-            raise ValueError(f"audio must be {SAMPLING_RATE} Hz; got {sr}")
-        return mx.array(wav)
+        return load_audio(str(audio), sr=SAMPLING_RATE)
     return mx.array(np.asarray(audio, dtype=np.float32))
 
 
@@ -189,8 +183,9 @@ class Model(nn.Module):
         """Transcribe a single audio clip. Returns STTOutput with .text.
 
         Args:
-            audio: a file path (str/Path) loadable by soundfile, an mlx.array of
-                samples, or a numpy ndarray. Must be 16 kHz mono.
+            audio: a file path (str/Path) supported by the shared audio loader,
+                resampled to 16 kHz mono, or an mlx.array, numpy ndarray, or list
+                of samples already at 16 kHz mono.
         """
         if self._tokenizer is None:
             raise RuntimeError(

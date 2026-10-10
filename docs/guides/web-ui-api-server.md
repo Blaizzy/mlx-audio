@@ -129,7 +129,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 | `file` | file | required | Audio file to transcribe |
 | `model` | string | required | STT model ID |
 | `language` | string | `null` | Language code |
-| `max_tokens` | int | `1024` | Maximum output tokens |
+| `max_tokens` | int | `null` | Maximum output tokens. When omitted, the larger of 1024 and the model's own `generate()` default (8192 for Qwen3-ASR) |
 | `stream` | bool | `false` | Stream results as NDJSON |
 | `context` | string | `null` | Hotwords or metadata to guide transcription |
 | `verbose` | bool | `false` | Include extra details |
@@ -253,10 +253,11 @@ To use a different VAD model, launch the server with `--vad-model <id>` (or set 
 **Minimal Python client:**
 
 ```python
-import asyncio, base64, json, websockets, numpy as np, soundfile as sf
+import asyncio, base64, json, websockets
+from mlx_audio.audio_io import read
 
 async def transcribe(path: str):
-    audio, sr = sf.read(path, dtype="int16", always_2d=False)
+    audio, sr = read(path, dtype="int16", nchannels=1)
     uri = "ws://localhost:8000/v1/realtime?model=iris-sfg/Voxtral-Mini-4B-Realtime-2602-4bit"
     async with websockets.connect(uri) as ws:
         # Wait for session.created

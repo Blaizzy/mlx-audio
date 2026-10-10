@@ -2,6 +2,7 @@ from .descript import DAC
 from .ecapa_tdnn import EcapaTdnnBackbone
 from .encodec import Encodec
 from .mimi import Mimi
+from .mimo_audio_tokenizer import MiMoAudioTokenizer
 from .moss_audio_tokenizer import MossAudioTokenizer
 from .nemotron_voicechat import NemotronVoiceChatCodec
 from .snac import SNAC
@@ -13,6 +14,7 @@ __all__ = [
     "EcapaTdnnBackbone",
     "Encodec",
     "Mimi",
+    "MiMoAudioTokenizer",
     "MossAudioTokenizer",
     "NemotronVoiceChatCodec",
     "SNAC",

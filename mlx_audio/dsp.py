@@ -405,8 +405,8 @@ def stft(
         w = window
 
     if w.shape[0] < n_fft:
-        pad_size = n_fft - w.shape[0]
-        w = mx.concatenate([w, mx.zeros((pad_size,))], axis=0)
+        padding = n_fft - w.shape[0]
+        w = mx.pad(w, [(padding // 2, padding - padding // 2)])
 
     def _pad(x, padding, pad_mode="reflect"):
         if pad_mode == "constant":
@@ -447,7 +447,7 @@ def istft(
     Args:
         x: Complex STFT output of shape (n_fft // 2 + 1, num_frames)
         hop_length: Hop length between frames (default: win_length // 4)
-        win_length: Window length (default: (n_fft - 1) * 2)
+        win_length: Window length (default: FFT size inferred from the frequency axis)
         window: Window function name or array (default: "hann")
         center: If True, remove center padding (default: True)
         length: Target output length (default: None)
@@ -460,8 +460,9 @@ def istft(
     Returns:
         Reconstructed time-domain signal
     """
+    n_fft = (x.shape[0] - 1) * 2
     if win_length is None:
-        win_length = (x.shape[1] - 1) * 2
+        win_length = n_fft
     if hop_length is None:
         hop_length = win_length // 4
 
@@ -473,11 +474,12 @@ def istft(
     else:
         w = window
 
-    if w.shape[0] < win_length:
-        w = mx.concatenate([w, mx.zeros((win_length - w.shape[0],))], axis=0)
+    if w.shape[0] < n_fft:
+        padding = n_fft - w.shape[0]
+        w = mx.pad(w, [(padding // 2, padding - padding // 2)])
 
     num_frames = x.shape[1]
-    t = (num_frames - 1) * hop_length + win_length
+    t = (num_frames - 1) * hop_length + n_fft
 
     reconstructed = mx.zeros(t)
     window_sum = mx.zeros(t)
@@ -487,7 +489,7 @@ def istft(
 
     # get the position in the time-domain signal to add the frame
     frame_offsets = mx.arange(num_frames) * hop_length
-    indices = frame_offsets[:, None] + mx.arange(win_length)
+    indices = frame_offsets[:, None] + mx.arange(n_fft)
     indices_flat = indices.flatten()
 
     updates_reconstructed = (frames_time * w).flatten()
@@ -500,15 +502,15 @@ def istft(
     window_sum = window_sum.at[indices_flat].add(updates_window)
 
     # normalize by the sum of (squared) window values
-    reconstructed = mx.where(
-        window_sum > 1e-10, reconstructed / window_sum, reconstructed
-    )
+    # Avoid dividing by zero even on discarded samples: it produces NaN gradients.
+    denominator = mx.where(window_sum > 1e-10, window_sum, 1.0)
+    reconstructed = reconstructed / denominator
 
-    if center and length is None:
-        reconstructed = reconstructed[win_length // 2 : -win_length // 2]
-
-    if length is not None:
-        reconstructed = reconstructed[:length]
+    start = n_fft // 2 if center else 0
+    end = start + length if length is not None else t - start
+    reconstructed = reconstructed[start:end]
+    if length is not None and reconstructed.shape[0] < length:
+        reconstructed = mx.pad(reconstructed, [(0, length - reconstructed.shape[0])])
 
     return reconstructed
 
@@ -691,10 +693,10 @@ class ISTFTCache:
         Returns:
             Reconstructed audio (batch, samples)
         """
-        # Window padding safety check
+        # Center-pad short windows to match stft and istft.
         if window.shape[0] < n_fft:
-            pad = n_fft - window.shape[0]
-            window = mx.concatenate([window, mx.zeros((pad,), dtype=window.dtype)])
+            padding = n_fft - window.shape[0]
+            window = mx.pad(window, [(padding // 2, padding - padding // 2)])
 
         # Inverse FFT
         stft_complex = real_part + 1j * imag_part

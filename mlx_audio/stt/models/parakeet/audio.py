@@ -2,15 +2,7 @@ from dataclasses import dataclass
 
 import mlx.core as mx
 
-from mlx_audio.utils import (
-    STR_TO_WINDOW_FN,
-    bartlett,
-    blackman,
-    hamming,
-    hanning,
-    mel_filters,
-    stft,
-)
+from mlx_audio.utils import STR_TO_WINDOW_FN, hanning, mel_filters, stft
 
 
 @dataclass
@@ -27,6 +19,7 @@ class PreprocessArgs:
     pad_value: float = 0
     preemph: float = 0.97
     log_zero_guard_value: float = 2**-24
+    normalize_valid_frames: bool = False
 
     @property
     def win_length(self) -> int:
@@ -39,6 +32,11 @@ class PreprocessArgs:
 
 def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     original_dtype = x.dtype
+    valid_frames = x.shape[-1] // args.hop_length
+    if args.normalize_valid_frames:
+        if valid_frames < 2:
+            raise ValueError("Parakeet Redux requires at least 320 audio samples.")
+        x = x.astype(mx.float32)
 
     if args.pad_to > 0:
         if x.shape[-1] < args.pad_to:
@@ -68,7 +66,9 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
         )
 
     x = stft(x, args.n_fft, args.hop_length, args.n_fft, window, pad_mode="constant")
-    x = mx.square(mx.abs(x)).astype(original_dtype)
+    x = mx.square(mx.abs(x))
+    if not args.normalize_valid_frames:
+        x = x.astype(original_dtype)
     filters = mel_filters(
         args.sample_rate, args.n_fft, args.features, norm="slaney", mel_scale="slaney"
     )
@@ -78,15 +78,21 @@ def log_mel_spectrogram(x: mx.array, args: PreprocessArgs) -> mx.array:
     x = mx.log(x + log_guard)
 
     if args.normalize == "per_feature":
-        mean = mx.mean(x, axis=1, keepdims=True)
-        n = max(x.shape[1] - 1, 1)
-        variance = mx.sum((x - mean) ** 2, axis=1, keepdims=True) / n
+        valid = x[:, :valid_frames] if args.normalize_valid_frames else x
+        mean = mx.mean(valid, axis=1, keepdims=True)
+        n = max(valid.shape[1] - 1, 1)
+        variance = mx.sum((valid - mean) ** 2, axis=1, keepdims=True) / n
         std = mx.sqrt(variance)
         normalized_mel = (x - mean) / (std + 1e-5)
     else:
         mean = mx.mean(x)
         std = mx.std(x)
         normalized_mel = (x - mean) / (std + 1e-5)
+
+    if args.normalize_valid_frames:
+        normalized_mel = mx.where(
+            mx.arange(x.shape[1])[None, :] < valid_frames, normalized_mel, 0
+        )
 
     normalized_mel = normalized_mel.T
     normalized_mel = mx.expand_dims(normalized_mel, axis=0)

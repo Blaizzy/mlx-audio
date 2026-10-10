@@ -8,6 +8,7 @@ import mlx.nn as nn
 
 from .config import IrodoriDiTConfig
 from .modernbert import ModernBertConfig, ModernBertEncoder
+from .t5gemma2 import T5Gemma2Config, T5Gemma2TextEncoder
 
 RotaryCache = Tuple[mx.array, mx.array]
 KVCache = Tuple[mx.array, mx.array]
@@ -446,13 +447,29 @@ class TextEncoder(nn.Module):
 class PretrainedTextBackbone(nn.Module):
     """
     Thin wrapper around the pretrained encoder shared by the text and caption
-    projectors (v4). Keeps the checkpoint's `pretrained_text_backbone.backbone.*`
-    key layout.
+    projectors (v4: ModernBERT-ja-310m; v4-Large: T5Gemma2's bidirectional
+    text encoder). Keeps the checkpoint's `pretrained_text_backbone.backbone.*`
+    key layout. Dispatches on the embedded HF config's top-level `model_type`,
+    mirroring upstream's own AutoModel-vs-T5Gemma2TextEncoder branch.
     """
 
-    def __init__(self, config: ModernBertConfig):
+    def __init__(self, config_dict: dict):
         super().__init__()
-        self.backbone = ModernBertEncoder(config)
+        model_type = str(config_dict.get("model_type", "")).strip().lower()
+        if model_type == "t5gemma2":
+            text_config = config_dict.get("encoder", {}).get("text_config")
+            if not text_config:
+                raise ValueError(
+                    "A t5gemma2 text_encoder_config requires encoder.text_config."
+                )
+            eoi_token_index = config_dict.get("eoi_token_index", 256_000)
+            config = T5Gemma2Config.from_dict(
+                {**text_config, "eoi_token_index": eoi_token_index}
+            )
+            self.backbone = T5Gemma2TextEncoder(config)
+        else:
+            config = ModernBertConfig.from_dict(config_dict)
+            self.backbone = ModernBertEncoder(config)
         self.hidden_size = config.hidden_size
 
     def __call__(self, input_ids: mx.array, mask: Optional[mx.array]) -> mx.array:
@@ -1225,6 +1242,14 @@ class IrodoriDiT(nn.Module):
         self.cfg = cfg
         self.head_dim = cfg.model_dim // cfg.num_heads
 
+        flow_parameterization = str(cfg.flow_parameterization).strip().lower()
+        if flow_parameterization not in {"rf_velocity", "meanflow"}:
+            raise ValueError(
+                "flow_parameterization must be 'rf_velocity' or 'meanflow', "
+                f"got {cfg.flow_parameterization!r}."
+            )
+        self.cfg.flow_parameterization = flow_parameterization
+
         self.pretrained_text_backbone = None
         if cfg.use_pretrained_text_encoder:
             if not cfg.text_encoder_config:
@@ -1233,7 +1258,7 @@ class IrodoriDiT(nn.Module):
                     "in the model config."
                 )
             self.pretrained_text_backbone = PretrainedTextBackbone(
-                ModernBertConfig.from_dict(cfg.text_encoder_config)
+                cfg.text_encoder_config
             )
             self.text_encoder = PretrainedConditionProjector(
                 self.pretrained_text_backbone.hidden_size,
@@ -1329,6 +1354,22 @@ class IrodoriDiT(nn.Module):
             nn.SiLU(),
             nn.Linear(cfg.model_dim, cfg.model_dim * 3, bias=False),
         )
+
+        # Interval-length (delta_t = t - r) conditioning for MeanFlow students.
+        # Additive on top of cond_module's t-embedding; zero-initialized so a
+        # freshly-converted RF checkpoint behaves identically until trained.
+        self.delta_cond_module = None
+        if self.cfg.use_meanflow:
+            self.delta_cond_module = nn.Sequential(
+                nn.Linear(cfg.timestep_embed_dim, cfg.model_dim, bias=False),
+                nn.SiLU(),
+                nn.Linear(cfg.model_dim, cfg.model_dim, bias=False),
+                nn.SiLU(),
+                nn.Linear(cfg.model_dim, cfg.model_dim * 3, bias=False),
+            )
+            self.delta_cond_module.layers[-1].weight = (
+                self.delta_cond_module.layers[-1].weight * 0.0
+            )
 
         self.in_proj = nn.Linear(cfg.patched_latent_dim, cfg.model_dim, bias=True)
         mlp_hidden = int(cfg.model_dim * cfg.mlp_ratio)
@@ -1546,6 +1587,7 @@ class IrodoriDiT(nn.Module):
         caption_state: Optional[mx.array] = None,
         caption_mask: Optional[mx.array] = None,
         kv_caption: Optional[List[KVCache]] = None,
+        delta_t: Optional[mx.array] = None,
     ) -> mx.array:
         """
         Forward pass with pre-encoded conditions.
@@ -1554,11 +1596,24 @@ class IrodoriDiT(nn.Module):
         For caption-only models: speaker_state/mask carry the caption context
             (backward-compat; internally routed to caption branch).
         For dual models (v3 VoiceDesign): speaker_state=speaker, caption_state=caption.
+
+        ``delta_t`` (Irodori interval length t - r) is required for MeanFlow
+        checkpoints and rejected for standard RF-velocity checkpoints.
         """
         t_embed = get_timestep_embedding(t, self.cfg.timestep_embed_dim).astype(
             x_t.dtype
         )
-        cond_embed = self.cond_module(t_embed)[:, None, :]  # (B, 1, 3*model_dim)
+        cond_embed = self.cond_module(t_embed)
+        if self.delta_cond_module is not None:
+            if delta_t is None:
+                raise ValueError("delta_t is required for a MeanFlow forward pass.")
+            delta_embed = get_timestep_embedding(
+                delta_t, self.cfg.timestep_embed_dim
+            ).astype(x_t.dtype)
+            cond_embed = cond_embed + self.delta_cond_module(delta_embed)
+        elif delta_t is not None:
+            raise ValueError("delta_t was provided to an RF velocity model.")
+        cond_embed = cond_embed[:, None, :]  # (B, 1, 3*model_dim)
 
         x = self.in_proj(x_t)
         freqs_cis = precompute_freqs_cis(self.head_dim, start_pos + x.shape[1])
