@@ -1014,3 +1014,238 @@ async def test_stream_inference_results_reraises_error_by_default():
 
     assert exc_info.value is error
     assert handle.cancelled
+
+
+# ── Sampling defaults: omitted fields use the model's generation config ──
+
+QWEN_GENERATE_CONFIG = {
+    "temperature": 0.9,
+    "top_p": 1.0,
+    "top_k": 50,
+    "repetition_penalty": 1.05,
+    "max_new_tokens": 8192,
+}
+SERVER_SAMPLING_DEFAULTS = {
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "top_k": 40,
+    "repetition_penalty": 1.0,
+}
+
+
+def _sampling_kwargs(kwargs):
+    return {name: kwargs[name] for name in SERVER_SAMPLING_DEFAULTS}
+
+
+def _tts_model_with_config(generate_config):
+    model = MagicMock()
+    model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+    model.generate_config = generate_config
+    return model
+
+
+def test_tts_speech_omitted_sampling_uses_model_generate_config(
+    client, mock_model_provider
+):
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    payload = {"model": "qwen3_tts", "input": "Hello", "voice": "vivian"}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = model.generate.call_args
+    assert _sampling_kwargs(kwargs) == {
+        "temperature": 0.9,
+        "top_p": 1.0,
+        "top_k": 50,
+        "repetition_penalty": 1.05,
+    }
+    # Only the four sampling fields are resolved from the config.
+    assert kwargs["max_tokens"] == 1200
+
+
+@pytest.mark.parametrize(
+    "sent, expected",
+    [
+        (
+            {"temperature": 0, "top_p": 0, "top_k": 0, "repetition_penalty": 1.0},
+            {"temperature": 0, "top_p": 0, "top_k": 0, "repetition_penalty": 1.0},
+        ),
+        (
+            {"top_k": 0},
+            {"temperature": 0.9, "top_p": 1.0, "top_k": 0, "repetition_penalty": 1.05},
+        ),
+        (
+            {"temperature": 0.7, "repetition_penalty": 1.2},
+            {"temperature": 0.7, "top_p": 1.0, "top_k": 50, "repetition_penalty": 1.2},
+        ),
+    ],
+)
+def test_tts_speech_sent_sampling_overrides_generate_config(
+    client, mock_model_provider, sent, expected
+):
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    payload = {"model": "qwen3_tts", "input": "Hello", **sent}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = model.generate.call_args
+    assert _sampling_kwargs(kwargs) == expected
+
+
+@pytest.mark.parametrize("generate_config", ["missing", None, {}, {"top_k": None}])
+def test_tts_speech_without_generate_config_keeps_server_defaults(
+    client, mock_model_provider, generate_config
+):
+    if generate_config == "missing":
+        # spec= stops MagicMock from fabricating a generate_config attribute.
+        model = MagicMock(spec=["generate"])
+    else:
+        model = MagicMock()
+        model.generate_config = generate_config
+    model.generate = MagicMock(wraps=sync_mock_audio_stream_generator)
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    response = client.post(
+        "/v1/audio/speech", json={"model": "other_tts", "input": "Hello"}
+    )
+
+    assert response.status_code == 200
+    _, kwargs = model.generate.call_args
+    assert _sampling_kwargs(kwargs) == SERVER_SAMPLING_DEFAULTS
+
+
+def _tts_inference_request(model, **fields):
+    from mlx_audio.server import SpeechRequest, SpeechTaskPayload, TTSExecutionAdapter
+    from mlx_audio.server_inference import InferenceRequest
+
+    request = InferenceRequest(
+        endpoint_kind="tts",
+        model_name="qwen3_tts",
+        payload=SpeechTaskPayload(
+            request=SpeechRequest(model="qwen3_tts", input="Hello", **fields)
+        ),
+    )
+    setattr(request, TTSExecutionAdapter._REQUEST_MODEL_ATTR, model)
+    return request
+
+
+def test_tts_continuous_batch_options_use_generate_config():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+
+    options = adapter._build_batch_options(_tts_inference_request(model))
+    assert (
+        options.temperature,
+        options.top_p,
+        options.top_k,
+        options.repetition_penalty,
+    ) == (0.9, 1.0, 50, 1.05)
+
+    options = adapter._build_batch_options(
+        _tts_inference_request(model, temperature=0.3)
+    )
+    assert (options.temperature, options.top_k) == (0.3, 50)
+
+    plain = adapter._build_batch_options(_tts_inference_request(MagicMock()))
+    assert (
+        plain.temperature,
+        plain.top_p,
+        plain.top_k,
+        plain.repetition_penalty,
+    ) == (0.7, 0.95, 40, 1.0)
+
+
+class _BatchTTSModel:
+    sample_rate = 16000
+
+    def __init__(self, generate_config):
+        self.generate_config = generate_config
+        self.batch_calls = []
+
+    def batch_generate(
+        self,
+        texts,
+        voices=None,
+        temperature=0.0,
+        top_p=0.0,
+        top_k=0,
+        repetition_penalty=0.0,
+        lang_code="auto",
+        max_tokens=0,
+        stream=False,
+        verbose=False,
+    ):
+        self.batch_calls.append(
+            {
+                "temperature": temperature,
+                "top_p": top_p,
+                "top_k": top_k,
+                "repetition_penalty": repetition_penalty,
+            }
+        )
+        for idx, _ in enumerate(texts):
+            result = MockAudioResult(np.zeros(160, dtype=np.float32), 16000)
+            result.sequence_idx = idx
+            yield result
+
+
+def test_tts_run_batch_uses_generate_config():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _BatchTTSModel(dict(QWEN_GENERATE_CONFIG))
+    requests = [_tts_inference_request(model) for _ in range(2)]
+
+    adapter.run_batch(requests)
+
+    assert model.batch_calls == [
+        {"temperature": 0.9, "top_p": 1.0, "top_k": 50, "repetition_penalty": 1.05}
+    ]
+    for request in requests:
+        kinds = [request.result_queue.get_nowait().kind for _ in range(2)]
+        assert kinds == ["data", "done"]
+
+
+def test_tts_batch_key_separates_omitted_from_sent_sampling():
+    from mlx_audio.server import TTSExecutionAdapter
+
+    adapter = TTSExecutionAdapter()
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+
+    omitted = adapter.batch_key(_tts_inference_request(model))
+    also_omitted = adapter.batch_key(_tts_inference_request(model))
+    # Same raw value as the omitted default, but sent explicitly: it must not
+    # share a batch with a request that resolves to the model's 0.9.
+    sent_default = adapter.batch_key(_tts_inference_request(model, temperature=0.7))
+
+    assert omitted == also_omitted
+    assert omitted != sent_default
+    hash(omitted)
+    # Continuous sessions are keyed the same way.
+    assert adapter.continuous_batch_key(
+        _tts_inference_request(model)
+    ) != adapter.continuous_batch_key(_tts_inference_request(model, temperature=0.7))
+
+
+def test_tts_speech_streaming_uses_generate_config(client, mock_model_provider):
+    model = _tts_model_with_config(dict(QWEN_GENERATE_CONFIG))
+    mock_model_provider.load_model = MagicMock(return_value=model)
+
+    payload = {"model": "qwen3_tts", "input": "Hello", "stream": True, "top_p": 0.5}
+    response = client.post("/v1/audio/speech", json=payload)
+
+    assert response.status_code == 200
+    _, kwargs = model.generate.call_args
+    assert kwargs["stream"] is True
+    assert _sampling_kwargs(kwargs) == {
+        "temperature": 0.9,
+        "top_p": 0.5,
+        "top_k": 50,
+        "repetition_penalty": 1.05,
+    }
