@@ -100,6 +100,12 @@ class ModelProvider:
     ):
         self.models: Dict[str, Dict[str, Any]] = {}
         self._last_used: Dict[str, float] = {}
+        # Requests currently generating with a model, keyed by model name. An
+        # in-use model is never an eviction candidate: dropping it while a
+        # request still holds the object would strand that request with a
+        # ghost reference while the next request for the same model loads a
+        # second copy.
+        self._in_use: Dict[str, int] = {}
         # 0 = unbounded (never evict); >= 1 bounds the resident set and evicts
         # least-recently-used when a new model would exceed it.
         self.max_resident_models = max(0, max_resident_models)
@@ -109,20 +115,63 @@ class ModelProvider:
 
     def load_model(self, model_name: str):
         with self._lock:
-            if model_name not in self.models:
-                if (
-                    self.max_resident_models > 0
-                    and len(self.models) >= self.max_resident_models
-                ):
-                    self._evict_least_recently_used()
-                self.models[model_name] = load_model(model_name)
-
+            model = self._ensure_loaded(model_name)
             self._last_used[model_name] = time.monotonic()
+            return model
+
+    def acquire_model(self, model_name: str):
+        """Load ``model_name`` and mark it in use until ``release_model``.
+
+        Requests that generate over time (a slow transcription, a WebSocket
+        session) must hold their model this way: eviction only considers idle
+        models, so a request can never lose the object it is generating with.
+        """
+        with self._lock:
+            model = self._ensure_loaded(model_name)
+            self._last_used[model_name] = time.monotonic()
+            self._in_use[model_name] = self._in_use.get(model_name, 0) + 1
+            return model
+
+    def release_model(self, model_name: str) -> None:
+        """Mark one in-flight use of ``model_name`` as finished."""
+        with self._lock:
+            remaining = self._in_use.get(model_name, 0) - 1
+            if remaining > 0:
+                self._in_use[model_name] = remaining
+            else:
+                self._in_use.pop(model_name, None)
+            # Idle time counts from the end of the last request, not its start.
+            if model_name in self.models:
+                self._last_used[model_name] = time.monotonic()
+
+    def _ensure_loaded(self, model_name: str):
+        """Load ``model_name`` if missing, enforcing the resident bound (with the lock held)."""
+        if model_name in self.models:
             return self.models[model_name]
+        if (
+            self.max_resident_models > 0
+            and len(self.models) >= self.max_resident_models
+        ):
+            if self._evict_least_recently_used() is None:
+                # Every resident model is mid-request. Proceed with a temporary
+                # overflow rather than dropping a model another call is using;
+                # the bound is re-enforced once those requests release.
+                print(
+                    f"warning: max_resident_models={self.max_resident_models} but all "
+                    f"resident models are in use; loading {model_name} anyway"
+                )
+        self.models[model_name] = load_model(model_name)
+        return self.models[model_name]
 
     async def remove_model(self, model_name: str) -> bool:
         with self._lock:
             if model_name in self.models:
+                in_use = self._in_use.get(model_name, 0)
+                if in_use:
+                    print(
+                        f"warning: removing model {model_name} while {in_use} "
+                        "request(s) still hold it"
+                    )
                 self._evict(model_name)
                 return True
             return False
@@ -142,10 +191,11 @@ class ModelProvider:
         mx.clear_cache()
 
     def _evict_least_recently_used(self) -> Optional[str]:
-        """Evict the model unused for the longest time, returning its name."""
-        if not self._last_used:
+        """Evict the idle model unused for the longest time, returning its name."""
+        idle = [name for name in self._last_used if self._in_use.get(name, 0) <= 0]
+        if not idle:
             return None
-        victim = min(self._last_used, key=self._last_used.get)
+        victim = min(idle, key=self._last_used.get)
         self._evict(victim)
         return victim
 
@@ -165,7 +215,7 @@ class ModelProvider:
             self.evict_stale(time.monotonic())
 
     def evict_stale(self, now: float) -> List[str]:
-        """Evict every model unused for at least ``idle_ttl_seconds``."""
+        """Evict every idle model unused for at least ``idle_ttl_seconds``."""
         if self.idle_ttl_seconds <= 0:
             return []
         with self._lock:
@@ -173,6 +223,7 @@ class ModelProvider:
                 name
                 for name, last_used in self._last_used.items()
                 if now - last_used >= self.idle_ttl_seconds
+                and self._in_use.get(name, 0) <= 0
             ]
             for name in stale:
                 self._evict(name)
@@ -327,6 +378,17 @@ def _load_model_for_inference(model_name: str):
     return model_provider.load_model(model_name)
 
 
+def _release_request_model(request: InferenceRequest) -> None:
+    """Release the model a finished request held for inference, if it had one.
+
+    Requests that never acquired a model (mocks, warmups) are a no-op;
+    ``ModelProvider.release_model`` ignores unknown names.
+    """
+    name = getattr(request, "model_name", None)
+    if name:
+        model_provider.release_model(name)
+
+
 async def _preflight_model_load(model_name: str) -> None:
     """Load ``model_name`` synchronously and translate failures into HTTPException.
 
@@ -374,7 +436,7 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
         audio_write(tmp_path, payload.audio, payload.sample_rate)
 
         try:
-            stt_model = _load_model_for_inference(request.model_name)
+            stt_model = model_provider.acquire_model(request.model_name)
             gen_kwargs = payload.request.model_dump(
                 exclude={"model"}, exclude_none=True
             )
@@ -411,6 +473,7 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
+            model_provider.release_model(request.model_name)
 
         request.emit_done()
 
@@ -536,8 +599,12 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
     def _get_model_for_request(self, request: InferenceRequest):
         model = getattr(request, self._REQUEST_MODEL_ATTR, None)
         if model is None:
-            model = _load_model_for_inference(request.model_name)
+            # Hold the model for the request's lifetime, so eviction cannot
+            # drop it mid-generation: the completion hook hands it back when
+            # emit_done fires (success, pops, and broker failure paths alike).
+            model = model_provider.acquire_model(request.model_name)
             setattr(request, self._REQUEST_MODEL_ATTR, model)
+            request.completion_release = _release_request_model
         return model
 
     def _build_batch_options(self, request: InferenceRequest) -> TTSBatchOptions:
@@ -1717,8 +1784,11 @@ async def realtime_ws(websocket: WebSocket):
         )
         await websocket.close()
         return
+    held_model_name: Optional[str] = None
+    model = None
     try:
-        model = model_provider.load_model(model_name)
+        model = model_provider.acquire_model(model_name)
+        held_model_name = model_name
     except Exception as e:
         await send_error(f"load failed: {e}")
         await websocket.close()
@@ -1852,7 +1922,7 @@ async def realtime_ws(websocket: WebSocket):
                 target_model_name = _resolve_realtime_model_name(resolved_model)
                 if target_model_name and target_model_name != model_name:
                     try:
-                        model = model_provider.load_model(target_model_name)
+                        model = model_provider.acquire_model(target_model_name)
                     except Exception as e:
                         await send_error(f"load failed: {e}")
                         continue
@@ -1860,8 +1930,18 @@ async def realtime_ws(websocket: WebSocket):
                         await send_error(
                             f"model {target_model_name!r} does not support streaming"
                         )
+                        model_provider.release_model(target_model_name)
                         continue
                     model_name = target_model_name
+                    async with REALTIME_INFERENCE_LOCK:
+                        session = _open_streaming_session(
+                            model,
+                            temperature=temperature,
+                            delay_ms=transcription_delay_ms,
+                        )
+                    if held_model_name is not None and held_model_name != model_name:
+                        model_provider.release_model(held_model_name)
+                        held_model_name = model_name
                     async with REALTIME_INFERENCE_LOCK:
                         session = _open_streaming_session(
                             model,
@@ -2049,6 +2129,10 @@ async def realtime_ws(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+        if held_model_name is not None:
+            # The realtime session is over; make the model evictable again.
+            model_provider.release_model(held_model_name)
+            held_model_name = None
         mx.clear_cache()
 
 
