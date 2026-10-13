@@ -112,6 +112,7 @@ nav:
   - Guides:
     - guides/index.md
     - Streaming Audio: guides/streaming.md
+    - StepAudio2 Codec Streaming: guides/stepaudio2-streaming.md
     - Voice Cloning: guides/voice-cloning.md
     - Quantization: guides/quantization.md
     - Web UI & API Server: guides/web-ui-api-server.md

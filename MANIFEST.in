@@ -1,5 +1,6 @@
 include requirements.txt
 recursive-include mlx_audio/ *.py
+include mlx_audio/codec/models/stepaudio2/STREAMING-LICENSE.txt
 recursive-include mlx_audio/tts *.html
 recursive-include mlx_audio/tts *.json
 recursive-include mlx_audio/tts *.tsx
