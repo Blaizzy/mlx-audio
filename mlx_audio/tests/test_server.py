@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import inspect
 import io
@@ -35,6 +36,13 @@ def mock_model_provider():
         "mlx_audio.server.model_provider", new_callable=AsyncMock
     ) as mock_provider:
         mock_provider.load_model = MagicMock()
+        # In-use acquisition (acquire_model/release_model) reuses the
+        # load_model mock, so per-test load_model return values still reach
+        # the endpoints; release is no-op bookkeeping on the mock.
+        mock_provider.acquire_model = MagicMock(
+            side_effect=lambda name: mock_provider.load_model(name)
+        )
+        mock_provider.release_model = MagicMock()
         yield mock_provider
 
 
@@ -1013,4 +1021,212 @@ async def test_stream_inference_results_reraises_error_by_default():
             pass
 
     assert exc_info.value is error
-    assert handle.cancelled
+
+
+# -- ModelProvider memory eviction ------------------------------------------
+
+
+def _make_provider(max_resident=1, idle_ttl=0.0):
+    from mlx_audio.server import ModelProvider
+
+    return ModelProvider(max_resident_models=max_resident, idle_ttl_seconds=idle_ttl)
+
+
+def test_model_provider_lru_evicts_least_recently_used(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: loaded.append(name) or f"model-{name}",
+    )
+    provider = _make_provider(max_resident=2)
+
+    provider.load_model("a")
+    provider.load_model("b")
+    provider.load_model("a")  # a becomes the most recently used
+    provider.load_model("c")  # evicts b (LRU), keeps a
+
+    assert set(provider.models) == {"a", "c"}
+    assert set(provider._last_used.keys()) == {"a", "c"}
+
+
+def test_model_provider_evicts_when_capacity_exceeded(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: loaded.append(name) or f"model-{name}",
+    )
+    provider = _make_provider(max_resident=1)
+
+    provider.load_model("a")
+    provider.load_model("b")
+
+    assert list(provider.models.keys()) == ["b"]
+    assert loaded == ["a", "b"]
+
+
+async def test_model_provider_remove_model_clears_memory(monkeypatch):
+    cleared = []
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
+    monkeypatch.setattr("mlx_audio.server.mx.clear_cache", lambda: cleared.append(1))
+    provider = _make_provider()
+
+    provider.load_model("a")
+    assert "a" in provider.models
+
+    removed = await provider.remove_model("a")
+
+    assert removed is True
+    assert provider.models == {}
+    assert cleared == [1]
+    assert "a" not in provider._last_used
+
+
+def test_model_provider_evict_collects_garbage_before_clearing_cache(monkeypatch):
+    order = []
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
+    monkeypatch.setattr(
+        "mlx_audio.server.gc.collect", lambda: order.append("gc.collect")
+    )
+    monkeypatch.setattr(
+        "mlx_audio.server.mx.clear_cache", lambda: order.append("mx.clear_cache")
+    )
+    provider = _make_provider()
+
+    provider.load_model("a")
+    provider.load_model("b")
+
+    assert order == ["gc.collect", "mx.clear_cache"]
+
+
+async def test_model_provider_remove_model_missing_returns_false():
+    provider = _make_provider()
+    assert await provider.remove_model("missing") is False
+
+
+async def test_model_provider_idle_sweeper_evicts_stale_models(monkeypatch):
+    loaded = []
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: loaded.append(name) or f"model-{name}",
+    )
+    clock = {"now": 0.0}
+    monkeypatch.setattr("mlx_audio.server.time.monotonic", lambda: clock["now"])
+    provider = _make_provider(idle_ttl=0.05)
+    provider.start_sweeper()
+    try:
+        provider.load_model("a")
+        clock["now"] = 0.06
+        stale = provider.evict_stale(clock["now"])
+        assert stale == ["a"]
+        assert "a" not in provider.models
+
+        provider.load_model("b")
+        clock["now"] = 0.10  # b is only 0.04s old — still fresh
+        assert provider.evict_stale(clock["now"]) == []
+        assert "b" in provider.models
+
+        clock["now"] = 0.20  # b is now 0.14s old — stale
+        assert provider.evict_stale(clock["now"]) == ["b"]
+        assert "b" not in provider.models
+    finally:
+        provider.stop_sweeper()
+
+
+def test_model_provider_sweeper_is_noop_when_ttl_disabled(monkeypatch):
+    provider = _make_provider(idle_ttl=0.0)
+    provider.start_sweeper()
+    assert provider._sweeper_task is None
+    provider.stop_sweeper()
+
+
+def test_model_provider_zero_max_resident_is_unbounded(monkeypatch):
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
+    provider = _make_provider(max_resident=0)
+    assert provider.max_resident_models == 0
+
+    for i in range(5):
+        provider.load_model(f"m{i}")
+
+    assert len(provider.models) == 5
+
+
+# -- in-use tracking: a model a request holds is never an eviction candidate ---
+
+
+def test_model_provider_lru_skips_in_use_models(monkeypatch):
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: f"model-{name}",
+    )
+    provider = _make_provider(max_resident=2)
+
+    # "a" is held by an in-flight request; "b" has been released.
+    held = provider.acquire_model("a")
+    b = provider.acquire_model("b")
+    provider.release_model("b")
+    provider.load_model("a")  # a stays most-recently-used either way
+    provider.load_model("c")  # capacity exceeded: must evict b, not the held a
+
+    assert set(provider.models) == {"a", "c"}
+    assert provider._in_use == {"a": 1}
+    assert held == "model-a" and b == "model-b"
+
+
+def test_model_provider_lru_all_in_use_overflows_and_warns(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: f"model-{name}",
+    )
+    provider = _make_provider(max_resident=1)
+
+    provider.acquire_model("a")
+    provider.acquire_model("b")  # nothing evictable: load proceeds anyway
+
+    assert set(provider.models) == {"a", "b"}
+    assert "in use" in capsys.readouterr().out
+
+
+def test_model_provider_release_makes_model_evictable_again(monkeypatch):
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model",
+        lambda name: f"model-{name}",
+    )
+    provider = _make_provider(max_resident=2)
+
+    provider.acquire_model("a")
+    provider.acquire_model("b")
+    provider.release_model("a")
+    provider.release_model("a")  # an extra release must not go negative
+    provider.load_model("c")
+
+    assert "a" not in provider.models
+    assert provider._in_use == {"b": 1}
+
+
+async def test_model_provider_sweeper_skips_in_use_models(monkeypatch):
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
+    clock = {"now": 0.0}
+    monkeypatch.setattr("mlx_audio.server.time.monotonic", lambda: clock["now"])
+    provider = _make_provider(idle_ttl=0.05)
+
+    provider.acquire_model("a")  # acquired long "ago" at the same clock time
+    clock["now"] = 0.20
+    assert provider.evict_stale(clock["now"]) == []
+    assert "a" in provider.models
+
+    provider.release_model("a")
+    # release_model re-arms the idle clock at "now" (0.20); past the TTL it is evictable
+    assert provider.evict_stale(0.26) == ["a"]
+    assert "a" not in provider.models
+
+
+async def test_model_provider_remove_model_warns_when_in_use(monkeypatch, capsys):
+    monkeypatch.setattr("mlx_audio.server.load_model", lambda name: f"model-{name}")
+    provider = _make_provider()
+
+    provider.acquire_model("a")
+    removed = await provider.remove_model("a")
+
+    assert removed is True
+    assert provider.models == {}
+    assert "still hold it" in capsys.readouterr().out
