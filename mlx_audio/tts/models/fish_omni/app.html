@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drama 3 Studio</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1c1a; --muted: #6b6862; --line: #e3e0da;
+    --accent: #c2410c; --accent-ink: #ffffff; --soft: #fbeee6; --ok: #15803d; --warn: #b45309; --bad: #b91c1c;
+    --chip: #f0ede7; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141312; --panel: #1d1c1a; --ink: #f1efea; --muted: #a29e96; --line: #33312d;
+      --accent: #fb923c; --accent-ink: #1d1c1a; --soft: #3a2518; --chip: #2a2825;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+           padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+           position: sticky; top: 0; z-index: 5; }
+  header h1 { font-size: 16px; margin: 0 12px 0 0; letter-spacing: .2px; }
+  header .spacer { flex: 1; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px;
+         padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  section + section { margin-top: 16px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted);
+       margin: 0 0 10px; font-weight: 600; }
+  textarea, input, select, button { font: inherit; color: inherit; }
+  textarea, input[type=text], input[type=number], select {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 7px 9px; }
+  textarea { min-height: 190px; resize: vertical; font-family: var(--mono); font-size: 13px; }
+  button { border: 1px solid var(--line); background: var(--chip); border-radius: 7px; padding: 6px 11px;
+           cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0; }
+  .chips button { font-family: var(--mono); font-size: 12px; padding: 3px 8px; }
+  .pill { font-size: 12px; padding: 3px 9px; border-radius: 999px; background: var(--chip); color: var(--muted); white-space: nowrap; }
+  .pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+  label { display: block; font-size: 12px; color: var(--muted); }
+  label > input, label > select { margin-top: 3px; }
+  .range { display: flex; align-items: center; gap: 8px; }
+  .range input[type=range] { flex: 1; accent-color: var(--accent); }
+  .range output { font-family: var(--mono); font-size: 12px; min-width: 34px; text-align: right; }
+  .voice { border: 1px solid var(--line); border-radius: 8px; padding: 9px; margin-bottom: 8px; }
+  .voice .meta { font-size: 12px; color: var(--muted); }
+  .voice textarea { min-height: 52px; font-family: inherit; font-size: 13px; margin-top: 6px; }
+  .take { border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 12px; }
+  .take.live { border-color: var(--accent); background: var(--soft); }
+  .take .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .take .head b { font-size: 14px; }
+  .take .sub { color: var(--muted); font-size: 12px; }
+  .take .script { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: pre-wrap;
+                  margin: 6px 0; max-height: 4.5em; overflow: auto; }
+  .chunk { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center;
+           padding: 6px 0; border-top: 1px dashed var(--line); }
+  .chunk .t { font-size: 12px; color: var(--muted); font-family: var(--mono); overflow: hidden;
+              text-overflow: ellipsis; white-space: nowrap; grid-column: 1 / -1; }
+  .chunk audio { width: 100%; height: 32px; }
+  .chunk .s { font-size: 12px; font-family: var(--mono); color: var(--muted); white-space: nowrap; }
+  .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+  #error { display: none; background: #fee2e2; color: #7f1d1d; border: 1px solid #fecaca; border-radius: 8px;
+           padding: 9px 12px; margin-bottom: 12px; white-space: pre-wrap; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--muted);
+          border-top-color: transparent; border-radius: 50%; animation: s 0.8s linear infinite; vertical-align: -1px; }
+  @keyframes s { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Drama 3 Studio</h1>
+  <select id="model" style="width:auto"></select>
+  <button id="load">Load</button>
+  <span id="modelState" class="pill">no model</span>
+  <span class="spacer"></span>
+  <span id="mem" class="pill">–</span>
+</header>
+
+<main>
+  <div>
+    <div id="error"></div>
+    <section>
+      <h2>Script</h2>
+      <div class="row">
+        <select id="examples" style="width:auto">
+          <option value="">Examples…</option>
+          <option value="single">Single line</option>
+          <option value="cues">Cues</option>
+          <option value="dialog">Two-speaker dialog</option>
+          <option value="long">Long three-speaker scene</option>
+        </select>
+        <span class="hint" style="margin:0">Speaker tags pick the voice whose reference uses that speaker number.</span>
+      </div>
+      <div class="chips" id="tagChips"></div>
+      <textarea id="text" spellcheck="false" placeholder="<|speaker:0|> Hello there. <|speaker:1|> [laughs] Hi!"></textarea>
+      <div class="row" style="margin-top:10px">
+        <button id="generate" class="primary">Generate</button>
+        <button id="stop" disabled>Stop</button>
+        <label style="display:flex;align-items:center;gap:6px;margin-left:6px">
+          Continue from
+          <select id="previous" style="width:auto"><option value="">— nothing (fresh take) —</option></select>
+        </label>
+        <span id="genState" class="hint" style="margin:0 0 0 auto"></span>
+      </div>
+      <div class="hint">“Continue from” passes an earlier take back in as history, so you can edit a line
+        (for example, change one word) while keeping the delivery.</div>
+    </section>
+
+    <section>
+      <h2>Takes</h2>
+      <div id="takes"><div class="empty">Nothing generated yet.</div></div>
+    </section>
+  </div>
+
+  <aside>
+    <section>
+      <h2>Reference voices</h2>
+      <div id="voices"></div>
+      <form id="voiceForm">
+        <label>Audio file (wav / mp3 / flac, ≤ 30 s)<input type="file" id="voiceFile" accept="audio/*" required></label>
+        <label style="margin-top:8px">Exact transcript of the clip
+          <input type="text" id="voiceText" placeholder="What is said in the clip" required></label>
+        <div class="row" style="margin-top:8px">
+          <label style="flex:1">Speaker <select id="voiceSpeaker"></select></label>
+          <button type="submit" id="voiceAdd" style="align-self:flex-end">Add voice</button>
+        </div>
+      </form>
+      <div class="hint">Without a reference the model picks a voice. With several, tag each line
+        <code>&lt;|speaker:N|&gt;</code> to choose who says it.</div>
+    </section>
+
+    <section>
+      <h2>Sampling</h2>
+      <div class="range"><label style="width:84px">Temperature</label>
+        <input type="range" id="temperature" min="0.1" max="1.5" step="0.05" value="1.0"><output></output></div>
+      <div class="range"><label style="width:84px">Top-p</label>
+        <input type="range" id="top_p" min="0.1" max="1.0" step="0.05" value="0.9"><output></output></div>
+      <div class="range"><label style="width:84px">Top-k</label>
+        <input type="range" id="top_k" min="1" max="100" step="1" value="30"><output></output></div>
+      <div class="grid2" style="margin-top:8px">
+        <label>Max frames / chunk<input type="number" id="max_frames" value="600" min="20" max="2048"></label>
+        <label>Seed (blank = random)<input type="number" id="seed" placeholder="random"></label>
+      </div>
+      <label style="display:flex;gap:6px;align-items:center;margin-top:10px">
+        <input type="checkbox" id="single_chunk"> Generate as one chunk (no splitting)</label>
+      <div class="row" style="margin-top:8px">
+        <button class="small" id="resetSampling">Official defaults</button>
+        <label style="display:flex;gap:6px;align-items:center;margin-left:auto">
+          <input type="checkbox" id="autoplay" checked> Autoplay chunks</label>
+      </div>
+      <div class="hint">21.5 frames = 1 s of audio. Defaults match the official Drama 3 server.</div>
+    </section>
+  </aside>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { voices: [], takes: [], controller: null, playQueue: [], playing: false };
+const player = new Audio();
+
+const EXAMPLES = {
+  single: "<|speaker:0|> The quarterly report is due on Thursday, so please finish it by noon.",
+  cues: "<|speaker:0|> [sighs] Fine. If we miss it, it's on you. [laughs] Well, maybe that's fair.",
+  dialog: "<|speaker:0|> Did you remember to lock the door?\n<|speaker:1|> [sighs] I think so. Do you want me to go back and check?\n<|speaker:0|> [laughs] No, no. I trust you. Mostly.",
+  long: "<|speaker:0|> Did you hear the news about the bakery on the corner? They are finally closing after thirty years, and the owner says she wants to travel the world.\n<|speaker:1|> [sighs] That is a real shame. I used to buy their cinnamon rolls every Saturday morning before football practice.\n<|speaker:2|> Maybe someone will buy the place and keep the recipes. Stranger things have happened in this town, you know.\n<|speaker:0|> I hope so. Let's go there tomorrow and say goodbye properly.\n<|speaker:1|> [laughs] Only if you promise to pay this time.\n<|speaker:2|> Deal. I will bring my camera, too.",
+};
+
+function showError(message) {
+  const box = $("error");
+  box.textContent = message || "";
+  box.style.display = message ? "block" : "none";
+}
+
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try { detail = (await response.json()).detail || detail; } catch (_) {}
+    throw new Error(detail);
+  }
+  return response;
+}
+
+// ------------------------------------------------------------------ status
+async function refresh() {
+  try {
+    const s = await (await api("/api/status")).json();
+    const select = $("model");
+    if (select.options.length !== s.models.length) {
+      select.innerHTML = s.models.map((m) => `<option>${m}</option>`).join("");
+    }
+    if (s.loaded && !select.dataset.touched) select.value = s.loaded;
+    const pill = $("modelState");
+    if (s.loading) { pill.innerHTML = `<span class="spin"></span> loading ${s.loading}`; pill.className = "pill warn"; }
+    else if (s.loaded) { pill.textContent = `● ${s.loaded}`; pill.className = "pill ok"; }
+    else { pill.textContent = "no model loaded"; pill.className = "pill warn"; }
+    $("mem").textContent = `${s.active_gb} GB in use${s.busy ? " · busy" : ""}`;
+    $("load").disabled = !!s.loading || select.value === s.loaded;
+    if (JSON.stringify(s.voices) !== JSON.stringify(state.voices)) {
+      state.voices = s.voices;
+      renderVoices();
+    }
+  } catch (e) {
+    $("modelState").textContent = "server unreachable";
+    $("modelState").className = "pill warn";
+  }
+}
+setInterval(refresh, 2000);
+
+$("model").addEventListener("change", () => { $("model").dataset.touched = "1"; refresh(); });
+$("load").addEventListener("click", async () => {
+  showError("");
+  $("load").disabled = true;
+  try { await api("/api/load", { method: "POST", headers: { "Content-Type": "application/json" },
+                                 body: JSON.stringify({ model: $("model").value }) }); }
+  catch (e) { showError(`Load failed: ${e.message}`); }
+  delete $("model").dataset.touched;
+  refresh();
+});
+
+// ------------------------------------------------------------------ voices
+const speakerOptions = (selected) =>
+  Array.from({ length: 16 }, (_, i) => `<option value="${i}" ${i === selected ? "selected" : ""}>${i}</option>`).join("");
+$("voiceSpeaker").innerHTML = speakerOptions(0);
+
+function renderVoices() {
+  const box = $("voices");
+  if (!state.voices.length) {
+    box.innerHTML = `<div class="empty">No reference voices yet.</div>`;
+  } else {
+    box.innerHTML = "";
+    for (const v of state.voices) {
+      const el = document.createElement("div");
+      el.className = "voice";
+      el.innerHTML = `
+        <div class="row">
+          <b style="flex:1;overflow:hidden;text-overflow:ellipsis">${escapeHtml(v.name)}</b>
+          <label style="display:flex;align-items:center;gap:4px">speaker
+            <select style="width:auto" data-k="speaker">${speakerOptions(v.speaker)}</select></label>
+          <button class="small" data-k="remove" title="Remove">✕</button>
+        </div>
+        <div class="meta">${v.seconds}s · ${v.frames} frames</div>
+        <textarea data-k="transcript">${escapeHtml(v.transcript)}</textarea>`;
+      el.querySelector('[data-k="speaker"]').addEventListener("change", (e) =>
+        patchVoice(v.id, { speaker: Number(e.target.value) }));
+      el.querySelector('[data-k="transcript"]').addEventListener("change", (e) =>
+        patchVoice(v.id, { transcript: e.target.value }));
+      el.querySelector('[data-k="remove"]').addEventListener("click", async () => {
+        await api(`/api/voices/${v.id}`, { method: "DELETE" });
+        refresh();
+      });
+      box.appendChild(el);
+    }
+  }
+  renderTagChips();
+  const used = new Set(state.voices.map((v) => v.speaker));
+  const next = Array.from({ length: 16 }, (_, i) => i).find((i) => !used.has(i)) ?? 0;
+  $("voiceSpeaker").value = String(next);
+}
+
+async function patchVoice(id, body) {
+  await api(`/api/voices/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+                                   body: JSON.stringify(body) });
+  refresh();
+}
+
+$("voiceForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  showError("");
+  const form = new FormData();
+  form.append("file", $("voiceFile").files[0]);
+  form.append("transcript", $("voiceText").value);
+  form.append("speaker", $("voiceSpeaker").value);
+  $("voiceAdd").disabled = true;
+  $("voiceAdd").innerHTML = `<span class="spin"></span> Encoding`;
+  try {
+    await api("/api/voices", { method: "POST", body: form });
+    $("voiceForm").reset();
+  } catch (e) { showError(`Could not add voice: ${e.message}`); }
+  $("voiceAdd").disabled = false;
+  $("voiceAdd").textContent = "Add voice";
+  refresh();
+});
+
+// ------------------------------------------------------------------ script
+function renderTagChips() {
+  const speakers = new Set([0, 1, 2, ...state.voices.map((v) => v.speaker)]);
+  const chips = [...speakers].sort((a, b) => a - b).map((s) => `<|speaker:${s}|> `);
+  chips.push("[laughs] ", "[sighs] ");
+  $("tagChips").innerHTML = "";
+  for (const chip of chips) {
+    const b = document.createElement("button");
+    b.textContent = chip.trim();
+    b.addEventListener("click", () => insertAtCursor(chip.startsWith("<|") && !atLineStart() ? "\n" + chip : chip));
+    $("tagChips").appendChild(b);
+  }
+}
+function atLineStart() {
+  const t = $("text"); const i = t.selectionStart;
+  return i === 0 || t.value[i - 1] === "\n";
+}
+function insertAtCursor(snippet) {
+  const t = $("text");
+  const [a, b] = [t.selectionStart, t.selectionEnd];
+  t.value = t.value.slice(0, a) + snippet + t.value.slice(b);
+  t.selectionStart = t.selectionEnd = a + snippet.length;
+  t.focus();
+}
+$("examples").addEventListener("change", (e) => {
+  if (e.target.value) $("text").value = EXAMPLES[e.target.value];
+  e.target.value = "";
+});
+
+// ---------------------------------------------------------------- sampling
+for (const id of ["temperature", "top_p", "top_k"]) {
+  const input = $(id), out = input.nextElementSibling;
+  const sync = () => (out.textContent = input.value);
+  input.addEventListener("input", sync); sync();
+}
+$("resetSampling").addEventListener("click", () => {
+  for (const [id, v] of [["temperature", 1.0], ["top_p", 0.9], ["top_k", 30]]) {
+    $(id).value = v; $(id).dispatchEvent(new Event("input"));
+  }
+  $("max_frames").value = 600;
+});
+
+// -------------------------------------------------------------- generation
+function enqueue(url) {
+  if (!$("autoplay").checked) return;
+  state.playQueue.push(url);
+  if (!state.playing) playNext();
+}
+function playNext() {
+  const url = state.playQueue.shift();
+  if (!url) { state.playing = false; return; }
+  state.playing = true;
+  player.src = url;
+  player.play().catch(() => { state.playing = false; });
+}
+player.addEventListener("ended", playNext);
+
+function b64ToBlobUrl(b64) {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+}
+
+function newTakeCard(number, text, settings) {
+  const takes = $("takes");
+  if (takes.querySelector(".empty")) takes.innerHTML = "";
+  const card = document.createElement("div");
+  card.className = "take live";
+  card.innerHTML = `
+    <div class="head"><b>Take ${number}</b>
+      <span class="sub">${settings}</span>
+      <span class="sub" data-k="status" style="margin-left:auto"><span class="spin"></span> generating…</span></div>
+    <div class="script">${escapeHtml(text)}</div>
+    <div data-k="chunks"></div>
+    <div class="row" data-k="actions" style="margin-top:8px"></div>`;
+  takes.prepend(card);
+  return card;
+}
+
+$("generate").addEventListener("click", async () => {
+  showError("");
+  const text = $("text").value.trim();
+  if (!text) { showError("Enter some text first."); return; }
+  const body = {
+    text,
+    voices: state.voices.map((v) => v.id),
+    temperature: Number($("temperature").value),
+    top_p: Number($("top_p").value),
+    top_k: Number($("top_k").value),
+    max_frames: Number($("max_frames").value),
+    seed: $("seed").value === "" ? null : Number($("seed").value),
+    single_chunk: $("single_chunk").checked,
+    previous_take: $("previous").value || null,
+  };
+  const prevLabel = body.previous_take ? ` · continues take ${$("previous").selectedOptions[0].dataset.n}` : "";
+  const settings = `${$("model").value} · T ${body.temperature} · p ${body.top_p} · k ${body.top_k}` +
+                   `${body.seed !== null ? " · seed " + body.seed : ""} · ${body.voices.length} voice(s)${prevLabel}`;
+  state.controller = new AbortController();
+  $("generate").disabled = true; $("stop").disabled = false;
+  $("genState").innerHTML = `<span class="spin"></span> working`;
+  let card = null, takeId = null, number = null, frames = 0, audioSeconds = 0;
+  try {
+    const response = await api("/api/generate", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: state.controller.signal,
+    });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const event = JSON.parse(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+        if (event.type === "start") {
+          takeId = event.take; number = event.number;
+          card = newTakeCard(number, text, settings);
+        } else if (event.type === "chunk") {
+          frames += event.frames; audioSeconds += event.seconds;
+          const url = b64ToBlobUrl(event.wav);
+          const row = document.createElement("div");
+          row.className = "chunk";
+          row.innerHTML = `<div class="t" title="${escapeHtml(event.text)}">${escapeHtml(event.text)}</div>
+            <audio controls src="${url}"></audio>
+            <span class="s">${event.seconds}s · ${event.fps} fr/s · ${event.peak_gb} GB</span>`;
+          card.querySelector('[data-k="chunks"]').appendChild(row);
+          card.querySelector('[data-k="status"]').innerHTML =
+            `<span class="spin"></span> chunk ${event.index + 1} done`;
+          $("genState").innerHTML = `<span class="spin"></span> ${audioSeconds.toFixed(1)}s of audio so far`;
+          enqueue(url);
+        } else if (event.type === "error") {
+          showError(event.message);
+        } else if (event.type === "cancelled") {
+          showError("Stopped after the current chunk.");
+        } else if (event.type === "done") {
+          finishCard(card, event.take, number, text, event, frames);
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") showError("Stopped. The server finishes the chunk it is on, then stops.");
+    else showError(e.message);
+    if (card) finishCard(card, null, number, text, null, frames);
+  }
+  $("generate").disabled = false; $("stop").disabled = true;
+  $("genState").textContent = "";
+  refresh();
+});
+$("stop").addEventListener("click", () => state.controller && state.controller.abort());
+
+function finishCard(card, takeId, number, text, done, frames) {
+  if (!card || card.dataset.finished) return;
+  card.dataset.finished = "1";
+  card.classList.remove("live");
+  const status = card.querySelector('[data-k="status"]');
+  if (done && takeId) {
+    const rtf = done.elapsed / Math.max(done.seconds, 1e-6);
+    status.textContent = `${done.seconds}s audio in ${done.elapsed}s · ${frames} frames · RTF ${rtf.toFixed(2)}`;
+    const actions = card.querySelector('[data-k="actions"]');
+    actions.innerHTML = `<button class="small" data-k="download">Download WAV</button>
+      <button class="small" data-k="edit">Edit from this take</button>`;
+    actions.querySelector('[data-k="download"]').addEventListener("click", () => {
+      window.location.href = `/api/takes/${takeId}.wav`;
+    });
+    actions.querySelector('[data-k="edit"]').addEventListener("click", () => {
+      $("previous").value = takeId;
+      $("text").value = text;
+      $("text").focus();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    const option = document.createElement("option");
+    option.value = takeId; option.dataset.n = number;
+    option.textContent = `Take ${number}: ${text.replace(/<\|speaker:\d+\|>\s*/g, "").slice(0, 48)}…`;
+    $("previous").insertBefore(option, $("previous").options[1] || null);
+  } else {
+    status.textContent = done ? "no audio produced" : "stopped";
+  }
+}
+
+refresh();
+</script>
+</body>
+</html>

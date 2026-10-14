@@ -35,6 +35,7 @@ MODEL_REMAPPING = {
     "kitten": "kitten_tts",
     "echo_tts": "echo_tts",
     "fish_qwen3_omni": "fish_qwen3_omni",
+    "fish_omni": "fish_omni",
     "irodori_tts": "irodori_tts",
     "voxtral_tts": "voxtral_tts",
     "kugelaudio": "kugelaudio",
