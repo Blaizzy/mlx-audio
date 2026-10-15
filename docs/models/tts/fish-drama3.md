@@ -38,6 +38,28 @@ Three more options give finer control. They only change how the checkpoint is wr
 
 For example, [`fcmeyer/drama-3-MLX-3bit-HQ`](https://huggingface.co/fcmeyer/drama-3-MLX-3bit-HQ) uses `--expert-bits 3 --dense-bits 8 --tower-bits 8 --head-bits 0` with a map that keeps the experts of 15 layers at 4 bits.
 
+### Comparing quantized checkpoints
+
+WER barely separates the quantized checkpoints, because it sits near Whisper's floor for all of them. Teacher-forced KL to the bfloat16 model does separate them. To measure it, run each checkpoint on the same bfloat16-generated sequences and compare its next-token distributions with the bfloat16 ones. The table compares the published checkpoints and a few stock recipes, all run on one harness:
+
+| Recipe | Checkpoint | Weights | Main KL | Head KL | Failures | Peak memory | Speed |
+|---|---|---|---|---|---|---|---|
+| (none) | bfloat16 reference | 70.8 GB | 0 | 0 | 4.0% | 84.9 GB | 2.0× |
+| `--expert-bits 8` | | 40.6 GB | 0.0046 | 0.0025 | 6.2% | 54.7 GB | 2.1× |
+| `--expert-bits 6` | | 32.5 GB | 0.0062 | 0.0032 | 7.2% | 46.6 GB | 2.0× |
+| `--expert-bits 5 --dense-bits 8 --tower-bits 8 --head-bits 0` | [fcmeyer/drama-3-MLX-5bit](https://huggingface.co/fcmeyer/drama-3-MLX-5bit) | 26.3 GB | 0.0094 | 0.0059 | 3.8% | 40.4 GB | 2.8× |
+| `--expert-bits 4` | [fcmeyer/drama-3-MLX-4bit-HQ](https://huggingface.co/fcmeyer/drama-3-MLX-4bit-HQ) | 24.5 GB | 0.0190 | 0.0082 | 4.6% | 38.6 GB | 2.3× |
+| `--expert-bits 4 --dense-bits 8 --tower-bits 8` | [mlx-community/fish-audio-drama-3-4bit](https://huggingface.co/mlx-community/fish-audio-drama-3-4bit) | 22.2 GB | 0.0204 | 0.0101 | 4.4% | 36.3 GB | 3.0× |
+| `--expert-bits 3 --dense-bits 8 --tower-bits 8 --head-bits 0` with a 15-layer `--expert-bits-map` | [fcmeyer/drama-3-MLX-3bit-HQ](https://huggingface.co/fcmeyer/drama-3-MLX-3bit-HQ) | 19.7 GB | 0.0352 | 0.0146 | 3.6% | 33.8 GB | 2.7× |
+| `--expert-bits 3 --dense-bits 8 --tower-bits 8` | [Nav8ha/drama-3-mlx-mixed-3bit](https://huggingface.co/Nav8ha/drama-3-mlx-mixed-3bit) | 18.2 GB | 0.0660 | 0.0271 | 3.0% | 32.2 GB | 3.1× |
+
+- **Main KL** compares the distributions for the semantic token, and **Head KL** averages the comparison over the nine codebook heads. Lower is closer to bfloat16. The KLs are averaged over 64 sequences, and every pair of neighbouring rows differs with a paired 95% confidence interval that excludes zero.
+- **Failures** counts free-running clips that stall, ramble to the length limit or drop text, out of 500 (100 prompts × 5 seeds, in six languages, with dialogue and cues). This happens at every precision, bfloat16 included, and the differences between rows are within noise.
+- **Peak memory** and **Speed** (audio seconds per second) were measured over the whole run of 500 clips on an M5 Max. A single generation peaks lower.
+- **Sampling:** temperature 1.0, top-p 0.9, top-k 30, no reference voice.
+
+Keeping the codebook heads in bfloat16 lowers head KL at little cost, and so does keeping the more sensitive late layers' experts at 4 bits. The harness and per-clip results are in the [`eval/`](https://huggingface.co/fcmeyer/drama-3-MLX-3bit-HQ/tree/main/eval) folder of the checkpoints above.
+
 ## Usage
 
 === "CLI"
