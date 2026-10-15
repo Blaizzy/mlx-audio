@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 from mlx.utils import tree_flatten
 
@@ -200,6 +201,51 @@ class TestConversion(unittest.TestCase):
             enorm = out["tower.residual_layers.0.enorm.weight"]
             want = source["audio_decoder_mtp.layers.0.enorm.weight"]
             self.assertTrue(mx.array_equal(enorm, want.astype(mx.float32) + 1))
+
+    def test_per_layer_expert_bits_and_bf16_heads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp, "src"), Path(tmp, "dst")
+            src.mkdir()
+            write_source(src)
+            convert(
+                src,
+                dst,
+                expert_bits=3,
+                dense_bits=8,
+                tower_bits=8,
+                head_bits=0,
+                expert_group_size=32,
+                expert_bits_map={1: 4},
+                codec=False,
+            )
+            quant = json.loads((dst / "config.json").read_text())["quantization"]
+            experts = "backbone.model.layers.{}.mlp.switch_mlp.down_proj"
+            self.assertEqual(quant[experts.format(0)], {"group_size": 32, "bits": 3})
+            self.assertEqual(quant[experts.format(1)], {"group_size": 32, "bits": 4})
+            self.assertFalse(any("codebook_heads" in path for path in quant))
+            self.assertEqual(
+                quant["tower.residual_layers.0.transformer_layer.attention.wo"]["bits"],
+                8,
+            )
+
+            with patch(
+                "mlx_audio.codec.models.fish_s1_dac.DAC.from_pretrained",
+                return_value=_tiny_streaming_dac(semantic_codebook_size=TOWER_VOCAB),
+            ):
+                model = load_model(dst)
+            layers = model.backbone.model.layers
+            self.assertEqual(layers[0].mlp.switch_mlp.down_proj.bits, 3)
+            self.assertEqual(layers[1].mlp.switch_mlp.down_proj.bits, 4)
+            self.assertEqual(layers[1].mlp.switch_mlp.down_proj.group_size, 32)
+            self.assertNotIsInstance(model.tower.codebook_heads[0], nn.QuantizedLinear)
+
+    def test_rejects_a_bits_map_for_missing_layers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = Path(tmp, "src"), Path(tmp, "dst")
+            src.mkdir()
+            write_source(src)
+            with self.assertRaises(ValueError):
+                convert(src, dst, expert_bits=3, expert_bits_map={9: 4}, codec=False)
 
     def test_refuses_a_non_empty_destination(self):
         # The loader reads every shard in the directory, so stale ones would

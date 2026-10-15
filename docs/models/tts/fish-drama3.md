@@ -30,6 +30,14 @@ Measured on 20 voice-cloned English clips (Whisper WER, speaker similarity, UTMO
 
 Without `--dense-bits` and `--tower-bits`, the dense projections and the audio tower stay in bfloat16. With 4-bit experts that brings the codebook heads slightly closer to the PyTorch reference, but needs about 2.3 GB more peak memory and runs about a quarter slower on an M3 Max.
 
+Three more options give finer control. They only change how the checkpoint is written; the result loads like any other.
+
+- `--head-bits` quantizes the tower's nine codebook heads separately from the rest of the tower. It defaults to `--tower-bits`; `0` keeps the heads in bfloat16.
+- `--expert-group-size` sets the experts' quantization group size: 32, 64 (the default) or 128.
+- `--expert-bits-map` takes a JSON file that maps layer index to expert bits, such as `{"38": 4, "39": 4}`. Layers it does not list use `--expert-bits`.
+
+For example, [`fcmeyer/drama-3-MLX-3bit-HQ`](https://huggingface.co/fcmeyer/drama-3-MLX-3bit-HQ) uses `--expert-bits 3 --dense-bits 8 --tower-bits 8 --head-bits 0` with a map that keeps the experts of 15 layers at 4 bits.
+
 ## Usage
 
 === "CLI"
