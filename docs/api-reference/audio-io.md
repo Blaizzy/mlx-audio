@@ -34,14 +34,20 @@ Drop-in replacements for `soundfile.read()` and `soundfile.write()`:
 
 ### Reading
 
+`read()` detects the format from the file's first bytes, so a wrong or missing
+extension does not matter. It falls back to the extension when the bytes are not
+recognized or do not decode.
+
 | Format | Backend | Notes |
 |--------|---------|-------|
 | WAV | miniaudio | No external dependencies |
+| AIFF | miniaudio | No external dependencies |
 | MP3 | miniaudio | No external dependencies |
 | FLAC | miniaudio | No external dependencies |
 | Vorbis / OGG | ffmpeg | Requires ffmpeg |
 | M4A / AAC | ffmpeg | Requires ffmpeg |
 | Opus | ffmpeg | Requires ffmpeg |
+| WebM / CAF / AIFC | ffmpeg | Requires ffmpeg |
 
 ### Writing
 

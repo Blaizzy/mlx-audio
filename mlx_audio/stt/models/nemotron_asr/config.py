@@ -29,6 +29,7 @@ class PreprocessArgs:
     log_zero_guard_value: float = 2.0**-24
     pad_to: int = 0
     pad_value: float = 0.0
+    pad_mode: str = "reflect"
 
     @property
     def win_length(self) -> int:

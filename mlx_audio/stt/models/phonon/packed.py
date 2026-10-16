@@ -68,6 +68,26 @@ def _unpack_kernel():
     )
 
 
+def _unpack_base5_codes_fallback(
+    quint5_q: mx.array, in_features: int
+) -> tuple[mx.array, mx.array]:
+    """Decode little-endian base-5 payloads into low-to-high 2-bit codes."""
+    out_features = quint5_q.shape[0]
+    source = quint5_q.astype(mx.uint32).reshape(out_features, -1, 3)
+    payload = source[..., 0] | (source[..., 1] << 8) | (source[..., 2] << 16)
+    divisors = mx.array([5**i for i in range(10)], dtype=mx.uint32)
+    symbols = ((payload[..., None] // divisors) % 5).reshape(out_features, -1)
+    symbols = symbols[:, :in_features]
+    base = mx.array([0, 0, 1, 2, 2], dtype=mx.uint32)[symbols]
+    residual = mx.array([0, 2, 1, 0, 2], dtype=mx.uint32)[symbols]
+    shape = (out_features, in_features // 16, 16)
+    shifts = 2 * mx.arange(16, dtype=mx.uint32)
+    return (
+        mx.sum(base.reshape(shape) << shifts, axis=-1),
+        mx.sum(residual.reshape(shape) << shifts, axis=-1),
+    )
+
+
 def packed_bytes_per_row(in_features: int) -> int:
     return ((in_features + 9) // 10) * 3
 
@@ -81,6 +101,9 @@ def unpack_base5_codes(
         raise ValueError("quint5_q must be a two-dimensional uint8 array")
     if in_features % 16 or quint5_q.shape[1] != packed_bytes_per_row(in_features):
         raise ValueError("invalid ten-base-5-symbols-per-24-bit layout")
+
+    if not mx.metal.is_available():
+        return _unpack_base5_codes_fallback(quint5_q, in_features)
 
     out_features = quint5_q.shape[0]
     shape = (out_features, in_features // 16)

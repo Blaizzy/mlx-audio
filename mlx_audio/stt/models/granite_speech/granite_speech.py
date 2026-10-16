@@ -737,7 +737,7 @@ class Model(nn.Module):
         prefill_step_size: int = 2048,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
-        from mlx_audio.lm.generate import generate_step
+        from mlx_audio.lm.generate import StreamingDetokenizer, generate_step
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         audio_data = self._load_audio(audio)
@@ -760,6 +760,7 @@ class Model(nn.Module):
 
         eos_token_id = self._tokenizer.eos_token_id
         gen_tokens = 0
+        detokenizer = StreamingDetokenizer(self._tokenizer, skip_special_tokens=True)
 
         for token, _ in generate_step(
             prompt=prompt_ids,
@@ -773,18 +774,20 @@ class Model(nn.Module):
             if token == eos_token_id:
                 break
             gen_tokens += 1
-            text = self._tokenizer.decode([token], skip_special_tokens=True)
-            yield StreamingResult(
-                text=text,
-                is_final=False,
-                start_time=0.0,
-                end_time=0.0,
-                prompt_tokens=prompt_token_count,
-                generation_tokens=gen_tokens,
-            )
+            detokenizer.add_token(token)
+            if text := detokenizer.last_segment:
+                yield StreamingResult(
+                    text=text,
+                    is_final=False,
+                    start_time=0.0,
+                    end_time=0.0,
+                    prompt_tokens=prompt_token_count,
+                    generation_tokens=gen_tokens,
+                )
 
+        detokenizer.finalize()
         yield StreamingResult(
-            text="",
+            text=detokenizer.last_segment,
             is_final=True,
             start_time=0.0,
             end_time=0.0,

@@ -624,6 +624,7 @@ def load_audio(
     length: Optional[int] = None,
     volume_normalize: bool = False,
     segment_duration: Optional[int] = None,
+    duration: Optional[float] = None,
 ) -> mx.array:
     """Load audio from file path or return mx.array as-is.
 
@@ -635,6 +636,7 @@ def load_audio(
         length: Target length in samples (pad or truncate if specified)
         volume_normalize: Whether to normalize audio volume
         segment_duration: If specified, randomly select a segment of this duration (seconds)
+        duration: If specified, only read this many seconds from the start of the file
 
     Returns:
         mx.array: Audio waveform at target sample rate
@@ -663,6 +665,7 @@ def load_audio(
         dtype="float32",
         sample_rate=sample_rate,
         nchannels=1,
+        duration=duration,
     )
 
     # Random segment selection

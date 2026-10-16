@@ -2,6 +2,13 @@
 
 This file acknowledges the original authors and contributors of models ported to mlx-audio.
 
+## Fish Audio Drama 3 (Text-to-Speech)
+
+- **Original**: [fishaudio/drama-3](https://huggingface.co/fishaudio/drama-3)
+- **Copyright**: Fish Audio
+- **License**: [Fish Audio Community License](https://huggingface.co/fishaudio/drama-3/blob/main/LICENSE)
+- **MLX Port**: Daniel Sticker ([@stickerdaniel](https://github.com/stickerdaniel))
+
 ## MiniMax Music 3 (Song Generation)
 
 - **Original**: [MiniMaxAI/MiniMax-Music3](https://huggingface.co/MiniMaxAI/MiniMax-Music3)

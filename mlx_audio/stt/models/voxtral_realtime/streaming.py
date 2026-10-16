@@ -18,6 +18,8 @@ import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
 
+from mlx_audio.lm.generate import StreamingDetokenizer
+
 from .config import RAW_AUDIO_LENGTH_PER_TOK, _num_delay_tokens
 
 
@@ -467,6 +469,8 @@ class VoxtralStreamingSession:
         self._sconv = StreamingConvStem(model.encoder)
         self._senc = StreamingEncoder(model.encoder)
         self._sproj = StreamingDownsampler(model.encoder)
+        self._mel_frame_group = self._raw_tok // aec.hop_length
+        self._pending_mel: Optional[mx.array] = None
 
         self._audio_q: list[np.ndarray] = []
         self._audio_lock = threading.Lock()
@@ -479,7 +483,7 @@ class VoxtralStreamingSession:
         self._next_tok: Optional[mx.array] = None
         self._pos = self._prompt_len
         self.generated: list[int] = []
-        self._prev_text = ""
+        self._detokenizer = StreamingDetokenizer(model._tokenizer)
         self._trailing_after_close = 0
         self._done = False
         self._left_pad_seeded = False
@@ -565,10 +569,29 @@ class VoxtralStreamingSession:
             right_pad = np.zeros(right_pad_toks * self._raw_tok, dtype=np.float32)
             self._ingest_mel(self._smel.append(right_pad))
             self._ingest_mel(self._smel.close())
+            self._flush_mel()
 
     def _ingest_mel(self, mel_chunk: Optional[mx.array]) -> None:
         if mel_chunk is None or mel_chunk.shape[1] == 0:
             return
+        if self._pending_mel is not None:
+            mel_chunk = mx.concatenate([self._pending_mel, mel_chunk], axis=1)
+
+        usable = mel_chunk.shape[1] - (mel_chunk.shape[1] % self._mel_frame_group)
+        self._pending_mel = (
+            mel_chunk[:, usable:] if usable < mel_chunk.shape[1] else None
+        )
+        for start in range(0, usable, self._mel_frame_group):
+            self._encode_mel(mel_chunk[:, start : start + self._mel_frame_group])
+
+    def _flush_mel(self) -> None:
+        if self._pending_mel is None or self._pending_mel.shape[1] == 0:
+            return
+        mel_chunk = self._pending_mel
+        self._pending_mel = None
+        self._encode_mel(mel_chunk)
+
+    def _encode_mel(self, mel_chunk: mx.array) -> None:
         conv_out = self._sconv.step(mel_chunk)
         if conv_out.shape[0] == 0:
             return
@@ -636,12 +659,13 @@ class VoxtralStreamingSession:
                 # matches voxmlx's finalize() behavior.
                 token = int(self._next_tok.item())
                 self.generated.append(token)
-                text_so_far = self.model._tokenizer.decode(
-                    [t for t in self.generated if t != eos]
-                )
-                if text_so_far != self._prev_text:
-                    deltas.append(text_so_far[len(self._prev_text) :])
-                    self._prev_text = text_so_far
+                if token != eos:
+                    self._detokenizer.add_token(token)
+                    if text := self._detokenizer.last_segment:
+                        deltas.append(text)
+                self._detokenizer.finalize()
+                if text := self._detokenizer.last_segment:
+                    deltas.append(text)
                 self._done = True
                 return deltas
 
@@ -669,14 +693,15 @@ class VoxtralStreamingSession:
             token = int(prev_tok_mx.item())
             self.generated.append(token)
 
-            text_so_far = self.model._tokenizer.decode(
-                [t for t in self.generated if t != eos]
-            )
-            if text_so_far != self._prev_text:
-                deltas.append(text_so_far[len(self._prev_text) :])
-                self._prev_text = text_so_far
+            if token != eos:
+                self._detokenizer.add_token(token)
+                if text := self._detokenizer.last_segment:
+                    deltas.append(text)
 
             if token == eos or len(self.generated) > self.max_tokens:
+                self._detokenizer.finalize()
+                if text := self._detokenizer.last_segment:
+                    deltas.append(text)
                 self._done = True
                 return deltas
 

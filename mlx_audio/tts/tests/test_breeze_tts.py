@@ -153,16 +153,21 @@ def test_default_generic_voice_maps_to_breeze_s0():
 def test_depth_cfg_applies_to_every_remaining_codebook(monkeypatch):
     model = Model(tiny_config())
     sampled_logits = []
+    frame_values = {}
 
-    def next_logits(_token_ids, hidden):
-        return mx.full((1, 8), hidden[0, 0])
+    def start_frame(hidden, cache):
+        frame_values[id(cache)] = hidden[0, 0]
+
+    def step_logits(cache, *, head_idx, token_id):
+        return mx.full((1, 8), frame_values[id(cache)])
 
     def sample(logits, **_kwargs):
         sampled_logits.append(logits)
-        return 1
+        return mx.array([1])
 
-    monkeypatch.setattr(model.depth_decoder, "next_logits", next_logits)
-    monkeypatch.setattr(model, "_sample", sample)
+    monkeypatch.setattr(model.depth_decoder, "start_frame", start_frame)
+    monkeypatch.setattr(model.depth_decoder, "step_logits", step_logits)
+    monkeypatch.setattr(model, "_sample_array", sample)
     tokens = model._depth_tokens(
         1,
         mx.ones((1, 16)),
@@ -182,15 +187,19 @@ def test_depth_cfg_masks_reserved_tokens_at_every_step(monkeypatch):
     model = Model(tiny_config())
     sampled_logits = []
 
-    def next_logits(_token_ids, _hidden):
+    def start_frame(_hidden, _cache):
+        return None
+
+    def step_logits(_cache, *, head_idx, token_id):
         return mx.arange(8, dtype=mx.float32)[None, :]
 
     def sample(logits, **_kwargs):
         sampled_logits.append(logits)
-        return 1
+        return mx.array([1])
 
-    monkeypatch.setattr(model.depth_decoder, "next_logits", next_logits)
-    monkeypatch.setattr(model, "_sample", sample)
+    monkeypatch.setattr(model.depth_decoder, "start_frame", start_frame)
+    monkeypatch.setattr(model.depth_decoder, "step_logits", step_logits)
+    monkeypatch.setattr(model, "_sample_array", sample)
     model._depth_tokens(
         1,
         mx.ones((1, 16)),
@@ -265,6 +274,22 @@ def test_exact_prompt_template_for_cloning_and_direction(monkeypatch):
         ref_text="reference text",
     )
     assert prompts == ["[S2]reference text", "[S2]<ins_bos>warm<ins_eos>target"]
+
+
+def test_bf16_prompt_embeddings_keep_the_weight_dtype(monkeypatch):
+    # A float32 scale in the text embedding used to promote every prompt
+    # activation, and with it the backbone KV cache, to float32, which made
+    # bf16 checkpoints ~3.4x slower than necessary.
+    model = Model(tiny_config())
+    model.set_dtype(mx.bfloat16)
+    monkeypatch.setattr(
+        model, "_text_ids", lambda _text: mx.array([1, 2, 3], dtype=mx.int32)
+    )
+    embeds = model._prompt_embeddings(
+        "target", voice=None, instruct=None, ref_audio=None, ref_text=None
+    )
+    assert model.text_encoder.embed_tokens.weight.dtype == mx.bfloat16
+    assert embeds.dtype == mx.bfloat16
 
 
 def test_stream_flushes_at_exact_interval_and_resets_state(monkeypatch):

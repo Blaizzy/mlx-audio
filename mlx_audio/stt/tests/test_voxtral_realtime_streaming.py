@@ -31,6 +31,7 @@ from mlx_audio.stt.models.voxtral_realtime.streaming import (
     StreamingAudioSource,
     StreamingCausalConv1d,
     StreamingMel,
+    VoxtralStreamingSession,
 )
 
 
@@ -206,6 +207,36 @@ class TestStreamingCausalConv1dParity(unittest.TestCase):
         for chunk in (4, 8, 12):
             with self.subTest(chunk=chunk):
                 self._run_case(kernel_size=4, stride=4, n_in=40, chunk=chunk)
+
+
+class TestVoxtralStreamingSessionMelGrouping(unittest.TestCase):
+    def _group(self, chunks: list[int]) -> list[np.ndarray]:
+        session = VoxtralStreamingSession.__new__(VoxtralStreamingSession)
+        session._mel_frame_group = 8
+        session._pending_mel = None
+        pieces: list[np.ndarray] = []
+        session._encode_mel = lambda mel: pieces.append(np.array(mel))
+
+        mel = mx.arange(2 * sum(chunks), dtype=mx.float32).reshape(2, -1)
+        offset = 0
+        for width in chunks:
+            session._ingest_mel(mel[:, offset : offset + width])
+            offset += width
+        session._flush_mel()
+        return pieces
+
+    def test_packet_boundaries_do_not_change_encoder_groups(self):
+        expected = self._group([24])
+        for chunks in ([3, 5, 7, 9], [1] * 24, [11, 13]):
+            with self.subTest(chunks=chunks):
+                actual = self._group(list(chunks))
+                self.assertEqual([x.shape for x in expected], [x.shape for x in actual])
+                for expected_piece, actual_piece in zip(expected, actual):
+                    np.testing.assert_array_equal(expected_piece, actual_piece)
+
+    def test_close_flushes_partial_group(self):
+        pieces = self._group([3, 6])
+        self.assertEqual([piece.shape[1] for piece in pieces], [8, 1])
 
 
 class TestAudioEncoder(unittest.TestCase):

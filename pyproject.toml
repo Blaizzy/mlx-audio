@@ -20,7 +20,7 @@ requires-python = ">=3.10"
 # Core dependencies
 dependencies = [
     "huggingface_hub>=1.0",
-    "miniaudio>=1.61",
+    "miniaudio>=1.71",
     "mlx>=0.31.1",
     "numpy>=1.26.4",
     "scipy>=1.10.0",
@@ -92,6 +92,7 @@ parity = [
 
 # Development dependencies
 dev = [
+    "httpx2>=2.0.0,<3",
     "pytest>=7.0.0",
     "pytest-asyncio>=1.0.0",
     "black>=24.2.0",
@@ -103,6 +104,8 @@ dev = [
 docs = [
     "mkdocs-material>=9.6",
     "mkdocstrings[python]>=0.29",
+    # mkdocstrings supports pymdown-extensions 12.2 from 1.0.7, which needs Python 3.11
+    "pymdown-extensions<12.2; python_version < '3.11'",
 ]
 
 [project.scripts]

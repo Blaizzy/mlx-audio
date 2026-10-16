@@ -671,6 +671,33 @@ class Model(nn.Module):
         top_k: int,
         temperature: float,
     ) -> mx.array:
+        generated_steps = list(
+            self._iter_codes_for_batch(
+                conversation=conversation,
+                batch_text=batch_text,
+                max_new_tokens=max_new_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature,
+            )
+        )
+        if not generated_steps:
+            raise RuntimeError(
+                f"No audio tokens were generated for batch text: {batch_text!r}"
+            )
+
+        return mx.stack(generated_steps, axis=1).astype(mx.int32)
+
+    def _iter_codes_for_batch(
+        self,
+        conversation: Conversation,
+        batch_text: str,
+        max_new_tokens: int,
+        top_p: float,
+        top_k: int,
+        temperature: float,
+    ):
+        """Yields the [num_codebooks] codes of each generated frame."""
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
 
@@ -695,7 +722,6 @@ class Model(nn.Module):
         hidden_state = result.hidden_states[:, -1]
 
         previous_semantic_tokens: list[int] = []
-        generated_steps = []
         im_end_id = self.tokenizer.get_token_id(IM_END_TOKEN)
         text_token_count = len(self.tokenizer.encode(batch_text))
         semantic_token_budget = min(
@@ -745,7 +771,7 @@ class Model(nn.Module):
                 )
                 fast_hidden = self.model.fast_embeddings(residual_token)
 
-            generated_steps.append(previous_codebooks[0])
+            yield previous_codebooks[0]
 
             next_input = mx.concatenate(
                 [semantic_token[:, None].astype(mx.int32), previous_codebooks], axis=1
@@ -753,13 +779,6 @@ class Model(nn.Module):
             next_result = self.model(next_input[:, :, None], cache=cache)
             logits = next_result.logits[:, -1]
             hidden_state = next_result.hidden_states[:, -1]
-
-        if not generated_steps:
-            raise RuntimeError(
-                f"No audio tokens were generated for batch text: {batch_text!r}"
-            )
-
-        return mx.stack(generated_steps, axis=1).astype(mx.int32)
 
     def _generate_codes_for_text_batch(
         self,
@@ -960,12 +979,11 @@ class Model(nn.Module):
         speed: float = 1.0,
         chunk_length: int = 300,
         verbose: bool = True,
+        streaming_interval: float = 2.0,
         **kwargs,
     ):
         del voice, repetition_penalty, verbose, kwargs
 
-        if stream:
-            raise NotImplementedError("Fish Speech streaming is not implemented yet.")
         if self.tokenizer is None:
             raise ValueError("Tokenizer not loaded. Call post_load_hook first.")
         if self.codec is None:
@@ -979,6 +997,19 @@ class Model(nn.Module):
             prompt_texts, prompt_tokens, instruct=instruct
         )
         batches = self._split_generation_text(text, chunk_length)
+
+        if stream:
+            yield from self._generate_stream(
+                base_conversation=base_conversation,
+                batches=batches,
+                max_tokens=max_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature,
+                speed=speed,
+                streaming_interval=streaming_interval,
+            )
+            return
 
         conversation = Conversation(list(base_conversation.messages))
         segment_idx = 0
@@ -1042,6 +1073,124 @@ class Model(nn.Module):
                 peak_memory_usage=float(mx.get_peak_memory() / 1e9),
             )
             segment_idx += 1
+
+    def _generate_stream(
+        self,
+        base_conversation: Conversation,
+        batches: list[str],
+        max_tokens: int,
+        top_p: float,
+        top_k: int,
+        temperature: float,
+        speed: float,
+        streaming_interval: float,
+    ):
+        """Yields audio every streaming_interval seconds of generated frames.
+
+        The causal codec decodes only the new frames of each chunk, carrying its
+        state, so the concatenated chunks of a segment match its full decode.
+        The last chunk of the call is marked final and may be empty.
+        """
+        frame_rate = self.sample_rate / self.codec.frame_length
+        chunk_frames = max(1, int(streaming_interval * frame_rate))
+        conversation = Conversation(list(base_conversation.messages))
+
+        for segment_idx, batch_text in enumerate(batches):
+            is_last_segment = segment_idx == len(batches) - 1
+            conversation.append(
+                Message(
+                    role="user",
+                    parts=[TextPart(batch_text)],
+                    add_im_start=True,
+                    add_im_end=True,
+                )
+            )
+            self.codec.reset_streaming_state()
+            steps = []
+            decoded = 0
+            chunk_start = time.perf_counter()
+            for step in self._iter_codes_for_batch(
+                conversation=conversation,
+                batch_text=batch_text,
+                max_new_tokens=max_tokens,
+                top_p=top_p,
+                top_k=top_k,
+                temperature=temperature,
+            ):
+                steps.append(step)
+                if len(steps) - decoded >= chunk_frames:
+                    yield self._stream_result(
+                        mx.stack(steps[decoded:], axis=1).astype(mx.int32),
+                        segment_idx=segment_idx,
+                        started=chunk_start,
+                        speed=speed,
+                        is_final=False,
+                    )
+                    decoded = len(steps)
+                    chunk_start = time.perf_counter()
+
+            if not steps:
+                raise RuntimeError(
+                    f"No audio tokens were generated for batch text: {batch_text!r}"
+                )
+            if len(steps) > decoded or is_last_segment:
+                yield self._stream_result(
+                    (
+                        mx.stack(steps[decoded:], axis=1).astype(mx.int32)
+                        if len(steps) > decoded
+                        else mx.zeros((self.model.num_codebooks, 0), dtype=mx.int32)
+                    ),
+                    segment_idx=segment_idx,
+                    started=chunk_start,
+                    speed=speed,
+                    is_final=is_last_segment,
+                )
+            conversation.append(
+                Message(
+                    role="assistant",
+                    parts=[VQPart(mx.stack(steps, axis=1).astype(mx.int32))],
+                    modality="voice",
+                    add_im_start=True,
+                    add_im_end=True,
+                )
+            )
+
+    def _stream_result(
+        self,
+        codes: mx.array,
+        segment_idx: int,
+        started: float,
+        speed: float,
+        is_final: bool,
+    ) -> GenerationResult:
+        frames = int(codes.shape[1])
+        if frames:
+            audio = self.codec.streaming_step(codes[None])[0, 0]
+            audio = _adjust_speed(audio, speed)
+        else:
+            audio = mx.zeros((0,), dtype=mx.float32)
+        mx.eval(audio)
+
+        elapsed = max(time.perf_counter() - started, 1e-6)
+        audio_duration = float(audio.shape[0]) / float(self.sample_rate)
+        return GenerationResult(
+            audio=audio,
+            samples=int(audio.shape[0]),
+            sample_rate=self.sample_rate,
+            segment_idx=segment_idx,
+            token_count=frames,
+            audio_duration=_format_duration(audio_duration),
+            real_time_factor=audio_duration / elapsed,
+            prompt={"tokens": frames, "tokens-per-sec": frames / elapsed},
+            audio_samples={
+                "samples": int(audio.shape[0]),
+                "samples-per-sec": float(audio.shape[0]) / elapsed,
+            },
+            processing_time_seconds=elapsed,
+            peak_memory_usage=float(mx.get_peak_memory() / 1e9),
+            is_streaming_chunk=True,
+            is_final_chunk=is_final,
+        )
 
     @staticmethod
     def _normalize_batch_arg(name: str, value, batch_size: int) -> list:

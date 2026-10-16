@@ -651,7 +651,11 @@ class DecoderBlockUpsample(nn.Module):
                 [y[:, :ov_len, :] + self._overflow, y[:, ov_len:, :]], axis=1
             )
         if self.trim_right > 0:
-            self._overflow = y[:, -self.trim_right :, :]
+            # Carry the tail without its bias (the next chunk's head already has it)
+            tail = y[:, -self.trim_right :, :]
+            if "bias" in self.conv:
+                tail = tail - self.conv.bias
+            self._overflow = tail
             y = y[:, : -self.trim_right, :]
         return y
 

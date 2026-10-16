@@ -1273,6 +1273,7 @@ class Model(nn.Module):
                 yield chunk_text
             return
 
+        from mlx_audio.lm.generate import StreamingDetokenizer
         from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
 
         # Preprocess audio
@@ -1301,6 +1302,7 @@ class Model(nn.Module):
             repetition_penalty=repetition_penalty,
             repetition_context_size=repetition_context_size,
         )
+        detokenizer = StreamingDetokenizer(self.tokenizer)
 
         # Stream tokens
         for token, _ in self.stream_generate(
@@ -1313,7 +1315,12 @@ class Model(nn.Module):
             prefill_step_size=prefill_step_size,
             verbose=verbose,
         ):
-            text = self.tokenizer.decode([token])
+            detokenizer.add_token(token)
+            if text := detokenizer.last_segment:
+                yield text
+
+        detokenizer.finalize()
+        if text := detokenizer.last_segment:
             yield text
 
         mx.clear_cache()

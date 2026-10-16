@@ -72,6 +72,30 @@ def test_empty_reset_cancel_and_validation():
     assert session.step() == []
 
 
+@pytest.mark.parametrize(
+    ("delay_ms", "lookahead", "first_chunk_mel", "chunk_mel"),
+    [(80, 0, 1, 8), (160, 1, 9, 16), (560, 6, 49, 56), (1120, 13, 105, 112)],
+)
+def test_native_transcription_delay_modes(
+    delay_ms, lookahead, first_chunk_mel, chunk_mel
+):
+    m = model()
+    m.model_type = "nemotron_asr_streaming"
+    m.default_att_context_size = [70, 13]
+    session = m.create_streaming_session(transcription_delay_ms=delay_ms)
+    assert session.att_context_size == [70, lookahead]
+    assert session._encoder.first_chunk_mel == first_chunk_mel
+    assert session._encoder.chunk_mel == chunk_mel
+
+
+def test_rejects_untrained_transcription_delay():
+    m = model()
+    m.model_type = "nemotron_asr_streaming"
+    m.default_att_context_size = [70, 13]
+    with pytest.raises(ValueError, match="expected one of \\[80, 160, 560, 1120\\]"):
+        m.create_streaming_session(transcription_delay_ms=240)
+
+
 def test_cooperative_budget_and_decoder_state():
     session = model().create_streaming_session()
     session.feed(np.zeros(20000))

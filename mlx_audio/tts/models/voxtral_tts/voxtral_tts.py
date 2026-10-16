@@ -608,22 +608,13 @@ class Model(nn.Module):
         # LM backbone returns hidden states; full model returns logits
         lm_backbone = self.language_model.model.model
 
-        # Prefill: run prompt through LM with KV cache
+        # Prefill: run prompt through LM with KV cache. The prompt ends with
+        # [BEGIN_AUDIO], so its last hidden state already predicts the first
+        # audio frame (as in vllm-omni). Feeding an extra [AUDIO] token here
+        # shifts every frame by one position and garbles the opening words.
         cache = make_prompt_cache(self.language_model.model)
         hidden = lm_backbone(
             input_ids_mx, cache=cache, input_embeddings=input_embeddings
-        )
-
-        # First decode step uses AUDIO token (24) embedding as input
-        # This matches the C reference: the first LLM decode produces the hidden state
-        # for the first audio frame
-        audio_tok_emb = self.language_model.embed_tokens(
-            mx.array([[self.config.audio_token_id]])
-        )  # (1, 1, dim)
-        hidden = lm_backbone(
-            mx.array([[self.config.audio_token_id]]),
-            cache=cache,
-            input_embeddings=audio_tok_emb,
         )
 
         all_codes = []

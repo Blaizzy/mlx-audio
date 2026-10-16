@@ -117,6 +117,7 @@ def load_audio(
     sr: int = SAMPLE_RATE,
     from_stdin=False,
     dtype: mx.Dtype = mx.float32,
+    duration: Optional[float] = None,
 ):
     """
     Open an audio file and read as mono waveform, resampling as necessary
@@ -129,13 +130,18 @@ def load_audio(
     sr: int
         The sample rate to resample the audio if necessary
 
+    duration: float, optional
+        Only read this many seconds from the start of the file
+
     Returns
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
     from mlx_audio.audio_io import read as audio_read
 
-    audio, _ = audio_read(file, dtype="float32", sample_rate=sr, nchannels=1)
+    audio, _ = audio_read(
+        file, dtype="float32", sample_rate=sr, nchannels=1, duration=duration
+    )
     return mx.array(audio, dtype=dtype)
 
 
@@ -170,8 +176,11 @@ def load_model(
     config = load_config(model_path)
     # Resolve the HF alias here so the shared loader recognizes Parakeet even
     # when a local checkpoint directory has an unrelated model family name.
-    if (kwargs.get("model_type") or config.get("model_type")) == "parakeet_tdt":
+    source_model_type = kwargs.get("model_type") or config.get("model_type")
+    if source_model_type == "parakeet_tdt":
         kwargs["model_type"] = "parakeet"
+    elif source_model_type == "nemotron_asr_streaming":
+        kwargs["model_type"] = "nemotron_asr"
 
     from mlx_audio.stt.models.phonon.transport import (
         is_phonon_model,

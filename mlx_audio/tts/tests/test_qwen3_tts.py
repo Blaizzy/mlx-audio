@@ -12,6 +12,7 @@ from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
 )
+from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import DecoderBlockUpsample
 
 
 def _top_p_keep_mask(scores, top_p):
@@ -799,6 +800,42 @@ class TestQwen3TTSBaseVoiceValidation(unittest.TestCase):
         results = list(model.generate(text="Hello", voice="vivian", max_tokens=1))
 
         self.assertTrue(results)
+
+
+class TestDecoderBlockUpsampleStreaming(unittest.TestCase):
+    """Tests for DecoderBlockUpsample streaming (step) against the full call."""
+
+    def _block(self, upsample_rate):
+        mx.random.seed(0)
+        block = DecoderBlockUpsample(in_dim=6, out_dim=5, upsample_rate=upsample_rate)
+        # Non-zero bias, so a doubled bias at chunk boundaries shows
+        block.conv.bias = mx.random.normal(block.conv.bias.shape)
+        return block
+
+    def _stream(self, block, x, chunk_sizes):
+        block.reset_state()
+        out, start = [], 0
+        for size in chunk_sizes:
+            out.append(block.step(x[:, start : start + size, :]))
+            start += size
+        self.assertEqual(start, x.shape[1])
+        return mx.concatenate(out, axis=1)
+
+    def test_step_matches_full_call_for_any_chunking(self):
+        """Test that streaming in any chunk sizes matches one call."""
+        for upsample_rate in (2, 4, 8):
+            block = self._block(upsample_rate)
+            x = mx.random.normal((1, 12, 6))
+            full = block(x)
+            for chunks in ([1] * 12, [2] * 6, [3, 1, 4, 4], [12]):
+                streamed = self._stream(block, x, chunks)
+                self.assertEqual(streamed.shape, full.shape)
+                np.testing.assert_allclose(
+                    np.array(streamed),
+                    np.array(full),
+                    atol=1e-5,
+                    err_msg=f"upsample_rate={upsample_rate}, chunks={chunks}",
+                )
 
 
 if __name__ == "__main__":

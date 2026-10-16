@@ -1263,6 +1263,41 @@ class TestMossTranscribeDiarizeModel(unittest.TestCase):
             (8, 3, 80),
         )
 
+    def test_sanitize_preserves_unquantized_mlx_convolutions(self):
+        weights = {
+            "model.whisper_encoder.conv1.weight": mx.zeros((8, 3, 80)),
+            "model.whisper_encoder.conv2.weight": mx.zeros((8, 3, 8)),
+        }
+
+        sanitized = self.Model.sanitize(weights)
+
+        for key, weight in weights.items():
+            self.assertIs(sanitized[key], weight)
+
+    def test_sanitize_converts_both_hf_convolutions(self):
+        weights = {
+            "model.whisper_encoder.conv1.weight": mx.arange(8 * 80 * 3).reshape(
+                8, 80, 3
+            ),
+            "model.whisper_encoder.conv2.weight": mx.arange(8 * 8 * 3).reshape(8, 8, 3),
+        }
+
+        sanitized = self.Model.sanitize(weights)
+
+        for key, weight in weights.items():
+            np.testing.assert_array_equal(
+                np.array(sanitized[key]), np.array(weight).transpose(0, 2, 1)
+            )
+
+    def test_sanitize_preserves_convolutions_with_quantization_scales(self):
+        conv_key = "model.whisper_encoder.conv1.weight"
+        conv_weight = mx.zeros((8, 80, 3))
+        weights = {conv_key: conv_weight, "model.language_model.scales": mx.ones((1,))}
+
+        sanitized = self.Model.sanitize(weights)
+
+        self.assertIs(sanitized[conv_key], conv_weight)
+
     def test_parse_segments_from_compact_transcript(self):
         text = "[0.48][S01]hello[1.66][2.00][S02]world[3.50]"
 
@@ -1543,13 +1578,21 @@ class TestQwen3ASRForceAlignProcessor(unittest.TestCase):
         self.assertEqual(fixed, [100, 200, 300, 400])
 
     def test_fix_timestamp_non_monotonic(self):
-        """Test fixing non-monotonic timestamps."""
-        data = np.array([100, 200, 150, 400])  # 150 breaks monotonicity
-        fixed = self.processor.fix_timestamp(data)
-        # Should fix the anomaly
-        self.assertLessEqual(fixed[0], fixed[1])
-        self.assertLessEqual(fixed[1], fixed[2])
-        self.assertLessEqual(fixed[2], fixed[3])
+        """Keep the same anchors, neighbor selection, and interpolation."""
+        cases = [
+            ([100, 200, 150, 400], [100, 200, 200, 400]),  # First predecessor
+            ([400, 300, 200, 100], [400, 400, 400, 400]),  # First endpoint
+            ([2, 1, 1, 2], [1, 1, 1, 2]),  # Equal timestamps extend a subsequence
+            ([4, 1, 3, 2, 5], [1, 1, 3, 3, 5]),  # Short gaps
+            ([0, 800, 700, 600, 500, 1003], [0, 800, 850, 901, 952, 1003]),
+            ([500, 400, 300, 0, 100, 200, 300], [0, 0, 0, 0, 100, 200, 300]),
+            ([np.nan, 0, np.nan, 10, 9], [0, 0, 0, 10, 10]),
+        ]
+        for values, expected in cases:
+            with self.subTest(values=values):
+                data = np.array(values)
+                self.assertEqual(self.processor.fix_timestamp(data), expected)
+                np.testing.assert_array_equal(data, values)
 
     def test_fix_timestamp_empty(self):
         data = np.array([])

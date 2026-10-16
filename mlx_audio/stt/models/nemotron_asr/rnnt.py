@@ -18,6 +18,7 @@ class GreedyDecoderState:
         self.model = model
         self.last_token = model.blank_id
         self.hidden = None
+        self._prediction = None
 
     def decode(self, features, start_frame):
         from mlx_audio.stt.models.nemo.alignment import AlignedToken
@@ -35,12 +36,15 @@ class GreedyDecoderState:
             feature = features[:, time : time + 1]
             symbols = 0
             while True:
-                current = (
-                    mx.array([[self.last_token]], dtype=mx.int32)
-                    if self.last_token != model.blank_id
-                    else None
-                )
-                prediction, (h, c) = model.decoder(current, self.hidden)
+                # Blanks advance only the audio clock, not the predictor state.
+                if self._prediction is None:
+                    current = (
+                        mx.array([[self.last_token]], dtype=mx.int32)
+                        if self.last_token != model.blank_id
+                        else None
+                    )
+                    self._prediction = model.decoder(current, self.hidden)
+                prediction, (h, c) = self._prediction
                 token = int(
                     mx.argmax(model.joint(feature, prediction.astype(feature.dtype)))
                 )
@@ -48,6 +52,7 @@ class GreedyDecoderState:
                     break
                 self.last_token = token
                 self.hidden = (h.astype(feature.dtype), c.astype(feature.dtype))
+                self._prediction = None
                 if not tokenizer.is_special_token(token, model.vocabulary):
                     tokens.append(
                         AlignedToken(
