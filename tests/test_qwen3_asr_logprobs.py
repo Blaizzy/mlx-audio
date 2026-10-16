@@ -3,10 +3,7 @@ from types import SimpleNamespace
 import mlx.core as mx
 import numpy as np
 
-from mlx_audio.stt.models.qwen3_asr.qwen3_asr import (
-    Qwen3ASRModel,
-    _logprob_metadata,
-)
+from mlx_audio.stt.models.qwen3_asr.qwen3_asr import Qwen3ASRModel, _logprob_metadata
 
 
 def test_logprob_metadata_preserves_tokens_and_summarizes_them():
