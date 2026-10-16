@@ -1,6 +1,8 @@
+import threading
 import unittest
 
 import mlx.core as mx
+from mlx.utils import tree_flatten
 
 from ..models.fish_s1_dac.fish_s1_dac import (
     DAC,
@@ -11,14 +13,14 @@ from ..models.fish_s1_dac.fish_s1_dac import (
 )
 
 
-def _tiny_streaming_dac(block_size: int = 64) -> DAC:
+def _tiny_streaming_dac(block_size: int = 64, semantic_codebook_size: int = 32) -> DAC:
     mx.random.seed(0)
     quantizer = DownsampleResidualVectorQuantize(
         input_dim=16,
         n_codebooks=2,
         codebook_dim=4,
         codebook_size=16,
-        semantic_codebook_size=32,
+        semantic_codebook_size=semantic_codebook_size,
         downsample_factor=(2,),
         pre_module=Identity(),
         post_module=WindowLimitedTransformer(
@@ -144,6 +146,73 @@ class TestFishS1DAC(unittest.TestCase):
             model.reset_streaming_state()
             with self.assertRaises(ValueError):
                 model.streaming_step(_random_codes(13))
+
+    def test_folded_kernels_match_and_refold_after_new_weights(self):
+        with mx.stream(mx.cpu):
+            codes = _random_codes(9)
+            audio = mx.random.normal((1, 1, 128))
+            model = _tiny_streaming_dac()
+            unfolded, _ = model.decode(codes, mx.array([9]))
+            unfolded_zq = model.encode_zq(audio)
+            model.fold_weight_norm()
+            folded, _ = model.decode(codes, mx.array([9]))
+            self.assertTrue(mx.array_equal(folded, unfolded).item())
+            self.assertTrue(mx.array_equal(model.encode_zq(audio), unfolded_zq).item())
+
+            scaled = [
+                (k, v * 1.5 if k.endswith("weight_g") else v)
+                for k, v in tree_flatten(model.parameters())
+            ]
+            model.load_weights(scaled)
+            model.fold_weight_norm()
+            fresh = _tiny_streaming_dac()
+            fresh.load_weights(scaled)
+            refolded, _ = model.decode(codes, mx.array([9]))
+            expected, _ = fresh.decode(codes, mx.array([9]))
+            self.assertGreater(mx.abs(refolded - folded).max().item(), 1e-3)
+            self.assertTrue(mx.array_equal(refolded, expected).item())
+
+    def test_folded_codec_decodes_on_another_thread(self):
+        # Folded kernels are shared across threads, which each decode on their
+        # own stream; a lazy kernel would be bound to the folding thread.
+        model = _tiny_streaming_dac()
+        codes = _random_codes(9)
+        mx.eval(model.parameters(), codes)
+        model.fold_weight_norm()
+        errors = []
+
+        def decode():
+            try:
+                with mx.stream(mx.new_stream(mx.default_device())):
+                    mx.eval(model.decode(codes, mx.array([9]))[0])
+            except Exception as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=decode)
+        worker.start()
+        worker.join()
+        self.assertEqual(errors, [])
+
+    def test_folded_codec_compiles_with_captured_state(self):
+        model = _tiny_streaming_dac()
+        codes = _random_codes(9)
+        mx.eval(model.parameters(), codes)
+        model.fold_weight_norm()
+        lengths = mx.array([9])
+        compiled = mx.compile(
+            lambda c: model.decode(c, lengths)[0], inputs=model, outputs=model
+        )
+        self.assertTrue(
+            mx.allclose(compiled(codes), model.decode(codes, lengths)[0], atol=1e-5)
+        )
+
+    def test_checkpoint_causal_masks_are_dropped(self):
+        # PyTorch checkpoints carry square causal-mask buffers. A strict load
+        # fails if one survives sanitize or the model still expects one.
+        model = _tiny_streaming_dac()
+        weights = dict(tree_flatten(model.parameters()))
+        weights["quantizer.post_module.causal_mask"] = mx.ones((64, 64), dtype=mx.bool_)
+        model.load_weights(list(model.sanitize(weights).items()), strict=True)
 
 
 if __name__ == "__main__":

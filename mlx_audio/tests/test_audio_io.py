@@ -112,6 +112,81 @@ class TestAudioIOFormats:
         assert loaded_rate == target_rate
         assert rms < 0.001
 
+    @pytest.mark.parametrize("source_rate,frequency", [(16000, 7000), (24000, 10000)])
+    def test_load_audio_upsampling_rejects_images(
+        self, tmp_path, source_rate, frequency
+    ):
+        """Upsampling a reference must not add images above its original bandwidth."""
+        import wave
+
+        from mlx_audio.utils import load_audio, resample_audio
+
+        target_rate = 44100
+        t = np.arange(2 * source_rate) / source_rate
+        pcm = (0.5 * np.sin(2 * np.pi * frequency * t) * 32767).astype(np.int16)
+        path = tmp_path / "upsample.wav"
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(source_rate)
+            wav.writeframes(pcm.tobytes())
+
+        loaded = np.asarray(load_audio(str(path), sample_rate=target_rate))
+        expected = resample_audio(
+            pcm.astype(np.float32) / 32768, source_rate, target_rate
+        )
+        assert loaded.shape == (2 * target_rate,)
+        center = loaded[len(loaded) // 4 : -len(loaded) // 4].astype(np.float64)
+        spectrum = np.abs(np.fft.rfft(center * np.hanning(len(center)))) ** 2
+        freqs = np.fft.rfftfreq(len(center), 1 / target_rate)
+        near_tone = np.abs(freqs - frequency) < 50
+        image_ratio = (
+            spectrum[freqs > source_rate / 2 + 50].sum() / spectrum[near_tone].sum()
+        )
+        spur_ratio = (
+            spectrum[(freqs < source_rate / 2 - 50) & ~near_tone].max()
+            / spectrum[near_tone].max()
+        )
+        assert image_ratio < 1e-6
+        assert spur_ratio < 1e-6
+        np.testing.assert_allclose(loaded, expected, atol=1e-6, rtol=1e-6)
+
+    @pytest.mark.parametrize("use_buffer", [False, True])
+    @pytest.mark.parametrize("channels", [1, 2])
+    def test_miniaudio_upsampling_matches_fir(self, tmp_path, use_buffer, channels):
+        """Both file and memory inputs retain channel layout through chunked FIR."""
+        from mlx_audio.resample import resample_audio_array
+
+        source_rate, target_rate = 16000, 44100
+        t = np.arange(2 * source_rate) / source_rate
+        tone = (0.5 * np.sin(2 * np.pi * 7000 * t)).astype(np.float32)
+        if channels == 2:
+            tone = np.column_stack((tone, tone * 0.5))
+        source = io.BytesIO() if use_buffer else tmp_path / "channels.wav"
+        write(source, tone, source_rate, format="wav")
+        native, _ = read(source, dtype="float32")
+        actual, rate = read(source, dtype="float32", sample_rate=target_rate)
+        expected = resample_audio_array(native, source_rate, target_rate, axis=0)
+        assert rate == target_rate
+        assert actual.shape == expected.shape
+        np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-6)
+
+    def test_miniaudio_same_rate_keeps_native_samples(self, tmp_path, monkeypatch):
+        """Requesting the source rate does not introduce a FIR conversion."""
+        import mlx_audio.resample as resample
+
+        def unexpected_resample(*args, **kwargs):
+            raise AssertionError("same-rate decoding must not resample")
+
+        monkeypatch.setattr(resample, "resample_audio_chunks", unexpected_resample)
+        t = np.arange(1600) / 16000
+        path = tmp_path / "native.wav"
+        write(path, np.sin(2 * np.pi * 440 * t).astype(np.float32), 16000, format="wav")
+        native, _ = read(path, dtype="float32")
+        requested, rate = read(path, dtype="float32", sample_rate=16000)
+        assert rate == 16000
+        np.testing.assert_array_equal(requested, native)
+
     def test_stt_load_audio_rejects_alias(self, tmp_path):
         """Protect the public STT loader path reported in issue #870."""
         from mlx_audio.stt.utils import load_audio

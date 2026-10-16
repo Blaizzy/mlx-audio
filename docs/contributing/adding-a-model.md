@@ -59,7 +59,7 @@ imported anywhere outside `sts/voice_pipeline.py`.
 | Attention masks, `scaled_dot_product_attention` | `mlx_audio.lm.models.base` |
 | Samplers, logits processors | `mlx_audio.lm.sample_utils` |
 | `generate_step`, `stream_generate` | `mlx_audio.lm.generate` |
-| Backbones (llama, qwen2, qwen3, gpt2, granite, lfm2, bailing_moe, gemma3) | `mlx_audio.lm.models.<name>` |
+| Backbones (llama, qwen2, qwen3, qwen3_5, gpt2, granite, lfm2, bailing_moe, gemma3) | `mlx_audio.lm.models.<name>` |
 | Quantize / save helpers | `mlx_audio.lm.convert` |
 
 If your model needs a backbone that is not vendored yet, copy it from mlx-lm

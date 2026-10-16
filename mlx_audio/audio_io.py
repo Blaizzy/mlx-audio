@@ -190,7 +190,7 @@ def _decode_ffmpeg(
     return samples, output_sample_rate, output_nchannels
 
 
-def _decode_miniaudio_downsampled(
+def _decode_miniaudio_resampled(
     input_data: Union[str, Path, bytes],
     input_sample_rate: int,
     input_num_frames: int,
@@ -246,7 +246,7 @@ def read(
         always_2d: If True, always return a 2D array (samples, channels).
         dtype: Data type for the output array. Supports 'float32', 'float64', 'int16'.
         sample_rate: Optional target sample rate. Preserves the input rate when omitted.
-            Miniaudio-backed downsampling uses the high-quality chunked FIR path.
+            Miniaudio-backed resampling uses the high-quality chunked FIR path.
         nchannels: Optional target channel count. Preserves the input channels when omitted.
 
     Returns:
@@ -317,8 +317,8 @@ def read(
             raise TypeError(f"Unsupported file type: {type(file)}")
 
         output_nchannels = nchannels or info.nchannels
-        if sample_rate is not None and sample_rate < info.sample_rate:
-            samples = _decode_miniaudio_downsampled(
+        if sample_rate is not None and sample_rate != info.sample_rate:
+            samples = _decode_miniaudio_resampled(
                 miniaudio_input,
                 info.sample_rate,
                 info.num_frames,

@@ -141,7 +141,30 @@ class ConvTranspose1dTorch(nn.Module):
         return y.swapaxes(1, 2)
 
 
-class WNConv1d(nn.Module):
+class _WeightNorm(nn.Module):
+    """A weight-normalized conv. Its kernel g * v / |v| is computed on every
+    call unless DAC.fold_weight_norm has folded it."""
+
+    def _weight(self) -> mx.array:
+        folded = self.get("_folded")
+        if folded is not None:
+            return folded
+        return (
+            self.weight_g
+            * self.weight_v
+            / _normalize_weight(self.weight_v, except_dim=0)
+        )
+
+    def _fold(self) -> mx.array:
+        # The underscore keeps the kernel out of parameters(), so checkpoints
+        # still hold weight_g and weight_v, while module state (and with it
+        # mx.compile's captured inputs) still includes it.
+        self.pop("_folded", None)
+        self._folded = self._weight()
+        return self._folded
+
+
+class WNConv1d(_WeightNorm):
     """Weight-normalized Conv1d with PyTorch-compatible parameter layout."""
 
     def __init__(
@@ -173,13 +196,6 @@ class WNConv1d(nn.Module):
         self.weight_v = weight_init / (self.weight_g + 1e-12)
         self.bias = mx.zeros((out_channels,)) if bias else None
 
-    def _weight(self) -> mx.array:
-        return (
-            self.weight_g
-            * self.weight_v
-            / _normalize_weight(self.weight_v, except_dim=0)
-        )
-
     def __call__(self, x: mx.array) -> mx.array:
         x_nlc = x.swapaxes(1, 2)
         y = mx.conv1d(
@@ -195,7 +211,7 @@ class WNConv1d(nn.Module):
         return y.swapaxes(1, 2)
 
 
-class WNConvTranspose1d(nn.Module):
+class WNConvTranspose1d(_WeightNorm):
     """Weight-normalized ConvTranspose1d with PyTorch-compatible parameters."""
 
     def __init__(
@@ -226,13 +242,6 @@ class WNConvTranspose1d(nn.Module):
         self.weight_g = _normalize_weight(weight_init, except_dim=0)
         self.weight_v = weight_init / (self.weight_g + 1e-12)
         self.bias = mx.zeros((out_channels,)) if bias else None
-
-    def _weight(self) -> mx.array:
-        return (
-            self.weight_g
-            * self.weight_v
-            / _normalize_weight(self.weight_v, except_dim=0)
-        )
 
     def __call__(self, x: mx.array) -> mx.array:
         x_nlc = x.swapaxes(1, 2)
@@ -373,7 +382,7 @@ class CausalTransConvNet(nn.Module):
         self._overlap = None
 
 
-class CausalWNConv1d(nn.Module):
+class CausalWNConv1d(_WeightNorm):
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.conv = CausalConvNet(*args, **kwargs)
@@ -386,11 +395,7 @@ class CausalWNConv1d(nn.Module):
         self.conv.conv.bias = self.bias
 
     def _materialize_weight(self):
-        self.conv.conv.weight = (
-            self.weight_g
-            * self.weight_v
-            / _normalize_weight(self.weight_v, except_dim=0)
-        )
+        self.conv.conv.weight = self._weight()
         self.conv.conv.bias = self.bias
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -402,7 +407,7 @@ class CausalWNConv1d(nn.Module):
         return self.conv.step(x)
 
 
-class CausalWNConvTranspose1d(nn.Module):
+class CausalWNConvTranspose1d(_WeightNorm):
     def __init__(self, *args, **kwargs):
         super().__init__()
         self.conv = CausalTransConvNet(*args, **kwargs)
@@ -415,11 +420,7 @@ class CausalWNConvTranspose1d(nn.Module):
         self.conv.conv.bias = self.bias
 
     def _materialize_weight(self):
-        self.conv.conv.weight = (
-            self.weight_g
-            * self.weight_v
-            / _normalize_weight(self.weight_v, except_dim=0)
-        )
+        self.conv.conv.weight = self._weight()
         self.conv.conv.bias = self.bias
 
     def __call__(self, x: mx.array) -> mx.array:
@@ -814,10 +815,6 @@ class Transformer(nn.Module):
         else:
             self.freqs_cis = None
 
-        row = mx.arange(config.block_size)[:, None]
-        col = mx.arange(config.block_size)[None, :]
-        self.causal_mask = row >= col
-
     def __call__(
         self, x: mx.array, input_pos: mx.array, mask: mx.array | None = None
     ) -> mx.array:
@@ -827,8 +824,7 @@ class Transformer(nn.Module):
             freqs_cis = None
 
         if mask is None:
-            local_mask = self.causal_mask[input_pos][:, input_pos]
-            mask = local_mask[None, None, :, :]
+            mask = (input_pos[:, None] >= input_pos[None, :])[None, None, :, :]
 
         if mask.dtype == mx.bool_:
             mask = mx.where(mask, 0.0, -1e9).astype(x.dtype)
@@ -1421,6 +1417,24 @@ class DAC(nn.Module):
                 z_q = layer(z_q)
         return self.decoder(z_q)
 
+    def fold_weight_norm(self) -> None:
+        """Computes every weight-norm kernel once and reuses it from then on,
+        instead of renormalizing each conv on every call, including every
+        streaming step. Inference only: gradients no longer reach weight_g and
+        weight_v, so train an unfolded instance. Later load_weights calls or
+        in-place edits are not seen until this is called again. from_pretrained
+        calls it.
+        """
+        kernels = []
+        for module in self.modules():
+            if isinstance(module, _WeightNorm):
+                kernels.append(module._fold())
+                if hasattr(module, "_materialize_weight"):
+                    # Releases the causal convs' constructor placeholder.
+                    module._materialize_weight()
+        # Evaluated now, so any stream or thread can read them.
+        mx.eval(kernels)
+
     def sanitize(self, weights: dict) -> dict:
         wn_prefixes = set()
         for k in weights:
@@ -1430,6 +1444,10 @@ class DAC(nn.Module):
 
         out = {}
         for k, v in weights.items():
+            # PyTorch checkpoints store the square causal masks as buffers;
+            # the windowed transformers build their own.
+            if k.endswith(".causal_mask"):
+                continue
             if ".conv.parametrizations.weight.original0" in k:
                 k = k.replace(".conv.parametrizations.weight.original0", ".weight_g")
             elif ".conv.parametrizations.weight.original1" in k:
@@ -1473,6 +1491,7 @@ class DAC(nn.Module):
 
         dac.load_weights(list(weights.items()), strict=False)
         mx.eval(dac.parameters())
+        dac.fold_weight_norm()
         return dac
 
 
