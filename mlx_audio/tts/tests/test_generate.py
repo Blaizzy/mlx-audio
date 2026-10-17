@@ -361,6 +361,28 @@ class TestGenerateAudio(unittest.TestCase):
 
     @patch("builtins.print")
     @patch("mlx_audio.tts.generate.audio_write")
+    def test_generate_audio_passes_model_specific_kwargs(
+        self, mock_audio_write, _mock_print
+    ):
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [self._result([0.1, 0.2])]
+
+        generate_audio(
+            text="hello",
+            model=model,
+            cross_lingual=True,
+            spk_id="speaker-a",
+            verbose=False,
+        )
+
+        call_kwargs = model.generate.call_args.kwargs
+        self.assertTrue(call_kwargs["cross_lingual"])
+        self.assertEqual(call_kwargs["spk_id"], "speaker-a")
+        mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
     def test_voice_is_omitted_when_none(self, mock_audio_write, _mock_print):
         model = MagicMock()
         model.sample_rate = 24000

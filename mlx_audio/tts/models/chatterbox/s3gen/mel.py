@@ -29,6 +29,7 @@ def mel_spectrogram(
     fmin: int = 0,
     fmax: int = 8000,
     center: bool = False,
+    window: "mx.array | str" = "hann",
 ) -> mx.array:
     """
     Extract mel-spectrogram from waveform.
@@ -43,6 +44,9 @@ def mel_spectrogram(
         fmin: Minimum frequency
         fmax: Maximum frequency
         center: Whether to center the window
+        window: STFT window — a window name (default "hann", symmetric) or an
+            explicit window array. Pass a periodic Hann array to match
+            PyTorch's ``torch.hann_window`` (periodic=True) exactly.
 
     Returns:
         Mel-spectrogram (B, num_mels, T')
@@ -62,7 +66,7 @@ def mel_spectrogram(
     for i in range(y.shape[0]):
         spec = stft(
             y[i],  # 1D input
-            window="hann",
+            window=window,
             n_fft=n_fft,
             hop_length=hop_size,
             win_length=win_size,
