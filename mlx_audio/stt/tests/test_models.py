@@ -57,6 +57,7 @@ class TestWhisperModel(unittest.TestCase):
         type(self.model_mock).is_multilingual = PropertyMock(return_value=False)
         type(self.model_mock).num_languages = PropertyMock(return_value=0)
 
+    @patch("transformers.WhisperProcessor.from_pretrained")
     @patch("mlx_audio.stt.models.whisper.whisper.Path")
     @patch("mlx_audio.stt.models.whisper.whisper.snapshot_download")
     @patch("mlx_audio.stt.models.whisper.whisper.mx.load")
@@ -71,6 +72,7 @@ class TestWhisperModel(unittest.TestCase):
         mock_mx_load,
         mock_snapshot_download,
         mock_pathlib_path,
+        mock_processor_from_pretrained,
     ):
 
         mock_snapshot_download.return_value = "dummy_path"
@@ -135,6 +137,58 @@ class TestWhisperModel(unittest.TestCase):
         mock_open.assert_any_call("dummy_path/config.json", "r")
         self.assertGreaterEqual(mock_open.call_count, 1)
         mock_mx_load.assert_called_once_with("dummy_path/weights.safetensors")
+        mock_processor_from_pretrained.assert_called_once_with("dummy_path")
+        self.assertIs(
+            model_instance._processor, mock_processor_from_pretrained.return_value
+        )
+
+    def _write_checkpoint_without_processor(self, model_path, library_name=None):
+        """Mimic a checkpoint converted by another tool: weights config only."""
+        (model_path / "config.json").write_text(json.dumps({"n_mels": 80}))
+        if library_name is not None:
+            (model_path / "README.md").write_text(
+                f"---\nlibrary_name: {library_name}\n---\n\n# Whisper\n"
+            )
+
+    def test_post_load_hook_raises_when_processor_files_are_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp)
+            self._write_checkpoint_without_processor(model_path)
+
+            with self.assertRaises(ValueError) as ctx:
+                self.Model.post_load_hook(self.model_mock, model_path)
+
+        message = str(ctx.exception)
+        self.assertIn("Could not load the Whisper processor", message)
+        self.assertIn(str(model_path), message)
+        self.assertIn("preprocessor_config.json", message)
+        self.assertNotIn("library_name", message)
+        # The underlying transformers error stays available for debugging.
+        self.assertIsNotNone(ctx.exception.__cause__)
+
+    def test_post_load_hook_names_the_library_from_the_model_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp)
+            self._write_checkpoint_without_processor(
+                model_path, library_name="mlx-audio-plus"
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                self.Model.post_load_hook(self.model_mock, model_path)
+
+        self.assertIn("library_name: mlx-audio-plus", str(ctx.exception))
+
+    def test_post_load_hook_skips_library_hint_for_mlx_audio_model_card(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_path = Path(tmp)
+            self._write_checkpoint_without_processor(
+                model_path, library_name="mlx-audio"
+            )
+
+            with self.assertRaises(ValueError) as ctx:
+                self.Model.post_load_hook(self.model_mock, model_path)
+
+        self.assertNotIn("library_name", str(ctx.exception))
 
     @patch("mlx_audio.stt.models.whisper.whisper.pad_or_trim")
     @patch("mlx_audio.stt.models.whisper.whisper.tqdm.tqdm")

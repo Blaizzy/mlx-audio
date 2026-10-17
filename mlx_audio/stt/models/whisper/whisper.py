@@ -43,6 +43,39 @@ def _filter_decode_options(decode_options):
     }
 
 
+def _model_card_library_name(model_path: Path) -> Optional[str]:
+    """Return the ``library_name`` declared in the checkpoint's model card, if any."""
+    readme_path = Path(model_path) / "README.md"
+    if not readme_path.exists():
+        return None
+    try:
+        from huggingface_hub import ModelCard
+
+        return ModelCard.load(readme_path).data.library_name
+    except Exception:
+        return None
+
+
+def _processor_load_error_message(model_path: Path) -> str:
+    """Explain why a Whisper checkpoint without a usable processor can't be used."""
+    message = (
+        f"Could not load the Whisper processor from {model_path}. mlx-audio needs "
+        "the Hugging Face processor files (preprocessor_config.json and the "
+        "tokenizer files) shipped with the checkpoint to transcribe audio."
+    )
+    library_name = _model_card_library_name(model_path)
+    if library_name and library_name != "mlx-audio":
+        message += (
+            f" This checkpoint's model card declares library_name: {library_name}, "
+            "so it was most likely converted for a different library."
+        )
+    message += (
+        " Use a Whisper checkpoint converted with mlx-audio, such as the "
+        "mlx-community/whisper-*-asr-* repos."
+    )
+    return message
+
+
 class HFTokenizerWrapper:
     """
     Wrapper around HuggingFace WhisperTokenizer that provides a compatible interface
@@ -703,15 +736,19 @@ class Model(nn.Module):
 
         Returns:
             The model with processor initialized
+
+        Raises:
+            ValueError: If the checkpoint has no usable Hugging Face processor.
+                Transcription can't work without one, so fail here rather than
+                on the first ``generate()`` call.
         """
         try:
             from transformers import WhisperProcessor
 
             processor = WhisperProcessor.from_pretrained(str(model_path))
-            model._processor = processor
         except Exception as e:
-            model._processor = None
-            warnings.warn(f"Could not load WhisperProcessor: {e}.")
+            raise ValueError(_processor_load_error_message(model_path)) from e
+        model._processor = processor
 
         # Load alignment heads from generation_config.json for word-level timestamps
         gen_config_path = Path(model_path) / "generation_config.json"
