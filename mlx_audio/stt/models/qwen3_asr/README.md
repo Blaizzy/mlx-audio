@@ -54,6 +54,7 @@ print(result.text)
 # With timing info
 for segment in result.segments:
     print(f"[{segment['start']:.2f}s - {segment['end']:.2f}s] {segment['text']}")
+    print(f"Average token log probability: {segment['avg_logprob']:.3f}")
 ```
 
 ### Multiple-input Transcription
