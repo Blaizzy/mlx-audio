@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import gc
 import inspect
 import io
 import json
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx2
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 import pytest
 from huggingface_hub.errors import RepositoryNotFoundError
@@ -1570,3 +1572,75 @@ async def test_model_provider_remove_model_warns_when_in_use(monkeypatch, capsys
     assert removed is True
     assert provider.models == {}
     assert "still hold it" in capsys.readouterr().out
+
+
+# -- small-weights nn.Module: eviction must reclaim cyclic model memory ------
+
+
+class _SmallModule(nn.Module):
+    """Tiny ``nn.Module`` holding a small MLX weight buffer (repo convention:
+    small weights in tests — real weights are hundreds of MB, this is ~1 MB).
+
+    ``partner`` mirrors how real models have nested modules whose graphs
+    cross-reference each other (model ↔ processor), so a loaded model can be
+    unreachable-but-uncollectable: refcounting alone cannot free its cycle,
+    which is what ``_evict()``'s ``gc.collect()`` step is for.
+    """
+
+    def __init__(self, size: int):
+        super().__init__()
+        self.weight = mx.zeros((size, size), dtype=mx.float32)
+        mx.eval(self.weight)
+        self.partner = None
+
+
+def _cyclic_small_model(size: int) -> _SmallModule:
+    """Build one model object: a root with a small internal reference cycle."""
+    root = _SmallModule(size)
+    partner = _SmallModule(size // 2)
+    root.partner = partner
+    partner.partner = root
+    return root
+
+
+async def test_model_provider_eviction_frees_cyclic_nn_module_weights(monkeypatch):
+    """Eviction reclaims a loaded ``nn.Module``'s weight memory.
+
+    ``nn.Module`` graphs contain reference cycles, so dropping the provider's
+    reference does not free the weights through refcounting alone: the cycle
+    (and its buffers) stay alive. ``_evict()`` runs ``gc.collect()`` before
+    ``mx.clear_cache()`` so eviction really releases them.
+    """
+    monkeypatch.setattr(
+        "mlx_audio.server.load_model", lambda name: _cyclic_small_model(512)
+    )
+    gc.collect()  # settle ambient cyclic garbage, so baselines are stable
+    provider = _make_provider(max_resident=2)
+
+    baseline = mx.get_active_memory()
+    provider.load_model("a")
+    provider.load_model("b")
+    assert mx.get_active_memory() - baseline >= 2 * 4 * (512**2 + 256**2)
+
+    removed = await provider.remove_model("a")
+    assert removed is True
+    # ``b``'s weights are still active; ``a``'s cycle-held buffer was reclaimed
+    # by ``_evict()``'s ``gc.collect()`` + ``mx.clear_cache()`` ordering.
+    assert mx.get_active_memory() - baseline <= 4 * (512**2 + 256**2) + 4096
+
+
+def test_small_nn_module_cycle_needs_gc_before_clear_cache():
+    """``mx.clear_cache()`` alone cannot free a dropped cyclic ``nn.Module``;
+    only ``gc.collect()`` can. This is the leak ``_evict()``'s ordering fixed."""
+    gc.collect()  # settle ambient cyclic garbage, so baselines are stable
+    baseline = mx.get_active_memory()
+    model = _cyclic_small_model(512)  # ~1.5 MB of weights behind a cycle
+
+    del model
+    mx.clear_cache()
+    # Refcounting cannot break the cycle: the model's weights are still active.
+    assert mx.get_active_memory() - baseline >= 4 * (512**2 + 256**2)
+
+    gc.collect()
+    mx.clear_cache()
+    assert abs(mx.get_active_memory() - baseline) <= 4096
