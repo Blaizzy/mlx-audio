@@ -147,6 +147,19 @@ class TestChunking(unittest.TestCase):
         span = "<whisper>" + "leise, " * 60 + "</whisper>"
         self.assertTrue(any(span in c for c in split_text(f"Hallo. {span} Ende.")))
 
+    def test_line_breaks_do_not_end_a_turn(self):
+        # Inside a turn the model reads a line break as the end of the turn.
+        self.assertEqual(
+            split_text("Erster Absatz.\n\nZweiter."), ["Erster Absatz. Zweiter."]
+        )
+        self.assertEqual(split_text("第一段。\r\n\n 第二段。\n"), ["第一段。第二段。"])
+        # Turns are still joined by the prompt's own line break.
+        chunks = split_text("<|speaker:0|> Hallo.\n\n<|speaker:1|> Na\ndu.")
+        self.assertEqual(
+            chunks, split_text("<|speaker:0|> Hallo. <|speaker:1|> Na du.")
+        )
+        self.assertEqual(chunks[0].count("\n"), 1)
+
     def test_rejects_structural_tokens_and_unknown_speakers(self):
         for text in ("hi <|im_end|>", "<|semantic:7|>", "<|speaker:16|> hi", "  "):
             with self.assertRaises(ValueError):

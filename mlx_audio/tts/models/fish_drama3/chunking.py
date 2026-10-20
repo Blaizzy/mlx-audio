@@ -4,7 +4,9 @@ Drama 3 is generated chunk by chunk: about CHUNK_BYTES of UTF-8 text with at mos
 CHUNK_SPEAKERS speakers each, so the per-chunk frame budget is never the limit.
 Cuts prefer sentence ends, then clause marks, then spaces. Special tokens,
 paired tags such as <whisper>...</whisper>, and [bracketed] cues are never cut,
-and every piece of a speaker's turn keeps that speaker's tag.
+and every piece of a speaker's turn keeps that speaker's tag. Line breaks in the
+caller's text are flattened first: inside a turn the model reads one as the end of
+the turn and stops, dropping the rest of the chunk.
 """
 
 import re
@@ -38,6 +40,9 @@ UNCUTTABLE = re.compile(
 SENTENCE_ENDS = frozenset(".!?;。！？；…\n")
 CLAUSE_MARKS = frozenset(",:，：、")
 SPACES = frozenset(" ")
+LINE_BREAK = re.compile(r"\s*[\n\r\v\f\x85\u2028\u2029]\s*")
+# From CJK Radicals on, scripts are written without spaces between sentences.
+FIRST_UNSPACED = 0x2E80
 
 
 def validate_text(text: str, location: str) -> None:
@@ -71,6 +76,19 @@ def reference_transcript(text: str) -> str:
     tag = SPEAKER_TAG.match(body)
     leading = tagged[: len(tagged) - len(body)]
     return tag.group(0) + leading + body[tag.end() :]
+
+
+def flatten_lines(text: str) -> str:
+    """Text with every line break, and the white space around it, replaced by a
+    space, or by nothing after a character of a script written without spaces."""
+
+    def join(match: re.Match) -> str:
+        start = match.start()
+        if start == 0 or match.end() == len(text):
+            return ""
+        return "" if ord(text[start - 1]) >= FIRST_UNSPACED else " "
+
+    return LINE_BREAK.sub(join, text)
 
 
 def _bytes(text: str) -> int:
@@ -153,6 +171,7 @@ def split_text(
 ) -> list[str]:
     """Generation chunks in order. Tagged turns are split per speaker, each piece
     re-tagged, then regrouped so a chunk stays within limit and max_speakers."""
+    text = flatten_lines(text)
     if not SPEAKER_TAG.search(text):
         return split_by_length(text, limit)
 
