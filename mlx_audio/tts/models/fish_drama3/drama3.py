@@ -39,6 +39,9 @@ DEFAULT_TEMPERATURE = 0.7
 DEFAULT_TOP_K = 30
 DEFAULT_TOP_P = 0.7
 PREFILL_CHUNK = 256
+# Reference frames decoded, and discarded, to warm the causal codec up before the
+# first generated frame.
+CODEC_PRIME_FRAMES = 24
 VOICE_CACHE_SIZE = 4
 KEPT_PREFIXES = ("backbone.", "semantic_head.", "tower.")
 
@@ -447,7 +450,7 @@ class Model(nn.Module):
         frame_rate = self.sample_rate / self.codec.frame_length
         interval = max(1, round(streaming_interval * frame_rate))
         first = first_chunk_frames or interval
-        self.codec.reset_streaming_state()
+        self._start_codec(voice)
 
         chunks = split_text(text)
         pinned: Optional[tuple[str, mx.array]] = None
@@ -477,6 +480,21 @@ class Model(nn.Module):
                 # An empty last chunk still closes the stream.
                 yield self._result(codes[emitted:], index, started, stream, is_last)
                 started = time.perf_counter()
+
+    def _start_codec(self, voice: _Voice) -> None:
+        """Resets the streaming codec and, for a single reference, decodes the
+        last CODEC_PRIME_FRAMES of its codes and discards the audio.
+
+        Started cold, the causal codec's convolutions see zeros and its windowed
+        transformer an empty context, which smears the first second or so of
+        speech. Warmed up on the same speaker it decodes the first frames closer
+        to the real audio; warming it up on another speaker is worse than cold,
+        so with several references, which may speak first, it stays cold.
+        """
+        self.codec.reset_streaming_state()
+        if len(voice.references) == 1:
+            codes = voice.references[0][1][None, :, -CODEC_PRIME_FRAMES:]
+            mx.eval(self.codec.streaming_step(codes))
 
     def _result(
         self,

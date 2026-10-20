@@ -13,7 +13,10 @@ from mlx_audio.codec.tests.test_fish_s1_dac import _tiny_streaming_dac
 from mlx_audio.tts.models.fish_drama3 import Model, ModelConfig
 from mlx_audio.tts.models.fish_drama3.chunking import split_text, validate_text
 from mlx_audio.tts.models.fish_drama3.convert import TOWER_PREFIXES, convert
-from mlx_audio.tts.models.fish_drama3.drama3 import sample_top_k_top_p
+from mlx_audio.tts.models.fish_drama3.drama3 import (
+    CODEC_PRIME_FRAMES,
+    sample_top_k_top_p,
+)
 from mlx_audio.tts.utils import load_model
 
 SEMANTIC_START, TOWER_VOCAB, EOS = 32, 16, 2
@@ -325,6 +328,43 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual([r.is_final_chunk for r in results][-1], True)
         self.assertEqual(sum(r.is_final_chunk for r in results), 1)
         self.assertEqual(sum(r.token_count for r in results), 5)
+
+    def test_single_reference_warms_the_codec_up(self):
+        mx.random.seed(2)
+        codes = mx.random.randint(0, TOWER_VOCAB, (3, 6)).astype(mx.int32)
+        module = "mlx_audio.tts.models.fish_drama3.drama3"
+
+        def speak(**kwargs):
+            with (
+                patch(f"{module}.split_text", return_value=["Eins."]),
+                patch.object(
+                    self.model,
+                    "_frames",
+                    side_effect=lambda *a, **k: iter(codes[:, i] for i in range(6)),
+                ),
+            ):
+                return mx.concatenate([r.audio for r in self.speak(**kwargs)])
+
+        def decode(prime=None):
+            self.codec.reset_streaming_state()
+            frames = codes if prime is None else mx.concatenate([prime, codes], axis=1)
+            audio = self.codec.streaming_step(frames)[0, 0]
+            # The audio of the warm-up frames is dropped.
+            return audio[audio.shape[0] * (frames.shape[1] - 6) // frames.shape[1] :]
+
+        reference = self.model._voice(self.reference, "Guten Tag.").references[0][1]
+        warm = speak(ref_audio=self.reference, ref_text="Guten Tag.")
+        prime = reference[:, -CODEC_PRIME_FRAMES:]
+        self.assertLess(mx.abs(warm - decode(prime)).max().item(), 1e-5)
+        self.assertGreater(mx.abs(warm - decode()).max().item(), 1e-4)
+        # Without a reference, or with several, there is no voice to warm up on.
+        cold = speak()
+        self.assertLess(mx.abs(cold - decode()).max().item(), 1e-5)
+        both = speak(
+            ref_audio=[self.reference, self.reference * 0.5],
+            ref_text=["<|speaker:0|> Guten Tag.", "<|speaker:1|> Hallo."],
+        )
+        self.assertLess(mx.abs(both - decode()).max().item(), 1e-5)
 
     def test_accepts_the_cli_and_server_arguments(self):
         cli = dict(speed=1.0, lang_code="en", temperature=0.7, verbose=False)
