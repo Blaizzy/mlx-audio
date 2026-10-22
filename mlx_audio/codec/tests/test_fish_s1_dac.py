@@ -140,6 +140,27 @@ class TestFishS1DAC(unittest.TestCase):
             streamed = _stream(_tiny_streaming_dac(block_size=12), codes, 3)
             self.assertLess(mx.abs(streamed - reference).max().item(), 1e-4)
 
+    def test_restored_streaming_state_decodes_the_same_frames_again(self):
+        # Prefixes that fill the transformer's window, leave every state at its
+        # reset value, and run past the RoPE table.
+        cases = (("filled window", 64, 6), ("reset", 64, 0), ("past table", 12, 15))
+        with mx.stream(mx.cpu):
+            codes = _random_codes(40)
+            for name, block_size, prefix in cases:
+                with self.subTest(name):
+                    model = _tiny_streaming_dac(block_size=block_size)
+                    model.reset_streaming_state()
+                    for start in range(0, prefix, 3):
+                        model.streaming_step(
+                            codes[:, :, start : min(start + 3, prefix)]
+                        )
+                    state = model.streaming_state()
+                    frames = codes[:, :, prefix : prefix + 5]
+                    first = model.streaming_step(frames)
+                    model.streaming_step(codes[:, :, prefix + 5 : prefix + 9])
+                    model.set_streaming_state(state)
+                    self.assertTrue(mx.array_equal(model.streaming_step(frames), first))
+
     def test_streaming_rejects_chunk_larger_than_rope_table(self):
         with mx.stream(mx.cpu):
             model = _tiny_streaming_dac(block_size=12)

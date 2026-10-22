@@ -1,8 +1,11 @@
+import contextlib
 import gc
+import itertools
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Optional
 from unittest.mock import patch
 
 import mlx.core as mx
@@ -22,6 +25,7 @@ from mlx_audio.tts.models.fish_drama3.drama3 import sample_top_k_top_p
 from mlx_audio.tts.utils import load_model
 
 SEMANTIC_START, TOWER_VOCAB, EOS = 32, 16, 2
+DRAMA3 = "mlx_audio.tts.models.fish_drama3.drama3"
 # Bytes the MLX cache may hold after a clear: finished GPU work still returns a
 # few kilobytes, while one skipped clear leaves megabytes even with the tiny model.
 CACHE_LEFTOVER = 256 * 1024
@@ -137,6 +141,77 @@ def write_source(path: Path) -> dict[str, mx.array]:
     (path / "config.json").write_text(json.dumps(config))
     write_tokenizer(path)
     return source
+
+
+class FakeCodec:
+    """The DAC streaming API over a frame counter, at the real codec's rate.
+
+    A frame with c0 = 0 decodes to RMS 0.0002, as the model's silent tails do,
+    any other frame to 0.05. The sign pattern depends on c1 and on the frame's
+    position in the stream, so the audio shows which state decoded it. Every
+    call width, reset and restore is recorded in `events`.
+    """
+
+    sample_rate, frame_length = 44100, 2048
+
+    def __init__(self):
+        self.position, self.events = 0, []
+
+    def reset_streaming_state(self):
+        self.position = 0
+        self.events.append("reset")
+
+    def streaming_state(self) -> int:
+        return self.position
+
+    def set_streaming_state(self, state: int):
+        self.position = state
+        self.events.append(("restore", state))
+
+    def streaming_step(self, indices: mx.array) -> mx.array:
+        codes = np.array(indices.reshape(-1, *indices.shape[-2:])[0])
+        self.events.append(codes.shape[1])
+        samples = np.arange(self.frame_length)
+        frames = []
+        for c0, c1 in codes[:2].T:
+            level = 0.0002 if c0 == 0 else 0.05
+            split = (37 * self.position + int(c1)) % self.frame_length
+            frames.append(np.where(samples < split, level, -level))
+            self.position += 1
+        return mx.array(np.concatenate(frames).astype(np.float32))[None, None]
+
+
+def spans(*runs: tuple[int, bool], salt: int = 0) -> list[mx.array]:
+    """Frames from runs of (count, loud), their codes varied by salt."""
+    frames = []
+    for count, loud in runs:
+        for _ in range(count):
+            i = len(frames) + salt
+            c0 = 1 + i % (TOWER_VOCAB - 1) if loud else 0
+            frames.append(mx.array([c0, (3 * i) % TOWER_VOCAB, 0], dtype=mx.int32))
+    return frames
+
+
+def fake_decode(frames: list[mx.array]) -> mx.array:
+    """What a fresh fake codec decodes from these frames."""
+    return FakeCodec().streaming_step(mx.stack(frames, axis=1)[None])[0, 0]
+
+
+def legacy_pieces(frames: int, first: Optional[int], interval: int) -> list[int]:
+    """Frames per result of a chunk that is not the last, as streamed when each
+    piece was decoded at its due point; first=None means no streaming."""
+    pieces, emitted = [], 0
+    for length in range(1, frames + 1):
+        due = first if emitted == 0 else interval
+        if first is not None and length - emitted >= due:
+            pieces.append(length - emitted)
+            emitted = length
+    return pieces + ([frames - emitted] if frames > emitted else [])
+
+
+def legacy_widths(pieces: list[int]) -> list[int]:
+    """Codec call widths of decoding each piece at once in 64-frame calls."""
+    return [min(64, piece - begin) for piece in pieces for begin in range(0, piece, 64)]
 
 
 class TestChunking(unittest.TestCase):
@@ -415,8 +490,9 @@ class TestGeneration(unittest.TestCase):
         self.assertEqual(result.audio.shape, expected.shape)
         self.assertTrue(mx.allclose(result.audio, expected, atol=1e-5).item())
 
-    def decode_peak(self, codes: list[mx.array]) -> int:
-        """Bytes one chunk's decode adds to MLX's active memory at its peak."""
+    def decode_peak(self, codes: list[mx.array], frames_per_call: int) -> int:
+        """Peak memory of decoding codes in calls of frames_per_call frames,
+        keeping the audio as a chunk does."""
         peaks = []
         # A busy machine returns freed buffers late or hands out cached ones up to
         # twice the size asked for, which only ever raises a peak: keep the least.
@@ -428,32 +504,31 @@ class TestGeneration(unittest.TestCase):
             mx.clear_cache()
             before = mx.get_active_memory()
             mx.reset_peak_memory()
-            self.model._result(codes, 0, 0.0, False, True)
+            pieces = [
+                self.model._decode(codes[begin : begin + frames_per_call])
+                for begin in range(0, len(codes), frames_per_call)
+            ]
+            mx.eval(mx.concatenate(pieces))
             peaks.append(mx.get_peak_memory() - before)
+            del pieces
         return min(peaks)
 
     def test_a_long_chunk_decodes_in_a_fraction_of_one_codec_call(self):
-        def decode_peak(frames_per_call: int) -> int:
-            with patch(f"{module}.DECODE_FRAMES", frames_per_call):
-                return self.decode_peak(codes)
-
         mx.random.seed(17)
         codes = list(mx.random.randint(0, TOWER_VOCAB, (56, 3)))
         mx.eval(codes)
-        module = "mlx_audio.tts.models.fish_drama3.drama3"
         # Measured: pieces of 8 frames peak at a fifth to a third of one call.
-        self.assertLess(decode_peak(8), 0.5 * decode_peak(56))
+        self.assertLess(self.decode_peak(codes, 8), 0.5 * self.decode_peak(codes, 56))
 
     def test_decode_memory_does_not_grow_with_the_chunk(self):
-        def decode_peak(frames: int) -> int:
+        def chunk(frames: int) -> list[mx.array]:
             codes = list(mx.random.randint(0, TOWER_VOCAB, (frames, 3)))
             mx.eval(codes)
-            return self.decode_peak(codes)
+            return codes
 
         mx.random.seed(19)
-        module = "mlx_audio.tts.models.fish_drama3.drama3"
-        with patch(f"{module}.DECODE_FRAMES", 8):
-            short, long = decode_peak(56), decode_peak(1792)
+        short = self.decode_peak(chunk(56), 8)
+        long = self.decode_peak(chunk(1792), 8)
         # Measured: 1.2 to 1.5 with each piece evaluated, 4 to 5 when all pieces
         # form one lazy graph.
         self.assertLess(long, 2 * short)
@@ -493,17 +568,19 @@ class TestGeneration(unittest.TestCase):
         # result, yet its prompt's buffers must not carry over to the next.
         model, frames, cached = self.model, self.model._frames, []
 
+        # Plain functions, not mocks: a mock keeps its arguments in a cycle, so
+        # a garbage collection may release them into the cache at any point.
         def chunk_frames(*args):
             cached.append(mx.get_cache_memory())
             step = self.scripted_step([SEMANTIC_START + 1, SEMANTIC_START + 2])
-            with patch.object(model, "_step", side_effect=step):
+            with patch.object(model, "_step", step):
                 yield from frames(*args)
 
         module = "mlx_audio.tts.models.fish_drama3.drama3"
         chunks = [" ".join(["Wort"] * 60) + "."] * 4
         with (
             patch(f"{module}.split_text", return_value=chunks),
-            patch.object(model, "_frames", side_effect=chunk_frames),
+            patch.object(model, "_frames", chunk_frames),
         ):
             results = list(
                 model.generate(
@@ -534,7 +611,7 @@ class TestGeneration(unittest.TestCase):
         model = self.model
         frames, system_rows = model.build_frames([], [], "Hallo du.")
         voice = model._voice(None, None)
-        with patch.object(model, "_step", side_effect=self.scripted_step(mains)):
+        with patch.object(model, "_step", self.scripted_step(mains)):
             return list(model._frames(frames, system_rows, voice, 8, 0.7, 30, 0.7))
 
     def test_semantic_zero_right_before_eos_is_dropped(self):
@@ -548,6 +625,376 @@ class TestGeneration(unittest.TestCase):
         # The frame cap is not EOS: a held frame is still yielded.
         codes = self.run_frames([SEMANTIC_START + 1] * 7 + [SEMANTIC_START])
         self.assertEqual(len(codes), 8)
+
+    def scripted(self, attempts: list, chunks=("Eins.",), retry_after=3.0, **kwargs):
+        """Generates with the fake codec, _frames yielding the scripted attempts
+        in order. Returns the results, the codec, how many frames each attempt
+        yielded and the prompt each attempt got. retry_after=None keeps the
+        model's own retry trigger."""
+        codec, scripts, pulled, prompts = FakeCodec(), iter(attempts), [], []
+
+        def frames(prompt, *args):
+            prompts.append(prompt)
+            pulled.append(0)
+            for frame in next(scripts):
+                pulled[-1] += 1
+                yield frame
+
+        # By default a retry trigger shorter than the end, so the scripts tell
+        # the two apart.
+        trigger = patch(f"{DRAMA3}.RETRY_AFTER_QUIET", retry_after)
+        with (
+            patch(f"{DRAMA3}.split_text", return_value=list(chunks)),
+            trigger if retry_after else contextlib.nullcontext(),
+            patch.object(self.model, "codec", codec),
+            patch.object(self.model, "_frames", frames),
+        ):
+            results = list(self.model.generate("Hallo du.", **kwargs))
+        return results, codec, pulled, prompts
+
+    def prompt(self, text: str, *history: tuple[str, list]) -> mx.array:
+        """The prompt rows for text after these turns, without a reference."""
+        turns = [(turn, mx.stack(codes, axis=1)) for turn, codes in history]
+        return self.model.build_frames([], turns, text)[0]
+
+    def test_a_chunk_that_falls_silent_is_generated_again(self):
+        silent, spoken = spans((10, True), (300, False)), spans((40, True), salt=5)
+        (result,), codec, pulled, _ = self.scripted([silent, spoken])
+        # 65 quiet frames end at frame 74, in the second 64-frame piece.
+        self.assertEqual(pulled, [128, 40])
+        self.assertEqual(codec.events, ["reset", 64, 64, ("restore", 0), 40])
+        self.assertEqual(result.token_count, 40)
+        self.assertTrue(mx.array_equal(result.audio, fake_decode(spoken)))
+
+    def test_only_12_s_of_quiet_regenerate_a_chunk(self):
+        # Complete takes paused for up to 10 s in the measured ones. 12 s are
+        # 259 frames at 2048 samples and 44.1 kHz; a shorter pause is kept whole.
+        spare = spans((40, True))
+        kept = spans((10, True), (258, False), (30, True), salt=2)
+        (result,), _, pulled, _ = self.scripted([kept, spare], retry_after=None)
+        self.assertEqual(pulled, [298])
+        self.assertTrue(mx.array_equal(result.audio, fake_decode(kept)))
+        retried = spans((10, True), (259, False), (30, True), salt=2)
+        (result,), _, pulled, _ = self.scripted([retried, spare], retry_after=None)
+        self.assertEqual(pulled, [299, 40])
+        self.assertTrue(mx.array_equal(result.audio, fake_decode(spare)))
+
+    def test_a_chunk_silent_after_its_retries_ends_a_second_after_speech(self):
+        prefixes = (5, 70, 30, 100)
+        attempts = [spans((n, True), (400, False), salt=n) for n in prefixes]
+        # The spare attempt lets an extra retry show in `pulled`.
+        (result,), _, pulled, _ = self.scripted(attempts + [spans((40, True))])
+        # Retries at the piece that shows 65 quiet frames, the end at the one
+        # that shows 259 of them (frame 358).
+        self.assertEqual(pulled, [128, 192, 128, 384])
+        # The last attempt's 100 loud frames and the 21 quiet ones of 1 s.
+        self.assertEqual(result.token_count, 121)
+        self.assertTrue(mx.array_equal(result.audio, fake_decode(attempts[3][:121])))
+
+    def test_an_all_quiet_text_closes_with_one_empty_final_result(self):
+        # Without streaming, each chunk is retried three times and nothing goes
+        # out.
+        # A stream sends each chunk's first 21 quiet frames (1 s) at its due
+        # points every 7 frames, so it cannot retry: 259 quiet frames end it.
+        expected = {
+            False: ([128, 128, 128, 320] * 2, [0]),
+            True: ([259, 259], [7] * 6 + [0]),
+        }
+        for stream, (frames, counts) in expected.items():
+            with (
+                self.subTest(stream=stream),
+                self.assertLogs(DRAMA3, "WARNING") as logs,
+            ):
+                results, _, pulled, prompts = self.scripted(
+                    [spans((400, False))] * 8, ("Eins.", "Zwei."), stream=stream
+                )
+                self.assertEqual(pulled, frames)
+                self.assertEqual([r.token_count for r in results], counts)
+                finals = [r.is_final_chunk for r in results]
+                self.assertEqual(finals, [False] * (len(counts) - 1) + [True])
+                self.assertEqual(results[-1].audio.shape[0], 0)
+                # Nothing of the first chunk is history, even what a stream sent.
+                self.assertTrue(mx.array_equal(prompts[-1], self.prompt("Zwei.")))
+                self.assertEqual(len(logs.records), 2)
+
+    def test_a_short_quiet_chunk_that_ends_by_itself_is_kept_whole(self):
+        quiet, spoken = spans((40, False)), spans((30, True))
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                results, _, pulled, prompts = self.scripted(
+                    [quiet, spoken], ("Eins.", "Zwei."), stream=stream
+                )
+                self.assertEqual(len(pulled), 2)
+                first = [r.audio for r in results if r.segment_idx == 0]
+                self.assertTrue(
+                    mx.array_equal(mx.concatenate(first), fake_decode(quiet))
+                )
+                expected = self.prompt("Zwei.", ("Eins.", quiet))
+                self.assertTrue(mx.array_equal(prompts[1], expected))
+
+    def test_the_chunk_after_an_ended_one_continues_from_its_kept_audio(self):
+        silent, spoken = spans((100, True), (400, False)), spans((20, True), salt=3)
+        with patch(f"{DRAMA3}.SILENT_RETRIES", 0):
+            results, codec, _, prompts = self.scripted(
+                [silent, spoken],
+                ("Eins.", "Zwei."),
+                stream=True,
+                first_chunk_frames=1000,
+            )
+        kept = silent[:121]
+        ended = [r for r in results if r.segment_idx == 0]
+        self.assertEqual(sum(r.token_count for r in ended), 121)
+        audio = mx.concatenate([r.audio for r in ended])
+        self.assertTrue(mx.array_equal(audio, fake_decode(kept)))
+        # Six pieces up to the end, then the kept frames again in the calls
+        # that decoded them, the last one cut short; then the next chunk.
+        replay = [("restore", 0), 64, 57]
+        self.assertEqual(codec.events, ["reset", *[64] * 6, *replay, 7, 7, 6])
+        following = mx.concatenate([r.audio for r in results if r.segment_idx == 1])
+        expected = fake_decode(kept + spoken)[121 * FakeCodec.frame_length :]
+        self.assertTrue(mx.array_equal(following, expected))
+        self.assertTrue(
+            mx.array_equal(prompts[1], self.prompt("Zwei.", ("Eins.", kept)))
+        )
+
+    def test_audio_and_codec_calls_are_unchanged_without_a_long_silence(self):
+        # Quiet runs of at most 21 frames (1 s), then of up to 60.
+        short = spans((30, True), (20, False), (100, True), (21, False), (140, True))
+        long = spans((10, True), (60, False), (150, True), (40, False), (30, True))
+        # A quiet opening shorter than 1 s, due before and after it ends.
+        opening = spans((15, False), (100, True), (20, False), (80, True))
+        rate = FakeCodec.sample_rate / FakeCodec.frame_length
+        cases = [(short, *due) for due in ((None, 7), (5, 7), (100, 90), (3, 70))]
+        cases += [(opening, 5, 7), (opening, 18, 7)]
+        for chunk, first, interval in cases:
+            stream = first is not None
+            kwargs = dict(stream=stream, first_chunk_frames=first)
+            with self.subTest(first=first, interval=interval, frames=len(chunk)):
+                results, codec, _, prompts = self.scripted(
+                    [chunk, long],
+                    ("Eins.", "Zwei."),
+                    streaming_interval=interval / rate,
+                    **kwargs,
+                )
+                pieces = legacy_pieces(len(chunk), first, interval)
+                later = legacy_pieces(len(long), interval if stream else None, interval)
+                widths = legacy_widths(pieces) + legacy_widths(later)
+                self.assertEqual(codec.events, ["reset", *widths])
+                audio = mx.concatenate([r.audio for r in results])
+                self.assertTrue(mx.array_equal(audio, fake_decode(chunk + long)))
+                counts = [r.token_count for r in results if r.segment_idx == 0]
+                self.assertEqual(counts, pieces)
+                expected = self.prompt("Zwei.", ("Eins.", chunk))
+                self.assertTrue(mx.array_equal(prompts[1], expected))
+
+    def test_due_points_on_a_64_frame_boundary_decode_each_frame_once(self):
+        rate = FakeCodec.sample_rate / FakeCodec.frame_length
+        for interval in (63, 64, 65):
+            with self.subTest(interval=interval):
+                # Both chunks end on a due point, so EOS leaves nothing to send.
+                first = spans((3 * interval, True))
+                last = spans((2 * interval, True), salt=1)
+                results, codec, _, _ = self.scripted(
+                    [first, last],
+                    ("Eins.", "Zwei."),
+                    stream=True,
+                    first_chunk_frames=interval,
+                    streaming_interval=interval / rate,
+                )
+                pieces = legacy_pieces(len(first), interval, interval)
+                later = legacy_pieces(len(last), interval, interval)
+                widths = legacy_widths(pieces) + legacy_widths(later)
+                self.assertEqual(codec.events, ["reset", *widths])
+                self.assertNotIn(0, codec.events)
+                counts = [r.token_count for r in results]
+                self.assertEqual(counts, [interval] * 5 + [0])
+                finals = [r.is_final_chunk for r in results]
+                self.assertEqual(finals, [False] * 5 + [True])
+                audio = mx.concatenate([r.audio for r in results])
+                self.assertTrue(mx.array_equal(audio, fake_decode(first + last)))
+                if interval == 64:
+                    # Every due point is also a full piece: one call each.
+                    self.assertEqual(codec.events, ["reset"] + [64] * 5)
+
+    def test_a_stream_retries_a_chunk_before_its_first_delivery(self):
+        silent = [spans((10, True), (300, False), salt=n) for n in (1, 2)]
+        spoken = spans((40, True), salt=3)
+        results, codec, pulled, prompts = self.scripted(
+            [*silent, spoken], stream=True, first_chunk_frames=1000
+        )
+        # Each silent attempt shows 65 quiet frames (to frame 74) in the piece
+        # that ends at frame 128, before its first due point.
+        self.assertEqual(pulled, [128, 128, 40])
+        self.assertEqual(codec.events.count(("restore", 0)), 2)
+        self.assertTrue(all(mx.array_equal(p, prompts[0]) for p in prompts))
+        self.assertEqual(
+            [(r.token_count, r.is_final_chunk) for r in results], [(40, True)]
+        )
+        self.assertTrue(mx.array_equal(results[0].audio, fake_decode(spoken)))
+
+    def test_a_stream_retries_a_quiet_opening_only_while_it_has_sent_nothing(self):
+        quiet, spoken = spans((300, False)), spans((40, True))
+        # The 65th quiet frame is frame 64. A first due point at frame 64 comes
+        # before it is decoded and sends up to 21 quiet frames, so the attempt
+        # can only end, 259 quiet frames in, at the due point at frame 260.
+        with self.assertLogs(DRAMA3, "WARNING"):
+            results, _, pulled, _ = self.scripted(
+                [quiet, quiet, spoken], stream=True, first_chunk_frames=64
+            )
+        self.assertEqual(pulled, [260])
+        flags = [(r.token_count, r.is_final_chunk) for r in results]
+        self.assertEqual(flags, [(21, False), (0, True)])
+        # A first due point at frame 65 decodes frame 64 before sending, so the
+        # attempt is retried with nothing sent.
+        with self.assertNoLogs(DRAMA3, "WARNING"):
+            results, codec, pulled, _ = self.scripted(
+                [quiet, quiet, spoken], stream=True, first_chunk_frames=65
+            )
+        self.assertEqual(pulled, [65, 65, 40])
+        self.assertEqual(codec.events.count(("restore", 0)), 2)
+        self.assertEqual(
+            [(r.token_count, r.is_final_chunk) for r in results], [(40, True)]
+        )
+        self.assertTrue(mx.array_equal(results[0].audio, fake_decode(spoken)))
+
+    def test_a_stream_ends_a_silent_chunk_without_taking_back_audio(self):
+        frames, spare = spans((30, True), (400, False)), spans((40, True))
+        # The spare attempt lets a wrong retry show in `pulled`.
+        results, _, pulled, _ = self.scripted(
+            [frames, spare], stream=True, first_chunk_frames=5
+        )
+        # 259 quiet frames end at frame 288; the due point at 292 shows them.
+        self.assertEqual(pulled, [292])
+        self.assertEqual(sum(r.token_count for r in results), 30 + 21)
+        audio = mx.concatenate([r.audio for r in results])
+        self.assertTrue(mx.array_equal(audio, fake_decode(frames[:51])))
+        self.assertEqual([r.is_final_chunk for r in results][-1], True)
+        self.assertEqual(sum(r.is_final_chunk for r in results), 1)
+
+    def test_a_held_pause_goes_out_once_when_speech_resumes(self):
+        frames = spans((30, True), (40, False), (30, True))
+        results, _, _, _ = self.scripted([frames], stream=True, first_chunk_frames=5)
+        audio = mx.concatenate([r.audio for r in results])
+        self.assertTrue(mx.array_equal(audio, fake_decode(frames)))
+        # Due every 7 frames from frame 5. The pause sends 21 frames, holds the
+        # rest, and they go out with the speech at frame 75.
+        ends = list(itertools.accumulate(r.token_count for r in results))
+        self.assertEqual(ends, [5, 12, 19, 26, 33, 40, 47, 51, 75, 82, 89, 96, 100])
+
+    def test_audio_held_at_a_chunks_end_goes_out_in_its_closing_result(self):
+        first, last = spans((20, True), (40, False)), spans((20, True), (40, False))
+        results, _, _, _ = self.scripted(
+            [first, last], ("Eins.", "Zwei."), stream=True, first_chunk_frames=5
+        )
+        audio = mx.concatenate([r.audio for r in results])
+        self.assertTrue(mx.array_equal(audio, fake_decode(first + last)))
+        self.assertTrue(all(r.token_count for r in results))
+        self.assertEqual(sum(r.token_count for r in results), 120)
+        self.assertEqual([r.is_final_chunk for r in results][-1], True)
+        self.assertEqual(sum(r.is_final_chunk for r in results), 1)
+        # A last chunk sent whole by its due points closes with an empty result.
+        results, _, _, _ = self.scripted(
+            [first, spans((21, True))], ("Eins.", "Zwei."), stream=True
+        )
+        self.assertEqual(
+            (results[-1].token_count, results[-1].is_final_chunk), (0, True)
+        )
+
+    def test_a_retried_chunk_leaves_only_its_accepted_codes_as_history(self):
+        silent, spoken = spans((10, True), (300, False)), spans((40, True), salt=5)
+        _, _, pulled, prompts = self.scripted(
+            [silent, spoken, spans((30, True))], ("Eins.", "Zwei.")
+        )
+        self.assertEqual(len(pulled), 3)
+        self.assertTrue(mx.array_equal(prompts[0], prompts[1]))
+        expected = self.prompt("Zwei.", ("Eins.", spoken))
+        self.assertTrue(mx.array_equal(prompts[2], expected))
+
+    def test_a_retry_draws_new_frames_and_the_call_stays_repeatable(self):
+        model, frames, attempts = self.model, self.model._frames, []
+
+        def recorded(*args):
+            attempts.append([])
+            for frame in frames(*args):
+                attempts[-1].append(frame.tolist())
+                yield frame
+
+        # Every frame counts as quiet, and 8 of them call for a retry: the tiny
+        # codec has 16 samples per frame, so 3 s would take 8269 frames.
+        rate = model.sample_rate / model.codec.frame_length
+        # The recipe's top-p keeps a single candidate in the tiny model.
+        voice = dict(ref_audio=self.reference, ref_text="Guten Tag.", top_p=1.0)
+        with (
+            patch(f"{DRAMA3}.QUIET_RMS", 1.0),
+            patch(f"{DRAMA3}.RETRY_AFTER_QUIET", 7.5 / rate),
+            patch.object(model, "_frames", recorded),
+        ):
+            first = self.speak(**voice)
+            retried = attempts[:]
+            second = self.speak(**voice)
+        self.assertLess(mx.get_cache_memory(), CACHE_LEFTOVER)
+        # The first two attempts both ran 8 frames without EOS, so both were retried.
+        self.assertGreaterEqual(len(retried), 3)
+        self.assertGreaterEqual(min(len(codes) for codes in retried[:2]), 8)
+        self.assertNotEqual(retried[0], retried[1])
+        self.assertEqual(attempts[len(retried) :], retried)
+        a = mx.concatenate([r.audio for r in first])
+        b = mx.concatenate([r.audio for r in second])
+        self.assertTrue(mx.array_equal(a, b).item())
+
+    def test_one_warning_per_ended_chunk_and_none_for_a_retry(self):
+        retried = [spans((10, True), (300, False)), spans((40, True))]
+        with self.assertNoLogs(DRAMA3, "WARNING"):
+            self.scripted(retried)
+        with self.assertLogs(DRAMA3, "WARNING") as logs:
+            self.scripted(retried + [spans((300, False))] * 4, ("Eins.", "Zwei."))
+        (record,) = logs.records
+        self.assertIn("chunk 1 ", record.getMessage())
+        self.assertIn("3 retries", record.getMessage())
+
+    def test_retries_and_ended_chunks_leave_the_mlx_cache_empty(self):
+        model, frames, build = self.model, self.model._frames, self.model.build_frames
+        loud, quiet = [SEMANTIC_START + 1] * 20, [SEMANTIC_START] * 300
+        cached = []
+
+        def chunk_frames(*args):
+            with patch.object(model, "_step", self.scripted_step(next(scripts))):
+                yield from frames(*args)
+
+        def chunk_start(*args):
+            cached.append(mx.get_cache_memory())
+            return build(*args)
+
+        def run(**kwargs):
+            # Audio as small as the tiny codec's, at the real frame rate:
+            # buffers the GPU releases after a clear stay a few kilobytes.
+            codec = FakeCodec()
+            codec.frame_length, codec.sample_rate = 16, 44100 * 16 / 2048
+            with (
+                patch(f"{DRAMA3}.split_text", return_value=["Eins.", "Zwei.", "Drei."]),
+                patch(f"{DRAMA3}.RETRY_AFTER_QUIET", 3.0),
+                patch(f"{DRAMA3}.SILENT_RETRIES", 1),
+                patch.object(model, "codec", codec),
+                patch.object(model, "_frames", chunk_frames),
+                patch.object(model, "build_frames", chunk_start),
+            ):
+                yield from model.generate("Wort.", max_tokens=400, **kwargs)
+
+        # A retry, a chunk ended after its retry, and a chunk that speaks.
+        scripts = iter([loud[:10] + quiet, loud] + [loud[:10] + quiet] * 2 + [loud])
+        for _ in run():
+            self.assertLess(mx.get_cache_memory(), CACHE_LEFTOVER)
+        self.assertEqual(len(cached), 3)
+        for size in cached[1:]:
+            self.assertLess(size, CACHE_LEFTOVER)
+        # A stream closed at its first piece after a retry: the first due point
+        # comes after the quiet run that calls for one.
+        scripts = iter([quiet, loud * 6])
+        stream = run(stream=True, first_chunk_frames=100)
+        next(stream)
+        stream.close()
+        self.assertIsNone(next(scripts, None))
+        self.assertLess(mx.get_cache_memory(), CACHE_LEFTOVER)
 
     def test_accepts_the_cli_and_server_arguments(self):
         cli = dict(speed=1.0, lang_code="en", temperature=0.7, verbose=False)
