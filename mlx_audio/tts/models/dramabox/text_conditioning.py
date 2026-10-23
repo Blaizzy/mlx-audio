@@ -172,10 +172,10 @@ class Embeddings1DConnector(nn.Module):
                 f"divisible by num_learnable_registers {self.num_learnable_registers}."
             )
 
-        binary = (attention_mask.squeeze(1).squeeze(1) >= -9000.0).astype(
-            hidden_states.dtype
-        )
-        positions = mx.arange(hidden_states.shape[1], dtype=hidden_states.dtype)[None]
+        # Integer sort keys: bfloat16 cannot count past 256 by one, so keys built in
+        # the hidden dtype tie and the last prompt token can lose its slot.
+        binary = (attention_mask.squeeze(1).squeeze(1) >= -9000.0).astype(mx.int32)
+        positions = mx.arange(hidden_states.shape[1], dtype=mx.int32)[None]
         order_keys = mx.where(binary > 0, positions - hidden_states.shape[1], positions)
         order = mx.argsort(order_keys, axis=1)
         hidden_states = mx.take_along_axis(hidden_states, order[:, :, None], axis=1)

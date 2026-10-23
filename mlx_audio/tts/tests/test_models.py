@@ -10919,6 +10919,36 @@ def test_embeddings_connector_compacts_left_padded_tokens_like_reference():
     np.testing.assert_array_equal(np.array(returned_mask), np.zeros((1, 1, 1, 2)))
 
 
+def test_embeddings_connector_keeps_every_token_of_bf16_prompt():
+    # Gemma prompts are left padded to 1024 tokens, past where bf16 counts by one.
+    length = 1024
+    connector = Embeddings1DConnector(
+        attention_head_dim=2,
+        num_attention_heads=1,
+        num_layers=0,
+        num_learnable_registers=128,
+    )
+    connector.learnable_registers = mx.full((128, 2), -1.0, dtype=mx.bfloat16)
+    index = np.arange(length)
+    # Tag each slot with its index, split so that bf16 holds it exactly.
+    hidden = mx.array(np.stack([index // 32, index % 32], axis=-1)[None])
+    hidden = hidden.astype(mx.bfloat16)
+
+    for valid in (29, 46, 300):
+        binary_mask = mx.array((index >= length - valid)[None], dtype=mx.int32)
+        additive_mask = binary_to_additive_attention_mask(
+            binary_mask, dtype=mx.bfloat16
+        )
+        replaced, _ = connector._replace_padded_with_learnable_registers(
+            hidden, additive_mask
+        )
+        replaced = np.array(replaced.astype(mx.float32))[0]
+        kept = replaced[:, 0] * 32 + replaced[:, 1]
+
+        np.testing.assert_array_equal(kept[:valid], index[length - valid :])
+        np.testing.assert_array_equal(kept[valid:], -33.0)
+
+
 def test_dramabox_text_conditioner_small_path_shapes():
     conditioner = DramaboxTextConditioner(
         embedding_dim=2,
