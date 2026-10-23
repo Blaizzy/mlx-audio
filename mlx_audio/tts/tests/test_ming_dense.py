@@ -8,12 +8,15 @@ import mlx.nn as nn
 
 from mlx_audio.tts.models.bailingmm.bailingmm import (
     _MING3_VOICE_RE,
+    MING3_BASE_STEPS,
     MING3_MAX_CACHE_LEN,
+    MING3_STEPS_PER_UNIT,
     Model,
     _add_period,
     _is_style_instruction,
     _semantic_length,
     _split_fragments,
+    _spoken_units,
     _trim_trailing_silence,
     ming3_instruction,
 )
@@ -266,6 +269,13 @@ class TestMingText(unittest.TestCase):
         trimmed = _trim_trailing_silence(speech, sr)
         self.assertEqual(trimmed.shape[0], 500 + 300)
 
+    def test_spoken_units_count_kana_hangul_and_digits(self):
+        self.assertEqual(_spoken_units("Yes."), 1)
+        self.assertEqual(_spoken_units("好的。"), 2)
+        self.assertEqual(_spoken_units("ありがとう"), 5)
+        self.assertEqual(_spoken_units("안녕하세요"), 5)
+        self.assertEqual(_spoken_units("Call 555."), 4)
+
 
 class TestMing3GenerationBudget(unittest.TestCase):
     def test_full_or_oversized_prompt_is_rejected_before_inference(self):
@@ -307,6 +317,24 @@ class TestMing3GenerationBudget(unittest.TestCase):
             next(model.generate(text))
         model.sample.assert_called_once()
         model.audio.decode.assert_not_called()
+
+    def test_generate_caps_steps_by_text_length(self):
+        model = make_model(chat_layout=True, ming3=True)
+        model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
+        model.audio.decode.return_value = (mx.ones((1, 100)), None, None)
+        latent = mx.zeros((1, 1, 4))
+        model.sample = MagicMock(side_effect=lambda **_: iter([(latent, True)]))
+
+        def requested_steps(**kwargs):
+            list(model.generate("Yes.", **kwargs))
+            return model.sample.call_args.kwargs["max_decode_steps"]
+
+        cap = MING3_BASE_STEPS + MING3_STEPS_PER_UNIT
+        self.assertEqual(requested_steps(), cap)
+        # Servers always send max_tokens; it only lowers the cap.
+        self.assertEqual(requested_steps(max_tokens=1200), cap)
+        self.assertEqual(requested_steps(max_tokens=10), 10)
+        self.assertEqual(requested_steps(max_decode_steps=300), 300)
 
     def test_stream_yields_each_fragment_as_it_is_decoded(self):
         model = make_model(chat_layout=True, ming3=True)

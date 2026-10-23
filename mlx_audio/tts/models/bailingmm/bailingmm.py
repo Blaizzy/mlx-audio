@@ -36,6 +36,11 @@ def format_duration(seconds: float) -> str:
 MING3_MAX_CACHE_LEN = 512
 # Fragment size in "semantic units": one per Chinese character or English word.
 MING3_MAX_FRAGMENT_LENGTH = 50
+# Each fragment is capped at 2 s plus about 1 s per spoken unit (12.5 latent
+# steps per second). Real speech stays under 0.8 s per unit, but a missed stop
+# otherwise runs on to the cache limit, about 30 s even for "Yes.".
+MING3_BASE_STEPS = 25
+MING3_STEPS_PER_UNIT = 12
 
 # Ming-3.0 adds a "Target language:" line for the languages beyond zh/en.
 MING3_TARGET_LANGUAGES = {
@@ -56,6 +61,16 @@ _CJK_RE = re.compile(r"[一-鿿]")
 
 def _semantic_length(text: str) -> int:
     return len(re.findall(r"[一-龥]", text)) + len(re.findall(r"[a-zA-Z]+", text))
+
+
+def _spoken_units(text: str) -> int:
+    """Rough spoken length: Latin words plus every digit and non-ASCII letter.
+
+    Unlike ``_semantic_length`` this also counts kana, hangul and numbers, so
+    the step cap never starves Japanese, Korean or numeric text.
+    """
+    letters = sum(1 for c in text if c.isdigit() or (not c.isascii() and c.isalpha()))
+    return len(re.findall(r"[a-zA-Z]+", text)) + letters
 
 
 def _add_period(text: str) -> str:
@@ -1998,6 +2013,10 @@ class Model(nn.Module):
         cfg = 2.0 if cfg_scale is None else cfg_scale
         flow_steps = 10 if ddpm_steps is None else ddpm_steps
         sigma = float(kwargs.get("sigma", 0.25))
+        # Also cap each Ming-3.0 fragment by its length, so a missed stop cannot
+        # run on for the whole cache. max_tokens stays an upper bound (servers
+        # always send one); an explicit max_decode_steps replaces both.
+        cap_by_length = self.ming3 and "max_decode_steps" not in kwargs
         if max_tokens is None:
             # Ming-3.0 is bounded per fragment by its 512-position cache.
             max_tokens = 1000 if self.ming3 else 200
@@ -2054,12 +2073,16 @@ class Model(nn.Module):
         speech_parts = []
         chunk_start = start_time
         for idx, fragment in enumerate(fragments):
+            steps = max_decode_steps
+            if cap_by_length:
+                units = _spoken_units(fragment)
+                steps = min(steps, MING3_BASE_STEPS + MING3_STEPS_PER_UNIT * units)
             sampler = self.sample(
                 prompt=prompt,
                 text=fragment,
                 instruction=instruct,
                 prompt_text=ref_text,
-                max_decode_steps=max_decode_steps,
+                max_decode_steps=steps,
                 cfg=cfg,
                 sigma=sigma,
                 temperature=temperature,

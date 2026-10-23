@@ -116,7 +116,7 @@ design = next(
 - **Speaker embeddings.** The reference implementation also conditions cloning and the emotion, attribute and dialect tasks on a CAM++ speaker embedding (`use_spk_emb=True`). This port does not extract one yet. Cloning works from the reference audio and transcript alone. If you have a precomputed 192-dim embedding, pass it as `spk_emb=`.
 - **Freeform and voice-design length.** As in the reference, freeform and voice-design text is not split, because the instruction describes the whole utterance. Each request is therefore capped by the 512-position budget, about 30 seconds of speech.
 - **Text normalization.** The reference's FST text normalization (numbers, dates and units) is not ported. Write numbers out as words for the most reliable reading.
-- **Stopping.** The stop head occasionally fails to fire, leaving several seconds of low noise after the speech. Re-run with another seed if that happens.
+- **Stopping.** The stop head sometimes fires late or not at all, so the model keeps going after the speech, usually with a steady hum or low noise. Each fragment is therefore capped at about 2 seconds plus 1 second per word or character, so a missed stop can no longer run on for the whole 512-position budget. `max_tokens` can lower the cap; pass `max_decode_steps` to set the budget yourself. Re-run with another seed if a tail remains.
 
 ## Ming-omni-tts-0.5B
 
