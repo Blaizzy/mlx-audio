@@ -10740,6 +10740,24 @@ def test_reference_latent_conditioning_appends_asymmetric_mask():
     )
 
 
+def test_bf16_latent_keeps_float32_positions_for_every_frame():
+    shape = AudioLatentShape.from_duration(batch=1, duration=20.0)
+    tools = AudioLatentTools(AudioPatchifier(), shape)
+    state = tools.create_initial_state(dtype=mx.bfloat16)
+    ref = mx.zeros((1, 8, 250, 16), dtype=mx.bfloat16)
+    state = append_reference_latent(state, tools, ref)
+
+    # The frame times the RoPE sees (generate_freqs takes the middle of each bound).
+    middle = (state.positions[..., 0] + state.positions[..., 1]) / 2
+    middle = np.array(middle.astype(mx.float32))[0, 0]
+    target, reference = middle[:500], middle[500:]
+    assert np.all(np.diff(target) > 0), "adjacent frames share a time stamp"
+    np.testing.assert_allclose(np.diff(target)[1:], 0.04, atol=1e-4)
+    np.testing.assert_allclose(reference - target[:250], 0.5, atol=1e-4)
+    assert state.latent.dtype == mx.bfloat16
+    assert state.positions.dtype == mx.float32
+
+
 def _expected_ltx2_sigmas(steps, latent_shape):
     tokens = math.prod(latent_shape[2:])
     sigmas = np.linspace(1.0, 0.0, steps + 1, dtype=np.float32)
