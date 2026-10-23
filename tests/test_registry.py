@@ -37,6 +37,15 @@ def test_phonon_tts_is_identified_by_config():
     assert classify_model(model_type, "gradium/phonon-40m-en") == "tts"
 
 
+def test_phonon_tts_explicit_type_takes_precedence_over_name():
+    model_type = model_type_from_config(
+        {"model_type": "gradium_phonon_tts", "flow_lm": {}, "mimi": {}}
+    )
+    assert model_type in SUPPORTED_MODEL_TYPES["tts"]
+    assert classify_model(model_type) == "tts"
+    assert classify_model(model_type, "gradium/phonon-40m-es") == "tts"
+
+
 def test_classify_speech_to_text():
     assert classify_model("tdt", "mlx-community/parakeet-tdt-0.6b-v2") == "stt"
     assert classify_model("whisper", "openai/whisper-base") == "stt"

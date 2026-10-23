@@ -347,7 +347,8 @@ def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
 
 
 @pytest.mark.parametrize("num_layers", [6, 9])
-def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers):
+@pytest.mark.parametrize("model_type", [None, "gradium_phonon_tts"])
+def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers, model_type):
     from mlx_audio.tts.utils import load
 
     config["flow_lm"].update(num_layers=num_layers, time_rms_norm="rms", gelu="erf")
@@ -376,6 +377,8 @@ def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers):
         {"speaker_wavs": mx.ones((1, 8, 2))},
     )
     config.pop("model_path")
+    if model_type is not None:
+        config["model_type"] = model_type
     (tmp_path / "config.json").write_text(json.dumps(config))
 
     # Resolve the architecture from the config, independently of the folder name.
