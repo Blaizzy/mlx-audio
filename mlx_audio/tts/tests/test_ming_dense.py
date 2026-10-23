@@ -17,6 +17,7 @@ from mlx_audio.tts.models.bailingmm.bailingmm import (
     _semantic_length,
     _split_fragments,
     _spoken_units,
+    _trim_stationary_tail,
     _trim_trailing_silence,
     ming3_instruction,
 )
@@ -275,6 +276,102 @@ class TestMingText(unittest.TestCase):
         self.assertEqual(_spoken_units("ありがとう"), 5)
         self.assertEqual(_spoken_units("안녕하세요"), 5)
         self.assertEqual(_spoken_units("Call 555."), 4)
+
+
+HOP = 80
+
+
+def tail_case(speech_steps=12, steady_steps=0, silent_steps=0, level=0.1):
+    """Latents that change every step, then near-identical ones, then silence.
+
+    Audio is noise at ``level`` for the speech and steady steps and zeros for
+    the silent ones, so loudness never gives the tail away.
+    """
+    mx.random.seed(0)
+    dim = 16
+    changing = mx.random.normal((speech_steps, dim))
+    base = mx.random.normal((1, dim))
+    steady = base + 0.01 * mx.random.normal((steady_steps + silent_steps, dim))
+    latents = mx.concatenate([changing, steady])[None]
+    audible = (speech_steps + steady_steps) * HOP
+    audio = mx.concatenate(
+        [level * mx.random.normal((audible,)), mx.zeros((silent_steps * HOP,))]
+    )
+    return audio, latents
+
+
+def pattern_case(pattern, speech_steps=12):
+    """Changing latents, then one step per character of ``pattern``.
+
+    "S" repeats the previous latent (a steady step), "." draws a new one. The
+    audio is noise at one level throughout.
+    """
+    mx.random.seed(0)
+    dim = 16
+    rows = list(mx.random.normal((speech_steps, dim)))
+    for c in pattern:
+        if c == "S":
+            rows.append(rows[-1] + 0.01 * mx.random.normal((dim,)))
+        else:
+            rows.append(mx.random.normal((dim,)))
+    latents = mx.stack(rows)[None]
+    audio = 0.1 * mx.random.normal((latents.shape[1] * HOP,))
+    return audio, latents
+
+
+class TestMing3StationaryTail(unittest.TestCase):
+    def test_sustained_tail_is_cut_and_faded(self):
+        audio, latents = tail_case(steady_steps=10)
+        trimmed = _trim_stationary_tail(audio, latents)
+        # The first steady latent still differs from the speech before it, so
+        # the run starts one step later; two steps of it are kept.
+        self.assertEqual(trimmed.shape[0], (12 + 1 + 2) * HOP)
+        self.assertEqual(float(trimmed[-1]), 0.0)
+
+    def test_tail_followed_by_silence_is_cut(self):
+        audio, latents = tail_case(steady_steps=10, silent_steps=5)
+        trimmed = _trim_stationary_tail(audio, latents)
+        self.assertEqual(trimmed.shape[0], (12 + 1 + 2) * HOP)
+
+    def test_short_steady_ending_is_kept(self):
+        # A held final vowel: six near-identical latents give a five-step run.
+        audio, latents = tail_case(steady_steps=6)
+        self.assertEqual(_trim_stationary_tail(audio, latents).shape, audio.shape)
+        audio, latents = tail_case(steady_steps=7)
+        self.assertLess(_trim_stationary_tail(audio, latents).shape[0], audio.shape[0])
+
+    def test_dips_and_fading_end_do_not_count_as_steady(self):
+        # A held vowel before a final consonant, and alternating steps, span
+        # six steps but hold only three steady ones.
+        for pattern in ("SSS...", "S.S.S."):
+            audio, latents = pattern_case(pattern)
+            trimmed = _trim_stationary_tail(audio, latents)
+            self.assertEqual(trimmed.shape, audio.shape, pattern)
+        # Six steady steps before a two-step fade are cut.
+        audio, latents = pattern_case("SSSSSS..")
+        trimmed = _trim_stationary_tail(audio, latents)
+        self.assertEqual(trimmed.shape[0], (12 + 2) * HOP)
+
+    def test_quiet_changing_speech_is_kept(self):
+        # Whisper-level audio (about -50 dB) whose latents keep changing.
+        audio, latents = tail_case(speech_steps=40, level=0.003)
+        self.assertEqual(_trim_stationary_tail(audio, latents).shape, audio.shape)
+
+    def test_generate_trims_tail_unless_disabled(self):
+        audio, latents = tail_case(steady_steps=10)
+        model = make_model(chat_layout=True, ming3=True, latent_dim=16)
+        model.audio = SimpleNamespace(sample_rate=1000, decode=MagicMock())
+        model.audio.decode.return_value = (audio[None], None, None)
+        steps = [(latents[:, i : i + 1], False) for i in range(latents.shape[1])]
+        model.sample = MagicMock(side_effect=lambda **_: iter(steps))
+
+        (result,) = list(model.generate("Okay."))
+        self.assertEqual(result.samples, (12 + 1 + 2) * HOP)
+        (result,) = list(model.generate("Okay.", trim_tail=False))
+        self.assertEqual(result.samples, audio.shape[0])
+        # A trailing tag asks for a sustained sound such as a sigh.
+        (result,) = list(model.generate("Okay. [Sigh]"))
+        self.assertEqual(result.samples, audio.shape[0])
 
 
 class TestMing3GenerationBudget(unittest.TestCase):

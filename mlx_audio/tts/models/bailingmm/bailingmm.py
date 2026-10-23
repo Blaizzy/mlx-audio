@@ -41,6 +41,12 @@ MING3_MAX_FRAGMENT_LENGTH = 50
 # otherwise runs on to the cache limit, about 30 s even for "Yes.".
 MING3_BASE_STEPS = 25
 MING3_STEPS_PER_UNIT = 12
+# When the stop head fires late, the last latents settle into a sustained hum
+# or noise. In speech, a run never held 6 steps this similar (it rarely held
+# more than 3); a trailing run with 6 or more is cut, keeping 2 steps of it.
+MING3_TAIL_SIMILARITY = 0.8
+MING3_TAIL_MIN_STEPS = 6
+MING3_TAIL_KEEP_STEPS = 2
 
 # Ming-3.0 adds a "Target language:" line for the languages beyond zh/en.
 MING3_TARGET_LANGUAGES = {
@@ -57,6 +63,9 @@ MING3_TARGET_LANGUAGES = {
 }
 
 _CJK_RE = re.compile(r"[一-鿿]")
+# A trailing paralinguistic tag such as "[Sigh]" asks for a sustained
+# non-speech sound, which looks just like the tail that gets trimmed.
+_TRAILING_TAG_RE = re.compile(r"\[[^\]]+\]\W*$")
 
 
 def _semantic_length(text: str) -> int:
@@ -217,6 +226,64 @@ def _trim_trailing_silence(
     if loud.size == 0:
         return speech[:tail]
     return speech[: int(loud[-1]) * frame + frame + tail]
+
+
+def _trim_stationary_tail(
+    speech: mx.array,
+    latents: mx.array,
+    similarity: float = MING3_TAIL_SIMILARITY,
+    min_steps: int = MING3_TAIL_MIN_STEPS,
+    keep_steps: int = MING3_TAIL_KEEP_STEPS,
+    silence_db: float = -60.0,
+) -> mx.array:
+    """Cut the sustained hum or noise left when the stop head fires late.
+
+    Looks for a run of near-identical consecutive latents that ends the
+    audible part of ``speech``, allowing single-step dips. A run with at least
+    ``min_steps`` near-identical steps is cut ``keep_steps`` in, with a
+    1/8-step fade out.
+    """
+    lat = np.array(latents.astype(mx.float32)).reshape(-1, latents.shape[-1])
+    steps = lat.shape[0]
+    hop = speech.shape[-1] // steps if steps else 0
+    if steps < min_steps or hop == 0:
+        return speech
+
+    frames = np.array(speech[: steps * hop].astype(mx.float32)).reshape(steps, hop)
+    db = 20 * np.log10(np.sqrt(np.mean(frames**2, axis=-1)) + 1e-9)
+    audible = np.nonzero(db > silence_db)[0]
+    if audible.size == 0:
+        return speech
+    end = int(audible[-1]) + 1
+
+    norm = np.linalg.norm(lat, axis=-1) + 1e-9
+    cos = np.sum(lat[1:] * lat[:-1], axis=-1) / (norm[1:] * norm[:-1])
+    steady = np.concatenate([[False], cos >= similarity]) & (db > silence_db)
+
+    # Step back over up to two fading steps, then extend the run backwards,
+    # tolerating one non-steady step at a time.
+    i = end
+    while i > end - 2 and i > 0 and not steady[i - 1]:
+        i -= 1
+    start, dips = i, 0
+    while i > 0:
+        if steady[i - 1]:
+            i -= 1
+            start, dips = i, 0
+        elif dips < 1:
+            i -= 1
+            dips += 1
+        else:
+            break
+    # Count only the steady steps: dips and the fading end must not make up
+    # the run, or a held vowel before a final consonant would be cut.
+    if steady[start:end].sum() < min_steps:
+        return speech
+
+    cut = (start + keep_steps) * hop
+    fade = min(hop // 8, cut)
+    ramp = mx.linspace(1.0, 0.0, fade).astype(speech.dtype)
+    return mx.concatenate([speech[: cut - fade], speech[cut - fade : cut] * ramp])
 
 
 @dataclass
@@ -2021,6 +2088,7 @@ class Model(nn.Module):
             # Ming-3.0 is bounded per fragment by its 512-position cache.
             max_tokens = 1000 if self.ming3 else 200
         max_decode_steps = int(kwargs.get("max_decode_steps", max_tokens))
+        trim_tail = bool(kwargs.get("trim_tail", True))
         spk_emb = self._speaker_embeddings(
             kwargs.get("spk_emb"), bool(kwargs.get("use_zero_spk_emb", False))
         )
@@ -2097,10 +2165,14 @@ class Model(nn.Module):
                     raise RuntimeError(
                         "No audio latents were generated for a text fragment"
                     )
+                latents = mx.concatenate(latents, axis=1)
                 part, _, _ = self.audio.decode(
-                    mx.concatenate(latents, axis=1), use_cache=False, last_chunk=True
+                    latents, use_cache=False, last_chunk=True
                 )
-                part = _trim_trailing_silence(part[0], self.sample_rate)
+                part = part[0]
+                if trim_tail and not _TRAILING_TAG_RE.search(fragment):
+                    part = _trim_stationary_tail(part, latents)
+                part = _trim_trailing_silence(part, self.sample_rate)
                 if stream:
                     # Fragments decode independently, so each can play once ready.
                     is_final = idx == len(fragments) - 1
