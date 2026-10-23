@@ -2,6 +2,7 @@
 
 import json
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from unittest.mock import patch
 
@@ -400,8 +401,16 @@ def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers, mo
     assert mx.array_equal(
         loaded.flow_lm._conditioning_embedding, expected_condition
     ).item()
-    mx.random.seed(0)
-    audio = next(loaded.generate("Hello world.")).audio
+    # Servers preload on one thread and synthesize on an audio worker. Private
+    # cached arrays must not retain unevaluated work on the loading stream.
+    def generate_on_worker():
+        mx.random.seed(0)
+        audio = next(loaded.generate("Hello world.")).audio
+        mx.eval(audio)
+        return audio
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        audio = executor.submit(generate_on_worker).result(timeout=30)
     assert audio.size > 0 and mx.all(mx.isfinite(audio)).item()
 
     destination = tmp_path.with_name(tmp_path.name + "-converted")

@@ -59,6 +59,9 @@ class Model(nn.Module):
         self.noise_clamp = config.noise_clamp
         self.eos_threshold = config.eos_threshold
         self._empty_conditioning = mx.zeros((1, 0, self.flow_lm.dim))
+        # Private buffers are excluded from parameters(), which the loader evals.
+        # Materialize this on its owning stream before an audio worker uses it.
+        mx.eval(self._empty_conditioning)
         self._validate_sampling()
 
         if (

@@ -762,6 +762,16 @@ def get_model_category(model_type: str, model_name: List[str]) -> Optional[str]:
             if _has_model_module(module_path):
                 return category
 
+    # A resolved config type takes precedence over ordinary repo-name hints.
+    # For example, Pocket/Gradium TTS checkpoints can include "phonon", which
+    # is also the name of an unrelated STT architecture.
+    for category, remap in categories:
+        arch = remap.get(model_type, model_type)
+        if is_valid_module_name(arch) and _has_model_module(
+            f"mlx_audio.{category}.models.{arch}"
+        ):
+            return category
+
     # First pass: check for explicit remapping matches (higher priority)
     for category, remap in categories:
         for hint in candidates:
