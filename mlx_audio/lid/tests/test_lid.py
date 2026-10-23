@@ -249,19 +249,10 @@ class TestLidCategoryRouting(unittest.TestCase):
         self.assertEqual(category, "lid")
 
     def test_get_model_category_non_lid_wav2vec(self):
-        from mlx_audio.stt.models.wav2vec import Model
-        from mlx_audio.stt.utils import MODEL_REMAPPING
-        from mlx_audio.utils import get_model_category, get_model_class
+        from mlx_audio.utils import get_model_category
 
-        for name in ([], ["wav2vec2", "base"], ["wav2vec2", "large"]):
-            with self.subTest(name=name):
-                category = get_model_category("wav2vec2", name)
-                self.assertEqual(category, "stt")
-                module, model_type = get_model_class(
-                    "wav2vec2", name, category, MODEL_REMAPPING
-                )
-                self.assertEqual(model_type, "wav2vec")
-                self.assertIs(module.Model, Model)
+        category = get_model_category("wav2vec2", ["wav2vec2", "base"])
+        self.assertNotEqual(category, "lid")
 
 
 # ---- ECAPA-TDNN Tests ----

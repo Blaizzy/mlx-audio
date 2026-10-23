@@ -98,7 +98,6 @@ MODEL_REMAPPING = {
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
     "moonshine": "moonshine",
-    "wav2vec2": "wav2vec",
     "mms": "mms",
     "granite_speech": "granite_speech",
     "granite_speech5_ctc": "granite_speech5_ctc",

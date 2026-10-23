@@ -6,6 +6,22 @@ from mlx_audio import utils
 
 
 @pytest.mark.parametrize(
+    "model_type,repo,category",
+    [
+        ("gradium_phonon_tts", "gradium/phonon-40m-es", "tts"),
+        ("pocket_tts", "gradium/phonon-40m-es", "tts"),
+        ("pocket_tts", "nativ-community/phonon", "tts"),
+        ("phonon", "FermionResearch/Phonon-1", "stt"),
+    ],
+)
+def test_phonon_category_routing(model_type, repo, category):
+    assert (
+        utils.get_model_category(model_type, utils.get_model_name_parts(repo))
+        == category
+    )
+
+
+@pytest.mark.parametrize(
     "category,model_type,canonical",
     [
         ("stt", "granite_speech_plus", "granite_speech"),
