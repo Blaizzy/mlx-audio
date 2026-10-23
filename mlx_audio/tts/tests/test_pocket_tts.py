@@ -349,7 +349,9 @@ def test_upstream_decoder_mapping_and_optional_encoders(config, dtype):
 
 @pytest.mark.parametrize("num_layers", [6, 9])
 @pytest.mark.parametrize("model_type", [None, "gradium_phonon_tts"])
-def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers, model_type):
+def test_official_checkpoint_loads_and_converts(
+    config, tmp_path, num_layers, model_type
+):
     from mlx_audio.tts.utils import load
 
     config["flow_lm"].update(num_layers=num_layers, time_rms_norm="rms", gelu="erf")
@@ -401,6 +403,7 @@ def test_official_checkpoint_loads_and_converts(config, tmp_path, num_layers, mo
     assert mx.array_equal(
         loaded.flow_lm._conditioning_embedding, expected_condition
     ).item()
+
     # Servers preload on one thread and synthesize on an audio worker. Private
     # cached arrays must not retain unevaluated work on the loading stream.
     def generate_on_worker():
