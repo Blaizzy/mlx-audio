@@ -219,6 +219,8 @@ The canonical `saa` and `timestamps` prompts define their output schemas and can
 
 Plus checkpoints send the system turn from the model card by default; pass `system_prompt=` to replace it.
 
+IBM updated the plus weights and configuration in place on October 21, 2026 (v2610). Both the original and updated checkpoints load, but MLX conversions or quantizations made from the original contain the original weights; reconvert from the current source to use the update.
+
 ```python
 from mlx_audio.stt import load
 

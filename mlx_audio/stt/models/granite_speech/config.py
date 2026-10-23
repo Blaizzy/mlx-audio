@@ -81,6 +81,13 @@ class TextConfig:
 
     @classmethod
     def from_dict(cls, params):
+        # Transformers 5 serializes RoPE settings as rope_parameters. The
+        # October 2026 granite-speech-4.1-2b-plus checkpoint uses it for YaRN.
+        rope_parameters = params.get("rope_parameters")
+        if rope_parameters and params.get("rope_scaling") is None:
+            params = {**params, "rope_scaling": rope_parameters}
+            if "rope_theta" in rope_parameters:
+                params["rope_theta"] = rope_parameters["rope_theta"]
         return cls(
             **{
                 k: v

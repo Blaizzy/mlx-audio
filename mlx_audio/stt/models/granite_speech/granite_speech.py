@@ -777,6 +777,10 @@ class Model(nn.Module):
             # merges all safetensors, leaving its bare weight/bias at the root.
             if k in {"weight", "bias"}:
                 continue
+            # The October 2026 granite-speech-4.1-2b-plus checkpoint (saved by
+            # Transformers 5.19) nests the decoder one level deeper.
+            if k.startswith("language_model.model.model."):
+                k = "language_model.model." + k[len("language_model.model.model.") :]
 
             if (
                 any(name in k for name in ["up_conv", "down_conv", "depth_conv"])

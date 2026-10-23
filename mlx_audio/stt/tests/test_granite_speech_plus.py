@@ -11,8 +11,11 @@ import json
 from types import SimpleNamespace
 
 import mlx.core as mx
+import mlx.nn as nn
 import pytest
+from mlx.utils import tree_flatten
 
+from mlx_audio.lm.models.rope_utils import YarnRoPE
 from mlx_audio.stt.generate import save_as_json
 from mlx_audio.stt.models.granite_speech.config import (
     EncoderConfig,
@@ -97,6 +100,69 @@ def test_projector_consumes_concatenated_features():
         CTCEncoder(config.encoder_config)(mx.zeros((1, 8, 4)))
     )
     assert out.shape == (1, config.window_size // config.downsample_rate, 12)
+
+
+def _tiny_plus_model(**text_config):
+    return Model(
+        ModelConfig(
+            model_type="granite_speech_plus",
+            encoder_config=_tiny_encoder_config(cat_hidden_layers=[1]),
+            projector_config=ProjectorConfig(
+                hidden_size=HIDDEN_DIM,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                intermediate_size=16,
+                encoder_hidden_size=2 * HIDDEN_DIM,
+            ),
+            text_config={
+                "hidden_size": 16,
+                "intermediate_size": 32,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 2,
+                "num_key_value_heads": 1,
+                "vocab_size": 32,
+                "tie_word_embeddings": True,
+                **text_config,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    ("rope_parameters", "rope_class"),
+    [
+        # October 2026 checkpoint (v2610).
+        (
+            {
+                "rope_type": "yarn",
+                "factor": 4.0,
+                "original_max_position_embeddings": 4096,
+                "rope_theta": 10000,
+            },
+            YarnRoPE,
+        ),
+        # April 2026 checkpoint (v2604).
+        ({"rope_type": "default", "rope_theta": 10000}, nn.RoPE),
+    ],
+)
+def test_decoder_rope_follows_rope_parameters(rope_parameters, rope_class):
+    model = _tiny_plus_model(rope_parameters=rope_parameters)
+    assert type(model.language_model.model.layers[0].self_attn.rope) is rope_class
+
+
+def test_sanitize_unnests_v2610_decoder_keys():
+    model = _tiny_plus_model()
+    native = dict(tree_flatten(model.parameters()))
+    nested = {
+        k.replace("language_model.model.", "language_model.model.model.", 1): v
+        for k, v in native.items()
+    }
+
+    sanitized = Model.sanitize(nested)
+
+    assert sanitized.keys() == native.keys()
+    assert Model.sanitize(sanitized).keys() == native.keys()
+    model.load_weights(list(sanitized.items()), strict=True)
 
 
 def test_non_aligned_attention_preserves_bfloat16():
