@@ -116,7 +116,7 @@ design = next(
 - **Speaker embeddings.** Automatic CAM++ speaker embedding extraction is not implemented. Cloning uses the supplied audio and transcript. If you have a precomputed 192-dim embedding, pass it as `spk_emb=`.
 - **Freeform and voice-design length.** Freeform and voice-design text is kept in one fragment, capped by the 512-position budget, about 30 seconds of speech.
 - **Text normalization.** Numbers, dates and units are not expanded automatically. Write numbers out as words for the most reliable reading.
-- **Generation and stopping.** Ming-3.0 defaults to CFG 2.0, sigma 0.25, temperature 0.0, and 10 flow steps. The stop head must exceed 0.5 after the first four patches; its final patch is included. `max_tokens` (default 1000) or `max_decode_steps` sets the requested budget, bounded by the remaining 512-position cache. Trailing silence is trimmed. Some generations can still have long tails; re-run with another seed if that happens.
+- **Generation and stopping.** Ming-3.0 defaults to CFG 2.0, sigma 0.25, temperature 0.0, and 10 flow steps. The stop head must exceed 0.5 after the first four patches; its final patch is included. The stop head sometimes misses, so each fragment is capped at about 2 seconds plus 1 second per word or character, within the remaining 512-position cache. `max_tokens` (default 1000) can only lower the cap; `max_decode_steps` replaces it. Trailing silence is trimmed. Some generations can still have long tails; re-run with another seed if that happens.
 
 Pass `raw_text=True` to skip text splitting and punctuation changes. `trim_silence=False` disables the trailing-silence trim.
 
