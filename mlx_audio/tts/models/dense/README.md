@@ -116,7 +116,11 @@ design = next(
 - **Speaker embeddings.** The reference implementation also conditions cloning and the emotion, attribute and dialect tasks on a CAM++ speaker embedding (`use_spk_emb=True`). This port does not extract one yet. Cloning works from the reference audio and transcript alone. If you have a precomputed 192-dim embedding, pass it as `spk_emb=`.
 - **Freeform and voice-design length.** As in the reference, freeform and voice-design text is not split, because the instruction describes the whole utterance. Each request is therefore capped by the 512-position budget, about 30 seconds of speech.
 - **Text normalization.** The reference's FST text normalization (numbers, dates and units) is not ported. Write numbers out as words for the most reliable reading.
-- **Stopping.** The stop head occasionally fails to fire, leaving several seconds of low noise after the speech. Re-run with another seed if that happens.
+- **Stopping.** The stop head sometimes fires late or not at all, so the model keeps going after the speech, usually with a steady hum or low noise. Two guards limit this:
+  - Each fragment is capped at about 2 seconds plus 1 second per word or character. `max_tokens` can lower the cap; pass `max_decode_steps` to set the budget yourself.
+  - A trailing hum is cut, detected as a run of near-identical latents after the speech. Pass `trim_tail=False` to turn this off. Fragments that end in a tag such as `[Sigh]` are never cut, because the requested sound looks the same.
+
+  On 162 held-out short English and Chinese replies, runs with more than 1.2 seconds of audio after the last word fell from 11 to 4. The trim fired on 12 of them and dropped no words. Two kinds of tail remain: extra sounds such as a filler "uh" or a repeated phrase (mostly without a voice or reference clip), and slowly drifting hums at slow speed. Re-run with another seed if that happens.
 
 ## Ming-omni-tts-0.5B
 
