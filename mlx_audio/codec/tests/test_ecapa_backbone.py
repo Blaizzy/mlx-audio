@@ -17,6 +17,8 @@ class TestEcapaTdnnConfig(unittest.TestCase):
         self.assertEqual(config.res2net_scale, 8)
         self.assertEqual(config.se_channels, 128)
         self.assertEqual(config.global_context, False)
+        self.assertEqual(config.padding_mode, "zeros")
+        self.assertEqual(config.centered_statistics, False)
 
     def test_custom_values(self):
         from mlx_audio.codec.models.ecapa_tdnn.config import EcapaTdnnConfig

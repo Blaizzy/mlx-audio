@@ -1,5 +1,5 @@
 from .descript import DAC
-from .ecapa_tdnn import EcapaTdnnBackbone
+from .ecapa_tdnn import EcapaSpeakerEmbeddingExtractor, EcapaTdnnBackbone
 from .encodec import Encodec
 from .mimi import Mimi
 from .mimo_audio_tokenizer import MiMoAudioTokenizer
@@ -12,6 +12,7 @@ from .vocos import Vocos
 __all__ = [
     "DAC",
     "EcapaTdnnBackbone",
+    "EcapaSpeakerEmbeddingExtractor",
     "Encodec",
     "Mimi",
     "MiMoAudioTokenizer",
