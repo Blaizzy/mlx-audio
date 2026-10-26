@@ -30,6 +30,10 @@ File inputs are resampled to 16 kHz mono. Array inputs must already be mono
 Long recordings use NVIDIA's context-extended encoder windows and persistent
 speaker cache. The full audio is encoded before text generation starts.
 
+For runnable examples of all six tasks, synthetic audio inputs, recorded
+outputs, and an optional separate text-to-speech reply, see the
+[six-task demo](../../../../examples/nemotron_transcribe/README.md).
+
 ## Other tasks
 
 ```python
