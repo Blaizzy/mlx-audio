@@ -107,6 +107,10 @@ class W2VBertFeatureExtractor:
             ones = mx.ones((fl,), dtype=mx.int32)
             zeros = mx.zeros((max_frames - fl,), dtype=mx.int32)
             mask_rows.append(mx.concatenate([ones, zeros], axis=0))
-        mask = mx.stack(mask_rows, axis=0) if mask_rows else mx.zeros((B, 0), dtype=mx.int32)
+        mask = (
+            mx.stack(mask_rows, axis=0)
+            if mask_rows
+            else mx.zeros((B, 0), dtype=mx.int32)
+        )
 
         return input_features, mask

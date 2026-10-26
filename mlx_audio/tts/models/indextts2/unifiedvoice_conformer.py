@@ -71,14 +71,20 @@ class MultiHeadedAttention(nn.Module):
 
     def forward_qkv(self, query: mx.array, key: mx.array, value: mx.array):
         n_batch = query.shape[0]
-        q = self.linear_q(query).reshape(n_batch, -1, self.h, self.d_k).transpose(
-            0, 2, 1, 3
+        q = (
+            self.linear_q(query)
+            .reshape(n_batch, -1, self.h, self.d_k)
+            .transpose(0, 2, 1, 3)
         )
-        k = self.linear_k(key).reshape(n_batch, -1, self.h, self.d_k).transpose(
-            0, 2, 1, 3
+        k = (
+            self.linear_k(key)
+            .reshape(n_batch, -1, self.h, self.d_k)
+            .transpose(0, 2, 1, 3)
         )
-        v = self.linear_v(value).reshape(n_batch, -1, self.h, self.d_k).transpose(
-            0, 2, 1, 3
+        v = (
+            self.linear_v(value)
+            .reshape(n_batch, -1, self.h, self.d_k)
+            .transpose(0, 2, 1, 3)
         )
         return q, k, v
 
@@ -96,7 +102,9 @@ class MultiHeadedAttention(nn.Module):
         if mask is not None and mask.size > 0:
             # mask: (B,1,T)
             attn_mask = (1.0 - mask.astype(mx.float32))[:, None, None, :] * (-1e9)
-        o = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.d_k**-0.5, mask=attn_mask)
+        o = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=self.d_k**-0.5, mask=attn_mask
+        )
         o = o.transpose(0, 2, 1, 3).reshape(query.shape[0], -1, self.h * self.d_k)
         return self.linear_out(o)
 

@@ -134,7 +134,9 @@ class GPTFastBlock(nn.Module):
         super().__init__()
         self.attention = GPTFastAttention(config)
         self.feed_forward = GPTFastFeedForward(config)
-        self.ffn_norm = AdaptiveLayerNorm(config.dim, RMSNorm(config.dim, eps=config.norm_eps))
+        self.ffn_norm = AdaptiveLayerNorm(
+            config.dim, RMSNorm(config.dim, eps=config.norm_eps)
+        )
         self.attention_norm = AdaptiveLayerNorm(
             config.dim, RMSNorm(config.dim, eps=config.norm_eps)
         )
@@ -170,14 +172,22 @@ class GPTFastTransformer(nn.Module):
         super().__init__()
         self.config = config
         self.layers = [GPTFastBlock(config) for _ in range(config.n_layer)]
-        self.norm = AdaptiveLayerNorm(config.dim, RMSNorm(config.dim, eps=config.norm_eps))
+        self.norm = AdaptiveLayerNorm(
+            config.dim, RMSNorm(config.dim, eps=config.norm_eps)
+        )
 
-        self.freqs_cis = _precompute_freqs_cis(config.block_size, config.head_dim, int(config.rope_base))
+        self.freqs_cis = _precompute_freqs_cis(
+            config.block_size, config.head_dim, int(config.rope_base)
+        )
 
         self.uvit_skip_connection = config.uvit_skip_connection
         if self.uvit_skip_connection:
-            self.layers_emit_skip = [i for i in range(config.n_layer) if i < config.n_layer // 2]
-            self.layers_receive_skip = [i for i in range(config.n_layer) if i > config.n_layer // 2]
+            self.layers_emit_skip = [
+                i for i in range(config.n_layer) if i < config.n_layer // 2
+            ]
+            self.layers_receive_skip = [
+                i for i in range(config.n_layer) if i > config.n_layer // 2
+            ]
         else:
             self.layers_emit_skip = []
             self.layers_receive_skip = []

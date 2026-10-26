@@ -9,12 +9,12 @@ from typing import Any, Dict, Optional, Tuple
 import mlx.core as mx
 import mlx.nn as nn
 import sentencepiece as spm
-from mlx_lm.models.base import create_attention_mask
-from mlx_lm.models.cache import KVCache
-from mlx_lm.sample_utils import make_sampler
 
+from mlx_audio.lm.models.base import create_attention_mask
+from mlx_audio.lm.models.cache import KVCache
+from mlx_audio.lm.models.gpt2 import ModelArgs as GPT2Args
+from mlx_audio.lm.sample_utils import make_sampler
 from mlx_audio.tts.models.indextts.gpt2 import GPT2Model
-from mlx_lm.models.gpt2 import ModelArgs as GPT2Args
 
 from .unifiedvoice_conformer import ConformerEncoder, ConformerEncoderConfig
 
@@ -62,9 +62,13 @@ class PerceiverAttend(nn.Module):
         self.dropout = dropout
         self.causal = causal
 
-    def __call__(self, q: mx.array, k: mx.array, v: mx.array, mask: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self, q: mx.array, k: mx.array, v: mx.array, mask: Optional[mx.array] = None
+    ) -> mx.array:
         # q,k,v: (B, H, L, D)
-        out = mx.fast.scaled_dot_product_attention(q, k, v, scale=q.shape[-1] ** -0.5, mask=mask)
+        out = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=q.shape[-1] ** -0.5, mask=mask
+        )
         return out
 
 
@@ -90,7 +94,9 @@ class PerceiverAttention(nn.Module):
         self.to_out = nn.Linear(dim_inner, dim, bias=False)
         self.attend = PerceiverAttend()
 
-    def __call__(self, x: mx.array, context: mx.array, mask: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self, x: mx.array, context: mx.array, mask: Optional[mx.array] = None
+    ) -> mx.array:
         # x: (B, N, D), context: (B, M, Dctx), mask: (B, M)
         if self.cross_attn_include_queries:
             context = mx.concatenate([x, context], axis=-2)
@@ -137,7 +143,9 @@ class PerceiverResampler(nn.Module):
         super().__init__()
         dim_context = dim if dim_context is None else dim_context
 
-        self.proj_context = nn.Linear(dim_context, dim) if dim_context != dim else nn.Identity()
+        self.proj_context = (
+            nn.Linear(dim_context, dim) if dim_context != dim else nn.Identity()
+        )
         self.latents = mx.random.normal((num_latents, dim)).astype(mx.float32) * 0.02
 
         self.layers = []
@@ -188,6 +196,7 @@ class UnifiedVoiceConfig:
     condition_num_latent: int = 32
     max_conditioning_inputs: int = 1
     mel_length_compression: int = 1024
+    spk_cond_mode: str = "conformer"
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "UnifiedVoiceConfig":
@@ -209,44 +218,66 @@ class UnifiedVoiceConfig:
             condition_num_latent=int(d.get("condition_num_latent", 32)),
             max_conditioning_inputs=int(d.get("max_conditioning_inputs", 1)),
             mel_length_compression=int(d.get("mel_length_compression", 1024)),
+            spk_cond_mode=str(d.get("spk_cond_mode", "conformer")),
         )
 
 
 class UnifiedVoice(nn.Module):
-    def __init__(self, cfg: UnifiedVoiceConfig, *, bpe_model: str):
+    def __init__(
+        self,
+        cfg: UnifiedVoiceConfig,
+        *,
+        bpe_model: Optional[str] = None,
+        tokenizer=None,
+    ):
         super().__init__()
         self.cfg = cfg
+        self.spk_cond_mode = cfg.spk_cond_mode
 
-        self.tokenizer = spm.SentencePieceProcessor(model_file=bpe_model)
+        if tokenizer is not None:
+            self.tokenizer = tokenizer
+        elif bpe_model is not None:
+            self.tokenizer = spm.SentencePieceProcessor(model_file=bpe_model)
+        else:
+            raise ValueError("UnifiedVoice requires a tokenizer or bpe_model")
 
         self.text_embedding = nn.Embedding(cfg.number_text_tokens + 1, cfg.model_dim)
         self.mel_embedding = nn.Embedding(cfg.number_mel_codes, cfg.model_dim)
         self.mel_pos_embedding = LearnedPositionEmbeddings(
             cfg.max_mel_tokens + 2 + cfg.max_conditioning_inputs, cfg.model_dim
         )
-        self.text_pos_embedding = LearnedPositionEmbeddings(cfg.max_text_tokens + 2, cfg.model_dim)
+        self.text_pos_embedding = LearnedPositionEmbeddings(
+            cfg.max_text_tokens + 2, cfg.model_dim
+        )
 
         self.text_head = nn.Linear(cfg.model_dim, cfg.number_text_tokens + 1)
         self.mel_head = nn.Linear(cfg.model_dim, cfg.number_mel_codes)
 
-        # Conditioning encoders (port of index-tts ConformerEncoder)
-        self.conditioning_encoder = ConformerEncoder(
-            ConformerEncoderConfig(
-                input_size=1024,
-                output_size=int(cfg.condition_module["output_size"]),
-                linear_units=int(cfg.condition_module["linear_units"]),
-                attention_heads=int(cfg.condition_module["attention_heads"]),
-                num_blocks=int(cfg.condition_module["num_blocks"]),
-                input_layer=str(cfg.condition_module["input_layer"]),
+        if self.spk_cond_mode == "campplus":
+            # IndexTTS-2.5 conditions the GPT on the 192-d CAMPPlus style vector
+            # and always applies a language embedding.
+            from .text_frontend import LANGUAGE_DICT
+
+            self.spk_emb_proj = nn.Linear(192, cfg.model_dim)
+            self.lang_embedding = nn.Embedding(len(LANGUAGE_DICT) + 1, cfg.model_dim)
+        else:
+            self.conditioning_encoder = ConformerEncoder(
+                ConformerEncoderConfig(
+                    input_size=1024,
+                    output_size=int(cfg.condition_module["output_size"]),
+                    linear_units=int(cfg.condition_module["linear_units"]),
+                    attention_heads=int(cfg.condition_module["attention_heads"]),
+                    num_blocks=int(cfg.condition_module["num_blocks"]),
+                    input_layer=str(cfg.condition_module["input_layer"]),
+                )
             )
-        )
-        self.perceiver_encoder = PerceiverResampler(
-            cfg.model_dim,
-            dim_context=int(cfg.condition_module["output_size"]),
-            heads=int(cfg.condition_module["attention_heads"]),
-            ff_mult=int(cfg.condition_module.get("perceiver_mult", 2)),
-            num_latents=cfg.condition_num_latent,
-        )
+            self.perceiver_encoder = PerceiverResampler(
+                cfg.model_dim,
+                dim_context=int(cfg.condition_module["output_size"]),
+                heads=int(cfg.condition_module["attention_heads"]),
+                ff_mult=int(cfg.condition_module.get("perceiver_mult", 2)),
+                num_latents=cfg.condition_num_latent,
+            )
 
         self.emo_conditioning_encoder = ConformerEncoder(
             ConformerEncoderConfig(
@@ -269,7 +300,8 @@ class UnifiedVoice(nn.Module):
         self.emo_layer = nn.Linear(cfg.model_dim, cfg.model_dim)
         self.emovec_layer = nn.Linear(1024, cfg.model_dim)
 
-        self.speed_emb = nn.Embedding(2, cfg.model_dim)
+        if self.spk_cond_mode != "campplus":
+            self.speed_emb = nn.Embedding(2, cfg.model_dim)
         self.final_norm = nn.LayerNorm(cfg.model_dim)
 
         self.gpt = GPT2Model(
@@ -292,16 +324,17 @@ class UnifiedVoice(nn.Module):
     def _pretokenize_text(text: str) -> str:
         # Match official IndexTTS tokenizer pre-tokenizer behavior:
         # split around CJK chars and uppercase non-CJK spans.
-        cjk_range = (
-            r"([\u1100-\u11ff\u2e80-\ua4cf\ua840-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
-        )
+        cjk_range = r"([\u1100-\u11ff\u2e80-\ua4cf\ua840-\uD7AF\uF900-\uFAFF\uFE30-\uFE4F\uFF65-\uFFDC\U00020000-\U0002FFFF])"
         parts = re.split(cjk_range, text.strip())
         return " ".join(p.strip().upper() for p in parts if p.strip())
 
-    def encode_text(self, text: str) -> mx.array:
-        text = self._pretokenize_text(text)
-        ids = self.tokenizer.encode(text)
-        return mx.array(ids, dtype=mx.int32)[None, :]
+    def encode_text(self, text: str, lang: str = "en") -> mx.array:
+        if self.spk_cond_mode == "campplus":
+            tokens = self.tokenizer.encode(f"<|{lang.lower()}|> {text}")
+        else:
+            text = self._pretokenize_text(text)
+            tokens = self.tokenizer.encode(text)
+        return mx.array(tokens, dtype=mx.int32)[None, :]
 
     def get_conditioning(self, x: mx.array, x_lens: mx.array) -> mx.array:
         hs, mask = self.conditioning_encoder(x, x_lens)
@@ -346,7 +379,11 @@ class UnifiedVoice(nn.Module):
         duration_emb = self.speed_emb(use_speed)
         duration_emb_half = self.speed_emb(mx.ones_like(use_speed))
         conds = mx.concatenate(
-            [speech_conditioning_latent + emo_vec[:, None, :], duration_emb_half[:, None, :], duration_emb[:, None, :]],
+            [
+                speech_conditioning_latent + emo_vec[:, None, :],
+                duration_emb_half[:, None, :],
+                duration_emb[:, None, :],
+            ],
             axis=1,
         )
 
@@ -388,6 +425,8 @@ class UnifiedVoice(nn.Module):
         emo_condition: Optional[mx.array] = None,
         *,
         alpha: float = 1.0,
+        campplus_embedding: Optional[mx.array] = None,
+        lang_id: Optional[int] = None,
         top_p: float = 0.8,
         top_k: int = 30,
         temperature: float = 0.8,
@@ -402,16 +441,41 @@ class UnifiedVoice(nn.Module):
         spk_lens = mx.array([speech_condition.shape[1]] * B, dtype=mx.int32)
         emo_lens = mx.array([emo_condition.shape[1]] * B, dtype=mx.int32)
 
-        speech_conditioning_latent = self.get_conditioning(speech_condition, spk_lens)
-        emo_vec = self.merge_emovec(speech_condition, emo_condition, spk_lens, emo_lens, alpha=alpha)
-
-        use_speed = mx.zeros((B,), dtype=mx.int32)
-        duration_emb = self.speed_emb(use_speed)
-        duration_emb_half = self.speed_emb(mx.ones_like(use_speed))
-        conds = mx.concatenate(
-            [speech_conditioning_latent + emo_vec[:, None, :], duration_emb_half[:, None, :], duration_emb[:, None, :]],
-            axis=1,
+        emo_vec = self.merge_emovec(
+            speech_condition, emo_condition, spk_lens, emo_lens, alpha=alpha
         )
+
+        if self.spk_cond_mode == "campplus":
+            if campplus_embedding is None:
+                raise ValueError("IndexTTS-2.5 requires a CAMPPlus speaker embedding")
+            speech_conditioning_latent = self.spk_emb_proj(campplus_embedding)
+            if speech_conditioning_latent.ndim != 3:
+                speech_conditioning_latent = speech_conditioning_latent[:, None, :]
+            conds = mx.concatenate(
+                [
+                    speech_conditioning_latent + emo_vec[:, None, :],
+                    mx.zeros(
+                        (B, 2, speech_conditioning_latent.shape[-1]),
+                        dtype=speech_conditioning_latent.dtype,
+                    ),
+                ],
+                axis=1,
+            )
+        else:
+            speech_conditioning_latent = self.get_conditioning(
+                speech_condition, spk_lens
+            )
+            use_speed = mx.zeros((B,), dtype=mx.int32)
+            duration_emb = self.speed_emb(use_speed)
+            duration_emb_half = self.speed_emb(mx.ones_like(use_speed))
+            conds = mx.concatenate(
+                [
+                    speech_conditioning_latent + emo_vec[:, None, :],
+                    duration_emb_half[:, None, :],
+                    duration_emb[:, None, :],
+                ],
+                axis=1,
+            )
 
         # Build text emb with start/stop
         text_tokens = mx.concatenate(
@@ -422,7 +486,12 @@ class UnifiedVoice(nn.Module):
             [text_tokens, mx.full((B, 1), self.cfg.stop_text_token, dtype=mx.int32)],
             axis=1,
         )
-        text_emb = self.text_embedding(text_tokens) + self.text_pos_embedding(text_tokens)
+        text_emb = self.text_embedding(text_tokens) + self.text_pos_embedding(
+            text_tokens
+        )
+        if self.spk_cond_mode == "campplus":
+            lang = mx.array([lang_id or 0], dtype=mx.int32)
+            text_emb = text_emb + self.lang_embedding(lang)[:, None, :]
 
         # Start mel
         cur = mx.full((B, 1), self.cfg.start_mel_token, dtype=mx.int32)
@@ -438,8 +507,14 @@ class UnifiedVoice(nn.Module):
 
         sampler = make_sampler(temp=temperature, top_p=top_p, top_k=top_k)
 
-        def apply_repetition_penalty(logits_: mx.array, generated: list[mx.array]) -> mx.array:
-            if repetition_penalty is None or repetition_penalty <= 1.0 or len(generated) == 0:
+        def apply_repetition_penalty(
+            logits_: mx.array, generated: list[mx.array]
+        ) -> mx.array:
+            if (
+                repetition_penalty is None
+                or repetition_penalty <= 1.0
+                or len(generated) == 0
+            ):
                 return logits_
             # HF-style repetition penalty for batch size 1 (IndexTTS2 inference path).
             # For this model we run B=1 in practice.

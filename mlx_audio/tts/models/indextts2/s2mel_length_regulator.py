@@ -26,7 +26,9 @@ def _nearest_interpolate_1d(x: mx.array, out_len: int) -> mx.array:
     if in_len <= 1:
         return mx.broadcast_to(x[:1, :], (out_len, x.shape[1]))
 
-    idx = (mx.floor(mx.arange(out_len, dtype=mx.float32) * (in_len / out_len))).astype(mx.int32)
+    idx = (mx.floor(mx.arange(out_len, dtype=mx.float32) * (in_len / out_len))).astype(
+        mx.int32
+    )
     idx = mx.clip(idx, 0, in_len - 1)
     return x[idx, :]
 

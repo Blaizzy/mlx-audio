@@ -27,6 +27,12 @@ def main():
         help="HuggingFace repo id of the BigVGAN model",
     )
     parser.add_argument(
+        "--model-dir",
+        type=str,
+        default=None,
+        help="Optional local snapshot with config.json and bigvgan_generator.pt",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -40,28 +46,33 @@ def main():
     )
     args = parser.parse_args()
 
-    from huggingface_hub import hf_hub_download
     import mlx.core as mx
+    from huggingface_hub import hf_hub_download
 
     from mlx_audio.codec.models.bigvgan.bigvgan import BigVGAN, BigVGANConfig
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg_path = Path(
-        hf_hub_download(
-            repo_id=args.hf_repo,
-            filename="config.json",
-            revision=args.revision,
+    if args.model_dir:
+        local = Path(args.model_dir)
+        cfg_path = local / "config.json"
+        gen_path = local / "bigvgan_generator.pt"
+    else:
+        cfg_path = Path(
+            hf_hub_download(
+                repo_id=args.hf_repo,
+                filename="config.json",
+                revision=args.revision,
+            )
         )
-    )
-    gen_path = Path(
-        hf_hub_download(
-            repo_id=args.hf_repo,
-            filename="bigvgan_generator.pt",
-            revision=args.revision,
+        gen_path = Path(
+            hf_hub_download(
+                repo_id=args.hf_repo,
+                filename="bigvgan_generator.pt",
+                revision=args.revision,
+            )
         )
-    )
 
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     vocoder_cfg = BigVGANConfig(
@@ -104,7 +115,7 @@ def main():
     else:
         out_cfg = {}
 
-    out_cfg["model_type"] = "indextts2"
+    out_cfg.setdefault("model_type", "indextts2")
     out_cfg.setdefault("sample_rate", int(cfg.get("sampling_rate", 22050)))
     out_cfg["vocoder"] = {
         "num_mels": vocoder_cfg.num_mels,

@@ -35,12 +35,20 @@ def _transpose_conv2d_torch_to_mlx(w):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert IndexTTS2 s2mel.pth to MLX safetensors")
+    parser = argparse.ArgumentParser(
+        description="Convert IndexTTS s2mel.pth to MLX safetensors"
+    )
     parser.add_argument(
         "--hf-repo",
         type=str,
-        default="IndexTeam/IndexTTS-2",
+        default="IndexTeam/IndexTTS-2.5",
         help="HuggingFace repo id containing s2mel.pth and config.yaml",
+    )
+    parser.add_argument(
+        "--version",
+        choices=["2.0", "2.5"],
+        default="2.5",
+        help="IndexTTS generation; 2.5 no longer uses the GPT latent projection",
     )
     parser.add_argument(
         "--revision",
@@ -56,21 +64,24 @@ def main():
     )
     args = parser.parse_args()
 
-    from huggingface_hub import hf_hub_download
-    import torch
     import mlx.core as mx
+    import torch
     import yaml
+    from huggingface_hub import hf_hub_download
 
     from mlx_audio.tts.models.indextts2.s2mel import S2MelConfig, S2MelModel
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg_path = Path(hf_hub_download(args.hf_repo, "config.yaml", revision=args.revision))
+    cfg_path = Path(
+        hf_hub_download(args.hf_repo, "config.yaml", revision=args.revision)
+    )
     ckpt_path = Path(hf_hub_download(args.hf_repo, "s2mel.pth", revision=args.revision))
 
     cfg_yaml = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    s2mel_cfg = S2MelConfig.from_dict(cfg_yaml["s2mel"])
+    use_gpt_latent = args.version == "2.0"
+    s2mel_cfg = S2MelConfig.from_dict(cfg_yaml["s2mel"], use_gpt_latent=use_gpt_latent)
     model = S2MelModel(s2mel_cfg)
 
     obj = torch.load(str(ckpt_path), map_location="cpu")
@@ -132,7 +143,8 @@ def main():
 
     add_module("s2mel.cfm.", sd["cfm"])
     add_module("s2mel.length_regulator.", sd["length_regulator"])
-    add_module("s2mel.gpt_layer.", sd["gpt_layer"])
+    if "gpt_layer" in sd:
+        add_module("s2mel.gpt_layer.", sd["gpt_layer"])
 
     # Add derived / MLX-only parameters that are not stored in torch ckpt
     # 1) freqs_cis buffer for GPTFastTransformer
@@ -142,6 +154,7 @@ def main():
     seq_len = 16384
     base = 10000
     import numpy as np
+
     freqs = 1.0 / (base ** (np.arange(0, head_dim, 2, dtype=np.float32) / head_dim))
     t = np.arange(seq_len, dtype=np.float32)
     outer = np.outer(t, freqs)
@@ -149,8 +162,12 @@ def main():
     out["s2mel.cfm.estimator.transformer.freqs_cis"] = mx.array(freqs_cis)
 
     # 2) FinalLayer LayerNorm affine params (MLX LayerNorm always has them)
-    out["s2mel.cfm.estimator.final_layer.norm_final.weight"] = mx.ones((512,), dtype=mx.float32)
-    out["s2mel.cfm.estimator.final_layer.norm_final.bias"] = mx.zeros((512,), dtype=mx.float32)
+    out["s2mel.cfm.estimator.final_layer.norm_final.weight"] = mx.ones(
+        (512,), dtype=mx.float32
+    )
+    out["s2mel.cfm.estimator.final_layer.norm_final.bias"] = mx.zeros(
+        (512,), dtype=mx.float32
+    )
 
     mx.save_safetensors(str(out_dir / "s2mel.safetensors"), out)
 
@@ -162,6 +179,9 @@ def main():
         root = {"model_type": "indextts2", "sample_rate": 22050}
 
     root["s2mel"] = cfg_yaml["s2mel"]
+    root["version"] = args.version
+    root["model_type"] = "indextts2_5" if args.version == "2.5" else "indextts2"
+    root["use_gpt_latent"] = use_gpt_latent
     cfg_out.write_text(json.dumps(root, indent=2), encoding="utf-8")
 
     print(f"Saved MLX weights: {out_dir / 's2mel.safetensors'}")

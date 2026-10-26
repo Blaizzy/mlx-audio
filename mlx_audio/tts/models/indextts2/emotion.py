@@ -3,7 +3,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
-
 EMOTION_KEYS = [
     "happy",
     "angry",
@@ -120,10 +119,12 @@ def normalize_emo_vector(
     min_score: float = 0.0,
     max_score: float = 1.2,
     apply_bias: bool = True,
-    max_sum: float = 0.8,
+    max_sum: Optional[float] = None,
 ) -> Tuple[Dict[str, float], list[float]]:
-    """Clamp + bias + sum-normalize emotion vectors.
+    """Clamp + optionally bias/sum-normalize emotion vectors.
 
+    IndexTTS inference uses the clamped vectors directly; the upstream
+    ``normalize_emo_vec`` cap is only applied when explicitly requested.
     Returns both a dict (by key) and a list in EMOTION_KEYS order.
     """
 
@@ -141,7 +142,7 @@ def normalize_emo_vector(
             vec[k] *= EMO_BIAS[k]
 
     s = sum(vec.values())
-    if s > max_sum and s > 0:
+    if max_sum is not None and s > max_sum and s > 0:
         scale = max_sum / s
         for k in EMOTION_KEYS:
             vec[k] *= scale
@@ -154,7 +155,7 @@ class QwenEmotionConfig:
     model: str = "Qwen/Qwen2.5-0.5B-Instruct-4bit"
     max_tokens: int = 256
     temperature: float = 0.0
-    apply_bias: bool = True
+    apply_bias: bool = False
 
 
 _LLM_CACHE: Dict[str, Tuple[Any, Any]] = {}
@@ -183,11 +184,31 @@ class QwenEmotion:
         if self.config.model in _LLM_CACHE:
             return _LLM_CACHE[self.config.model]
 
-        from mlx_lm.utils import load as load_llm
+        from transformers import AutoTokenizer
 
-        llm, tokenizer = load_llm(self.config.model)
-        _LLM_CACHE[self.config.model] = (llm, tokenizer)
-        return llm, tokenizer
+        from mlx_audio.lm.models import qwen2
+        from mlx_audio.utils import (
+            apply_quantization,
+            get_model_path,
+            load_config,
+            load_weights,
+        )
+
+        model_path = get_model_path(self.config.model)
+        config = load_config(model_path)
+        model_type = config.get("model_type", "qwen2")
+        if model_type not in {"qwen2", "qwen2_5"}:
+            raise ValueError(
+                f"QwenEmotion only supports qwen2-family checkpoints, got {model_type!r}"
+            )
+
+        model = qwen2.Model(qwen2.ModelArgs.from_dict(config))
+        weights = load_weights(model_path)
+        apply_quantization(model, config, weights)
+        model.load_weights(list(model.sanitize(weights).items()))
+        tokenizer = AutoTokenizer.from_pretrained(str(model_path))
+        _LLM_CACHE[self.config.model] = (model, tokenizer)
+        return model, tokenizer
 
     def _prompt(self, text: str) -> str:
         llm, tokenizer = self._load_llm()
@@ -209,10 +230,9 @@ class QwenEmotion:
         )
 
     def infer(self, text: str) -> Tuple[Dict[str, float], list[float]]:
+        from mlx_audio.lm.generate import generate
+
         llm, tokenizer = self._load_llm()
-
-        from mlx_lm.generate import generate
-
         prompt = self._prompt(text)
         resp = generate(
             llm,

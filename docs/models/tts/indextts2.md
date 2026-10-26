@@ -1,0 +1,99 @@
+# IndexTTS2 / IndexTTS-2.5
+
+Native MLX support for Bilibili's IndexTTS family. One model package loads both
+generations; the converted checkpoint's `version` selects the matching runtime
+path.
+
+| Version | Languages | Conditioning | Pace control |
+|---|---|---|---|
+| IndexTTS2 (`2.0`) | ZH, EN | Conformer speaker conditioning + GPT latent projection | waveform speed adjustment |
+| IndexTTS-2.5 (`2.5`) | ZH, EN, JA, ES, AR | CAMPPlus speaker embedding + language embedding | latent `duration_factor` |
+
+Both versions support zero-shot voice cloning from a short reference clip and
+the same 22.05 kHz BigVGAN vocoder.
+
+## Convert
+
+Install conversion dependencies first:
+
+```bash
+pip install -e ".[convert]"
+```
+
+Convert IndexTTS-2.5:
+
+```bash
+python -m mlx_audio.tts.models.indextts2.convert_unifiedvoice \
+  --version 2.5 --hf-repo IndexTeam/IndexTTS-2.5 --output-dir ./IndexTTS-2.5-MLX
+python -m mlx_audio.tts.models.indextts2.convert_s2mel \
+  --version 2.5 --hf-repo IndexTeam/IndexTTS-2.5 --output-dir ./IndexTTS-2.5-MLX
+python -m mlx_audio.tts.models.indextts2.convert_maskgct_semantic_codec \
+  --version 2.5 --hf-repo IndexTeam/IndexTTS-2.5 --output-dir ./IndexTTS-2.5-MLX
+python -m mlx_audio.tts.models.indextts2.convert_bigvgan \
+  --output-dir ./IndexTTS-2.5-MLX
+python -m mlx_audio.tts.models.indextts2.convert_campplus \
+  --output-dir ./IndexTTS-2.5-MLX
+python -m mlx_audio.tts.models.indextts2.convert_w2vbert \
+  --output-dir ./IndexTTS-2.5-MLX
+python -m mlx_audio.tts.models.indextts2.convert_w2vbert_stats \
+  --output-dir ./IndexTTS-2.5-MLX
+```
+
+For IndexTTS2, use `--version 2.0 --hf-repo IndexTeam/IndexTTS-2`. The
+conversion scripts merge their component metadata into one `config.json`;
+`version`, `spk_cond_mode`, `tokenizer`, and `use_gpt_latent` are inferred when
+the checkpoint is loaded.
+
+## Generate
+
+```python
+from mlx_audio.tts import load
+
+model = load("./IndexTTS-2.5-MLX", strict=True)
+result = next(
+    model.generate(
+        "Hello from IndexTTS-2.5 on Apple Silicon.",
+        ref_audio="reference.wav",
+        language="en",
+        duration_factor=1.0,
+    )
+)
+```
+
+`duration_factor > 1.0` produces slower speech and `< 1.0` produces faster
+speech (valid range in the upstream model is 0.5–2.0). Pronunciation overrides
+use the upstream syntax:
+
+```python
+model.generate(
+    "行<行|XING2>走，<going|G OW1 . IH0 NG> home.",
+    ref_audio="reference.wav",
+    language="zh",
+)
+```
+
+## Validation
+
+The 2.5 path was smoke-tested on Apple Silicon with the existing
+`vanch007/mlx-indextts2-2.5-fp16` MLX export (2.0 GB):
+
+- Strict model load: pass
+- Text: `Hello from IndexTTS two point five on MLX Audio.`
+- Output: 3.51 s at 22.05 kHz, all samples finite, peak 0.94
+- `duration_factor=0.5`: 1.393 s
+- `duration_factor=1.5`: 4.249 s
+- Unit/regression tests: 17 passed
+
+IndexTTS2 (`2.0`) keeps the original PR's conformer + GPT-latent path, but no
+2.0 converted checkpoint was available for an end-to-end rerun in this pass.
+
+## Current limits
+
+- No `mlx-community` converted checkpoint is published yet; convert the official
+  PyTorch weights locally.
+- Streaming generation is not implemented.
+- Explicit 8-D emotion vectors and text-driven emotion guidance are not wired
+  into the MLX generation path yet; both raise `NotImplementedError`. The
+  parser and QwenEmotion helper are present for follow-up work.
+- IndexTTS-2.5 requires `tiktoken`; IndexTTS2 uses the SentencePiece
+  `bpe.model`.

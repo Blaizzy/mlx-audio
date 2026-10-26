@@ -1,20 +1,21 @@
 #!/usr/bin/env python
-"""Example: IndexTTS2 inference with quality-focused settings."""
+"""Example: IndexTTS2 / IndexTTS-2.5 inference with a converted MLX model."""
 
 import argparse
 from pathlib import Path
 
 import numpy as np
+
 from mlx_audio.audio_io import sf_write
 from mlx_audio.tts import load
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run IndexTTS2 TTS inference")
+    parser = argparse.ArgumentParser(description="Run IndexTTS inference on MLX")
     parser.add_argument(
         "--model",
         default="indextts2_mlx",
-        help="Path to converted IndexTTS2 MLX model directory",
+        help="Path to a converted IndexTTS2 or IndexTTS-2.5 MLX model directory",
     )
     parser.add_argument(
         "--ref-audio",
@@ -49,6 +50,17 @@ def main():
         default=10.0,
         help="AR repetition penalty for semantic token decoding",
     )
+    parser.add_argument(
+        "--language",
+        default="en",
+        help="IndexTTS-2.5 language: zh, en, ja, es, or ar",
+    )
+    parser.add_argument(
+        "--duration-factor",
+        type=float,
+        default=1.0,
+        help="IndexTTS-2.5 pace control; >1 is slower, <1 is faster",
+    )
     args = parser.parse_args()
 
     model = load(Path(args.model), strict=True)
@@ -57,6 +69,8 @@ def main():
         model.generate(
             args.text,
             ref_audio=args.ref_audio,
+            language=args.language,
+            duration_factor=args.duration_factor,
             diffusion_steps=args.diffusion_steps,
             diffusion_cfg_rate=args.diffusion_cfg_rate,
             repetition_penalty=args.repetition_penalty,

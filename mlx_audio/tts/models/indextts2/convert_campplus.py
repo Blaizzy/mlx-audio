@@ -24,6 +24,12 @@ def main():
         help="HuggingFace repo id containing campplus_cn_common.bin",
     )
     parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Optional local campplus checkpoint path",
+    )
+    parser.add_argument(
         "--filename",
         type=str,
         default="campplus_cn_common.bin",
@@ -55,21 +61,24 @@ def main():
     )
     args = parser.parse_args()
 
-    from huggingface_hub import hf_hub_download
     import mlx.core as mx
+    from huggingface_hub import hf_hub_download
 
     from mlx_audio.tts.models.chatterbox.s3gen.xvector import CAMPPlus
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ckpt_path = Path(
-        hf_hub_download(
-            repo_id=args.hf_repo,
-            filename=args.filename,
-            revision=args.revision,
+    if args.checkpoint:
+        ckpt_path = Path(args.checkpoint)
+    else:
+        ckpt_path = Path(
+            hf_hub_download(
+                repo_id=args.hf_repo,
+                filename=args.filename,
+                revision=args.revision,
+            )
         )
-    )
 
     state = _load_state_dict(ckpt_path)
 

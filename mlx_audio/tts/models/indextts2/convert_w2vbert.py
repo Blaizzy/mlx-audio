@@ -14,6 +14,12 @@ def main():
         help="HuggingFace repo id",
     )
     parser.add_argument(
+        "--model-dir",
+        type=str,
+        default=None,
+        help="Optional local snapshot directory containing config.json and model.safetensors",
+    )
+    parser.add_argument(
         "--revision",
         type=str,
         default=None,
@@ -27,29 +33,37 @@ def main():
     )
     args = parser.parse_args()
 
-    from huggingface_hub import hf_hub_download
     import mlx.core as mx
+    from huggingface_hub import hf_hub_download
     from safetensors import safe_open
 
-    from mlx_audio.tts.models.indextts2.w2vbert import Wav2Vec2BertConfig, Wav2Vec2BertModel
+    from mlx_audio.tts.models.indextts2.w2vbert import (
+        Wav2Vec2BertConfig,
+        Wav2Vec2BertModel,
+    )
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg_path = Path(
-        hf_hub_download(
-            repo_id=args.hf_repo,
-            filename="config.json",
-            revision=args.revision,
+    if args.model_dir:
+        local = Path(args.model_dir)
+        cfg_path = local / "config.json"
+        model_path = local / "model.safetensors"
+    else:
+        cfg_path = Path(
+            hf_hub_download(
+                repo_id=args.hf_repo,
+                filename="config.json",
+                revision=args.revision,
+            )
         )
-    )
-    model_path = Path(
-        hf_hub_download(
-            repo_id=args.hf_repo,
-            filename="model.safetensors",
-            revision=args.revision,
+        model_path = Path(
+            hf_hub_download(
+                repo_id=args.hf_repo,
+                filename="model.safetensors",
+                revision=args.revision,
+            )
         )
-    )
 
     cfg_json = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg = Wav2Vec2BertConfig(
@@ -59,11 +73,17 @@ def main():
         intermediate_size=int(cfg_json["intermediate_size"]),
         feature_projection_input_dim=int(cfg_json["feature_projection_input_dim"]),
         layer_norm_eps=float(cfg_json.get("layer_norm_eps", 1e-5)),
-        position_embeddings_type=cfg_json.get("position_embeddings_type", "relative_key"),
+        position_embeddings_type=cfg_json.get(
+            "position_embeddings_type", "relative_key"
+        ),
         rotary_embedding_base=int(cfg_json.get("rotary_embedding_base", 10000)),
         max_source_positions=int(cfg_json.get("max_source_positions", 5000)),
-        left_max_position_embeddings=int(cfg_json.get("left_max_position_embeddings", 64)),
-        right_max_position_embeddings=int(cfg_json.get("right_max_position_embeddings", 8)),
+        left_max_position_embeddings=int(
+            cfg_json.get("left_max_position_embeddings", 64)
+        ),
+        right_max_position_embeddings=int(
+            cfg_json.get("right_max_position_embeddings", 8)
+        ),
         conv_depthwise_kernel_size=int(cfg_json.get("conv_depthwise_kernel_size", 31)),
         conformer_conv_dropout=float(cfg_json.get("conformer_conv_dropout", 0.1)),
         hidden_dropout=float(cfg_json.get("hidden_dropout", 0.0)),

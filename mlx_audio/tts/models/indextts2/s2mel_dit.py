@@ -38,7 +38,9 @@ class TimestepEmbedder(nn.Module):
         args = self.scale * t[:, None].astype(mx.float32) * self.freqs[None]
         emb = mx.concatenate([mx.cos(args), mx.sin(args)], axis=-1)
         if self.frequency_embedding_size % 2:
-            emb = mx.concatenate([emb, mx.zeros((emb.shape[0], 1), dtype=emb.dtype)], axis=-1)
+            emb = mx.concatenate(
+                [emb, mx.zeros((emb.shape[0], 1), dtype=emb.dtype)], axis=-1
+            )
         return emb
 
     def __call__(self, t: mx.array) -> mx.array:
@@ -124,13 +126,17 @@ class DiT(nn.Module):
 
         self.long_skip_connection = cfg.long_skip_connection
         if self.long_skip_connection:
-            self.skip_linear = nn.Linear(cfg.hidden_dim + cfg.in_channels, cfg.hidden_dim, bias=True)
+            self.skip_linear = nn.Linear(
+                cfg.hidden_dim + cfg.in_channels, cfg.hidden_dim, bias=True
+            )
 
         self.final_layer_type = cfg.final_layer_type
         if self.final_layer_type == "wavenet":
             self.t_embedder2 = TimestepEmbedder(cfg.wavenet_hidden_dim)
             self.conv1 = nn.Linear(cfg.hidden_dim, cfg.wavenet_hidden_dim, bias=True)
-            self.conv2 = nn.Conv1d(cfg.wavenet_hidden_dim, cfg.in_channels, kernel_size=1)
+            self.conv2 = nn.Conv1d(
+                cfg.wavenet_hidden_dim, cfg.in_channels, kernel_size=1
+            )
             self.wavenet = WN(
                 hidden_channels=cfg.wavenet_hidden_dim,
                 kernel_size=cfg.wavenet_kernel_size,
@@ -139,8 +145,12 @@ class DiT(nn.Module):
                 gin_channels=cfg.wavenet_hidden_dim,
                 p_dropout=0.0,
             )
-            self.final_layer = FinalLayer(cfg.wavenet_hidden_dim, cfg.wavenet_hidden_dim)
-            self.res_projection = nn.Linear(cfg.hidden_dim, cfg.wavenet_hidden_dim, bias=True)
+            self.final_layer = FinalLayer(
+                cfg.wavenet_hidden_dim, cfg.wavenet_hidden_dim
+            )
+            self.res_projection = nn.Linear(
+                cfg.hidden_dim, cfg.wavenet_hidden_dim, bias=True
+            )
         else:
             self.final_mlp = nn.Sequential(
                 nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
@@ -168,7 +178,9 @@ class DiT(nn.Module):
 
         x_t = x.transpose(0, 2, 1)  # (B, T, C)
         p_t = prompt_x.transpose(0, 2, 1)
-        x_in = mx.concatenate([x_t, p_t, cond_proj, mx.repeat(style[:, None, :], T, axis=1)], axis=-1)
+        x_in = mx.concatenate(
+            [x_t, p_t, cond_proj, mx.repeat(style[:, None, :], T, axis=1)], axis=-1
+        )
         x_in = self.cond_x_merge_linear(x_in)
 
         # Attention mask (non-causal)

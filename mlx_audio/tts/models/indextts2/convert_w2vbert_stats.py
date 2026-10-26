@@ -21,8 +21,8 @@ def main():
     )
     args = parser.parse_args()
 
-    import torch
     import mlx.core as mx
+    import torch
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

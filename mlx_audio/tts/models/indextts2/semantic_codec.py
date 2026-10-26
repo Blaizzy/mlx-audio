@@ -37,7 +37,9 @@ class FactorizedVectorQuantize(nn.Module):
 
         if self.input_dim != self.codebook_dim:
             self.in_project = WNConv1d(self.input_dim, self.codebook_dim, kernel_size=1)
-            self.out_project = WNConv1d(self.codebook_dim, self.input_dim, kernel_size=1)
+            self.out_project = WNConv1d(
+                self.codebook_dim, self.input_dim, kernel_size=1
+            )
         else:
             self.in_project = nn.Identity()
             self.out_project = nn.Identity()
@@ -143,7 +145,7 @@ class ResidualVQ(nn.Module):
 
 
 @dataclass
-class RepCodecConfig:
+class EnhancedCodecConfig:
     codebook_size: int = 8192
     hidden_size: int = 1024
     codebook_dim: int = 8
@@ -151,13 +153,18 @@ class RepCodecConfig:
     vocos_intermediate_dim: int = 2048
     vocos_num_layers: int = 12
     num_quantizers: int = 1
-    downsample_scale: int = 1
+    # Official IndexTTS2/2.5 EnhancedCodec defaults to 2 when config.yaml omits it.
+    downsample_scale: int = 2
 
 
-class RepCodec(nn.Module):
-    """MLX port of MaskGCT RepCodec (semantic codec)."""
+# Backwards-compatible names from the original PR.
+RepCodecConfig = EnhancedCodecConfig
 
-    def __init__(self, cfg: RepCodecConfig):
+
+class EnhancedCodec(nn.Module):
+    """MLX port of the IndexTTS2/2.5 EnhancedCodec semantic codec."""
+
+    def __init__(self, cfg: EnhancedCodecConfig):
         super().__init__()
         self.cfg = cfg
 
@@ -217,7 +224,7 @@ class RepCodec(nn.Module):
         return y
 
     def quantize(self, x: mx.array) -> Tuple[mx.array, mx.array]:
-        # Downsample (optional)
+        # x: (B, T, C)
         if self.down is not None:
             x = self.down(x)
             x = nn.gelu(x)
@@ -228,6 +235,27 @@ class RepCodec(nn.Module):
         if all_indices.shape[0] == 1:
             return all_indices[0], quantized_out
         return all_indices, quantized_out
+
+    def decode(self, codes: mx.array) -> mx.array:
+        """Restore continuous semantic features from quantized codes.
+
+        Args:
+            codes: (N, B, T) or (B, T) when there is one quantizer.
+
+        Returns:
+            Features shaped (B, T, C), ready for the s2mel length regulator.
+        """
+        if codes.ndim == 2:
+            codes = codes[None, :, :]
+
+        x = self.quantizer.vq2emb(codes)
+        x = self._decode(x)
+
+        if self.up is not None:
+            # Official EnhancedCodec doubles the time axis before the final conv.
+            x = mx.repeat(x, 2, axis=1)
+            x = self.up(x)
+        return x
 
     def vq2emb(self, vq: mx.array, *, n_quantizers: Optional[int] = None) -> mx.array:
         return self.quantizer.vq2emb(vq, n_quantizers=n_quantizers)
@@ -252,3 +280,7 @@ class RepCodec(nn.Module):
 
             out[k] = v
         return out
+
+
+# Backwards-compatible name from the original PR.
+RepCodec = EnhancedCodec

@@ -80,7 +80,9 @@ class Wav2Vec2BertConfig:
 
     # Attention
     attention_dropout: float = 0.0
-    position_embeddings_type: Optional[str] = "relative_key"  # rotary|relative|relative_key|None
+    position_embeddings_type: Optional[str] = (
+        "relative_key"  # rotary|relative|relative_key|None
+    )
     rotary_embedding_base: int = 10000
     max_source_positions: int = 5000
     left_max_position_embeddings: int = 64
@@ -113,7 +115,9 @@ class Wav2Vec2BertFeatureProjection(nn.Module):
 
 
 class Wav2Vec2BertFeedForward(nn.Module):
-    def __init__(self, config: Wav2Vec2BertConfig, *, hidden_size: Optional[int] = None):
+    def __init__(
+        self, config: Wav2Vec2BertConfig, *, hidden_size: Optional[int] = None
+    ):
         super().__init__()
         hs = hidden_size if hidden_size is not None else config.hidden_size
         self.intermediate_dense = nn.Linear(hs, config.intermediate_size)
@@ -130,9 +134,7 @@ class Wav2Vec2BertConvolutionModule(nn.Module):
     def __init__(self, config: Wav2Vec2BertConfig):
         super().__init__()
         if (config.conv_depthwise_kernel_size - 1) % 2 == 1:
-            raise ValueError(
-                "conv_depthwise_kernel_size must be odd for SAME padding"
-            )
+            raise ValueError("conv_depthwise_kernel_size must be odd for SAME padding")
 
         self.hidden_size = config.hidden_size
         self.kernel_size = config.conv_depthwise_kernel_size
@@ -301,7 +303,9 @@ class Wav2Vec2BertEncoderLayer(nn.Module):
 
         # 3) Conv
         residual = hidden_states
-        hidden_states = self.conv_module(hidden_states, attention_mask=conv_attention_mask)
+        hidden_states = self.conv_module(
+            hidden_states, attention_mask=conv_attention_mask
+        )
         hidden_states = hidden_states + residual
 
         # 4) FFN2
@@ -317,7 +321,9 @@ class Wav2Vec2BertEncoderLayer(nn.Module):
 class Wav2Vec2BertEncoder(nn.Module):
     def __init__(self, config: Wav2Vec2BertConfig):
         super().__init__()
-        self.layers = [Wav2Vec2BertEncoderLayer(config) for _ in range(config.num_hidden_layers)]
+        self.layers = [
+            Wav2Vec2BertEncoderLayer(config) for _ in range(config.num_hidden_layers)
+        ]
 
     def __call__(
         self,
@@ -326,7 +332,9 @@ class Wav2Vec2BertEncoder(nn.Module):
         attention_mask: Optional[mx.array] = None,
         output_hidden_states: bool = False,
     ) -> Tuple[mx.array, Optional[List[mx.array]]]:
-        all_hidden_states: Optional[List[mx.array]] = [] if output_hidden_states else None
+        all_hidden_states: Optional[List[mx.array]] = (
+            [] if output_hidden_states else None
+        )
 
         conv_attention_mask = attention_mask
 
@@ -380,7 +388,12 @@ class Wav2Vec2BertModel(nn.Module):
         curr = dict(tree_flatten(self.parameters()))
         out = {}
         for k, v in weights.items():
-            if k in curr and v.ndim == 3 and curr[k].ndim == 3 and v.shape != curr[k].shape:
+            if (
+                k in curr
+                and v.ndim == 3
+                and curr[k].ndim == 3
+                and v.shape != curr[k].shape
+            ):
                 # Torch Conv1d: (O, I/groups, K) -> MLX: (O, K, I/groups)
                 if v.shape[0] == curr[k].shape[0] and v.shape[2] == curr[k].shape[1]:
                     v = v.transpose(0, 2, 1)

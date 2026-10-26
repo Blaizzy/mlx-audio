@@ -14,9 +14,12 @@ from .s2mel_length_regulator import InterpolateRegulator, InterpolateRegulatorCo
 class S2MelConfig:
     dit: DiTConfig
     length_regulator: InterpolateRegulatorConfig
+    use_gpt_latent: bool = False
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "S2MelConfig":
+    def from_dict(
+        cls, d: Dict[str, Any], *, use_gpt_latent: bool = False
+    ) -> "S2MelConfig":
         dit_d = d.get("DiT", {})
         wv_d = d.get("wavenet", {})
         dit = DiTConfig(
@@ -44,7 +47,11 @@ class S2MelConfig:
             out_channels=int(lr_d.get("channels", 512)),
             groups=1,
         )
-        return cls(dit=dit, length_regulator=lr)
+        return cls(
+            dit=dit,
+            length_regulator=lr,
+            use_gpt_latent=use_gpt_latent,
+        )
 
 
 class S2MelModel(nn.Module):
@@ -54,11 +61,12 @@ class S2MelModel(nn.Module):
 
         self.cfm = CFM(cfg.dit)
         self.length_regulator = InterpolateRegulator(cfg.length_regulator)
-        self.gpt_layer = [
-            nn.Linear(1280, 256),
-            nn.Linear(256, 128),
-            nn.Linear(128, 1024),
-        ]
+        if cfg.use_gpt_latent:
+            self.gpt_layer = [
+                nn.Linear(1280, 256),
+                nn.Linear(256, 128),
+                nn.Linear(128, 1024),
+            ]
 
     def project_gpt_latent(self, x):
         h = x

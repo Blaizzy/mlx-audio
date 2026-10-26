@@ -9,7 +9,9 @@ import mlx.nn as nn
 from .s2mel_utils import fused_add_tanh_sigmoid_multiply
 
 
-def _conv1d_weightnorm_strip(weight_g: mx.array, weight_v: mx.array, eps: float = 1e-8) -> mx.array:
+def _conv1d_weightnorm_strip(
+    weight_g: mx.array, weight_v: mx.array, eps: float = 1e-8
+) -> mx.array:
     # weightnorm: w = g * v / ||v||
     v = weight_v
     # Norm over (in, k) dims for conv1d v shaped (O, I, K) in torch; converter should transpose first.
@@ -21,7 +23,16 @@ def _conv1d_weightnorm_strip(weight_g: mx.array, weight_v: mx.array, eps: float 
 class WNConv1d(nn.Module):
     """Conv1d wrapper that optionally accepts already-stripped weights."""
 
-    def __init__(self, in_ch: int, out_ch: int, kernel_size: int, *, dilation: int = 1, padding: int = 0, bias: bool = True):
+    def __init__(
+        self,
+        in_ch: int,
+        out_ch: int,
+        kernel_size: int,
+        *,
+        dilation: int = 1,
+        padding: int = 0,
+        bias: bool = True,
+    ):
         super().__init__()
         self.conv = nn.Conv1d(
             in_ch,
@@ -71,10 +82,16 @@ class WN(nn.Module):
                 )
             )
 
-            res_skip_channels = 2 * hidden_channels if i < n_layers - 1 else hidden_channels
-            self.res_skip_layers.append(nn.Conv1d(hidden_channels, res_skip_channels, 1))
+            res_skip_channels = (
+                2 * hidden_channels if i < n_layers - 1 else hidden_channels
+            )
+            self.res_skip_layers.append(
+                nn.Conv1d(hidden_channels, res_skip_channels, 1)
+            )
 
-    def __call__(self, x: mx.array, x_mask: mx.array, g: Optional[mx.array] = None) -> mx.array:
+    def __call__(
+        self, x: mx.array, x_mask: mx.array, g: Optional[mx.array] = None
+    ) -> mx.array:
         # x: (B, T, C), x_mask: (B, T, 1), g: (B, 1, gin)
         output = mx.zeros_like(x)
         n_ch = self.hidden_channels
