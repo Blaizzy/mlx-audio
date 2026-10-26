@@ -22,7 +22,7 @@ from .text_frontend import (
     apply_pronunciation_annotations,
     lang_to_token,
     normalize_case,
-    split_text_by_punctuation,
+    split_text_by_tokens,
 )
 from .unifiedvoice import UnifiedVoice, UnifiedVoiceConfig
 from .w2vbert import Wav2Vec2BertConfig, Wav2Vec2BertModel
@@ -344,7 +344,16 @@ class Model(nn.Module):
 
         return out
 
-    def _result(self, audio: mx.array, start_time: float) -> GenerationResult:
+    def _result(
+        self,
+        audio: mx.array,
+        start_time: float,
+        *,
+        segment_idx: int = 0,
+        token_count: int = 0,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
+    ) -> GenerationResult:
         samples = int(audio.shape[0])
         audio_duration_seconds = samples / self.sample_rate
         elapsed_time = time.perf_counter() - start_time
@@ -360,11 +369,11 @@ class Model(nn.Module):
             audio=audio,
             samples=samples,
             sample_rate=self.sample_rate,
-            segment_idx=0,
-            token_count=0,
+            segment_idx=segment_idx,
+            token_count=token_count,
             audio_duration=duration_str,
             real_time_factor=rtf,
-            prompt={"tokens": 0, "tokens-per-sec": 0},
+            prompt={"tokens": token_count, "tokens-per-sec": 0},
             audio_samples={
                 "samples": samples,
                 "samples-per-sec": (
@@ -373,6 +382,8 @@ class Model(nn.Module):
             },
             processing_time_seconds=elapsed_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
         )
 
     def _s2mel_ref_mel(self, audio: mx.array) -> mx.array:
@@ -433,115 +444,45 @@ class Model(nn.Module):
         # Keep values in a reasonable log-mel range for BigVGAN.
         return mx.clip(mel_a, -12.0, 4.0)
 
-    def generate(
+    def _token_len(self, text: str) -> int:
+        tokenizer = self.unifiedvoice.tokenizer
+        try:
+            return len(tokenizer.encode(text, allowed_special="all"))
+        except TypeError:
+            return len(tokenizer.encode(text))
+
+    def _split_segments(
+        self, text: str, lang: str, max_text_tokens_per_segment: int
+    ) -> list[str]:
+        prefix = f"<|{lang.lower()}|> " if self.is_2_5 else ""
+        return split_text_by_tokens(
+            text,
+            max_text_tokens_per_segment,
+            self._token_len,
+            capacity=self.unifiedvoice.cfg.max_text_tokens,
+            lang_prefix=prefix,
+        )
+
+    def _synthesize_segment(
         self,
         text: str,
         *,
-        ref_audio: Optional[Union[str, mx.array]] = None,
-        ref_text: Optional[str] = None,
-        speed: float = 1.0,
-        # Emotion controls
-        use_emo_text: bool = False,
-        emo_text: Optional[str] = None,
-        emo_vector: Optional[list[float]] = None,
-        emo_alpha: float = 1.0,
-        use_random: bool = False,
-        repetition_penalty: float = 10.0,
-        diffusion_steps: int = 40,
-        diffusion_cfg_rate: float = 0.7,
-        duration_factor: float = 1.0,
-        language: Optional[str] = None,
-        # Keep signature compatible with mlx_audio.tts.generate
-        voice: Optional[str] = None,
-        lang_code: str = "en",
-        verbose: bool = False,
-        stream: bool = False,
-        streaming_interval: float = 2.0,
-        **kwargs,
-    ) -> Iterator[GenerationResult]:
-        del voice, ref_text, verbose, stream, streaming_interval, kwargs
-        lang = (language or lang_code or "en").lower()
-        if self.is_2_5 and lang not in {"zh", "en", "ja", "es", "ar"}:
-            raise ValueError(
-                "IndexTTS-2.5 supports zh, en, ja, es, and ar; "
-                f"got language={lang!r}"
-            )
-        if emo_vector is not None and use_emo_text:
-            raise ValueError("emo_vector and use_emo_text are mutually exclusive")
-
-        if ref_audio is None:
-            raise ValueError("IndexTTS2 requires ref_audio (speaker prompt audio)")
-
-        if (
-            self.unifiedvoice is None
-            or self.s2mel is None
-            or self.semantic_codec is None
-        ):
-            raise ValueError(
-                "IndexTTS2 is missing required submodules (unifiedvoice/s2mel/semantic_codec). "
-                "Make sure you converted all weights into the model folder."
-            )
-
-        start_time = time.perf_counter()
-
-        # Load reference audio at 16k (semantic) and 22.05k (mel/vocoder)
-        ref_16k = load_audio(ref_audio, sample_rate=16000)
-        ref_22k = load_audio(ref_audio, sample_rate=self.sample_rate)
-
-        # W2V-BERT features -> hidden states
-        input_features, attn_mask = self.w2vbert_feature_extractor(ref_16k)
-        last, hstates = self.w2vbert(
-            input_features, attention_mask=attn_mask, output_hidden_states=True
-        )
-        del last
-        hs17 = self.w2vbert_stats(hstates[17])
-
-        # Semantic codec prompt codes + embeddings
-        ref_codes, ref_quant = self.semantic_codec.quantize(hs17)
-        # ref_mel: (B, 80, T)
-        ref_mel = self._s2mel_ref_mel(ref_22k)
-        ref_mel_len = mx.array([ref_mel.shape[-1]], dtype=mx.int32)
-
-        # Style from CAMPPlus (Kaldi fbank)
-        fb = compute_fbank_kaldi(ref_16k, sample_rate=16000, num_mels=80, dither=0.0)
-        fb = fb - mx.mean(fb, axis=0, keepdims=True)
-        style = self.campplus(fb[None, :, :])
-
-        prompt_condition, _, _, _, _ = self.s2mel.length_regulator(
-            hs17 if self.is_2_5 else ref_quant, ylens=ref_mel_len
-        )
-
-        # Emotion vector
-        emotion_input = emo_vector
-        if use_emo_text:
-            text_for_emo = emo_text if emo_text is not None else text
-            _, emotion_input = self._get_emotion().infer(text_for_emo)
-        emotion_weights = None
-        emotion_override = None
-        emotion_weight_sum = 0.0
-        if emotion_input is not None:
-            emotion_weights = self._normalize_emotion_weights(emotion_input)
-            scale = max(0.0, min(1.0, float(emo_alpha)))
-            if scale != 1.0:
-                emotion_weights = {
-                    key: value * scale for key, value in emotion_weights.items()
-                }
-            emotion_override = self._compute_emotion_vector(
-                emotion_weights, style, use_random=use_random
-            )
-            emotion_weight_sum = sum(emotion_weights.values())
-
-        if self.is_2_5:
-            text = normalize_case(apply_pronunciation_annotations(text), lang)
-
-        # Text -> semantic codes via UnifiedVoice
+        lang: str,
+        spk_cond: mx.array,
+        emo_cond: mx.array,
+        style: mx.array,
+        prompt_condition: mx.array,
+        ref_mel: mx.array,
+        emotion_override: Optional[mx.array],
+        emotion_weight_sum: float,
+        emo_alpha: float,
+        repetition_penalty: float,
+        diffusion_steps: int,
+        diffusion_cfg_rate: float,
+        duration_factor: float,
+        speed: float,
+    ) -> mx.array:
         text_tokens = self.unifiedvoice.encode_text(text, lang=lang)
-
-        # Use reference hidden states as speaker/emotion condition.
-        # UnifiedVoice expects (B, T, 1024)
-        spk_cond = hs17
-        emo_cond = hs17
-
         codes, speech_latent = self.unifiedvoice.inference_speech(
             spk_cond,
             text_tokens,
@@ -558,7 +499,6 @@ class Model(nn.Module):
             repetition_penalty=float(repetition_penalty),
         )
 
-        # Strip stop token if present
         if (
             codes.shape[1] > 0
             and int(codes[0, -1].item()) == self.unifiedvoice.cfg.stop_mel_token
@@ -566,8 +506,6 @@ class Model(nn.Module):
             codes = codes[:, :-1]
 
         if self.is_2_5:
-            # IndexTTS-2.5 decodes semantic codes directly; it no longer uses
-            # the GPT latent projection from IndexTTS2.
             semantic = self.semantic_codec.decode(codes)
             seconds_scale = float(duration_factor)
             if speed and speed != 1.0:
@@ -580,7 +518,6 @@ class Model(nn.Module):
                 semantic, ylens=target_lengths
             )
         else:
-            # IndexTTS2 uses the GPT latent plus semantic codebook embeddings.
             emo_vec_lat = self.unifiedvoice.get_emovec(
                 emo_cond, mx.array([emo_cond.shape[1]], dtype=mx.int32)
             )
@@ -588,7 +525,6 @@ class Model(nn.Module):
                 speech_latent, text_tokens, codes, emo_vec_lat
             )
             gpt_lat = self.s2mel.project_gpt_latent(mel_lat)
-
             semantic = self.semantic_codec.vq2emb(codes[None, :, :])
             semantic = semantic + gpt_lat
             code_lens = mx.array([semantic.shape[1]], dtype=mx.int32)
@@ -596,8 +532,8 @@ class Model(nn.Module):
             cond, _, _, _, _ = self.s2mel.length_regulator(
                 semantic, ylens=target_lengths
             )
-        cat_condition = mx.concatenate([prompt_condition, cond], axis=1)
 
+        cat_condition = mx.concatenate([prompt_condition, cond], axis=1)
         x_lens = mx.array([cat_condition.shape[1]], dtype=mx.int32)
         mel_all = self.s2mel.cfm.inference(
             cat_condition,
@@ -609,13 +545,12 @@ class Model(nn.Module):
             inference_cfg_rate=float(diffusion_cfg_rate),
         )
         mel = mel_all[:, :, ref_mel.shape[-1] :]
-
         if mel.shape[-1] == 0:
             raise ValueError(
-                "IndexTTS2 generated empty mel sequence (no semantic frames after stop token)."
+                "IndexTTS2 generated an empty mel segment (no semantic frames "
+                "after the stop token)."
             )
 
-        # Auto-correct low-energy mel drift before vocoding.
         ref_energy = mx.mean(mx.std(ref_mel, axis=-1))
         mel_energy = mx.mean(mx.std(mel, axis=-1))
         ref_level = mx.mean(mx.mean(ref_mel, axis=-1))
@@ -627,12 +562,172 @@ class Model(nn.Module):
 
         audio = self.bigvgan(mel)
         audio = audio.reshape(-1).astype(mx.float32)
-        # IndexTTS-2.5 controls tempo in latent space via duration_factor, so
-        # do not time-stretch the waveform a second time.
         if not self.is_2_5 and speed and speed != 1.0:
             audio = adjust_speed(audio, speed)
+        mx.eval(audio)
+        return audio
 
-        yield self._result(audio, start_time)
+    def generate(
+        self,
+        text: str,
+        *,
+        ref_audio: Optional[Union[str, mx.array]] = None,
+        ref_text: Optional[str] = None,
+        speed: float = 1.0,
+        use_emo_text: bool = False,
+        emo_text: Optional[str] = None,
+        emo_vector: Optional[list[float]] = None,
+        emo_alpha: float = 1.0,
+        use_random: bool = False,
+        repetition_penalty: float = 10.0,
+        diffusion_steps: int = 40,
+        diffusion_cfg_rate: float = 0.7,
+        duration_factor: float = 1.0,
+        language: Optional[str] = None,
+        max_text_tokens_per_segment: int = 120,
+        interval_silence: int = 200,
+        voice: Optional[str] = None,
+        lang_code: str = "en",
+        verbose: bool = False,
+        stream: bool = False,
+        streaming_interval: float = 2.0,
+        **kwargs,
+    ) -> Iterator[GenerationResult]:
+        del voice, ref_text, verbose, streaming_interval, kwargs
+        if not text or not text.strip():
+            raise ValueError("IndexTTS requires non-empty text")
+        lang = (language or lang_code or "en").lower()
+        if self.is_2_5 and lang not in {"zh", "en", "ja", "es", "ar"}:
+            raise ValueError(
+                "IndexTTS-2.5 supports zh, en, ja, es, and ar; "
+                f"got language={lang!r}"
+            )
+        if emo_vector is not None and use_emo_text:
+            raise ValueError("emo_vector and use_emo_text are mutually exclusive")
+        if ref_audio is None:
+            raise ValueError("IndexTTS2 requires ref_audio (speaker prompt audio)")
+        if (
+            self.unifiedvoice is None
+            or self.s2mel is None
+            or self.semantic_codec is None
+        ):
+            raise ValueError(
+                "IndexTTS2 is missing required submodules "
+                "(unifiedvoice/s2mel/semantic_codec). Make sure all weights "
+                "were converted into the model folder."
+            )
+
+        total_start = time.perf_counter()
+        ref_16k = load_audio(ref_audio, sample_rate=16000)
+        ref_22k = load_audio(ref_audio, sample_rate=self.sample_rate)
+
+        input_features, attn_mask = self.w2vbert_feature_extractor(ref_16k)
+        last, hstates = self.w2vbert(
+            input_features, attention_mask=attn_mask, output_hidden_states=True
+        )
+        del last
+        hs17 = self.w2vbert_stats(hstates[17])
+
+        ref_codes, ref_quant = self.semantic_codec.quantize(hs17)
+        ref_mel = self._s2mel_ref_mel(ref_22k)
+        ref_mel_len = mx.array([ref_mel.shape[-1]], dtype=mx.int32)
+
+        fb = compute_fbank_kaldi(ref_16k, sample_rate=16000, num_mels=80, dither=0.0)
+        fb = fb - mx.mean(fb, axis=0, keepdims=True)
+        style = self.campplus(fb[None, :, :])
+
+        prompt_condition, _, _, _, _ = self.s2mel.length_regulator(
+            hs17 if self.is_2_5 else ref_quant, ylens=ref_mel_len
+        )
+
+        emotion_input = emo_vector
+        if use_emo_text:
+            text_for_emo = emo_text if emo_text is not None else text
+            _, emotion_input = self._get_emotion().infer(text_for_emo)
+        emotion_override = None
+        emotion_weight_sum = 0.0
+        if emotion_input is not None:
+            emotion_weights = self._normalize_emotion_weights(emotion_input)
+            scale = max(0.0, min(1.0, float(emo_alpha)))
+            if scale != 1.0:
+                emotion_weights = {
+                    key: value * scale for key, value in emotion_weights.items()
+                }
+            emotion_override = self._compute_emotion_vector(
+                emotion_weights, style, use_random=use_random
+            )
+            emotion_weight_sum = sum(emotion_weights.values())
+
+        if self.is_2_5:
+            text = normalize_case(apply_pronunciation_annotations(text), lang)
+        segments = self._split_segments(text, lang, max_text_tokens_per_segment)
+        silence_samples = max(0, int(self.sample_rate * interval_silence / 1000))
+
+        if stream:
+            for index, segment in enumerate(segments):
+                segment_start = time.perf_counter()
+                audio = self._synthesize_segment(
+                    segment,
+                    lang=lang,
+                    spk_cond=hs17,
+                    emo_cond=hs17,
+                    style=style,
+                    prompt_condition=prompt_condition,
+                    ref_mel=ref_mel,
+                    emotion_override=emotion_override,
+                    emotion_weight_sum=emotion_weight_sum,
+                    emo_alpha=float(emo_alpha),
+                    repetition_penalty=float(repetition_penalty),
+                    diffusion_steps=int(diffusion_steps),
+                    diffusion_cfg_rate=float(diffusion_cfg_rate),
+                    duration_factor=float(duration_factor),
+                    speed=float(speed),
+                )
+                if index < len(segments) - 1 and silence_samples:
+                    audio = mx.concatenate(
+                        [audio, mx.zeros((silence_samples,), dtype=audio.dtype)]
+                    )
+                    mx.eval(audio)
+                yield self._result(
+                    audio,
+                    segment_start,
+                    segment_idx=index,
+                    is_streaming_chunk=True,
+                    is_final_chunk=index == len(segments) - 1,
+                )
+            return
+
+        chunks = []
+        for index, segment in enumerate(segments):
+            audio = self._synthesize_segment(
+                segment,
+                lang=lang,
+                spk_cond=hs17,
+                emo_cond=hs17,
+                style=style,
+                prompt_condition=prompt_condition,
+                ref_mel=ref_mel,
+                emotion_override=emotion_override,
+                emotion_weight_sum=emotion_weight_sum,
+                emo_alpha=float(emo_alpha),
+                repetition_penalty=float(repetition_penalty),
+                diffusion_steps=int(diffusion_steps),
+                diffusion_cfg_rate=float(diffusion_cfg_rate),
+                duration_factor=float(duration_factor),
+                speed=float(speed),
+            )
+            if index < len(segments) - 1 and silence_samples:
+                audio = mx.concatenate(
+                    [audio, mx.zeros((silence_samples,), dtype=audio.dtype)]
+                )
+            chunks.append(audio)
+        audio = mx.concatenate(chunks, axis=0) if len(chunks) > 1 else chunks[0]
+        mx.eval(audio)
+        yield self._result(
+            audio,
+            total_start,
+            is_final_chunk=True,
+        )
 
     def vocode(self, mel: mx.array) -> mx.array:
         """Run the BigVGAN vocoder.

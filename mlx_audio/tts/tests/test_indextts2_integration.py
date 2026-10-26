@@ -48,6 +48,36 @@ class TestIndexTTS25Integration(unittest.TestCase):
         self.assertGreater(audio.size, 0)
         self.assertTrue(np.isfinite(audio).all())
 
+    def test_segment_streaming(self):
+        import numpy as np
+
+        from mlx_audio.tts import load
+
+        model = load(os.environ["MLX_INDEXTTS2_MODEL"], strict=True)
+        chunks = list(
+            model.generate(
+                "Hello from IndexTTS. This is another sentence. And a final one.",
+                ref_audio=os.environ["MLX_INDEXTTS2_REF_AUDIO"],
+                language="en",
+                stream=True,
+                max_text_tokens_per_segment=8,
+                diffusion_steps=8,
+            )
+        )
+        self.assertGreater(len(chunks), 1)
+        self.assertEqual(
+            [chunk.segment_idx for chunk in chunks], list(range(len(chunks)))
+        )
+        self.assertTrue(all(chunk.is_streaming_chunk for chunk in chunks))
+        self.assertEqual(
+            [chunk.is_final_chunk for chunk in chunks],
+            [False] * (len(chunks) - 1) + [True],
+        )
+        for chunk in chunks:
+            audio = np.array(chunk.audio, dtype=np.float32)
+            self.assertGreater(audio.size, 0)
+            self.assertTrue(np.isfinite(audio).all())
+
 
 if __name__ == "__main__":
     unittest.main()

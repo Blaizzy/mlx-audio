@@ -94,6 +94,27 @@ Emotion control requires `feat1.pt`/`feat2.pt` to be converted into
 `emotion_matrices.safetensors`; text emotion additionally requires the
 `qwen0.6bemo4-merge` directory from the official 2.5 checkpoint.
 
+Long text can be streamed by completed text segment. The first chunk is yielded
+as soon as its segment is synthesized, instead of waiting for the full text:
+
+```python
+for chunk in model.generate(
+    "First sentence. Second sentence. Third sentence.",
+    ref_audio="reference.wav",
+    language="en",
+    stream=True,
+    max_text_tokens_per_segment=120,
+    interval_silence=200,
+):
+    play(chunk.audio)
+    if chunk.is_final_chunk:
+        break
+```
+
+Each chunk carries `segment_idx`, `is_streaming_chunk=True`, and
+`is_final_chunk=True` only for the last segment. With `stream=False`, all
+segments are concatenated into one result.
+
 Pronunciation overrides use the upstream syntax:
 
 ```python
@@ -116,6 +137,8 @@ The 2.5 path was smoke-tested on Apple Silicon with the existing
 - `duration_factor=1.5`: 4.249 s
 - Explicit 8-D emotion vector (`happy=1.0`, `emo_alpha=0.8`): 2.752 s, finite
 - Qwen3 text emotion ("非常开心、激动，终于重逢"): 2.786 s, finite
+- Segment streaming (3 sentences, max 20 tokens/segment): 2 chunks, first chunk
+  25.39 s, full non-streaming 54.35 s
 - Unit/regression tests: 20 passed
 
 IndexTTS2 (`2.0`) keeps the original PR's conformer + GPT-latent path, but no
@@ -125,7 +148,7 @@ IndexTTS2 (`2.0`) keeps the original PR's conformer + GPT-latent path, but no
 
 - No `mlx-community` converted checkpoint is published yet; convert the official
   PyTorch weights locally.
-- Streaming generation is not implemented.
+- Streaming is segment-level; audio is not emitted inside a single long segment.
 - Emotion control needs the converted `emotion_matrices.safetensors`; text
   emotion additionally needs the Qwen3 emotion checkpoint.
 - IndexTTS-2.5 requires `tiktoken`; IndexTTS2 uses the SentencePiece
