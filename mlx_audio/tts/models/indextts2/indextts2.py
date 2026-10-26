@@ -14,12 +14,7 @@ from mlx_audio.tts.models.base import GenerationResult, adjust_speed
 from mlx_audio.utils import load_audio
 
 from .config import ModelConfig
-from .emotion import (
-    CN_TO_EN,
-    EMOTION_KEYS,
-    QwenEmotion,
-    QwenEmotionConfig,
-)
+from .emotion import CN_TO_EN, EMOTION_KEYS, QwenEmotion, QwenEmotionConfig
 from .s2mel import S2MelConfig, S2MelModel
 from .semantic_codec import EnhancedCodec
 from .text_frontend import (
