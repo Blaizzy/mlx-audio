@@ -152,10 +152,13 @@ class Model(nn.Module):
         """
         raise NotImplementedError
 
+    def _log_mel_spectrogram(self, audio_data: mx.array) -> mx.array:
+        return log_mel_spectrogram(audio_data, self.preprocessor_config)
+
     def decode_chunk(
         self, audio_data: mx.array, verbose: bool = False
     ) -> AlignedResult:
-        mel = log_mel_spectrogram(audio_data, self.preprocessor_config)
+        mel = self._log_mel_spectrogram(audio_data)
         result = self.decode(mel)[0]
         if verbose:
             print(result.text)
@@ -244,7 +247,7 @@ class Model(nn.Module):
                 chunk_callback(end, len(audio_data))
 
             chunk_audio = audio_data[start:end]
-            chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
+            chunk_mel = self._log_mel_spectrogram(chunk_audio)
 
             chunk_result = self.decode(chunk_mel)[0]
 
@@ -353,7 +356,7 @@ class Model(nn.Module):
             is_last = end >= total_samples
 
             chunk_audio = audio_data[start:end]
-            chunk_mel = log_mel_spectrogram(chunk_audio, self.preprocessor_config)
+            chunk_mel = self._log_mel_spectrogram(chunk_audio)
 
             chunk_result = self.decode(chunk_mel)[0]
 

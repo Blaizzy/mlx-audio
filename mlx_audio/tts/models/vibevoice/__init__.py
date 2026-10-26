@@ -3,6 +3,7 @@ from .config import (
     DiffusionHeadConfig,
     ModelConfig,
     Qwen2DecoderConfig,
+    SemanticTokenizerConfig,
 )
 from .vibevoice import Model
 
@@ -12,4 +13,5 @@ __all__ = [
     "AcousticTokenizerConfig",
     "DiffusionHeadConfig",
     "Qwen2DecoderConfig",
+    "SemanticTokenizerConfig",
 ]

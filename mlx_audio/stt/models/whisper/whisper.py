@@ -113,9 +113,15 @@ class HFTokenizerWrapper:
         return self.hf_tokenizer.convert_tokens_to_ids("<|notimestamps|>")
 
     @property
-    def no_speech(self) -> int:
-        """No speech token."""
-        return self.hf_tokenizer.convert_tokens_to_ids("<|nospeech|>")
+    def no_speech(self) -> Optional[int]:
+        """No speech token (named <|nocaptions|> in pre-large-v3 vocabularies)."""
+        # convert_tokens_to_ids returns unk (== eot) for a missing token, which
+        # would put eot into the suppress list and decoding would never stop.
+        vocab = self.hf_tokenizer.get_vocab()
+        for name in ("<|nospeech|>", "<|nocaptions|>"):
+            if name in vocab:
+                return vocab[name]
+        return None
 
     @property
     def transcribe(self) -> int:
@@ -183,10 +189,14 @@ class HFTokenizerWrapper:
 
         miscellaneous = set("♩♪♫♬♭♮♯")
 
-        result = {self.encode(" -")[0], self.encode(" '")[0]}
+        result = set()
+        for seed in (" -", " '"):
+            tokens = self.encode(seed)
+            if tokens:
+                result.add(tokens[0])
         for symbol in symbols + list(miscellaneous):
             for tokens in [self.encode(symbol), self.encode(" " + symbol)]:
-                if len(tokens) == 1 or symbol in miscellaneous:
+                if tokens and (len(tokens) == 1 or symbol in miscellaneous):
                     result.add(tokens[0])
 
         return tuple(sorted(result))

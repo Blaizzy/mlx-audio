@@ -151,8 +151,8 @@ def _model_preserves_ref_audio_paths(model: nn.Module) -> bool:
 def generate_audio(
     text: str,
     model: Optional[Union[str, nn.Module]] = None,
-    max_tokens: Optional[int] = 1200,
-    voice: str = "af_heart",
+    max_tokens: Optional[int] = None,
+    voice: Optional[str] = None,
     prompt: Optional[str] = None,
     instruct: Optional[str] = None,
     speed: float = 1.0,
@@ -171,15 +171,20 @@ def generate_audio(
     join_audio: bool = False,
     play: bool = False,
     verbose: bool = True,
-    temperature: float = 0.7,
+    temperature: Optional[float] = None,
     stream: bool = False,
     streaming_interval: float = 2.0,
     save: bool = False,
     use_zero_spk_emb: bool = False,
+    top_p: Optional[float] = None,
+    top_k: Optional[int] = None,
+    repetition_penalty: Optional[float] = None,
     **kwargs,
 ) -> None:
     """
     Generates audio from text using a specified TTS model.
+
+    Voice and sampling options left as None use the model's defaults.
 
     Parameters:
     - text (str): The input text to be converted to speech.
@@ -187,6 +192,10 @@ def generate_audio(
     - voice (str): The voice style to use (also used as speaker for Qwen3-TTS models).
     - instruct (str): Instruction for emotion/style (CustomVoice) or voice description (VoiceDesign).
     - temperature (float): The temperature for the model.
+    - max_tokens (int): Maximum number of tokens to generate.
+    - top_p (float): Nucleus sampling threshold.
+    - top_k (int): Top-k sampling cutoff.
+    - repetition_penalty (float): Penalty for repeated tokens.
     - speed (float): Playback speed multiplier.
     - lang_code (str): The language code.
     - ref_audio (mx.array): Reference audio you would like to clone the voice from.
@@ -323,7 +332,6 @@ def generate_audio(
             lang_code=lang_code,
             ref_audio=ref_audio,
             ref_text=ref_text,
-            temperature=temperature,
             verbose=verbose,
             stream=stream,
             streaming_interval=streaming_interval,
@@ -331,10 +339,20 @@ def generate_audio(
             use_zero_spk_emb=use_zero_spk_emb,
             **extra_kwargs,
         )
-        if voice is not None:
-            gen_kwargs["voice"] = voice
-        if max_tokens is not None:
-            gen_kwargs["max_tokens"] = max_tokens
+        gen_kwargs.update(
+            {
+                key: value
+                for key, value in dict(
+                    voice=voice,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                ).items()
+                if value is not None
+            }
+        )
         if cfg_scale is not None:
             gen_kwargs["cfg_scale"] = cfg_scale
         if ddpm_steps is not None:
@@ -356,7 +374,9 @@ def generate_audio(
             if play:
                 player.queue_audio(result.audio)
 
-            if save_streamed_audio:
+            # An empty final chunk only marks the end of the stream; saved per
+            # segment, it would add a file without audio.
+            if save_streamed_audio and result.audio.size > 0:
                 if join_audio:
                     streamed_audio_chunks.append(result.audio)
                 else:
@@ -462,7 +482,7 @@ def parse_args():
         "--max_tokens",
         type=int,
         default=None,
-        help="Maximum number of tokens to generate",
+        help="Maximum number of tokens to generate (defaults to the model's value)",
     )
     parser.add_argument(
         "--text",
@@ -474,7 +494,7 @@ def parse_args():
         "--voice",
         type=str,
         default=None,
-        help="Voice/speaker name (e.g., Vivian, Ryan for Qwen3-TTS CustomVoice models)",
+        help="Voice/speaker name (defaults to the model's voice, if available)",
     )
     parser.add_argument(
         "--prompt",
@@ -584,7 +604,10 @@ def parse_args():
         help="STT model to use to transcribe reference audio",
     )
     parser.add_argument(
-        "--temperature", type=float, default=0.7, help="Temperature for the model"
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature (defaults to the model's value)",
     )
     parser.add_argument(
         "--sigma",
@@ -597,8 +620,18 @@ def parse_args():
         action="store_true",
         help="Optional model-specific zero speaker embedding mode (e.g., Ming Omni).",
     )
-    parser.add_argument("--top_p", type=float, default=0.9, help="Top-p for the model")
-    parser.add_argument("--top_k", type=int, default=50, help="Top-k for the model")
+    parser.add_argument(
+        "--top_p",
+        type=float,
+        default=None,
+        help="Top-p sampling threshold (defaults to the model's value)",
+    )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=None,
+        help="Top-k sampling cutoff (defaults to the model's value)",
+    )
     parser.add_argument(
         "--min_p",
         type=float,
@@ -608,8 +641,8 @@ def parse_args():
     parser.add_argument(
         "--repetition_penalty",
         type=float,
-        default=1.1,
-        help="Repetition penalty for the model",
+        default=None,
+        help="Repetition penalty (defaults to the model's value)",
     )
     parser.add_argument(
         "--stream",

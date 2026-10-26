@@ -70,7 +70,10 @@ def test_config_and_parameter_keys_match_upstream(vendored, upstream, make_args)
     vendored_args = make_args(vendored)
     upstream_args = make_args(upstream)
 
-    assert asdict(vendored_args) == asdict(upstream_args)
+    upstream_config = asdict(upstream_args)
+    if vendored is vendored_lfm2:
+        assert upstream_config.pop("intermediate_size") is None
+    assert asdict(vendored_args) == upstream_config
     assert parameter_shapes(vendored.Model(vendored_args)) == parameter_shapes(
         upstream.Model(upstream_args)
     )

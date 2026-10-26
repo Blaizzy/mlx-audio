@@ -12,6 +12,8 @@ from mlx_audio.utils import (
 )
 
 MODEL_REMAPPING = {
+    "bailing_moe_v3_audio": "ming_v3_audio",
+    "ming_v3_audio": "ming_v3_audio",
     "dialogue_sidon": "dialogue_sidon",
     "dialoguesidon": "dialogue_sidon",
     "deepfilter": "deepfilternet",
@@ -130,7 +132,19 @@ def load_model(
     MLX Audio loading contract with sensible defaults. Model-specific
     ``from_pretrained(...)`` paths remain available for custom behavior.
     """
+    version = kwargs.pop("version", None)
+    subfolder = kwargs.pop("subfolder", None)
+    if version is not None:
+        if version not in (1, 2, 3):
+            raise ValueError("Unsupported version. Choose from 1, 2, or 3.")
+        subfolder = f"v{version}"
+    if subfolder is not None:
+        model_path = get_model_path(str(model_path), **kwargs) / subfolder
+        if not model_path.is_dir():
+            raise FileNotFoundError(f"Model subfolder not found: {model_path}")
     model_type = _resolve_model_type(model_path, **kwargs)
+    if version is not None and model_type != "deepfilternet":
+        raise ValueError("version selection is only supported for DeepFilterNet")
     if model_type == "moshi":
         from mlx_audio.sts.models.moshi import MoshiSTSModel
 
@@ -142,6 +156,7 @@ def load_model(
         )
 
     if model_type in {
+        "ming_v3_audio",
         "dialogue_sidon",
         "lfm_audio",
         "mimo_audio",

@@ -191,13 +191,14 @@ class TranscriptionRequest(BaseModel):
     model: str
     language: str | None = None
     verbose: bool = False
-    max_tokens: int = 1024
+    max_tokens: int | None = None
     chunk_duration: float = 30.0
     frame_threshold: int = 25
     stream: bool = False
     context: str | None = None
     prefill_step_size: int = 2048
     text: str | None = None
+    prompt: str | None = None
     word_timestamps: bool = False
     timestamp_granularities: Optional[str] = None
 
@@ -278,14 +279,24 @@ async def _preflight_model_load(model_name: str) -> None:
 
 _STT_EXTRA_KWARGS = {"word_timestamps", "timestamp_granularities"}
 
+# Floor for max_tokens when the client does not send one. Models whose own
+# generate() default is larger (e.g. Qwen3-ASR's 8192, which is one budget for
+# every chunk of the file) keep that default, so long audio is not truncated.
+_STT_MIN_DEFAULT_MAX_TOKENS = 1024
+
+
+def _default_stt_max_tokens(signature: inspect.Signature) -> int:
+    model_default = signature.parameters["max_tokens"].default
+    if isinstance(model_default, int) and model_default > _STT_MIN_DEFAULT_MAX_TOKENS:
+        return model_default
+    return _STT_MIN_DEFAULT_MAX_TOKENS
+
 
 class STTExecutionAdapter(BaseModelExecutionAdapter):
     def run_serial(self, request: InferenceRequest) -> None:
         payload: TranscriptionTaskPayload = request.payload
-        _, ext = os.path.splitext(payload.filename or "")
-        suffix = ext or ".mp3"
-        tmp_path = f"/tmp/{time.time()}_{request.request_id}{suffix}"
-        audio_write(tmp_path, payload.audio, payload.sample_rate)
+        tmp_path = f"/tmp/{time.time()}_{request.request_id}.wav"
+        audio_write(tmp_path, payload.audio, payload.sample_rate, format="wav")
 
         try:
             stt_model = _load_model_for_inference(request.model_name)
@@ -298,6 +309,8 @@ class STTExecutionAdapter(BaseModelExecutionAdapter):
                 for key, value in gen_kwargs.items()
                 if key in signature.parameters or key in _STT_EXTRA_KWARGS
             }
+            if "max_tokens" in signature.parameters and "max_tokens" not in gen_kwargs:
+                gen_kwargs["max_tokens"] = _default_stt_max_tokens(signature)
 
             result = stt_model.generate(tmp_path, **gen_kwargs)
             if hasattr(result, "__iter__") and hasattr(result, "__next__"):
@@ -437,6 +450,23 @@ class _TTSAdapterContinuousSession:
             self._emitted_audio.discard(sequence_id)
 
 
+_SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "repetition_penalty")
+
+
+def _resolve_sampling_params(model, speech_request: SpeechRequest) -> dict[str, Any]:
+    """Use explicit request values, then model config, then request defaults."""
+    params = {name: getattr(speech_request, name) for name in _SAMPLING_FIELDS}
+    generate_config = getattr(model, "generate_config", None)
+    if isinstance(generate_config, dict):
+        for name in _SAMPLING_FIELDS:
+            if (
+                name not in speech_request.model_fields_set
+                and generate_config.get(name) is not None
+            ):
+                params[name] = generate_config[name]
+    return params
+
+
 class TTSExecutionAdapter(BaseModelExecutionAdapter):
     _REQUEST_MODEL_ATTR = "_mlx_audio_loaded_model"
 
@@ -456,11 +486,9 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
 
     def _build_batch_options(self, request: InferenceRequest) -> TTSBatchOptions:
         speech_request: SpeechRequest = request.payload.request
+        model = self._get_model_for_request(request)
         return TTSBatchOptions(
-            temperature=speech_request.temperature,
-            top_p=speech_request.top_p,
-            top_k=speech_request.top_k,
-            repetition_penalty=speech_request.repetition_penalty,
+            **_resolve_sampling_params(model, speech_request),
             max_tokens=speech_request.max_tokens,
             lang_code=speech_request.lang_code,
             stream=speech_request.stream,
@@ -569,6 +597,9 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             speech_request.top_p,
             speech_request.top_k,
             speech_request.repetition_penalty,
+            # Omitted sampling fields may resolve to the model's generation
+            # config, so only requests that set the same fields can share a batch.
+            tuple(name in speech_request.model_fields_set for name in _SAMPLING_FIELDS),
             speech_request.max_tokens,
             speech_request.ref_audio,
             speech_request.ref_text,
@@ -642,10 +673,7 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             "lang_code": speech_request.lang_code,
             "ref_audio": ref_audio,
             "ref_text": speech_request.ref_text,
-            "temperature": speech_request.temperature,
-            "top_p": speech_request.top_p,
-            "top_k": speech_request.top_k,
-            "repetition_penalty": speech_request.repetition_penalty,
+            **_resolve_sampling_params(model, speech_request),
             "stream": speech_request.stream,
             "streaming_interval": speech_request.streaming_interval,
             "max_tokens": speech_request.max_tokens,
@@ -659,12 +687,15 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
                 return
 
             if speech_request.stream:
-                self._emit_audio(
-                    request,
-                    speech_request,
-                    result.audio,
-                    result.sample_rate,
-                )
+                # An empty final chunk only marks the end of the stream; encoded,
+                # it would send a container header without audio.
+                if result.audio.size > 0:
+                    self._emit_audio(
+                        request,
+                        speech_request,
+                        result.audio,
+                        result.sample_rate,
+                    )
             else:
                 audio_chunks.append(result.audio)
                 if sample_rate is None:
@@ -720,12 +751,10 @@ class TTSExecutionAdapter(BaseModelExecutionAdapter):
             "pitches": pitches,
             "ref_audios": ref_audios,
             "ref_texts": ref_texts,
-            "temperature": first_speech_request.temperature,
+            # Requests in one batch share a batch_key, so they resolve alike.
+            **_resolve_sampling_params(model, first_speech_request),
             "lang_code": first_speech_request.lang_code,
             "max_tokens": first_speech_request.max_tokens,
-            "top_k": first_speech_request.top_k,
-            "top_p": first_speech_request.top_p,
-            "repetition_penalty": first_speech_request.repetition_penalty,
             "stream": False,
             "verbose": first_speech_request.verbose,
         }
@@ -1026,13 +1055,14 @@ async def stt_transcriptions(
     model: str = Form(...),
     language: Optional[str] = Form(None),
     verbose: bool = Form(False),
-    max_tokens: int = Form(1024),
+    max_tokens: Optional[int] = Form(None),
     chunk_duration: float = Form(30.0),
     frame_threshold: int = Form(25),
     stream: bool = Form(False),
     context: Optional[str] = Form(None),
     prefill_step_size: int = Form(2048),
     text: Optional[str] = Form(None),
+    prompt: Optional[str] = Form(None),
     response_format: str = Form("ndjson"),
     word_timestamps: bool = Form(False),
     timestamp_granularities: Optional[str] = Form(None),
@@ -1065,6 +1095,7 @@ async def stt_transcriptions(
         context=context,
         prefill_step_size=prefill_step_size,
         text=text,
+        prompt=prompt,
         word_timestamps=word_timestamps,
         timestamp_granularities=timestamp_granularities,
     )

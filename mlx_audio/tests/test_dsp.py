@@ -378,6 +378,31 @@ def test_chunked_resample_matches_whole_buffer(orig):
     np.testing.assert_array_equal(actual, expected)
 
 
+@pytest.mark.parametrize("orig", [8000, 16000, 44100])
+def test_chunked_resample_stops_at_max_output_frames(orig):
+    from mlx_audio.resample import resample_audio_chunks
+    from mlx_audio.utils import resample_audio
+
+    target = 16000
+    rng = np.random.default_rng(orig)
+    audio = rng.normal(0.0, 0.1, size=(10 * orig, 2)).astype(np.float32)
+    consumed = 0
+
+    def chunks():
+        nonlocal consumed
+        for start in range(0, len(audio), orig // 10):
+            consumed += 1
+            yield audio[start : start + orig // 10]
+
+    expected = resample_audio(audio, orig, target, axis=0)[:target]
+    actual = resample_audio_chunks(
+        chunks(), orig, target, len(audio), max_output_frames=target
+    )
+
+    np.testing.assert_array_equal(actual, expected)
+    assert consumed <= 20  # of 100 chunks
+
+
 def test_integrated_loudness_validation_matches_previous_behavior():
     """Verify the public helper keeps the old validation semantics."""
     from mlx_audio.dsp import integrated_loudness

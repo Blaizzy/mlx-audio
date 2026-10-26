@@ -6,11 +6,13 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 
 | Model | Size | Languages | Voice Cloning | Streaming | Key Features |
 |-------|------|-----------|:---:|:---:|--------------|
+| [**Ming-3.0 TTS Tiny**](ming3-tiny.md) | 7.9B backbone (A1.3B) | ZH, EN, DE, ES, FR, KO, JA | Yes | -- | Built-in voices, style control, acoustic continuation, podcast; [BF16](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
 | [**Kokoro**](kokoro.md) | 82M | EN, JA, ZH, FR, ES, IT, PT, HI | -- | -- | Fast, 54 voice presets, speed control |
 | [**KittenTTS**](https://huggingface.co/collections/mlx-community/kittentts) | 14.6M / 35.5M / 73.8M | EN | -- | -- | KittenTTS 0.8 nano/micro/mini, compact edge-friendly TTS, speed control |
 | [**Qwen3-TTS**](qwen3-tts.md) | 0.6B / 1.7B | ZH, EN, JA, KO, + more | Yes | Yes | Voice cloning, emotion control, voice design, batch generation |
 | [**Breeze TTS 2**](breeze-tts.md) | 1B | EN, ZH | Yes | Yes | Voice design, cloning, direction, and inline vocal events |
 | [**Higgs Audio v3**](higgs_audio_v3.md) | 4B | 100 languages | Yes | -- | Conversational TTS, inline emotion/style/prosody controls, bundled Higgs codec |
+| [**Fish Audio Drama 3**](fish-drama3.md) | 35B (A3B) | 83 languages | Yes | Yes | Up to 16 speakers per text, inline delivery cues, long-form chunking |
 | [**MOSS-TTS**](moss-tts.md) | 8B / 1.7B | 31 languages | Yes | -- | Delay-pattern and local-transformer RVQ generation, full MOSS Audio Tokenizer |
 | [**OmniVoice**](omnivoice.md) | 0.6B backbone + HiggsAudio tokenizer | 646+ languages | Yes | -- | Zero-shot multilingual cloning, nonverbal tags, CMU + pinyin controls |
 | [**Voxtral TTS**](voxtral-tts.md) | 4B | EN, FR, ES, DE, IT, PT, NL, AR, HI | -- | Yes | 20 voice presets, 9 languages, chunked streaming output |

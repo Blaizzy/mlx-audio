@@ -243,11 +243,18 @@ class Model(Qwen3Model):
         return mx.concatenate(padded, axis=0)
 
     def generate_result(
-        self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs
+        self,
+        audio,
+        start_time: float,
+        token_count: int,
+        segment_idx: int,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
+        **kwargs,
     ) -> GenerationResult:
         """Helper to create a GenerationResult from audio."""
         samples = audio.shape[0] if audio is not None else 0
-        assert samples > 0, "No audio generated"
+        assert samples > 0 or is_final_chunk, "No audio generated"
 
         sample_rate = self.config.sample_rate
         audio_duration_seconds = samples / sample_rate
@@ -286,6 +293,8 @@ class Model(Qwen3Model):
             },
             processing_time_seconds=elapsed_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
         )
 
     def generate(
@@ -327,6 +336,7 @@ class Model(Qwen3Model):
         # Process each prompt segment individually for memory efficiency
         for segment_idx, segment_prompt in enumerate(prompts):
             time_start = time.perf_counter()
+            is_last_segment = segment_idx == len(prompts) - 1
 
             # Prepare input_ids for this segment (with zeroprompt if voice cloning)
             input_ids = self.prepare_input_ids(
@@ -338,6 +348,7 @@ class Model(Qwen3Model):
             generated_token_count = 0
             yielded_token_count = 0
             yielded_frame_count = 0
+            yielded_final = False
 
             # Generate tokens for this segment
             for i, response in enumerate(
@@ -373,6 +384,7 @@ class Model(Qwen3Model):
                                 start_time=time_start,
                                 token_count=generated_token_count - yielded_token_count,
                                 segment_idx=segment_idx,
+                                is_streaming_chunk=True,
                             )
                             yielded_token_count = generated_token_count
                             yielded_frame_count = audio.shape[0]
@@ -395,7 +407,21 @@ class Model(Qwen3Model):
                         start_time=time_start,
                         token_count=generated_token_count - yielded_token_count,
                         segment_idx=segment_idx,
+                        is_streaming_chunk=stream,
+                        is_final_chunk=stream and is_last_segment,
                     )
+                    yielded_final = stream and is_last_segment
+
+            # The last audio may already have gone out as a partial chunk.
+            if stream and is_last_segment and not yielded_final:
+                yield self.generate_result(
+                    audio=mx.zeros((0,), dtype=mx.float32),
+                    start_time=time_start,
+                    token_count=generated_token_count - yielded_token_count,
+                    segment_idx=segment_idx,
+                    is_streaming_chunk=True,
+                    is_final_chunk=True,
+                )
 
             # Clear cache after each segment to avoid memory buildup
             mx.clear_cache()

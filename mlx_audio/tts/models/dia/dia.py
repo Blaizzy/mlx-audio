@@ -9,13 +9,14 @@ from huggingface_hub import hf_hub_download
 from tqdm import trange
 
 from mlx_audio.codec.models import DAC
+from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.lm.sample_utils import make_sampler
 from mlx_audio.utils import load_audio
 
 from ..base import GenerationResult
 from .audio import audio_to_codebook, codebook_to_audio
 from .config import DiaConfig
-from .layers import DiaModel, KVCache
+from .layers import DiaModel
 
 
 def _sample_next_token(
@@ -371,22 +372,14 @@ class Model(nn.Module):
         )  # Shape: (B, S, E)
 
         # 3. Prepare Decoder Inputs
-        # 3-1. Allocate KV Cache (Static)
-        decoder_cross_attention_cache: list[KVCache] = (
+        decoder_cross_attention_cache = (
             self.model.decoder.precompute_cross_attention_kv(
-                max_tokens, encoder_out, src_positions_BxS
+                encoder_out, src_positions_BxS
             )
         )
-
-        decoder_self_attention_cache: list[KVCache] = []
-        for _ in range(self.model.decoder.num_layers):
-            decoder_self_attention_cache.append(
-                KVCache(
-                    self.config.model.decoder.gqa_query_heads,
-                    max_tokens,
-                    self.config.model.decoder.gqa_head_dim,
-                )
-            )
+        decoder_self_attention_cache = [
+            KVCache() for _ in range(self.model.decoder.num_layers)
+        ]
 
         # 3-2. Initialize Decoder Inputs
         generated_BxTxC = mx.full(
@@ -397,6 +390,7 @@ class Model(nn.Module):
 
         current_step = 0
         prompt_len_inc_bos = 1  # Start with BOS length
+        prefill_logits = None
 
         # 3-3. Load Audio Prompt (if provided)
         if ref_audio is not None:
@@ -432,7 +426,7 @@ class Model(nn.Module):
                 is_causal=False,
             )
 
-            _ = self.model.decoder(
+            prefill_logits = self.model.decoder(
                 tgt_ids_BxTxC=generated_BxTxC,
                 encoder_out=encoder_out,
                 tgt_positions=prefill_tgt_pos,
@@ -442,7 +436,7 @@ class Model(nn.Module):
                 cross_attn_mask=prefill_cross_attn_mask,
                 self_attention_cache=decoder_self_attention_cache,
                 cross_attention_cache=decoder_cross_attention_cache,
-            )
+            )[:, -1:, :, :]
 
             current_step = prefill_len - 1
 
@@ -486,15 +480,19 @@ class Model(nn.Module):
                 dtype=mx.int32,
             )
 
-            logits_Bx1xCxV = decode_step(
-                tgt_ids_Bx1xC=tgt_ids_Bx1xC,
-                tgt_pos_Bx1=tgt_pos_Bx1,
-                encoder_out=encoder_out,
-                self_attn_mask=None,
-                cross_attn_mask=decoder_cross_attn_mask,
-                self_attention_cache=decoder_self_attention_cache,
-                cross_attention_cache=decoder_cross_attention_cache,
-            )
+            if prefill_logits is not None:
+                logits_Bx1xCxV = prefill_logits
+                prefill_logits = None
+            else:
+                logits_Bx1xCxV = decode_step(
+                    tgt_ids_Bx1xC=tgt_ids_Bx1xC,
+                    tgt_pos_Bx1=tgt_pos_Bx1,
+                    encoder_out=encoder_out,
+                    self_attn_mask=None,
+                    cross_attn_mask=decoder_cross_attn_mask,
+                    self_attention_cache=decoder_self_attention_cache,
+                    cross_attention_cache=decoder_cross_attention_cache,
+                )
 
             V = self.config.model.tgt_vocab_size
             logits_last_BxCxV = logits_Bx1xCxV[:, -1, :, :]  # B, C, V
@@ -548,6 +546,8 @@ class Model(nn.Module):
                 [before_update, new_token, after_update], axis=1
             )
 
+            generation_step_index = step - current_step + 1
+
             if not eos_detected_channel_0 and pred_C[0] == audio_eos_value:
                 print(f"EOS detected at step {step} for channel 0")
                 eos_detected_channel_0 = True
@@ -580,8 +580,6 @@ class Model(nn.Module):
                 eos_countdown -= 1
                 if eos_countdown == 0:
                     break
-
-            generation_step_index = step - current_step + 1
 
         output_codes = generated_BxTxC[:, prompt_len_inc_bos : step + 1, :]
         generated_codes = output_codes[0]

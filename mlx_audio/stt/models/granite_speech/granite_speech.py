@@ -1,4 +1,5 @@
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,7 +24,279 @@ LANGUAGE_CODES = {
     "es": "Spanish",
     "pt": "Portuguese",
     "ja": "Japanese",
+    "it": "Italian",
+    "zh": "Mandarin",
 }
+
+# Verbatim from the granite-speech-4.1-2b-plus model card. IBM's reference code
+# sends this system turn; without one the plus chat template substitutes a
+# generic assistant message the model was not trained against.
+PLUS_SYSTEM_PROMPT = (
+    "Knowledge Cutoff Date: April 2024.\nToday's Date: December 19, 2024.\n"
+    "You are Granite, developed by IBM. You are a helpful AI assistant"
+)
+
+# Task prompts verbatim from the model card. An unfamiliar or malformed prompt
+# makes the model silently fall back to plain transcription, so these must not
+# be reworded.
+TASK_PROMPTS = {
+    "asr": "can you transcribe the speech into a written format?",
+    "saa": (
+        "Speaker attribution: Transcribe and denote who is speaking by adding "
+        "[Speaker 1]: and [Speaker 2]: tags before speaker turns."
+    ),
+    "timestamps": (
+        "Timestamps: Transcribe the speech. After each word, add a timestamp tag "
+        "showing the end time in centiseconds, e.g. hello [T:45] world [T:82]"
+    ),
+}
+
+_SPEAKER_RE = re.compile(r"\[Speaker (\d+)\]:")
+_TS_RE = re.compile(r"\[T:(\d+)\]")
+
+
+class UnsupportedTranscriptionTask(ValueError):
+    """The loaded checkpoint cannot perform the requested transcription task."""
+
+
+class StructuredTranscriptError(RuntimeError):
+    """A rich transcription did not contain the requested structured syntax."""
+
+    def __init__(self, message: str, *, raw_text: str) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+
+
+def _normalize_task(task: str, *, word_timestamps: bool = False) -> str:
+    normalized = (task or "asr").lower().strip()
+    if normalized not in TASK_PROMPTS:
+        raise ValueError(
+            f"Unknown task {task!r}; expected one of {sorted(TASK_PROMPTS)}"
+        )
+    if word_timestamps:
+        if normalized not in ("asr", "timestamps"):
+            raise ValueError(f"word_timestamps=True conflicts with task={normalized!r}")
+        normalized = "timestamps"
+    return normalized
+
+
+def _parse_saa(text: str) -> List[dict]:
+    """Parse ``[Speaker N]:`` turns without inventing speaker metadata."""
+    matches = list(_SPEAKER_RE.finditer(text))
+    if not matches:
+        raise StructuredTranscriptError(
+            "Granite speaker-attribution mode produced no [Speaker N]: tags. The "
+            "model may have fallen back to plain ASR.",
+            raw_text=text,
+        )
+    if text[: matches[0].start()].strip():
+        raise StructuredTranscriptError(
+            "Granite SAA output begins with unattributed text before the first "
+            "[Speaker N]: tag.",
+            raw_text=text,
+        )
+
+    seen: List[int] = []
+    segments: List[dict] = []
+    for index, match in enumerate(matches):
+        speaker_id = int(match.group(1))
+        body_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.end() : body_end].strip()
+        if not body:
+            raise StructuredTranscriptError(
+                f"[Speaker {speaker_id}]: has no associated transcript text.",
+                raw_text=text,
+            )
+        if speaker_id not in seen:
+            expected = len(seen) + 1
+            if speaker_id != expected:
+                raise StructuredTranscriptError(
+                    "SAA speakers must be introduced in order: "
+                    f"expected Speaker {expected}, got Speaker {speaker_id}.",
+                    raw_text=text,
+                )
+            seen.append(speaker_id)
+        segments.append({"speaker_id": speaker_id, "text": body})
+
+    return segments
+
+
+def _resolve_timestamp_centiseconds(value: str, previous_cs: Optional[int]) -> int:
+    """Resolve a modulo-1000 timestamp while enforcing monotonic output."""
+    current_cs = int(value)
+    if current_cs >= 1000:
+        if previous_cs is not None and current_cs < previous_cs:
+            raise ValueError(
+                "Absolute Granite timestamp moved backwards: "
+                f"{current_cs} < {previous_cs} centiseconds."
+            )
+        return current_cs
+    if previous_cs is None:
+        return current_cs
+
+    current_cs += (previous_cs // 1000) * 1000
+    while current_cs < previous_cs:
+        current_cs += 1000
+    return current_cs
+
+
+def _timestamp_items(text: str) -> List[Tuple[str, str]]:
+    """Return validated ``(word, timestamp)`` pairs for one transcript string."""
+    tags = _TS_RE.findall(text)
+    if not tags:
+        raise StructuredTranscriptError(
+            "Granite timestamp mode produced no [T:N] tags. The model may have "
+            "fallen back to plain ASR.",
+            raw_text=text,
+        )
+
+    parts = _TS_RE.split(text)
+    trailing = parts[-1].strip()
+    if trailing:
+        raise StructuredTranscriptError(
+            "Granite timestamp output ends with content lacking a [T:N] tag: "
+            f"{trailing!r}.",
+            raw_text=text,
+        )
+
+    items: List[Tuple[str, str]] = []
+    for raw_token, raw_timestamp in zip(parts[0::2], tags):
+        token = raw_token.strip()
+        if not token:
+            raise StructuredTranscriptError(
+                f"[T:{raw_timestamp}] has no preceding word or '_' marker.",
+                raw_text=text,
+            )
+        if token != "_" and len(token.split()) != 1:
+            raise StructuredTranscriptError(
+                "Expected exactly one word or '_' before each timestamp tag, "
+                f"but {token!r} precedes [T:{raw_timestamp}]. One or more "
+                "timestamp tags are missing.",
+                raw_text=text,
+            )
+        items.append((token, raw_timestamp))
+    return items
+
+
+def _parse_timestamps(text: str) -> List[dict]:
+    """Parse a complete word-timestamp sequence without fabricating alignment."""
+    cursor = 0.0
+    previous_cs: Optional[int] = None
+    words = []
+
+    for token, raw_timestamp in _timestamp_items(text):
+        try:
+            current_cs = _resolve_timestamp_centiseconds(raw_timestamp, previous_cs)
+        except ValueError as exc:
+            raise StructuredTranscriptError(str(exc), raw_text=text) from exc
+        end = current_cs / 100.0
+        # "_" marks silence: it advances the clock but is not a word.
+        if token != "_":
+            words.append({"word": token, "start": cursor, "end": end})
+        cursor = end
+        previous_cs = current_cs
+
+    if not words:
+        return []
+    return [
+        {
+            "text": " ".join(word["word"] for word in words),
+            "start": words[0]["start"],
+            "end": words[-1]["end"],
+            "words": words,
+        }
+    ]
+
+
+def _resolve_prompt(
+    task: str,
+    prompt: str | None,
+    language: str | None,
+    *,
+    source_language: str | None = None,
+    hotwords: list[str] | None = None,
+    punctuate: bool = False,
+) -> str:
+    # Rich tasks are prompt-controlled, so their canonical prompts are part of
+    # the output-schema contract. Custom prompts remain available for ASR.
+    task = _normalize_task(task)
+    if task != "asr":
+        if prompt is not None:
+            raise ValueError(
+                f"prompt cannot override task={task!r}. Use task='asr' for an "
+                "unconstrained custom instruction."
+            )
+        if source_language is not None or hotwords or punctuate:
+            raise ValueError(
+                "source_language, hotwords, and punctuate require task='asr'."
+            )
+        return TASK_PROMPTS[task]
+
+    keywords = [str(word).strip() for word in (hotwords or []) if word is not None]
+    keywords = [word for word in keywords if word]
+    if prompt is not None:
+        instruction = prompt
+    elif language is not None:
+        lang_name = LANGUAGE_CODES.get(language.lower(), language)
+        suffix = " with proper punctuation and capitalization" if punctuate else ""
+        instruction = f"Translate the speech to {lang_name}{suffix}."
+    elif punctuate:
+        instruction = (
+            "transcribe the speech with proper punctuation and capitalization."
+        )
+    elif keywords:
+        instruction = "transcribe the speech to text."
+    else:
+        instruction = TASK_PROMPTS["asr"]
+
+    if source_language is not None:
+        if language is not None:
+            raise ValueError(
+                "source_language selects transcription; language selects translation. "
+                "Pass only one of them."
+            )
+        lang_name = LANGUAGE_CODES.get(source_language.lower(), source_language)
+        instruction = (
+            f"The speech is in {lang_name}. Transcribe it exactly; do not translate. "
+            f"{instruction}"
+        )
+    if keywords:
+        instruction += f" Keywords: {', '.join(keywords)}"
+    return instruction
+
+
+def _parse_segments(task: str, text: str) -> List[dict]:
+    if task == "saa":
+        return _parse_saa(text)
+    if task == "timestamps":
+        return _parse_timestamps(text)
+    return []
+
+
+def _make_repetition_penalty(
+    penalty: Optional[float], context_size: Optional[int] = None
+) -> list:
+    """Scale log-probabilities of previously seen tokens by ``penalty``.
+
+    The history includes the full prompt and output unless ``context_size``
+    limits it to the most recent tokens. Penalties greater than one suppress
+    low-confidence repeats more strongly than high-confidence repeats.
+    """
+    if penalty is None:
+        return []
+    if not isinstance(penalty, (int, float)) or penalty <= 0:
+        raise ValueError(f"repetition_penalty must be a positive float, got {penalty}")
+
+    def processor(tokens: mx.array, logits: mx.array) -> mx.array:
+        logits = logits.astype(mx.float32)
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        if context_size is not None:
+            tokens = tokens[-context_size:]
+        if len(tokens) > 0:
+            logprobs[:, tokens] = logprobs[:, tokens] * penalty
+        return logprobs
+
+    return [processor]
 
 
 @dataclass
@@ -35,6 +308,12 @@ class StreamingResult:
     language: str = "en"
     prompt_tokens: int = 0
     generation_tokens: int = 0
+    speculative_stats: dict | None = None
+
+
+@dataclass
+class SpeculativeSTTOutput(STTOutput):
+    speculative_stats: dict | None = None
 
 
 class BatchNorm1d(nn.Module):
@@ -125,7 +404,7 @@ class ConformerAttention(nn.Module):
             row_valid = mx.arange(C)[:, None] < remainder
             col_valid = mx.arange(C)[None, :] < remainder
             mask = ~(row_valid & col_valid)
-            mask_value = mx.array(mx.finfo(pos_attn.dtype).min)
+            mask_value = mx.array(mx.finfo(pos_attn.dtype).min, dtype=pos_attn.dtype)
             pos_attn_last = mx.where(
                 mask[None, None, None], mask_value, pos_attn[:, -1:, :, :, :]
             )
@@ -222,13 +501,28 @@ class CTCEncoder(nn.Module):
         )
         mx.eval(self._attention_dists)
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: mx.array, *, return_importance: bool = False):
         x = self.input_linear(x)
+        cat_layers = set(self.config.cat_hidden_layers or ())
+        exported = [x] if 0 in cat_layers else []
         for idx, layer in enumerate(self.layers, start=1):
             x = layer(x, attention_dists=self._attention_dists)
             if idx == self.num_layers // 2:
                 x_mid = self.out(x)
+                if return_importance:
+                    importance = (
+                        1.0 - mx.softmax(x_mid.astype(mx.float32), axis=-1)[:, :, 0]
+                    )
                 x = x + self.out_mid(mx.softmax(x_mid, axis=-1))
+            # Export after the mid-layer CTC injection: HF adds it in place to
+            # the tensor it has already exported, so an exported mid layer
+            # carries the injection.
+            if idx in cat_layers:
+                exported.append(x)
+        if exported:
+            x = mx.concatenate([*exported, x], axis=-1)
+        if return_importance:
+            return x, importance
         return x
 
 
@@ -435,10 +729,21 @@ class Model(nn.Module):
 
         self.audio_token_id = config.audio_token_index
         self._tokenizer = None
+        self._bpe_head_path = None
+        self._bpe_head = None
 
     @property
     def layers(self):
         return self.language_model.model.layers
+
+    @property
+    def is_plus(self) -> bool:
+        # mlx_audio.convert rewrites model_type to the module name
+        # ("granite_speech"), so detect the plus variant by its architectural
+        # fingerprint, which survives conversion.
+        return self.config.model_type == "granite_speech_plus" or bool(
+            self.config.encoder_config.cat_hidden_layers
+        )
 
     def make_cache(self) -> List[KVCache]:
         return [KVCache() for _ in range(len(self.layers))]
@@ -471,9 +776,16 @@ class Model(nn.Module):
         else:
             logits = self.language_model.lm_head(h)
 
+        # Apply the decoder's configured output scaling.
         return logits / self.language_model.logits_scaling
 
     def get_audio_features(self, input_features: mx.array) -> mx.array:
+        # Plus runs its encoder in the loaded weight dtype, as HF does. 4.0/4.1
+        # keep their established float32 activations (float32 features promote
+        # the weights).
+        encoder_dtype = self.encoder.input_linear.weight.dtype
+        if self.is_plus and input_features.dtype != encoder_dtype:
+            input_features = input_features.astype(encoder_dtype)
         encoder_output = self.encoder(input_features)
         projected = self.projector(encoder_output)
         return projected
@@ -483,27 +795,33 @@ class Model(nn.Module):
 
     @staticmethod
     def sanitize(weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        already_converted = any("scales" in k for k in weights)
-
         sanitized = {}
         for k, v in weights.items():
             if "num_batches_tracked" in k:
                 continue
+            # Granite Speech 5.0 also ships out_llm.safetensors, an optional
+            # encoder BPE head for speculative decoding. The shared loader
+            # merges all safetensors, leaving its bare weight/bias at the root.
+            if k in {"weight", "bias"}:
+                continue
+            # The October 2026 granite-speech-4.1-2b-plus checkpoint (saved by
+            # Transformers 5.19) nests the decoder one level deeper.
+            if k.startswith("language_model.model.model."):
+                k = "language_model.model." + k[len("language_model.model.model.") :]
 
             if (
-                not already_converted
-                and any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
-                and "weight" in k
+                any(name in k for name in ["up_conv", "down_conv", "depth_conv"])
+                and k.endswith(".weight")
                 and len(v.shape) == 3
             ):
                 # MLX Conv1d expects weights in (out_channels, kernel_size, in_channels)
                 # layout, while PyTorch uses (out_channels, in_channels, kernel_size).
-                # Models converted from PyTorch checkpoints need transposing; models
-                # already saved in MLX-native layout (e.g. bf16 safetensors) do not.
-                # depth_conv (kernel > 1) needs the shape heuristic to distinguish
-                # PyTorch (out, 1, kernel) from MLX (out, kernel, 1). up_conv and
-                # down_conv always use kernel_size=1, so they are always transposed.
-                if "depth_conv" not in k or v.shape[-1] > v.shape[-2]:
+                # Infer each convolution's layout independently so sanitizing
+                # both unquantized and quantized MLX checkpoints is idempotent.
+                depthwise = "depth_conv" in k
+                if (depthwise and v.shape[1] == 1) or (
+                    not depthwise and v.shape[2] == 1
+                ):
                     v = v.transpose(0, 2, 1)
 
             sanitized[k] = v
@@ -523,7 +841,52 @@ class Model(nn.Module):
         finally:
             transformers.logging.set_verbosity(prev)
 
+        head_path = model_path / "out_llm.safetensors"
+        if head_path.exists():
+            model._bpe_head_path = head_path
         return model
+
+    @property
+    def supports_speculative(self) -> bool:
+        return self._bpe_head_path is not None
+
+    def _load_bpe_head(self):
+        if self._bpe_head is None:
+            if not self.supports_speculative:
+                raise ValueError(
+                    "Speculative decoding requires out_llm.safetensors. Load the "
+                    "original Granite Speech checkpoint or reconvert it with the "
+                    "BPE head included."
+                )
+            weights = mx.load(str(self._bpe_head_path))
+            head = nn.Linear(
+                self.config.encoder_config.hidden_dim,
+                weights["weight"].shape[0],
+            )
+            head.load_weights(list(weights.items()), strict=True)
+            head.eval()
+            mx.eval(head.parameters())
+            self._bpe_head = head
+        return self._bpe_head
+
+    def _get_speculative_audio_features(self, input_features, stats):
+        from .speculative import collapse_bpe_tokens, posterior_weighted_pool
+
+        start = time.perf_counter()
+        hidden, importance = self.encoder(input_features, return_importance=True)
+        audio_features = self.projector(hidden)
+        mx.eval(hidden, importance, audio_features)
+        stats["encoder_projector_time"] = time.perf_counter() - start
+        start = time.perf_counter()
+        pooled = posterior_weighted_pool(hidden, importance)
+        labels = mx.argmax(self._load_bpe_head()(pooled), axis=-1)[0].tolist()
+        tokens = collapse_bpe_tokens(labels)
+        # Canonical tokenization improves agreement with the LLM's output,
+        # particularly when CTC emits adjacent pieces with different boundaries.
+        text = self._tokenizer.decode(tokens, skip_special_tokens=True).strip()
+        tokens = self._tokenizer.encode(text, add_special_tokens=False) if text else []
+        stats["draft_time"] = time.perf_counter() - start
+        return audio_features, tokens
 
     def _extract_features(
         self, audio: Union[mx.array, np.ndarray]
@@ -583,15 +946,24 @@ class Model(nn.Module):
         self,
         num_audio_tokens: int,
         user_prompt: str = None,
+        *,
+        system_prompt: Optional[str] = None,
     ) -> mx.array:
         if user_prompt is None:
-            user_prompt = "can you transcribe the speech into a written format?"
+            user_prompt = TASK_PROMPTS["asr"]
 
+        # The plus checkpoint was trained with a separator after the audio
+        # placeholder; the 4.0/4.1 checkpoints concatenate the instruction.
         audio_placeholder = "<|audio|>" * num_audio_tokens
-        content = f"{audio_placeholder}{user_prompt}"
+        if self.is_plus:
+            content = f"{audio_placeholder} {user_prompt.lstrip()}"
+        else:
+            content = f"{audio_placeholder}{user_prompt}"
 
         if getattr(self._tokenizer, "chat_template", None):
             chat = [{"role": "user", "content": content}]
+            if system_prompt:
+                chat.insert(0, {"role": "system", "content": system_prompt})
             prompt_str = self._tokenizer.apply_chat_template(
                 chat, tokenize=False, add_generation_prompt=True
             )
@@ -632,17 +1004,52 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         repetition_penalty: Optional[float] = None,
-        repetition_context_size: int = 100,
+        repetition_context_size: Optional[int] = None,
+        task: str = "asr",
         prompt: str = None,
         language: str = None,
+        source_language: str | None = None,
+        hotwords: list[str] | None = None,
+        punctuate: bool = False,
+        system_prompt: Optional[str] = None,
+        word_timestamps: bool = False,
         prefill_step_size: int = 2048,
+        speculative: bool = False,
+        num_draft_tokens: int = 16,
         verbose: bool = False,
         stream: bool = False,
         **kwargs,
     ) -> Union[STTOutput, Generator[StreamingResult, None, None]]:
-        if prompt is None and language is not None:
-            lang_name = LANGUAGE_CODES.get(language.lower(), language)
-            prompt = f"Translate the speech to {lang_name}."
+        # 4.0/4.1 have no timestamp mode. Like other models without word
+        # timings, they ignore the generic word_timestamps flag (the server
+        # forwards it to every STT model); an explicit rich task still raises.
+        task = _normalize_task(task, word_timestamps=word_timestamps and self.is_plus)
+        if task != "asr" and not self.is_plus:
+            raise UnsupportedTranscriptionTask(
+                f"task={task!r} requires a Granite Speech Plus checkpoint, but the "
+                f"loaded model has model_type={self.config.model_type!r}. Load "
+                "ibm-granite/granite-speech-4.1-2b-plus or use task='asr'."
+            )
+        prompt = _resolve_prompt(
+            task,
+            prompt,
+            language,
+            source_language=source_language,
+            hotwords=hotwords,
+            punctuate=punctuate,
+        )
+
+        if system_prompt is None and self.is_plus:
+            system_prompt = PLUS_SYSTEM_PROMPT
+
+        if speculative:
+            if temperature != 0 or repetition_penalty is not None:
+                raise ValueError(
+                    "Speculative decoding requires temperature=0 and no repetition_penalty."
+                )
+            if num_draft_tokens < 1 or prefill_step_size < 1 or max_tokens < 0:
+                raise ValueError("Invalid speculative decoding token or prefill limit.")
+            self._load_bpe_head()
 
         if stream:
             return self._stream_generate(
@@ -655,52 +1062,78 @@ class Model(nn.Module):
                 repetition_penalty=repetition_penalty,
                 repetition_context_size=repetition_context_size,
                 prompt=prompt,
+                system_prompt=system_prompt,
                 prefill_step_size=prefill_step_size,
+                speculative=speculative,
+                num_draft_tokens=num_draft_tokens,
                 verbose=verbose,
             )
 
         start_time = time.time()
 
         from mlx_audio.lm.generate import generate_step
-        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.sample_utils import make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
 
         if verbose:
             print("Encoding audio...")
-        audio_features = self.get_audio_features(input_features)
+        speculative_stats = {} if speculative else None
+        if speculative:
+            audio_features, draft_tokens = self._get_speculative_audio_features(
+                input_features, speculative_stats
+            )
+        else:
+            audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
-        prompt_ids = self._build_prompt(num_audio_tokens, prompt)
+        prompt_ids = self._build_prompt(
+            num_audio_tokens, prompt, system_prompt=system_prompt
+        )
         inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
         mx.eval(inputs_embeds)
 
         prompt_tokens = len(prompt_ids)
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
-        logits_processors = make_logits_processors(
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=repetition_context_size,
+        logits_processors = _make_repetition_penalty(
+            repetition_penalty, repetition_context_size
         )
 
         eos_token_id = self._tokenizer.eos_token_id
         tokens = []
 
-        for token, logprobs in generate_step(
-            prompt=prompt_ids,
-            input_embeddings=inputs_embeds.squeeze(0),
-            model=self,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            prefill_step_size=prefill_step_size,
-        ):
+        if speculative:
+            from .speculative import speculative_generate_step
+
+            token_stream = speculative_generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                draft_tokens=draft_tokens,
+                max_tokens=max_tokens,
+                num_draft_tokens=num_draft_tokens,
+                prefill_step_size=prefill_step_size,
+                stats=speculative_stats,
+            )
+        else:
+            token_stream = generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                prefill_step_size=prefill_step_size,
+            )
+        for token, logprobs in token_stream:
             if token == eos_token_id:
                 break
             tokens.append(token)
 
         text = self._tokenizer.decode(tokens, skip_special_tokens=True)
+        segments = _parse_segments(task, text)
         elapsed = time.time() - start_time
         gen_tokens = len(tokens)
 
@@ -711,9 +1144,9 @@ class Model(nn.Module):
             if gen_tokens > 0:
                 print(f"Generation TPS: {gen_tokens / elapsed:.1f}")
 
-        return STTOutput(
+        output = STTOutput(
             text=text,
-            segments=[],
+            segments=segments,
             prompt_tokens=prompt_tokens,
             generation_tokens=gen_tokens,
             total_tokens=prompt_tokens + gen_tokens,
@@ -721,6 +1154,11 @@ class Model(nn.Module):
             prompt_tps=prompt_tokens / elapsed if elapsed > 0 else 0,
             generation_tps=gen_tokens / elapsed if elapsed > 0 else 0,
         )
+        if speculative:
+            return SpeculativeSTTOutput(
+                **vars(output), speculative_stats=speculative_stats
+            )
+        return output
 
     def _stream_generate(
         self,
@@ -732,64 +1170,93 @@ class Model(nn.Module):
         top_k: int = 0,
         min_p: float = 0.0,
         repetition_penalty: Optional[float] = None,
-        repetition_context_size: int = 100,
+        repetition_context_size: Optional[int] = None,
         prompt: str = None,
+        system_prompt: Optional[str] = None,
         prefill_step_size: int = 2048,
+        speculative: bool = False,
+        num_draft_tokens: int = 16,
         verbose: bool = False,
     ) -> Generator[StreamingResult, None, None]:
-        from mlx_audio.lm.generate import generate_step
-        from mlx_audio.lm.sample_utils import make_logits_processors, make_sampler
+        from mlx_audio.lm.generate import StreamingDetokenizer, generate_step
+        from mlx_audio.lm.sample_utils import make_sampler
 
         audio_data = self._load_audio(audio)
         input_features, num_audio_tokens = self._extract_features(audio_data)
 
-        audio_features = self.get_audio_features(input_features)
+        speculative_stats = {} if speculative else None
+        if speculative:
+            audio_features, draft_tokens = self._get_speculative_audio_features(
+                input_features, speculative_stats
+            )
+        else:
+            audio_features = self.get_audio_features(input_features)
         mx.eval(audio_features)
 
-        prompt_ids = self._build_prompt(num_audio_tokens, prompt)
+        prompt_ids = self._build_prompt(
+            num_audio_tokens, prompt, system_prompt=system_prompt
+        )
         inputs_embeds = self._build_inputs_embeds(prompt_ids, audio_features)
         mx.eval(inputs_embeds)
 
         prompt_token_count = len(prompt_ids)
 
         sampler = make_sampler(temperature, top_p=top_p, min_p=min_p, top_k=top_k)
-        logits_processors = make_logits_processors(
-            repetition_penalty=repetition_penalty,
-            repetition_context_size=repetition_context_size,
+        logits_processors = _make_repetition_penalty(
+            repetition_penalty, repetition_context_size
         )
 
         eos_token_id = self._tokenizer.eos_token_id
         gen_tokens = 0
+        detokenizer = StreamingDetokenizer(self._tokenizer, skip_special_tokens=True)
 
-        for token, _ in generate_step(
-            prompt=prompt_ids,
-            input_embeddings=inputs_embeds.squeeze(0),
-            model=self,
-            max_tokens=max_tokens,
-            sampler=sampler,
-            logits_processors=logits_processors,
-            prefill_step_size=prefill_step_size,
-        ):
+        if speculative:
+            from .speculative import speculative_generate_step
+
+            token_stream = speculative_generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                draft_tokens=draft_tokens,
+                max_tokens=max_tokens,
+                num_draft_tokens=num_draft_tokens,
+                prefill_step_size=prefill_step_size,
+                stats=speculative_stats,
+            )
+        else:
+            token_stream = generate_step(
+                prompt=prompt_ids,
+                input_embeddings=inputs_embeds.squeeze(0),
+                model=self,
+                max_tokens=max_tokens,
+                sampler=sampler,
+                logits_processors=logits_processors,
+                prefill_step_size=prefill_step_size,
+            )
+        for token, _ in token_stream:
             if token == eos_token_id:
                 break
             gen_tokens += 1
-            text = self._tokenizer.decode([token], skip_special_tokens=True)
-            yield StreamingResult(
-                text=text,
-                is_final=False,
-                start_time=0.0,
-                end_time=0.0,
-                prompt_tokens=prompt_token_count,
-                generation_tokens=gen_tokens,
-            )
+            detokenizer.add_token(token)
+            if text := detokenizer.last_segment:
+                yield StreamingResult(
+                    text=text,
+                    is_final=False,
+                    start_time=0.0,
+                    end_time=0.0,
+                    prompt_tokens=prompt_token_count,
+                    generation_tokens=gen_tokens,
+                )
 
+        detokenizer.finalize()
         yield StreamingResult(
-            text="",
+            text=detokenizer.last_segment,
             is_final=True,
             start_time=0.0,
             end_time=0.0,
             prompt_tokens=prompt_token_count,
             generation_tokens=gen_tokens,
+            speculative_stats=speculative_stats,
         )
 
     def _load_audio(self, audio: Union[str, mx.array, np.ndarray]) -> mx.array:

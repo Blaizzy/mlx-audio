@@ -3,6 +3,7 @@ from mlx_audio.registry import (
     classify_model,
     is_supported_model,
     kinds,
+    model_type_from_config,
 )
 
 
@@ -27,6 +28,34 @@ def test_classify_text_to_speech():
     assert classify_model("kokoro", "prince-canuma/Kokoro-82M") == "tts"
     assert classify_model("dia", "nari-labs/Dia-1.6B") == "tts"
     assert classify_model("bark", "suno/bark") == "tts"
+
+
+def test_phonon_tts_is_identified_by_config():
+    from mlx_audio.utils import get_model_category, get_model_name_parts
+
+    model_type = model_type_from_config({"flow_lm": {}, "mimi": {}})
+    assert model_type == "pocket_tts"
+    assert classify_model(model_type, "gradium/phonon-31m-en") == "tts"
+    assert classify_model(model_type, "gradium/phonon-40m-en") == "tts"
+    assert (
+        get_model_category(model_type, get_model_name_parts("gradium/phonon-40m-es"))
+        == "tts"
+    )
+
+
+def test_phonon_tts_explicit_type_takes_precedence_over_name():
+    from mlx_audio.utils import get_model_category, get_model_name_parts
+
+    model_type = model_type_from_config(
+        {"model_type": "gradium_phonon_tts", "flow_lm": {}, "mimi": {}}
+    )
+    assert model_type in SUPPORTED_MODEL_TYPES["tts"]
+    assert classify_model(model_type) == "tts"
+    assert classify_model(model_type, "gradium/phonon-40m-es") == "tts"
+    assert (
+        get_model_category(model_type, get_model_name_parts("gradium/phonon-40m-es"))
+        == "tts"
+    )
 
 
 def test_classify_speech_to_text():

@@ -133,6 +133,43 @@ class TestOptionalDeps:
         dep_names = [extract_package_name(r) for r in dev_deps]
         assert "pytest" in dep_names, f"pytest not in dev deps: {dep_names}"
 
+    def test_transformers_requests_chat_template_extra(self):
+        """transformers must be requested with the [chat-template] extra.
+
+        transformers only ships jinja2 under that extra, and mlx_audio calls
+        tokenizer.apply_chat_template() in the stt, tts and sts model
+        implementations. Without it those paths fail at runtime with
+        "apply_chat_template requires jinja2 to be installed".
+        """
+        meta = get_package_metadata()
+        requires = meta.get_all("Requires-Dist") or []
+        core_deps = [r for r in requires if "extra ==" not in r]
+        tf_reqs = [r for r in core_deps if extract_package_name(r) == "transformers"]
+        assert tf_reqs, "transformers must be a core dependency"
+        assert any(
+            "chat-template" in r for r in tf_reqs
+        ), f"transformers must request the [chat-template] extra: {tf_reqs}"
+
+    def test_jinja2_importable(self):
+        """jinja2 must be importable, otherwise chat templates cannot render."""
+        import importlib.util
+
+        assert (
+            importlib.util.find_spec("jinja2") is not None
+        ), "jinja2 is not installed; tokenizer.apply_chat_template() would raise ImportError"
+
+    def test_chat_template_sandbox_blocks_format_attribute_escape(self):
+        """Model templates must not bypass the sandbox through CVE-2025-27516."""
+        from jinja2.exceptions import SecurityError
+        from transformers.utils.chat_template_utils import render_jinja_template
+
+        # Older Jinja versions expose the type through an unchecked format method.
+        with pytest.raises(SecurityError):
+            render_jinja_template(
+                [[{"role": "user", "content": "hello"}]],
+                chat_template="{{ '{0.__class__.__name__}' | attr('format')(0) }}",
+            )
+
     def test_core_resolves(self):
         """Verify core install resolves without errors."""
         result = run_dry_run()

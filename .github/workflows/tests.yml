@@ -64,7 +64,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: Install with parity extra
         run: |
@@ -135,3 +135,8 @@ jobs:
 
       - name: Run ${{ matrix.name }} tests
         run: pytest -s ${{ matrix.path }}/
+
+      # These live outside the codec package to keep CPU-only collection lazy.
+      - name: Run StepAudio2 streaming tests
+        if: matrix.name == 'Codec'
+        run: pytest -s tests/test_stepaudio2_streaming_contract.py tests/test_stepaudio2_streaming_mlx.py

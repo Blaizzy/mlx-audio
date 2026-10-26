@@ -1,9 +1,13 @@
-# Nemotron 3.5 ASR (streaming) — MLX
+# Nemotron streaming ASR — MLX
 
 MLX port of NVIDIA's
 [`nvidia/nemotron-3.5-asr-streaming-0.6b`](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b):
 a 600M-parameter **cache-aware streaming FastConformer-RNNT** with **language-ID prompt
 conditioning**, covering 40 language-locales with punctuation and capitalization.
+
+The same implementation loads NVIDIA's native Transformers checkpoint
+[`nvidia/nemotron-speech-streaming-en-0.6b`](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b)
+directly, including its 80, 160, 560, and 1120 ms English streaming modes.
 
 ## Models
 
@@ -24,6 +28,20 @@ print(model.generate("speech.wav").text)
 
 # force a language via its prompt key (en-US, es-ES, zh-CN, fr-FR, ...)
 print(model.generate("speech.wav", language="en-US").text)
+```
+
+The English checkpoint uses the shared streaming contract with
+`transcription_delay_ms` set to `80`, `160`, `560`, or `1120`:
+
+```python
+model = load("nvidia/nemotron-speech-streaming-en-0.6b")
+session = model.create_streaming_session(transcription_delay_ms=160)
+for pcm in audio_chunks:
+    session.feed(pcm)
+    print("".join(session.step()), end="", flush=True)
+session.close()
+while not session.done:
+    print("".join(session.step()), end="", flush=True)
 ```
 
 CLI:

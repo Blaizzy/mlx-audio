@@ -61,12 +61,9 @@ def test_apply_min_p_zero_fails_identically_to_upstream():
         upstream.apply_min_p(x, 0.0)
 
 
-def test_apply_min_p_min_tokens_to_keep_diverges_from_upstream():
-    """Deliberate fix: upstream passes a Python bool to mx.put_along_axis and
-    raises TypeError whenever min_p > 0 and min_tokens_to_keep > 1."""
+def test_apply_min_p_preserves_minimum_tokens():
     x = logprobs(2)
-    with pytest.raises(TypeError):
-        upstream.apply_min_p(x, 0.9, 5)
+    both("apply_min_p", x, 0.9, 5)
     kept = (vendored.apply_min_p(x, 0.9, 5) != -mx.inf).sum(-1)
     assert kept.tolist() == [5, 5]
 

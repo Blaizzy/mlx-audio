@@ -6,7 +6,6 @@ import mlx.nn as nn
 from mlx_audio.tts.models.chatterbox.s3gen.xvector import (
     CAMLayer,
     DenseLayer,
-    StatsPool,
     kaldi_fbank,
 )
 
@@ -121,6 +120,29 @@ class FusedTDNNLayer(nn.Module):
         return mx.swapaxes(x, 1, 2)
 
 
+class FusedCAMLayer(CAMLayer):
+    def seg_pooling(self, x, seg_len=100, stype="avg"):
+        if stype != "avg":
+            return super().seg_pooling(x, seg_len, stype)
+        b, c, length = x.shape
+        segments = (length + seg_len - 1) // seg_len
+        padded = mx.pad(x, [(0, 0), (0, 0), (0, segments * seg_len - length)])
+        sums = padded.reshape(b, c, segments, seg_len).sum(-1)
+        # PyTorch's ceil-mode pooling excludes the implicit final padding.
+        counts = mx.minimum(seg_len, length - mx.arange(segments) * seg_len)
+        pooled = sums / counts
+        return mx.repeat(pooled, seg_len, axis=-1)[..., :length]
+
+
+class UnbiasedStatsPool(nn.Module):
+    def __call__(self, x):
+        length = x.shape[-1]
+        if length < 2:
+            raise ValueError("CAMPPlus statistics require at least two frames")
+        variance = mx.var(x, axis=-1) * length / (length - 1)
+        return mx.concatenate([x.mean(-1), mx.sqrt(mx.maximum(variance, 0))], axis=-1)
+
+
 class FusedCAMDenseTDNNLayer(nn.Module):
     def __init__(
         self,
@@ -137,7 +159,7 @@ class FusedCAMDenseTDNNLayer(nn.Module):
         padding = (kernel_size - 1) // 2 * dilation
         self.nonlinear1 = _batchnorm_relu(in_channels)
         self.linear1 = nn.Conv1d(in_channels, bn_channels, 1)
-        self.cam_layer = CAMLayer(
+        self.cam_layer = FusedCAMLayer(
             bn_channels,
             out_channels,
             kernel_size,
@@ -255,7 +277,7 @@ class StepAudio2CAMPPlus(nn.Module):
 
         self.out_nonlinear = [lambda x: nn.relu(x)]
         if output_level == "segment":
-            self.stats = StatsPool()
+            self.stats = UnbiasedStatsPool()
             self.dense = DenseLayer(
                 channels * 2, embedding_size, config_str="batchnorm_"
             )

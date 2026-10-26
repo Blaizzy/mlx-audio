@@ -10,22 +10,29 @@ def modulate(x: mx.array, shift: mx.array, scale: mx.array) -> mx.array:
     return x * (1 + scale) + shift
 
 
-def _rms_norm(x: mx.array, alpha: mx.array, eps: float) -> mx.array:
+def _rms_norm(x: mx.array, alpha: mx.array, eps: float, mode: str) -> mx.array:
     x_dtype = x.dtype
     x = x.astype(mx.float32)
-    var = eps + mx.var(x, axis=-1, keepdims=True, ddof=1)
+    var = eps + (
+        mx.mean(mx.square(x), axis=-1, keepdims=True)
+        if mode == "rms"
+        else mx.var(x, axis=-1, keepdims=True, ddof=1)
+    )
     y = x * (alpha.astype(var.dtype) * mx.rsqrt(var))
     return y.astype(x_dtype)
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-5):
+    def __init__(self, dim: int, eps: float = 1e-5, mode: str = "rms_var"):
         super().__init__()
+        if mode not in ("rms", "rms_var"):
+            raise ValueError(f"Unsupported timestep normalization: {mode}")
+        self.mode = mode
         self.eps = eps
         self.alpha = mx.ones((dim,))
 
     def __call__(self, x: mx.array) -> mx.array:
-        return _rms_norm(x, self.alpha, self.eps)
+        return _rms_norm(x, self.alpha, self.eps, self.mode)
 
 
 class LayerNorm(nn.Module):
@@ -55,6 +62,7 @@ class TimestepEmbedder(nn.Module):
         hidden_size: int,
         frequency_embedding_size: int = 256,
         max_period: int = 10000,
+        time_rms_norm: str = "rms_var",
     ):
         super().__init__()
         self.frequency_embedding_size = frequency_embedding_size
@@ -66,7 +74,7 @@ class TimestepEmbedder(nn.Module):
             nn.Linear(frequency_embedding_size, hidden_size, bias=True),
             nn.SiLU(),
             nn.Linear(hidden_size, hidden_size, bias=True),
-            RMSNorm(hidden_size),
+            RMSNorm(hidden_size, mode=time_rms_norm),
         ]
 
     def __call__(self, t: mx.array) -> mx.array:
@@ -133,6 +141,7 @@ class SimpleMLPAdaLN(nn.Module):
         cond_channels: int,
         num_res_blocks: int,
         num_time_conds: int = 1,
+        time_rms_norm: str = "rms_var",
     ):
         super().__init__()
         self.in_channels = in_channels
@@ -145,7 +154,8 @@ class SimpleMLPAdaLN(nn.Module):
             raise ValueError("num_time_conds must be != 1 for AdaLN conditioning.")
 
         self.time_embed = [
-            TimestepEmbedder(model_channels) for _ in range(num_time_conds)
+            TimestepEmbedder(model_channels, time_rms_norm=time_rms_norm)
+            for _ in range(num_time_conds)
         ]
         self.cond_embed = nn.Linear(cond_channels, model_channels, bias=True)
         self.input_proj = nn.Linear(in_channels, model_channels, bias=True)
@@ -166,6 +176,7 @@ class SimpleMLPAdaLN(nn.Module):
             cond_dim,
             flow_depth,
             num_time_conds=num_time_conds,
+            time_rms_norm=cfg.time_rms_norm,
         )
 
     def __call__(self, c: mx.array, s: mx.array, t: mx.array, x: mx.array) -> mx.array:

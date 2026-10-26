@@ -134,6 +134,15 @@ def lstm_custom(x, h_in, cell, time_step):
     )
 
 
+def lstm_fallback(x, h_in, cell, time_step):
+    """LSTM step with projected input and recurrent gates in (i, f, g, o) order."""
+    assert x.ndim == 3, "Input to LSTM must have 3 dimensions."
+    i, f, g, o = mx.split(x[:, time_step, :] + h_in, 4, axis=-1)
+    cell = mx.sigmoid(f) * cell + mx.sigmoid(i) * mx.tanh(g)
+    hidden = mx.sigmoid(o) * mx.tanh(cell)
+    return hidden, cell
+
+
 class LSTM(nn.Module):
     def __init__(
         self,
@@ -163,7 +172,10 @@ class LSTM(nn.Module):
                 hidden = mx.zeros((B, self.hidden_size * 4), x.dtype)
             else:
                 hidden = hidden @ self.Wh.T
-            hidden, cell = lstm_custom(x, hidden, cell, t)
+            if mx.metal.is_available():
+                hidden, cell = lstm_custom(x, hidden, cell, t)
+            else:
+                hidden, cell = lstm_fallback(x, hidden, cell, t)
             all_hidden.append(hidden)
 
         return mx.stack(all_hidden, axis=-2)

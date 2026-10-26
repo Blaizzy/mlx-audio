@@ -76,18 +76,21 @@ def test_sampler_stream_matches_upstream():
     )
 
 
-def test_logits_processors_stream_matches_upstream():
+@pytest.mark.parametrize("prefill", [1, 2, 4, 4096])
+def test_logits_processors_stream_matches_upstream(prefill):
     v, u = paired_models()
     compare(
         stream(
             vendored,
             v,
             processors=vendored_sample.make_logits_processors(repetition_penalty=1.2),
+            prefill_step_size=prefill,
         ),
         stream(
             upstream,
             u,
             processors=upstream_sample.make_logits_processors(repetition_penalty=1.2),
+            prefill_step_size=prefill,
         ),
     )
 

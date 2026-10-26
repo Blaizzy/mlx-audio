@@ -67,6 +67,7 @@ def depthwise_conv1d(
         and groups == x.shape[2]
         and weight.shape[0] == x.shape[2]
         and (x.dtype == mx.float32 or x.dtype == mx.float16)
+        and mx.metal.is_available()
     ):
         kernel_size = weight.shape[1]
         output_length = x.shape[1] + 2 * padding - kernel_size + 1

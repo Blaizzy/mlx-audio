@@ -82,10 +82,12 @@ nav:
       - MiniMax Music 3: models/music/minimax-music3.md
     - Text-to-Speech:
       - models/tts/index.md
+      - Ming-3.0 TTS Tiny: models/tts/ming3-tiny.md
       - Kokoro: models/tts/kokoro.md
       - Qwen3-TTS: models/tts/qwen3-tts.md
       - Breeze TTS 2: models/tts/breeze-tts.md
       - Higgs Audio v3: models/tts/higgs_audio_v3.md
+      - Fish Audio Drama 3: models/tts/fish-drama3.md
       - MOSS-TTS: models/tts/moss-tts.md
       - Voxtral TTS: models/tts/voxtral-tts.md
       - VoxCPM2: models/tts/voxcpm2.md
@@ -97,15 +99,19 @@ nav:
       - Chatterbox: models/tts/chatterbox.md
     - Speech-to-Text:
       - models/stt/index.md
+      - Ming-3.0 ASR Tiny: models/stt/ming3-tiny.md
       - Whisper: models/stt/whisper.md
       - Parakeet: models/stt/parakeet.md
       - Phonon-1: models/stt/phonon.md
+      - Phonon-2 / 2.5: models/stt/phonon2.md
       - Voxtral Realtime: models/stt/voxtral-realtime.md
       - VibeVoice ASR: models/stt/vibevoice-asr.md
       - Fun-ASR-Nano: models/stt/fun-asr-nano.md
       - Qwen2-Audio: models/stt/qwen2-audio.md
+      - Granite Speech: models/stt/granite-speech.md
     - Speech-to-Speech:
       - models/sts/index.md
+      - Ming-3.0 Audio Tiny: models/sts/ming3-tiny.md
       - MiMo-Audio: models/sts/mimo-audio.md
       - DialogueSidon: models/sts/dialogue-sidon.md
     - Voice Activity Detection: models/vad/index.md

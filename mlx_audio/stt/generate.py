@@ -126,20 +126,28 @@ def format_vtt_timestamp(seconds: float) -> str:
 
 
 def _get_cues(segments):
-    """Extract unified cues from any model's output (Parakeet or Whisper).
-
-    Uses word-level cues when available, otherwise falls back to segment-level.
-    """
+    """Extract subtitle cues, rejecting text without timestamps."""
     if hasattr(segments, "sentences"):
         return [
             {"start": s.start, "end": s.end, "text": s.text} for s in segments.sentences
         ]
     cues = []
     for s in segments.segments:
+        if s.get("start") is None or s.get("end") is None:
+            if s["text"].strip():
+                raise ValueError(
+                    "Subtitle export requires timestamps for every nonempty segment. "
+                    "Use TXT or JSON for untimed transcripts."
+                )
+            continue
         cues.append({"start": s["start"], "end": s["end"], "text": s["text"]})
         if "words" in s and s["words"]:
             for w in s["words"]:
                 cues.append({"start": w["start"], "end": w["end"], "text": w["word"]})
+    if not cues and segments.text.strip():
+        raise ValueError(
+            "Subtitle export requires timestamps. Use TXT or JSON for untimed transcripts."
+        )
     return cues
 
 
@@ -153,12 +161,13 @@ def save_as_txt(segments, output_path: str):
 
 
 def save_as_srt(segments, output_path: str):
+    cues = _get_cues(segments)
     with (
         open(f"{output_path}.srt", "w", encoding="utf-8")
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
-        for i, cue in enumerate(_get_cues(segments), 1):
+        for i, cue in enumerate(cues, 1):
             f.write(f"{i}\n")
             f.write(
                 f"{format_timestamp(cue['start'])} --> {format_timestamp(cue['end'])}\n"
@@ -167,13 +176,14 @@ def save_as_srt(segments, output_path: str):
 
 
 def save_as_vtt(segments, output_path: str):
+    cues = _get_cues(segments)
     with (
         open(f"{output_path}.vtt", "w", encoding="utf-8")
         if output_path != "-"
         else contextlib.nullcontext(sys.stdout)
     ) as f:
         f.write("WEBVTT\n\n")
-        for i, cue in enumerate(_get_cues(segments), 1):
+        for i, cue in enumerate(cues, 1):
             f.write(f"{i}\n")
             f.write(
                 f"{format_vtt_timestamp(cue['start'])} --> {format_vtt_timestamp(cue['end'])}\n"
@@ -214,12 +224,15 @@ def save_as_json(segments, output_path: str):
             "segments": [],
         }
         for s in segments.segments:
-            seg = {
-                "text": s["text"],
-                "start": s["start"],
-                "end": s["end"],
-                "duration": s["end"] - s["start"],
-            }
+            seg = {"text": s["text"]}
+            if "start" in s or "end" in s:
+                seg["start"] = s.get("start")
+                seg["end"] = s.get("end")
+                seg["duration"] = (
+                    seg["end"] - seg["start"]
+                    if seg["start"] is not None and seg["end"] is not None
+                    else None
+                )
             # Add word-level timestamps if available
             if "words" in s and s["words"]:
                 seg["words"] = s["words"]
@@ -293,27 +306,51 @@ def generate_transcription(
     if kwargs.get("stream", False):
         all_segments = []
         accumulated_text = ""
+        pending_text = ""
+        pending_is_final = False
         language = "en"
         prompt_tokens = 0
         generation_tokens = 0
         for result in model.generate(audio, verbose=verbose, **kwargs):
-            segment_dict = {
-                "text": result.text,
-                "start": result.start_time,
-                "end": result.end_time,
-                "is_final": result.is_final,
-            }
-
-            all_segments.append(segment_dict)
             # Accumulate text (handles both incremental and cumulative streaming)
             accumulated_text += result.text
+            pending_text += result.text
+            pending_is_final = pending_is_final or result.is_final
             language = result.language
+
+            # Untimed text is committed when the model emits a timed boundary.
+            # Qwen3-ASR exposes coarse chunk boundaries because generated tokens
+            # do not carry real audio alignment.
+            if result.start_time is not None and result.end_time is not None:
+                if pending_text or result.is_final:
+                    all_segments.append(
+                        {
+                            "text": pending_text,
+                            "start": result.start_time,
+                            "end": result.end_time,
+                            "is_final": result.is_final,
+                        }
+                    )
+                pending_text = ""
+                pending_is_final = False
 
             # Extract token counts from results (final result has cumulative totals)
             if hasattr(result, "prompt_tokens") and result.prompt_tokens > 0:
                 prompt_tokens = result.prompt_tokens
             if hasattr(result, "generation_tokens") and result.generation_tokens > 0:
                 generation_tokens = result.generation_tokens
+
+        if pending_text:
+            if format in {"srt", "vtt"}:
+                raise ValueError("Cannot write untimed streaming text as SRT or VTT")
+            all_segments.append(
+                {
+                    "text": pending_text,
+                    "start": None,
+                    "end": None,
+                    "is_final": pending_is_final,
+                }
+            )
 
         stream_end_time = time.time()
         stream_duration = stream_end_time - start_time

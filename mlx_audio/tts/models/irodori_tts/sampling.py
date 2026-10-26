@@ -617,8 +617,9 @@ def sample_euler_cfg(
                 kv_speaker_cond, inv, max_layers=speaker_kv_max_layers
             )
             if kv_speaker_cfg is not None:
-                n_rep = 3 if (not is_dual and has_text_cfg and has_context_cfg) else 2
-                kv_speaker_cfg = _concat_kv_caches(*([kv_speaker_cond] * n_rep))
+                kv_speaker_cfg = _scale_kv_cache(
+                    kv_speaker_cfg, inv, max_layers=speaker_kv_max_layers
+                )
             if kv_speaker_uncond_alt is not None:
                 kv_speaker_uncond_alt = _scale_kv_cache(
                     kv_speaker_uncond_alt, inv, max_layers=speaker_kv_max_layers

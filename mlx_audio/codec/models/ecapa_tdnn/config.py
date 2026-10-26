@@ -12,3 +12,5 @@ class EcapaTdnnConfig:
     res2net_scale: int = 8
     se_channels: int = 128
     global_context: bool = False
+    padding_mode: str = "zeros"
+    centered_statistics: bool = False

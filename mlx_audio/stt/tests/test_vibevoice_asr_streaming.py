@@ -134,6 +134,53 @@ def test_post_load_reads_streaming_processor_metadata(tmp_path, monkeypatch):
     assert model.normalize_audio is False
 
 
+class _EmptyTokenizer(_FakeTokenizer):
+    """What recent transformers returns for a checkpoint without tokenizer files."""
+
+    unk_token_id = 0
+
+    def convert_tokens_to_ids(self, token):
+        del token
+        return 0
+
+
+def _load_with_tokenizers(tmp_path, monkeypatch, local):
+    calls = []
+
+    def from_pretrained(path, *args, **kwargs):
+        calls.append(str(path))
+        if path == "Qwen/Qwen2.5-7B":
+            return _FakeTokenizer()
+        if isinstance(local, Exception):
+            raise local
+        return local
+
+    monkeypatch.setattr("transformers.AutoTokenizer.from_pretrained", from_pretrained)
+    model = _streaming_model()
+    Model.post_load_hook(model, tmp_path)
+    return model, calls
+
+
+def test_post_load_falls_back_when_local_tokenizer_is_empty(tmp_path, monkeypatch):
+    model, calls = _load_with_tokenizers(tmp_path, monkeypatch, _EmptyTokenizer())
+
+    assert calls == [str(tmp_path), "Qwen/Qwen2.5-7B"]
+    assert model._speech_start_id == 1
+    assert model._speech_end_id == 2
+
+
+def test_post_load_falls_back_when_local_tokenizer_raises(tmp_path, monkeypatch):
+    _, calls = _load_with_tokenizers(tmp_path, monkeypatch, ValueError("no tokenizer"))
+
+    assert calls == [str(tmp_path), "Qwen/Qwen2.5-7B"]
+
+
+def test_post_load_keeps_a_valid_local_tokenizer(tmp_path, monkeypatch):
+    _, calls = _load_with_tokenizers(tmp_path, monkeypatch, _FakeTokenizer())
+
+    assert calls == [str(tmp_path)]
+
+
 def test_streaming_windows_keep_lookahead_and_pad_final_chunk():
     model = _streaming_model()
     audio = mx.array(np.arange(17, dtype=np.float32))[None, :]

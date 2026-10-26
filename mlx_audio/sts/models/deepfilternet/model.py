@@ -21,6 +21,7 @@ from huggingface_hub import hf_hub_download
 
 from mlx_audio import audio_io
 from mlx_audio.dsp import istft, stft
+from mlx_audio.sts.models.base import STSOutput
 
 from .config import DeepFilterNet2Config, DeepFilterNet3Config, DeepFilterNetConfig
 from .network import DfNet
@@ -45,6 +46,8 @@ DEFAULT_CONFIGS = {
 
 class DeepFilterNetModel(nn.Module):
     """Pure-MLX DeepFilterNet inference runtime."""
+
+    output_suffix = "_enhanced"
 
     def __init__(
         self,
@@ -182,6 +185,47 @@ class DeepFilterNetModel(nn.Module):
             model_dir=model_dir,
             model_version=model_version,
         )
+
+    def generate(
+        self,
+        audio: str | Path | np.ndarray | mx.array,
+        *,
+        sample_rate: int | None = None,
+        stream: bool = False,
+        chunk_samples: int | None = None,
+        pad_end_frames: int = 3,
+        compensate_delay: bool = True,
+    ) -> STSOutput:
+        """Enhance a file or waveform through the standard STS interface.
+
+        Arrays are assumed to use the model sample rate unless specified.
+        ``stream`` uses the stateful enhancer and returns the completed audio.
+        """
+        if isinstance(audio, (str, Path)):
+            audio, sample_rate = audio_io.read(
+                str(Path(audio).expanduser()), always_2d=False, dtype="float32"
+            )
+        elif audio is None:
+            raise ValueError("Input audio is required for enhancement")
+        if sample_rate is not None and sample_rate != self.config.sample_rate:
+            raise ValueError(
+                f"Expected {self.config.sample_rate} Hz audio, got {sample_rate} Hz"
+            )
+        waveform = np.asarray(audio, dtype=np.float32)
+        if waveform.ndim == 2:
+            waveform = waveform[:, 0]
+        if waveform.ndim != 1 or waveform.size == 0:
+            raise ValueError("Expected nonempty [samples] or [samples, channels] audio")
+        if stream:
+            enhanced = self.enhance_array_streaming(
+                waveform,
+                chunk_samples=chunk_samples,
+                pad_end_frames=pad_end_frames,
+                compensate_delay=compensate_delay,
+            )
+        else:
+            enhanced = self.enhance_array(waveform)
+        return STSOutput(audio=enhanced, sample_rate=self.config.sample_rate)
 
     def enhance_file(
         self, input_path: Union[str, Path], output_path: Union[str, Path]

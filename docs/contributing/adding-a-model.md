@@ -59,7 +59,7 @@ imported anywhere outside `sts/voice_pipeline.py`.
 | Attention masks, `scaled_dot_product_attention` | `mlx_audio.lm.models.base` |
 | Samplers, logits processors | `mlx_audio.lm.sample_utils` |
 | `generate_step`, `stream_generate` | `mlx_audio.lm.generate` |
-| Backbones (llama, qwen2, qwen3, gpt2, granite, lfm2, bailing_moe, gemma3) | `mlx_audio.lm.models.<name>` |
+| Backbones (llama, qwen2, qwen3, qwen3_5, gpt2, granite, lfm2, bailing_moe, gemma3) | `mlx_audio.lm.models.<name>` |
 | Quantize / save helpers | `mlx_audio.lm.convert` |
 
 If your model needs a backbone that is not vendored yet, copy it from mlx-lm
@@ -181,6 +181,15 @@ If the `model_type` in `config.json` differs from your directory name, add an en
 4. It dynamically imports the corresponding package from `mlx_audio/tts/models/` (or `stt/models/`).
 5. It instantiates `ModelConfig` from the config dict and `Model` from the config.
 6. It loads the `.safetensors` weights into the model.
+
+For checkpoints that require unpacking or format adaptation, the model package
+can export `prepare_model_path(model_path, *, source=None, revision=None,
+force_download=False) -> Path`. The shared loader calls this optional hook
+before constructing `ModelConfig` or reading weights. Return the input path for
+an ordinary checkpoint, or a prepared directory containing the runtime config
+and weights. When the path changes, the loader reads the prepared config and
+resolves its model type again. Keep archive downloading, verification, and
+unpacking inside the model package.
 
 ## Step 4: Convert and Test
 

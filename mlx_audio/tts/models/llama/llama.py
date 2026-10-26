@@ -312,11 +312,18 @@ class Model(LlamaModel):
         return input_ids
 
     def generate_result(
-        self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs
+        self,
+        audio,
+        start_time: float,
+        token_count: int,
+        segment_idx: int,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
+        **kwargs,
     ) -> GenerationResult:
         """Helper to create a GenerationResult from audio."""
         samples = audio.shape[0] if audio is not None else 0
-        assert samples > 0, "No audio generated"
+        assert samples > 0 or is_final_chunk, "No audio generated"
 
         sample_rate = self.config.sample_rate
         audio_duration_seconds = samples / sample_rate
@@ -355,6 +362,8 @@ class Model(LlamaModel):
             },
             processing_time_seconds=elapsed_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
         )
 
     def generate(
@@ -396,6 +405,7 @@ class Model(LlamaModel):
         # Process each prompt segment individually for memory efficiency
         for segment_idx, segment_prompt in enumerate(prompts):
             time_start = time.perf_counter()
+            is_last_segment = segment_idx == len(prompts) - 1
 
             # Prepare input_ids for this segment (with zeroprompt if voice cloning)
             input_ids = self.prepare_input_ids(
@@ -407,6 +417,7 @@ class Model(LlamaModel):
             generated_token_count = 0
             yielded_token_count = 0
             prev_code_count = 0
+            yielded_final = False
 
             # Streaming decode context
             prev_context_codes = None
@@ -463,6 +474,7 @@ class Model(LlamaModel):
                                     token_count=generated_token_count
                                     - yielded_token_count,
                                     segment_idx=segment_idx,
+                                    is_streaming_chunk=True,
                                 )
                                 yielded_token_count = generated_token_count
                                 prev_code_count += len(new_codes)
@@ -499,7 +511,10 @@ class Model(LlamaModel):
                                 start_time=time_start,
                                 token_count=generated_token_count - yielded_token_count,
                                 segment_idx=segment_idx,
+                                is_streaming_chunk=True,
+                                is_final_chunk=is_last_segment,
                             )
+                            yielded_final = is_last_segment
                 else:
                     # Non-streaming: decode all at once
                     audio = decode_audio_from_codes(code_list)[0]
@@ -511,6 +526,17 @@ class Model(LlamaModel):
                             token_count=generated_token_count - yielded_token_count,
                             segment_idx=segment_idx,
                         )
+
+            # The last audio may already have gone out as a partial chunk.
+            if stream and is_last_segment and not yielded_final:
+                yield self.generate_result(
+                    audio=mx.zeros((0,), dtype=mx.float32),
+                    start_time=time_start,
+                    token_count=generated_token_count - yielded_token_count,
+                    segment_idx=segment_idx,
+                    is_streaming_chunk=True,
+                    is_final_chunk=True,
+                )
 
             # Clear cache after each segment to avoid memory buildup
             mx.clear_cache()

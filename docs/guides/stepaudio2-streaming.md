@@ -115,6 +115,23 @@ against the native streaming implementation with matched reference arrays,
 codes, persistent noise, weights and RNG; complete native endings must be
 measured separately from a single final call.
 
+The existing Codec CI job explicitly runs both streaming suites from `tests/`.
+The CPU contract file stays outside the codec package so pytest collection does
+not import its device modules.
+On an Apple Silicon Mac with MLX/Metal available, run the device tests and the
+existing offline StepAudio2 tests together:
+
+```sh
+python -m pytest -q tests/test_stepaudio2_streaming_contract.py \
+    tests/test_stepaudio2_streaming_mlx.py mlx_audio/codec/tests/test_stepaudio2.py
+```
+
+These device cases use small randomly initialized Conformer/DiT networks and a
+synthetic vocoder. They check the current upstream dependency versions without
+downloading weights; they do not validate trained HiFT waveform parity or sustained
+live performance. Upstream's CAMPPlus speaker changes affect prompt extraction;
+regenerate prepared prompts when comparing speaker embeddings across versions.
+
 The streaming algorithm derives from StepAudio2/CosyVoice2 and ESPnet native
 cache implementations. Original author/license notices remain in the source;
 this derived module retains Apache-2.0, with its license copy packaged beside it.

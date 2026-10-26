@@ -120,6 +120,7 @@ class KokoroPipeline:
         model: nn.Module,
         repo_id: str,
         trf: bool = False,
+        model_path: Optional[Union[str, Path]] = None,
     ):
         """Initialize a KokoroPipeline.
 
@@ -127,6 +128,7 @@ class KokoroPipeline:
             lang_code: Language code for G2P processing
             model: KokoroModel instance, True to create new model, False for no model
             trf: Whether to use transformer-based G2P
+            model_path: Loaded model snapshot, checked for local voice packs first
             device: Override default device selection ('cuda' or 'cpu', or None for auto)
                    If None, will auto-select cuda if available
                    If 'cuda' and not available, will explicitly raise an error
@@ -136,6 +138,7 @@ class KokoroPipeline:
         assert lang_code in LANG_CODES, (lang_code, LANG_CODES)
         self.lang_code = lang_code
         self.repo_id = repo_id
+        self.model_path = Path(model_path) if model_path is not None else None
         if repo_id is None:
             raise ValueError("repo_id is required to load voices")
         self.model = model
@@ -173,6 +176,12 @@ class KokoroPipeline:
         if voice.endswith(".safetensors"):
             # Direct path to safetensors file
             f = voice
+        elif (
+            self.model_path is not None
+            and (self.model_path / "voices" / f"{voice}.safetensors").is_file()
+        ):
+            # Use the same local snapshot as the weights, including a pinned revision.
+            f = str(self.model_path / "voices" / f"{voice}.safetensors")
         else:
             # Check if voice exists in local snapshot first
             try:
@@ -198,12 +207,10 @@ class KokoroPipeline:
                 )
                 f = str(local_dir / "voices" / f"{voice}.safetensors")
 
-            if not voice.startswith(self.lang_code):
-                v = LANG_CODES.get(voice, voice)
-                p = LANG_CODES.get(self.lang_code, self.lang_code)
-                logging.warning(
-                    f"Language mismatch, loading {v} voice into {p} pipeline."
-                )
+        if not voice.endswith(".safetensors") and not voice.startswith(self.lang_code):
+            v = LANG_CODES.get(voice, voice)
+            p = LANG_CODES.get(self.lang_code, self.lang_code)
+            logging.warning(f"Language mismatch, loading {v} voice into {p} pipeline.")
 
         pack = load_voice_tensor(f)
         self.voices[voice] = pack

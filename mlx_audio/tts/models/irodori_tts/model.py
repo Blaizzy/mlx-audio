@@ -8,6 +8,7 @@ import mlx.nn as nn
 
 from .config import IrodoriDiTConfig
 from .modernbert import ModernBertConfig, ModernBertEncoder
+from .t5gemma2 import T5Gemma2Config, T5Gemma2TextEncoder
 
 RotaryCache = Tuple[mx.array, mx.array]
 KVCache = Tuple[mx.array, mx.array]
@@ -446,13 +447,29 @@ class TextEncoder(nn.Module):
 class PretrainedTextBackbone(nn.Module):
     """
     Thin wrapper around the pretrained encoder shared by the text and caption
-    projectors (v4). Keeps the checkpoint's `pretrained_text_backbone.backbone.*`
-    key layout.
+    projectors (v4: ModernBERT-ja-310m; v4-Large: T5Gemma2's bidirectional
+    text encoder). Keeps the checkpoint's `pretrained_text_backbone.backbone.*`
+    key layout. Dispatches on the embedded HF config's top-level `model_type`,
+    mirroring upstream's own AutoModel-vs-T5Gemma2TextEncoder branch.
     """
 
-    def __init__(self, config: ModernBertConfig):
+    def __init__(self, config_dict: dict):
         super().__init__()
-        self.backbone = ModernBertEncoder(config)
+        model_type = str(config_dict.get("model_type", "")).strip().lower()
+        if model_type == "t5gemma2":
+            text_config = config_dict.get("encoder", {}).get("text_config")
+            if not text_config:
+                raise ValueError(
+                    "A t5gemma2 text_encoder_config requires encoder.text_config."
+                )
+            eoi_token_index = config_dict.get("eoi_token_index", 256_000)
+            config = T5Gemma2Config.from_dict(
+                {**text_config, "eoi_token_index": eoi_token_index}
+            )
+            self.backbone = T5Gemma2TextEncoder(config)
+        else:
+            config = ModernBertConfig.from_dict(config_dict)
+            self.backbone = ModernBertEncoder(config)
         self.hidden_size = config.hidden_size
 
     def __call__(self, input_ids: mx.array, mask: Optional[mx.array]) -> mx.array:
@@ -1241,7 +1258,7 @@ class IrodoriDiT(nn.Module):
                     "in the model config."
                 )
             self.pretrained_text_backbone = PretrainedTextBackbone(
-                ModernBertConfig.from_dict(cfg.text_encoder_config)
+                cfg.text_encoder_config
             )
             self.text_encoder = PretrainedConditionProjector(
                 self.pretrained_text_backbone.hidden_size,

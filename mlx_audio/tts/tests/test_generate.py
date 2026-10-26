@@ -41,7 +41,7 @@ class TestGenerateArgs(unittest.TestCase):
         self.assertTrue(args.stream)
         self.assertTrue(args.save)
 
-    def test_max_tokens_defaults_to_none_for_model_defaults(self):
+    def test_generation_options_default_to_none(self):
         test_args = [
             "--model",
             "dummy-model",
@@ -52,7 +52,45 @@ class TestGenerateArgs(unittest.TestCase):
         with patch.object(sys, "argv", ["generate.py"] + test_args):
             args = parse_args()
 
-        self.assertIsNone(args.max_tokens)
+        for name in (
+            "voice",
+            "temperature",
+            "max_tokens",
+            "top_p",
+            "top_k",
+            "repetition_penalty",
+        ):
+            with self.subTest(option=name):
+                self.assertIsNone(getattr(args, name))
+
+    def test_explicit_generation_options(self):
+        test_args = [
+            "--model",
+            "dummy-model",
+            "--text",
+            "hello",
+            "--voice",
+            "Vivian",
+            "--temperature",
+            "0",
+            "--max_tokens",
+            "42",
+            "--top_p",
+            "1",
+            "--top_k",
+            "0",
+            "--repetition_penalty",
+            "1",
+        ]
+        with patch.object(sys, "argv", ["generate.py"] + test_args):
+            args = parse_args()
+
+        self.assertEqual(args.voice, "Vivian")
+        self.assertEqual(args.temperature, 0.0)
+        self.assertEqual(args.max_tokens, 42)
+        self.assertEqual(args.top_p, 1.0)
+        self.assertEqual(args.top_k, 0)
+        self.assertEqual(args.repetition_penalty, 1.0)
 
     def test_cfg_scale_defaults_to_none_for_model_defaults(self):
         test_args = [
@@ -207,6 +245,34 @@ class TestGenerateAudio(unittest.TestCase):
         self.assertEqual(second_kwargs["format"], "wav")
 
     @patch("builtins.print")
+    @patch("mlx_audio.tts.generate.audio_write")
+    @patch("mlx_audio.tts.generate.AudioPlayer")
+    def test_stream_save_skips_an_empty_final_chunk(
+        self, mock_audio_player, mock_audio_write, _mock_print
+    ):
+        mock_audio_player.return_value = MagicMock()
+        model = MagicMock()
+        model.sample_rate = 24000
+        model.generate.return_value = [
+            self._result([0.1, 0.2]),
+            self._result([0.3, 0.4], segment_idx=1),
+            self._result([], segment_idx=2),
+        ]
+
+        generate_audio(
+            text="hello",
+            model=model,
+            stream=True,
+            save=True,
+            verbose=False,
+        )
+
+        self.assertEqual(
+            [args[0] for args, _ in mock_audio_write.call_args_list],
+            ["audio_000.wav", "audio_001.wav"],
+        )
+
+    @patch("builtins.print")
     @patch("mlx_audio.tts.generate.os.makedirs")
     @patch("mlx_audio.tts.generate.audio_write")
     @patch("mlx_audio.tts.generate.AudioPlayer")
@@ -295,6 +361,82 @@ class TestGenerateAudio(unittest.TestCase):
         self.assertNotIn("gen_duration", model.generate.call_args.kwargs)
         self.assertNotIn("stg_scale", model.generate.call_args.kwargs)
         mock_audio_write.assert_called_once()
+
+    @patch("builtins.print")
+    def test_generate_audio_leaves_generation_defaults_to_model(self, _mock_print):
+        received = []
+
+        class Model:
+            sample_rate = 24000
+
+            def generate(
+                self,
+                *,
+                voice="model-voice",
+                temperature=0.3,
+                max_tokens=512,
+                top_p=0.95,
+                top_k=40,
+                repetition_penalty=1.2,
+                **kwargs,
+            ):
+                received.append(
+                    (voice, temperature, max_tokens, top_p, top_k, repetition_penalty)
+                )
+                return iter(())
+
+        generate_audio(text="hello", model=Model(), verbose=False)
+        generate_audio(
+            text="hello",
+            model=Model(),
+            verbose=False,
+            voice=None,
+            temperature=None,
+            max_tokens=None,
+            top_p=None,
+            top_k=None,
+            repetition_penalty=None,
+        )
+        self.assertEqual(
+            received,
+            [("model-voice", 0.3, 512, 0.95, 40, 1.2)] * 2,
+        )
+
+    @patch("builtins.print")
+    def test_cli_forwards_only_explicit_generation_options(self, _mock_print):
+        model = MagicMock(sample_rate=24000)
+        model.generate.return_value = iter(())
+        argv = [
+            "generate.py",
+            "--model",
+            "dummy-model",
+            "--text",
+            "hello",
+            "--voice",
+            "Vivian",
+            "--temperature",
+            "0",
+            "--max_tokens",
+            "42",
+            "--top_p",
+            "1",
+            "--top_k",
+            "0",
+            "--repetition_penalty",
+            "1",
+        ]
+        with patch.object(sys, "argv", argv):
+            options = vars(parse_args())
+        options["model"] = model
+        generate_audio(**options)
+
+        forwarded = model.generate.call_args.kwargs
+        self.assertEqual(forwarded["voice"], "Vivian")
+        self.assertEqual(forwarded["temperature"], 0.0)
+        self.assertEqual(forwarded["max_tokens"], 42)
+        self.assertEqual(forwarded["top_p"], 1.0)
+        self.assertEqual(forwarded["top_k"], 0)
+        self.assertEqual(forwarded["repetition_penalty"], 1.0)
 
     @patch("builtins.print")
     @patch("mlx_audio.tts.generate.audio_write")
