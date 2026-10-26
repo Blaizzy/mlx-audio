@@ -24,6 +24,10 @@ class ModelConfig(BaseModelArgs):
     # This is separate from the core TTS weights.
     qwen_emotion_model: str = "Qwen/Qwen2.5-0.5B-Instruct-4bit"
 
+    # Emotion matrix bank used by explicit 8-D vectors and Qwen text emotion.
+    emo_num: tuple[int, ...] = (3, 17, 2, 8, 4, 5, 10, 24)
+    emotion_matrices: Optional[str] = None
+
     # Vocoder (BigVGAN v2 22khz 80-band for official IndexTTS2)
     vocoder: Optional[BigVGANConfig] = None
 
@@ -113,6 +117,8 @@ class ModelConfig(BaseModelArgs):
             qwen_emotion_model=config.get(
                 "qwen_emotion_model", "Qwen/Qwen2.5-0.5B-Instruct-4bit"
             ),
+            emo_num=tuple(config.get("emo_num", (3, 17, 2, 8, 4, 5, 10, 24))),
+            emotion_matrices=config.get("emotion_matrices"),
             vocoder=vocoder,
             campplus=config.get("campplus"),
             semantic_codec=semantic_codec,

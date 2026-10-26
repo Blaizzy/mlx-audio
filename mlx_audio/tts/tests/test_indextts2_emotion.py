@@ -44,6 +44,14 @@ class TestIndexTTS2Emotion(unittest.TestCase):
         self.assertAlmostEqual(vec_dict["happy"], 0.7)
         self.assertAlmostEqual(vec_dict["angry"], 0.2)
 
+    def test_first_json_object_only(self):
+        from mlx_audio.tts.models.indextts2.emotion import parse_emotion_response
+
+        resp = '{"happy": 0.95, "calm": 0.02}\nAssistant: {"happy": 0.1}'
+        emo = parse_emotion_response(resp)
+        self.assertAlmostEqual(emo["happy"], 0.95)
+        self.assertAlmostEqual(emo["calm"], 0.02)
+
     def test_default_calm_when_empty(self):
         from mlx_audio.tts.models.indextts2.emotion import normalize_emo_vector
 

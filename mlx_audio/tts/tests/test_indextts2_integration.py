@@ -26,6 +26,28 @@ class TestIndexTTS25Integration(unittest.TestCase):
         self.assertTrue(np.isfinite(audio).all())
         self.assertEqual(result.sample_rate, 22050)
 
+    def test_explicit_emotion_vector(self):
+        import numpy as np
+
+        from mlx_audio.tts import load
+
+        model = load(os.environ["MLX_INDEXTTS2_MODEL"], strict=True)
+        if model.emo_matrix is None:
+            self.skipTest("emotion matrices are not converted")
+        result = next(
+            model.generate(
+                "I am very happy to see you.",
+                ref_audio=os.environ["MLX_INDEXTTS2_REF_AUDIO"],
+                language="en",
+                emo_vector=[1.0, 0, 0, 0, 0, 0, 0, 0],
+                emo_alpha=0.8,
+                diffusion_steps=8,
+            )
+        )
+        audio = np.array(result.audio, dtype=np.float32)
+        self.assertGreater(audio.size, 0)
+        self.assertTrue(np.isfinite(audio).all())
+
 
 if __name__ == "__main__":
     unittest.main()

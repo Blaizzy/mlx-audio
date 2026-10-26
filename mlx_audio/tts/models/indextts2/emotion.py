@@ -64,7 +64,7 @@ def parse_emotion_response(text: str) -> Dict[str, float]:
     text = text.strip()
 
     # Try to extract a JSON object substring first (common for chatty outputs).
-    m = re.search(r"\{[\s\S]*\}", text)
+    m = re.search(r"\{[\s\S]*?\}", text)
     json_blob = m.group(0) if m else None
 
     candidates = [json_blob, text] if json_blob else [text]
@@ -80,7 +80,7 @@ def parse_emotion_response(text: str) -> Dict[str, float]:
     # Matches: happy: 0.5, "angry":0.2, 高兴: 1.0, etc.
     pairs: Dict[str, float] = {}
     for key, val in re.findall(
-        r"([A-Za-z_]+|[\u4e00-\u9fff]+)\s*[:=]\s*([-+]?\d+(?:\.\d+)?)",
+        r"\"?([A-Za-z_]+|[\u4e00-\u9fff]+)\"?\s*[:=]\s*([-+]?\d+(?:\.\d+)?)",
         text,
     ):
         f = _coerce_float(val)
@@ -186,7 +186,7 @@ class QwenEmotion:
 
         from transformers import AutoTokenizer
 
-        from mlx_audio.lm.models import qwen2
+        from mlx_audio.lm.models import qwen2, qwen3
         from mlx_audio.utils import (
             apply_quantization,
             get_model_path,
@@ -197,12 +197,17 @@ class QwenEmotion:
         model_path = get_model_path(self.config.model)
         config = load_config(model_path)
         model_type = config.get("model_type", "qwen2")
-        if model_type not in {"qwen2", "qwen2_5"}:
+        if model_type == "qwen3":
+            module = qwen3
+        elif model_type in {"qwen2", "qwen2_5"}:
+            module = qwen2
+        else:
             raise ValueError(
-                f"QwenEmotion only supports qwen2-family checkpoints, got {model_type!r}"
+                "QwenEmotion only supports qwen2/qwen3-family checkpoints, "
+                f"got {model_type!r}"
             )
 
-        model = qwen2.Model(qwen2.ModelArgs.from_dict(config))
+        model = module.Model(module.ModelArgs.from_dict(config))
         weights = load_weights(model_path)
         apply_quantization(model, config, weights)
         model.load_weights(list(model.sanitize(weights).items()))
@@ -231,6 +236,7 @@ class QwenEmotion:
 
     def infer(self, text: str) -> Tuple[Dict[str, float], list[float]]:
         from mlx_audio.lm.generate import generate
+        from mlx_audio.lm.sample_utils import make_sampler
 
         llm, tokenizer = self._load_llm()
         prompt = self._prompt(text)
@@ -239,7 +245,7 @@ class QwenEmotion:
             tokenizer,
             prompt,
             max_tokens=self.config.max_tokens,
-            temp=self.config.temperature,
+            sampler=make_sampler(temp=self.config.temperature),
             verbose=False,
         )
 

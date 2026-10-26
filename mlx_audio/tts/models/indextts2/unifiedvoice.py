@@ -427,6 +427,8 @@ class UnifiedVoice(nn.Module):
         alpha: float = 1.0,
         campplus_embedding: Optional[mx.array] = None,
         lang_id: Optional[int] = None,
+        emo_vector_override: Optional[mx.array] = None,
+        emo_weight_sum: float = 0.0,
         top_p: float = 0.8,
         top_k: int = 30,
         temperature: float = 0.8,
@@ -444,6 +446,9 @@ class UnifiedVoice(nn.Module):
         emo_vec = self.merge_emovec(
             speech_condition, emo_condition, spk_lens, emo_lens, alpha=alpha
         )
+        if emo_vector_override is not None:
+            remaining = max(0.0, 1.0 - float(emo_weight_sum))
+            emo_vec = emo_vector_override + remaining * emo_vec
 
         if self.spk_cond_mode == "campplus":
             if campplus_embedding is None:

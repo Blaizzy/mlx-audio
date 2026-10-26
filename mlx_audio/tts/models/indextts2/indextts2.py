@@ -14,7 +14,12 @@ from mlx_audio.tts.models.base import GenerationResult, adjust_speed
 from mlx_audio.utils import load_audio
 
 from .config import ModelConfig
-from .emotion import QwenEmotion, QwenEmotionConfig
+from .emotion import (
+    CN_TO_EN,
+    EMOTION_KEYS,
+    QwenEmotion,
+    QwenEmotionConfig,
+)
 from .s2mel import S2MelConfig, S2MelModel
 from .semantic_codec import EnhancedCodec
 from .text_frontend import (
@@ -136,12 +141,107 @@ class Model(nn.Module):
                 )
             )
 
+        self.emo_matrix = None
+        self.spk_matrix = None
+        self.emo_matrix_split = None
+        self.spk_matrix_split = None
+
+    @classmethod
+    def post_load_hook(cls, model: "Model", model_path) -> "Model":
+        """Load optional emotion matrices outside the parameter tree."""
+        path = model.config.emotion_matrices
+        if path:
+            matrices_path = Path(model_path) / path
+            if matrices_path.is_file():
+                matrices = mx.load(str(matrices_path))
+                model.spk_matrix = matrices["spk_matrix"]
+                model.emo_matrix = matrices["emo_matrix"]
+                bounds = []
+                offset = 0
+                for size in model.config.emo_num[:-1]:
+                    offset += int(size)
+                    bounds.append(offset)
+                model.emo_matrix_split = list(
+                    mx.split(model.emo_matrix, bounds, axis=0)
+                )
+                model.spk_matrix_split = list(
+                    mx.split(model.spk_matrix, bounds, axis=0)
+                )
+        return model
+
     def _get_emotion(self) -> QwenEmotion:
         if self._emotion is None:
-            self._emotion = QwenEmotion(
-                QwenEmotionConfig(model=self.config.qwen_emotion_model)
-            )
+            model_id = self.config.qwen_emotion_model
+            if self.config.model_path:
+                local = Path(self.config.model_path) / model_id
+                if local.exists():
+                    model_id = str(local)
+            self._emotion = QwenEmotion(QwenEmotionConfig(model=model_id))
         return self._emotion
+
+    @staticmethod
+    def _normalize_emotion_weights(
+        values: Optional[list[float] | dict[str, float]],
+    ) -> dict[str, float]:
+        if values is None:
+            return {key: 0.0 for key in EMOTION_KEYS}
+        if isinstance(values, dict):
+            normalized = {}
+            for key, value in values.items():
+                key = CN_TO_EN.get(str(key), str(key).lower())
+                if key in EMOTION_KEYS:
+                    normalized[key] = max(0.0, min(1.2, float(value)))
+        else:
+            values = list(values)
+            if len(values) != len(EMOTION_KEYS):
+                raise ValueError("emo_vector must contain exactly 8 values")
+            normalized = {
+                key: max(0.0, min(1.2, float(value)))
+                for key, value in zip(EMOTION_KEYS, values)
+            }
+        if not any(value > 0 for value in normalized.values()):
+            normalized["calm"] = 1.0
+        return normalized
+
+    def _compute_emotion_vector(
+        self,
+        weights: dict[str, float],
+        style: mx.array,
+        *,
+        use_random: bool = False,
+    ) -> mx.array:
+        """Mix the 2.5 emotion matrix bank using the CAMPPlus style vector."""
+        if self.emo_matrix_split is None or self.spk_matrix_split is None:
+            raise ValueError(
+                "Emotion matrices are not loaded. Convert feat1.pt/feat2.pt with "
+                "convert_emotion_matrices.py first."
+            )
+
+        style = style.reshape(-1, style.shape[-1]).astype(mx.float32)
+        style_norm = mx.sqrt(mx.sum(style * style, axis=-1, keepdims=True))
+        selected = []
+        for spk_bank, emo_bank, category in zip(
+            self.spk_matrix_split, self.emo_matrix_split, EMOTION_KEYS
+        ):
+            if use_random:
+                import random
+
+                index = random.randrange(spk_bank.shape[0])
+            else:
+                bank = spk_bank.astype(mx.float32)
+                bank_norm = mx.sqrt(mx.sum(bank * bank, axis=-1, keepdims=True))
+                similarity = (bank @ style[0]) / mx.maximum(
+                    bank_norm[:, 0] * style_norm[0, 0], 1e-8
+                )
+                index = int(mx.argmax(similarity).item())
+            selected.append(emo_bank[index])
+
+        matrix = mx.stack(selected, axis=0)
+        weight_vector = mx.array(
+            [weights.get(category, 0.0) for category in EMOTION_KEYS],
+            dtype=mx.float32,
+        )
+        return (weight_vector[:, None] * matrix).sum(axis=0, keepdims=True)
 
     @staticmethod
     def _split_weightnorm(key: str, value: mx.array, expected: dict):
@@ -171,6 +271,8 @@ class Model(nn.Module):
         out: dict[str, mx.array] = {}
 
         for original_key, value in weights.items():
+            if original_key in {"emo_matrix", "spk_matrix"}:
+                continue
             key = original_key
 
             # Existing exports keep BigVGAN's upsample ConvTranspose inside a
@@ -348,6 +450,7 @@ class Model(nn.Module):
         emo_text: Optional[str] = None,
         emo_vector: Optional[list[float]] = None,
         emo_alpha: float = 1.0,
+        use_random: bool = False,
         repetition_penalty: float = 10.0,
         diffusion_steps: int = 40,
         diffusion_cfg_rate: float = 0.7,
@@ -368,16 +471,8 @@ class Model(nn.Module):
                 "IndexTTS-2.5 supports zh, en, ja, es, and ar; "
                 f"got language={lang!r}"
             )
-        if emo_vector is not None:
-            raise NotImplementedError(
-                "Explicit 8-D emo_vector is not wired into the MLX IndexTTS "
-                "pipeline yet."
-            )
-        if use_emo_text:
-            raise NotImplementedError(
-                "Text-driven emotion guidance requires the upstream emotion "
-                "matrix buffers, which are not converted yet."
-            )
+        if emo_vector is not None and use_emo_text:
+            raise ValueError("emo_vector and use_emo_text are mutually exclusive")
 
         if ref_audio is None:
             raise ValueError("IndexTTS2 requires ref_audio (speaker prompt audio)")
@@ -422,12 +517,24 @@ class Model(nn.Module):
         )
 
         # Emotion vector
-        emo_vec = None
+        emotion_input = emo_vector
         if use_emo_text:
             text_for_emo = emo_text if emo_text is not None else text
-            _, emo_vector = self._get_emotion().infer(text_for_emo)
-        if emo_vector is not None:
-            emo_vec = mx.array(emo_vector, dtype=mx.float32)[None, :]
+            _, emotion_input = self._get_emotion().infer(text_for_emo)
+        emotion_weights = None
+        emotion_override = None
+        emotion_weight_sum = 0.0
+        if emotion_input is not None:
+            emotion_weights = self._normalize_emotion_weights(emotion_input)
+            scale = max(0.0, min(1.0, float(emo_alpha)))
+            if scale != 1.0:
+                emotion_weights = {
+                    key: value * scale for key, value in emotion_weights.items()
+                }
+            emotion_override = self._compute_emotion_vector(
+                emotion_weights, style, use_random=use_random
+            )
+            emotion_weight_sum = sum(emotion_weights.values())
 
         if self.is_2_5:
             text = normalize_case(apply_pronunciation_annotations(text), lang)
@@ -447,6 +554,8 @@ class Model(nn.Module):
             alpha=float(emo_alpha),
             campplus_embedding=style if self.is_2_5 else None,
             lang_id=lang_to_token(lang) if self.is_2_5 else None,
+            emo_vector_override=emotion_override,
+            emo_weight_sum=emotion_weight_sum,
             top_p=0.8,
             top_k=30,
             temperature=0.8,
