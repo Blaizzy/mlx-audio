@@ -15,15 +15,23 @@ def kv(n, seed):
 
 
 def compare_state(a, b):
-    sa, sb = a.state, b.state
+    if isinstance(a, vendored.ArraysCache):
+        sa, sb = a.cache, b.cache
+    else:
+        sa, sb = a.state, b.keys_and_values()
     assert len(sa) == len(sb)
     for x, y in zip(sa, sb):
         if x is None or y is None:
             assert x is y
         else:
             assert_exactly_equal(x, y)
-    if hasattr(a, "offset"):
-        assert_exactly_equal(mx.array(a.offset), mx.array(b.offset))
+    for attribute in ("offset", "keep", "max_size", "_idx", "left_padding", "lengths"):
+        if hasattr(a, attribute):
+            x, y = getattr(a, attribute), getattr(b, attribute)
+            if x is None or y is None:
+                assert x is y
+            else:
+                assert_exactly_equal(mx.array(x), mx.array(y))
 
 
 def drive(vc, uc, steps):
@@ -146,5 +154,5 @@ def test_state_roundtrip_matches_upstream():
     vc, uc = vendored.KVCache(), upstream.KVCache()
     drive(vc, uc, [5, 1])
     vc2 = vendored.KVCache.from_state(vc.state, vc.meta_state)
-    uc2 = upstream.KVCache.from_state(uc.state, uc.meta_state)
+    uc2 = upstream.KVCache.from_state(uc.state)
     compare_state(vc2, uc2)

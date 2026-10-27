@@ -71,7 +71,7 @@ class TimestepEmbedder(nn.Module):
             embedding = mx.concatenate(
                 [embedding, mx.zeros_like(embedding[:, :1])], axis=-1
             )
-        return embedding
+        return embedding.astype(t.dtype)
 
     def __call__(self, t: mx.array) -> mx.array:
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size)
@@ -199,29 +199,22 @@ class DiffusionHead(nn.Module):
             norm_eps=config.rms_norm_eps,
         )
 
-    def __call__(
-        self,
-        noisy_images: mx.array,
-        timesteps: mx.array,
-        condition: mx.array,
+    def project_condition(self, condition: mx.array) -> mx.array:
+        return self.cond_proj(condition)
+
+    def embed_timesteps(self, timesteps: mx.array) -> mx.array:
+        return self.t_embedder(timesteps)
+
+    def forward_with_condition(
+        self, noisy_images: mx.array, condition_with_timestep: mx.array
     ) -> mx.array:
-        """Forward pass of the prediction head.
-
-        Args:
-            noisy_images: Noisy latents to denoise, shape (B, latent_size)
-            timesteps: Diffusion timesteps, shape (B,)
-            condition: Conditioning information, shape (B, hidden_size)
-
-        Returns:
-            Predicted noise/velocity, shape (B, latent_size)
-        """
         x = self.noisy_images_proj(noisy_images)
-        t = self.t_embedder(timesteps)
-        condition = self.cond_proj(condition)
-        c = condition + t
-
         for layer in self.layers:
-            x = layer(x, c)
+            x = layer(x, condition_with_timestep)
+        return self.final_layer(x, condition_with_timestep)
 
-        x = self.final_layer(x, c)
-        return x
+    def __call__(
+        self, noisy_images: mx.array, timesteps: mx.array, condition: mx.array
+    ) -> mx.array:
+        c = self.project_condition(condition) + self.embed_timesteps(timesteps)
+        return self.forward_with_condition(noisy_images, c)

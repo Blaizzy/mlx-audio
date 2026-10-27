@@ -158,13 +158,12 @@ def test_stitching_tracks_speaker_swaps_and_preserves_tail(tiny_model, monkeypat
     )
 
 
-def test_cli_uses_local_metadata_and_writes_two_stems(tmp_path, monkeypatch):
+def test_cli_writes_two_stems_via_standard_generate(tmp_path, monkeypatch):
     import sys
     from types import SimpleNamespace
 
-    import mlx_audio.sts
+    import mlx_audio.sts.generate as cli
     from mlx_audio import audio_io
-    from mlx_audio.sts.generate import main
 
     model_dir = tmp_path / "converted"
     model_dir.mkdir()
@@ -178,7 +177,13 @@ def test_cli_uses_local_metadata_and_writes_two_stems(tmp_path, monkeypatch):
         return SimpleNamespace(speakers=mx.zeros((2, 8)), sample_rate=24000)
 
     monkeypatch.setattr(
-        mlx_audio.sts, "load", lambda *a, **kw: SimpleNamespace(separate=separate)
+        cli,
+        "load_model",
+        lambda *a, **kw: SimpleNamespace(
+            generate=lambda audio, **options: Model.generate(
+                SimpleNamespace(separate=separate), audio, **options
+            )
+        ),
     )
     monkeypatch.setattr(
         sys,
@@ -195,7 +200,7 @@ def test_cli_uses_local_metadata_and_writes_two_stems(tmp_path, monkeypatch):
             "9",
         ],
     )
-    main()
+    cli.main()
     assert calls["seed"] == 9 and calls["num_steps"] == 30
     for i in (1, 2):
         data, sr = audio_io.read(str(tmp_path / f"out_speaker_{i}.wav"))

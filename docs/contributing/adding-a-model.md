@@ -182,6 +182,15 @@ If the `model_type` in `config.json` differs from your directory name, add an en
 5. It instantiates `ModelConfig` from the config dict and `Model` from the config.
 6. It loads the `.safetensors` weights into the model.
 
+For checkpoints that require unpacking or format adaptation, the model package
+can export `prepare_model_path(model_path, *, source=None, revision=None,
+force_download=False) -> Path`. The shared loader calls this optional hook
+before constructing `ModelConfig` or reading weights. Return the input path for
+an ordinary checkpoint, or a prepared directory containing the runtime config
+and weights. When the path changes, the loader reads the prepared config and
+resolves its model type again. Keep archive downloading, verification, and
+unpacking inside the model package.
+
 ## Step 4: Convert and Test
 
 ### Convert Weights

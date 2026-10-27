@@ -90,7 +90,8 @@ def test_generate_music_joins_results_and_writes_audio(mock_write, tmp_path) -> 
     )
 
 
-def test_main_reads_lyrics_file(tmp_path) -> None:
+@pytest.mark.parametrize("verbose", [False, True])
+def test_main_reads_lyrics_file(tmp_path, verbose) -> None:
     lyrics_path = tmp_path / "lyrics.txt"
     lyrics_path.write_text("[chorus]\nSing with me", encoding="utf-8")
 
@@ -105,6 +106,7 @@ def test_main_reads_lyrics_file(tmp_path) -> None:
                 "caption",
                 "--lyrics-file",
                 str(lyrics_path),
+                *(["--verbose"] if verbose else []),
             ],
         ),
         patch("mlx_audio.music.generate.generate_music") as mock_generate,
@@ -119,5 +121,5 @@ def test_main_reads_lyrics_file(tmp_path) -> None:
         steps=30,
         seed=0,
         output_path=configure_parser().get_default("output"),
-        verbose=True,
+        verbose=verbose,
     )

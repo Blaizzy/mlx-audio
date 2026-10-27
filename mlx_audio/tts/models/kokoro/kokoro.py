@@ -52,6 +52,7 @@ class ModelConfig(BaseModelArgs):
     plbert: dict
     vocab: Dict[str, int]
     sample_rate: int = 24000
+    model_path: str | None = None
 
 
 class Model(nn.Module):
@@ -287,6 +288,7 @@ class Model(nn.Module):
                 model=self,
                 repo_id=self.REPO_ID if self.repo_id is None else self.repo_id,
                 lang_code=lang_code,
+                model_path=self.config.model_path,
             )
         return self._pipelines[lang_code]
 

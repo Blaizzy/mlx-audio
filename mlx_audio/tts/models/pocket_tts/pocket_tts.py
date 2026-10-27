@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import time
 from pathlib import Path
@@ -10,18 +11,15 @@ import mlx.nn as nn
 
 from mlx_audio.codec.models.mimi.modules.conv import ConvTranspose1d
 from mlx_audio.tts.models.base import GenerationResult
-from mlx_audio.utils import load_audio
+from mlx_audio.utils import load_audio, load_weights
 
-from .conditioners import TokenizedText
+from .conditioners import ContinuousConditioner, SpeakerCountConditioner, TokenizedText
 from .config import ModelConfig
 from .flow_lm import FlowLMModel
 from .mimi import MimiAdapter
 from .utils import PREDEFINED_VOICES, download_if_necessary, load_predefined_voice
+from .weights import map_weights
 
-DEFAULT_TEMPERATURE = 0.7
-DEFAULT_LSD_DECODE_STEPS = 1
-DEFAULT_NOISE_CLAMP = None
-DEFAULT_EOS_THRESHOLD = -4.0
 DEFAULT_AUDIO_PROMPT = "alba"
 
 
@@ -35,19 +33,48 @@ class Model(nn.Module):
             raise ValueError("PocketTTS requires flow_lm and mimi config sections.")
 
         self.flow_lm = FlowLMModel.from_config(
-            config.flow_lm, latent_dim=config.mimi.quantizer.dimension
+            config.flow_lm,
+            latent_dim=config.flow_lm.ldim or config.mimi.quantizer.dimension,
         )
         self.mimi = MimiAdapter.from_config(config.mimi)
+        for conditioner in config.conditioners:
+            if conditioner["name"] == "num_speakers" and conditioner["type"] == "lut":
+                lut = conditioner["lut"]
+                self.flow_lm.num_speakers = SpeakerCountConditioner(
+                    lut["n_bins"], lut["dim"], config.flow_lm.transformer.d_model
+                )
+            elif (
+                conditioner["name"] == "duration_delta"
+                and conditioner["type"] == "continuous"
+            ):
+                self.flow_lm.duration_delta = ContinuousConditioner(
+                    output_dim=config.flow_lm.transformer.d_model,
+                    **conditioner["continuous"],
+                )
+            else:
+                raise ValueError(f"Unsupported conditioner: {conditioner['name']}")
 
-        self.temp = DEFAULT_TEMPERATURE
-        self.lsd_decode_steps = DEFAULT_LSD_DECODE_STEPS
-        self.noise_clamp = DEFAULT_NOISE_CLAMP
-        self.eos_threshold = DEFAULT_EOS_THRESHOLD
+        self.temp = config.temp
+        self.lsd_decode_steps = config.lsd_decode_steps
+        self.noise_clamp = config.noise_clamp
+        self.eos_threshold = config.eos_threshold
+        self._empty_conditioning = mx.zeros((1, 0, self.flow_lm.dim))
+        # Private buffers are excluded from parameters(), which the loader evals.
+        # Materialize this on its owning stream before an audio worker uses it.
+        mx.eval(self._empty_conditioning)
+        self._validate_sampling()
+
+        if (
+            config.fuser.get("cross")
+            or config.fuser.get("streaming_sum")
+            or set(config.fuser.get("sum", [])) - {"num_speakers", "duration_delta"}
+        ):
+            raise ValueError("Unsupported Pocket TTS conditioning fuser.")
 
         self.speaker_proj_weight = mx.zeros(
             (
                 config.flow_lm.transformer.d_model,
-                config.mimi.quantizer.output_dimension,
+                config.mimi.seanet.dimension,
             ),
             dtype=mx.float32,
         )
@@ -62,6 +89,35 @@ class Model(nn.Module):
     def model_type(self) -> str:
         return self.config.model_type
 
+    def sanitize(self, weights):
+        # Conditioner padding is unused during inference.
+        for key in list(weights):
+            if key.endswith(".learnt_padding"):
+                weights.pop(key)
+        # Voice sidecars are loaded separately from the model parameters.
+        for key in ("speaker_wavs", "emb", "audio_prompt"):
+            weights.pop(key, None)
+        weights = map_weights(self, weights)
+        # Native inference packages can omit the audio encoder. Quantization is
+        # handled by the standard loader using the exported config.
+        if not any(key.startswith("mimi.encoder.") for key in weights):
+            self.config.mimi.encoder_enabled = False
+            self.mimi.encoder = self.mimi.encoder_transformer = self.mimi.downsample = (
+                None
+            )
+            self.mimi.encoder_cache = []
+        return weights
+
+    def _validate_sampling(self):
+        if not isinstance(self.lsd_decode_steps, int) or self.lsd_decode_steps <= 0:
+            raise ValueError("lsd_decode_steps must be a positive integer.")
+        if not math.isfinite(self.temp) or self.temp < 0:
+            raise ValueError("temperature must be finite and >= 0.")
+        if self.noise_clamp is not None and (
+            not math.isfinite(self.noise_clamp) or self.noise_clamp < 0
+        ):
+            raise ValueError("noise_clamp must be finite and >= 0.")
+
     def load_weights(self, weights, strict: bool = True):
         m = super().load_weights(weights, strict=strict)
 
@@ -71,24 +127,28 @@ class Model(nn.Module):
             return True
 
         m.filter_and_map(_filter_fn)
+        self.flow_lm.cache_conditioning()
         return m
 
     def load_from_config(self, strict: bool = True):
-        if self.config.weights_path:
-            weights = mx.load(download_if_necessary(self.config.weights_path))
-            return self.load_weights(weights, strict=strict)
+        from dataclasses import asdict
 
-        loaded = False
-        if self.config.flow_lm and self.config.flow_lm.weights_path:
-            weights = mx.load(download_if_necessary(self.config.flow_lm.weights_path))
-            self.load_weights(weights, strict=strict)
-            loaded = True
-        if self.config.mimi and self.config.mimi.weights_path:
-            weights = mx.load(download_if_necessary(self.config.mimi.weights_path))
-            self.load_weights(weights, strict=strict)
-            loaded = True
-        if not loaded:
-            raise ValueError("No weights_path configured for PocketTTS.")
+        from mlx_audio.utils import apply_quantization
+
+        if self.config.model_path:
+            weights = load_weights(Path(self.config.model_path))
+        elif self.config.weights_path:
+            weights = mx.load(download_if_necessary(self.config.weights_path))
+        else:
+            weights = {}
+            for cfg in (self.config.flow_lm, self.config.mimi):
+                if cfg and cfg.weights_path:
+                    weights.update(mx.load(download_if_necessary(cfg.weights_path)))
+            if not weights:
+                raise ValueError("No weights_path configured for PocketTTS.")
+        weights = self.sanitize(weights)
+        apply_quantization(self, asdict(self.config), weights)
+        return self.load_weights(list(weights.items()), strict=strict)
 
     def init_state(self) -> dict[str, Any]:
         return {"flow_cache": self.flow_lm.make_cache()}
@@ -96,13 +156,27 @@ class Model(nn.Module):
     def _run_flow_lm(
         self,
         model_state: dict[str, Any],
-        text_tokens: mx.array,
-        backbone_input_latents: mx.array,
-        audio_conditioning: mx.array,
-    ) -> tuple[mx.array, mx.array]:
-        text_embeddings = self.flow_lm.conditioner(TokenizedText(text_tokens))
-        text_embeddings = mx.concatenate([text_embeddings, audio_conditioning], axis=1)
-        output_embeddings, is_eos = self.flow_lm._sample_next_latent(
+        text_tokens: mx.array | None = None,
+        backbone_input_latents: mx.array | None = None,
+        audio_conditioning: mx.array | None = None,
+    ) -> tuple[mx.array, mx.array] | None:
+        text_embeddings = (
+            self.flow_lm.conditioner(TokenizedText(text_tokens))
+            if text_tokens is not None and text_tokens.shape[1]
+            else self._empty_conditioning
+        )
+        if audio_conditioning is not None and audio_conditioning.shape[1]:
+            text_embeddings = mx.concatenate(
+                [text_embeddings, audio_conditioning], axis=1
+            )
+        if backbone_input_latents is None or backbone_input_latents.shape[1] == 0:
+            # Prefill the transformer cache with float32 conditioning.
+            text_embeddings = text_embeddings.astype(mx.float32)
+            self.flow_lm.transformer(text_embeddings, model_state["flow_cache"])
+            # Advance the sampling RNG once per prefill without evaluating a latent.
+            mx.random.normal((1, self.flow_lm.ldim))
+            return None
+        output_embeddings, is_eos = self.flow_lm(
             sequence=backbone_input_latents,
             text_embeddings=text_embeddings,
             cache=model_state["flow_cache"],
@@ -112,28 +186,6 @@ class Model(nn.Module):
             eos_threshold=self.eos_threshold,
         )
         return output_embeddings[:, None, :], is_eos
-
-    def _run_flow_lm_and_increment_step(
-        self,
-        model_state: dict[str, Any],
-        text_tokens: mx.array | None = None,
-        backbone_input_latents: mx.array | None = None,
-        audio_conditioning: mx.array | None = None,
-    ) -> tuple[mx.array, mx.array]:
-        if text_tokens is None:
-            text_tokens = mx.zeros((1, 0), dtype=mx.int32)
-        if backbone_input_latents is None:
-            backbone_input_latents = mx.zeros(
-                (1, 0, self.flow_lm.ldim), dtype=mx.float32
-            )
-        if audio_conditioning is None:
-            audio_conditioning = mx.zeros((1, 0, self.flow_lm.dim), dtype=mx.float32)
-        return self._run_flow_lm(
-            model_state,
-            text_tokens=text_tokens,
-            backbone_input_latents=backbone_input_latents,
-            audio_conditioning=audio_conditioning,
-        )
 
     def _encode_audio(self, audio: mx.array) -> mx.array:
         encoded = self.mimi.encode_to_latent(audio)
@@ -147,13 +199,50 @@ class Model(nn.Module):
             and audio_conditioning in PREDEFINED_VOICES
         ):
             prompt = load_predefined_voice(audio_conditioning)
+        elif isinstance(audio_conditioning, (str, Path)) and str(
+            audio_conditioning
+        ).split("@")[0].endswith(".safetensors"):
+            weights = mx.load(download_if_necessary(str(audio_conditioning)))
+            if "speaker_wavs" in weights:
+                latents = weights["speaker_wavs"]
+                if latents.ndim == 2:
+                    latents = latents[None]
+                prompt = (
+                    latents.transpose(0, 2, 1).astype(mx.float32)
+                    @ self.speaker_proj_weight.T
+                )
+            else:
+                key = "emb" if "emb" in weights else "audio_prompt"
+                prompt = weights[key]
         else:
             audio = self._load_audio(audio_conditioning)
-            prompt = self._encode_audio(audio)
+            min_samples = int(self.config.audio_prompt_min_duration * self.sample_rate)
+            if audio.shape[-1] < min_samples:
+                raise ValueError(
+                    f"Audio prompt must be at least {self.config.audio_prompt_min_duration} seconds."
+                )
+            if self.config.audio_prompt_max_duration is not None:
+                audio = audio[
+                    ...,
+                    : int(self.config.audio_prompt_max_duration * self.sample_rate),
+                ]
+            if audio.shape[-1] == 0:
+                prompt = mx.zeros((1, 0, self.flow_lm.dim))
+            else:
+                prompt = self._encode_audio(audio)
+        if prompt.ndim == 2:
+            prompt = prompt[None]
+        if (
+            prompt.ndim != 3
+            or prompt.shape[0] != 1
+            or prompt.shape[-1] != self.flow_lm.dim
+        ):
+            raise ValueError(
+                f"Voice embedding must have shape [1, T, {self.flow_lm.dim}], got {prompt.shape}."
+            )
         model_state = self.init_state()
-        self._run_flow_lm_and_increment_step(
-            model_state=model_state, audio_conditioning=prompt
-        )
+        if prompt.shape[1]:
+            self._run_flow_lm(model_state=model_state, audio_conditioning=prompt)
         self._slice_flow_cache(model_state, prompt.shape[1])
         return model_state
 
@@ -164,7 +253,9 @@ class Model(nn.Module):
         frames_after_eos: int | None = None,
     ) -> mx.array:
         if model_state is None:
-            model_state = self.get_state_for_audio_prompt(DEFAULT_AUDIO_PROMPT)
+            model_state = self.get_state_for_audio_prompt(
+                self._resolve_audio_prompt(None, None, False)
+            )
         chunks = []
         for chunk in self.generate_audio_stream(
             model_state=model_state,
@@ -183,7 +274,9 @@ class Model(nn.Module):
         frames_after_eos: int | None = None,
     ) -> Iterable[mx.array]:
         if model_state is None:
-            model_state = self.get_state_for_audio_prompt(DEFAULT_AUDIO_PROMPT)
+            model_state = self.get_state_for_audio_prompt(
+                self._resolve_audio_prompt(None, None, False)
+            )
         prompt_num_frames = self._get_flow_cache_num_frames(model_state)
         chunks = split_into_best_sentences(
             self.flow_lm.conditioner.tokenizer, text_to_generate
@@ -208,19 +301,17 @@ class Model(nn.Module):
         max_gen_len = int(gen_len_sec * self.mimi.frame_rate)
 
         prepared = self.flow_lm.conditioner.prepare(text_to_generate)
-        self._run_flow_lm_and_increment_step(
-            model_state=model_state, text_tokens=prepared.tokens
-        )
+        self._run_flow_lm(model_state=model_state, text_tokens=prepared.tokens)
 
         backbone_input = mx.full(
             (1, 1, self.flow_lm.ldim), float("NaN"), dtype=mx.float32
         )
         eos_step = None
         for step in range(max_gen_len):
-            next_latent, is_eos = self._run_flow_lm_and_increment_step(
+            next_latent, is_eos = self._run_flow_lm(
                 model_state=model_state, backbone_input_latents=backbone_input
             )
-            if bool(is_eos.item()) and eos_step is None:
+            if eos_step is None and bool(is_eos.item()):
                 eos_step = step
             if eos_step is not None and step >= eos_step + frames_after_eos:
                 break
@@ -243,10 +334,6 @@ class Model(nn.Module):
         frames_after_eos: Optional[int] = None,
         **kwargs,
     ) -> Iterable[GenerationResult]:
-        if ref_audio is not None:
-            ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
-        prompt = self._resolve_audio_prompt(voice, ref_audio, verbose)
-        model_state = self.get_state_for_audio_prompt(prompt)
         token_count = len(text.split())
 
         prev_temp = self.temp
@@ -266,6 +353,11 @@ class Model(nn.Module):
             self.eos_threshold = eos_threshold
 
         try:
+            self._validate_sampling()
+            if ref_audio is not None:
+                ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
+            prompt = self._resolve_audio_prompt(voice, ref_audio, verbose)
+            model_state = self.get_state_for_audio_prompt(prompt)
             if not stream:
                 start_time = time.perf_counter()
                 audio = self.generate_audio(
@@ -307,6 +399,7 @@ class Model(nn.Module):
                     start_time=start_time,
                     segment_idx=segment_idx,
                     token_count=token_count,
+                    is_streaming_chunk=True,
                 )
                 segment_idx += 1
                 buffer = []
@@ -315,13 +408,18 @@ class Model(nn.Module):
 
             if buffer:
                 audio = mx.concatenate(buffer, axis=0) if len(buffer) > 1 else buffer[0]
-                yield _build_generation_result(
-                    audio=audio,
-                    sample_rate=self.sample_rate,
-                    start_time=start_time,
-                    segment_idx=segment_idx,
-                    token_count=token_count,
-                )
+            else:
+                # The last audio already went out as a partial chunk.
+                audio = mx.zeros((0,), dtype=mx.float32)
+            yield _build_generation_result(
+                audio=audio,
+                sample_rate=self.sample_rate,
+                start_time=start_time,
+                segment_idx=segment_idx,
+                token_count=token_count,
+                is_streaming_chunk=True,
+                is_final_chunk=True,
+            )
         finally:
             self.temp = prev_temp
             self.lsd_decode_steps = prev_lsd
@@ -402,6 +500,36 @@ class Model(nn.Module):
         if ref_audio is not None:
             return ref_audio
 
+        if self.config.model_path:
+            root = Path(self.config.model_path)
+            voices = {
+                p.stem.lower(): p
+                for directory in (root / "voices", root / "embeddings")
+                for p in sorted(directory.glob("*.safetensors"))
+            }
+            default_voice = root / "default-voice.safetensors"
+            if default_voice.is_file():
+                voices.setdefault("default", default_voice)
+            if voice is None and voices:
+                return voices.get(
+                    "default",
+                    voices.get(DEFAULT_AUDIO_PROMPT, next(iter(voices.values()))),
+                )
+            if voice and voice.lower() in voices:
+                return voices[voice.lower()]
+            if (
+                voices
+                and self.mimi.encoder is None
+                and voice
+                and not (
+                    voice.startswith(("http://", "https://", "hf://"))
+                    or os.path.exists(voice)
+                )
+            ):
+                raise ValueError(
+                    f"Unknown voice '{voice}'. Available voices: {', '.join(voices)}"
+                )
+
         prompt = voice or DEFAULT_AUDIO_PROMPT
         if isinstance(prompt, str):
             if prompt in PREDEFINED_VOICES:
@@ -436,6 +564,8 @@ def _build_generation_result(
     start_time: float,
     segment_idx: int,
     token_count: int,
+    is_streaming_chunk: bool = False,
+    is_final_chunk: bool = False,
 ) -> GenerationResult:
     samples = int(audio.shape[0])
     audio_duration_seconds = samples / sample_rate if sample_rate else 0.0
@@ -466,6 +596,8 @@ def _build_generation_result(
         },
         processing_time_seconds=elapsed_time,
         peak_memory_usage=mx.get_peak_memory() / 1e9,
+        is_streaming_chunk=is_streaming_chunk,
+        is_final_chunk=is_final_chunk,
     )
 
 
@@ -516,7 +648,7 @@ def split_into_best_sentences(tokenizer, text_to_generate: str) -> list[str]:
     for i in range(len(end_of_sentences_indices) - 1):
         start = end_of_sentences_indices[i]
         end = end_of_sentences_indices[i + 1]
-        text = tokenizer.sp.decode(list_of_tokens[start:end])
+        text = tokenizer.decode(list_of_tokens[start:end])
         nb_tokens_and_sentences.append((end - start, text))
 
     max_nb_tokens_in_a_chunk = 50

@@ -430,6 +430,10 @@ class Model(nn.Module):
     def model_type(self) -> str:
         return "fish_speech"
 
+    @classmethod
+    def model_quant_predicate(cls, path: str, module: nn.Module) -> bool:
+        return not isinstance(module, nn.Embedding) and "fast_" not in path
+
     def load_weights(self, weights, strict: bool = True):
         remapped = []
         for key, value in weights:

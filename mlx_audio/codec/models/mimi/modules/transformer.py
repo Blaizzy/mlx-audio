@@ -36,6 +36,7 @@ class TransformerConfig:
     dim_feedforward: int
     conv_layout: bool
     rope_traditional: bool = True
+    gelu: str = "tanh"
 
     @property
     def head_dim(self) -> int:
@@ -133,12 +134,15 @@ class MlpGating(nn.Module):
 class MlpNoGating(nn.Module):
     def __init__(self, cfg: TransformerConfig):
         super().__init__()
+        if cfg.gelu not in ("erf", "tanh"):
+            raise ValueError(f"Unsupported GELU activation: {cfg.gelu}")
+        self.activation = nn.gelu if cfg.gelu == "erf" else nn.gelu_approx
 
         self.linear1 = nn.Linear(cfg.d_model, cfg.dim_feedforward, bias=cfg.bias_ff)
         self.linear2 = nn.Linear(cfg.dim_feedforward, cfg.d_model, bias=cfg.bias_ff)
 
     def __call__(self, xs: mx.array) -> mx.array:
-        return self.linear2(nn.gelu_approx(self.linear1(xs)))
+        return self.linear2(self.activation(self.linear1(xs)))
 
 
 class TransformerLayer(nn.Module):

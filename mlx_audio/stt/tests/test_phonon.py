@@ -8,6 +8,7 @@ import mlx.core as mx
 import numpy as np
 import pytest
 
+from mlx_audio.stt.models.phonon import packed
 from mlx_audio.stt.models.phonon.config import ModelConfig
 from mlx_audio.stt.models.phonon.packed import (
     PackedTritLinear,
@@ -90,6 +91,87 @@ def _pack_base5(symbols: list[int]) -> np.ndarray:
         payload = sum(symbol * (5**index) for index, symbol in enumerate(group))
         payloads.extend((payload & 255, (payload >> 8) & 255, (payload >> 16) & 255))
     return np.array([payloads], dtype=np.uint8)
+
+
+def _unpack_base5_numpy(encoded, in_features):
+    planes = np.zeros((2, encoded.shape[0], in_features // 16), dtype=np.uint32)
+    codes = ((0, 0), (0, 2), (1, 1), (2, 0), (2, 2))
+    for row, data in enumerate(encoded):
+        symbols = []
+        for start in range(0, len(data), 3):
+            payload = int.from_bytes(data[start : start + 3].tobytes(), "little")
+            for _ in range(10):
+                payload, symbol = divmod(payload, 5)
+                symbols.append(symbol)
+        for index, symbol in enumerate(symbols[:in_features]):
+            for plane, code in enumerate(codes[symbol]):
+                planes[plane, row, index // 16] |= np.uint32(code << (2 * (index % 16)))
+    return tuple(planes)
+
+
+# metal_kernel binds inputs under 8 elements as constant, which the kernel can't read.
+_UNPACK_SHAPES = [(1, 32), (2, 80), (2, 144)]
+
+
+def forbidden():
+    raise AssertionError("Metal kernel called without Metal")
+
+
+@pytest.mark.parametrize("rows,in_features", _UNPACK_SHAPES)
+def test_no_metal_unpack_matches_numpy(rows, in_features, monkeypatch):
+    rng = np.random.default_rng(42)
+    encoded = rng.integers(
+        0, 256, (rows, packed_bytes_per_row(in_features)), dtype=np.uint8
+    )
+    expected = _unpack_base5_numpy(encoded, in_features)
+
+    monkeypatch.setattr(mx.metal, "is_available", lambda: False)
+    monkeypatch.setattr(packed, "_unpack_kernel", forbidden)
+    for actual in (
+        packed._unpack_base5_codes_fallback(mx.array(encoded), in_features),
+        unpack_base5_codes(mx.array(encoded), in_features),
+    ):
+        for out, ref in zip(actual, expected):
+            assert out.shape == (rows, in_features // 16)
+            assert out.dtype == mx.uint32
+            np.testing.assert_array_equal(np.array(out), ref)
+
+
+@pytest.mark.skipif(not mx.metal.is_available(), reason="Metal is not available")
+@pytest.mark.parametrize("rows,in_features", _UNPACK_SHAPES)
+def test_metal_unpack_matches_fallback(rows, in_features):
+    rng = np.random.default_rng(43)
+    encoded = mx.array(
+        rng.integers(0, 256, (rows, packed_bytes_per_row(in_features)), dtype=np.uint8)
+    )
+    actual = unpack_base5_codes(encoded, in_features)
+    expected = packed._unpack_base5_codes_fallback(encoded, in_features)
+    for out, ref in zip(actual, expected):
+        np.testing.assert_array_equal(np.array(out), np.array(ref))
+
+
+def test_no_metal_phonon_decoder_smoke(monkeypatch):
+    rng = np.random.default_rng(45)
+    model = PhononASRModel(_tiny_config())
+    manifest = _tiny_manifest(model)
+    manifest["decoder_codes"] = {"format": "ten-base5-per-24bit-v1"}
+    modules = configure_packed_modules(model, manifest)
+
+    monkeypatch.setattr(mx.metal, "is_available", lambda: False)
+    monkeypatch.setattr(packed, "_unpack_kernel", forbidden)
+    for module in modules:
+        shape = module.quint5_q.shape
+        module.quint5_q = mx.array(rng.integers(0, 256, shape, dtype=np.uint8))
+        shape = module.base_scales.shape
+        module.base_scales = mx.array(rng.uniform(0.01, 0.05, shape), mx.float32)
+        module.base_biases = -module.base_scales
+        module.residual_scales = module.base_scales / 4
+        module.residual_biases = -module.residual_scales
+        module.materialize()
+    out = model.model(mx.array([[1, 2, 3], [4, 5, 6]]))
+    mx.eval(out)
+    assert out.shape == (2, 3, 128)
+    assert bool(mx.all(mx.isfinite(out)))
 
 
 def test_base5_unpack_reconstructs_five_values():

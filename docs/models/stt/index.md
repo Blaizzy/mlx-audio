@@ -10,10 +10,13 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 
 | Model | Provider | Parameters | Languages | Streaming | Timestamps | Repo |
 |-------|----------|-----------|-----------|-----------|------------|------|
+| [**Ming-3.0 ASR Tiny**](ming3-tiny.md) | inclusionAI | Hybrid MoE | EN, ZH | -- | -- | [BF16](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-4bit) |
 | [**Whisper**](whisper.md) | OpenAI | Various | 99+ | -- | Segment + Word | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Distil-Whisper** | HuggingFace | Various | EN | -- | Segment | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | [**Parakeet**](parakeet.md) | NVIDIA | 0.6B | EN (v2), 25 EU (v3) | Yes | Sentence + Word | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **MiMo-V2.5-ASR** | Xiaomi | 7B | ZH, EN | -- | -- | [MiMo-V2.5-ASR](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX) |
 | [**Phonon-1**](phonon.md) | Fermion Research | 0.6B | EN | Yes | Segment | [FermionResearch/Phonon-1](https://huggingface.co/FermionResearch/Phonon-1) |
+| [**Phonon-2 / 2.5**](phonon2.md) | Fermion Research | 0.6B | EN / 25 European languages | Chunked | Token + Sentence | [2.5](https://huggingface.co/FermionResearch/Phonon-2.5) · [2.5 English](https://huggingface.co/FermionResearch/Phonon-2.5-English) · [2](https://huggingface.co/mlx-community/Phonon-2) |
 | [**Voxtral Realtime**](voxtral-realtime.md) | Mistral | 4B | Multiple | Yes | -- | [4bit](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-4bit), [fp16](https://huggingface.co/mlx-community/Voxtral-Mini-4B-Realtime-2602-fp16) |
 | [**Fun-ASR-Nano**](fun-asr-nano.md) | FunAudioLLM | 0.8B | ZH, EN, JA | -- | -- | [mlx-community/Fun-ASR-Nano-2512](https://huggingface.co/mlx-community/Fun-ASR-Nano-2512) |
 | **MOSS-Transcribe-Diarize** | OpenMOSS | ~0.6B text backbone + Whisper encoder | Multiple major languages | -- | Segment + speaker | https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize |
@@ -26,7 +29,8 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | **Canary** | NVIDIA | ~1B | 25 EU + RU, UK | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/canary/README.md) |
 | **SenseVoice** | Alibaba DAMO | ~234M | 50+ | -- | -- | [mlx-community/SenseVoiceSmall](https://huggingface.co/mlx-community/SenseVoiceSmall) |
 | **FireRedASR2** | Xiaohongshu | ~1.18B | ZH, EN | -- | -- | [mlx-community/FireRedASR2-AED-mlx](https://huggingface.co/mlx-community/FireRedASR2-AED-mlx) |
-| **Granite Speech** | IBM | ~1B | EN, FR, DE, ES, PT, JA | Yes | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/granite_speech/README.md) |
+| [**Granite Speech 4.0**](granite-speech.md) | IBM | ~1B | EN, FR, DE, ES, PT, JA | Yes | -- | [ibm-granite/granite-4.0-1b-speech](https://huggingface.co/ibm-granite/granite-4.0-1b-speech) |
+| [**Granite Speech 4.1 Plus**](granite-speech.md) | IBM | ~2B | EN, FR, DE, ES, PT | Yes | Word (separate from speaker attribution) | [ibm-granite/granite-speech-4.1-2b-plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) |
 | **Moonshine** | Useful Sensors | 27M / 61M | EN | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta | 1B | 1000+ | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/mms/README.md) |
 

@@ -33,12 +33,20 @@ RAS_TEMPERATURE = 1.0
 RAS_TOP_K = 30
 RAS_TOP_P = 0.95
 MIN_TEMPERATURE = 1e-5
-# The reference recipe's sampling defaults.
 DEFAULT_MAX_FRAMES = 1024
-DEFAULT_TEMPERATURE = 0.7
-DEFAULT_TOP_K = 30
-DEFAULT_TOP_P = 0.7
+# SGLang-Omni's sampling defaults (sgl-project/sglang-omni#2890 and #2810). A
+# top-k cap on the main token lets a take without a reference fall silent after
+# a phrase and stay silent until the frame cap, most often at fish-speech's
+# 0.7 / 0.7 / 30. The codebook heads keep a cap of 30, which holds the voice.
+DEFAULT_TEMPERATURE = 1.0
+DEFAULT_TOP_K = None
+DEFAULT_TOP_P = 0.9
+CODEBOOK_TOP_K = 30
 PREFILL_CHUNK = 256
+# Frames per codec call when a chunk is decoded at once. The codec's working set
+# grows with the frames of one call: a 1024-frame chunk needs about 20 GB on top
+# of the weights in one call and about 4 GB in 64-frame pieces, no slower.
+DECODE_FRAMES = 64
 VOICE_CACHE_SIZE = 4
 KEPT_PREFIXES = ("backbone.", "semantic_head.", "tower.")
 
@@ -46,26 +54,33 @@ AudioInput = Union[str, Path, mx.array, np.ndarray]
 
 
 def sample_top_k_top_p(
-    logits: mx.array, temperature: float, top_k: int, top_p: float
+    logits: mx.array,
+    temperature: float,
+    top_k: Optional[int],
+    top_p: float,
+    keep_crossing: bool = False,
 ) -> mx.array:
     """One id per row of logits [B, V], as the reference samples.
 
     Temperature applies before top-p; the cumulative probability runs over the
-    full vocabulary; the token that crosses top_p is dropped unless it ranks
-    first. Only the top_k candidates are sorted, since all others are dropped.
+    full vocabulary; top_k None keeps every candidate. The token that crosses
+    top_p is dropped unless it ranks first; keep_crossing keeps it, as the main
+    token's draws do so that EOS stays reachable. Only the top_k candidates are
+    sorted, since all others are dropped.
     """
     x = logits.astype(mx.float32) / max(temperature, MIN_TEMPERATURE)
     # At low temperature the logits share a huge offset that would swamp the
     # log-sum-exp in float32 and push every probability to 1.
     x = x - x.max(axis=-1, keepdims=True)
-    k = min(top_k, x.shape[-1])
+    k = x.shape[-1] if top_k is None else min(top_k, x.shape[-1])
     ids = mx.argpartition(-x, kth=k - 1, axis=-1)[..., :k]
     values = mx.take_along_axis(x, ids, axis=-1)
     order = mx.argsort(-values, axis=-1)
     values = mx.take_along_axis(values, order, axis=-1)
     ids = mx.take_along_axis(ids, order, axis=-1)
     probs = mx.exp(values - mx.logsumexp(x, axis=-1, keepdims=True))
-    dropped = (mx.cumsum(probs, axis=-1) > top_p) & (mx.arange(k) > 0)
+    passed = mx.cumsum(probs, axis=-1, inclusive=not keep_crossing)
+    dropped = (passed > top_p) & (mx.arange(k) > 0)
     choice = mx.random.categorical(mx.where(dropped, -mx.inf, values))
     return mx.take_along_axis(ids, choice[..., None], axis=-1)[..., 0]
 
@@ -137,6 +152,16 @@ class Model(nn.Module):
     @property
     def sample_rate(self) -> int:
         return self.codec.sample_rate
+
+    @property
+    def generate_config(self) -> dict:
+        """The defaults the server uses for sampling fields a request leaves out.
+        A top_k of every candidate leaves the main token uncapped, as None does."""
+        return {
+            "temperature": DEFAULT_TEMPERATURE,
+            "top_p": DEFAULT_TOP_P,
+            "top_k": int(self._candidate_ids.size),
+        }
 
     def sanitize(self, weights: dict[str, mx.array]) -> dict[str, mx.array]:
         # The loader also reads codec.safetensors; the codec loads separately.
@@ -212,6 +237,9 @@ class Model(nn.Module):
         indices, lengths = self.codec.encode(mx.array(samples)[None, None, :])
         codes = indices[0, :, : int(lengths[0].item())].astype(mx.int32)
         mx.eval(codes)
+        # Temporaries sized by this reference rarely fit a later allocation;
+        # cached, those of every reference of a voice would add up.
+        mx.clear_cache()
         return codes
 
     def _check_codes(self, codes: mx.array, location: str) -> None:
@@ -347,18 +375,21 @@ class Model(nn.Module):
         backbone_cache, tower_cache = caches
         logits = self.semantic_head(hidden[:, 0]).astype(mx.float32)
         first = self._candidate_ids[
-            sample_top_k_top_p(logits, temperature, top_k, top_p)
+            sample_top_k_top_p(logits, temperature, top_k, top_p, keep_crossing=True)
         ]
         retry = self._candidate_ids[
-            sample_top_k_top_p(logits, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P)
+            sample_top_k_top_p(
+                logits, RAS_TEMPERATURE, RAS_TOP_K, RAS_TOP_P, keep_crossing=True
+            )
         ]
         repeated = (history[None, :] == first[:, None]).any(axis=-1)
         main = mx.where(repeated & self.tower.is_semantic(first), retry, first)
         c0 = mx.clip(main - self.semantic_begin, 0, self.tower.vocab_size - 1)
         semantic = self.tower.is_semantic(main)[:, None]
+        head_top_k = CODEBOOK_TOP_K if top_k is None else min(top_k, CODEBOOK_TOP_K)
 
         def sample(head_logits: mx.array) -> mx.array:
-            ids = sample_top_k_top_p(head_logits[:, 0], temperature, top_k, top_p)
+            ids = sample_top_k_top_p(head_logits[:, 0], temperature, head_top_k, top_p)
             return ids[:, None]
 
         codes = self.tower.residual_codes(
@@ -379,7 +410,7 @@ class Model(nn.Module):
         voice: _Voice,
         max_frames: int,
         temperature: float,
-        top_k: int,
+        top_k: Optional[int],
         top_p: float,
     ) -> Iterator[mx.array]:
         """Codes [num_codebooks] of each generated frame until EOS.
@@ -388,20 +419,33 @@ class Model(nn.Module):
         for the host; the one wasted step after EOS only touches this call's
         caches. The EOS check reads step n's own `main` array: slicing the frame
         instead would build a new op that waits behind the queued step.
+
+        The model often ends a turn with <|semantic:0|> right before EOS; that
+        frame decodes to a click after the trailing silence, so it is held back
+        one step and dropped when EOS follows.
         """
         caches = self._start_caches(frames, system_rows, voice)
         hidden = self._prefill(frames, caches, system_rows, frames.shape[0])
         args = (caches, temperature, top_k, top_p)
         pending = self._step(hidden, frames[None, -1:], frames[-RAS_WINDOW:, 0], *args)
         mx.async_eval(pending)
+        held = None
         for n in range(max_frames):
             frame, hidden, history, main = pending
             if n + 1 < max_frames:
                 pending = self._step(hidden, frame, history, *args)
                 mx.async_eval(pending)
-            if main.item() == self.eos_id:
+            token = main.item()
+            if token == self.eos_id:
                 return
-            yield frame[0, 0, 1:]
+            if held is not None:
+                yield held
+            held = frame[0, 0, 1:]
+            if token != self.semantic_begin:
+                yield held
+                held = None
+        if held is not None:
+            yield held
 
     def generate(
         self,
@@ -423,7 +467,8 @@ class Model(nn.Module):
 
         Long text is generated chunk by chunk; each chunk sees the first and the
         previous chunk as history, and max_tokens caps the frames of one chunk.
-        Sampling arguments left as None use the reference recipe.
+        Sampling arguments left as None use SGLang-Omni's defaults; a top_k
+        caps the main token, and the codebook heads at most 30.
         With stream=True, audio is yielded every streaming_interval seconds;
         first_chunk_frames sets a smaller first piece for a faster first audio.
         Delivery cues go inline, e.g. "[whispers]". Other keyword arguments that
@@ -453,30 +498,49 @@ class Model(nn.Module):
         pinned: Optional[tuple[str, mx.array]] = None
         latest: Optional[tuple[str, mx.array]] = None
         started = time.perf_counter()
-        for index, chunk in enumerate(chunks):
-            is_last = index == len(chunks) - 1
-            history = [turn for turn in (pinned, latest) if turn is not None]
-            frames, system_rows = self.build_frames(voice.references, history, chunk)
-            codes: list[mx.array] = []
-            emitted = 0
-            for frame in self._frames(
-                frames, system_rows, voice, max_tokens, *sampling
-            ):
-                codes.append(frame)
-                due = first if index == 0 and emitted == 0 else interval
-                if stream and len(codes) - emitted >= due:
-                    yield self._result(codes[emitted:], index, started, stream, False)
-                    emitted, started = len(codes), time.perf_counter()
-            if codes:
-                turn = (chunk, mx.stack(codes, axis=1))
-                if pinned is None:
-                    pinned = turn
+        try:
+            for index, chunk in enumerate(chunks):
+                is_last = index == len(chunks) - 1
+                history = [turn for turn in (pinned, latest) if turn is not None]
+                frames, system_rows = self.build_frames(
+                    voice.references, history, chunk
+                )
+                codes: list[mx.array] = []
+                emitted = 0
+                for frame in self._frames(
+                    frames, system_rows, voice, max_tokens, *sampling
+                ):
+                    codes.append(frame)
+                    due = first if index == 0 and emitted == 0 else interval
+                    if stream and len(codes) - emitted >= due:
+                        yield self._result(
+                            codes[emitted:], index, started, stream, False
+                        )
+                        emitted, started = len(codes), time.perf_counter()
+                if codes:
+                    turn = (chunk, mx.stack(codes, axis=1))
+                    if pinned is None:
+                        pinned = turn
+                    else:
+                        latest = turn
+                if len(codes) > emitted or is_last:
+                    # An empty last chunk still closes the stream.
+                    result = self._result(
+                        codes[emitted:], index, started, stream, is_last
+                    )
+                    # Buffers sized by this prompt and chunk rarely fit a later one,
+                    # so MLX's cache would keep them up to its GC limit, about 110 GB
+                    # on a 128 GB Mac. Cleared before the yield, as a caller may stop
+                    # at the final chunk.
+                    mx.clear_cache()
+                    yield result
+                    started = time.perf_counter()
                 else:
-                    latest = turn
-            if len(codes) > emitted or is_last:
-                # An empty last chunk still closes the stream.
-                yield self._result(codes[emitted:], index, started, stream, is_last)
-                started = time.perf_counter()
+                    # The chunk ended with its last streamed piece.
+                    mx.clear_cache()
+        finally:
+            # A caller that stops early, or an error, skips the clear above.
+            mx.clear_cache()
 
     def _result(
         self,
@@ -486,11 +550,13 @@ class Model(nn.Module):
         streaming: bool,
         final: bool,
     ) -> GenerationResult:
-        if codes:
-            frames = mx.stack(codes, axis=1)[None]
-            audio = self.codec.streaming_step(frames)[0, 0]
-        else:
-            audio = mx.zeros((0,), dtype=mx.float32)
+        pieces = []
+        for begin in range(0, len(codes), DECODE_FRAMES):
+            frames = mx.stack(codes[begin : begin + DECODE_FRAMES], axis=1)[None]
+            pieces.append(self.codec.streaming_step(frames)[0, 0])
+            # Evaluated piece by piece, so only one piece's working set is alive.
+            mx.eval(pieces[-1])
+        audio = mx.concatenate(pieces) if pieces else mx.zeros((0,), mx.float32)
         mx.eval(audio)
         elapsed = max(time.perf_counter() - started, 1e-6)
         samples = audio.shape[0]

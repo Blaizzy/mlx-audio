@@ -174,8 +174,10 @@ class GatedDeltaNet(nn.Module):
 
         state = cache[1] if cache else None
         inv_scale = k.shape[-1] ** -0.5
-        q = (inv_scale**2) * mx.fast.rms_norm(q, None, 1e-6)
-        k = inv_scale * mx.fast.rms_norm(k, None, 1e-6)
+        # RMS normalization averages squares; L2 normalization sums them.
+        rms_eps = 1e-6 * inv_scale**2
+        q = (inv_scale**2) * mx.fast.rms_norm(q, None, rms_eps)
+        k = inv_scale * mx.fast.rms_norm(k, None, rms_eps)
 
         out, state = gated_delta_update(
             q,

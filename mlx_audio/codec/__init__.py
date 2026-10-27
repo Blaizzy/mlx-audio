@@ -1,5 +1,6 @@
 from .models import (
     DAC,
+    EcapaSpeakerEmbeddingExtractor,
     EcapaTdnnBackbone,
     Encodec,
     Mimi,
@@ -13,6 +14,7 @@ from .models import (
 __all__ = [
     "DAC",
     "EcapaTdnnBackbone",
+    "EcapaSpeakerEmbeddingExtractor",
     "Encodec",
     "Mimi",
     "MiMoAudioTokenizer",

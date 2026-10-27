@@ -170,6 +170,7 @@ class TestKokoroModel(unittest.TestCase):
                 "dropout": 0.1,
             },
             "vocab": {"a": 1, "b": 2},
+            "model_path": "/mock/model",
         }
         mock_json_load.return_value = config
 
@@ -185,6 +186,7 @@ class TestKokoroModel(unittest.TestCase):
         # Check that the model was initialized correctly
         self.assertIsInstance(model, nn.Module)
         self.assertEqual(model.vocab, {"a": 1, "b": 2})
+        self.assertEqual(model.config.model_path, "/mock/model")
 
     def test_output_dataclass(self):
         """Test KokoroModel.Output dataclass."""
@@ -319,6 +321,7 @@ class TestKokoroPipeline(unittest.TestCase):
                     pipeline.voices = {}
                     # Add the missing repo_id attribute
                     pipeline.repo_id = "mlx-community/kokoro-tts"
+                    pipeline.model_path = None
 
                     # Mock the load voice return value
                     load_voice_tensor.return_value = mx.zeros((512, 1, 256))
@@ -3913,6 +3916,8 @@ class TestBailingMMModel(unittest.TestCase):
         model.tokenizer.encode.return_value = [1, 2, 3]
         model.audio = MagicMock()
         model.audio.sample_rate = 24000
+        model.chat_layout = False
+        model.ming3 = False
         return model
 
     def test_convert_campplus_onnx_to_safetensors_allclose(self):
@@ -4021,6 +4026,13 @@ class TestBailingMMModel(unittest.TestCase):
         mock_qwen2_lm.assert_called_once()
         mock_moe_lm.assert_not_called()
         self.assertEqual(model.llm_args.model_type, "qwen2")
+        self.assertEqual(model.generate_config["temperature"], 0.0)
+        self.assertFalse(_mock_flowloss.call_args.kwargs["ming3_sampling"])
+
+        config["ditar_config"] = {"patch_size": 1, "history_patch_size": 1}
+        model = Model(config)
+        self.assertTrue(model.ming3)
+        self.assertTrue(_mock_flowloss.call_args.kwargs["ming3_sampling"])
 
     @patch(
         "mlx_audio.tts.models.bailingmm.bailingmm.mx.get_peak_memory",
@@ -4038,7 +4050,7 @@ class TestBailingMMModel(unittest.TestCase):
         latent = mx.zeros((1, 1, 64), dtype=mx.float32)
         model.sample = MagicMock(return_value=iter([(latent, True)]))
 
-        # Torch path does not apply a trailing low-energy trim pass.
+        # Ming Omni decoding keeps trailing samples.
         chunk = mx.array([[0.25, 0.15, 0.0, 0.0, 0.0]], dtype=mx.float32)
         model.audio.decode.return_value = (chunk, (None, None, None), None)
 
@@ -5513,6 +5525,74 @@ class TestIrodoriV3VoiceDesignGenerate(unittest.TestCase):
         self.assertGreater(results[0].samples, 0)
 
 
+class TestIrodoriSpeakerKVScaleRollback(unittest.TestCase):
+    """speaker_kv_scale is rolled back once t crosses speaker_kv_min_t.
+
+    With dual conditioning and independent CFG, the CFG batch holds one bundle
+    per active guidance term (up to 4), and the rolled-back speaker KV cache must
+    keep that batch size.
+    """
+
+    def _make_model(self):
+        from mlx_audio.tts.models.irodori_tts.irodori_tts import Model
+
+        cfg = _small_irodori_model_config_v3_voicedesign(
+            num_steps=4,
+            cfg_scale_text=3.0,
+            cfg_scale_speaker=5.0,
+            cfg_scale_caption=3.0,
+            cfg_guidance_mode="independent",
+            cfg_min_t=0.0,
+            t_schedule_mode="linear",
+        )
+        model = Model(cfg)
+        model.dacvae = _FakeDACVAE(
+            latent_dim=cfg.dit.latent_dim,
+            downsample_factor=cfg.audio_downsample_factor,
+        )
+        model._tokenizer = _MockTokenizer()
+        model._caption_tokenizer = _MockTokenizer()
+        return model
+
+    def _latents(self, model, caption, **kwargs):
+        cfg = model.config
+        ref_latent = mx.random.normal((1, 4, cfg.dit.latent_dim), key=mx.random.key(1))
+        ref_mask = mx.ones((1, 4), dtype=mx.bool_)
+        latent, _ = model.generate_latents(
+            "こんにちは",
+            ref_latent=ref_latent,
+            ref_mask=ref_mask,
+            caption=caption,
+            rng_seed=0,
+            seconds=1.0,
+            **kwargs,
+        )
+        mx.eval(latent)
+        return latent
+
+    def test_rollback_with_speaker_and_caption_cfg(self):
+        # cond + text + speaker + caption: 4 bundles
+        model = self._make_model()
+        latent = self._latents(
+            model, "穏やかな声", speaker_kv_scale=1.5, speaker_kv_min_t=0.9
+        )
+        self.assertTrue(bool(mx.all(mx.isfinite(latent))))
+
+    def test_rollback_without_caption(self):
+        # empty caption is masked, so cond + text + speaker: 3 bundles
+        model = self._make_model()
+        latent = self._latents(model, "", speaker_kv_scale=1.5, speaker_kv_min_t=0.9)
+        self.assertTrue(bool(mx.all(mx.isfinite(latent))))
+
+    def test_unit_scale_rollback_matches_plain_kv_cache(self):
+        model = self._make_model()
+        plain = self._latents(model, "穏やかな声", context_kv_cache=True)
+        rolled = self._latents(
+            model, "穏やかな声", speaker_kv_scale=1.0, speaker_kv_min_t=0.9
+        )
+        self.assertTrue(bool(mx.allclose(plain, rolled)))
+
+
 # ---------------------------------------------------------------------------
 # Irodori-TTS v4: shared pretrained (ModernBERT) text/caption encoder
 # ---------------------------------------------------------------------------
@@ -6838,16 +6918,18 @@ class TestMossTTSRegistration(unittest.TestCase):
             ("moss_tts_local", ["OpenMOSS-Team", "MOSS-TTS"]),
         ]
 
-        for expected_model_type, model_name in cases:
-            arch, model_type = get_model_class(
-                model_type=expected_model_type,
-                model_name=model_name,
-                category="tts",
-                model_remapping=MODEL_REMAPPING,
-            )
+        for config_model_type, model_name in cases:
+            for name_parts in (model_name, None, [], ["checkpoint"], ["kokoro"]):
+                with self.subTest(model_type=config_model_type, model_name=name_parts):
+                    arch, model_type = get_model_class(
+                        model_type=config_model_type,
+                        model_name=name_parts,
+                        category="tts",
+                        model_remapping=MODEL_REMAPPING,
+                    )
 
-            self.assertEqual(model_type, expected_model_type)
-            self.assertIs(arch.Model, SharedModel)
+                    self.assertEqual(model_type, "moss_tts")
+                    self.assertIs(arch.Model, SharedModel)
 
 
 class TestMisoTTSRegistration(unittest.TestCase):

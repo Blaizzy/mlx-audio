@@ -22,6 +22,8 @@ from mlx_audio.dsp import (
     stft,
 )
 
+from ..base import STSOutput
+
 # Reuse audio utilities from sam_audio
 from ..sam_audio.processor import load_audio
 from .config import MossFormer2SEConfig
@@ -42,6 +44,8 @@ class MossFormer2SEModel(nn.Module):
         >>> enhanced = model.enhance("noisy.wav")
         >>> save_audio(enhanced, "clean.wav")
     """
+
+    output_suffix = "_enhanced"
 
     def __init__(
         self,
@@ -165,6 +169,27 @@ class MossFormer2SEModel(nn.Module):
         self._warmed_up = True
         warmup_time = time.time() - warmup_start
         print(f"Warmup complete: {warmup_time:.2f}s\n")
+
+    def generate(
+        self,
+        audio: str | Path | np.ndarray | mx.array,
+        *,
+        sample_rate: int | None = None,
+        chunked: bool | None = None,
+    ) -> STSOutput:
+        """Enhance audio through the standard STS generation interface."""
+        if audio is None:
+            raise ValueError("Input audio is required for enhancement")
+        if isinstance(audio, (str, Path)):
+            audio = str(Path(audio).expanduser())
+        elif sample_rate is not None and sample_rate != self.config.sample_rate:
+            raise ValueError(
+                f"Expected {self.config.sample_rate} Hz audio, got {sample_rate} Hz"
+            )
+        return STSOutput(
+            audio=self.enhance(audio, chunked=chunked),
+            sample_rate=self.config.sample_rate,
+        )
 
     def enhance(
         self,

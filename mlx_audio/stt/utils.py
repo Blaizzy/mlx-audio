@@ -80,17 +80,21 @@ def wired_limit(model: nn.Module, streams: Optional[List[mx.Stream]] = None):
 
 
 MODEL_REMAPPING = {
+    "ming_v3_asr": "ming_v3_asr",
     "parakeet": "parakeet",
     "parakeet_tdt": "parakeet",
     "cohere_asr": "cohere_asr",
     "fireredasr2": "fireredasr2",
     "glm": "glmasr",
+    "mimo": "mimo_v2_asr",
     "sensevoice": "sensevoice",
     "voxtral": "voxtral",
     "voxtral_realtime": "voxtral_realtime",
     "vibevoice": "vibevoice_asr",
     "qwen3_asr": "qwen3_asr",
     "phonon": "phonon",
+    "phonon2": "phonon2",
+    "parakeet_tdt_five_value": "phonon2",
     "moss_transcribe_diarize": "moss_transcribe_diarize",
     "fun_asr_nano": "fun_asr_nano",
     "canary": "canary",
@@ -98,6 +102,7 @@ MODEL_REMAPPING = {
     "mms": "mms",
     "granite_speech": "granite_speech",
     "granite_speech5_ctc": "granite_speech5_ctc",
+    "granite_speech_plus": "granite_speech",
     "granite_speech_nar": "granite_speech_nar",
     "qwen2_audio": "qwen2_audio",
     "mega_asr": "mega_asr",
@@ -117,6 +122,7 @@ def load_audio(
     sr: int = SAMPLE_RATE,
     from_stdin=False,
     dtype: mx.Dtype = mx.float32,
+    duration: Optional[float] = None,
 ):
     """
     Open an audio file and read as mono waveform, resampling as necessary
@@ -129,13 +135,18 @@ def load_audio(
     sr: int
         The sample rate to resample the audio if necessary
 
+    duration: float, optional
+        Only read this many seconds from the start of the file
+
     Returns
     -------
     A NumPy array containing the audio waveform, in float32 dtype.
     """
     from mlx_audio.audio_io import read as audio_read
 
-    audio, _ = audio_read(file, dtype="float32", sample_rate=sr, nchannels=1)
+    audio, _ = audio_read(
+        file, dtype="float32", sample_rate=sr, nchannels=1, duration=duration
+    )
     return mx.array(audio, dtype=dtype)
 
 
@@ -201,6 +212,7 @@ def load_model(
         model_remapping=MODEL_REMAPPING,
         lazy=lazy,
         strict=strict,
+        source_model_path=source,
         **kwargs,
     )
 

@@ -82,13 +82,19 @@ class ShardWriter:
         self.count = 0
         self.quantization: dict[str, dict] = {}
 
-    def add(self, name: str, value: mx.array, bits: Optional[int] = None) -> None:
+    def add(
+        self,
+        name: str,
+        value: mx.array,
+        bits: Optional[int] = None,
+        group_size: int = GROUP_SIZE,
+    ) -> None:
         items = {name: value}
         if bits:
             path = name.removesuffix(".weight")
-            weight, scales, biases = mx.quantize(value, GROUP_SIZE, bits)
+            weight, scales, biases = mx.quantize(value, group_size, bits)
             items = {name: weight, f"{path}.scales": scales, f"{path}.biases": biases}
-            self.quantization[path] = {"group_size": GROUP_SIZE, "bits": bits}
+            self.quantization[path] = {"group_size": group_size, "bits": bits}
         mx.eval(list(items.values()))
         self.pending.update(items)
         self.pending_bytes += sum(v.nbytes for v in items.values())
@@ -111,6 +117,9 @@ def convert(
     dense_bits: int = 0,
     tower_bits: int = 0,
     codec: bool = True,
+    expert_group_size: int = GROUP_SIZE,
+    head_bits: Optional[int] = None,
+    expert_bits_map: Optional[dict[int, int]] = None,
 ) -> None:
     """Writes the MLX checkpoint into dst, which must not exist or be empty:
     the loader reads every safetensors file there, so a leftover shard from an
@@ -122,6 +131,14 @@ def convert(
     num_experts = config["text_config"]["num_experts"]
     band = slice(config["semantic_start_token_id"], config["semantic_end_token_id"] + 1)
     eos = config["eos_token_id"]
+    if head_bits is None:
+        head_bits = tower_bits
+    expert_bits_map = expert_bits_map or {}
+    num_layers = config["text_config"]["num_hidden_layers"]
+    if unknown := sorted(set(expert_bits_map) - set(range(num_layers))):
+        raise ValueError(
+            f"expert_bits_map names layers {unknown}; the model has {num_layers}"
+        )
 
     writer = ShardWriter(dst)
     experts: dict[int, dict[tuple, mx.array]] = defaultdict(dict)
@@ -138,7 +155,8 @@ def convert(
                 ]
             )
             name = f"backbone.model.layers.{layer}.mlp.switch_mlp.{proj}_proj.weight"
-            writer.add(name, stacked, expert_bits)
+            bits = expert_bits_map.get(layer, expert_bits)
+            writer.add(name, stacked, bits, expert_group_size)
 
     index = json.loads((src / "model.safetensors.index.json").read_text())
     for shard in sorted(set(index["weight_map"].values())):
@@ -166,7 +184,15 @@ def convert(
                 out = TOWER_PREFIXES[old] + name.removeprefix(old)
                 if TOWER_NORMS.search(out):
                     value = value.astype(mx.float32) + 1.0
-                writer.add(out, value, tower_bits if TOWER.search(out) else None)
+                if match := TOWER.search(out):
+                    bits = (
+                        head_bits
+                        if match[1].startswith("codebook_heads")
+                        else tower_bits
+                    )
+                else:
+                    bits = None
+                writer.add(out, value, bits)
             else:
                 raise ValueError(f"unexpected tensor {name}")
         del tensors
@@ -181,7 +207,7 @@ def convert(
         # also has its own entry.
         config["quantization"] = {
             "group_size": GROUP_SIZE,
-            "bits": dense_bits or tower_bits or expert_bits,
+            "bits": dense_bits or tower_bits or head_bits or expert_bits,
             **writer.quantization,
         }
     config["model_type"] = "fish_drama3"
@@ -244,8 +270,41 @@ def main() -> None:
     # their top-1 agreement with bf16 dropped from about 88% to 40%, so quantize
     # it to 8 at most.
     parser.add_argument("--tower-bits", type=int, default=0, help="0 keeps bf16")
+    parser.add_argument(
+        "--head-bits",
+        type=int,
+        default=None,
+        help="bits for the tower's codebook heads; defaults to --tower-bits, 0 keeps bf16",
+    )
+    parser.add_argument(
+        "--expert-group-size",
+        type=int,
+        default=GROUP_SIZE,
+        choices=(32, 64, 128),
+        help="quantization group size for the experts",
+    )
+    parser.add_argument(
+        "--expert-bits-map",
+        type=Path,
+        default=None,
+        help='JSON file mapping layer index to expert bits, e.g. {"0": 4}; '
+        "layers not listed use --expert-bits",
+    )
     args = parser.parse_args()
-    convert(args.src, args.dst, args.expert_bits, args.dense_bits, args.tower_bits)
+    convert(
+        args.src,
+        args.dst,
+        args.expert_bits,
+        args.dense_bits,
+        args.tower_bits,
+        expert_group_size=args.expert_group_size,
+        head_bits=args.head_bits,
+        expert_bits_map=(
+            {int(k): v for k, v in json.loads(args.expert_bits_map.read_text()).items()}
+            if args.expert_bits_map
+            else None
+        ),
+    )
 
 
 if __name__ == "__main__":

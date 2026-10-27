@@ -51,14 +51,14 @@ class DummyQuantizer(nn.Module):
 class MimiAdapter(nn.Module):
     def __init__(
         self,
-        encoder: SeanetEncoder,
+        encoder: SeanetEncoder | None,
         decoder: SeanetDecoder,
         quantizer: DummyQuantizer,
         frame_rate: float,
         encoder_frame_rate: float,
         sample_rate: int,
         channels: int,
-        encoder_transformer: ProjectedTransformer,
+        encoder_transformer: ProjectedTransformer | None,
         decoder_transformer: ProjectedTransformer,
     ):
         super().__init__()
@@ -71,7 +71,7 @@ class MimiAdapter(nn.Module):
         self.sample_rate = sample_rate
         self.channels = channels
         self.encoder_frame_rate = encoder_frame_rate
-        self.dimension = encoder_transformer.transformer.cfg.d_model
+        self.dimension = decoder_transformer.transformer.cfg.d_model
 
         if encoder_frame_rate != frame_rate:
             if encoder_frame_rate <= frame_rate:
@@ -82,8 +82,14 @@ class MimiAdapter(nn.Module):
                     f"Only integer strides are supported, got {downsample_stride}"
                 )
             downsample_stride = int(downsample_stride)
-            self.downsample = ConvDownsample1d(
-                downsample_stride, dim=self.dimension, causal=True
+            self.downsample = (
+                ConvDownsample1d(
+                    downsample_stride,
+                    dim=self.dimension,
+                    causal=True,
+                )
+                if encoder is not None
+                else None
             )
             self.upsample = ConvTrUpsample1d(
                 downsample_stride, dim=self.dimension, causal=True
@@ -92,7 +98,9 @@ class MimiAdapter(nn.Module):
             self.downsample = None
             self.upsample = None
 
-        self.encoder_cache = self.encoder_transformer.make_cache()
+        self.encoder_cache = (
+            self.encoder_transformer.make_cache() if encoder is not None else []
+        )
         self.decoder_cache = self.decoder_transformer.make_cache()
 
     @property
@@ -100,7 +108,8 @@ class MimiAdapter(nn.Module):
         return int(self.sample_rate / self.frame_rate)
 
     def reset_state(self):
-        self.encoder.reset_state()
+        if self.encoder is not None:
+            self.encoder.reset_state()
         self.decoder.reset_state()
         if self.downsample is not None:
             self.downsample.reset_state()
@@ -133,6 +142,10 @@ class MimiAdapter(nn.Module):
         return self.upsample.step(x)
 
     def encode_to_latent(self, x: mx.array) -> mx.array:
+        if self.encoder is None:
+            raise ValueError(
+                "This checkpoint omits the speaker encoder; use a bundled voice embedding."
+            )
         if x.ndim != 3:
             raise ValueError(
                 "MimiAdapter.encode_to_latent expects audio of shape [B, C, T]."
@@ -182,7 +195,7 @@ class MimiAdapter(nn.Module):
             true_skip=True,
             compress=config.seanet.compress,
         )
-        encoder = SeanetEncoder(seanet_cfg)
+        encoder = SeanetEncoder(seanet_cfg) if config.encoder_enabled else None
         decoder = SeanetDecoder(seanet_cfg)
 
         transformer_cfg = TransformerConfig(
@@ -207,12 +220,17 @@ class MimiAdapter(nn.Module):
             kv_repeat=1,
             dim_feedforward=config.transformer.dim_feedforward,
             conv_layout=True,
+            gelu=config.gelu,
         )
         output_dims = list(config.transformer.output_dimensions)
-        encoder_transformer = ProjectedTransformer(
-            transformer_cfg,
-            input_dim=config.transformer.input_dimension,
-            output_dims=output_dims,
+        encoder_transformer = (
+            ProjectedTransformer(
+                transformer_cfg,
+                input_dim=config.transformer.input_dimension,
+                output_dims=output_dims,
+            )
+            if encoder is not None
+            else None
         )
         decoder_transformer = ProjectedTransformer(
             transformer_cfg,

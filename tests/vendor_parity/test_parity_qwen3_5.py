@@ -67,5 +67,10 @@ def test_cached_decode_from_embeddings_matches_upstream():
             u(None, cache=u_cache, input_embeddings=x),
         )
     for v_layer, u_layer in zip(v_cache, u_cache):
-        for got, want in zip(v_layer.state, u_layer.state):
+        upstream_state = (
+            u_layer.cache
+            if isinstance(v_layer, vendored.ArraysCache)
+            else u_layer.keys_and_values()
+        )
+        for got, want in zip(v_layer.state, upstream_state):
             assert_exactly_equal(got, want)

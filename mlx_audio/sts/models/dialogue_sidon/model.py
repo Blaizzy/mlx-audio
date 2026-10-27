@@ -8,6 +8,7 @@ import numpy as np
 from mlx import nn
 
 from mlx_audio.codec.models.descript.dac import Decoder
+from mlx_audio.sts.models.base import STSOutput
 
 from .config import ModelConfig
 from .diffusion import DiffusionHead, DPMSolver
@@ -41,6 +42,8 @@ def align_speakers(previous, current, overlap):
 
 
 class Model(nn.Module):
+    output_suffix = "_separated"
+
     def __init__(self, config: ModelConfig):
         super().__init__()
         self.config = config
@@ -133,6 +136,37 @@ class Model(nn.Module):
         output = mx.stack((first, second), axis=1)
         mx.eval(output)
         return output
+
+    def generate(
+        self,
+        audio,
+        sample_rate=None,
+        *,
+        num_steps=30,
+        seed=None,
+        chunk_seconds=20.0,
+        overlap_seconds=5.0,
+    ) -> STSOutput:
+        """Separate audio into named speaker stems for the shared STS entrypoint."""
+        if audio is None:
+            raise ValueError("Input audio is required for separation")
+        if isinstance(audio, (str, Path)):
+            audio = Path(audio).expanduser()
+        result = self.separate(
+            audio,
+            sample_rate=sample_rate,
+            num_steps=num_steps,
+            seed=seed,
+            chunk_seconds=chunk_seconds,
+            overlap_seconds=overlap_seconds,
+        )
+        return STSOutput(
+            sample_rate=result.sample_rate,
+            audios={
+                f"speaker_{index}": waveform
+                for index, waveform in enumerate(result.speakers, 1)
+            },
+        )
 
     def separate(
         self,

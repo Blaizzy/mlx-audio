@@ -33,17 +33,12 @@ class FlowLMModel(nn.Module):
         transformer: StreamingTransformer,
         dim: int = 128,
         ldim: int = 64,
-        stats_ema_decay: float = 0.999,
-        text_padding_weight: float = 1.0,
         dtype=None,
     ):
         super().__init__()
         self.conditioner = conditioner
         self.ldim = ldim
-        self.stats_ema_decay = stats_ema_decay
         self.dim = dim
-        self.text_padding_weight = text_padding_weight
-        self.dtype = dtype
 
         self.flow_net = flow_net
         self.emb_std = mx.ones((ldim,), dtype=dtype or mx.float32)
@@ -54,6 +49,23 @@ class FlowLMModel(nn.Module):
         self.transformer = transformer
         self.out_norm = nn.LayerNorm(dim, eps=1e-5)
         self.out_eos = nn.Linear(dim, 1)
+        self.num_speakers = None
+        self.duration_delta = None
+        self._conditioning_embedding = None
+
+    def cache_conditioning(self):
+        """Materialize the default single-speaker and zero-duration conditions."""
+        embedding = (
+            self.num_speakers(mx.array([1], dtype=mx.int32))
+            if self.num_speakers is not None
+            else None
+        )
+        if self.duration_delta is not None:
+            duration = self.duration_delta(mx.array([0.0]))
+            embedding = duration if embedding is None else embedding + duration
+        self._conditioning_embedding = embedding
+        if embedding is not None:
+            mx.eval(embedding)
 
     def make_cache(self):
         return self.transformer.make_cache()
@@ -61,7 +73,13 @@ class FlowLMModel(nn.Module):
     def backbone(
         self, input_: mx.array, text_embeddings: mx.array, sequence: mx.array, cache
     ) -> mx.array:
-        input_ = mx.concatenate([text_embeddings, input_], axis=1)
+        if self.num_speakers is not None or self.duration_delta is not None:
+            # Also support freshly constructed models used without load_weights.
+            if self._conditioning_embedding is None:
+                self.cache_conditioning()
+            input_ = input_ + self._conditioning_embedding
+        if text_embeddings.shape[1]:
+            input_ = mx.concatenate([text_embeddings, input_], axis=1)
         transformer_out = self.transformer(input_, cache)
         if self.out_norm is not None:
             transformer_out = self.out_norm(transformer_out)
@@ -96,26 +114,6 @@ class FlowLMModel(nn.Module):
         conditioned_flow = partial(self.flow_net, transformer_out)
         return lsd_decode(conditioned_flow, noise, lsd_decode_steps), out_eos
 
-    def _sample_next_latent(
-        self,
-        sequence: mx.array,
-        text_embeddings: mx.array,
-        cache,
-        lsd_decode_steps: int,
-        temp: float,
-        noise_clamp: float | None,
-        eos_threshold: float,
-    ) -> tuple[mx.array, mx.array]:
-        return self(
-            sequence=sequence,
-            text_embeddings=text_embeddings,
-            cache=cache,
-            lsd_decode_steps=lsd_decode_steps,
-            temp=temp,
-            noise_clamp=noise_clamp,
-            eos_threshold=eos_threshold,
-        )
-
     @classmethod
     def from_config(cls, config: FlowLMConfig, latent_dim: int) -> "FlowLMModel":
         d_model = config.transformer.d_model
@@ -125,6 +123,7 @@ class FlowLMModel(nn.Module):
             tokenizer_path=str(config.lookup_table.tokenizer_path),
             dim=config.lookup_table.dim,
             output_dim=d_model,
+            tokenizer=config.lookup_table.tokenizer,
         )
         transformer = StreamingTransformer(
             d_model=d_model,
@@ -132,6 +131,7 @@ class FlowLMModel(nn.Module):
             num_layers=config.transformer.num_layers,
             dim_feedforward=int(config.transformer.hidden_scale * d_model),
             max_period=float(config.transformer.max_period),
+            gelu=config.transformer.gelu,
         )
         dtype = getattr(mx, config.dtype) if config.dtype else None
         return cls(

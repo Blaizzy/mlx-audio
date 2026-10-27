@@ -10,8 +10,10 @@ import math
 import os
 
 import mlx.core as mx
+import mlx.nn as nn
 import numpy as np
 import pytest
+from mlx.utils import tree_flatten
 
 from mlx_audio.stt.models.nemotron_asr import (
     ConformerStreamingState,
@@ -180,13 +182,25 @@ def test_streaming_log_mel_matches_full_with_bounded_state():
 
 
 def test_voicechat_style_frontend_and_conformer_state_tracks_bounded_encoder():
-    mx.random.seed(0)
     rng = np.random.default_rng(0)
     config = _tiny_config()
     config["encoder"]["att_context_size"] = [[56, 0]]
     config["default_att_context_size"] = [56, 0]
     model = Model(ModelConfig.from_dict(config))
-    mx.eval(model.parameters())
+    # Explicit weights keep the fixture independent of MLX initializer defaults.
+    weight_rng = np.random.default_rng(0)
+    for _, layer in sorted(
+        tree_flatten(model.encoder.leaf_modules(), is_leaf=nn.Module.is_module)
+    ):
+        if isinstance(layer, (nn.Linear, nn.Conv1d, nn.Conv2d)):
+            fan_in = math.prod(layer.weight.shape[1:]) * getattr(layer, "groups", 1)
+            bound = math.sqrt(1 / fan_in)
+            layer.weight = mx.array(
+                weight_rng.uniform(-bound, bound, layer.weight.shape).astype(np.float32)
+            )
+            if "bias" in layer:
+                layer.bias = mx.zeros_like(layer.bias)
+    mx.eval(model.encoder.parameters())
     model.eval()
 
     args = model.preprocessor_config

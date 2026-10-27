@@ -20,6 +20,7 @@ class AudioPlayer:
         self.stream: sd.OutputStream | None = None
         self.playing = False
         self.drain_event = Event()
+        self.drain_event.set()
 
         self.window_sample_count = 0
         self.window_start = time.perf_counter()
@@ -42,33 +43,56 @@ class AudioPlayer:
                     self.audio_buffer[0] = buf[to_copy:]
 
             if not self.audio_buffer and filled < frames:
-                self.drain_event.set()
                 self.playing = False
                 raise sd.CallbackStop()
 
+    def _on_stream_finished(self):
+        # CallbackStop only means all samples have been submitted. PortAudio
+        # calls this after the device has actually played the pending output.
+        self.playing = False
+        self.drain_event.set()
+
     def start_stream(self):
+        # An underrun stops callbacks but leaves the old stream open. Finish
+        # and close it before replacing it (and reusing the drain event).
+        if self.stream is not None:
+            self.stop_stream()
+
         print("\nStarting audio stream...")
         self.stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=1,
             callback=self.callback,
+            finished_callback=self._on_stream_finished,
             blocksize=self.buffer_size,
         )
-        self.stream.start()
-        self.playing = True
+        # Callbacks may run before start() returns, so publish state first.
         self.drain_event.clear()
-
-    def stop_stream(self):
+        self.playing = True
         try:
-            if self.stream:
-                self.stream.stop()
-                self.stream.close()
+            self.stream.start()
+        except BaseException:
+            self.stop_stream(abort=True)
+            raise
+
+    def stop_stream(self, *, abort=False):
+        try:
+            if self.stream is not None:
+                try:
+                    if abort:
+                        self.stream.abort()
+                    else:
+                        self.stream.stop()
+                finally:
+                    self.stream.close()
         finally:
             self.stream = None
             self.playing = False
+            self.drain_event.set()
 
     def buffered_samples(self) -> int:
-        return sum(map(len, self.audio_buffer))
+        with self.buffer_lock:
+            return sum(map(len, self.audio_buffer))
 
     def queue_audio(self, samples):
         samples = np.asarray(samples, dtype=np.float32)
@@ -115,28 +139,24 @@ class AudioPlayer:
         # If the stream never started (e.g. short text whose total audio fell
         # below the min_buffer_seconds threshold), force-start it now so the
         # buffered audio is played instead of hanging forever.
-        if not self.playing:
-            if self.buffered_samples() > 0:
-                self.start_stream()
-            else:
-                return
-        return self.drain_event.wait()
+        if not self.playing and self.buffered_samples() > 0:
+            self.start_stream()
+        # An empty Python buffer can still have output pending at the device.
+        if self.stream is not None:
+            return self.drain_event.wait()
 
     def stop(self):
-        if self.playing:
+        """Play all queued audio, then close the stream."""
+        # wait_for_drain() force-starts the stream when buffered audio never
+        # reached min_buffer_seconds, so it must run even if playback has not
+        # started; gating on `self.playing` silently dropped short utterances.
+        try:
             self.wait_for_drain()
-            sd.sleep(100)
-
+        finally:
             self.stop_stream()
-            self.playing = False
 
     def flush(self):
         """Discard everything and stop playback immediately."""
-        if not self.playing:
-            return
-
         with self.buffer_lock:
             self.audio_buffer.clear()
-        self.stop_stream()
-        self.playing = False
-        self.drain_event.set()
+        self.stop_stream(abort=True)

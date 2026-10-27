@@ -651,43 +651,51 @@ class Model(nn.Module):
         return [prompt]
 
     def generate_result(
-        self, samples, start_time: float, stream: bool = False
+        self,
+        samples,
+        start_time: float,
+        stream: bool = False,
+        is_final_chunk: bool = False,
     ) -> GenerationResult:
         token_count = len(samples)
-        transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
+        if token_count == 0:
+            # An empty final chunk ends a stream whose audio already went out.
+            audio = mx.zeros((0,), dtype=mx.float32)
+        else:
+            transposed = mx.transpose(mx.stack(samples), axes=[1, 2, 0])
 
-        # decode in 10 second max chunks to avoid excessive memory usage
-        tokens_per_batch = min(token_count, int(12.5 * 5))
-        all_audio = []
-        for i in range(0, transposed.shape[2], tokens_per_batch):
-            batch_tokens = transposed[:, :, i : i + tokens_per_batch]
-            audio = (
-                self._streaming_decoder.decode_frames(batch_tokens)
-                .squeeze(0)
-                .squeeze(0)
-            )
-            all_audio.append(audio)
-        audio = mx.concat(all_audio, axis=0)
+            # decode in 10 second max chunks to avoid excessive memory usage
+            tokens_per_batch = min(token_count, int(12.5 * 5))
+            all_audio = []
+            for i in range(0, transposed.shape[2], tokens_per_batch):
+                batch_tokens = transposed[:, :, i : i + tokens_per_batch]
+                audio = (
+                    self._streaming_decoder.decode_frames(batch_tokens)
+                    .squeeze(0)
+                    .squeeze(0)
+                )
+                all_audio.append(audio)
+            audio = mx.concat(all_audio, axis=0)
 
-        # This applies an imperceptible watermark to identify audio as AI-generated.
-        # Watermarking ensures transparency, dissuades misuse, and enables traceability.
-        # Please be a responsible AI citizen and keep the watermarking in place.
-        # If using CSM 1B in another application, use your own private key and keep it secret.
-        if self._watermarker is not None and self._watermark_key is not None:
-            audio = watermark(
-                self._watermarker,
-                audio,
-                self._sample_rate,
-                self._watermark_key,
-            )
-            audio = mx.array(audio, dtype=mx.float32)
+            # This applies an imperceptible watermark to identify audio as AI-generated.
+            # Watermarking ensures transparency, dissuades misuse, and enables traceability.
+            # Please be a responsible AI citizen and keep the watermarking in place.
+            # If using CSM 1B in another application, use your own private key and keep it secret.
+            if self._watermarker is not None and self._watermark_key is not None:
+                audio = watermark(
+                    self._watermarker,
+                    audio,
+                    self._sample_rate,
+                    self._watermark_key,
+                )
+                audio = mx.array(audio, dtype=mx.float32)
 
         mx.eval(audio)
 
         segment_time = time.perf_counter() - start_time
 
         samples = audio.shape[0] if audio is not None else 0
-        assert samples > 0, "No audio generated"
+        assert samples > 0 or is_final_chunk, "No audio generated"
 
         # Calculate audio duration in seconds
         sample_rate = 24000
@@ -725,6 +733,8 @@ class Model(nn.Module):
             },
             processing_time_seconds=segment_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=stream,
+            is_final_chunk=is_final_chunk,
         )
 
     def generate(
@@ -771,7 +781,8 @@ class Model(nn.Module):
         if isinstance(text, str):
             text = re.split(split_pattern, text.strip()) if split_pattern else [text]
 
-        for prompt in text:
+        for prompt_idx, prompt in enumerate(text):
+            is_last_prompt = prompt_idx == len(text) - 1
             current_context = list(context)
             if voice_match and current_context:
                 generation_text = (context[0].text + " " + prompt).strip()
@@ -859,8 +870,13 @@ class Model(nn.Module):
                         samples = []
                         start_time = time.perf_counter()
 
-                if len(samples) > 0:
-                    yield self.generate_result(samples, start_time, stream=stream)
+                if len(samples) > 0 or (stream and is_last_prompt):
+                    yield self.generate_result(
+                        samples,
+                        start_time,
+                        stream=stream,
+                        is_final_chunk=stream and is_last_prompt,
+                    )
 
                 # Clear cache after each segment to avoid memory leaks
                 mx.clear_cache()

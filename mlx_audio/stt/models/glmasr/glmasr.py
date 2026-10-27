@@ -868,6 +868,8 @@ class Model(nn.Module):
             StreamingResult objects for this chunk. The chunk-final result
             includes token counts (prompt_tokens, generation_tokens).
         """
+        from mlx_audio.lm.generate import StreamingDetokenizer
+
         # Preprocess chunk to mel spectrogram
         mel = self._preprocess_audio(audio_chunk)
 
@@ -894,6 +896,8 @@ class Model(nn.Module):
         audio_length = [[audio_len]]
 
         token_count = 0
+        emitted_token_count = 0
+        detokenizer = StreamingDetokenizer(self._tokenizer)
 
         for token, _ in self.stream_generate(
             input_ids=input_ids,
@@ -904,11 +908,14 @@ class Model(nn.Module):
             sampler=sampler,
             verbose=verbose,
         ):
-            text = self._tokenizer.decode([int(token)])
-
             # Estimate timing based on token position within chunk
-            prev_progress = token_count / max(remaining_tokens, 1)
             token_count += 1
+            detokenizer.add_token(int(token))
+            text = detokenizer.last_segment
+            if not text:
+                continue
+
+            prev_progress = emitted_token_count / max(remaining_tokens, 1)
             curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
 
             estimated_start = offset_sec + (chunk_duration * prev_progress)
@@ -919,6 +926,19 @@ class Model(nn.Module):
                 is_final=False,
                 start_time=estimated_start,
                 end_time=estimated_end,
+                language="en",
+            )
+            emitted_token_count = token_count
+
+        detokenizer.finalize()
+        if text := detokenizer.last_segment:
+            prev_progress = emitted_token_count / max(remaining_tokens, 1)
+            curr_progress = min(token_count / max(remaining_tokens, 1), 1.0)
+            yield StreamingResult(
+                text=text,
+                is_final=False,
+                start_time=offset_sec + (chunk_duration * prev_progress),
+                end_time=offset_sec + (chunk_duration * curr_progress),
                 language="en",
             )
 

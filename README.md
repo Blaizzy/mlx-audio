@@ -129,7 +129,10 @@ for result in model.generate(
 | **Spark** | SparkTTS model | EN, ZH | [mlx-community/Spark-TTS-0.5B-bf16](https://huggingface.co/mlx-community/Spark-TTS-0.5B-bf16) |
 | **Chatterbox** | Expressive multilingual TTS (v2/v3) | 23 languages | [v3](https://huggingface.co/mlx-community/chatterbox-multilingual-v3), [v2](https://huggingface.co/mlx-community/chatterbox-fp16) |
 | **Soprano** | High-quality TTS | EN | [mlx-community/Soprano-1.1-80M-bf16](https://huggingface.co/mlx-community/Soprano-1.1-80M-bf16) |
+| [**Phonon**](mlx_audio/tts/models/pocket_tts/README.md) | Gradium 24 kHz TTS with streaming generation | EN | [31M](https://huggingface.co/gradium/phonon-31m-en), [40M](https://huggingface.co/gradium/phonon-40m-en) |
 | **Ming Omni TTS (BailingMM)** | Multimodal generation with voice cloning, style control, and speech/music/event generation | EN, ZH | [mlx-community/Ming-omni-tts-16.8B-A3B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-16.8B-A3B-bf16) |
+| **Ming-3.0 TTS Tiny** | MoE speech synthesis with cloning, built-in voices and style control ([README](mlx_audio/tts/models/lingv3_tts/README.md)) | ZH, EN, DE, ES, FR, KO, JA | [BF16](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-tts-tiny-4bit) |
+| **Ming-3.0 TTS (Dense)** | 0.5B multilingual TTS with voice cloning, built-in voices, freeform/emotion/dialect control and paralinguistic tags ([README](mlx_audio/tts/models/dense/README.md)) | ZH, EN, DE, ES, FR, KO, JA | [mlx-community/Ming-3.0-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-3.0-tts-0.5B-bf16) |
 | **Ming Omni TTS (Dense)** | Lightweight dense Ming Omni variant for voice cloning and style control | EN, ZH | [mlx-community/Ming-omni-tts-0.5B-bf16](https://huggingface.co/mlx-community/Ming-omni-tts-0.5B-bf16) |
 | **KugelAudio** | SOTA 7B AR+Diffusion TTS for European languages | EN, DE, FR, ES, IT, PT, NL, PL, RU, UK, + 14 more | [kugelaudio/kugelaudio-0-open](https://huggingface.co/kugelaudio/kugelaudio-0-open) |
 | **Voxtral TTS** | Mistral's 4B multilingual TTS (20 voices, 9 languages) | EN, FR, ES, DE, IT, PT, NL, AR, HI | [mlx-community/Voxtral-4B-TTS-2603-mlx-bf16](https://huggingface.co/mlx-community/Voxtral-4B-TTS-2603-mlx-bf16) |
@@ -148,10 +151,13 @@ for result in model.generate(
 | **Whisper** | OpenAI's robust STT model | 99+ languages | [mlx-community/whisper-large-v3-turbo-asr-fp16](https://huggingface.co/mlx-community/whisper-large-v3-turbo-asr-fp16) |
 | **Distil-Whisper** | Distilled fast Whisper variants | EN | [distil-whisper/distil-large-v3](https://huggingface.co/distil-whisper/distil-large-v3) |
 | **Qwen3-ASR** | Alibaba's multilingual ASR | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ASR-1.7B-8bit](https://huggingface.co/mlx-community/Qwen3-ASR-1.7B-8bit) |
+| **Ming-3.0 ASR Tiny** | Hybrid MoE speech recognition with language hints and hotwords ([README](mlx_audio/stt/models/ming_v3_asr/README.md)) | EN, ZH | [BF16](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-asr-tiny-4bit) |
+| **MiMo-V2.5-ASR** | Xiaomi's speech recognition model | ZH, EN | [MiMo-V2.5-ASR](https://huggingface.co/mlx-community/MiMo-V2.5-ASR-MLX) |
 | **Mega-ASR** | Routed Qwen3-ASR with automatic clean/base vs degraded/LoRA switching | EN (fixtures), multilingual Qwen3-ASR backbone | [README](mlx_audio/stt/models/mega_asr/README.md) |
 | **Qwen3-ForcedAligner** | Word-level audio alignment | ZH, EN, JA, KO, + more | [mlx-community/Qwen3-ForcedAligner-0.6B-8bit](https://huggingface.co/mlx-community/Qwen3-ForcedAligner-0.6B-8bit) |
 | **MOSS-Transcribe-Diarize** | Timestamped transcription with speaker labels | Multiple major languages | https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize |
 | **Parakeet** | NVIDIA's accurate STT | EN (v2), 25 EU languages (v3) | [mlx-community/parakeet-tdt-0.6b-v3](https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3) |
+| **Phonon-2 / 2.5** | Five-value Parakeet TDT | EN / 25 European languages | [2.5](https://huggingface.co/FermionResearch/Phonon-2.5) · [2.5 English](https://huggingface.co/FermionResearch/Phonon-2.5-English) · [2](https://huggingface.co/mlx-community/Phonon-2) · [README](mlx_audio/stt/models/phonon2/README.md) |
 | **Nemotron 3.5 ASR (streaming)** | NVIDIA's cache-aware streaming FastConformer-RNNT with language-ID prompting | 40 language-locales | [mlx-community/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/mlx-community/nemotron-3.5-asr-streaming-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Nemotron Speech Streaming 0.6B** | NVIDIA's English FastConformer-RNNT with 80/160/560/1120 ms streaming modes | EN | [nvidia/nemotron-speech-streaming-en-0.6b](https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b) · [README](mlx_audio/stt/models/nemotron_asr/README.md) |
 | **Voxtral** | Mistral's speech model | Multiple | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
@@ -160,7 +166,7 @@ for result in model.generate(
 | **Canary** | NVIDIA's multilingual ASR with translation | 25 EU + RU, UK | [README](mlx_audio/stt/models/canary/README.md) |
 | **Moonshine** | Useful Sensors' lightweight ASR | EN | [README](mlx_audio/stt/models/moonshine/README.md) |
 | **MMS** | Meta's massively multilingual ASR with adapters | 1000+ | [README](mlx_audio/stt/models/mms/README.md) |
-| **Granite Speech** | IBM's ASR + speech translation | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) |
+| **Granite Speech** | IBM's ASR + speech translation; 5.0 adds language hints, punctuation & keyword biasing; plus adds speaker attribution & word timestamps | EN, FR, DE, ES, PT, JA | [README](mlx_audio/stt/models/granite_speech/README.md) · [5.0 2B](https://huggingface.co/ibm-granite/granite-speech-5.0-2b) · [plus](https://huggingface.co/ibm-granite/granite-speech-4.1-2b-plus) |
 | **Granite Speech 5.0 TurboCTC** | IBM's fast encoder-only CTC ASR | EN | [README](mlx_audio/stt/models/granite_speech5_ctc/README.md) |
 | **Qwen2-Audio** | Alibaba's multimodal audio understanding (ASR, captioning, emotion, translation) | Multiple | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
 | **MOSS-Music** | OpenMOSS music understanding and lyrics ASR | EN, ZH | [README](mlx_audio/stt/models/moss_music/README.md) |
@@ -184,6 +190,7 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
 | [**DialogueSidon**](mlx_audio/sts/models/dialogue_sidon/README.md) | Two-speaker separation and restoration | Separate dialogue into speaker tracks | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
 | **Liquid2.5-Audio*** | Speech-to-Speech, Text-to-Speech and Speech-to-Text | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
+| **Ming-3.0 Audio Tiny** | Audio understanding, transcription, reasoning and spoken dialogue | English/Chinese audio and text conversations | [BF16](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-4bit), [guide](mlx_audio/sts/models/ming_v3_audio/README.md) |
 | **MiMo-Audio** | English/Chinese TTS, ASR, audio understanding and dialogue; Base few-shot speech tasks | Speech interactions and audio completion | [Instruct](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct), [Base](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Base), [audio tokenizer](https://huggingface.co/XiaomiMiMo/MiMo-Audio-Tokenizer), [guide](mlx_audio/sts/models/mimo_audio/README.md) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
@@ -260,7 +267,7 @@ mlx_audio.tts.generate \
     --verbose
 ```
 
-See the [Ming Omni TTS README](mlx_audio/tts/models/bailingmm/README.md) for CLI and Python cookbook examples, and the [Ming Omni Dense README](mlx_audio/tts/models/dense/README.md) for the `mlx-community/Ming-omni-tts-0.5B-bf16` workflow.
+See the [Ming Omni TTS README](mlx_audio/tts/models/bailingmm/README.md) for CLI and Python cookbook examples, and the [Ming Dense README](mlx_audio/tts/models/dense/README.md) for Ming-3.0-tts-0.5B and Ming-omni-tts-0.5B.
 
 ### Kokoro TTS
 
@@ -347,6 +354,18 @@ for item in result:
 
 See the [Qwen3-ASR README](mlx_audio/stt/models/qwen3_asr/README.md) for CLI usage, all models, and more examples.
 
+### MiMo-V2.5-ASR
+
+```python
+from mlx_audio.stt import load
+
+model = load("mlx-community/MiMo-V2.5-ASR-MLX")
+result = model.generate("audio.wav", language="en")
+print(result.text)
+```
+
+See the [MiMo-V2.5-ASR README](mlx_audio/stt/models/mimo_v2_asr/README.md) for local-path loading.
+
 ### Phonon-1
 
 Fermion Research's compact English Qwen3-ASR derivatives load directly from
@@ -424,6 +443,24 @@ python -m mlx_audio.stt.generate \
     --context "MLX, Apple Silicon, PyTorch, Transformer" \
     --verbose
 ```
+
+### Phonon-2 and Phonon-2.5
+
+Speech recognition with Fermion Research's five-value Parakeet TDT models.
+Phonon-2.5 supports 25 European languages; Phonon-2.5 English and Phonon-2 support
+English. Load the published checkpoints directly; no Fermion runtime is needed.
+
+```python
+from mlx_audio.stt import load
+
+model = load("FermionResearch/Phonon-2.5")
+result = model.generate("audio.wav", chunk_duration=30, overlap_duration=2)
+print(result.text)
+```
+
+Use `FermionResearch/Phonon-2.5-English` for English-only recognition. See the
+[Phonon README](mlx_audio/stt/models/phonon2/README.md) for all model IDs, timestamps,
+and chunk streaming.
 
 ### Parakeet (Multilingual STT)
 

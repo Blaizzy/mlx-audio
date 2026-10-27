@@ -1,9 +1,13 @@
+import sys
+
 import mlx.core as mx
 import pytest
 
 
 @pytest.fixture(autouse=True)
 def _seeded():
+    if sys.version_info < (3, 11):
+        pytest.skip("The pinned mlx-lm reference requires Python 3.11 or newer")
     mx.random.seed(0)
 
 

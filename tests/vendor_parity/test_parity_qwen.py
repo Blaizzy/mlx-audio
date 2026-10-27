@@ -57,7 +57,10 @@ def test_qwen_config_and_parameter_keys_match_upstream(vendored, upstream, make_
     vendored_args = make_args(vendored)
     upstream_args = make_args(upstream)
 
-    assert asdict(vendored_args) == asdict(upstream_args)
+    upstream_config = asdict(upstream_args)
+    if vendored is vendored_qwen3:
+        assert upstream_config.pop("rope_parameters") is None
+    assert asdict(vendored_args) == upstream_config
     assert parameter_shapes(vendored.Model(vendored_args)) == parameter_shapes(
         upstream.Model(upstream_args)
     )

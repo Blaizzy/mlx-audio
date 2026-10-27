@@ -1,12 +1,16 @@
 # Copyright (c) 2025, Prince Canuma and contributors (https://github.com/Blaizzy/mlx-audio)
 
 import math
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import mlx.nn as nn
 
+from mlx_audio.lm.models.cache import KVCache
+
 from .config import Qwen2DecoderConfig
+
+LayerCache = Union[Tuple[mx.array, mx.array], KVCache]
 
 
 class RMSNorm(nn.Module):
@@ -96,6 +100,7 @@ def apply_rotary_pos_emb(
     cos = cos[:, :, None, :]  # (B, L, 1, D)
     sin = sin[:, :, None, :]  # (B, L, 1, D)
 
+    cos, sin = cos.astype(q.dtype), sin.astype(q.dtype)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
 
@@ -135,8 +140,8 @@ class Attention(nn.Module):
         cos: mx.array,
         sin: mx.array,
         mask: Optional[mx.array] = None,
-        cache: Optional[Tuple[mx.array, mx.array]] = None,
-    ) -> Tuple[mx.array, Tuple[mx.array, mx.array]]:
+        cache: Optional[LayerCache] = None,
+    ) -> Tuple[mx.array, LayerCache]:
         B, L, _ = x.shape
 
         q = self.q_proj(x)
@@ -150,18 +155,19 @@ class Attention(nn.Module):
         # Apply rotary embeddings
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
 
-        # KV cache handling
-        if cache is not None:
-            k_cache, v_cache = cache
-            k = mx.concatenate([k_cache, k], axis=1)
-            v = mx.concatenate([v_cache, v], axis=1)
-
-        new_cache = (k, v)
-
-        # Transpose for attention: (B, L, H, D) -> (B, H, L, D)
         q = q.transpose(0, 2, 1, 3)
-        k = k.transpose(0, 2, 1, 3)
-        v = v.transpose(0, 2, 1, 3)
+        if isinstance(cache, KVCache):
+            k, v = cache.update_and_fetch(
+                k.transpose(0, 2, 1, 3), v.transpose(0, 2, 1, 3)
+            )
+            new_cache = cache
+        else:
+            if cache is not None:
+                k_cache, v_cache = cache
+                k = mx.concatenate([k_cache, k], axis=1)
+                v = mx.concatenate([v_cache, v], axis=1)
+            new_cache = (k, v)
+            k, v = k.transpose(0, 2, 1, 3), v.transpose(0, 2, 1, 3)
 
         # Scaled dot-product attention
         out = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
@@ -209,8 +215,8 @@ class DecoderLayer(nn.Module):
         cos: mx.array,
         sin: mx.array,
         mask: Optional[mx.array] = None,
-        cache: Optional[Tuple[mx.array, mx.array]] = None,
-    ) -> Tuple[mx.array, Tuple[mx.array, mx.array]]:
+        cache: Optional[LayerCache] = None,
+    ) -> Tuple[mx.array, LayerCache]:
         # Self attention
         residual = x
         x = self.input_layernorm(x)
@@ -294,9 +300,9 @@ class Qwen2Model(nn.Module):
         inputs_embeds: Optional[mx.array] = None,
         input_ids: Optional[mx.array] = None,
         mask: Optional[mx.array] = None,
-        cache: Optional[List[Tuple[mx.array, mx.array]]] = None,
+        cache: Optional[List[LayerCache]] = None,
         is_causal: bool = True,
-    ) -> Tuple[mx.array, List[Tuple[mx.array, mx.array]]]:
+    ) -> Tuple[mx.array, List[LayerCache]]:
         """Forward pass.
 
         Args:
@@ -317,7 +323,11 @@ class Qwen2Model(nn.Module):
         # Compute position offset from cache
         offset = 0
         if cache is not None and cache[0] is not None:
-            offset = cache[0][0].shape[1]
+            offset = (
+                cache[0].offset
+                if isinstance(cache[0], KVCache)
+                else cache[0][0].shape[1]
+            )
 
         # Position IDs
         position_ids = mx.arange(offset, offset + L, dtype=mx.int32)
@@ -339,9 +349,7 @@ class Qwen2Model(nn.Module):
                 mx.arange(0, k_len, dtype=mx.int32), axis=0
             )  # (1, K)
             allow = q_pos >= k_pos  # (L, K)
-            neg_inf = mx.array(float("-inf"), dtype=mx.float32)
-            causal_mask = mx.where(allow, mx.array(0.0, dtype=mx.float32), neg_inf)
-            mask = causal_mask[None, None, :, :]  # (1, 1, L, K)
+            mask = allow[None, None, :, :]  # (1, 1, L, K)
 
         h = inputs_embeds
         new_caches = []
@@ -354,6 +362,9 @@ class Qwen2Model(nn.Module):
         if self.norm is not None:
             h = self.norm(h)
         return h, new_caches
+
+    def make_cache(self) -> List[KVCache]:
+        return [KVCache() for _ in self.layers]
 
 
 class VibeVoiceLanguageModel(nn.Module):

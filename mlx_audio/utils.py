@@ -278,27 +278,24 @@ def get_model_class(
     Raises:
         ValueError: If the model type is not supported.
     """
-    # Stage 1: Check if the model type is in the remapping
-    model_type_mapped = model_remapping.get(model_type, None)
-
-    # Stage 2: Check for partial matches in segments of the model name
-    # Only do this if the initial mapping didn't find a match
-    models_dir = Path(__file__).parent / category / "models"
-    available_models = []
-    if models_dir.exists() and models_dir.is_dir():
-        for item in models_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("__"):
-                available_models.append(item.name)
-
-    if model_name is not None and model_type_mapped != model_type:
+    model_type_mapped = model_remapping.get(model_type)
+    if model_type_mapped is not None:
+        model_type = model_type_mapped
+    elif model_name is not None:
+        models_dir = Path(__file__).parent / category / "models"
+        available_models = []
+        if models_dir.exists() and models_dir.is_dir():
+            available_models = [
+                item.name
+                for item in models_dir.iterdir()
+                if item.is_dir() and not item.name.startswith("__")
+            ]
         for part in model_name:
             if part in available_models:
                 model_type = part
             if part in model_remapping:
                 model_type = model_remapping[part]
                 break
-    elif model_type_mapped is not None:
-        model_type = model_type_mapped
 
     try:
         module_path = f"mlx_audio.{category}.models.{model_type}"
@@ -344,6 +341,7 @@ def base_load_model(
     model_name = kwargs.pop("model_name_parts", None)
     model_type = kwargs.pop("model_type", None)
     allow_patterns = kwargs.pop("allow_patterns", None)
+    source_model_path = kwargs.pop("source_model_path", model_path)
 
     if isinstance(model_path, str):
         if model_name is None:
@@ -363,7 +361,6 @@ def base_load_model(
         raise ValueError(f"Invalid model path type: {type(model_path)}")
 
     config = load_config(model_path)
-    config["model_path"] = str(model_path)
 
     # Determine model_type from config or model_name
     if model_type is None:
@@ -383,6 +380,35 @@ def base_load_model(
         category=category,
         model_remapping=model_remapping,
     )
+
+    # Model packages can materialize nonstandard checkpoint formats before
+    # config construction and weight loading. Keep transport details local.
+    if hasattr(model_class, "prepare_model_path"):
+        source = (
+            source_model_path
+            if isinstance(source_model_path, str)
+            and not Path(source_model_path).expanduser().exists()
+            else None
+        )
+        prepared_path = Path(
+            model_class.prepare_model_path(
+                model_path,
+                source=source,
+                revision=kwargs.get("revision"),
+                force_download=kwargs.get("force_download", False),
+            )
+        )
+        if prepared_path != model_path:
+            model_path = prepared_path
+            config = load_config(model_path)
+            model_class, model_type = get_model_class(
+                model_type=model_type_from_config(config) or model_type,
+                model_name=model_name,
+                category=category,
+                model_remapping=model_remapping,
+            )
+
+    config["model_path"] = str(model_path)
 
     # Get model config from model class if it exists, otherwise use the config
     model_config = (
@@ -624,6 +650,7 @@ def load_audio(
     length: Optional[int] = None,
     volume_normalize: bool = False,
     segment_duration: Optional[int] = None,
+    duration: Optional[float] = None,
 ) -> mx.array:
     """Load audio from file path or return mx.array as-is.
 
@@ -635,6 +662,7 @@ def load_audio(
         length: Target length in samples (pad or truncate if specified)
         volume_normalize: Whether to normalize audio volume
         segment_duration: If specified, randomly select a segment of this duration (seconds)
+        duration: If specified, only read this many seconds from the start of the file
 
     Returns:
         mx.array: Audio waveform at target sample rate
@@ -663,6 +691,7 @@ def load_audio(
         dtype="float32",
         sample_rate=sample_rate,
         nchannels=1,
+        duration=duration,
     )
 
     # Random segment selection

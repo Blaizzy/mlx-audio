@@ -72,8 +72,12 @@ class StreamingTransformerLayer(nn.Module):
         dim_feedforward: int,
         rope: RotaryEmbedding,
         layer_scale: float | None = None,
+        gelu: str = "erf",
     ):
         super().__init__()
+        if gelu not in ("erf", "tanh"):
+            raise ValueError(f"Unsupported GELU activation: {gelu}")
+        self.activation = nn.gelu if gelu == "erf" else nn.gelu_approx
         self.self_attn = StreamingMultiheadAttention(
             embed_dim=d_model, num_heads=num_heads, rope=rope
         )
@@ -94,7 +98,7 @@ class StreamingTransformerLayer(nn.Module):
     def __call__(self, x: mx.array, cache: KVCache | None) -> mx.array:
         attn_out = self.self_attn(self.norm1(x), cache)
         x = x + self._apply_scale(attn_out, self.layer_scale_1)
-        ff = self.linear2(nn.gelu(self.linear1(self.norm2(x))))
+        ff = self.linear2(self.activation(self.linear1(self.norm2(x))))
         x = x + self._apply_scale(ff, self.layer_scale_2)
         return x
 
@@ -108,6 +112,7 @@ class StreamingTransformer(nn.Module):
         dim_feedforward: int,
         max_period: float = 10000.0,
         layer_scale: float | None = None,
+        gelu: str = "erf",
     ):
         super().__init__()
         self.d_model = d_model
@@ -122,6 +127,7 @@ class StreamingTransformer(nn.Module):
                 dim_feedforward=dim_feedforward,
                 rope=self.rope,
                 layer_scale=layer_scale,
+                gelu=gelu,
             )
             for _ in range(num_layers)
         ]

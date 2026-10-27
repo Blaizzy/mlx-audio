@@ -12,3 +12,10 @@ def prepare_config(config, model_path):
             "Parakeet Redux's ternary codes and scales without requantizing."
         )
     return config
+
+
+def prepare_model_path(model_path, **kwargs):
+    # Unpacked Phonon containers retain their parent Parakeet model_type.
+    from mlx_audio.stt.models.phonon2 import transport
+
+    return transport.prepare_model_path(model_path, **kwargs)

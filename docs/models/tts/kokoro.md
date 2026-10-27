@@ -77,6 +77,11 @@ pip install misaki[zh]
 
 ## Available Voices
 
+Named voices are loaded from `voices/<name>.safetensors` in the loaded model
+snapshot when present, preserving the model's pinned revision and allowing
+offline use. Explicit voice file paths take precedence; missing local voices
+use the existing Hub lookup.
+
 ### American English
 
 | Female | Male |

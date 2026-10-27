@@ -1,7 +1,9 @@
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, NamedTuple, Optional, Tuple
 
 import mlx.core as mx
 import mlx.nn as nn
+
+from mlx_audio.lm.models.cache import KVCache
 
 from .config import DiaConfig
 
@@ -184,26 +186,9 @@ class RotaryEmbedding(nn.Module):
         return mx.concatenate([first_part, second_part], axis=-1)
 
 
-class KVCache:
-    def __init__(self, num_heads, max_len, head_dim, k=None, v=None):
-        self.k = mx.zeros((2, num_heads, max_len, head_dim)) if k is None else k
-        self.v = mx.zeros((2, num_heads, max_len, head_dim)) if v is None else v
-        self.current_idx = 0
-        self.max_len = max_len
-
-    def update_and_fetch(self, k, v):
-        assert self.current_idx < self.max_len
-        self.k[:, :, self.current_idx : self.current_idx + 1, :] = k
-        self.v[:, :, self.current_idx : self.current_idx + 1, :] = v
-        self.current_idx += 1
-        return self.k[:, :, : self.current_idx, :], self.v[:, :, : self.current_idx, :]
-
-    def prefill_kv(self, k, v):
-        prefill_len = k.shape[2]
-        assert prefill_len <= self.max_len
-        self.k[:, :, :prefill_len, :] = k
-        self.v[:, :, :prefill_len, :] = v
-        self.current_idx = prefill_len
+class CrossAttentionCache(NamedTuple):
+    k: mx.array
+    v: mx.array
 
 
 class Attention(nn.Module):
@@ -287,8 +272,7 @@ class Attention(nn.Module):
         attn_mask: Optional[
             mx.array
         ] = None,  # None in Decoder Self Attention, Valid mask in Others
-        cache: Optional[KVCache] = None,  # None in Encoder, KVCache in Decoder
-        prefill: bool = False,  # True only when prefilling KV Cache
+        cache: Optional[KVCache | CrossAttentionCache] = None,
     ) -> Tuple[mx.array, Optional[Tuple[mx.array, mx.array]]]:
         """
         Performs attention calculation with optional KV caching.
@@ -301,7 +285,6 @@ class Attention(nn.Module):
             deterministic: If True, disable dropout.
             attn_mask: Attention mask.
             cache: KVCache.
-            prefill: If True, use prefill mode.
 
         Returns:
             A tuple containing:
@@ -362,13 +345,7 @@ class Attention(nn.Module):
                 attn_v = Xv_BxNxSxH
             # Decoder Self Attention
             else:
-                # In prefill mode, we fill in cache until prefill length
-                if prefill:
-                    attn_k, attn_v = Xk_BxNxSxH, Xv_BxNxSxH
-                    cache.prefill_kv(attn_k, attn_v)
-                # In decode step, we add current K/V to cache step by step
-                else:
-                    attn_k, attn_v = cache.update_and_fetch(Xk_BxNxSxH, Xv_BxNxSxH)
+                attn_k, attn_v = cache.update_and_fetch(Xk_BxNxSxH, Xv_BxNxSxH)
 
         # Attention Calculation
         attn_scores = mx.matmul(Xq_BxNxTxH, attn_k.swapaxes(2, 3))
@@ -584,8 +561,7 @@ class DecoderLayer(nn.Module):
         self_attn_mask: mx.array,
         cross_attn_mask: mx.array,
         self_attn_cache: KVCache,
-        cross_attn_cache: KVCache,
-        prefill: bool = False,
+        cross_attn_cache: CrossAttentionCache,
     ) -> Tuple[mx.array, Tuple[mx.array, mx.array]]:
         # 1. Self-Attention
         residual = x
@@ -599,7 +575,6 @@ class DecoderLayer(nn.Module):
             deterministic=deterministic,
             attn_mask=self_attn_mask,  # (2, 1, 1, S_max)
             cache=self_attn_cache,
-            prefill=prefill,
         )
         x = residual + sa_out
 
@@ -661,14 +636,13 @@ class Decoder(nn.Module):
 
     def precompute_cross_attention_kv(
         self,
-        max_len: int,
         encoder_out: mx.array,  # (B, S, E)
         src_positions: Optional[mx.array],  # (B, S)
-    ) -> List[KVCache]:
+    ) -> List[CrossAttentionCache]:
         """
         Computes the Key and Value tensors for cross-attention for each layer from the encoder output.
         """
-        per_layer_kv_cache: List[KVCache] = []
+        per_layer_kv_cache: List[CrossAttentionCache] = []
 
         for layer in self.layers:
             cross_attn_module = layer.cross_attention
@@ -679,16 +653,7 @@ class Decoder(nn.Module):
             k = mx.transpose(k_proj, (0, 2, 1, 3))  # equivalent to transpose(1, 2)
             v = mx.transpose(v_proj, (0, 2, 1, 3))  # equivalent to transpose(1, 2)
 
-            # Create KVCache without device parameter
-            per_layer_kv_cache.append(
-                KVCache(
-                    cross_attn_module.num_kv_heads,
-                    max_len,
-                    cross_attn_module.head_dim,
-                    k=k,
-                    v=v,
-                )
-            )
+            per_layer_kv_cache.append(CrossAttentionCache(k, v))
 
         return per_layer_kv_cache
 
@@ -700,7 +665,7 @@ class Decoder(nn.Module):
         self_attn_mask: Any,  # None
         cross_attn_mask: mx.array,  # [B, 1, 1, S]
         self_attention_cache: List[KVCache],
-        cross_attention_cache: List[KVCache],
+        cross_attention_cache: List[CrossAttentionCache],
     ) -> mx.array:
         """
         Performs a single decoding step, managing KV caches layer by layer.
@@ -754,7 +719,7 @@ class Decoder(nn.Module):
         self_attn_mask: mx.array,
         cross_attn_mask: mx.array,
         self_attention_cache: List[KVCache],
-        cross_attention_cache: List[KVCache],
+        cross_attention_cache: List[CrossAttentionCache],
     ) -> mx.array:
         """
         Forward pass for the Decoder stack, managing KV caches.
@@ -799,7 +764,6 @@ class Decoder(nn.Module):
                 cross_attn_mask=cross_attn_mask,
                 self_attn_cache=self_attention_cache[i],
                 cross_attn_cache=cross_attention_cache[i],
-                prefill=True,
             )
 
         # Final Norm
@@ -842,17 +806,10 @@ class DiaModel(nn.Module):
         )
 
         # --- Decoder Pass ---
-        max_len = self.config.model.max_sequence_length
-
-        self_attention_cache = []
-
-        for layer in self.decoder.layers:
-            self_attn_module = layer.self_attention
-            self_attention_cache.append(
-                KVCache(
-                    self_attn_module.num_query_heads, max_len, self_attn_module.head_dim
-                )
-            )
+        self_attention_cache = [KVCache() for _ in self.decoder.layers]
+        cross_attention_cache = self.decoder.precompute_cross_attention_kv(
+            encoder_out, src_positions
+        )
 
         logits = self.decoder(
             tgt_ids_BxTxC=tgt_BxTxC,
@@ -863,7 +820,7 @@ class DiaModel(nn.Module):
             self_attn_mask=dec_self_attn_mask,
             cross_attn_mask=dec_cross_attn_mask,
             self_attention_cache=self_attention_cache,
-            cross_attention_cache=None,
+            cross_attention_cache=cross_attention_cache,
         )
 
         return logits

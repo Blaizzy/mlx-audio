@@ -4,7 +4,8 @@ Drama 3 is generated chunk by chunk: about CHUNK_BYTES of UTF-8 text with at mos
 CHUNK_SPEAKERS speakers each, so the per-chunk frame budget is never the limit.
 Cuts prefer sentence ends, then clause marks, then spaces. Special tokens,
 paired tags such as <whisper>...</whisper>, and [bracketed] cues are never cut,
-and every piece of a speaker's turn keeps that speaker's tag.
+and every piece of a speaker's turn keeps that speaker's tag. Caller-supplied
+line breaks become spaces so they cannot prematurely end the model's turn.
 """
 
 import re
@@ -32,6 +33,8 @@ WHITE_SPACE = "".join(
         + [0x2028, 0x2029, 0x202F, 0x205F, 0x3000],
     )
 )
+WHITE_SPACE_RUN = re.compile(f"[{re.escape(WHITE_SPACE)}]+")
+LINE_BREAKS = frozenset("\n\r\v\f\x85\u2028\u2029")
 UNCUTTABLE = re.compile(
     r"<\|[^|>]*\|>|<([A-Za-z][\w-]*)\b[^>]*>.*?</\1>|\[[^\[\]]*\]", re.S
 )
@@ -71,6 +74,24 @@ def reference_transcript(text: str) -> str:
     tag = SPEAKER_TAG.match(body)
     leading = tagged[: len(tagged) - len(body)]
     return tag.group(0) + leading + body[tag.end() :]
+
+
+def flatten_lines(text: str) -> str:
+    """Replace each whitespace run containing a line break with one space.
+
+    A space preserves word boundaries in every script. Other whitespace stays
+    unchanged, and line breaks at the edges of the text are removed. Matching
+    whole whitespace runs avoids retrying a newline search at every character.
+    """
+
+    def join(match: re.Match) -> str:
+        if not any(char in LINE_BREAKS for char in match.group()):
+            return match.group()
+        if match.start() == 0 or match.end() == len(text):
+            return ""
+        return " "
+
+    return WHITE_SPACE_RUN.sub(join, text)
 
 
 def _bytes(text: str) -> int:
@@ -153,6 +174,7 @@ def split_text(
 ) -> list[str]:
     """Generation chunks in order. Tagged turns are split per speaker, each piece
     re-tagged, then regrouped so a chunk stays within limit and max_speakers."""
+    text = flatten_lines(text)
     if not SPEAKER_TAG.search(text):
         return split_by_length(text, limit)
 

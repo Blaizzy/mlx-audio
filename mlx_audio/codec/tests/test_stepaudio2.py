@@ -24,3 +24,28 @@ class TestStepAudio2Codec(unittest.TestCase):
         mask = mx.ones((1, 1, 3), dtype=mx.bool_)
         out = model(x, mask, mu, t, spks, cond)
         self.assertEqual(out.shape, (1, 2, 3))
+
+
+class TestCAMPPlusPooling(unittest.TestCase):
+    def test_partial_segments_exclude_padding(self):
+        from mlx_audio.codec.models.stepaudio2.speaker import FusedCAMLayer
+
+        layer = FusedCAMLayer(2, 2, 3, stride=1, padding=1, dilation=1, bias=False)
+        for length in (1, 99, 100, 101, 103, 200, 201):
+            x = mx.arange(length, dtype=mx.float32)[None, None]
+            actual = layer.seg_pooling(x)
+            expected = []
+            for start in range(0, length, 100):
+                end = min(start + 100, length)
+                expected.extend([(start + end - 1) / 2] * (end - start))
+            self.assertEqual(actual.shape, x.shape)
+            self.assertTrue(bool(mx.allclose(actual, mx.array(expected)[None, None])))
+
+    def test_statistics_use_sample_standard_deviation_without_epsilon(self):
+        from mlx_audio.codec.models.stepaudio2.speaker import UnbiasedStatsPool
+
+        x = mx.array([[[1.0, 3.0, 5.0], [7.0, 7.0, 7.0]]])
+        actual = UnbiasedStatsPool()(x)
+        self.assertTrue(bool(mx.allclose(actual, mx.array([[3.0, 7.0, 2.0, 0.0]]))))
+        with self.assertRaisesRegex(ValueError, "two frames"):
+            UnbiasedStatsPool()(x[..., :1])

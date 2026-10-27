@@ -371,17 +371,8 @@ def test_upload_preserves_model_specific_card(tmp_path, monkeypatch):
 @pytest.mark.parametrize("speech", [False, True])
 def test_cli_text_and_speech_outputs(tmp_path, monkeypatch, speech):
     import mlx_audio.sts.generate as cli
-    import mlx_audio.utils as utils
     from mlx_audio import audio_io
 
-    monkeypatch.setattr(
-        utils,
-        "load_config",
-        lambda *a, **k: {
-            "model_type": "qwen2",
-            "architectures": ["MiMoAudioModel"],
-        },
-    )
     calls = []
 
     def generate(audio, **kwargs):
@@ -396,7 +387,7 @@ def test_cli_text_and_speech_outputs(tmp_path, monkeypatch, speech):
         )
 
     monkeypatch.setattr(
-        Model, "from_pretrained", lambda *a, **k: SimpleNamespace(generate=generate)
+        cli, "load_model", lambda *a, **k: SimpleNamespace(generate=generate)
     )
     output = tmp_path / "new_directory" / "output.wav"
     monkeypatch.setattr(

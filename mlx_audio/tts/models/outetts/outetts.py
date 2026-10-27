@@ -105,10 +105,17 @@ class Model(nn.Module):
         return chunks
 
     def generate_result(
-        self, audio, start_time: float, token_count: int, segment_idx: int, **kwargs
+        self,
+        audio,
+        start_time: float,
+        token_count: int,
+        segment_idx: int,
+        is_streaming_chunk: bool = False,
+        is_final_chunk: bool = False,
+        **kwargs,
     ) -> GenerationResult:
         samples = audio.shape[0] if audio is not None else 0
-        assert samples > 0, "No audio generated"
+        assert samples > 0 or is_final_chunk, "No audio generated"
 
         sample_rate = (
             self.config.sample_rate
@@ -148,6 +155,8 @@ class Model(nn.Module):
             },
             processing_time_seconds=elapsed_time,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
+            is_streaming_chunk=is_streaming_chunk,
+            is_final_chunk=is_final_chunk,
         )
 
     def generate(
@@ -184,7 +193,8 @@ class Model(nn.Module):
             kwargs.get("repetition_context_size", 64),
         )
 
-        for prompt in prompts:
+        for prompt_idx, prompt in enumerate(prompts):
+            is_last_prompt = prompt_idx == len(prompts) - 1
             completion_prompt = self.prompt_processor.get_completion_prompt(
                 prompt, speaker
             )
@@ -231,6 +241,7 @@ class Model(nn.Module):
                         start_time=time_start,
                         token_count=len(output_ids) - yielded_token_count,
                         segment_idx=i,
+                        is_streaming_chunk=True,
                         **kwargs,
                     )
                     yielded_token_count = len(output_ids)
@@ -243,12 +254,16 @@ class Model(nn.Module):
             audio = self.audio_processor.audio_codec.decode(mx.array([output]))[
                 -1, -1, :
             ]
-            if audio.shape[0] > yielded_frame_count:
+            # In streaming mode the last prompt always closes with a final
+            # chunk, which is empty if its audio already went out.
+            if audio.shape[0] > yielded_frame_count or (stream and is_last_prompt):
                 yield self.generate_result(
                     audio=audio[yielded_frame_count:],
                     start_time=time_start,
                     token_count=len(output_ids) - yielded_token_count,
                     segment_idx=i,
+                    is_streaming_chunk=stream,
+                    is_final_chunk=stream and is_last_prompt,
                     **kwargs,
                 )
 

@@ -108,7 +108,12 @@ class ConformerStreamingState:
             else (end // self.subsampling_factor - base)
         )
         self.consumed = end
-        self.mel_cache = win[:, -_PRE_ENCODE_MEL_CACHE:]
+        # Keep the retained window aligned to the subsampling grid.
+        keep = (
+            _PRE_ENCODE_MEL_CACHE
+            + (end - _PRE_ENCODE_MEL_CACHE) % self.subsampling_factor
+        )
+        self.mel_cache = win[:, -keep:]
 
         if hi <= lo:
             self.emitted = base + max(lo, hi)

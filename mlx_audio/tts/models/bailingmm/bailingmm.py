@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +29,179 @@ def format_duration(seconds: float) -> str:
     mins = int(seconds // 60)
     secs = int(seconds % 60)
     return f"{mins:02d}:{secs:02d}"
+
+
+# Each fragment shares 512 cache positions between its prompt and generated patches.
+MING3_MAX_CACHE_LEN = 512
+# Fragment size in "semantic units": one per Chinese character or English word.
+MING3_MAX_FRAGMENT_LENGTH = 24
+
+# Ming-3.0 adds a "Target language:" line for the languages beyond zh/en.
+MING3_TARGET_LANGUAGES = {
+    "ja": "Japanese",
+    "japanese": "Japanese",
+    "ko": "Korean",
+    "korean": "Korean",
+    "de": "German",
+    "german": "German",
+    "fr": "French",
+    "french": "French",
+    "es": "Spanish",
+    "spanish": "Spanish",
+}
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _semantic_length(text: str) -> int:
+    return len(re.findall(r"[一-龥]", text)) + len(re.findall(r"[a-zA-Z]+", text))
+
+
+def _add_period(text: str) -> str:
+    text = text.rstrip()
+    if not text:
+        return text
+    period = "。" if _CJK_RE.search(text) else "."
+    if text[-1] in ",，、;；":
+        return text[:-1] + period
+    if text[-1].isalnum():
+        return text + period
+    return text
+
+
+def _split_fragments(text: str, max_length: int) -> List[str]:
+    """Split text into sentence-aligned fragments of at most ``max_length``.
+
+    Pack whole sentences, splitting long sentences at commas and long clauses
+    at words or Chinese characters.
+    """
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    text = " ".join(text.split())
+    if _semantic_length(text) <= max_length:
+        return [text]
+
+    # Pieces keep their trailing whitespace, so joining them restores the
+    # text exactly. ASCII punctuation only ends a piece before whitespace,
+    # which keeps "3.14", "1,000", "U.S." and "..." intact.
+    sentence_re = re.compile(r".*?(?:[。！？]|[.!?](?=\s)|$)\s*")
+    clause_re = re.compile(r".*?(?:[，；、]|[,;](?=\s)|$)\s*")
+    # Keep tags and non-Chinese words intact, including numbers and abbreviations.
+    word_re = re.compile(r"\[[^\]]*\]|[一-龥]|[^\s一-龥]+|\s+")
+
+    def units(pattern: re.Pattern, value: str) -> List[str]:
+        return [m.group(0) for m in pattern.finditer(value) if m.group(0)]
+
+    def pack(pieces: List[str]) -> List[str]:
+        out, cur = [], ""
+        for piece in pieces:
+            if cur and _semantic_length(cur + piece) > max_length:
+                out.append(cur)
+                cur = piece
+            else:
+                cur += piece
+        if cur:
+            out.append(cur)
+        return out
+
+    pieces = []
+    for sentence in units(sentence_re, text):
+        if _semantic_length(sentence) <= max_length:
+            pieces.append(sentence)
+        else:
+            for clause in units(clause_re, sentence):
+                if _semantic_length(clause) > max_length:
+                    pieces.extend(pack(word_re.findall(clause)))
+                else:
+                    pieces.append(clause)
+    return [f.strip() for f in pack(pieces) if f.strip()]
+
+
+_MING3_CAPTION_FIELDS = {
+    "zh": ("序号", "说话人", "方言", "风格", "语速", "基频", "音量", "情感", "IP"),
+    "en": (
+        "id",
+        "speaker",
+        "dialect",
+        "style",
+        "speed",
+        "pitch",
+        "volume",
+        "emotion",
+        "ip",
+    ),
+}
+
+
+def ming3_instruction(
+    *,
+    dialect: Optional[str] = None,
+    style: Optional[str] = None,
+    speed: Optional[str] = None,
+    pitch: Optional[str] = None,
+    volume: Optional[str] = None,
+    emotion: Optional[str] = None,
+    ip: Optional[str] = None,
+    schema: Optional[str] = None,
+) -> str:
+    """Build a Ming-3.0 control caption to pass as ``instruct``.
+
+    The JSON layout and key order are what the checkpoint was trained on.
+    Values follow the Ming-3.0 cookbook, e.g. ``emotion="高兴"``,
+    ``speed="慢速"``, ``dialect="cantonese"`` or ``ip="US_James"``. Dialect
+    captions use the English schema, everything else the Chinese one.
+    """
+    if schema is None:
+        schema = "en" if dialect is not None else "zh"
+    fields = _MING3_CAPTION_FIELDS[schema]
+    values = (1, "speaker_1", dialect, style, speed, pitch, volume, emotion)
+    item = dict(zip(fields[:-1], values))
+    item["BGM"] = {
+        key: None for key in ("Genre", "Mood", "Instrument", "Theme", "ENV", "SNR")
+    }
+    item[fields[-1]] = ip
+    return json.dumps({"audio_sequence": [item]}, ensure_ascii=False)
+
+
+# Built-in voice names: "US_James"-style English voices and Chinese names
+# such as "灵小柔" or "灵信远_高兴".
+_MING3_VOICE_RE = re.compile(
+    r"^(?:(?:US|UK)_[A-Z][a-z]+|[\u4e00-\u9fff][\u4e00-\u9fff_]*)$"
+)
+
+
+def _is_style_instruction(instruct: Optional[str]) -> bool:
+    """True for freeform text and voice-design (style) captions."""
+    if instruct is None:
+        return False
+    try:
+        caption = json.loads(instruct)
+        item = caption["audio_sequence"][0]
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError):
+        return True
+    return item.get("风格", item.get("style")) is not None
+
+
+def _trim_trailing_silence(
+    speech: mx.array,
+    sample_rate: int,
+    threshold: float = 1e-3,
+    tail_seconds: float = 0.3,
+) -> mx.array:
+    """Cut trailing near-silence, keeping a fixed tail."""
+    frame = int(sample_rate * 0.1)
+    tail = int(sample_rate * tail_seconds)
+    if speech.shape[-1] < frame:
+        return speech
+    num_frames = speech.shape[-1] // frame
+    # Discard any incomplete analysis frame.
+    speech = speech[: num_frames * frame]
+    scores = np.abs(np.array(speech, dtype=np.float32))
+    scores = scores.reshape(num_frames, frame).mean(axis=-1)
+    loud = np.nonzero(scores > threshold)[0]
+    if loud.size == 0:
+        return speech[:tail]
+    return speech[: int(loud[-1]) * frame + frame + tail]
 
 
 @dataclass
@@ -104,7 +279,6 @@ def _apply_multimodal_rotary_pos_emb(
     mrope_section: Optional[List[int]] = None,
     unsqueeze_dim: int = 1,
 ) -> Tuple[mx.array, mx.array]:
-    # Match Torch Ming default split layout.
     mrope_section = list(mrope_section) if mrope_section is not None else [16, 24, 24]
     split_sizes = [int(s) * 2 for s in mrope_section]
     if sum(split_sizes) != cos.shape[-1]:
@@ -494,12 +668,14 @@ class MingQwen2Attention(qwen2_impl.Attention):
         kv_len: int,
         cache_offset: int,
         sliding_window: int,
+        dtype: Optional[mx.Dtype] = None,
     ) -> mx.array:
-        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32)
+        dtype = dtype if dtype is not None else mx.float32
+        neg_inf = mx.array(-3.4028235e38, dtype=mx.float32).astype(dtype)
         q_pos = mx.arange(cache_offset, cache_offset + q_len, dtype=mx.int32)[:, None]
         k_pos = mx.arange(kv_len, dtype=mx.int32)[None, :]
         sw_allowed = k_pos > (q_pos - sliding_window)
-        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=mx.float32), neg_inf)[
+        sw_add = mx.where(sw_allowed, mx.array(0.0, dtype=dtype), neg_inf)[
             None, None, :, :
         ]
 
@@ -510,16 +686,16 @@ class MingQwen2Attention(qwen2_impl.Attention):
             if mask != "causal":
                 raise ValueError(f"Unsupported attention mask spec: {mask}")
             causal_allowed = q_pos >= k_pos
-            causal_add = mx.where(
-                causal_allowed, mx.array(0.0, dtype=mx.float32), neg_inf
-            )[None, None, :, :]
+            causal_add = mx.where(causal_allowed, mx.array(0.0, dtype=dtype), neg_inf)[
+                None, None, :, :
+            ]
             return mx.minimum(causal_add, sw_add)
 
         add_mask = mask
         if add_mask.dtype == mx.bool_:
-            add_mask = mx.where(add_mask, mx.array(0.0, dtype=mx.float32), neg_inf)
+            add_mask = mx.where(add_mask, mx.array(0.0, dtype=dtype), neg_inf)
         else:
-            add_mask = add_mask.astype(mx.float32)
+            add_mask = add_mask.astype(dtype)
         while add_mask.ndim < 4:
             add_mask = mx.expand_dims(add_mask, axis=0)
         return mx.minimum(add_mask, sw_add)
@@ -548,13 +724,13 @@ class MingQwen2Attention(qwen2_impl.Attention):
             queries = self.rope(queries)
             keys = self.rope(keys)
 
-        # TODO: move this to mask creation and pass in the mask to the attention layer
         attn_mask = self._build_sliding_additive_mask(
             mask=mask,
             q_len=seqlen,
             kv_len=keys.shape[2],
             cache_offset=cache_offset,
             sliding_window=self.sliding_window,
+            dtype=queries.dtype,
         )
         output = mx.fast.scaled_dot_product_attention(
             queries, keys, values, scale=self.scale, mask=attn_mask
@@ -587,7 +763,7 @@ class MingQwen2Model(Qwen2Model):
 
     @property
     def word_embeddings(self):
-        # Keep naming parity with BailingMoeModel for shared caller code.
+        # Shared callers use this alias for both dense and MoE backbones.
         return self.embed_tokens
 
 
@@ -634,14 +810,15 @@ class RotaryEmbedding(nn.Module):
         out_even = x_even * cos - x_odd * sin
         out_odd = x_even * sin + x_odd * cos
         out = mx.stack([out_even, out_odd], axis=-1)
-        return out.reshape(x.shape)
+        return out.reshape(x.shape).astype(x.dtype)
 
     def __call__(
         self, q: mx.array, k: mx.array, offset: int = 0
     ) -> Tuple[mx.array, mx.array]:
         seq_len = q.shape[2]
-        pos = mx.arange(offset, offset + seq_len, dtype=mx.float32)
-        freqs = mx.outer(pos, self.inv_freq.astype(mx.float32))
+        # Preserve attention precision through phase generation and rotation.
+        pos = mx.arange(offset, offset + seq_len, dtype=self.inv_freq.dtype)
+        freqs = mx.outer(pos, self.inv_freq)
         cos = mx.cos(freqs)[None, None, :, :]
         sin = mx.sin(freqs)[None, None, :, :]
         return self._apply(q, cos, sin), self._apply(k, cos, sin)
@@ -654,9 +831,7 @@ class RMSNorm(nn.Module):
         self.weight = mx.ones((dim,))
 
     def __call__(self, x: mx.array) -> mx.array:
-        variance = mx.mean((x.astype(mx.float32)) ** 2, axis=-1, keepdims=True)
-        y = x * mx.rsqrt(variance + self.eps).astype(x.dtype)
-        return y * self.weight.astype(x.dtype)
+        return mx.fast.rms_norm(x, self.weight, self.eps)
 
 
 class FeedForward(nn.Module):
@@ -855,10 +1030,11 @@ class DiT(nn.Module):
         latent_history: mx.array,
         patch_size: int,
     ) -> mx.array:
-        if cfg_scale != 1.0:
-            x = mx.concatenate([x, x], axis=0)
-            latent_history = mx.concatenate([latent_history, latent_history], axis=0)
-            c = mx.concatenate([c, mx.zeros_like(c)], axis=0)
+        # Ming guidance is pred + (pred - null_pred) * cfg_scale, so even a
+        # scale of 1 needs both branches (and 0 selects the conditional one).
+        x = mx.concatenate([x, x], axis=0)
+        latent_history = mx.concatenate([latent_history, latent_history], axis=0)
+        c = mx.concatenate([c, mx.zeros_like(c)], axis=0)
         if t.ndim == 0:
             t = mx.full((x.shape[0],), t, dtype=x.dtype)
         out = self(x=x, t=t, c=c, latent_history=latent_history)
@@ -924,20 +1100,26 @@ class Solver:
         self.sigma = sigma
         self.temperature = temperature
 
-    def integrate(self, t: mx.array) -> List[mx.array]:
+    def integrate(
+        self, t: mx.array, sde_noise: Optional[mx.array] = None
+    ) -> List[mx.array]:
         y = self.y0
         solution = [y]
         for i in range(1, t.shape[0]):
             t0 = t[i - 1]
             t1 = t[i]
             dt = t1 - t0
-            # Keep solver state arithmetic in the state dtype (float32 for parity).
+            # Keep each Euler update in the state dtype.
             f0 = self.func(t0, y)
             if f0.dtype != y.dtype:
                 f0 = f0.astype(y.dtype)
             dy = dt.astype(y.dtype) * f0
             y = y + dy
-            noise = mx.random.normal(y.shape, dtype=y.dtype)
+            noise = (
+                mx.random.normal(y.shape, dtype=y.dtype)
+                if sde_noise is None
+                else sde_noise[i - 1]
+            )
             shift = self.sigma * (self.temperature**0.5) * (mx.abs(dt) ** 0.5) * noise
             y = y + shift
             solution.append(y)
@@ -945,9 +1127,10 @@ class Solver:
 
 
 class CFM(nn.Module):
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, ming3_sampling: bool = False):
         super().__init__()
         self.model = model
+        self.ming3_sampling = ming3_sampling
 
     def sample(
         self,
@@ -961,18 +1144,11 @@ class CFM(nn.Module):
         patch_size: int = 1,
         sigma: float = 0.25,
         temperature: float = 1.5,
+        sde_noise: Optional[mx.array] = None,
     ) -> Tuple[mx.array, List[mx.array]]:
-        solver_dtype = mx.float32
+        solver_dtype = noise.dtype if self.ming3_sampling else mx.float32
 
         def fn(t: mx.array, x: mx.array) -> mx.array:
-            if cfg_scale < 1e-5:
-                pred = self.model(
-                    x=x,
-                    t=mx.full((x.shape[0],), t, dtype=x.dtype),
-                    c=c,
-                    latent_history=latent_history,
-                )
-                return pred.astype(solver_dtype)
             pred_cfg = self.model.forward_with_cfg(
                 x=x,
                 t=t,
@@ -984,7 +1160,8 @@ class CFM(nn.Module):
             pred, null_pred = mx.split(pred_cfg, 2, axis=0)
             return (pred + (pred - null_pred) * cfg_scale).astype(solver_dtype)
 
-        y0 = noise.transpose(0, 2, 1).astype(solver_dtype)
+        y0 = noise if self.ming3_sampling else noise.transpose(0, 2, 1)
+        y0 = y0.astype(solver_dtype)
         if use_epss:
             t = get_epss_timesteps(steps, dtype=solver_dtype)
         else:
@@ -993,16 +1170,23 @@ class CFM(nn.Module):
             t = t + sway_sampling_coef * (mx.cos(math.pi / 2 * t) - 1 + t)
 
         solver = Solver(fn, y0, sigma=sigma, temperature=temperature)
-        trajectory = solver.integrate(t)
+        trajectory = solver.integrate(t, sde_noise=sde_noise)
         return trajectory[-1], trajectory
 
 
 class FlowLoss(nn.Module):
-    def __init__(self, z_channels: int, llm_cond_dim: int, **kwargs: Any):
+    def __init__(
+        self,
+        z_channels: int,
+        llm_cond_dim: int,
+        ming3_sampling: bool = False,
+        **kwargs: Any,
+    ):
         super().__init__()
         self.z_channels = z_channels
         self.cfm = CFM(
-            model=DiT(in_channels=z_channels, llm_cond_dim=llm_cond_dim, **kwargs)
+            model=DiT(in_channels=z_channels, llm_cond_dim=llm_cond_dim, **kwargs),
+            ming3_sampling=ming3_sampling,
         )
 
     def sample(
@@ -1015,10 +1199,17 @@ class FlowLoss(nn.Module):
         temperature: float = 0.0,
         steps: int = 10,
     ) -> Tuple[mx.array, List[mx.array]]:
-        # Match Torch path: sample diffusion noise in float32 and integrate in float32.
-        noise = mx.random.normal(
-            (z.shape[0], self.z_channels, patch_size), dtype=mx.float32
-        )
+        if self.cfm.ming3_sampling:
+            # Draw all noise up front, including at zero temperature.
+            noise = mx.random.normal(
+                (z.shape[0], patch_size, self.z_channels), dtype=z.dtype
+            )
+            sde_noise = mx.random.normal((steps, *noise.shape), dtype=z.dtype)
+        else:
+            noise = mx.random.normal(
+                (z.shape[0], self.z_channels, patch_size), dtype=mx.float32
+            )
+            sde_noise = None
         sampled, trajectory = self.cfm.sample(
             noise=noise,
             c=z,
@@ -1028,6 +1219,7 @@ class FlowLoss(nn.Module):
             sigma=sigma,
             temperature=temperature,
             steps=steps,
+            sde_noise=sde_noise,
         )
         return sampled, trajectory
 
@@ -1036,8 +1228,7 @@ class _ISTFTWindowState(nn.Module):
     def __init__(self, n_fft: int):
         super().__init__()
         n = n_fft
-        # Default to torch.hann_window(periodic=True); checkpoint can overwrite this
-        # via audio.decoder.head.istft.window for exact parity.
+        # Periodic Hann window.
         self.window = mx.array(
             0.5 - 0.5 * mx.cos(2.0 * math.pi * mx.arange(n, dtype=mx.float32) / n),
             dtype=mx.float32,
@@ -1194,6 +1385,9 @@ class Encoder(nn.Module):
 
     def __call__(self, waveform: mx.array) -> mx.array:
         x = self.get_frames(waveform)
+        # Frame extraction returns float32; project in the encoder's dtype.
+        weight = getattr(self.fc1, "scales", self.fc1.weight)
+        x = x.astype(weight.dtype)
         x = self.fc1(x)
         x = self.fc2(x)
         dummy = mx.zeros((x.shape[0], x.shape[1]), dtype=mx.int32)
@@ -1231,24 +1425,20 @@ class Decoder(nn.Module):
         return y_bc.transpose(0, 2, 1)
 
     def _linear_upsample_1d(self, x_bc: mx.array) -> mx.array:
-        import numpy as np
-
-        x_np = np.array(x_bc, dtype=np.float32)  # (B, C, T)
-        bsz, channels, in_t = x_np.shape
+        # Keep interpolation on-device; NumPy cannot consume MLX bfloat16 buffers.
+        x = x_bc.astype(mx.float32)
+        in_t = x.shape[-1]
         scale = int(self.patch_size)
         out_t = in_t * scale
-        idx = (np.arange(out_t, dtype=np.float32) + 0.5) / scale - 0.5
-        left = np.floor(idx).astype(np.int64)
+        idx = (mx.arange(out_t, dtype=mx.float32) + 0.5) / scale - 0.5
+        left = mx.floor(idx).astype(mx.int32)
         right = left + 1
-        w_right = idx - left.astype(np.float32)
-        left = np.clip(left, 0, in_t - 1)
-        right = np.clip(right, 0, in_t - 1)
-        left_v = x_np[:, :, left]
-        right_v = x_np[:, :, right]
-        y_np = (
+        w_right = idx - left.astype(mx.float32)
+        left_v = mx.take(x, mx.clip(left, 0, in_t - 1), axis=-1)
+        right_v = mx.take(x, mx.clip(right, 0, in_t - 1), axis=-1)
+        return (
             left_v * (1.0 - w_right)[None, None, :] + right_v * w_right[None, None, :]
         )
-        return mx.array(y_np)
 
     def _streaming_linear_upsample(self, x: mx.array, state, is_last: bool = False):
         if state is None:
@@ -1427,6 +1617,8 @@ class Model(nn.Module):
             raise ValueError("Missing aggregator_config in Ming Omni config")
 
         llm_cfg = dict(config.text_config)
+        # Dense backbones use Qwen chat turns; MoE backbones use role tags.
+        self.chat_layout = not self._is_moe_llm_config(llm_cfg)
         if self._is_moe_llm_config(llm_cfg):
             self.llm_args = BailingMoeModelArgs.from_dict(llm_cfg)
             self.model = MingBailingMoeModel(self.llm_args)
@@ -1440,6 +1632,11 @@ class Model(nn.Module):
         self.history_patch_size = int(
             config.ditar_config.get("history_patch_size", self.patch_size)
         )
+        # One-latent patches distinguish Ming-3.0 from Ming Omni dense models.
+        self.ming3 = (
+            self.chat_layout and self.patch_size == 1 and self.history_patch_size == 1
+        )
+        self.generate_config = {"temperature": 0.0}
 
         self.linear_proj_audio = Aggregator(
             in_channels=self.latent_dim,
@@ -1449,6 +1646,7 @@ class Model(nn.Module):
         self.flowloss = FlowLoss(
             z_channels=self.latent_dim,
             llm_cond_dim=self.llm_args.hidden_size,
+            ming3_sampling=self.ming3,
             **config.ditar_config,
         )
         self.stop_head = nn.Linear(self.llm_args.hidden_size, 2, bias=True)
@@ -1475,7 +1673,7 @@ class Model(nn.Module):
         return all(llm_cfg.get(k) is not None for k in moe_keys)
 
     def sanitize(self, weights: Dict[str, mx.array]) -> Dict[str, mx.array]:
-        # First sanitize the LLM shard with mlx-lm's bailing_moe remapping.
+        # Apply the backbone's weight remapping to the LLM shard.
         llm_weights = {
             k[len("model.") :]: v for k, v in weights.items() if k.startswith("model.")
         }
@@ -1510,10 +1708,33 @@ class Model(nn.Module):
         instruction: Optional[str] = None,
         prompt_latent: Optional[mx.array] = None,
         prompt_text: Optional[str] = None,
+        spk_emb: Optional[List[mx.array]] = None,
     ) -> Tuple[mx.array, mx.array]:
+        if self.chat_layout:
+            spk_start, spk_pad, spk_end = (
+                "<|vision_start|>",
+                "<|vision_pad|>",
+                "<|vision_end|>\n",
+            )
+        else:
+            spk_start, spk_pad, spk_end = "<spk>", "<audioPatch>", "</spk>\n"
+        spk_emb = spk_emb or []
+        spk_prompt = []
+        for i in range(len(spk_emb)):
+            spk_prompt += (
+                self._encode(f"  speaker_{i + 1}:")
+                + self._encode(spk_start)
+                + self._encode(spk_pad)
+                + self._encode(spk_end)
+            )
+
         prompt_text_token = []
         prompt_latent_token = []
         if prompt_latent is not None and prompt_text is not None:
+            if self.ming3:
+                embedding = self.model.model.word_embeddings
+                weight = getattr(embedding, "scales", embedding.weight)
+                prompt_latent = prompt_latent.astype(weight.dtype)
             bsz = prompt_latent.shape[0]
             prompt_latent = prompt_latent.reshape(-1, self.patch_size, self.latent_dim)
             prompt_latent = self.linear_proj_audio(prompt_latent)
@@ -1534,17 +1755,30 @@ class Model(nn.Module):
 
         instruction_prompt = []
         if instruction is not None:
+            instruction_eos = "<|im_end|>" if self.ming3 else "<|endoftext|>"
             instruction_prompt = self._encode(instruction) + self._encode(
-                "<|endoftext|>"
+                instruction_eos
             )
 
+        if self.chat_layout:
+            user_start = self._encode(
+                "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n"
+            ) + self._encode("<|im_start|>user\n")
+            turn_end = self._encode("<|im_end|>\n") + self._encode(
+                "<|im_start|>assistant\n"
+            )
+        else:
+            user_start = self._encode("<role>HUMAN</role>")
+            turn_end = self._encode("<role>ASSISTANT</role>")
+
         input_part = (
-            self._encode("<role>HUMAN</role>")
+            user_start
             + self._encode(prompt)
+            + spk_prompt
             + prompt2
             + prompt_text_token
             + self._encode(text)
-            + self._encode("<role>ASSISTANT</role>")
+            + turn_end
             + instruction_prompt
             + self._encode("<audio>")
             + prompt_latent_token
@@ -1552,6 +1786,20 @@ class Model(nn.Module):
 
         input_ids = mx.array(input_part, dtype=mx.int32)[None, :]
         inputs_embeds = self.model.model.word_embeddings(input_ids)
+
+        if spk_emb:
+            spk_start_id = self.tokenizer.convert_tokens_to_ids(spk_start)
+            starts = np.where(np.array(input_ids[0]) == spk_start_id)[0]
+            pieces, prev = [], 0
+            for pos, emb in zip(starts, spk_emb):
+                pos = int(pos) + 1
+                pieces += [
+                    inputs_embeds[:, prev:pos, :],
+                    emb.reshape(1, 1, -1).astype(inputs_embeds.dtype),
+                ]
+                prev = pos + 1
+            pieces.append(inputs_embeds[:, prev:, :])
+            inputs_embeds = mx.concatenate(pieces, axis=1)
 
         if prompt_latent is not None:
             audio_token_id = self.tokenizer.convert_tokens_to_ids("<audio>")
@@ -1568,7 +1816,7 @@ class Model(nn.Module):
     def _pad_prompt_waveform(self, waveform: mx.array) -> mx.array:
         if waveform.ndim == 1:
             waveform = waveform[None, :]
-        # Match Torch Ming alignment for 12.5 Hz tokenizer frames.
+        # Align to the tokenizer's 12.5 Hz frames.
         pad_align = int((1 / 12.5) * self.patch_size * self.sample_rate)
         if pad_align <= 0:
             return waveform
@@ -1577,7 +1825,38 @@ class Model(nn.Module):
         if new_len == cur_len:
             return waveform
         pad = mx.zeros((waveform.shape[0], new_len - cur_len), dtype=waveform.dtype)
+        if self.ming3:
+            # Ming-3.0 pads at the front: the prompt's tail seeds the latent
+            # history, so trailing silence is what the model would continue.
+            return mx.concatenate([pad, waveform], axis=1)
         return mx.concatenate([waveform, pad], axis=1)
+
+    def _encode_prompt_latent(self, prompt_waveform: mx.array) -> mx.array:
+        prompt_waveform = self._pad_prompt_waveform(prompt_waveform)
+        prompt_waveform_length = mx.array([prompt_waveform.shape[1]], dtype=mx.int32)
+        prompt_latent, _ = self.audio.encode_latent(
+            prompt_waveform, prompt_waveform_length
+        )
+        return prompt_latent
+
+    def _speaker_embeddings(
+        self, spk_emb: Optional[Any], use_zero_spk_emb: bool
+    ) -> Optional[List[mx.array]]:
+        """Project 192-dim speaker embeddings into the LLM's speaker slots."""
+        if use_zero_spk_emb:
+            # Zero the projected speaker slot.
+            return [mx.zeros((self.llm_args.hidden_size,))]
+        if spk_emb is None:
+            return None
+        if not isinstance(spk_emb, (list, tuple)):
+            spk_emb = [spk_emb]
+        projected = []
+        for emb in spk_emb:
+            emb = mx.array(emb, dtype=mx.float32).reshape(1, -1)
+            if emb.shape[-1] != 192:
+                raise ValueError(f"spk_emb must be 192-dim, got {emb.shape[-1]} values")
+            projected.append(self.spk_head(emb)[0])
+        return projected
 
     def _forward_llm_hidden(
         self, inputs_embeds: mx.array, cache: List[KVCache]
@@ -1614,21 +1893,18 @@ class Model(nn.Module):
         instruction: Optional[str] = None,
         prompt_waveform: Optional[mx.array] = None,
         prompt_text: Optional[str] = None,
-        max_decode_steps: int = 200,
+        max_decode_steps: Optional[int] = None,
         cfg: float = 2.0,
         sigma: float = 0.25,
         temperature: float = 0.0,
         flow_steps: int = 10,
+        prompt_latent: Optional[mx.array] = None,
+        spk_emb: Optional[List[mx.array]] = None,
     ):
-        prompt_latent = None
-        if prompt_waveform is not None and prompt_text is not None:
-            prompt_waveform = self._pad_prompt_waveform(prompt_waveform)
-            prompt_waveform_length = mx.array(
-                [prompt_waveform.shape[1]], dtype=mx.int32
-            )
-            prompt_latent, _ = self.audio.encode_latent(
-                prompt_waveform, prompt_waveform_length
-            )
+        if prompt_text is None:
+            prompt_latent = None
+        elif prompt_latent is None and prompt_waveform is not None:
+            prompt_latent = self._encode_prompt_latent(prompt_waveform)
 
         _, inputs_embeds = self._prepare_input_embed(
             prompt=prompt,
@@ -1636,10 +1912,23 @@ class Model(nn.Module):
             instruction=instruction,
             prompt_latent=prompt_latent,
             prompt_text=prompt_text,
+            spk_emb=spk_emb,
         )
 
         cache = [KVCache() for _ in range(self.llm_args.num_hidden_layers)]
         latent_history = None
+        if max_decode_steps is None:
+            max_decode_steps = 1000 if self.ming3 else 200
+
+        if self.ming3:
+            budget = (MING3_MAX_CACHE_LEN - inputs_embeds.shape[1]) // self.patch_size
+            if budget <= 0:
+                raise ValueError(
+                    f"Ming-3.0 prompt has {inputs_embeds.shape[1]} positions and "
+                    f"exhausts the {MING3_MAX_CACHE_LEN}-position cache. Shorten "
+                    "the text, instruction, or reference audio."
+                )
+            max_decode_steps = min(max_decode_steps, budget)
 
         for step in range(max_decode_steps):
             hidden = self._forward_llm_hidden(inputs_embeds=inputs_embeds, cache=cache)
@@ -1650,6 +1939,7 @@ class Model(nn.Module):
                     dtype=z_diff.dtype,
                 )
                 if prompt_latent is not None:
+                    prompt_latent = prompt_latent.astype(z_diff.dtype)
                     start = self.history_patch_size - prompt_latent.shape[1]
                     if start < 0:
                         latent_history = prompt_latent[:, -start:, :]
@@ -1691,92 +1981,166 @@ class Model(nn.Module):
         ref_text: Optional[str] = None,
         cfg_scale: Optional[float] = None,
         ddpm_steps: Optional[int] = None,
-        max_tokens: int = 200,
+        max_tokens: Optional[int] = None,
         temperature: float = 0.0,
         verbose: bool = False,
         stream: bool = False,
         streaming_interval: float = 2.0,
         **kwargs,
     ) -> Iterable[GenerationResult]:
-        del voice, lang_code, stream, streaming_interval
+        del streaming_interval
 
         if self.tokenizer is None:
             raise ValueError(
                 "Tokenizer is not initialized. Load model with load()/from_pretrained first."
             )
 
+        # Built-in voices are an IP caption over an empty speaker slot. Only
+        # Ming voice names are mapped, so a default voice that a client sends
+        # for every model (e.g. "alloy") is ignored rather than becoming a
+        # caption.
+        if (
+            self.ming3
+            and voice
+            and ref_audio is None
+            and _MING3_VOICE_RE.match(str(voice))
+        ):
+            if instruct is not None:
+                raise ValueError("Pass either voice or instruct, not both")
+            instruct = ming3_instruction(ip=voice)
+            kwargs["use_zero_spk_emb"] = True
+
         if isinstance(ref_audio, str):
             ref_audio = load_audio(ref_audio, sample_rate=self.sample_rate)
 
         start_time = time.perf_counter()
-        speech_chunks = []
-        stream_state = (None, None, None)
-        past_key_values = None
         prompt = kwargs.get(
             "prompt", "Please generate speech based on the following description.\n"
         )
+        language = MING3_TARGET_LANGUAGES.get(str(lang_code or "").strip().lower())
+        if self.ming3 and language and "prompt" not in kwargs:
+            prompt += f"Target language: {language}.\n"
         cfg = 2.0 if cfg_scale is None else cfg_scale
         flow_steps = 10 if ddpm_steps is None else ddpm_steps
         sigma = float(kwargs.get("sigma", 0.25))
+        if max_tokens is None:
+            # Ming-3.0 is bounded per fragment by its 512-position cache.
+            max_tokens = 1000 if self.ming3 else 200
         max_decode_steps = int(kwargs.get("max_decode_steps", max_tokens))
+        spk_emb = self._speaker_embeddings(
+            kwargs.get("spk_emb"), bool(kwargs.get("use_zero_spk_emb", False))
+        )
 
-        for step_idx, (sampled_tokens, last_chunk) in enumerate(
-            self.sample(
+        # An acoustic prompt is only usable together with its transcript.
+        prompt_latent = None
+        if ref_audio is not None and ref_text is not None:
+            prompt_latent = self._encode_prompt_latent(ref_audio)
+
+        if self.ming3 and kwargs.get("raw_text", False):
+            fragments = [text]
+        elif self.ming3 and _is_style_instruction(instruct):
+            # Apply style captions to the whole utterance.
+            fragments = [_add_period(" ".join(text.split()))]
+        elif self.ming3:
+            max_length = int(kwargs.get("max_length", MING3_MAX_FRAGMENT_LENGTH))
+            fragments = _split_fragments(_add_period(text), max_length)
+        else:
+            fragments = [text]
+
+        if speed != 1.0:
+            if verbose:
+                print("[WARN] speed parameter is currently ignored for Ming Omni TTS.")
+
+        def result(audio, text, started, segment_idx, is_streaming_chunk, is_final):
+            mx.eval(audio)
+            elapsed = max(1e-6, time.perf_counter() - started)
+            samples = int(audio.shape[0])
+            token_count = len(self._encode(text))
+            duration_seconds = samples / self.sample_rate
+            return GenerationResult(
+                audio=audio,
+                samples=samples,
+                sample_rate=self.sample_rate,
+                segment_idx=segment_idx,
+                token_count=token_count,
+                audio_duration=format_duration(duration_seconds),
+                real_time_factor=elapsed / max(duration_seconds, 1e-6),
+                prompt={"tokens": token_count, "tokens-per-sec": token_count / elapsed},
+                audio_samples={
+                    "samples": samples,
+                    "samples-per-sec": samples / elapsed,
+                },
+                processing_time_seconds=elapsed,
+                peak_memory_usage=mx.get_peak_memory() / 1e9,
+                is_streaming_chunk=is_streaming_chunk,
+                is_final_chunk=is_final,
+            )
+
+        speech_parts = []
+        chunk_start = start_time
+        for idx, fragment in enumerate(fragments):
+            sampler = self.sample(
                 prompt=prompt,
-                text=text,
+                text=fragment,
                 instruction=instruct,
-                prompt_waveform=ref_audio,
                 prompt_text=ref_text,
                 max_decode_steps=max_decode_steps,
                 cfg=cfg,
                 sigma=sigma,
                 temperature=temperature,
                 flow_steps=flow_steps,
+                prompt_latent=prompt_latent,
+                spk_emb=spk_emb,
             )
-        ):
-            speech_tmp, stream_state, past_key_values = self.audio.decode(
-                sampled_tokens,
-                past_key_values=past_key_values,
-                use_cache=True,
-                stream_state=stream_state,
-                last_chunk=last_chunk,
-            )
-            speech_chunks.append(speech_tmp)
-            if last_chunk:
-                break
+            if self.ming3:
+                # Decode all latents in one pass per fragment.
+                latents = [tokens for tokens, _ in sampler]
+                if not latents:
+                    raise RuntimeError(
+                        "No audio latents were generated for a text fragment"
+                    )
+                part, _, _ = self.audio.decode(
+                    mx.concatenate(latents, axis=1), use_cache=False, last_chunk=True
+                )
+                part = part[0]
+                if kwargs.get("trim_silence", True):
+                    part = _trim_trailing_silence(part, self.sample_rate)
+                if stream:
+                    # Fragments decode independently, so each can play once ready.
+                    is_final = idx == len(fragments) - 1
+                    yield result(part, fragment, chunk_start, idx, True, is_final)
+                    chunk_start = time.perf_counter()
+                else:
+                    speech_parts.append(part)
+                continue
 
-        if not speech_chunks:
+            speech_chunks = []
+            stream_state = (None, None, None)
+            past_key_values = None
+            for sampled_tokens, last_chunk in sampler:
+                speech_tmp, stream_state, past_key_values = self.audio.decode(
+                    sampled_tokens,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    stream_state=stream_state,
+                    last_chunk=last_chunk,
+                )
+                speech_chunks.append(speech_tmp)
+                if last_chunk:
+                    break
+            if speech_chunks:
+                speech_parts.append(mx.concatenate(speech_chunks, axis=1)[0])
+
+        if self.ming3 and stream:
+            return
+        if not speech_parts:
             raise RuntimeError("No audio chunks were generated")
-        speech = mx.concatenate(speech_chunks, axis=1)[0]
-
-        if speed != 1.0:
-            # Speed control is not implemented for Ming Omni yet; keep native timing.
-            if verbose:
-                print("[WARN] speed parameter is currently ignored for Ming Omni TTS.")
-
-        mx.eval(speech)
-        elapsed = max(1e-6, time.perf_counter() - start_time)
-        samples = int(speech.shape[0])
-        token_count = len(self._encode(text))
-        duration_seconds = samples / self.sample_rate
-        audio_sps = samples / elapsed
-        token_tps = token_count / elapsed
-
-        yield GenerationResult(
-            audio=speech,
-            samples=samples,
-            sample_rate=self.sample_rate,
-            segment_idx=0,
-            token_count=token_count,
-            audio_duration=format_duration(duration_seconds),
-            real_time_factor=elapsed / max(duration_seconds, 1e-6),
-            prompt={"tokens": token_count, "tokens-per-sec": token_tps},
-            audio_samples={"samples": samples, "samples-per-sec": audio_sps},
-            processing_time_seconds=elapsed,
-            peak_memory_usage=mx.get_peak_memory() / 1e9,
-            is_streaming_chunk=False,
-            is_final_chunk=True,
+        speech = (
+            speech_parts[0]
+            if len(speech_parts) == 1
+            else mx.concatenate(speech_parts, axis=0)
         )
+        yield result(speech, text, start_time, 0, False, True)
 
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":

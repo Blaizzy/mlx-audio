@@ -1,6 +1,6 @@
 import inspect
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -17,6 +17,10 @@ class EncoderConfig:
     dropout: float = 0.1
     conv_kernel_size: int = 15
     conv_expansion_factor: int = 2
+    # 1-based Conformer block indices whose outputs are concatenated onto the
+    # final layer output (0 = post input_linear). granite-speech-4.1-2b-plus
+    # uses [3]; None/[] for 4.0 and 4.1.
+    cat_hidden_layers: Optional[List[int]] = None
     model_type: str = "granite_speech_encoder"
 
     @classmethod
@@ -77,6 +81,13 @@ class TextConfig:
 
     @classmethod
     def from_dict(cls, params):
+        # Transformers 5 serializes RoPE settings as rope_parameters. The
+        # October 2026 granite-speech-4.1-2b-plus checkpoint uses it for YaRN.
+        rope_parameters = params.get("rope_parameters")
+        if rope_parameters and params.get("rope_scaling") is None:
+            params = {**params, "rope_scaling": rope_parameters}
+            if "rope_theta" in rope_parameters:
+                params["rope_theta"] = rope_parameters["rope_theta"]
         return cls(
             **{
                 k: v

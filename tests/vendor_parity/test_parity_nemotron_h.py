@@ -45,7 +45,9 @@ def test_config_and_parameter_keys_match_upstream():
     vendored_args = make_args(vendored)
     upstream_args = make_args(upstream)
 
-    assert asdict(vendored_args) == asdict(upstream_args)
+    upstream_config = asdict(upstream_args)
+    assert upstream_config.pop("layer_types") is None
+    assert asdict(vendored_args) == upstream_config
     assert parameter_shapes(vendored.Model(vendored_args)) == parameter_shapes(
         upstream.Model(upstream_args)
     )

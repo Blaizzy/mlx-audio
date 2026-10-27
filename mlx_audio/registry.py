@@ -27,8 +27,10 @@ _AMBIGUOUS_FAMILIES = frozenset({"llama", "qwen3", "dense"})
 
 
 def model_type_from_config(config: dict) -> Optional[str]:
-    """Resolve audio architectures whose upstream config names a generic LLM."""
+    """Resolve audio architectures from explicit types or distinctive config fields."""
     model_type = config.get("model_type") or config.get("architecture")
+    if model_type is None and {"flow_lm", "mimi"}.issubset(config):
+        return "pocket_tts"
     if model_type in {None, "qwen2", "mimo_audio"} and (
         "MiMoAudioModel" in (config.get("architectures") or ())
         or {

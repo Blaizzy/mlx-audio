@@ -38,7 +38,7 @@ mx.eval(model.parameters())
 
 # Load tokenizers
 tokenizer = HiggsAudioTokenizer.from_pretrained(model_path)
-text_tokenizer = AutoTokenizer.from_pretrained(f"{model_path}/tokenizer")
+text_tokenizer = AutoTokenizer.from_pretrained(model_path)
 
 # Generate speech
 result = next(model.generate(
@@ -74,8 +74,7 @@ audio_write("output_cloned.wav", np.array(result.audio), result.sample_rate)
 python -m mlx_audio.tts.generate \
   --model mlx-community/OmniVoice-bfloat16 \
   --text "Hello, this is OmniVoice." \
-  --duration_s 5.0 \
-  --language en
+  --lang_code en
 ```
 
 ## Parameters
