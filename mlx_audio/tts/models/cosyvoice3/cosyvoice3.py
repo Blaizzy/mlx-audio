@@ -52,8 +52,22 @@ class CosyVoice3(nn.Module):
     def sample_rate(self) -> int:
         return self.config.sample_rate
 
+    # Buffers generated at init time and absent from the checkpoint. They are
+    # stored under underscore-prefixed names (excluded from the parameter
+    # tree), so both directions of a strict load stay clean.
+    NON_PERSISTENT_BUFFERS = frozenset(
+        {
+            "flow.decoder.rand_noise",
+            "hift.m_source.l_sin_gen.rand_ini",
+            "hift.stft_window",
+        }
+    )
+
     def sanitize(self, weights: dict) -> dict:
         """Route checkpoint weights to their matching submodules."""
+        weights = {
+            k: v for k, v in weights.items() if k not in self.NON_PERSISTENT_BUFFERS
+        }
         buckets: dict[str, dict] = {"llm": {}, "flow": {}, "hift": {}}
         passthrough: dict = {}
         for k, v in weights.items():

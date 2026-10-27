@@ -176,10 +176,6 @@ def generate_audio(
     streaming_interval: float = 2.0,
     save: bool = False,
     use_zero_spk_emb: bool = False,
-    add_spk: str = "",
-    save_spkinfo: str = "",
-    load_spkinfo: str = "",
-    strict: bool = True,
     top_p: Optional[float] = None,
     top_k: Optional[int] = None,
     repetition_penalty: Optional[float] = None,
@@ -214,23 +210,24 @@ def generate_audio(
     - save (bool): Whether to save streamed audio to a file when using stream mode.
     - model (object): A already loaded model.
     - stt_model (object): A already loaded stt model.
-    - strict (bool): Whether to require every checkpoint weight to be present when
-      loading a model from a path. Some models (e.g. cosyvoice3) have buffers that
-      are generated at init time rather than stored in the checkpoint; set this to
-      False to allow loading those. Ignored if `model` is already a loaded instance.
     Returns:
     - None: The function writes the generated audio to a file when not streaming, or when streaming with saving enabled.
     """
     try:
         play = play or stream
         cross_lingual = kwargs.get("cross_lingual", False)
+        # Model-specific speaker-preset options are passed through as extra
+        # kwargs rather than being part of the standard generate interface.
+        add_spk = kwargs.pop("add_spk", "")
+        save_spkinfo = kwargs.pop("save_spkinfo", "")
+        load_spkinfo = kwargs.pop("load_spkinfo", "")
 
         if model is None:
             raise ValueError("Model path or model instance must be provided.")
 
         if isinstance(model, str):
             # Load model
-            model = load_model(model_path=model, strict=strict)
+            model = load_model(model_path=model)
 
         # load speaker presets from a previously saved spk2info file
         if load_spkinfo:
@@ -773,15 +770,6 @@ def parse_args():
         "--save",
         action="store_true",
         help="Save streamed audio to a file. Requires --stream.",
-    )
-    parser.add_argument(
-        "--no-strict",
-        dest="strict",
-        action="store_false",
-        help=(
-            "Allow loading a model even if some checkpoint weights are missing "
-            "(e.g. cosyvoice3's init-time-generated buffers)."
-        ),
     )
 
     args = parser.parse_args()

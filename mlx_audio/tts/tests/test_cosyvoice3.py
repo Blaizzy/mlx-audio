@@ -584,11 +584,52 @@ class TestModelIntegration(unittest.TestCase):
             sorted(routed.keys()), ["flow.bar", "hift.baz", "llm.foo", "unprefixed"]
         )
 
+    def test_non_persistent_buffers_are_excluded_from_parameters(self):
+        """Init-time buffers are absent from the checkpoint, so they stay out
+        of the parameter tree (underscore names) and strict loading works
+        without any non-strict override."""
+        from mlx_audio.tts.models.cosyvoice3 import Model
+        from mlx_audio.tts.models.cosyvoice3 import ModelConfig as MC
+
+        model = Model(
+            MC(llm=_tiny_llm_config(), flow=_tiny_flow_config(), hift=HiFTConfig())
+        )
+        keys = set(dict(tree_flatten(model.parameters())).keys())
+        for name in ("rand_noise", "rand_ini", "stft_window"):
+            self.assertFalse(
+                [k for k in keys if k.endswith(name)],
+                f"{name} must stay a non-persistent buffer",
+            )
+
+        # The buffers still exist at runtime.
+        self.assertIsNotNone(model.flow.decoder._rand_noise)
+        self.assertIsNotNone(model.hift.m_source.l_sin_gen._rand_ini)
+        self.assertIsNotNone(model.hift._stft_window)
+
+    def test_sanitize_drops_non_persistent_buffers(self):
+        """Checkpoints exported with the non-persistent buffers are cleaned up
+        in sanitize so they are not reported as unexpected parameters."""
+        from mlx_audio.tts.models.cosyvoice3 import Model
+        from mlx_audio.tts.models.cosyvoice3 import ModelConfig as MC
+
+        model = Model(
+            MC(llm=_tiny_llm_config(), flow=_tiny_flow_config(), hift=HiFTConfig())
+        )
+        routed = model.sanitize(
+            {
+                "flow.decoder.rand_noise": mx.zeros((1, 2, 3)),
+                "hift.m_source.l_sin_gen.rand_ini": mx.zeros((1, 2)),
+                "hift.stft_window": mx.zeros((8,)),
+            }
+        )
+        self.assertEqual(routed, {})
+
     def test_hift_sanitize_is_a_pure_key_transform(self):
         """CausalHiFTGenerator.sanitize (convert_hift_weights) only reshapes
         keys/values — like convert_flow_weights/convert_llm_weights, it does
-        not filter against the live parameter tree. Actually dropping unknown
-        keys happens at ``load_weights(strict=False)`` time, not here."""
+        not filter against the live parameter tree. Model-level sanitize
+        filters the known non-persistent buffers; otherwise unknown keys
+        surface at load time."""
         from mlx_audio.tts.models.cosyvoice3.hift import CausalHiFTGenerator
 
         hift = CausalHiFTGenerator(HiFTConfig())

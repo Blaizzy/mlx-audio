@@ -216,9 +216,11 @@ class CausalSineGen(nn.Module):
         self.sampling_rate = samp_rate
         self.voiced_threshold = voiced_threshold
         self.upsample_scale = upsample_scale
-        # Random initial phases for harmonic components.
+        # Random initial phases for harmonic components. The underscore keeps
+        # this non-persistent buffer out of the parameter tree, so
+        # ``load_weights(strict=True)`` does not require it in the checkpoint.
         rand_ini = mx.random.uniform(shape=(1, harmonic_num + 1))
-        self.rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
+        self._rand_ini = mx.concatenate([mx.zeros((1, 1)), rand_ini[:, 1:]], axis=1)
 
     def _f02uv(self, f0: mx.array) -> mx.array:
         return (f0 > self.voiced_threshold).astype(mx.float32)
@@ -230,7 +232,7 @@ class CausalSineGen(nn.Module):
 
         T = fn.shape[1]
         rad_values = (fn / self.sampling_rate) % 1  # (B, T, H+1)
-        rad_values = rad_values.at[:, 0, :].add(self.rand_ini)
+        rad_values = rad_values.at[:, 0, :].add(self._rand_ini)
 
         T_down = max(1, T // self.upsample_scale)
         rad_t = mx.swapaxes(rad_values, 1, 2)  # (B, H+1, T)
@@ -401,7 +403,9 @@ class CausalHiFTGenerator(nn.Module):
             causal_type="left",
         )
 
-        self.stft_window = hann_window_periodic(config.istft_params["n_fft"])
+        # Non-persistent periodic Hann window (also kept out of the parameter
+        # tree via the underscore prefix, like the other init-time buffers).
+        self._stft_window = hann_window_periodic(config.istft_params["n_fft"])
         self.f0_predictor = CausalConvRNNF0Predictor(
             in_channels=config.in_channels, cond_channels=config.base_channels
         )
@@ -415,7 +419,7 @@ class CausalHiFTGenerator(nn.Module):
             x,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self.stft_window,
+            self._stft_window,
         )
 
     def _istft(self, magnitude: mx.array, phase: mx.array) -> mx.array:
@@ -424,7 +428,7 @@ class CausalHiFTGenerator(nn.Module):
             phase,
             self.istft_params["n_fft"],
             self.istft_params["hop_len"],
-            self.stft_window,
+            self._stft_window,
         )
 
     def decode(self, x: mx.array, s: mx.array) -> mx.array:

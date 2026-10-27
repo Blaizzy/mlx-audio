@@ -34,8 +34,11 @@ class CausalConditionalCFM(nn.Module):
         self.inference_cfg_rate = inference_cfg_rate
         self.t_scheduler = t_scheduler
         self.out_channels = estimator.out_channels
-        # Keep the initial noise deterministic across model loads.
-        self.rand_noise = mx.random.normal(
+        # Keep the initial noise deterministic across model loads. The
+        # underscore keeps this non-persistent buffer out of the parameter
+        # tree, so ``load_weights(strict=True)`` does not require it in the
+        # checkpoint.
+        self._rand_noise = mx.random.normal(
             (1, self.out_channels, max_len), key=mx.random.key(0)
         )
 
@@ -91,7 +94,7 @@ class CausalConditionalCFM(nn.Module):
         Returns generated mel [B, mel, T].
         """
         if noise is None:
-            noise = self.rand_noise[:, :, : mu.shape[2]]
+            noise = self._rand_noise[:, :, : mu.shape[2]]
         z = noise * temperature
         t_span = mx.linspace(0, 1, n_timesteps + 1, dtype=mu.dtype)
         if self.t_scheduler == "cosine":

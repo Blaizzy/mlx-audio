@@ -2,8 +2,8 @@
 
 Port of Alibaba **CosyVoice3** to `mlx-audio`. All model components are
 implemented; `llm.pt` / `flow.pt` / `hift.pt` have each been verified to
-load `strict`ly (or `strict=False` modulo documented non-persistent buffers)
-against the real `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` checkpoint, and a
+load strictly against the real `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`
+checkpoint (init-time buffers are kept out of the parameter tree), and a
 real `generate()` call against that checkpoint has been run end-to-end
 (see Status). What remains is absolute numerical-parity validation against
 a captured PyTorch reference run and streaming support.
@@ -31,7 +31,6 @@ CLI:
 ```bash
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --text "Hello, this is a cloned voice speaking English text." \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
@@ -72,7 +71,6 @@ is not sent to the LLM at all), matching the reference's
 # Chinese reference, English target (supply your own Chinese reference clip)
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --text "You are a helpful assistant.<|endofprompt|>Hello, this is a cloned voice." \
   --ref_audio path/to/your/chinese_reference.wav \
   --cross_lingual \
@@ -81,7 +79,6 @@ python -m mlx_audio.tts.generate \
 # English reference, Chinese target
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --text "You are a helpful assistant.<|endofprompt|>收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。" \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --cross_lingual \
@@ -119,7 +116,6 @@ result = next(model.generate(
 # CLI
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --text "收到好友从远方寄来的生日礼物，那份意外的惊喜与深深的祝福让我心中充满了甜蜜的快乐，笑容如花儿般绽放。" \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --instruct "You are a helpful assistant. 用四川话说这句话<|endofprompt|>" \
@@ -128,7 +124,6 @@ python -m mlx_audio.tts.generate \
 # English instruct2
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --text "Hello, this is a cloned voice." \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --instruct "You are a helpful assistant. Speak in a happy and excited tone.<|endofprompt|>" \
@@ -237,7 +232,6 @@ number of speakers.
 # Create and persist a speaker preset (no generation)
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
   --add_spk alice \
@@ -247,7 +241,6 @@ python -m mlx_audio.tts.generate \
 # Load presets and generate (no ref audio needed)
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --load_spkinfo my_speakers.safetensors \
   --text "你好世界" \
   --spk_id alice \
@@ -256,7 +249,6 @@ python -m mlx_audio.tts.generate \
 # Combine: add a speaker, save, and generate in one call
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
   --add_spk bob \
@@ -268,7 +260,6 @@ python -m mlx_audio.tts.generate \
 # English speaker preset
 python -m mlx_audio.tts.generate \
   --model mlx-community/CosyVoice3-0.5B \
-  --no-strict \
   --ref_audio examples/voice_prompts/en_woman.wav \
   --ref_text "You are a helpful assistant.<|endofprompt|>The radio quietly played a familiar song. Outside, rain tapped against the window in a steady rhythm. Coffee cooled slowly in a ceramic mug. Somewhere down the hall, a door clicked shut." \
   --add_spk en_speaker \
@@ -311,9 +302,9 @@ python -m mlx_audio.tts.models.cosyvoice3.convert \
   --out /path/to/mlx-cosyvoice3
 ```
 
-Then `load("/path/to/mlx-cosyvoice3", strict=False)` — `strict=False` is
-required because `flow.pt`/`hift.pt` are each missing a few non-persistent
-buffers not present in the checkpoint (see Status). Requires `pip install
+Then `load("/path/to/mlx-cosyvoice3")`. The buffers that `flow.pt`/`hift.pt`
+lack (initialized at construction time) are kept out of the model's parameter
+tree, so the default strict loading path works. Requires `pip install
 onnx` (for the CAMPPlus speaker-encoder weight extraction; `onnxruntime` is
 already a project dependency and is used at inference time for the speech
 tokenizer).
@@ -334,7 +325,7 @@ repeat_interleave(x2) → DiT flow-matching decoder`.
 | Flow (token→mel) | `flow.py` | ✅ verified vs. real `flow.pt` (strict) | PreLookaheadLayer + repeat_interleave + DiT; no encoder |
 | **DiT estimator (v3-only)** | `dit.py` | ✅ numerically verified vs. real `flow.pt` (max abs mel diff 0.0026 after 10 Euler steps, same inputs) | F5-TTS style: RoPE + AdaLayerNormZero(6-way) + ConvNeXtV2 |
 | Flow matching (CFM) | `flow_matching.py` | ✅ implemented | Euler ODE + CFG + cosine schedule |
-| HiFT vocoder | `hift.py` | ✅ verified vs. real `hift.pt` (strict=False, minus `rand_ini`/`stft_window`) | from-scratch causal port: `CausalConv1d`/`CausalConv1dDownSample`/`CausalConv1dUpsample`, causal NSF source, `CausalConvRNNF0Predictor` |
+| HiFT vocoder | `hift.py` | ✅ verified vs. real `hift.pt` (strict, non-persistent buffers excluded) | from-scratch causal port: `CausalConv1d`/`CausalConv1dDownSample`/`CausalConv1dUpsample`, causal NSF source, `CausalConvRNNF0Predictor` |
 | Speech tokenizer | `tokenizer.py`, `frontend.py` | ✅ real `speech_tokenizer_v3.onnx` via onnxruntime | MLX `S3TokenizerV2` port is v2's 6-layer encoder — architecturally incompatible with v3's 12-layer checkpoint, so the real onnx file is run directly (matches upstream's own production path); `ModelConfig.use_onnx_speech_tokenizer=True` by default |
 | Frontend | `frontend.py` | ✅ implemented | Qwen AutoTokenizer (registers `<\|endofprompt\|>` etc. via `add_special_tokens`, matching `CosyVoice3Tokenizer`) + CAMPPlus xvector + chatterbox mel |
 | Weight conversion | `convert.py` | ✅ verified vs. real checkpoints; `convert_cosyvoice3_assets` drives end-to-end conversion | key-mapping bugs found & fixed for all three `.pt` files (see Status) |
@@ -452,7 +443,7 @@ repeat_interleave(x2) → DiT flow-matching decoder`.
   checkpoint (`FunAudioLLM/Fun-CosyVoice3-0.5B-2512`) and
   `/Users/admin/CosyVoice/asset/zero_shot_prompt.wav`, using
   `convert_cosyvoice3_assets` (see `convert.py`) to produce a local
-  mlx-audio model directory, then `mlx_audio.tts.load(dir, strict=False)`
+  mlx-audio model directory, then `mlx_audio.tts.load(dir)`
   + `model.generate(...)`. Produced ~8.8s of audio for a 218-token
   generation (RTF 0.28 on CPU/Metal), no NaNs, no full-signal clipping, and
   an amplitude envelope with speech-like pauses/bursts (not silence or
@@ -483,18 +474,19 @@ repeat_interleave(x2) → DiT flow-matching decoder`.
     Fixed: `tie_word_embeddings=True` drops `llm.model.lm_head.weight`
     (bit-identical to `embed_tokens.weight`; mlx_lm's tied Qwen2 has no
     separate `lm_head` param).
-  - `flow.pt`: `load_weights(strict=False)` — only `decoder.rand_noise`
-    missing (non-persistent buffer, re-seeded per process; not in the
-    checkpoint). Fixed: PyTorch `nn.Sequential` index gaps around
-    GELU/Mish/SiLU (`ff.ff.0.0.*`/`ff.ff.2.*`, `conv_pos_embed.conv{1,2}.0.*`,
-    `time_mlp.2.*`) collapsed to this module's flat parameter-list indices;
-    `rotary_embed.inv_freq` dropped (recomputed on demand, verified
-    bit-for-bit identical).
-  - `hift.pt`: `load_weights(strict=False)` — only `m_source.l_sin_gen.rand_ini`
-    and `stft_window` missing (both non-persistent buffers). Fixed by
-    rewriting `hift.py` from scratch as the causal generator (see below);
-    ran a real forward pass with the loaded weights (mel → waveform, no
-    NaNs, correctly clipped to `[-0.99, 0.99]`).
+  - `flow.pt`: `load_weights(strict=True)` — `decoder.rand_noise` is a
+    non-persistent buffer re-seeded per process (not in the checkpoint), so
+    it is kept out of the parameter tree. Fixed: PyTorch `nn.Sequential`
+    index gaps around GELU/Mish/SiLU (`ff.ff.0.0.*`/`ff.ff.2.*`,
+    `conv_pos_embed.conv{1,2}.0.*`, `time_mlp.2.*`) collapsed to this
+    module's flat parameter-list indices; `rotary_embed.inv_freq` dropped
+    (recomputed on demand, verified bit-for-bit identical).
+  - `hift.pt`: `load_weights(strict=True)` — `m_source.l_sin_gen.rand_ini`
+    and `stft_window` are non-persistent buffers and are likewise excluded
+    from the parameter tree. Fixed by rewriting `hift.py` from scratch as
+    the causal generator (see below); ran a real forward pass with the
+    loaded weights (mel → waveform, no NaNs, correctly clipped to
+    `[-0.99, 0.99]`).
 - **Not yet validated**: absolute numerical parity against a captured
   PyTorch reference run (layer-by-layer tensor diffing). Speech tokenizer
   correctness now rests on the real onnx graph (not an MLX port), so this
