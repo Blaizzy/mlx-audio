@@ -93,6 +93,7 @@ nav:
       - VoxCPM2: models/tts/voxcpm2.md
       - Svara TTS: models/tts/svara.md
       - rumik-oss 1: models/tts/rumik-oss.md
+      - Maya-2 Native: models/tts/maya2.md
       - KugelAudio: models/tts/kugelaudio.md
       - CSM: models/tts/csm.md
       - Dia: models/tts/dia.md

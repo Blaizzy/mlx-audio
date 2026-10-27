@@ -18,6 +18,7 @@ MLX-Audio supports a wide range of TTS models optimized for Apple Silicon. Each 
 | [**Voxtral TTS**](voxtral-tts.md) | 4B | EN, FR, ES, DE, IT, PT, NL, AR, HI | -- | Yes | 20 voice presets, 9 languages, chunked streaming output |
 | [**Svara TTS**](svara.md) | 3B | 19 Indian langs (HI, BN, TA, TE, KN, ML, MR, GU, PA, OR, AS, BH, MAG, MAI, HNE, BRX, DOI, NE, SA, EN-IN) | -- | Yes | Orpheus-family, SNAC 24 kHz, 38 voices, 4-bit/8-bit MLX quants |
 | [**rumik-oss 1**](rumik-oss.md) | 3B | 22 Indic langs (HI, BN, TA, TE, MR, GU, KN, ML, PA, OR, AS, UR, NE, SA, MAI, MNI, BRX, DOI, KOK, SAT, KS) + EN | -- | Yes | Expressive multilingual Indic TTS, description-conditioned delivery (tone, accent, pace), `<laugh>`/`<chuckle>`/`<sigh>` tags, 4 voices, streaming, 8-bit/4-bit MLX quants |
+| [**Maya-2 Native**](maya2.md) | 2.5B | AS, BN, EN, GU, HI, KN, ML, MR, OR, PA, TA, TE | Yes | Yes | Streaming Indic TTS, 20 voices, cross-lingual cloning (in-context + ECAPA), code-mixed text, numbers/currency/date normalisation in every language, 8-bit MLX quant |
 | [**CSM / MisoTTS**](csm.md) | 1B / 8B | EN | Yes | Yes | Sesame-style conversational speech, voice cloning, multi-turn context |
 | [**Dia**](dia.md) | 1.6B | EN | -- | -- | Dialogue with `[S1]`/`[S2]` speaker tags |
 | [**Chatterbox**](chatterbox.md) | 0.5B | 23 languages | Yes | -- | Multilingual v2/v3, emotion exaggeration control |

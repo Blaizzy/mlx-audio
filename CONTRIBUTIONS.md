@@ -2,6 +2,13 @@
 
 This file acknowledges the original authors and contributors of models ported to mlx-audio.
 
+## Maya-2 Native (Text-to-Speech)
+
+- **Original**: [maya-research/maya2-native](https://huggingface.co/maya-research/maya2-native), [MayaResearch/maya2-native](https://github.com/MayaResearch/maya2-native)
+- **Copyright**: Maya Research
+- **License**: Apache License 2.0 (code and weights); the bundled text normaliser and decode guards are vendored from the same repository
+- **MLX Port**: Arun ([@aruntemme](https://github.com/aruntemme))
+
 ## Fish Audio Drama 3 (Text-to-Speech)
 
 - **Original**: [fishaudio/drama-3](https://huggingface.co/fishaudio/drama-3)
