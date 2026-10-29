@@ -126,7 +126,10 @@ class Model(nn.Module):
     def sanitize(weights):
         sanitized = {}
         for key, value in weights.items():
-            if key.startswith("llm.mtp.") or key.endswith("._extra_state"):
+            # The public HF release adds a CTC word-timestamp head; it is not ported.
+            if key.startswith(("llm.mtp.", "ctc_timestamp.")) or key.endswith(
+                "._extra_state"
+            ):
                 continue
             key = key.replace("llm.model.embed_tokens.", "llm.backbone.embeddings.")
             key = key.replace("llm.model.norm.", "llm.backbone.norm_f.")

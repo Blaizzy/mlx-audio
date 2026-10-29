@@ -141,6 +141,7 @@ def test_source_weight_mapping_and_idempotence():
         source[key] = value
     source["llm.mtp.layers.0.norm.weight"] = mx.ones(16)
     source["llm.lm_head._extra_state"] = mx.zeros(0)
+    source["ctc_timestamp.decoder.residual_scale"] = mx.ones(1)
     converted = model.sanitize(source)
     assert converted.keys() == original.keys()
     for weights in [converted, model.sanitize(converted)]:
