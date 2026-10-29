@@ -30,6 +30,13 @@ This file acknowledges the original authors and contributors of models ported to
 - **License**: MIT / Apache-2.0
 - **MLX Port**: Kyle Howells ([@kylehowells](https://github.com/kylehowells))
 
+## Nemotron 3.5 Transcribe (Speech-to-Text)
+
+- **Original**: NVIDIA Nemotron-3.5-Transcribe-30B-A4B-EA; [NeMo Speech](https://github.com/NVIDIA-NeMo/Speech)
+- **Copyright**: NVIDIA Corporation
+- **License**: Apache-2.0 (adapted NeMo code); [NVIDIA Software and Model Evaluation License](https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-software-and-model-evaluation-license/) (early-access weights)
+- **Backbone**: Nemotron-H implementation vendored from Apple's MLX-LM (MIT)
+
 ## Nemotron 3.5 ASR Streaming (Speech-to-Text)
 
 - **Original**: [nvidia/nemotron-3.5-asr-streaming-0.6b](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b)

@@ -679,7 +679,11 @@ def convert(
     if target_dtype and target_dtype in MODEL_CONVERSION_DTYPES:
         print(f"[INFO] Converting to {target_dtype}")
         mx_dtype = getattr(mx, target_dtype)
-        weights = {k: v.astype(mx_dtype) for k, v in weights.items()}
+        cast_predicate = getattr(model, "cast_predicate", lambda key: True)
+        weights = {
+            k: v.astype(mx_dtype) if cast_predicate(k) else v
+            for k, v in weights.items()
+        }
         model.load_weights(list(weights.items()))
 
     # Handle quantization/dequantization

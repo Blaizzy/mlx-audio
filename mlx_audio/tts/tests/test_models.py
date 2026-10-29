@@ -1284,6 +1284,39 @@ class TestIndexTTS(unittest.TestCase):
         # Check that model was created
         self.assertIsInstance(model, Model)
 
+    def test_prompt_ends_with_start_mel_at_mel_position_zero(self):
+        """The start mel token opens the mel sequence, as in the reference GPT2InferenceModel."""
+        from mlx_audio.tts.models.indextts.indextts import Model
+
+        model = Model(self._default_config)  # type: ignore
+        n_mels = model.args.gpt.condition_module.input_size
+        embedding = model.prepare_input_embedding(
+            ["hello"], None, ref_mel=mx.zeros((1, 20, n_mels))
+        )
+        start = mx.array([[model.args.gpt.start_mel_token]])
+        expected = model.mel_embedding(start) + model.mel_pos_embedding(start)
+        self.assertTrue(mx.allclose(embedding[:, -1:, :], expected).item())
+
+    def test_tokenizer_defaults_to_model_path(self):
+        """Converted checkpoints have no tokenizer_name; the loaded directory is used."""
+        from pathlib import Path
+
+        from mlx_audio.tts.models.indextts import indextts
+
+        config = dict(self._default_config)
+        del config["tokenizer_name"]
+        config["model_path"] = "/models/IndexTTS"
+        with (
+            patch.object(
+                indextts.huggingface_hub, "hf_hub_download", side_effect=ValueError
+            ),
+            patch.object(indextts.spm, "SentencePieceProcessor") as processor,
+        ):
+            indextts.Model(config)  # type: ignore
+        processor.assert_called_once_with(
+            model_file=str(Path("/models/IndexTTS/tokenizer.model").resolve())
+        )
+
 
 class TestVibeVoiceModel(unittest.TestCase):
     @property
@@ -10750,6 +10783,24 @@ def test_reference_latent_conditioning_appends_asymmetric_mask():
     )
 
 
+def test_bf16_latent_keeps_float32_positions_for_every_frame():
+    shape = AudioLatentShape.from_duration(batch=1, duration=20.0)
+    tools = AudioLatentTools(AudioPatchifier(), shape)
+    state = tools.create_initial_state(dtype=mx.bfloat16)
+    ref = mx.zeros((1, 8, 250, 16), dtype=mx.bfloat16)
+    state = append_reference_latent(state, tools, ref)
+
+    # The frame times the RoPE sees (generate_freqs takes the middle of each bound).
+    middle = (state.positions[..., 0] + state.positions[..., 1]) / 2
+    middle = np.array(middle.astype(mx.float32))[0, 0]
+    target, reference = middle[:500], middle[500:]
+    assert np.all(np.diff(target) > 0), "adjacent frames share a time stamp"
+    np.testing.assert_allclose(np.diff(target)[1:], 0.04, atol=1e-4)
+    np.testing.assert_allclose(reference - target[:250], 0.5, atol=1e-4)
+    assert state.latent.dtype == mx.bfloat16
+    assert state.positions.dtype == mx.float32
+
+
 def _expected_ltx2_sigmas(steps, latent_shape):
     tokens = math.prod(latent_shape[2:])
     sigmas = np.linspace(1.0, 0.0, steps + 1, dtype=np.float32)
@@ -10909,6 +10960,36 @@ def test_embeddings_connector_compacts_left_padded_tokens_like_reference():
     np.testing.assert_allclose(np.array(replaced[0, 0]), [3.0, 4.0], atol=1e-6)
     np.testing.assert_allclose(np.array(replaced[0, 1]), [30.0, 40.0], atol=1e-6)
     np.testing.assert_array_equal(np.array(returned_mask), np.zeros((1, 1, 1, 2)))
+
+
+def test_embeddings_connector_keeps_every_token_of_bf16_prompt():
+    # Gemma prompts are left padded to 1024 tokens, past where bf16 counts by one.
+    length = 1024
+    connector = Embeddings1DConnector(
+        attention_head_dim=2,
+        num_attention_heads=1,
+        num_layers=0,
+        num_learnable_registers=128,
+    )
+    connector.learnable_registers = mx.full((128, 2), -1.0, dtype=mx.bfloat16)
+    index = np.arange(length)
+    # Tag each slot with its index, split so that bf16 holds it exactly.
+    hidden = mx.array(np.stack([index // 32, index % 32], axis=-1)[None])
+    hidden = hidden.astype(mx.bfloat16)
+
+    for valid in (29, 46, 300):
+        binary_mask = mx.array((index >= length - valid)[None], dtype=mx.int32)
+        additive_mask = binary_to_additive_attention_mask(
+            binary_mask, dtype=mx.bfloat16
+        )
+        replaced, _ = connector._replace_padded_with_learnable_registers(
+            hidden, additive_mask
+        )
+        replaced = np.array(replaced.astype(mx.float32))[0]
+        kept = replaced[:, 0] * 32 + replaced[:, 1]
+
+        np.testing.assert_array_equal(kept[:valid], index[length - valid :])
+        np.testing.assert_array_equal(kept[valid:], -33.0)
 
 
 def test_dramabox_text_conditioner_small_path_shapes():

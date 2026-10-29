@@ -26,6 +26,7 @@ MLX Audio provides a range of speech-to-text models optimized for Apple Silicon,
 | **Voxtral** | Mistral | 3B | Multiple | -- | -- | [mlx-community/Voxtral-Mini-3B-2507-bf16](https://huggingface.co/mlx-community/Voxtral-Mini-3B-2507-bf16) |
 | **Cohere Transcribe** | Cohere | 2B | 14 languages | -- | Segment | [CohereLabs/cohere-transcribe-03-2026](https://huggingface.co/CohereLabs/cohere-transcribe-03-2026) |
 | [**Qwen2-Audio**](qwen2-audio.md) | Alibaba | 7B | Multiple | -- | -- | [mlx-community/Qwen2-Audio-7B-Instruct-4bit](https://huggingface.co/mlx-community/Qwen2-Audio-7B-Instruct-4bit) |
+| **Nemotron 3.5 Transcribe** | NVIDIA | 30B (4B active) | Multilingual | Text output | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/nemotron_transcribe/README.md) (local NGC checkpoint) |
 | **Canary** | NVIDIA | ~1B | 25 EU + RU, UK | -- | -- | [README](https://github.com/Blaizzy/mlx-audio/blob/main/mlx_audio/stt/models/canary/README.md) |
 | **SenseVoice** | Alibaba DAMO | ~234M | 50+ | -- | -- | [mlx-community/SenseVoiceSmall](https://huggingface.co/mlx-community/SenseVoiceSmall) |
 | **FireRedASR2** | Xiaohongshu | ~1.18B | ZH, EN | -- | -- | [mlx-community/FireRedASR2-AED-mlx](https://huggingface.co/mlx-community/FireRedASR2-AED-mlx) |

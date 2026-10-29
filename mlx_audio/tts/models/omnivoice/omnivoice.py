@@ -239,9 +239,15 @@ class Model(nn.Module):
     def _prepare_embed_inputs(
         self, input_ids: mx.array, audio_mask: mx.array
     ) -> mx.array:
-        text_embeds = self.backbone.embed_tokens(input_ids[:, :, 0])
+        # Each position is valid in only one table: text ids can exceed the audio
+        # vocab and the audio mask id can exceed a small text vocab. Zero the ids
+        # that mx.where discards so neither lookup reads past its table (MLX does
+        # not bounds-check gathers).
+        text_ids = mx.where(audio_mask, 0, input_ids[:, :, 0])
+        audio_ids = mx.where(audio_mask[:, :, None], input_ids, 0)
+        text_embeds = self.backbone.embed_tokens(text_ids)
         audio_embeds = sum(
-            self.audio_embeddings[i](input_ids[:, :, i])
+            self.audio_embeddings[i](audio_ids[:, :, i])
             for i in range(self.config.num_audio_codebook)
         )
         return mx.where(audio_mask[:, :, None], audio_embeds, text_embeds)
