@@ -1034,5 +1034,114 @@ class TestDecoderBlockUpsampleStreaming(unittest.TestCase):
                 )
 
 
+class _RecordingStreamingDecoder:
+    """Records every streaming_step input; returns fixed-rate fake audio."""
+
+    def __init__(self, upsample: int = 4):
+        self.upsample = upsample
+        self.step_inputs = []
+        self.events = []
+
+    def reset_streaming_state(self):
+        self.events.append("reset")
+
+    def streaming_step(self, codes):
+        self.events.append("step")
+        self.step_inputs.append(np.array(codes))
+        return mx.zeros(
+            (codes.shape[0], 1, codes.shape[2] * self.upsample), dtype=mx.float32
+        )
+
+
+def _make_icl_streaming_model(ref_time: int):
+    hidden_size = 4
+    model = _make_generation_test_model()
+    decoder = _RecordingStreamingDecoder()
+    model.speech_tokenizer = SimpleNamespace(decoder=decoder)
+    ref_codes = mx.arange(ref_time, dtype=mx.int32).reshape(1, 1, ref_time)
+    model._prepare_icl_generation_inputs = lambda **kwargs: (
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        mx.zeros((1, 1, hidden_size), dtype=mx.float32),
+        ref_codes,
+    )
+    return model, decoder
+
+
+class TestQwen3TTSICLStreamingPriming(unittest.TestCase):
+    """ICL streaming must decode with the reference acoustic context.
+
+    The non-streaming ICL path decodes ref_codes + generated codes together
+    and trims the reference, so the decoder always sees the voice's left
+    context. The streaming path must prime the decoder with the reference
+    tail to match, and the primed (reference) audio must not be yielded.
+    """
+
+    def _run(self, model, **kwargs):
+        defaults = dict(
+            text="hello there",
+            ref_audio=mx.zeros((2400,), dtype=mx.float32),
+            ref_text="reference transcript",
+            stream=True,
+            max_tokens=3,
+            streaming_interval=0.08,  # chunk size of 1 token
+        )
+        defaults.update(kwargs)
+        return list(model._generate_icl(**defaults))
+
+    def test_stream_primes_decoder_with_reference_tail(self):
+        model, decoder = _make_icl_streaming_model(ref_time=60)
+
+        self._run(model)
+
+        self.assertEqual(decoder.events[0], "reset")
+        self.assertEqual(decoder.events[1], "step")
+        primer = decoder.step_inputs[0]
+        self.assertEqual(primer.shape, (1, 1, 25))
+        np.testing.assert_array_equal(primer[0, 0], np.arange(35, 60))
+
+    def test_priming_uses_entire_reference_when_shorter_than_context(self):
+        model, decoder = _make_icl_streaming_model(ref_time=10)
+
+        self._run(model)
+
+        primer = decoder.step_inputs[0]
+        self.assertEqual(primer.shape, (1, 1, 10))
+        np.testing.assert_array_equal(primer[0, 0], np.arange(10))
+
+    def test_primed_reference_audio_is_not_yielded(self):
+        model, decoder = _make_icl_streaming_model(ref_time=60)
+
+        results = self._run(model)
+
+        total_samples = sum(r.samples for r in results)
+        self.assertEqual(total_samples, 3 * decoder.upsample)
+        self.assertEqual(sum(r.token_count for r in results), 3)
+
+    def test_generated_chunks_unchanged_by_priming(self):
+        model, decoder = _make_icl_streaming_model(ref_time=60)
+
+        self._run(model)
+
+        generated = np.concatenate([c[0, 0] for c in decoder.step_inputs[1:]])
+        np.testing.assert_array_equal(generated, np.ones(3, dtype=np.int32))
+
+    def test_priming_skipped_when_context_size_zero(self):
+        model, decoder = _make_icl_streaming_model(ref_time=60)
+
+        self._run(model, streaming_context_size=0)
+
+        self.assertEqual(len(decoder.step_inputs), 3)
+        self.assertEqual(decoder.step_inputs[0].shape, (1, 1, 1))
+
+    def test_priming_skipped_when_reference_is_empty(self):
+        model, decoder = _make_icl_streaming_model(ref_time=0)
+
+        self._run(model)
+
+        self.assertEqual(len(decoder.step_inputs), 3)
+        self.assertEqual(decoder.step_inputs[0].shape, (1, 1, 1))
+
+
 if __name__ == "__main__":
     unittest.main()
