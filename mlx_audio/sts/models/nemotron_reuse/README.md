@@ -46,15 +46,33 @@ python -m mlx_audio.convert \
 
 Conversion transposes convolution weights to MLX layout and writes a standalone native checkpoint. The loader accepts both original and converted layouts. Float32 is the validated precision; keep the small model unquantized.
 
-For full float32 numerical parity on hardware such as M5, launch inference with
+For full float32 computation on hardware such as M5, launch inference with
 `MLX_ENABLE_TF32=0`. MLX otherwise permits reduced-precision matrix operations
-even with float32 weights; see [MLX numerical precision](https://ml-explore.github.io/mlx/build/html/usage/precision.html).
+even with float32 weights; see [MLX environment variables](https://ml-explore.github.io/mlx/build/html/usage/environment_variables.html#mlx-enable-tf32).
 The port leaves this process-wide backend setting under the caller's control.
+This setting does not guarantee identical waveforms across FFT backends.
 
 ```bash
 MLX_ENABLE_TF32=0 python -m mlx_audio.sts.generate \
   --model ./RE-USE-mlx --audio noisy.wav --output-path enhanced.wav
 ```
+
+## Numerical validation
+
+All 1,416 converted tensors preserve the source float32 values exactly after
+layout conversion. Against the NVIDIA network with the upstream Mamba CPU
+reference scan, identical spectral inputs produced relative complex-output
+errors of `4.4e-6` to `8.8e-6` on five non-silent clips, and `3.6e-4` on silence,
+with `MLX_ENABLE_TF32=0` on Apple M5 Max.
+
+End-to-end waveform agreement is input-dependent. Small FFT rounding differences
+can select opposite sides of the `-pi`/`+pi` phase boundary. The network consumes
+raw phase angles, so this affects predictions, particularly in the first
+reflected frame of a chunk. Relative waveform errors against that CPU reference
+were 2.43% on a one-second 48 kHz coffee-shop excerpt, 2.99% on half a second of
+16 kHz noise, and 0.37% on 1.2 seconds of speech using half-second chunks.
+These are numerical differences, not measurements of perceptual quality.
+Parity with NVIDIA's CUDA implementation has not yet been established.
 
 ## License
 
