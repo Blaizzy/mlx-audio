@@ -96,6 +96,7 @@ Transform, separate, and enhance audio.
 |-------|-------------|----------|------|
 | **SAM-Audio** | Text-guided source separation | Extract specific sounds | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
 | **Liquid2.5-Audio** | Speech-to-Speech, TTS, and STT | Speech interactions | [mlx-community/LFM2.5-Audio-1.5B-8bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-8bit) |
+| **LFM3-Audio** | Speech-to-Speech, TTS, and STT | Multilingual speech and audio questions | [LiquidAI/LFM3-Audio-2B-MLX-8bit](https://huggingface.co/LiquidAI/LFM3-Audio-2B-MLX-8bit) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
 

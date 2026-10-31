@@ -2337,6 +2337,18 @@ class TestSoprano(unittest.TestCase):
         self.assertIn("dollar", normalize_numbers("$5"))
         self.assertIn("first", normalize_numbers("1st"))
 
+    def test_ordinals(self):
+        from mlx_audio.tts.models.soprano.text import normalize_numbers
+
+        self.assertEqual(normalize_numbers("July 4th"), "July fourth")
+        self.assertEqual(normalize_numbers("the 20th century"), "the twentieth century")
+        self.assertEqual(normalize_numbers("101st"), "one hundred first")
+        self.assertEqual(normalize_numbers("112th"), "one hundred twelfth")
+        self.assertEqual(normalize_numbers("100th"), "one hundredth")
+        self.assertEqual(normalize_numbers("1001st"), "one thousand first")
+        self.assertEqual(normalize_numbers("10K"), "ten thousand")
+        self.assertEqual(normalize_numbers("25M"), "twenty five million")
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations

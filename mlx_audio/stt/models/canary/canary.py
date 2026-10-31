@@ -154,6 +154,8 @@ class Model(nn.Module):
         verbose: bool = False,
         stream: bool = False,
         dtype: mx.Dtype = mx.bfloat16,
+        chunk_duration: float = 30.0,
+        min_chunk_duration: float = 1.0,
         **kwargs,
     ) -> STTOutput:
         """Generate transcription/translation from audio.
@@ -168,6 +170,8 @@ class Model(nn.Module):
             verbose: Print during generation
             stream: Not supported yet (returns STTOutput)
             dtype: Data type for computation
+            chunk_duration: Longer waveforms are decoded in chunks of about this many seconds
+            min_chunk_duration: Minimum chunk length in seconds
 
         Returns:
             STTOutput with transcription text
@@ -179,6 +183,52 @@ class Model(nn.Module):
             target_lang = language
 
         start_time = time.time()
+
+        sr = self.config.preprocessor.sample_rate
+        if isinstance(audio, (str, Path)):
+            from mlx_audio.stt.utils import load_audio
+
+            audio = load_audio(str(audio), sr=sr)
+        if getattr(audio, "ndim", 0) == 1 and audio.shape[0] > chunk_duration * sr:
+            from mlx_audio.stt.models.qwen3_asr.qwen3_asr import split_audio_into_chunks
+
+            texts, segments, prompt_count, token_count = [], [], 0, 0
+            total = audio.shape[0] / sr
+            for chunk, offset in split_audio_into_chunks(
+                np.array(audio),
+                sr,
+                chunk_duration=chunk_duration,
+                min_chunk_duration=min_chunk_duration,
+            ):
+                out = self.generate(
+                    mx.array(chunk),
+                    max_tokens=max_tokens,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    use_pnc=use_pnc,
+                    temperature=temperature,
+                    verbose=verbose,
+                    dtype=dtype,
+                    chunk_duration=float("inf"),
+                )
+                prompt_count += out.prompt_tokens
+                token_count += out.generation_tokens
+                if out.text:
+                    texts.append(out.text)
+                    end = min(offset + len(chunk) / sr, total)
+                    segments.append({"text": out.text, "start": offset, "end": end})
+            total_time = time.time() - start_time
+            return STTOutput(
+                text=" ".join(texts),
+                segments=segments,
+                language=source_lang,
+                prompt_tokens=prompt_count,
+                generation_tokens=token_count,
+                total_tokens=prompt_count + token_count,
+                total_time=total_time,
+                prompt_tps=prompt_count / total_time if total_time > 0 else 0,
+                generation_tps=token_count / total_time if total_time > 0 else 0,
+            )
 
         mel = self._preprocess_audio(audio)
         if mel.dtype != dtype:
