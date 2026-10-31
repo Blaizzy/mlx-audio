@@ -138,6 +138,7 @@ mlx_audio = [
     "tts/**/*.json",
     "tts/static/**/*",
 ]
+"mlx_audio.sts.models.nemotron_reuse" = ["LICENSE", "README.md"]
 
 [tool.black]
 line-length = 88

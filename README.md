@@ -197,6 +197,7 @@ See the model READMEs for API details, streaming examples, and conversion steps.
 | **MiMo-Audio** | English/Chinese TTS, ASR, audio understanding and dialogue; Base few-shot speech tasks | Speech interactions and audio completion | [Instruct](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct), [Base](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Base), [audio tokenizer](https://huggingface.co/XiaomiMiMo/MiMo-Audio-Tokenizer), [guide](mlx_audio/sts/models/mimo_audio/README.md) |
 | **MossFormer2 SE** | Speech enhancement | Noise removal | [starkdmi/MossFormer2_SE_48K_MLX](https://huggingface.co/starkdmi/MossFormer2_SE_48K_MLX) |
 | **DeepFilterNet (1/2/3)** | Speech enhancement | Noise suppression | [mlx-community/DeepFilterNet-mlx](https://huggingface.co/mlx-community/DeepFilterNet-mlx) |
+| **NemotronLabs RE-USE** | Speech enhancement | Restoration and bandwidth extension, 8–48 kHz | [nvidia/NVIDIA-NemotronLabs-RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE) |
 | **NemotronLabs VoiceChat** | Full-duplex speech-to-speech with streaming transcription and function calling | Real-time voice conversation | [mlx-community/NemotronLabs-VoiceChat-11B-4bit](https://huggingface.co/mlx-community/NemotronLabs-VoiceChat-11B-4bit) |
 
 ### Music Generation
