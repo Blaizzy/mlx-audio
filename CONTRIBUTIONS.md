@@ -30,6 +30,13 @@ This file acknowledges the original authors and contributors of models ported to
 - **License**: MIT / Apache-2.0
 - **MLX Port**: Kyle Howells ([@kylehowells](https://github.com/kylehowells))
 
+## NVIDIA NemotronLabs RE-USE (Speech Enhancement)
+
+- **Original**: [nvidia/NVIDIA-NemotronLabs-RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE)
+- **Copyright**: NVIDIA Corporation & Affiliates
+- **License**: [OpenMDW-1.1](mlx_audio/sts/models/nemotron_reuse/LICENSE)
+- **MLX Port**: Native convolutional encoder/decoders and bidirectional Mamba-1 with a Metal selective scan.
+
 ## Nemotron 3.5 Transcribe (Speech-to-Text)
 
 - **Original**: NVIDIA Nemotron-3.5-Transcribe-30B-A4B-EA; [NeMo Speech](https://github.com/NVIDIA-NeMo/Speech)

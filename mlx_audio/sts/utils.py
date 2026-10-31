@@ -28,6 +28,7 @@ MODEL_REMAPPING = {
     "mossformer2": "mossformer2_se",
     "mossformer2_se": "mossformer2_se",
     "nemotron_voicechat": "nemotron_voicechat",
+    "nemotron_reuse": "nemotron_reuse",
     "sam_audio": "sam_audio",
     "samaudio": "sam_audio",
 }
@@ -164,6 +165,7 @@ def load_model(
         "deepfilternet",
         "sam_audio",
         "nemotron_voicechat",
+        "nemotron_reuse",
     }:
         resolved_model_path = model_path
         if model_type == "deepfilternet":
