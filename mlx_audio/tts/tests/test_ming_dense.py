@@ -10,7 +10,9 @@ import numpy as np
 from mlx_audio.tts.models.bailingmm.bailingmm import (
     _MING3_VOICE_RE,
     CFM,
+    MING3_BASE_STEPS,
     MING3_MAX_CACHE_LEN,
+    MING3_STEPS_PER_UNIT,
     DiT,
     Encoder,
     FlowLoss,
@@ -21,6 +23,7 @@ from mlx_audio.tts.models.bailingmm.bailingmm import (
     _is_style_instruction,
     _semantic_length,
     _split_fragments,
+    _spoken_units,
     _trim_trailing_silence,
     ming3_instruction,
 )
@@ -288,6 +291,13 @@ class TestMingText(unittest.TestCase):
         trimmed = _trim_trailing_silence(mx.ones((555,)), 1000)
         self.assertEqual(trimmed.shape[0], 500)
 
+    def test_spoken_units_count_kana_hangul_and_digits(self):
+        self.assertEqual(_spoken_units("Yes."), 1)
+        self.assertEqual(_spoken_units("好的。"), 2)
+        self.assertEqual(_spoken_units("ありがとう"), 5)
+        self.assertEqual(_spoken_units("안녕하세요"), 5)
+        self.assertEqual(_spoken_units("Call 555."), 4)
+
 
 class TestMing3GenerationBudget(unittest.TestCase):
     def test_full_or_oversized_prompt_is_rejected_before_inference(self):
@@ -324,11 +334,13 @@ class TestMing3GenerationBudget(unittest.TestCase):
         model.audio.decode.return_value = (mx.ones((1, 100)), None, None)
         latent = mx.zeros((1, 1, 4))
         model.sample = MagicMock(side_effect=lambda **_: iter([(latent, True)]))
+        # "Yes." is capped at 2 s plus about 1 s for its one word.
+        cap = MING3_BASE_STEPS + MING3_STEPS_PER_UNIT
 
         list(model.generate("Yes."))
         options = model.sample.call_args.kwargs
         for name, value in {
-            "max_decode_steps": 1000,
+            "max_decode_steps": cap,
             "cfg": 2.0,
             "sigma": 0.25,
             "temperature": 0.0,
@@ -337,7 +349,8 @@ class TestMing3GenerationBudget(unittest.TestCase):
             self.assertEqual(options[name], value)
 
         for options, expected in (
-            ({"max_tokens": 1200}, 1200),
+            # Servers always send max_tokens; it only lowers the cap.
+            ({"max_tokens": 1200}, cap),
             ({"max_tokens": 10}, 10),
             ({"max_tokens": 10, "max_decode_steps": 300}, 300),
         ):
