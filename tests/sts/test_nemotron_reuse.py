@@ -99,7 +99,8 @@ def test_detection_without_repository_name():
 
 
 @pytest.mark.parametrize("rate", [8000, 16000, 22050, 24000, 32000, 44100, 48000])
-def test_stft_roundtrip_with_identity_network(rate):
+@pytest.mark.parametrize("frontend", ["native", "stable"])
+def test_stft_roundtrip_with_identity_network(rate, frontend):
     # Bypass the network to exercise the real analysis/synthesis path.
 
     class Identity(Model):
@@ -110,25 +111,43 @@ def test_stft_roundtrip_with_identity_network(rate):
     rng = np.random.default_rng(rate)
     nfft, hop, win = model.config.stft_sizes(rate)
     audio = rng.normal(0, 0.1, size=hop * 8 + 7).astype(np.float32)
-    actual = np.array(model.generate(audio, sample_rate=rate, chunk_seconds=None).audio)
+    actual = np.array(
+        model.generate(
+            audio, sample_rate=rate, chunk_seconds=None, frontend=frontend
+        ).audio
+    )
     np.testing.assert_allclose(actual[:-7], audio[:-7], atol=2e-6)
     np.testing.assert_array_equal(actual[-7:], np.full(7, 1e-8, dtype=np.float32))
 
 
-def test_chunk_overlap_and_channels_preserve_audio(tmp_path):
+@pytest.mark.parametrize("frontend", ["native", "stable"])
+def test_chunk_overlap_and_channels_preserve_audio(tmp_path, frontend):
     model = Model(tiny_config())
-    model._enhance_chunk = MethodType(lambda self, a, rate: a, model)
+    selected = []
+
+    def passthrough(self, audio, rate, **kwargs):
+        selected.append(kwargs["frontend"])
+        return audio
+
+    model._enhance_chunk = MethodType(passthrough, model)
     rng = np.random.default_rng(42)
     audio = rng.normal(0, 0.1, size=(3501, 2)).astype(np.float32)
     result = model.generate(
-        audio, sample_rate=8000, chunk_seconds=0.1, overlap_seconds=0.025
+        audio,
+        sample_rate=8000,
+        chunk_seconds=0.1,
+        overlap_seconds=0.025,
+        frontend=frontend,
     )
     np.testing.assert_allclose(np.array(result.audio), audio, atol=3e-8)
     path = tmp_path / "input.wav"
     audio_io.write(str(path), audio, 8000)
-    result = model.generate(path, target_sample_rate=16000, chunk_seconds=None)
+    result = model.generate(
+        path, target_sample_rate=16000, chunk_seconds=None, frontend=frontend
+    )
     assert result.audio.shape == (7002, 2)
     assert result.sample_rate == 16000
+    assert set(selected) == {frontend}
 
 
 @pytest.mark.parametrize(
@@ -140,6 +159,7 @@ def test_chunk_overlap_and_channels_preserve_audio(tmp_path):
         (np.array([]), {"sample_rate": 8000}),
         (np.array([float("nan")]), {"sample_rate": 8000}),
         (np.zeros(10), {"sample_rate": 8000, "chunk_seconds": 0}),
+        (np.zeros(10), {"sample_rate": 8000, "frontend": "unknown"}),
         (
             np.zeros(10),
             {
@@ -157,9 +177,10 @@ def test_invalid_inputs(audio, kwargs):
 
 
 @pytest.mark.parametrize("length", [1, 79, 160, 161])
-def test_short_silent_inputs_are_finite(length):
+@pytest.mark.parametrize("frontend", ["native", "stable"])
+def test_short_silent_inputs_are_finite(length, frontend):
     output = Model(tiny_config()).generate(
-        np.zeros(length), sample_rate=8000, chunk_seconds=None
+        np.zeros(length), sample_rate=8000, chunk_seconds=None, frontend=frontend
     )
     assert output.audio.shape == (length,)
     assert bool(mx.all(mx.isfinite(output.audio)))
@@ -181,3 +202,37 @@ def test_stft_negative_zero_uses_positive_pi_phase(monkeypatch):
 
     Capture(tiny_config()).generate(np.zeros(400), sample_rate=8000, chunk_seconds=None)
     np.testing.assert_allclose(phases[0], np.pi, atol=1e-7)
+
+
+def test_stable_frontend_matches_direct_dft_and_real_bin_convention():
+    from mlx_audio.sts.models.nemotron_reuse.frontend import stable_stft
+
+    n_fft, hop = 32, 8
+    audio = np.random.default_rng(19).normal(size=129)
+    magnitude, phase, window = stable_stft(audio, n_fft, hop, n_fft, "relu_log1p")
+    expected_window = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n_fft) / n_fft)
+    frames = np.lib.stride_tricks.sliding_window_view(
+        np.pad(audio, (n_fft // 2, n_fft // 2), mode="reflect"), n_fft
+    )[::hop]
+    basis = np.exp(
+        -2j * np.pi * np.arange(n_fft // 2 + 1)[:, None] * np.arange(n_fft) / n_fft
+    )
+    spectrum = basis @ (frames * expected_window).T
+    spectrum.imag[[0, -1], :] = 0
+    spectrum.imag[:, [0, -1]] = 0
+    np.testing.assert_allclose(magnitude, np.log1p(np.abs(spectrum)), atol=2e-7)
+    np.testing.assert_allclose(phase, np.angle(spectrum), atol=2e-7)
+    np.testing.assert_array_equal(window[1:], window[:0:-1])
+    assert set(np.unique(phase[[0, -1], :])).issubset(
+        {np.float32(0), np.float32(np.pi)}
+    )
+
+
+def test_stable_frontend_silence_is_independent_of_zero_sign():
+    from mlx_audio.sts.models.nemotron_reuse.frontend import stable_stft
+
+    positive = stable_stft(np.zeros(400), 320, 40, 320, "relu_log1p")
+    negative = stable_stft(-np.zeros(400), 320, 40, 320, "relu_log1p")
+    for expected, actual in zip(positive, negative):
+        np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(positive[1], 0)

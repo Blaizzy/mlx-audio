@@ -57,7 +57,75 @@ MLX_ENABLE_TF32=0 python -m mlx_audio.sts.generate \
   --model ./RE-USE-mlx --audio noisy.wav --output-path enhanced.wav
 ```
 
-## Numerical validation
+## Experimental stable analysis
+
+`frontend="stable"` uses NumPy CPU float64 spectral analysis, an exactly
+symmetric periodic Hann window, and a defined phase convention for real FFT
+bins. The neural network still runs in MLX with the original weights. This is
+an experimental alternative to the default `frontend="native"`:
+
+```python
+result = model.generate("noisy.wav", frontend="stable")
+```
+
+```bash
+MLX_ENABLE_TF32=0 python -m mlx_audio.sts.generate \
+  --model nvidia/NVIDIA-NemotronLabs-RE-USE --audio noisy.wav \
+  --gen-kwargs '{"frontend": "stable"}'
+```
+
+The stable mode changes the model's input convention and therefore its output.
+It is intended for comparison with a reference using the same analysis; it
+does not reproduce NVIDIA's unmodified CUDA preprocessing. It sets imaginary
+parts to zero only at DC, Nyquist, and frames centered exactly on reflected
+boundaries, with zero phase for exactly zero coefficients. Other bins are not
+thresholded. It also uses the shared window for
+synthesis. Keep `MLX_ENABLE_TF32=0` when checking numerical agreement.
+
+### Stable frontend validation
+
+The experimental mode was compared on Apple M5 Max and NVIDIA A30 using the
+same float32 audio samples, original weights, and shared NumPy analysis.
+Both backends used full float32 network computation. The CUDA reference used
+PyTorch 2.8.0/CUDA 12.8 and native Mamba 2.3.1 kernels.
+
+| Input | Native frontend error | Shared stable frontend error |
+| --- | ---: | ---: |
+| Coffee shop, 48 kHz | 1.392% | 0.000408% |
+| Noise, 16 kHz | 1.265% | 0.000388% |
+| Speech, 8 kHz, 0.5 s chunks | 0.406% | 0.000476% |
+| Held-out coffee excerpt, 48 kHz | 2.614% | 0.000444% |
+
+Error is `norm(MLX - CUDA) / norm(CUDA)`, before audio encoding. Each column
+compares its own frontend on both backends: the stable column does **not**
+measure agreement with NVIDIA's original preprocessing. All 47 cases passed
+the preset 0.1% error target. The worst non-silent error was 0.000726%; silence
+remained at 0.0263% (maximum absolute sample error `1.19e-5`).
+
+The shared analysis is not guaranteed bit-identical across CPU platforms.
+On macOS/NumPy 2.5.4 and Linux/NumPy 2.2.6, 36 of 47 cases had identical
+frontend hashes. The remaining cases differed by at most `1.46e-11` in
+compressed magnitude and `3.58e-7` radians in phase, with identical windows
+and no phase-wrap mismatches.
+
+Quality was screened separately on 36 six-second inputs from 12
+[LibriSpeech test-clean](https://www.openslr.org/12) speakers: clean controls,
+additive [coffee-shop noise](https://freesound.org/people/ericdhunter/sounds/236336/),
+and white noise at -5, 0, or +5 dB input SNR. Sample rates spanned 8–48 kHz;
+the original speech was 16 kHz, so upsampling adds no high-frequency speech
+content. Stable-minus-native changes against the same clean references were:
+
+| Backend | Median SI-SDR change | Worst SI-SDR change | Median STOI change | Worst STOI change |
+| --- | ---: | ---: | ---: | ---: |
+| MLX | +0.0104 dB | -0.1014 dB | +0.00000011 | -0.0000204 |
+| CUDA | +0.0090 dB | -0.1113 dB | -0.00000010 | -0.0001427 |
+
+Both passed preset engineering screens: median/worst SI-SDR loss below
+0.1/1.0 dB and median/worst STOI loss below 0.005/0.02. This small synthetic
+mixture set is not a listening study or proof of perceptual equivalence.
+The native frontend remains the default.
+
+## Numerical validation (native frontend)
 
 All 1,416 converted tensors preserve the source float32 values exactly after
 layout conversion. The unchanged NVIDIA network was validated on an NVIDIA L4
