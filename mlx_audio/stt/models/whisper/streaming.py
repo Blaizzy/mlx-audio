@@ -140,6 +140,8 @@ class StreamingDecoder:
         self.inference = Inference(model)
         self.tokenizer = model.get_tokenizer(language=language or "en", task=task)
         self._emitted_tokens = []
+        self._emitted_frames = []
+        self._dropped_tokens = 0
         self._pending_tokens = []
         self._accumulated_mel = None
 
@@ -170,8 +172,19 @@ class StreamingDecoder:
         """Reset decoder state for new transcription session."""
         self.inference.reset()
         self._emitted_tokens = []
+        self._emitted_frames = []
+        self._dropped_tokens = 0
         self._pending_tokens = []
         self._accumulated_mel = None
+
+    def _drop_emitted_before(self, frame: int):
+        drop = next(
+            (i for i, f in enumerate(self._emitted_frames) if f >= frame),
+            len(self._emitted_frames),
+        )
+        self._dropped_tokens += drop
+        self._emitted_tokens = self._emitted_tokens[drop:]
+        self._emitted_frames = [f - frame for f in self._emitted_frames[drop:]]
 
     def _take_new_tokens(
         self, text_tokens: List[int], is_last: bool
@@ -214,7 +227,9 @@ class StreamingDecoder:
 
         # Trim to max 30 seconds if accumulated too much (sliding window)
         if self._accumulated_mel.shape[0] > N_FRAMES:
+            trimmed = self._accumulated_mel.shape[0] - N_FRAMES
             self._accumulated_mel = self._accumulated_mel[-N_FRAMES:]
+            self._drop_emitted_before(trimmed // 2)
 
         # Reset KV cache for fresh decoding of accumulated audio
         self.inference.reset()
@@ -230,13 +245,20 @@ class StreamingDecoder:
         audio_features = self.model.encoder(mel_padded.astype(self.model.dtype))
         content_frames = self._accumulated_mel.shape[0] // 2  # Encoder has stride 2
 
-        # Initialize tokens with SOT sequence (including notimestamps)
-        tokens = mx.array([list(self._sot_sequence)])
+        n_text_ctx = self.model.dims.n_text_ctx
+        excess = len(self._emitted_tokens) - (n_text_ctx // 2 - 1)
+        if excess > 0:
+            self._dropped_tokens += excess
+            self._emitted_tokens = self._emitted_tokens[excess:]
+            self._emitted_frames = self._emitted_frames[excess:]
+        prefix_len = len(self._sot_sequence) + len(self._emitted_tokens)
+        tokens = mx.array([list(self._sot_sequence) + self._emitted_tokens])
+        frames = []
 
         # Decode loop with AlignAtt
         # First iteration: pass all initial tokens; subsequent: only last token
         first_iteration = True
-        for _ in range(self.model.dims.n_text_ctx // 2):
+        for _ in range(min(n_text_ctx // 2, n_text_ctx - prefix_len)):
             inputs = tokens if first_iteration else tokens[:, -1:]
             first_iteration = False
 
@@ -261,32 +283,35 @@ class StreamingDecoder:
             tokens = mx.concatenate([tokens, mx.array([[next_token]])], axis=-1)
 
             # Check AlignAtt condition (only if we have alignment heads)
-            if self._alignment_heads_list is not None:
-                most_attended = get_most_attended_frame(
-                    cross_qk, self._alignment_heads_list
-                )
-                threshold = 4 if is_last else self.config.frame_threshold
-                if should_emit(
-                    most_attended,
-                    content_frames,
-                    StreamingConfig(frame_threshold=threshold),
-                ):
-                    break
+            if self._alignment_heads_list is None:
+                frames.append(0)
+                continue
+
+            most_attended = get_most_attended_frame(
+                cross_qk, self._alignment_heads_list
+            )
+            frames.append(most_attended)
+
+            if not is_last and should_emit(most_attended, content_frames, self.config):
+                tokens = tokens[:, :-1]
+                frames.pop()
+                break
 
         # Extract text tokens (excluding special tokens)
-        text_tokens = [
-            t
-            for t in tokens[0].tolist()
+        generated = [
+            (t, f)
+            for t, f in zip(tokens[0, prefix_len:].tolist(), frames)
             if t < self.tokenizer.eot and t not in self.tokenizer.sot_sequence
         ]
+        text_tokens = self._emitted_tokens + [t for t, _ in generated]
 
         # Calculate what's new since last emission
         new_tokens, text = self._take_new_tokens(text_tokens, is_last)
+        self._emitted_frames += [f for _, f in generated[: len(new_tokens)]]
+        emitted_count = self._dropped_tokens + len(self._emitted_tokens)
 
-        emit_start_time = (
-            len(self._emitted_tokens) - len(new_tokens)
-        ) / TOKENS_PER_SECOND
-        emit_end_time = len(self._emitted_tokens) / TOKENS_PER_SECOND
+        emit_start_time = (emitted_count - len(new_tokens)) / TOKENS_PER_SECOND
+        emit_end_time = emitted_count / TOKENS_PER_SECOND
 
         return StreamingResult(
             text=text,
