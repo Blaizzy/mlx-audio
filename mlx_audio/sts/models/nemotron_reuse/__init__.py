@@ -37,8 +37,11 @@ def write_model_card(output_path, source_repo, model_repo, config):
         "Set `target_sample_rate` for bandwidth extension. Multichannel audio "
         "is processed independently per channel. Inference uses MLX and Metal; "
         "PyTorch, NeMo, and CUDA are not required.\n\n"
-        "For full float32 numerical parity on M5, launch Python with "
+        "For full float32 computation on M5, launch Python with "
         "`MLX_ENABLE_TF32=0`; MLX otherwise permits reduced-precision matmuls.\n\n"
+        "FFT rounding near the -pi/+pi phase boundary can change predictions. "
+        "Full float32 does not guarantee waveform parity across backends; "
+        "CUDA reference parity has not yet been established.\n\n"
         "Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. "
         "Distributed under the included OpenMDW-1.1 license.\n",
         encoding="utf-8",
