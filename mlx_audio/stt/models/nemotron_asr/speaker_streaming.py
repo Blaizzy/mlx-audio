@@ -6,6 +6,7 @@ log-mel features before subsampling. Model weights are shared; caches are not.
 This is temporal masking, not separation of simultaneously speaking voices.
 """
 
+import math
 from collections import deque
 from dataclasses import dataclass
 
@@ -143,6 +144,45 @@ class SpeakerStreamingSession:
             updates.extend(self._feed(mx.zeros((0,)), final=True))
             self._closed = True
         return updates
+
+    def close_streams(self):
+        """End every speaker stream and keep diarization running.
+
+        Each stream gets one chunk of silent features as its final chunk, so
+        tokens it was holding back are decoded. Its encoder and decoder state
+        are then dropped and the gating history is cleared, so a stream is
+        created again only for a speaker diarization marks active later.
+        Speaker IDs keep their arrival order. Audio the session has not yet
+        committed stays buffered for the next ``feed``, so feed enough trailing
+        silence for diarization to commit a turn's last chunk before closing.
+        Use it at the end of a turn in a live recording; ``feed([], final=True)``
+        still ends the whole session.
+
+        Returns one ``SpeakerTranscript`` per stream it ended, in speaker
+        order; a speaker who said nothing more has empty ``tokens``.
+        """
+        if self._closed:
+            raise RuntimeError("speaker streaming session is closed")
+        config = self.model.preprocessor_config
+        # Log-mel of digital silence, the floor the frontend never goes below.
+        silence = mx.full(
+            (1, self.chunk_mel, config.features),
+            math.log(config.log_zero_guard_value),
+        )
+        closed = []
+        for speaker in sorted(self._encoders):
+            encoder = self._encoders.pop(speaker)
+            decoder = self._decoders.pop(speaker)
+            start_frame = self._mel_offset // self.factor
+            tokens = []
+            for encoded in encoder.push(silence, final=True):
+                prompted = self.model.apply_prompt(encoded, self.language)
+                encoder.materialize(prompted)
+                tokens.extend(decoder.decode(prompted, start_frame))
+                start_frame += prompted.shape[1]
+            closed.append(SpeakerTranscript(f"speaker_{speaker}", tokens))
+        self._history.clear()
+        return closed
 
     def _feed(self, samples, *, final):
         if final and not self._frontend.total_samples:

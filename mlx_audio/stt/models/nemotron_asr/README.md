@@ -71,7 +71,9 @@ for delta in model.stream_generate_speakers("meeting.wav", diar):
 `generate_speakers()` returns a dictionary of speaker IDs to `AlignedResult`.
 Streaming deltas contain `speaker`, `tokens`, and `text`; timestamps use the
 original recording clock. `create_speaker_streaming_session(diar)` exposes
-`feed(pcm)` and `feed([], final=True)` for explicit live input.
+`feed(pcm)` and `feed([], final=True)` for explicit live input. Between turns,
+`close_streams()` ends every speaker stream and returns its last tokens while
+diarization keeps running, so speakers keep their IDs into the next turn.
 
 This uses existing weights with feature masking, independent encoder/decoder
 caches, and activity-based cache gating. Overlapping voices are not separated.
