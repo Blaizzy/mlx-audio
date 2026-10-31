@@ -41,6 +41,12 @@ class InferenceRequest:
         default_factory=queue.Queue
     )
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    # Called exactly once, when the request finishes (``emit_done``), so an
+    # adapter can release resources it acquired for the request — e.g. hand a
+    # held model back to the provider so eviction can consider it again.
+    # Firing in ``emit_done`` covers the success paths, the continuous-session
+    # pops, and the broker's failure catch alike.
+    completion_release: Optional[Any] = field(default=None, repr=False, compare=False)
 
     def emit_data(self, payload: Any) -> None:
         self.result_queue.put(InferenceResultChunk(kind="data", payload=payload))
@@ -49,6 +55,13 @@ class InferenceRequest:
         self.result_queue.put(InferenceResultChunk(kind="error", error=error))
 
     def emit_done(self) -> None:
+        release = self.completion_release
+        if release is not None:
+            self.completion_release = None  # fire once
+            try:
+                release(self)
+            except Exception:  # release must never break the done signal
+                traceback.print_exc()
         self.result_queue.put(InferenceResultChunk(kind="done"))
 
 
