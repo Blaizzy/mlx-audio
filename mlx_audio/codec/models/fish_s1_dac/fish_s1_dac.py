@@ -11,6 +11,10 @@ import mlx.nn as nn
 import numpy as np
 from huggingface_hub import snapshot_download
 
+# What a stream carries from one step to the next: conv buffers, transposed-conv
+# overlap tails, and the transformer's KV cache and position.
+_STREAMING_STATE = ("_buffer", "_overlap", "_cache", "_position")
+
 
 def _normalize_weight(x: mx.array, except_dim: int = 0) -> mx.array:
     axes = tuple(i for i in range(x.ndim) if i != except_dim)
@@ -1363,9 +1367,28 @@ class DAC(nn.Module):
 
     def reset_streaming_state(self):
         """Clears decoder conv buffers, overlap tails and transformer KV caches."""
-        for _, module in self.named_modules():
-            if hasattr(module, "reset_state"):
-                module.reset_state()
+        for module in self._streaming_modules():
+            module.reset_state()
+
+    def streaming_state(self) -> list[dict]:
+        """The state reset_streaming_state() clears, for set_streaming_state().
+
+        Every step replaces these values rather than writing into them, so the
+        state holds references and stays valid while the stream goes on.
+        """
+        return [
+            {n: getattr(module, n) for n in _STREAMING_STATE if hasattr(module, n)}
+            for module in self._streaming_modules()
+        ]
+
+    def set_streaming_state(self, state: list[dict]):
+        """Returns the stream to a state taken with streaming_state()."""
+        for module, values in zip(self._streaming_modules(), state, strict=True):
+            for name, value in values.items():
+                setattr(module, name, value)
+
+    def _streaming_modules(self) -> list[nn.Module]:
+        return [m for _, m in self.named_modules() if hasattr(m, "reset_state")]
 
     def streaming_step(self, indices: mx.array) -> mx.array:
         """Incrementally decodes only the new codec frames.

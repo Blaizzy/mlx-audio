@@ -106,6 +106,8 @@ player.wait_for_drain()
 
 With a cached voice and `first_chunk_frames=4`, the first audio arrives in under 200 ms on an M3 Max.
 
+Without streaming, a chunk that stays silent for 12 s, as the model sometimes does after a pause, is generated again, up to three times, and so is a chunk that ends by itself after 5 s of silence. Silence is measured above 60 Hz, since some silent stretches carry a low rumble with no speech in it. A stream cannot take back audio it has sent, so it ends such a chunk instead, as does a last try that falls silent too; the rest of that chunk's text is then lost.
+
 ## License
 
 The Drama 3 weights are released under the Fish Audio Community License. Check its terms before commercial use or hosting.

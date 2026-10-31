@@ -8,6 +8,8 @@ the backbone. Frames stream through the causal codec as they are produced.
 
 import copy
 import hashlib
+import logging
+import math
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -17,6 +19,7 @@ from typing import Callable, Iterator, Optional, Union
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
+from scipy.signal import butter, sosfilt
 
 from mlx_audio.lm.models.cache import KVCache
 from mlx_audio.tts.models.base import GenerationResult
@@ -43,14 +46,33 @@ DEFAULT_TOP_K = None
 DEFAULT_TOP_P = 0.9
 CODEBOOK_TOP_K = 30
 PREFILL_CHUNK = 256
-# Frames per codec call when a chunk is decoded at once. The codec's working set
-# grows with the frames of one call: a 1024-frame chunk needs about 20 GB on top
-# of the weights in one call and about 4 GB in 64-frame pieces, no slower.
+# Most frames per codec call. The codec's working set grows with the frames of
+# one call: a 1024-frame chunk needs about 20 GB on top of the weights in one
+# call and about 4 GB in 64-frame pieces, no slower.
 DECODE_FRAMES = 64
+# The model sometimes stops speaking at a pause and samples silence until EOS or
+# max_tokens. Decoded silence stays below this RMS per codec frame (about 0.004
+# at 3-bit experts, 0.0028 at 4-bit, 0.00025 at bf16); speech, whispered or
+# cloned from a quiet reference, does not stay below it for 3 s in the measured
+# takes. Pauses in complete takes reached 10 s, never 12 s. Some silent
+# stretches carry rumble below 60 Hz with no speech in it that lifts broadband
+# RMS above the threshold, so frames are measured above SPEECH_BAND_HZ.
+QUIET_RMS = 0.005
+SPEECH_BAND_HZ = 60
+RETRY_AFTER_QUIET = 12.0  # s of quiet that regenerate a chunk nothing of has gone out
+END_AFTER_QUIET = 12.0  # s of quiet that end it otherwise
+KEPT_QUIET = 1.0  # s of quiet kept after the last loud frame
+# A chunk that ends by itself after this much quiet stopped speaking before its
+# text was done: complete takes end within 3 s of their last loud frame, those
+# that skipped the rest of their text had 9 s or more.
+ENDED_QUIET = 5.0
+SILENT_RETRIES = 3
 VOICE_CACHE_SIZE = 4
 KEPT_PREFIXES = ("backbone.", "semantic_head.", "tower.")
 
 AudioInput = Union[str, Path, mx.array, np.ndarray]
+
+logger = logging.getLogger(__name__)
 
 
 def sample_top_k_top_p(
@@ -119,6 +141,88 @@ class _VoiceCache:
         while len(self._voices) > self._size:
             self._voices.popitem(last=False)
         return voice
+
+
+@dataclass
+class _Attempt:
+    """One try at a chunk. Frames [0, sent) have gone to the caller, [sent,
+    decoded) are decoded and held; due_start is where the streaming interval
+    in progress began. Sizes count codec frames: a quiet run of retry_after
+    calls for a retry while nothing has been sent, one of end_after ends the
+    chunk, and kept quiet frames after the last loud one are worth sending.
+    Levels are measured through the high-pass sections in band."""
+
+    retry_after: int
+    end_after: int
+    kept: int
+    frame_length: int
+    band: np.ndarray
+    codes: list[mx.array] = field(default_factory=list)
+    sent: int = 0
+    decoded: int = 0
+    due_start: int = 0
+    last_loud: Optional[int] = None
+    held: list[mx.array] = field(default_factory=list)
+    widths: list[int] = field(default_factory=list)
+    band_state: Optional[np.ndarray] = None
+
+    @property
+    def pending(self) -> list[mx.array]:
+        return self.codes[self.decoded :]
+
+    def hold(self, audio: mx.array) -> bool:
+        """Holds the audio of the pending frames and measures them in order.
+        True when the quiet run reaches its limit; the frames after that one
+        are left unmeasured, as they will not be sent."""
+        start, width = self.decoded, len(self.codes) - self.decoded
+        self.held.append(audio)
+        self.widths.append(width)
+        self.decoded = len(self.codes)
+        limit = self.retry_after if self.sent == 0 else self.end_after
+        for frame, level in enumerate(self.levels(audio, width), start):
+            if level >= QUIET_RMS:
+                self.last_loud = frame
+            elif frame - (-1 if self.last_loud is None else self.last_loud) >= limit:
+                return True
+        return False
+
+    def levels(self, audio: mx.array, frames: int) -> np.ndarray:
+        """RMS of each of the audio's frames above SPEECH_BAND_HZ. The filter
+        state carries over from the attempt's previous piece, so the levels do
+        not depend on how its frames were split into codec calls."""
+        if self.band_state is None:
+            self.band_state = np.zeros((self.band.shape[0], 2))
+        samples = np.array(audio.astype(mx.float32)).astype(np.float64)
+        filtered, self.band_state = sosfilt(self.band, samples, zi=self.band_state)
+        return np.sqrt(np.mean(np.square(filtered.reshape(frames, -1)), axis=1))
+
+    def quiet_tail(self) -> int:
+        """Quiet frames after the last loud one, or all of them without one."""
+        return len(self.codes) - (-1 if self.last_loud is None else self.last_loud) - 1
+
+    def limit(self) -> int:
+        """How far a due point may send: up to `kept` quiet frames after the
+        last loud one. Without a loud frame the attempt's start counts as
+        one, so a stream sends its quiet opening without delay; that attempt
+        can no longer be retried."""
+        last = -1 if self.last_loud is None else self.last_loud
+        return max(self.sent, min(last + 1 + self.kept, len(self.codes)))
+
+    def cutoff(self) -> int:
+        """Where an ended attempt stops: `kept` quiet frames after its last
+        loud one, or, without a loud frame, what has already gone out."""
+        return self.sent if self.last_loud is None else self.limit()
+
+    def send(self, stop: int) -> tuple[mx.array, int]:
+        """The held audio of frames [sent, stop), which then count as sent."""
+        count = stop - self.sent
+        if count == 0:
+            return mx.zeros((0,), mx.float32), 0
+        audio = mx.concatenate(self.held)
+        split = count * self.frame_length
+        self.held = [audio[split:]] if stop < self.decoded else []
+        self.sent = stop
+        return audio[:split], count
 
 
 class Model(nn.Module):
@@ -471,6 +575,11 @@ class Model(nn.Module):
         caps the main token, and the codebook heads at most 30.
         With stream=True, audio is yielded every streaming_interval seconds;
         first_chunk_frames sets a smaller first piece for a faster first audio.
+        A chunk that falls silent for RETRY_AFTER_QUIET seconds before any of it
+        is yielded is generated again, up to SILENT_RETRIES times; otherwise
+        END_AFTER_QUIET seconds of silence end it, keeping KEPT_QUIET of them.
+        Silence is measured above SPEECH_BAND_HZ, and a chunk that ends by
+        itself after ENDED_QUIET seconds of it counts as silent too.
         Delivery cues go inline, e.g. "[whispers]". Other keyword arguments that
         the CLI and server pass to every model (voice, lang_code, ...) do not
         apply to Drama 3 and are ignored.
@@ -489,9 +598,17 @@ class Model(nn.Module):
             DEFAULT_TOP_P if top_p is None else top_p,
         )
         voice = self._voice(ref_audio, ref_text)
-        frame_rate = self.sample_rate / self.codec.frame_length
+        frame_length = self.codec.frame_length
+        frame_rate = self.sample_rate / frame_length
         interval = max(1, round(streaming_interval * frame_rate))
         first = first_chunk_frames or interval
+        # The triggers round up, so they never fire before their duration; the
+        # kept quiet rounds down, so a stream never sends more of it.
+        retry_after = math.ceil(RETRY_AFTER_QUIET * frame_rate)
+        end_after = math.ceil(END_AFTER_QUIET * frame_rate)
+        ended_after = math.ceil(ENDED_QUIET * frame_rate)
+        kept = math.floor(KEPT_QUIET * frame_rate)
+        band = butter(4, SPEECH_BAND_HZ, "highpass", fs=self.sample_rate, output="sos")
         self.codec.reset_streaming_state()
 
         chunks = split_text(text)
@@ -505,29 +622,97 @@ class Model(nn.Module):
                 frames, system_rows = self.build_frames(
                     voice.references, history, chunk
                 )
-                codes: list[mx.array] = []
-                emitted = 0
-                for frame in self._frames(
-                    frames, system_rows, voice, max_tokens, *sampling
-                ):
-                    codes.append(frame)
-                    due = first if index == 0 and emitted == 0 else interval
-                    if stream and len(codes) - emitted >= due:
-                        yield self._result(
-                            codes[emitted:], index, started, stream, False
+                chunk_first = first if index == 0 else interval
+                chunk_start = self.codec.streaming_state()
+                for retries in range(SILENT_RETRIES + 1):
+                    last_try = retries == SILENT_RETRIES
+                    attempt = _Attempt(
+                        end_after if last_try else retry_after,
+                        end_after,
+                        kept,
+                        frame_length,
+                        band,
+                    )
+                    codes, silent = attempt.codes, False
+                    # Codec calls take DECODE_FRAMES from each due start and the
+                    # rest at a due point or the end, the calls that decoding each
+                    # streamed piece at once makes, so the audio stays the same.
+                    # Leaving the loop drops the attempt's generator and caches.
+                    for frame in self._frames(
+                        frames, system_rows, voice, max_tokens, *sampling
+                    ):
+                        codes.append(frame)
+                        due = chunk_first if attempt.due_start == 0 else interval
+                        is_due = stream and len(codes) - attempt.due_start >= due
+                        if is_due or len(codes) - attempt.decoded == DECODE_FRAMES:
+                            if silent := attempt.hold(self._decode(attempt.pending)):
+                                break
+                        if is_due:
+                            attempt.due_start = len(codes)
+                            audio, count = attempt.send(attempt.limit())
+                            if count:
+                                yield self._result(
+                                    audio, count, index, started, stream, False
+                                )
+                                started = time.perf_counter()
+                    if not silent and attempt.pending:
+                        silent = attempt.hold(self._decode(attempt.pending))
+                    # Ended by EOS (fewer frames than max_tokens) after long
+                    # quiet: the 12 s runs only catch a chunk that keeps going.
+                    ended_quiet = (
+                        not silent
+                        and len(codes) < max_tokens
+                        and attempt.quiet_tail() >= ended_after
+                    )
+                    silent = silent or ended_quiet
+                    if not silent or attempt.sent or last_try:
+                        break
+                    # Nothing of the attempt has gone out, so a fresh draw from
+                    # the same prompt replaces it.
+                    self.codec.set_streaming_state(chunk_start)
+
+                stop = spoken = len(codes)
+                if silent:
+                    stop = attempt.cutoff()
+                    # A turn of nothing but silence would prompt the next chunk
+                    # toward silence.
+                    spoken = 0 if attempt.last_loud is None else stop
+                    # The codec decoded past the cutoff. Rewound and fed the kept
+                    # frames in the calls that first decoded them, it continues
+                    # into the next chunk as if the chunk had ended there.
+                    self.codec.set_streaming_state(chunk_start)
+                    begin = 0
+                    for width in attempt.widths:
+                        if begin >= stop:
+                            break
+                        self._decode(codes[begin : min(begin + width, stop)])
+                        begin += width
+                    if ended_quiet:
+                        logger.warning(
+                            "Drama 3 chunk %d ended after %.1f s of silence after "
+                            "%d retries; the rest of its text is skipped",
+                            index,
+                            attempt.quiet_tail() / frame_rate,
+                            retries,
                         )
-                        emitted, started = len(codes), time.perf_counter()
-                if codes:
-                    turn = (chunk, mx.stack(codes, axis=1))
+                    else:
+                        logger.warning(
+                            "Drama 3 chunk %d stayed silent for %g s after %d "
+                            "retries; the rest of its text is skipped",
+                            index,
+                            END_AFTER_QUIET,
+                            retries,
+                        )
+                if spoken:
+                    turn = (chunk, mx.stack(codes[:spoken], axis=1))
                     if pinned is None:
                         pinned = turn
                     else:
                         latest = turn
-                if len(codes) > emitted or is_last:
+                audio, count = attempt.send(stop)
+                if count or is_last:
                     # An empty last chunk still closes the stream.
-                    result = self._result(
-                        codes[emitted:], index, started, stream, is_last
-                    )
+                    result = self._result(audio, count, index, started, stream, is_last)
                     # Buffers sized by this prompt and chunk rarely fit a later one,
                     # so MLX's cache would keep them up to its GC limit, about 110 GB
                     # on a 128 GB Mac. Cleared before the yield, as a caller may stop
@@ -542,21 +727,22 @@ class Model(nn.Module):
             # A caller that stops early, or an error, skips the clear above.
             mx.clear_cache()
 
+    def _decode(self, codes: list[mx.array]) -> mx.array:
+        """Audio of the next frames of the stream, in one codec call."""
+        audio = self.codec.streaming_step(mx.stack(codes, axis=1)[None])[0, 0]
+        # Evaluated call by call, so only one call's working set is alive.
+        mx.eval(audio)
+        return audio
+
     def _result(
         self,
-        codes: list[mx.array],
+        audio: mx.array,
+        frames: int,
         segment_idx: int,
         started: float,
         streaming: bool,
         final: bool,
     ) -> GenerationResult:
-        pieces = []
-        for begin in range(0, len(codes), DECODE_FRAMES):
-            frames = mx.stack(codes[begin : begin + DECODE_FRAMES], axis=1)[None]
-            pieces.append(self.codec.streaming_step(frames)[0, 0])
-            # Evaluated piece by piece, so only one piece's working set is alive.
-            mx.eval(pieces[-1])
-        audio = mx.concatenate(pieces) if pieces else mx.zeros((0,), mx.float32)
         mx.eval(audio)
         elapsed = max(time.perf_counter() - started, 1e-6)
         samples = audio.shape[0]
@@ -566,10 +752,10 @@ class Model(nn.Module):
             samples=samples,
             sample_rate=self.sample_rate,
             segment_idx=segment_idx,
-            token_count=len(codes),
+            token_count=frames,
             audio_duration=f"{seconds:.2f}s",
             real_time_factor=seconds / elapsed,
-            prompt={"tokens": len(codes), "tokens-per-sec": len(codes) / elapsed},
+            prompt={"tokens": frames, "tokens-per-sec": frames / elapsed},
             audio_samples={"samples": samples, "samples-per-sec": samples / elapsed},
             processing_time_seconds=elapsed,
             peak_memory_usage=mx.get_peak_memory() / 1e9,
