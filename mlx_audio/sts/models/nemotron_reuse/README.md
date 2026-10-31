@@ -60,19 +60,41 @@ MLX_ENABLE_TF32=0 python -m mlx_audio.sts.generate \
 ## Numerical validation
 
 All 1,416 converted tensors preserve the source float32 values exactly after
-layout conversion. Against the NVIDIA network with the upstream Mamba CPU
-reference scan, identical spectral inputs produced relative complex-output
-errors of `4.4e-6` to `8.8e-6` on five non-silent clips, and `3.6e-4` on silence,
-with `MLX_ENABLE_TF32=0` on Apple M5 Max.
+layout conversion. The unchanged NVIDIA network was validated on an NVIDIA L4
+with PyTorch 2.8.0/CUDA 12.8, Mamba 2.3.1, and native CUDA Mamba/causal-convolution
+kernels. The MLX comparison used Apple M5 Max, MLX 0.32.4, and
+`MLX_ENABLE_TF32=0`; CUDA TF32 was also disabled. The source checkpoint revision
+was `31f82f2efad1095034492f236e8dac9239ba713b`.
 
-End-to-end waveform agreement is input-dependent. Small FFT rounding differences
-can select opposite sides of the `-pi`/`+pi` phase boundary. The network consumes
-raw phase angles, so this affects predictions, particularly in the first
-reflected frame of a chunk. Relative waveform errors against that CPU reference
-were 2.43% on a one-second 48 kHz coffee-shop excerpt, 2.99% on half a second of
-16 kHz noise, and 0.37% on 1.2 seconds of speech using half-second chunks.
-These are numerical differences, not measurements of perceptual quality.
-Parity with NVIDIA's CUDA implementation has not yet been established.
+With identical spectral inputs, relative complex-output error was `4.0e-6` to
+`6.8e-6` on eight non-silent clips, and `3.0e-4` on silence. End-to-end waveform
+agreement was input-dependent:
+
+| Input | Duration | Relative waveform error |
+| --- | ---: | ---: |
+| Speech, 8 kHz | 5.1 s | 0.00047% |
+| Speech, 44.1 kHz | 1 s | 0.342% |
+| Speech, 22.05 kHz | 0.6 s | 0.469% |
+| Coffee shop, 48 kHz | 1 s | 1.39% |
+| Noise, 16 kHz | 0.5 s | 1.27% |
+| Silence, 8 kHz | 0.25 s | 0.0263% |
+| Speech, 8 kHz, 0.5 s chunks | 1.2 s | 0.406% |
+| Held-out coffee channel/excerpt, 48 kHz | 1 s | 2.61% |
+| Held-out speech, 16 kHz | 1 s | 0.224% |
+| Held-out noise, 32 kHz | 0.5 s | 1.44% |
+| Speech, 8 kHz, default 5 s chunks | 6.3 s | 0.0287% |
+
+Relative error is `norm(MLX - CUDA) / norm(CUDA)` on the same float32 input
+samples, before audio encoding. These are numerical differences, not
+measurements of perceptual quality. Optional bandwidth-extension resampling
+was excluded from this comparison.
+
+Small FFT rounding differences can select opposite sides of the `-pi`/`+pi`
+phase boundary. The network consumes raw phase angles, so this affects
+predictions, particularly in the first reflected frame and at real FFT
+endpoints. Keeping NVIDIA's CUDA network fixed and changing only the STFT to
+PyTorch CPU changed its waveform by 1.86% on the coffee clip and 4.70% on noise.
+Full float32 therefore does not guarantee waveform parity across FFT backends.
 
 ## License
 

@@ -41,7 +41,9 @@ def write_model_card(output_path, source_repo, model_repo, config):
         "`MLX_ENABLE_TF32=0`; MLX otherwise permits reduced-precision matmuls.\n\n"
         "FFT rounding near the -pi/+pi phase boundary can change predictions. "
         "Full float32 does not guarantee waveform parity across backends; "
-        "CUDA reference parity has not yet been established.\n\n"
+        "CUDA validation found up to 2.61% relative waveform error across 11 "
+        "test inputs, despite close agreement with identical spectral inputs. "
+        "See the architecture README for validation details.\n\n"
         "Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. "
         "Distributed under the included OpenMDW-1.1 license.\n",
         encoding="utf-8",
