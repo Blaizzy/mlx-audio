@@ -11,6 +11,7 @@ MLX Audio provides speech-to-speech models for audio source separation, speech e
 | [**SAM-Audio**](#sam-audio) | Meta | Text-guided source separation | [mlx-community/sam-audio-large](https://huggingface.co/mlx-community/sam-audio-large) |
 | [**DialogueSidon**](dialogue-sidon.md) | SaruLab | Two-speaker dialogue separation and restoration | [mlx-community/DialogueSidon](https://huggingface.co/mlx-community/DialogueSidon) (FP32), [mlx-community/DialogueSidon-bf16](https://huggingface.co/mlx-community/DialogueSidon-bf16) (BF16) |
 | [**Liquid2.5-Audio**](#liquid25-audio) | LiquidAI | Speech-to-Speech, TTS, ASR | [mlx-community/LFM2.5-Audio-1.5B-4bit](https://huggingface.co/mlx-community/LFM2.5-Audio-1.5B-4bit) |
+| [**LFM3-Audio**](#lfm3-audio) | LiquidAI | Speech-to-Speech, TTS, ASR, audio questions | [LiquidAI/LFM3-Audio-2B-MLX-8bit](https://huggingface.co/LiquidAI/LFM3-Audio-2B-MLX-8bit) |
 | [**Ming-3.0 Audio Tiny**](ming3-tiny.md) | inclusionAI | Audio understanding, ASR, reasoning and spoken dialogue | [BF16](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-bf16), [8-bit](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-8bit), [4-bit](https://huggingface.co/mlx-community/Ming-3.0-audio-tiny-4bit) |
 | [**MiMo-Audio**](mimo-audio.md) | Xiaomi | Offline TTS, ASR, voice dialogue, Base few-shot tasks | [Instruct](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Instruct), [Base](https://huggingface.co/XiaomiMiMo/MiMo-Audio-7B-Base) |
 | [**Moshi**](#moshi) | Kyutai Labs | Full-duplex voice conversation | [kyutai/moshiko-mlx-q4](https://huggingface.co/kyutai/moshiko-mlx-q4) |
@@ -184,6 +185,43 @@ Control the quality vs speed tradeoff:
 | `euler` | `2/64` | 32 | Very Good | Medium |
 | `euler` | `2/32` | 16 | Good | Fast |
 | `euler` | `2/16` | 8 | Good | Fastest |
+
+---
+
+## LFM3-Audio
+
+[LFM3-Audio-2B](https://huggingface.co/LiquidAI/LFM3-Audio-2B) supports
+transcription, multilingual TTS, audio questions, and English voice chat with
+interleaved text and speech. It reads 16 kHz audio and generates 24 kHz speech.
+BF16, 8-bit, and 4-bit LiquidAI checkpoints load directly.
+
+```python
+from mlx_audio.sts import load
+from mlx_audio import audio_io
+
+model = load("LiquidAI/LFM3-Audio-2B-MLX-8bit")
+print(model.generate("speech.wav", task="asr").text)
+result = model.generate(text="Hello there!", task="tts")
+audio_io.write("speech.wav", result.audio, result.sample_rate)
+result = model.generate("question.wav", task="sts")
+print(result.text)
+```
+
+```sh
+python -m mlx_audio.sts.generate \
+  --model LiquidAI/LFM3-Audio-2B-MLX-8bit \
+  --task tts --text "Hello there!" --output-path speech.wav
+```
+
+Use `language`, `voice` (`female` or `male`), `system_prompt`, `messages`,
+`max_new_tokens`, and text/audio sampling options through `generate()` or
+the CLI's `--gen-kwargs`. Text-only audio questions use `task="chat"`.
+Each call handles one conversation; LiveASR and waveform streaming are not
+supported. The context limit is 32K tokens. Speech supports 18 languages.
+
+See the [model README](https://github.com/Blaizzy/mlx-audio/tree/main/mlx_audio/sts/models/lfm3_audio)
+for options and conversation examples. Weights use the
+[LFM Open License v1.0](https://huggingface.co/LiquidAI/LFM3-Audio-2B/blob/main/LICENSE).
 
 ---
 
