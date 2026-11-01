@@ -14,9 +14,10 @@ def test_dsp_import_isolation():
     """
     code = """
 import sys
-from mlx_audio.dsp import stft
+from mlx_audio.dsp import stable_stft, stft
 assert "mlx_audio.tts" not in sys.modules, "TTS was imported"
 assert "mlx_audio.stt" not in sys.modules, "STT was imported"
+assert "mlx_audio.sts" not in sys.modules, "STS was imported"
 print("OK")
 """
     result = subprocess.run(
@@ -48,6 +49,7 @@ def test_dsp_all_exports():
         "bartlett",
         "STR_TO_WINDOW_FN",
         "stft",
+        "stable_stft",
         "istft",
         "mel_filters",
         "integrated_loudness",
@@ -57,6 +59,93 @@ def test_dsp_all_exports():
 
     for name in expected:
         assert hasattr(dsp, name), f"Missing export: {name}"
+
+
+@pytest.mark.parametrize("win_length", [16, 32])
+@pytest.mark.parametrize("length", [129, 130])
+def test_stable_stft_matches_direct_dft_and_real_bin_convention(win_length, length):
+    from mlx_audio.dsp import stable_stft
+
+    n_fft, hop = 32, 8
+    audio = np.random.default_rng(19).normal(size=length)
+    actual, window = stable_stft(audio, n_fft, hop, win_length)
+    expected_window = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win_length) / win_length)
+    expected_window = np.pad(expected_window, (n_fft - win_length) // 2)
+    frames = np.lib.stride_tricks.sliding_window_view(
+        np.pad(audio, (n_fft // 2, n_fft // 2), mode="reflect"), n_fft
+    )[::hop]
+    basis = np.exp(
+        -2j * np.pi * np.arange(n_fft // 2 + 1)[:, None] * np.arange(n_fft) / n_fft
+    )
+    expected = (frames * expected_window) @ basis.T
+    np.testing.assert_allclose(actual, expected, atol=1e-13, rtol=1e-13)
+    assert actual.dtype == np.complex128
+    assert window.dtype == np.float32
+    np.testing.assert_array_equal(window[1:], window[:0:-1])
+    np.testing.assert_array_equal(actual.imag[:, [0, -1]], 0)
+    np.testing.assert_array_equal(actual.imag[0], 0)
+    if (length - 1) % hop == 0:
+        np.testing.assert_array_equal(actual.imag[-1], 0)
+    else:
+        assert np.max(np.abs(actual.imag[-1])) > 0.1
+    assert set(np.unique(np.angle(actual[:, [0, -1]]))).issubset({0, np.pi})
+
+
+@pytest.mark.parametrize("win_length", [16, 32])
+def test_stable_stft_reconstructs_with_shared_istft(win_length):
+    import mlx.core as mx
+
+    from mlx_audio.dsp import istft, stable_stft
+
+    audio = np.random.default_rng(27).normal(0, 0.1, size=129).astype(np.float32)
+    # Default hop/window conventions match the shared STFT API.
+    spectrum, window = stable_stft(audio, n_fft=32, win_length=win_length)
+    restored = np.asarray(
+        istft(
+            mx.array(spectrum.T.astype(np.complex64)),
+            hop_length=8,
+            win_length=win_length,
+            window=mx.array(window),
+            normalized=True,
+        )
+    )
+    assert restored.shape == (128,)
+    np.testing.assert_allclose(restored, audio[:128], atol=2e-7)
+
+
+def test_stable_stft_silence_is_independent_of_zero_sign():
+    from mlx_audio.dsp import stable_stft
+
+    audio = -np.zeros(400)
+    positive = stable_stft(-audio, 320, 40)
+    negative = stable_stft(audio, 320, 40)
+    for expected, actual in zip(positive, negative):
+        np.testing.assert_array_equal(actual, expected)
+    np.testing.assert_array_equal(np.angle(negative[0]), 0)
+    assert not np.signbit(negative[0].real).any()
+    assert not np.signbit(negative[0].imag).any()
+    assert np.signbit(audio).all()  # Analysis must not mutate its input.
+
+
+@pytest.mark.parametrize(
+    "audio,kwargs",
+    [
+        (np.zeros(100), {"n_fft": 0}),
+        (np.zeros(100), {"n_fft": 31}),
+        (np.zeros(100), {"win_length": 0}),
+        (np.zeros(100), {"win_length": 15}),
+        (np.zeros(100), {"win_length": 34}),
+        (np.zeros(100), {"hop_length": 0}),
+        (np.zeros(100), {"hop_length": -1}),
+        (np.zeros((2, 100)), {}),
+        (np.zeros(16), {}),
+    ],
+)
+def test_stable_stft_rejects_invalid_analysis_inputs(audio, kwargs):
+    from mlx_audio.dsp import stable_stft
+
+    with pytest.raises(ValueError):
+        stable_stft(audio, **{"n_fft": 32, **kwargs})
 
 
 def test_istft_cache_can_constrain_inverse_frames_to_window_envelope():

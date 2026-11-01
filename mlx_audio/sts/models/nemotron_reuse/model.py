@@ -12,11 +12,10 @@ import numpy as np
 from scipy.signal import resample_poly
 
 from mlx_audio import audio_io
-from mlx_audio.dsp import istft, stft
+from mlx_audio.dsp import istft, stable_stft, stft
 
 from ..base import STSOutput
 from .config import ModelConfig
-from .frontend import stable_stft
 from .mamba import TFMambaBlock
 from .network import Decoder, DenseEncoder
 
@@ -75,9 +74,20 @@ class Model(nn.Module):
             audio = mx.pad(audio, ((0, n_fft // 2 + 1 - length),))
         compression = self.config.compress_factor
         if frontend == "stable":
+            spectrum, window = stable_stft(np.asarray(audio), n_fft, hop, win)
+            spectrum = spectrum.T
+            magnitude = np.abs(spectrum)
+            if compression in ("log1p", "relu_log1p", "signed_log1p"):
+                magnitude = np.log1p(magnitude)
+            else:
+                magnitude = magnitude**compression
             magnitude, phase, window = map(
                 mx.array,
-                stable_stft(np.asarray(audio), n_fft, hop, win, compression),
+                (
+                    magnitude.astype(np.float32),
+                    np.angle(spectrum).astype(np.float32),
+                    window,
+                ),
             )
         else:
             window = 0.5 - 0.5 * mx.cos(2 * mx.pi * mx.arange(win) / win)

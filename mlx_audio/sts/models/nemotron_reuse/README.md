@@ -59,10 +59,12 @@ MLX_ENABLE_TF32=0 python -m mlx_audio.sts.generate \
 
 ## Experimental stable analysis
 
-`frontend="stable"` uses NumPy CPU float64 spectral analysis, an exactly
-symmetric periodic Hann window, and a defined phase convention for real FFT
-bins. The neural network still runs in MLX with the original weights. This is
-an experimental alternative to the default `frontend="native"`:
+`frontend="stable"` uses the shared `mlx_audio.dsp.stable_stft` helper for
+NumPy CPU float64 spectral analysis, an exactly symmetric periodic Hann
+window, and a defined phase convention for real FFT bins. The helper returns
+an uncompressed complex spectrum; RE-USE applies its magnitude compression
+before the neural network, which still runs in MLX with the original weights.
+This is an experimental alternative to the default `frontend="native"`:
 
 ```python
 result = model.generate("noisy.wav", frontend="stable")

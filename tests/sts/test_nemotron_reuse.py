@@ -98,16 +98,22 @@ def test_detection_without_repository_name():
     assert model_type_from_config({**config, "model_type": "explicit"}) == "explicit"
 
 
-@pytest.mark.parametrize("rate", [8000, 16000, 22050, 24000, 32000, 44100, 48000])
+@pytest.mark.parametrize(
+    "rate,compression",
+    [(rate, "relu_log1p") for rate in [8000, 16000, 22050, 24000, 32000, 44100, 48000]]
+    + [(8000, compression) for compression in ["log1p", "signed_log1p", 0.3]],
+)
 @pytest.mark.parametrize("frontend", ["native", "stable"])
-def test_stft_roundtrip_with_identity_network(rate, frontend):
+def test_stft_roundtrip_with_identity_network(rate, compression, frontend):
     # Bypass the network to exercise the real analysis/synthesis path.
 
     class Identity(Model):
         def __call__(self, magnitude, phase):
             return magnitude, phase
 
-    model = Identity(tiny_config())
+    config = tiny_config()
+    config.compress_factor = compression
+    model = Identity(config)
     rng = np.random.default_rng(rate)
     nfft, hop, win = model.config.stft_sizes(rate)
     audio = rng.normal(0, 0.1, size=hop * 8 + 7).astype(np.float32)
@@ -202,37 +208,3 @@ def test_stft_negative_zero_uses_positive_pi_phase(monkeypatch):
 
     Capture(tiny_config()).generate(np.zeros(400), sample_rate=8000, chunk_seconds=None)
     np.testing.assert_allclose(phases[0], np.pi, atol=1e-7)
-
-
-def test_stable_frontend_matches_direct_dft_and_real_bin_convention():
-    from mlx_audio.sts.models.nemotron_reuse.frontend import stable_stft
-
-    n_fft, hop = 32, 8
-    audio = np.random.default_rng(19).normal(size=129)
-    magnitude, phase, window = stable_stft(audio, n_fft, hop, n_fft, "relu_log1p")
-    expected_window = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(n_fft) / n_fft)
-    frames = np.lib.stride_tricks.sliding_window_view(
-        np.pad(audio, (n_fft // 2, n_fft // 2), mode="reflect"), n_fft
-    )[::hop]
-    basis = np.exp(
-        -2j * np.pi * np.arange(n_fft // 2 + 1)[:, None] * np.arange(n_fft) / n_fft
-    )
-    spectrum = basis @ (frames * expected_window).T
-    spectrum.imag[[0, -1], :] = 0
-    spectrum.imag[:, [0, -1]] = 0
-    np.testing.assert_allclose(magnitude, np.log1p(np.abs(spectrum)), atol=2e-7)
-    np.testing.assert_allclose(phase, np.angle(spectrum), atol=2e-7)
-    np.testing.assert_array_equal(window[1:], window[:0:-1])
-    assert set(np.unique(phase[[0, -1], :])).issubset(
-        {np.float32(0), np.float32(np.pi)}
-    )
-
-
-def test_stable_frontend_silence_is_independent_of_zero_sign():
-    from mlx_audio.sts.models.nemotron_reuse.frontend import stable_stft
-
-    positive = stable_stft(np.zeros(400), 320, 40, 320, "relu_log1p")
-    negative = stable_stft(-np.zeros(400), 320, 40, 320, "relu_log1p")
-    for expected, actual in zip(positive, negative):
-        np.testing.assert_array_equal(actual, expected)
-    np.testing.assert_array_equal(positive[1], 0)
