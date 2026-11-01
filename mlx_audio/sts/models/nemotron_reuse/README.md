@@ -98,4 +98,4 @@ Full float32 therefore does not guarantee waveform parity across FFT backends.
 
 ## License
 
-Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. The adapted architecture and checkpoint are covered by [OpenMDW-1.1](LICENSE). See the included license and third-party notices.
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. See NVIDIA's [upstream license and third-party notices](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE/blob/main/LICENSE).

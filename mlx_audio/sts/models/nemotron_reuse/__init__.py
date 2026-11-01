@@ -14,7 +14,9 @@ def copy_supporting_files(source, dest):
     import shutil
     from pathlib import Path
 
-    shutil.copyfile(Path(__file__).with_name("LICENSE"), dest / "LICENSE")
+    license_path = Path(source) / "LICENSE"
+    if license_path.is_file():
+        shutil.copyfile(license_path, Path(dest) / "LICENSE")
 
 
 def write_model_card(output_path, source_repo, model_repo, config):
@@ -45,6 +47,7 @@ def write_model_card(output_path, source_repo, model_repo, config):
         "test inputs, despite close agreement with identical spectral inputs. "
         "See the architecture README for validation details.\n\n"
         "Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. "
-        "Distributed under the included OpenMDW-1.1 license.\n",
+        "See the [upstream OpenMDW-1.1 license]"
+        "(https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE/blob/main/LICENSE).\n",
         encoding="utf-8",
     )
