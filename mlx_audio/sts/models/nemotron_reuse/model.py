@@ -9,10 +9,10 @@ from pathlib import Path
 import mlx.core as mx
 import mlx.nn as nn
 import numpy as np
-from scipy.signal import resample_poly
 
 from mlx_audio import audio_io
 from mlx_audio.dsp import istft, stft
+from mlx_audio.utils import resample_audio
 
 from ..base import STSOutput
 from .config import ModelConfig
@@ -138,10 +138,7 @@ class Model(nn.Module):
             )
         if target_sample_rate is not None:
             self._validate_rate(target_sample_rate)
-            divisor = math.gcd(sample_rate, target_sample_rate)
-            audio = resample_poly(
-                audio, target_sample_rate // divisor, sample_rate // divisor, axis=0
-            )
+            audio = resample_audio(audio, sample_rate, target_sample_rate, axis=0)
             sample_rate = target_sample_rate
         mono = audio.ndim == 1
         if mono:

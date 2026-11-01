@@ -24,7 +24,7 @@ python -m mlx_audio.sts.generate \
 - Files retain their sample rate. Arrays use `[samples]` or `[samples, channels]` layout and require `sample_rate`. Channels are enhanced independently.
 - Supports 8–48 kHz by scaling the STFT sizes, including the source model's integer rounding at 22.05 and 44.1 kHz.
 - Uses five-second chunks with 50% overlap and Hann overlap-add by default, following the upstream long-audio recipe. Set `chunk_seconds=None` for one full-context pass. Chunked and full-context results can differ because the model is bidirectional and uses instance normalization.
-- Set `target_sample_rate=48000` to resample before enhancement for bandwidth extension. This port uses SciPy polyphase resampling; upstream uses librosa's `kaiser_best`, so that optional resampling step is not numerically identical.
+- Set `target_sample_rate=48000` to resample before enhancement for bandwidth extension. This uses the shared `resample_audio` utility with its `kaiser_best`-equivalent polyphase filter. Optional resampling is excluded from the numerical comparisons below.
 - Preserves the upstream nonpositive-magnitude sweep suppression and `1e-8` tail padding to the original length. Very short inputs are zero-padded before analysis.
 - This is offline enhancement, not causal streaming. Overlapping speech may suppress secondary speakers.
 
