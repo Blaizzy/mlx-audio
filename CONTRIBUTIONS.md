@@ -34,7 +34,7 @@ This file acknowledges the original authors and contributors of models ported to
 
 - **Original**: [nvidia/NVIDIA-NemotronLabs-RE-USE](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE)
 - **Copyright**: NVIDIA Corporation & Affiliates
-- **License**: [OpenMDW-1.1](mlx_audio/sts/models/nemotron_reuse/LICENSE)
+- **License**: [OpenMDW-1.1](https://huggingface.co/nvidia/NVIDIA-NemotronLabs-RE-USE/blob/main/LICENSE)
 - **MLX Port**: Native convolutional encoder/decoders and bidirectional Mamba-1 with a Metal selective scan.
 
 ## Nemotron 3.5 Transcribe (Speech-to-Text)
