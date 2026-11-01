@@ -504,3 +504,152 @@ class TestSharedHelpers:
         assert len(tokens) > 0
         # Should include non-speech tokens
         assert any(t in tokens for t in tokenizer.non_speech_tokens)
+
+
+class TestDecodeChunkWithStubModel:
+    def make_decoder(self, script):
+        from types import SimpleNamespace
+
+        import mlx.core as mx
+
+        from mlx_audio.stt.models.whisper.streaming import (
+            StreamingConfig,
+            StreamingDecoder,
+        )
+
+        eot, vocab = 9, 10
+        steps = iter(script)
+        inputs = []
+
+        class Inference:
+            def reset(self):
+                pass
+
+            def logits_with_cross_qk(self, tokens, audio_features):
+                inputs.append(tokens.tolist())
+                logits = mx.zeros((1, 1, vocab))
+                logits[0, -1, next(steps)] = 1.0
+                return logits, None
+
+        decoder = StreamingDecoder.__new__(StreamingDecoder)
+        decoder.model = SimpleNamespace(
+            encoder=lambda mel: mel,
+            dims=SimpleNamespace(n_text_ctx=448),
+            dtype=mx.float32,
+        )
+        decoder.config = StreamingConfig()
+        decoder.inference = Inference()
+        decoder.tokenizer = SimpleNamespace(
+            eot=eot, sot_sequence=(8,), decode=lambda t: "".join(map(str, t))
+        )
+        decoder._sot_sequence = (8,)
+        decoder._logit_filters = []
+        decoder._alignment_heads_list = [[0, 0]]
+        decoder._emitted_tokens = []
+        decoder._emitted_frames = []
+        decoder._dropped_tokens = 0
+        decoder._accumulated_mel = None
+        decoder.inputs = inputs
+        return decoder
+
+    def test_last_chunk_ignores_attention_at_the_end(self):
+        from unittest.mock import patch
+
+        import mlx.core as mx
+
+        decoder = self.make_decoder([1, 2, 3, 9])
+        mel = mx.zeros((100, 80))
+
+        with patch(
+            "mlx_audio.stt.models.whisper.streaming.get_most_attended_frame",
+            return_value=50,
+        ):
+            result = decoder.decode_chunk(mel, is_last=True)
+
+        assert result.text == "123"
+
+    def test_next_chunk_continues_after_the_emitted_text(self):
+        from unittest.mock import patch
+
+        import mlx.core as mx
+
+        decoder = self.make_decoder([1, 2, 9, 3, 9])
+        mel = mx.zeros((100, 80))
+
+        with patch(
+            "mlx_audio.stt.models.whisper.streaming.get_most_attended_frame",
+            return_value=0,
+        ):
+            first = decoder.decode_chunk(mel)
+            calls = len(decoder.inputs)
+            second = decoder.decode_chunk(mel)
+
+        assert (first.text, second.text) == ("12", "3")
+        assert decoder.inputs[calls] == [[8, 1, 2]]
+
+    def test_token_attending_the_end_of_the_audio_waits(self):
+        from unittest.mock import patch
+
+        import mlx.core as mx
+
+        decoder = self.make_decoder([1, 2])
+        mel = mx.zeros((100, 80))
+
+        with patch(
+            "mlx_audio.stt.models.whisper.streaming.get_most_attended_frame",
+            side_effect=[10, 45],
+        ):
+            result = decoder.decode_chunk(mel)
+
+        assert result.text == "1"
+        assert decoder._emitted_tokens == [1]
+        assert decoder._emitted_frames == [10]
+
+    def test_prefix_and_new_tokens_fit_the_text_context(self):
+        from unittest.mock import patch
+
+        import mlx.core as mx
+
+        decoder = self.make_decoder([2] * 448)
+        decoder._emitted_tokens = [1] * 300
+        decoder._emitted_frames = [0] * 300
+
+        with patch(
+            "mlx_audio.stt.models.whisper.streaming.get_most_attended_frame",
+            return_value=0,
+        ):
+            decoder.decode_chunk(mx.zeros((100, 80)))
+
+        prefix = len(decoder.inputs[0][0])
+        assert prefix == 1 + 223
+        assert prefix + len(decoder.inputs) - 1 <= 448
+        assert decoder._dropped_tokens == 300 - 223
+
+    def test_window_slide_drops_tokens_from_the_prefix(self):
+        from unittest.mock import patch
+
+        import mlx.core as mx
+
+        decoder = self.make_decoder([1, 2, 9, 3, 9])
+        with patch(
+            "mlx_audio.stt.models.whisper.streaming.get_most_attended_frame",
+            side_effect=[50, 150, 900],
+        ):
+            decoder.decode_chunk(mx.zeros((2000, 80)))
+            calls = len(decoder.inputs)
+            second = decoder.decode_chunk(mx.zeros((1200, 80)))
+
+        assert decoder.inputs[calls] == [[8, 2]]
+        assert second.text == "3"
+        assert decoder._dropped_tokens == 1
+
+    def test_sliding_window_drops_emitted_tokens_behind_it(self):
+        decoder = self.make_decoder([])
+        decoder._emitted_tokens = [1, 2, 3]
+        decoder._emitted_frames = [10, 20, 30]
+
+        decoder._drop_emitted_before(25)
+
+        assert decoder._emitted_tokens == [3]
+        assert decoder._emitted_frames == [5]
+        assert decoder._dropped_tokens == 2

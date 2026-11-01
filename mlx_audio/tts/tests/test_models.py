@@ -3442,7 +3442,16 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             )
 
         self.assertEqual(len(results), 51)
-        self.assertEqual(model.speech_tokenizer.decoder.streaming_step.call_count, 51)
+        decoder_calls = model.speech_tokenizer.decoder.streaming_step.call_args_list
+        # One reference-priming call precedes the 51 generated audio chunks.
+        self.assertEqual(len(decoder_calls), 52)
+        np.testing.assert_array_equal(
+            np.array(decoder_calls[0].args[0]),
+            np.array(model.speech_tokenizer.encode.return_value),
+        )
+        for decoder_call in decoder_calls[1:]:
+            self.assertEqual(decoder_call.args[0].shape, (1, 4, 1))
+        self.assertEqual(sum(result.samples for result in results), 51 * 1920)
         mock_clear_cache.assert_called_once_with()
 
     def test_generate_icl_repetition_penalty_applied(self):
