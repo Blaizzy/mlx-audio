@@ -98,62 +98,37 @@ def test_detection_without_repository_name():
     assert model_type_from_config({**config, "model_type": "explicit"}) == "explicit"
 
 
-@pytest.mark.parametrize(
-    "rate,compression",
-    [(rate, "relu_log1p") for rate in [8000, 16000, 22050, 24000, 32000, 44100, 48000]]
-    + [(8000, compression) for compression in ["log1p", "signed_log1p", 0.3]],
-)
-@pytest.mark.parametrize("frontend", ["native", "stable"])
-def test_stft_roundtrip_with_identity_network(rate, compression, frontend):
+@pytest.mark.parametrize("rate", [8000, 16000, 22050, 24000, 32000, 44100, 48000])
+def test_stft_roundtrip_with_identity_network(rate):
     # Bypass the network to exercise the real analysis/synthesis path.
 
     class Identity(Model):
         def __call__(self, magnitude, phase):
             return magnitude, phase
 
-    config = tiny_config()
-    config.compress_factor = compression
-    model = Identity(config)
+    model = Identity(tiny_config())
     rng = np.random.default_rng(rate)
     nfft, hop, win = model.config.stft_sizes(rate)
     audio = rng.normal(0, 0.1, size=hop * 8 + 7).astype(np.float32)
-    actual = np.array(
-        model.generate(
-            audio, sample_rate=rate, chunk_seconds=None, frontend=frontend
-        ).audio
-    )
+    actual = np.array(model.generate(audio, sample_rate=rate, chunk_seconds=None).audio)
     np.testing.assert_allclose(actual[:-7], audio[:-7], atol=2e-6)
     np.testing.assert_array_equal(actual[-7:], np.full(7, 1e-8, dtype=np.float32))
 
 
-@pytest.mark.parametrize("frontend", ["native", "stable"])
-def test_chunk_overlap_and_channels_preserve_audio(tmp_path, frontend):
+def test_chunk_overlap_and_channels_preserve_audio(tmp_path):
     model = Model(tiny_config())
-    selected = []
-
-    def passthrough(self, audio, rate, **kwargs):
-        selected.append(kwargs["frontend"])
-        return audio
-
-    model._enhance_chunk = MethodType(passthrough, model)
+    model._enhance_chunk = MethodType(lambda self, a, rate: a, model)
     rng = np.random.default_rng(42)
     audio = rng.normal(0, 0.1, size=(3501, 2)).astype(np.float32)
     result = model.generate(
-        audio,
-        sample_rate=8000,
-        chunk_seconds=0.1,
-        overlap_seconds=0.025,
-        frontend=frontend,
+        audio, sample_rate=8000, chunk_seconds=0.1, overlap_seconds=0.025
     )
     np.testing.assert_allclose(np.array(result.audio), audio, atol=3e-8)
     path = tmp_path / "input.wav"
     audio_io.write(str(path), audio, 8000)
-    result = model.generate(
-        path, target_sample_rate=16000, chunk_seconds=None, frontend=frontend
-    )
+    result = model.generate(path, target_sample_rate=16000, chunk_seconds=None)
     assert result.audio.shape == (7002, 2)
     assert result.sample_rate == 16000
-    assert set(selected) == {frontend}
 
 
 @pytest.mark.parametrize(
@@ -165,7 +140,6 @@ def test_chunk_overlap_and_channels_preserve_audio(tmp_path, frontend):
         (np.array([]), {"sample_rate": 8000}),
         (np.array([float("nan")]), {"sample_rate": 8000}),
         (np.zeros(10), {"sample_rate": 8000, "chunk_seconds": 0}),
-        (np.zeros(10), {"sample_rate": 8000, "frontend": "unknown"}),
         (
             np.zeros(10),
             {
@@ -183,10 +157,9 @@ def test_invalid_inputs(audio, kwargs):
 
 
 @pytest.mark.parametrize("length", [1, 79, 160, 161])
-@pytest.mark.parametrize("frontend", ["native", "stable"])
-def test_short_silent_inputs_are_finite(length, frontend):
+def test_short_silent_inputs_are_finite(length):
     output = Model(tiny_config()).generate(
-        np.zeros(length), sample_rate=8000, chunk_seconds=None, frontend=frontend
+        np.zeros(length), sample_rate=8000, chunk_seconds=None
     )
     assert output.audio.shape == (length,)
     assert bool(mx.all(mx.isfinite(output.audio)))

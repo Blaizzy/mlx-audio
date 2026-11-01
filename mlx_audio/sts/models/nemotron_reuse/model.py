@@ -12,7 +12,7 @@ import numpy as np
 from scipy.signal import resample_poly
 
 from mlx_audio import audio_io
-from mlx_audio.dsp import istft, stable_stft, stft
+from mlx_audio.dsp import istft, stft
 
 from ..base import STSOutput
 from .config import ModelConfig
@@ -66,40 +66,24 @@ class Model(nn.Module):
         # This small enhancement model is kept at source precision.
         return lambda path, module: False
 
-    def _enhance_chunk(self, audio, sample_rate, *, frontend="native"):
+    def _enhance_chunk(self, audio, sample_rate):
         length = audio.shape[0]
         n_fft, hop, win = self.config.stft_sizes(sample_rate)
         # Reflection padding needs more than half an FFT of input.
         if length <= n_fft // 2:
             audio = mx.pad(audio, ((0, n_fft // 2 + 1 - length),))
+        window = 0.5 - 0.5 * mx.cos(2 * mx.pi * mx.arange(win) / win)
+        spectrum = stft(audio, n_fft, hop, win, window=window).T
+        magnitude = mx.abs(spectrum)
         compression = self.config.compress_factor
-        if frontend == "stable":
-            spectrum, window = stable_stft(np.asarray(audio), n_fft, hop, win)
-            spectrum = spectrum.T
-            magnitude = np.abs(spectrum)
-            if compression in ("log1p", "relu_log1p", "signed_log1p"):
-                magnitude = np.log1p(magnitude)
-            else:
-                magnitude = magnitude**compression
-            magnitude, phase, window = map(
-                mx.array,
-                (
-                    magnitude.astype(np.float32),
-                    np.angle(spectrum).astype(np.float32),
-                    window,
-                ),
-            )
+        if compression in ("log1p", "relu_log1p", "signed_log1p"):
+            magnitude = mx.log1p(magnitude)
         else:
-            window = 0.5 - 0.5 * mx.cos(2 * mx.pi * mx.arange(win) / win)
-            spectrum = stft(audio, n_fft, hop, win, window=window).T
-            magnitude = mx.abs(spectrum)
-            if compression in ("log1p", "relu_log1p", "signed_log1p"):
-                magnitude = mx.log1p(magnitude)
-            else:
-                magnitude = magnitude**compression
-            # Canonicalize signed zero; near-zero FFT phase remains backend-specific.
-            imaginary = mx.where(spectrum.imag == 0, 0.0, spectrum.imag)
-            phase = mx.arctan2(imaginary, spectrum.real)
+            magnitude = magnitude**compression
+        # Real FFT endpoints can contain -0j in MLX. PyTorch returns +0j;
+        # feeding -pi instead of +pi into the network changes its prediction.
+        imaginary = mx.where(spectrum.imag == 0, 0.0, spectrum.imag)
+        phase = mx.arctan2(imaginary, spectrum.real)
         magnitude, phase = self(magnitude[None], phase[None])
         magnitude, phase = magnitude[0], phase[0]
         # Match the released inference script's sweep-artifact suppression.
@@ -129,7 +113,6 @@ class Model(nn.Module):
         target_sample_rate: int | None = None,
         chunk_seconds: float | None = 5.0,
         overlap_seconds: float | None = None,
-        frontend: str = "native",
     ) -> STSOutput:
         """Enhance mono or samples-first multichannel audio independently per channel.
 
@@ -137,13 +120,7 @@ class Model(nn.Module):
         Set ``target_sample_rate`` for bandwidth extension, or ``chunk_seconds=None``
         to process the complete recording in one pass. This bidirectional model
         performs offline enhancement, not causal streaming.
-
-        ``frontend="stable"`` selects experimental CPU float64 spectral analysis
-        with a defined real-bin phase convention. It changes model predictions
-        and does not reproduce the original NVIDIA CUDA frontend exactly.
         """
-        if frontend not in ("native", "stable"):
-            raise ValueError("frontend must be 'native' or 'stable'")
         if isinstance(audio, (str, Path)):
             audio, rate = audio_io.read(str(Path(audio).expanduser()))
             if sample_rate is not None and sample_rate != rate:
@@ -191,9 +168,7 @@ class Model(nn.Module):
                 raise ValueError("Chunk hop must be at least one sample")
         if length <= chunk:
             channels = [
-                self._enhance_chunk(
-                    mx.array(audio[:, i]), sample_rate, frontend=frontend
-                )
+                self._enhance_chunk(mx.array(audio[:, i]), sample_rate)
                 for i in range(audio.shape[1])
             ]
             enhanced = mx.stack(channels, axis=-1)
@@ -206,9 +181,7 @@ class Model(nn.Module):
             for start in starts:
                 for channel in range(audio.shape[1]):
                     result = self._enhance_chunk(
-                        mx.array(audio[start : start + chunk, channel]),
-                        sample_rate,
-                        frontend=frontend,
+                        mx.array(audio[start : start + chunk, channel]), sample_rate
                     )
                     output[start : start + chunk, channel] += (
                         np.asarray(result) * window

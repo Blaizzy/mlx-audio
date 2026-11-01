@@ -14,7 +14,6 @@ __all__ = [
     "bartlett",
     "STR_TO_WINDOW_FN",
     "stft",
-    "stable_stft",
     "istft",
     "ISTFTCache",
     "mel_filters",
@@ -383,64 +382,6 @@ def normalize_peak(data: np.ndarray, target_peak_db: float) -> np.ndarray:
 
 
 # STFT and ISTFT
-def stable_stft(
-    x,
-    n_fft: int = 800,
-    hop_length: Optional[int] = None,
-    win_length: Optional[int] = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """High-precision, centered STFT with a defined real-bin phase convention.
-
-    Returns a NumPy complex128 spectrum of shape ``[frames, frequencies]``
-    and a float32 periodic Hann window for synthesis. Analysis runs on the
-    CPU in float64. Input must be one-dimensional with more than ``n_fft // 2``
-    samples; FFT and window lengths must be positive and even.
-
-    This opt-in convention uses an exactly symmetric periodic Hann window
-    and reflection padding. These fixed choices make DC, Nyquist, and frames
-    centered exactly on a reflected boundary real. Their imaginary parts,
-    and all signed zeros, are canonicalized so ``np.angle`` gives +pi for
-    negative real coefficients and zero for zero coefficients. Other bins
-    are not thresholded. Results can differ from :func:`stft` and are not
-    guaranteed bit-identical across CPU platforms.
-    """
-    if hop_length is None:
-        hop_length = n_fft // 4
-    if win_length is None:
-        win_length = n_fft
-    if (
-        n_fft <= 0
-        or n_fft % 2
-        or win_length <= 0
-        or win_length % 2
-        or win_length > n_fft
-    ):
-        raise ValueError(
-            "Stable analysis requires positive even FFT/window sizes and win <= FFT"
-        )
-    if hop_length <= 0:
-        raise ValueError("hop_length must be positive")
-    audio = np.asarray(x, dtype=np.float64)
-    if audio.ndim != 1 or audio.size <= n_fft // 2:
-        raise ValueError("Stable analysis requires 1-D audio longer than n_fft // 2")
-
-    # Mirroring makes the periodic window exactly even about its center.
-    half = 0.5 - 0.5 * np.cos(2 * np.pi * np.arange(win_length // 2 + 1) / win_length)
-    window = np.concatenate((half, half[-2:0:-1]))
-    padding = (n_fft - win_length) // 2
-    analysis_window = np.pad(window, (padding, padding))
-    padded = np.pad(audio, (n_fft // 2, n_fft // 2), mode="reflect")
-    frames = np.lib.stride_tricks.sliding_window_view(padded, n_fft)[::hop_length]
-    spectrum = np.fft.rfft(frames * analysis_window, axis=-1)
-    spectrum.imag[:, [0, -1]] = 0.0
-    spectrum.imag[0, :] = 0.0
-    if (len(audio) - 1) % hop_length == 0:
-        spectrum.imag[-1, :] = 0.0
-    spectrum.imag[spectrum.imag == 0] = 0.0
-    spectrum.real[spectrum.real == 0] = 0.0
-    return spectrum, window.astype(np.float32)
-
-
 def stft(
     x,
     n_fft=800,
