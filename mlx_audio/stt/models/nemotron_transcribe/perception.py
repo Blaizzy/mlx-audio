@@ -5,7 +5,7 @@
 import math
 
 import mlx.core as mx
-import mlx.nn as nn
+from mlx import nn
 
 from mlx_audio.vad.models.nemotron_diarization import Model as DiarizationModel
 from mlx_audio.vad.models.nemotron_diarization.nemotron_diarization import (
@@ -53,7 +53,7 @@ class ParallelExpertEncoder(nn.Module):
         infusion = targets @ self._diar_kernel.astype(targets.dtype)
         return self.asr_norm(states) + cfg.get("spk_kernel_scale", 1.0) * infusion
 
-    def __call__(self, features):
+    def __call__(self, features, return_alignment=False):
         """One utterance of unnormalized (1, mel, valid_frames) features."""
         cfg, factor = self._config, self._factor
         size = cfg.get("online_inference_length", 500) * factor
@@ -64,6 +64,7 @@ class ParallelExpertEncoder(nn.Module):
         normalized = normalized.astype(dtype)
         state = self.diarization_model.init_streaming_state()
         outputs = []
+        asr_states, speaker_probs = [], []
         total = features.shape[-1]
         for start in range(0, total, size):
             end = min(start + size, total)
@@ -79,21 +80,30 @@ class ParallelExpertEncoder(nn.Module):
             # Include the padded final encoder frame, as NeMo's high-resolution
             # head pools all eight predictions before trimming to the ASR grid.
             central = count * factor
-            probabilities = (
-                self.diarization_model.streaming_step(
-                    features[:, :, context_start:context_end],
-                    state,
-                    central_frames=central,
-                    feature_length=length,
-                    left_context_frames=start - context_start,
-                )
-                .reshape(1, count, factor, -1)
-                .mean(axis=2)
+            native_probabilities = self.diarization_model.streaming_step(
+                features[:, :, context_start:context_end],
+                state,
+                central_frames=central,
+                feature_length=length,
+                left_context_frames=start - context_start,
+            )
+            probabilities = native_probabilities.reshape(1, count, factor, -1).mean(
+                axis=2
             )
             output = self.fuse(encoded, probabilities)
             mx.eval(output)
             outputs.append(output)
-        return mx.concatenate(outputs, axis=1)
+            if return_alignment:
+                asr_states.append(encoded)
+                speaker_probs.append(native_probabilities[None])
+        output = mx.concatenate(outputs, axis=1)
+        if return_alignment:
+            return (
+                output,
+                mx.concatenate(asr_states, axis=1),
+                mx.concatenate(speaker_probs, axis=1),
+            )
+        return output
 
 
 class Perception(nn.Module):
@@ -105,5 +115,11 @@ class Perception(nn.Module):
             config.asr_config.d_model, config.llm_config["hidden_size"]
         )
 
-    def __call__(self, audio):
-        return self.proj(self.encoder(self.preprocessor(audio)))
+    def __call__(self, audio, return_alignment=False):
+        output = self.encoder(
+            self.preprocessor(audio), return_alignment=return_alignment
+        )
+        if return_alignment:
+            fused, states, probabilities = output
+            return self.proj(fused), states, probabilities
+        return self.proj(output)

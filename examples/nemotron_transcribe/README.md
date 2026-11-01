@@ -19,15 +19,21 @@ dependency, then run the demo:
 python -m pip install -e '.[stt]' requests
 
 python examples/nemotron_transcribe/run.py \
-  --model "$HOME/Models/Nemotron-3.5-Transcribe-30B-A4B-EA-0.1.0" \
+  --model nativ-community/Nemotron-3.5-Transcribe-30B-A4B-EA-4bit \
   --tts-model gradium/phonon-31m-en \
   --tts-revision 92741c5b07d085ff840e26fea8ce43110b87852f \
   --output-dir "$HOME/Models/nemotron-transcribe-phonon-examples" \
-  --quantize --speak-answer
+  --speak-answer
 ```
 
-`--quantize` converts the original checkpoint's language model to 4-bit in
-memory. Omit it for BF16 or an already quantized checkpoint. Original-checkpoint
+Choose another precision from the
+[supported MLX checkpoints](https://huggingface.co/collections/nativ-community/nemotron-35-transcribe),
+or load the BF16, FP8, and NVFP4 checkpoints from the
+[NVIDIA collection](https://huggingface.co/collections/nvidia/nemotron-35-transcribe)
+directly. These three checkpoints retain MTP and CTC for speculative decoding
+and word timestamps.
+`--quantize` optionally converts an original checkpoint's language model to
+4-bit in memory; omit it for an already quantized checkpoint. Original-checkpoint
 loading occurs before quantization, so allow memory for the full model.
 `--speak-answer` creates `spoken_answer.wav` with Phonon; omit
 it for text output only.

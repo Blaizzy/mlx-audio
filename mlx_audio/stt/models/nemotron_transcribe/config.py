@@ -57,6 +57,8 @@ class ModelConfig(BaseModelArgs):
     llm_config: dict = field(default_factory=dict)
     pe_encoder_config: dict = field(default_factory=dict)
     perception: dict = field(default_factory=dict)
+    mtp: dict = field(default_factory=dict)
+    ctc_timestamps: dict = field(default_factory=dict)
     prompt_format: str = "nemotron3p5"
     audio_locator_tag: str = "<|audio|>"
     eos_token_id: list[int] = field(default_factory=lambda: [11])
@@ -110,6 +112,11 @@ class ModelConfig(BaseModelArgs):
             raise ValueError("Perception output must match the language model width")
         if isinstance(self.eos_token_id, int):
             self.eos_token_id = [self.eos_token_id]
+        if self.mtp.get("enabled"):
+            if not self.mtp.get("use_repeated_layer", True):
+                raise ValueError("Nemotron Transcribe requires a repeated MTP module")
+            if self.mtp.get("hybrid_override_pattern", "*E") != "*E":
+                raise ValueError("Expected attention/MoE MTP layers (*E)")
 
     @property
     def text_config(self):

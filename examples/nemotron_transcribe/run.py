@@ -105,7 +105,7 @@ def prepare_inputs(args, output, tts):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--model", required=True, help="Local NGC or converted checkpoint"
+        "--model", required=True, help="Hugging Face model ID or local checkpoint"
     )
     parser.add_argument(
         "--output-dir", type=Path, default=Path("output/nemotron_transcribe")

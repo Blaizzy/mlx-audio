@@ -255,6 +255,9 @@ def apply_quantization(
         mode=quantization.get("mode", "affine"),
         class_predicate=get_class_predicate,
     )
+    from mlx_audio.quantization.nvfp4 import replace_scaled_quantized_linears
+
+    replace_scaled_quantized_linears(model, weights)
 
 
 def get_model_class(
@@ -420,6 +423,9 @@ def base_load_model(
 
     # Load weights
     weights = load_weights(model_path)
+    from mlx_audio.quantization.modelopt import prepare_modelopt_weights
+
+    weights = prepare_modelopt_weights(weights, config, model_path)
 
     # Sanitize weights if the model has a sanitize method
     if hasattr(model, "sanitize"):

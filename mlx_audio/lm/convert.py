@@ -92,9 +92,22 @@ def quantize_model(
 
 
 def dequantize_model(model: nn.Module) -> nn.Module:
+    from mlx_audio.lm.models.switch_layers import QuantizedSwitchLinear, SwitchLinear
+    from mlx_audio.quantization.nvfp4 import ScaledQuantizedLinear
+
     replacements = []
     for name, module in model.named_modules():
-        if isinstance(module, nn.QuantizedLinear):
+        if isinstance(module, ScaledQuantizedLinear):
+            replacements.append((name, module.to_linear()))
+            continue
+        elif isinstance(module, QuantizedSwitchLinear):
+            layer = SwitchLinear(
+                module.input_dims,
+                module.output_dims,
+                module.num_experts,
+                bias="bias" in module,
+            )
+        elif isinstance(module, nn.QuantizedLinear):
             layer = nn.Linear(*module.weight.shape[::-1], bias="bias" in module)
         elif isinstance(module, nn.QuantizedEmbedding):
             layer = nn.Embedding(*module.weight.shape)

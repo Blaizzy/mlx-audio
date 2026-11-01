@@ -1,12 +1,22 @@
 """Tests for the arktts (Audio8-TTS) model: sanitize contract + tiny-model forward."""
 
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import mlx.core as mx
 import numpy as np
+from mlx import nn
 
 from mlx_audio.tts.models.arktts import Model, ModelConfig
 from mlx_audio.tts.models.arktts.arktts import ArkttsModel
+from mlx_audio.tts.models.arktts.convert import (
+    copy_supporting_files,
+    load_source_weights,
+    prepare_config,
+    write_model_card,
+)
 
 
 def tiny_config() -> ModelConfig:
@@ -115,6 +125,22 @@ class TestArkttsSanitize(unittest.TestCase):
 
 
 class TestArkttsTinyModel(unittest.TestCase):
+    def test_quantized_tied_logits_and_cached_generation(self):
+        config = tiny_config()
+        lm = ArkttsModel(config)
+        nn.quantize(lm, group_size=32, bits=4)
+        mx.eval(lm.parameters())
+        self.assertEqual(lm.embeddings.weight.dtype, mx.uint32)
+        prompt = mx.zeros((1, config.num_codebooks + 1, 3), dtype=mx.int32)
+        logits, _ = lm(prompt)
+        expected = lm.embeddings.as_linear(lm.norm(lm(prompt)[1]))
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected))
+        codes = lm.generate_codes(
+            [np.arange(3)], [np.arange(2)], max_new_tokens=2, do_sample=False
+        )
+        self.assertEqual(codes.shape[:2], (1, config.num_codebooks))
+        self.assertTrue(bool(mx.all((codes >= 0) & (codes < config.codebook_size))))
+
     def test_prefill_and_greedy_generation_shapes(self):
         config = tiny_config()
         lm = ArkttsModel(config)
@@ -150,6 +176,161 @@ class TestArkttsTinyModel(unittest.TestCase):
             [prefix], [suffix], max_new_tokens=4, do_sample=True, seed=11
         )
         self.assertTrue(np.array_equal(np.asarray(a), np.asarray(b)))
+
+
+class TestArkttsConversion(unittest.TestCase):
+    def test_native_tokenizer_and_reference_prompt(self):
+        from tokenizers import Tokenizer, models, pre_tokenizers
+
+        tokenizer = Tokenizer(
+            models.WordLevel({"[UNK]": 0, "hello": 1}, unk_token="[UNK]")
+        )
+        tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()
+        special = ["<|im_start|>", "<|im_end|>", "<|voice|>", "<|speaker:0|>"]
+        tokenizer.add_special_tokens(special)
+        with tempfile.TemporaryDirectory() as directory:
+            model = Model.__new__(Model)
+            model.model_path = Path(directory)
+            model._tokenizer = None
+            tokenizer.save(str(model.model_path / "tokenizer.json"))
+            with patch.dict("sys.modules", {"torch": None, "transformers": None}):
+                prefix, suffix = model._prompt_segments("hello", "hello", True)
+            self.assertIn(tokenizer.token_to_id("<|speaker:0|>"), prefix)
+            self.assertEqual(suffix[-1], tokenizer.token_to_id("<|voice|>"))
+            plain, empty = model._prompt_segments("hello", None, False)
+            self.assertNotIn(tokenizer.token_to_id("<|speaker:0|>"), plain)
+            self.assertEqual(empty.size, 0)
+
+    def test_realistic_config_and_loader_dispatch(self):
+        from mlx_audio.convert import Domain, get_model_type
+        from mlx_audio.tts.utils import get_model_and_args
+
+        config = {"model_type": "arktts", "dtype": "bfloat16", "auto_map": {}}
+        prepared = prepare_config(config, Path("unused"))
+        self.assertEqual(prepared["torch_dtype"], "bfloat16")
+        self.assertEqual(ModelConfig.from_dict(prepared).dim, 896)
+        self.assertNotIn("auto_map", prepared)
+        self.assertIn("auto_map", config)
+        module, model_type = get_model_and_args("arktts", ["Audio8", "Realistic"])
+        self.assertIs(module.Model, Model)
+        self.assertEqual(model_type, "arktts")
+        with patch("mlx_audio.convert.get_model_types", return_value={"arktts"}):
+            self.assertEqual(
+                get_model_type(prepared, Path("model"), Domain.TTS), "arktts"
+            )
+
+    def test_bundled_codec_keeps_source_precision(self):
+        self.assertTrue(Model.cast_predicate("model.embeddings.weight"))
+        self.assertFalse(Model.cast_predicate("codec.encoder.conv.weight"))
+        self.assertTrue(Model.model_quant_predicate("model.layers.0", None))
+        self.assertFalse(Model.model_quant_predicate("codec.quantizer", None))
+
+    def test_original_codec_is_loaded_and_sanitized(self):
+        tensor = MagicMock()
+        tensor.detach.return_value.cpu.return_value.float.return_value.numpy.return_value = np.arange(
+            24, dtype=np.float32
+        ).reshape(
+            2, 3, 4
+        )
+        torch = MagicMock()
+        torch.load.return_value = {
+            "state_dict": {
+                "generator.encoder.conv.weight": tensor,
+                "generator.freqs_cis": tensor,
+                "discriminator.weight": tensor,
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "config.json").write_text('{"codec_filename": "custom.pth"}')
+            (source / "custom.pth").touch()
+            mx.save_safetensors(
+                str(source / "model.safetensors"),
+                {"embeddings.weight": mx.ones((8, 4))},
+            )
+            with patch.dict("sys.modules", {"torch": torch}):
+                weights = load_source_weights(source)
+            torch.load.assert_called_once_with(
+                source / "custom.pth", map_location="cpu", weights_only=True
+            )
+            sanitized = Model.sanitize(Model.__new__(Model), weights)
+            self.assertEqual(
+                set(sanitized), {"model.embeddings.weight", "codec.encoder.conv.weight"}
+            )
+            np.testing.assert_array_equal(
+                np.asarray(sanitized["codec.encoder.conv.weight"]),
+                np.arange(24).reshape(2, 3, 4).transpose(0, 2, 1),
+            )
+
+    def test_converted_weights_do_not_need_pytorch_or_pth(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            mx.save_safetensors(
+                str(source / "model.safetensors"),
+                {
+                    "model.embeddings.weight": mx.ones((8, 4)),
+                    "codec.encoder.conv.weight": mx.ones((2, 4, 3)),
+                },
+            )
+            with patch.dict("sys.modules", {"torch": None}):
+                weights = load_source_weights(source)
+            self.assertEqual(len(weights), 2)
+
+    def test_missing_codec_reports_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            (source / "config.json").write_text("{}")
+            mx.save_safetensors(
+                str(source / "model.safetensors"),
+                {"embeddings.weight": mx.zeros((2, 2))},
+            )
+            with self.assertRaisesRegex(FileNotFoundError, "codec.pth"):
+                load_source_weights(source)
+
+    def test_runtime_files_and_model_card(self):
+        from huggingface_hub import ModelCard
+
+        with tempfile.TemporaryDirectory() as directory:
+            source, dest = Path(directory) / "source", Path(directory) / "output"
+            source.mkdir()
+            dest.mkdir()
+            for name in (
+                "tokenizer.json",
+                "tokenizer_config.json",
+                "special_tokens_map.json",
+                "LICENSE",
+                "NOTICE",
+                "modeling_arktts.py",
+                "codec.pth",
+                "processor_config.json",
+                "generation_config.json",
+            ):
+                (source / name).write_text("{}")
+            (source / "README.md").write_text(
+                "---\nlicense: apache-2.0\nlanguage:\n- en\n- ar\n---\n"
+            )
+            copy_supporting_files(source, dest)
+            self.assertEqual(
+                {file.name for file in dest.iterdir()},
+                {
+                    "tokenizer.json",
+                    "tokenizer_config.json",
+                    "special_tokens_map.json",
+                    "LICENSE",
+                    "NOTICE",
+                },
+            )
+            write_model_card(
+                dest,
+                str(source),
+                "local-audio8",
+                {"_name_or_path": "Edge0/Audio8-TTS-Realistic-0.6b"},
+            )
+            card = ModelCard.load(str(dest / "README.md"))
+            self.assertEqual(card.data.license, "apache-2.0")
+            self.assertEqual(card.data.language, ["en", "ar"])
+            self.assertEqual(card.data.base_model, "Edge0/Audio8-TTS-Realistic-0.6b")
+            self.assertIn('ref_audio="reference.wav"', card.text)
 
 
 if __name__ == "__main__":

@@ -2337,6 +2337,18 @@ class TestSoprano(unittest.TestCase):
         self.assertIn("dollar", normalize_numbers("$5"))
         self.assertIn("first", normalize_numbers("1st"))
 
+    def test_ordinals(self):
+        from mlx_audio.tts.models.soprano.text import normalize_numbers
+
+        self.assertEqual(normalize_numbers("July 4th"), "July fourth")
+        self.assertEqual(normalize_numbers("the 20th century"), "the twentieth century")
+        self.assertEqual(normalize_numbers("101st"), "one hundred first")
+        self.assertEqual(normalize_numbers("112th"), "one hundred twelfth")
+        self.assertEqual(normalize_numbers("100th"), "one hundredth")
+        self.assertEqual(normalize_numbers("1001st"), "one thousand first")
+        self.assertEqual(normalize_numbers("10K"), "ten thousand")
+        self.assertEqual(normalize_numbers("25M"), "twenty five million")
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
@@ -3430,7 +3442,16 @@ class TestQwen3TTSGenerateICL(unittest.TestCase):
             )
 
         self.assertEqual(len(results), 51)
-        self.assertEqual(model.speech_tokenizer.decoder.streaming_step.call_count, 51)
+        decoder_calls = model.speech_tokenizer.decoder.streaming_step.call_args_list
+        # One reference-priming call precedes the 51 generated audio chunks.
+        self.assertEqual(len(decoder_calls), 52)
+        np.testing.assert_array_equal(
+            np.array(decoder_calls[0].args[0]),
+            np.array(model.speech_tokenizer.encode.return_value),
+        )
+        for decoder_call in decoder_calls[1:]:
+            self.assertEqual(decoder_call.args[0].shape, (1, 4, 1))
+        self.assertEqual(sum(result.samples for result in results), 51 * 1920)
         mock_clear_cache.assert_called_once_with()
 
     def test_generate_icl_repetition_penalty_applied(self):

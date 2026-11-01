@@ -529,6 +529,10 @@ def build_quant_predicate(
 
 def copy_model_files(source: Path, dest: Path):
     """Copy supporting files from source to destination."""
+    index_path = source / "model.safetensors.index.json"
+    weight_shards = set()
+    if index_path.is_file():
+        weight_shards.update(json.loads(index_path.read_text())["weight_map"].values())
     patterns = [
         "*.py",
         "*.json",
@@ -546,8 +550,10 @@ def copy_model_files(source: Path, dest: Path):
         # Copy from root
         for file in glob.glob(str(source / pattern)):
             name = Path(file).name
-            if name == "model.safetensors.index.json" or (
-                name.startswith("model") and name.endswith(".safetensors")
+            if (
+                name in weight_shards
+                or name == "model.safetensors.index.json"
+                or (name.startswith("model") and name.endswith(".safetensors"))
             ):
                 continue
             shutil.copy(file, dest)
@@ -559,7 +565,7 @@ def copy_model_files(source: Path, dest: Path):
             if len(rel_path.parts) <= 1:
                 continue
             name = Path(file).name
-            if name == "model.safetensors.index.json":
+            if str(rel_path) in weight_shards or name == "model.safetensors.index.json":
                 continue
             dest_dir = dest / rel_path.parent
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -666,11 +672,18 @@ def convert(
     # Load and process weights
     source_weight_loader = getattr(model_class, "load_source_weights", load_weights)
     weights = source_weight_loader(model_path)
+    from mlx_audio.quantization.modelopt import prepare_modelopt_weights
+    from mlx_audio.utils import apply_quantization
+
+    weights = prepare_modelopt_weights(weights, config, model_path)
     model = model_class.Model(model_config)
 
     if hasattr(model, "sanitize"):
         weights = model.sanitize(weights)
 
+    apply_quantization(
+        model, config, weights, getattr(model, "model_quant_predicate", None)
+    )
     model.load_weights(list(weights.items()))
     weights = dict(tree_flatten(model.parameters()))
 
@@ -681,7 +694,15 @@ def convert(
         mx_dtype = getattr(mx, target_dtype)
         cast_predicate = getattr(model, "cast_predicate", lambda key: True)
         weights = {
-            k: v.astype(mx_dtype) if cast_predicate(k) else v
+            k: (
+                v.astype(mx_dtype)
+                if mx.issubdtype(v.dtype, mx.floating)
+                and not k.endswith(
+                    (".weight_scale_2", ".weight_global_scale", ".pre_quant_scale")
+                )
+                and cast_predicate(k)
+                else v
+            )
             for k, v in weights.items()
         }
         model.load_weights(list(weights.items()))
@@ -703,6 +724,8 @@ def convert(
         print("[INFO] Dequantizing")
         model = dequantize_model(model)
         weights = dict(tree_flatten(model.parameters()))
+        config.pop("quantization", None)
+        config.pop("quantization_config", None)
 
     # Create output directory and copy files
     mlx_path = Path(mlx_path)

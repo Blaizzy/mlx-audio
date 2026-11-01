@@ -1,4 +1,4 @@
-"""MLX port of the Audio8 TTS preview models (model_type: arktts).
+"""MLX port of Audio8 TTS Preview and Realistic (model_type: arktts).
 
 Mirrors the reference modeling_arktts.py structure: a DualAR transformer — a
 slow AR stack predicting one semantic token per audio frame, and a fast AR
@@ -7,9 +7,9 @@ stack predicting the frame's residual codec codebooks — plus the bundled
 semantic-range logit filtering, the legacy top-k/top-p order (filter before
 temperature), exponential-race sampling, and RAS repetition rescue.
 
-Two checkpoints share this ``model_type`` and are told apart by ``slow_backbone``:
+Two backbone variants share this ``model_type`` and are selected by ``slow_backbone``:
 
-``arktts`` (default, Audio8-TTS-Preview-0.6b)
+``arktts`` (default, Audio8-TTS-Preview/Realistic-0.6b)
     Pure-attention slow stack, full-vocabulary semantic logits tied to the input
     embedding, EOS at ``eos_token_id``.
 
@@ -27,7 +27,6 @@ conversion of either can reuse the other's converted codec tensors.
 
 from __future__ import annotations
 
-import json
 import math
 import time
 from dataclasses import dataclass
@@ -565,7 +564,7 @@ class ArkttsModel(nn.Module):
         for layer in self.layers:
             hidden = layer(hidden, rope, mask)
         normalized = self.norm(hidden)
-        logits = normalized @ self.embeddings.weight.T
+        logits = self.embeddings.as_linear(normalized)
         return logits, hidden
 
     # -- cached decode steps -------------------------------------------------
@@ -624,7 +623,7 @@ class ArkttsModel(nn.Module):
             hidden = layer(hidden, rope, mask, cache_start)
         hidden = hidden[:, -1:]
         normalized = self.norm(hidden)
-        logits = (normalized @ self.embeddings.weight.T)[:, -1]
+        logits = self.embeddings.as_linear(normalized)[:, -1]
         fast_hidden = normalized if config.norm_fastlayer_input else hidden
         return logits, fast_hidden
 
@@ -799,7 +798,7 @@ class ArkttsModel(nn.Module):
                 f"Prompt length {prompt_width} must be smaller than {config.max_seq_len}"
             )
         max_new_tokens = min(max_new_tokens, config.max_seq_len - prompt_width)
-        dtype = self.text_embeddings.weight.dtype
+        dtype = self.text_embeddings(prompt[:, 0, :1]).dtype
         # In the compact semantic space EOS is the last column of the head, not the
         # tokenizer's eos_token_id.
         eos_index = (
@@ -903,6 +902,15 @@ class Model(nn.Module):
     def sample_rate(self) -> int:
         return self.config.codec_sample_rate
 
+    @staticmethod
+    def cast_predicate(key: str) -> bool:
+        # Keep the codec's source precision for reference encoding and decoding.
+        return key.startswith("model.")
+
+    @staticmethod
+    def model_quant_predicate(path: str, module: nn.Module) -> bool:
+        return path.startswith("model.")
+
     @classmethod
     def post_load_hook(cls, model: "Model", model_path: Path) -> "Model":
         model.model_path = Path(model_path)
@@ -911,11 +919,12 @@ class Model(nn.Module):
     # tokenizer / prompt -----------------------------------------------------
     def _load_tokenizer(self):
         if self._tokenizer is None:
-            from transformers import AutoTokenizer
+            from tokenizers import Tokenizer
 
-            # the reference processor pins fix_mistral_regex=False; match it
-            self._tokenizer = AutoTokenizer.from_pretrained(
-                str(self.model_path), use_fast=True, fix_mistral_regex=False
+            # Load the reference's serialized tokenizer unchanged, including its
+            # special tokens and original pre-tokenizer (fix_mistral_regex=False).
+            self._tokenizer = Tokenizer.from_file(
+                str(self.model_path / "tokenizer.json")
             )
         return self._tokenizer
 
@@ -939,7 +948,7 @@ class Model(nn.Module):
         def encode_parts(parts):
             out = []
             for part in parts:
-                out.extend(tokenizer.encode(part, add_special_tokens=False))
+                out.extend(tokenizer.encode(part, add_special_tokens=False).ids)
             return np.asarray(out, dtype=np.int64)
 
         target = self._clean_text(text)

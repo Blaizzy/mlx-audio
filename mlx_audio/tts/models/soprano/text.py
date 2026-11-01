@@ -112,6 +112,8 @@ def _ordinal_to_words(n: int) -> str:
         if ones == 0:
             return ORDINALS.get(n, TENS[tens] + "th")
         return TENS[tens] + " " + ORDINALS.get(ones, ONES[ones] + "th")
+    if n % 100:
+        return _num_to_words(n - n % 100) + " " + _ordinal_to_words(n % 100)
     base = _num_to_words(n)
     if base.endswith("y"):
         return base[:-1] + "ieth"
@@ -181,7 +183,7 @@ def expand_abbreviations(text: str) -> str:
 
 # Number patterns
 _num_prefix_re = re.compile(r"#\d")
-_num_suffix_re = re.compile(r"\d(K|M|B|T)", re.IGNORECASE)
+_num_suffix_re = re.compile(r"\b\d+(K|M|B|T)\b", re.IGNORECASE)
 _comma_number_re = re.compile(r"(\d[\d,]+\d)")
 _dollars_re = re.compile(r"\$([\d.,]*\d+)")
 _ordinal_re = re.compile(r"\d+(st|nd|rd|th)")
@@ -194,9 +196,9 @@ def _expand_num_prefix(m):
 
 def _expand_num_suffix(m):
     match = m.group(0)
-    suffix = match[1].upper()
+    suffix = match[-1].upper()
     suffixes = {"K": "thousand", "M": "million", "B": "billion", "T": "trillion"}
-    return f"{match[0]} {suffixes.get(suffix, '')}"
+    return f"{match[:-1]} {suffixes.get(suffix, '')}"
 
 
 def _remove_commas(m):

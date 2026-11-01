@@ -545,6 +545,106 @@ class Model(nn.Module):
 
         return HiggsAudioV3BatchSession(self, options)
 
+    def _prefill_batch(
+        self,
+        texts: list[str],
+        references_by_sequence: list[list[ReferenceCodes]],
+    ) -> tuple[list[BatchKVCache], mx.array]:
+        # Rows sharing one reference list have the same prompt up to the end of
+        # the last reference clip, so that prefix is prefilled once for all rows.
+        shared = references_by_sequence[0]
+        if (
+            len(texts) > 1
+            and shared
+            and all(references is shared for references in references_by_sequence)
+        ):
+            prompts = [
+                self._prompt_builder.build_prompt(text, references=shared)
+                for text in texts
+            ]
+            start, codes = prompts[0].audio_segments[-1]
+            prefix_length = start + int(codes.shape[0])
+            return self._prefill_shared_prefix(
+                texts[0],
+                shared,
+                prefix_length,
+                [prompt.token_ids[prefix_length:] for prompt in prompts],
+            )
+        return self._prefill_padded(texts, references_by_sequence)
+
+    def _prefill_padded(
+        self,
+        texts: list[str],
+        references_by_sequence: list[list[ReferenceCodes]],
+    ) -> tuple[list[BatchKVCache], mx.array]:
+        prompt_embeddings = []
+        for text, references in zip(texts, references_by_sequence):
+            prompt_embeds, _prompt_tokens = self._build_prompt_embeddings(
+                text, references
+            )
+            mx.eval(prompt_embeds)
+            prompt_embeddings.append(prompt_embeds)
+        prompt_lengths = [int(embeds.shape[1]) for embeds in prompt_embeddings]
+
+        max_prompt_length = max(prompt_lengths)
+        left_padding = [max_prompt_length - length for length in prompt_lengths]
+        padded_prompt_embeddings = []
+        for prompt_embeds, pad in zip(prompt_embeddings, left_padding):
+            if pad:
+                prompt_embeds = mx.pad(prompt_embeds, [(0, 0), (pad, 0), (0, 0)])
+            padded_prompt_embeddings.append(prompt_embeds)
+        prompt_batch = mx.concatenate(padded_prompt_embeddings, axis=0)
+        batch_cache = [BatchKVCache(left_padding) for _ in self.layers]
+        dummy = mx.zeros((len(texts), max_prompt_length), dtype=mx.int32)
+        hidden = self.backbone(dummy, cache=batch_cache, input_embeddings=prompt_batch)
+        last_hidden_batch = hidden[:, -1, :]
+        mx.eval(last_hidden_batch)
+        return batch_cache, last_hidden_batch
+
+    def _prefill_shared_prefix(
+        self,
+        first_text: str,
+        references: list[ReferenceCodes],
+        prefix_length: int,
+        suffix_ids: list[list[int]],
+    ) -> tuple[list[BatchKVCache], mx.array]:
+        batch_size = len(suffix_ids)
+        prompt_embeds, _prompt_tokens = self._build_prompt_embeddings(
+            first_text, references
+        )
+        prefix_cache = make_prompt_cache(self)
+        self.backbone(
+            mx.zeros((1, prefix_length), dtype=mx.int32),
+            cache=prefix_cache,
+            input_embeddings=prompt_embeds[:, :prefix_length],
+        )
+
+        lengths = [len(ids) for ids in suffix_ids]
+        max_length = max(lengths)
+        right_padding = [max_length - n for n in lengths]
+        suffix_batch = mx.stack(
+            [
+                mx.pad(self._text_embeddings(ids), [(0, pad), (0, 0)])
+                for ids, pad in zip(suffix_ids, right_padding)
+            ]
+        )
+        batch_cache = []
+        for layer_cache in prefix_cache:
+            row_cache = BatchKVCache.merge([layer_cache] * batch_size)
+            row_cache.prepare(right_padding=right_padding)
+            batch_cache.append(row_cache)
+        hidden = self.backbone(
+            mx.zeros((batch_size, max_length), dtype=mx.int32),
+            cache=batch_cache,
+            input_embeddings=suffix_batch,
+        )
+        # finalize() rolls the right-padded suffixes into the left-padded decode layout.
+        for row_cache in batch_cache:
+            row_cache.finalize()
+        last_hidden_batch = hidden[mx.arange(batch_size), mx.array(lengths) - 1]
+        mx.eval(last_hidden_batch)
+        return batch_cache, last_hidden_batch
+
     def batch_generate(
         self,
         texts: list[str],
@@ -628,17 +728,7 @@ class Model(nn.Module):
         )
 
         states = []
-        prompt_embeddings = []
-        prompt_lengths = []
-        for sequence_idx, text in enumerate(texts):
-            prompt_embeds, _prompt_tokens = self._build_prompt_embeddings(
-                text,
-                references_by_sequence[sequence_idx],
-            )
-            mx.eval(prompt_embeds)
-            prompt_embeddings.append(prompt_embeds)
-            prompt_lengths.append(int(prompt_embeds.shape[1]))
-
+        for sequence_idx in range(batch_size):
             states.append(
                 {
                     "sequence_idx": sequence_idx,
@@ -649,19 +739,9 @@ class Model(nn.Module):
                 }
             )
 
-        max_prompt_length = max(prompt_lengths)
-        left_padding = [max_prompt_length - length for length in prompt_lengths]
-        padded_prompt_embeddings = []
-        for prompt_embeds, pad in zip(prompt_embeddings, left_padding):
-            if pad:
-                prompt_embeds = mx.pad(prompt_embeds, [(0, 0), (pad, 0), (0, 0)])
-            padded_prompt_embeddings.append(prompt_embeds)
-        prompt_batch = mx.concatenate(padded_prompt_embeddings, axis=0)
-        batch_cache = [BatchKVCache(left_padding) for _ in self.layers]
-        dummy = mx.zeros((batch_size, max_prompt_length), dtype=mx.int32)
-        hidden = self.backbone(dummy, cache=batch_cache, input_embeddings=prompt_batch)
-        last_hidden_batch = hidden[:, -1, :]
-        mx.eval(last_hidden_batch)
+        batch_cache, last_hidden_batch = self._prefill_batch(
+            texts, references_by_sequence
+        )
 
         active = list(range(batch_size))
         for _ in range(limit):

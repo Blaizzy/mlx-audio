@@ -113,31 +113,9 @@ class HiggsAudioV3BatchSession:
             ref_texts=[item.ref_text for item in pending],
         )
 
-        prompt_embeddings = []
-        prompt_lengths = []
-        for item, references in zip(pending, references_by_sequence):
-            prompt_embeds, _prompt_tokens = self.model._build_prompt_embeddings(
-                item.text,
-                references,
-            )
-            mx.eval(prompt_embeds)
-            prompt_embeddings.append(prompt_embeds)
-            prompt_lengths.append(int(prompt_embeds.shape[1]))
-
-        max_prompt_length = max(prompt_lengths)
-        left_padding = [max_prompt_length - length for length in prompt_lengths]
-        padded_prompt_embeddings = []
-        for prompt_embeds, pad in zip(prompt_embeddings, left_padding):
-            if pad:
-                prompt_embeds = mx.pad(prompt_embeds, [(0, 0), (pad, 0), (0, 0)])
-            padded_prompt_embeddings.append(prompt_embeds)
-
-        prompt_batch = mx.concatenate(padded_prompt_embeddings, axis=0)
-        cache = self._make_batch_cache(left_padding)
-        dummy = mx.zeros((len(pending), max_prompt_length), dtype=mx.int32)
-        hidden = self.model.backbone(dummy, cache=cache, input_embeddings=prompt_batch)
-        last_hidden_batch = hidden[:, -1, :]
-        mx.eval(last_hidden_batch)
+        cache, last_hidden_batch = self.model._prefill_batch(
+            [item.text for item in pending], references_by_sequence
+        )
 
         new_states = [
             _ActiveRequest(
@@ -251,9 +229,6 @@ class HiggsAudioV3BatchSession:
                 raise ValueError(
                     "Higgs Audio v3 continuous batching does not support speed or pitch"
                 )
-
-    def _make_batch_cache(self, left_padding: list[int]) -> list[BatchKVCache]:
-        return [BatchKVCache(left_padding) for _ in self.model.layers]
 
     def _eval_cache(self, cache: list[BatchKVCache]) -> None:
         arrays = []
