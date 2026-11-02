@@ -2349,6 +2349,21 @@ class TestSoprano(unittest.TestCase):
         self.assertEqual(normalize_numbers("10K"), "ten thousand")
         self.assertEqual(normalize_numbers("25M"), "twenty five million")
 
+    def test_decimal_numbers(self):
+        from mlx_audio.tts.models.soprano.text import clean_text, normalize_numbers
+
+        # Decimals must be spoken, not left as a literal "word.word" token.
+        self.assertEqual(normalize_numbers("3.14"), "three point fourteen")
+        self.assertEqual(normalize_numbers("2.5"), "two point five")
+        self.assertEqual(normalize_numbers("version 2.0"), "version two point zero")
+        self.assertEqual(
+            clean_text("I have 2.5 liters"), "i have two point five liters"
+        )
+        # Dollar amounts still route through the currency handler.
+        self.assertIn("dollar", normalize_numbers("$3.50"))
+        # Bare integers are unaffected.
+        self.assertEqual(normalize_numbers("I have 5 cats"), "I have five cats")
+
     def test_expand_abbreviations(self):
         """Test abbreviation expansion."""
         from mlx_audio.tts.models.soprano.text import expand_abbreviations
