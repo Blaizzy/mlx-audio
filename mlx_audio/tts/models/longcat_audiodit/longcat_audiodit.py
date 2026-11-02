@@ -277,6 +277,9 @@ class Model(nn.Module):
                 is_final_chunk=is_last,
             )
 
+            if is_last:
+                break
+
             chunk_idx += 1
             start += hop_frames
 

@@ -6852,6 +6852,24 @@ class TestAudioDiTModel(unittest.TestCase):
         self.assertEqual(latent.shape[1], prompt_dur)
         self.assertGreater(prompt_dur, 0)
 
+    def test_stream_decode_emits_each_frame_once(self):
+        ratio = self.cfg.vae_config.downsampling_ratio
+        sr = self.cfg.sampling_rate
+        # 24-frame chunks with 6 frames of overlap, so an 18-frame hop.
+        for total_frames in range(1, 61):
+            with self.subTest(total_frames=total_frames):
+                latent = mx.random.normal((1, total_frames, self.cfg.latent_dim))
+                results = list(
+                    self.model._stream_decode(
+                        latent, sr, 0.0, chunk_seconds=0.008, overlap_seconds=0.002
+                    )
+                )
+                self.assertEqual(sum(r.samples for r in results), total_frames * ratio)
+                self.assertEqual(
+                    [r.is_final_chunk for r in results],
+                    [False] * (len(results) - 1) + [True],
+                )
+
     # -- sanitize --
 
     def test_sanitize_weight_norm(self):
