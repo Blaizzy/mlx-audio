@@ -7,12 +7,16 @@ from unittest.mock import MagicMock, patch
 import mlx.core as mx
 import numpy as np
 
+from mlx_audio.tts.models.qwen3_tts.config import Qwen3TTSTokenizerDecoderConfig
 from mlx_audio.tts.models.qwen3_tts.qwen3_tts import Model, mel_spectrogram
 from mlx_audio.tts.models.qwen3_tts.speaker_encoder import (
     TimeDelayNetBlock,
     reflect_pad_1d,
 )
-from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import DecoderBlockUpsample
+from mlx_audio.tts.models.qwen3_tts.speech_tokenizer import (
+    DecoderBlockUpsample,
+    DecoderTransformer,
+)
 
 
 def _top_p_keep_mask(scores, top_p):
@@ -1032,6 +1036,50 @@ class TestDecoderBlockUpsampleStreaming(unittest.TestCase):
                     atol=1e-5,
                     err_msg=f"upsample_rate={upsample_rate}, chunks={chunks}",
                 )
+
+
+class TestDecoderTransformerSlidingWindow(unittest.TestCase):
+    """The decoder transformer attends to at most sliding_window frames."""
+
+    def setUp(self):
+        mx.random.seed(0)
+        self.config = Qwen3TTSTokenizerDecoderConfig(
+            latent_dim=8,
+            hidden_size=16,
+            intermediate_size=32,
+            head_dim=4,
+            num_attention_heads=4,
+            num_key_value_heads=4,
+            num_hidden_layers=2,
+            layer_scale_initial_scale=1.0,
+        )
+        self.model = DecoderTransformer(self.config)
+        self.x = mx.random.normal((1, 100, self.config.latent_dim))
+
+    def _windowed_reference(self):
+        q = np.arange(self.x.shape[1])[:, None]
+        k = np.arange(self.x.shape[1])[None, :]
+        allowed = (k <= q) & (k > q - self.config.sliding_window)
+        mask = mx.array(np.where(allowed, 0.0, -np.inf).astype(np.float32))
+        return np.array(self.model(self.x, mask=mask))
+
+    def test_full_forward_uses_sliding_window(self):
+        np.testing.assert_allclose(
+            np.array(self.model(self.x)), self._windowed_reference(), atol=1e-5
+        )
+
+    def test_streaming_matches_windowed_forward(self):
+        cache = self.model.make_cache()
+        out, start = [], 0
+        for size in (25, 1, 1, 10, 25, 1, 30, 1, 6):
+            out.append(self.model(self.x[:, start : start + size], cache=cache))
+            start += size
+        self.assertEqual(start, self.x.shape[1])
+        np.testing.assert_allclose(
+            np.array(mx.concatenate(out, axis=1)),
+            self._windowed_reference(),
+            atol=1e-5,
+        )
 
 
 class _RecordingStreamingDecoder:
