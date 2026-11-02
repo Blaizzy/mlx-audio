@@ -213,19 +213,25 @@ def apply_quantization(
     weights: dict,
     model_quant_predicate: Optional[callable] = None,
 ) -> None:
-    """Apply quantization to a model if specified in config.
+    """Reconstruct a checkpoint's quantized layers if specified in config.
+
+    Models may define ``model_load_quant_predicate`` to override their
+    conversion predicate when restoring an existing checkpoint.
 
     Args:
         model: The model to quantize
         config: Model config dict (should contain 'quantization' key if quantized)
         weights: Loaded weights dict (used to check which layers have scales)
-        model_quant_predicate: Optional model-specific predicate for which layers to quantize
+        model_quant_predicate: Fallback predicate for models without a load-specific hook
     """
     quantization = config.get("quantization", None)
     if quantization is None:
         quantization = config.get("quantization_config", None)
     if quantization is None:
         return
+    model_quant_predicate = getattr(
+        model, "model_load_quant_predicate", model_quant_predicate
+    )
     group_size = quantization.get("group_size", 64)
 
     def get_class_predicate(p, m):
