@@ -432,14 +432,13 @@ class Model(nn.Module):
 
     @classmethod
     def model_quant_predicate(cls, path: str, module: nn.Module) -> bool:
-        # The published mlx-community S2 Pro quantizations (e.g.
-        # mlx-community/fish-audio-s2-pro-8bit) quantize every layer that
-        # supports it, embeddings and fast_* decoder layers included.
-        # Returning True defers to apply_quantization's per-layer
-        # "<path>.scales in weights" check, so the model is quantized exactly
-        # where the checkpoint is — no more, no less. Previously this excluded
-        # embeddings and fast_* layers, which made the 8-bit checkpoint
-        # unloadable ("Received 48 parameters not in model").
+        return not isinstance(module, nn.Embedding) and "fast_" not in path
+
+    @classmethod
+    def model_load_quant_predicate(cls, path: str, module: nn.Module) -> bool:
+        # Published checkpoints can also quantize embeddings and fast_* layers.
+        # Let apply_quantization reconstruct their layout from the stored scales
+        # and per-layer settings without changing the policy for new conversions.
         return True
 
     def load_weights(self, weights, strict: bool = True):
