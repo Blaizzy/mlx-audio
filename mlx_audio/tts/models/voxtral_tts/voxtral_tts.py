@@ -622,11 +622,9 @@ class Model(nn.Module):
         chunk_idx = 0
         # Convert streaming_interval (seconds) to frames (1 frame = 80 ms)
         frames_per_chunk = max(1, int(streaming_interval / 0.08))
-        # Context frames for overlap-add decoding.  The codec decoder uses
-        # sliding-window attention with windows up to 16 (at the final stage).
-        # Including context frames from the previous chunk ensures smooth
-        # transitions without boundary artifacts.
-        context_frames = 16
+        # Left context frames for chunked decoding; the codec decoder reaches
+        # 21 frames back.
+        context_frames = 25
         # Each codec frame produces 1920 samples (8x upsample × 240 patch)
         samples_per_frame = 1920
 
